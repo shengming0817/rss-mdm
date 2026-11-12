@@ -49,15 +49,44 @@ pub struct Associations {
     tenant: TenantId,
     key: ring::hmac::Key,
 }
+pub struct WorkerHealth {
+    pub task: Option<rss_runtime::TaskState>,
+    pub observed: bool,
+    pub unresolved_attempts: u64,
+    pub truncated: bool,
+    pub failure: Option<rss_reconcile::ErrorKind>,
+}
 impl Associations {
-    pub fn worker_ready(&self) -> bool {
-        self.worker_observed
-            .load(std::sync::atomic::Ordering::Acquire)
-            && self
+    pub fn worker_health(&self) -> WorkerHealth {
+        let (unresolved_attempts, truncated, failure) = self
+            .worker_failures
+            .lock()
+            .map(|failures| {
+                (
+                    failures.keys().filter(|key| !key.starts_with('!')).count() as u64,
+                    failures.contains_key("!truncated"),
+                    failures.values().next().copied(),
+                )
+            })
+            .unwrap_or((0, true, Some(rss_reconcile::ErrorKind::Invariant)));
+        WorkerHealth {
+            task: self
                 .worker_status
                 .get()
-                .is_some_and(|s| s.current() == rss_runtime::TaskState::Running)
-            && self.worker_failures.lock().is_ok_and(|s| s.is_empty())
+                .map(rss_runtime::TaskStatus::current),
+            observed: self
+                .worker_observed
+                .load(std::sync::atomic::Ordering::Acquire),
+            unresolved_attempts,
+            truncated,
+            failure,
+        }
+    }
+    pub fn worker_ready(&self) -> bool {
+        let health = self.worker_health();
+        health.observed
+            && health.task == Some(rss_runtime::TaskState::Running)
+            && health.failure.is_none()
     }
     pub fn new(audit: Arc<AuditStore>, tenant: TenantId, secret: &[u8]) -> Result<Self> {
         if secret.len() != 32 {

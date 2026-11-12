@@ -29,7 +29,12 @@ pub(crate) struct RuntimeDiagnostics {
     pub collections: Arc<rss_mdm_inventory_service::collection::execution::worker::Worker>,
     pub enrollment: Arc<rss_mdm_registration_service::enrollment::tasks::worker::Worker>,
     pub access_tasks: Arc<rss_mdm_device_access_postgres::device_access::execution::worker::Worker>,
-    pub credential_tasks: Vec<Arc<rss_mdm_recovery_credentials::tasks::worker::Worker>>,
+    pub credential_tasks: Vec<(
+        ComponentName,
+        Arc<rss_mdm_recovery_credentials::tasks::worker::Worker>,
+    )>,
+    pub first_use: Arc<crate::administration::first_use::FirstUse>,
+    pub authorization: Arc<rss_mdm_authorization_service::Store>,
     pub clock: Arc<dyn crate::clock::Clock>,
     pub tenant: rss_request_context::TenantId,
     pub instance: String,
@@ -54,32 +59,338 @@ fn apply_configuration_input(automation: &mut Component, suspended: Result<bool,
 impl Source for RuntimeDiagnostics {
     fn snapshot<'a>(
         &'a self,
-        tenant: rss_request_context::TenantId,
-        instance: &'a str,
-        deadline: Instant,
+        auth: &'a rss_mdm_authorization_service::context::RequestAuth,
+        audit: &'a rss_mdm_audit_integration::RequestAudit,
+        continuation: &'a rss_mdm_authorization_service::credential::RequestCredential,
     ) -> futures::future::BoxFuture<'a, Result<Snapshot, rss_mdm_management_http::Error>> {
         Box::pin(async move {
-            if tenant != self.tenant || instance != self.instance {
-                return Err(rss_mdm_management_http::Error::Forbidden);
-            }
-            Ok(self.collect(deadline, true).await)
+            use rss_mdm_authorization_service::{Error as AuthorizationError, Permission};
+            use rss_mdm_management_http::Error;
+            tokio::time::timeout_at(auth.deadline.into(), async {
+                if auth.proof.tenant_id() != self.tenant.to_string()
+                    || auth.proof.instance_id() != self.instance
+                {
+                    return Err(Error::Forbidden);
+                }
+                let before = rss_mdm_authorization_service::store::authorization_snapshot(
+                    &self.authorization,
+                    &auth.proof,
+                )
+                .await?;
+                before
+                    .require(&auth.proof, Permission::RuntimeDiagnosticsRead, None)
+                    .map_err(AuthorizationError::from)?;
+                let binding = before.query_binding(&auth.proof)?;
+                let mut result = self.collect(auth.deadline, true).await;
+                result.first_use = Some(
+                    match before
+                        .require(&auth.proof, Permission::RegistrationConfigurationRead, None)
+                        .map_err(AuthorizationError::from)
+                    {
+                        Ok(()) => self.first_use.summary(auth, audit, continuation).await,
+                        Err(AuthorizationError::Forbidden) => FirstUse::Forbidden,
+                        Err(error) => return Err(error.into()),
+                    },
+                );
+                let fresh = auth.revalidate().await?;
+                let current = rss_mdm_authorization_service::store::authorization_snapshot(
+                    &self.authorization,
+                    &auth.proof,
+                )
+                .await?;
+                if auth.current_binding(&current, fresh.as_ref())? != binding {
+                    return Err(Error::QueryReadConflict);
+                }
+                current
+                    .require(&auth.proof, Permission::RuntimeDiagnosticsRead, None)
+                    .map_err(AuthorizationError::from)?;
+                Ok(result)
+            })
+            .await
+            .map_err(|_| Error::Unavailable(rss_mdm_management_http::Failure::RequestDeadline))?
         })
     }
 }
 impl RuntimeDiagnostics {
     pub(crate) async fn collect(&self, cutoff: Instant, detailed: bool) -> Snapshot {
         let mut inventory = self.inventory_health();
-        let mut automation = self.automation_component(cutoff).await;
         if detailed {
-            self.enrich(cutoff, &mut inventory, &mut automation).await;
+            self.enrich_inventory(cutoff, &mut inventory).await;
         }
-        let execution = self.execution_component();
-        let mut components = vec![inventory, automation, execution];
-        if let Some(telemetry) = self.telemetry_component(cutoff, detailed).await {
-            components.push(telemetry);
+        let mut policy = worker_component(
+            ComponentName::Policy,
+            self.planning.automation_state(),
+            true,
+            false,
+        );
+        let health = self.planning.automation_health();
+        apply_runner(
+            &mut policy,
+            Runner {
+                scan: health.scan.map(run_result),
+                unresolved_attempts: health.unresolved_attempts,
+                truncated: health.truncated,
+                latest_failure: health.latest_failure.map(|f| AttemptFailure {
+                    stage: attempt_stage(f.stage),
+                    reason: automation_failure(f.failure),
+                    observed_at: f.observed_at,
+                }),
+            },
+        );
+        let health = self.groups.runner_health();
+        let mut group = worker_component(
+            ComponentName::Group,
+            self.groups.task_state(),
+            health.scan.is_some(),
+            false,
+        );
+        apply_runner(
+            &mut group,
+            Runner {
+                scan: health.scan.map(|v| RunResult {
+                    successful: v.failure.is_none(),
+                    reason: v.failure.map(execution_failure),
+                    observed_at: v.observed_at,
+                }),
+                unresolved_attempts: health.unresolved_attempts,
+                truncated: health.truncated,
+                latest_failure: health.latest_failure.map(|f| AttemptFailure {
+                    stage: attempt_stage(f.stage),
+                    reason: execution_failure(f.failure),
+                    observed_at: f.observed_at,
+                }),
+            },
+        );
+        let health = self.scopes.runner_health();
+        let mut scope = worker_component(
+            ComponentName::Scope,
+            self.scopes.task_state(),
+            health.scan.is_some(),
+            false,
+        );
+        apply_runner(
+            &mut scope,
+            Runner {
+                scan: health.scan.map(|v| RunResult {
+                    successful: v.failure.is_none(),
+                    reason: v.failure.map(execution_failure),
+                    observed_at: v.observed_at,
+                }),
+                unresolved_attempts: health.unresolved_attempts,
+                truncated: health.truncated,
+                latest_failure: health.latest_failure.map(|f| AttemptFailure {
+                    stage: attempt_stage(f.stage),
+                    reason: execution_failure(f.failure),
+                    observed_at: f.observed_at,
+                }),
+            },
+        );
+        let health = self.assets.worker_status();
+        let mut assets = worker_component(
+            ComponentName::AssetQuery,
+            health.task,
+            health.scan.is_some(),
+            false,
+        );
+        apply_runner(
+            &mut assets,
+            Runner {
+                scan: health.scan.map(|v| RunResult {
+                    successful: v.failure.is_none(),
+                    reason: v.failure.map(execution_failure),
+                    observed_at: v.observed_at,
+                }),
+                unresolved_attempts: health.unresolved_attempts,
+                truncated: health.truncated,
+                latest_failure: health.latest_failure.map(|f| AttemptFailure {
+                    stage: attempt_stage(f.stage),
+                    reason: execution_failure(f.failure),
+                    observed_at: f.observed_at,
+                }),
+            },
+        );
+        let health = self.compliance.worker_status();
+        let mut compliance = worker_component(
+            ComponentName::Compliance,
+            health.task,
+            health.scan.is_some(),
+            false,
+        );
+        apply_runner(
+            &mut compliance,
+            Runner {
+                scan: health.scan.map(|v| RunResult {
+                    successful: v.failure.is_none(),
+                    reason: v.failure.map(execution_failure),
+                    observed_at: v.observed_at,
+                }),
+                unresolved_attempts: health.unresolved_attempts,
+                truncated: health.truncated,
+                latest_failure: health.latest_failure.map(|f| AttemptFailure {
+                    stage: attempt_stage(f.stage),
+                    reason: execution_failure(f.failure),
+                    observed_at: f.observed_at,
+                }),
+            },
+        );
+        let health = self.devices.worker_health();
+        let mut associations = worker_component(
+            ComponentName::DeviceAssociations,
+            health.task,
+            health.observed,
+            health.failure.is_some(),
+        );
+        if let Some(failure) = health.failure {
+            associations.reasons.push(execution_failure(failure));
         }
-        if let Some(initialization) = self.initialization_component(cutoff).await {
-            components.push(initialization);
+        associations.runner = Some(Runner {
+            scan: None,
+            unresolved_attempts: health.unresolved_attempts,
+            truncated: health.truncated,
+            latest_failure: None,
+        });
+        let mut control =
+            recovery_component(ComponentName::DeviceControl, &self.execution.health());
+        let mut software =
+            recovery_component(ComponentName::SoftwareDeployment, &self.software.health());
+        let remaining = || {
+            cutoff.saturating_duration_since(rss_request_context::Clock::now(
+                &crate::lifecycle::RuntimeTimer,
+            ))
+        };
+        let (
+            group_input,
+            scope_input,
+            compliance_input,
+            policy_input,
+            control_input,
+            software_input,
+        ) = tokio::join!(
+            self.groups.input_failed(remaining()),
+            self.scopes.input_failed(remaining()),
+            self.compliance.input_failed(remaining()),
+            self.planning.configuration_input_suspended(cutoff),
+            self.execution.ingress_health(cutoff),
+            self.software.ingress_health(cutoff)
+        );
+        apply_configuration_input(&mut group, group_input.map_err(|e| queue_failure(e.into())));
+        apply_configuration_input(&mut scope, scope_input.map_err(|e| queue_failure(e.into())));
+        apply_configuration_input(
+            &mut compliance,
+            compliance_input.map_err(|e| queue_failure(e.into())),
+        );
+        apply_configuration_input(&mut policy, policy_input);
+        match control_input.map_err(input_health_error) {
+            Ok(state) => {
+                apply_configuration_input(&mut control, Ok(state.suspended));
+                control.dispatch = Some(Dispatch {
+                    event_after: state.event_after,
+                    window_open: state.window_open,
+                });
+                control
+                    .dependencies
+                    .push(dependency(DependencyName::CommandStorage, None));
+            }
+            Err(error) => {
+                apply_configuration_input(&mut control, Err(error));
+                control.dependencies.push(dependency(
+                    DependencyName::CommandStorage,
+                    Some(health_failure(error)),
+                ));
+            }
+        }
+        match software_input.map_err(software_health_error) {
+            Ok(state) => {
+                apply_configuration_input(&mut software, Ok(state.suspended));
+                software.dispatch = Some(Dispatch {
+                    event_after: state.event_after,
+                    window_open: state.window_open,
+                });
+                software
+                    .dependencies
+                    .push(dependency(DependencyName::CommandStorage, None));
+            }
+            Err(error) => {
+                apply_configuration_input(&mut software, Err(error));
+                software.dependencies.push(dependency(
+                    DependencyName::CommandStorage,
+                    Some(health_failure(error)),
+                ));
+            }
+        }
+        if detailed {
+            let (p, g, s, a, c, control_inputs, software_inputs) = tokio::join!(
+                self.planning.queue_health(cutoff),
+                self.groups.queue_health(remaining()),
+                self.scopes.queue_health(remaining()),
+                self.assets.queue_health(remaining()),
+                self.compliance.queue_health(remaining()),
+                self.execution.input_pending_count(cutoff),
+                self.software.input_pending_count(cutoff)
+            );
+            apply_queues(&mut policy, p);
+            apply_queues(&mut group, g.map_err(|e| queue_failure(e.into())));
+            apply_queues(&mut scope, s.map_err(|e| queue_failure(e.into())));
+            apply_queues(&mut assets, a.map_err(|e| queue_failure(e.into())));
+            apply_queues(&mut compliance, c.map_err(|e| queue_failure(e.into())));
+            apply_input_queue(&mut control, control_inputs.map_err(input_health_error));
+            apply_input_queue(
+                &mut software,
+                software_inputs.map_err(software_health_error),
+            );
+        }
+        let mut components = vec![
+            self.baseline_component(cutoff).await.unwrap_or_else(|| {
+                let mut value = unmounted(ComponentName::Baseline);
+                value.mounted = true;
+                value
+            }),
+            self.telemetry_component(cutoff, detailed)
+                .await
+                .unwrap_or_else(|| unmounted(ComponentName::Telemetry)),
+            inventory,
+            policy,
+            group,
+            scope,
+            assets,
+            compliance,
+            associations,
+            delivery_component(ComponentName::ScopeGroupDelivery, &self.scope_group_health),
+            delivery_component(ComponentName::AssetInputDelivery, &self.asset_input_health),
+            control,
+            software,
+            recovery_component(
+                ComponentName::NativeInstallation,
+                &self.installation.health(),
+            ),
+            recovery_component(ComponentName::ScriptExecution, &self.scripts.health()),
+            recovery_component(
+                ComponentName::CollectionExecution,
+                &self.collections.health(),
+            ),
+            recovery_component(ComponentName::EnrollmentTasks, &self.enrollment.health()),
+            recovery_component(
+                ComponentName::DeviceAccessExecution,
+                &self.access_tasks.health(),
+            ),
+            self.recovery
+                .as_ref()
+                .map(|owner| {
+                    recovery_component(ComponentName::NativeRecoveryCredentials, &owner.health())
+                })
+                .unwrap_or_else(|| unmounted(ComponentName::NativeRecoveryCredentials)),
+        ];
+        for name in [
+            ComponentName::MdmCredentialTasks,
+            ComponentName::DaCredentialTasks,
+        ] {
+            components.push(
+                self.credential_tasks
+                    .iter()
+                    .find(|(owner, _)| *owner == name)
+                    .map(|(_, owner)| recovery_component(name, &owner.health()))
+                    .unwrap_or_else(|| unmounted(name)),
+            );
         }
         Snapshot {
             channels: self.channel_health(cutoff).await,
@@ -88,250 +399,8 @@ impl RuntimeDiagnostics {
                 .iter()
                 .all(|c| c.readiness != Readiness::NotReady),
             components,
+            first_use: None,
         }
-    }
-    fn execution_component(&self) -> Component {
-        let mut statuses = vec![
-            self.execution.health(),
-            self.software.health(),
-            self.installation.health(),
-            self.scripts.health(),
-            self.collections.health(),
-            self.enrollment.health(),
-            self.access_tasks.health(),
-        ];
-        if let Some(recovery) = &self.recovery {
-            statuses.push(recovery.health());
-        }
-        for credentials in &self.credential_tasks {
-            statuses.push(credentials.health());
-        }
-        recovery_component(&statuses)
-    }
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "host readiness explicitly combines independent owner observations without allowing success to mask failure"
-    )]
-    async fn automation_component(&self, cutoff: Instant) -> Component {
-        let status = self.planning.automation_state();
-        let group_scan = self.groups.runner_health().scan;
-        let scope_scan = self.scopes.runner_health().scan;
-        let mut automation = component(
-            ComponentName::Automation,
-            status == Some(rss_runtime::TaskState::Running)
-                && self.devices.worker_ready()
-                && group_scan.is_some_and(|scan| scan.failure.is_none())
-                && scope_scan.is_some_and(|scan| scan.failure.is_none())
-                && self.groups.task_state() == Some(rss_runtime::TaskState::Running)
-                && self.scopes.task_state() == Some(rss_runtime::TaskState::Running)
-                && self.scope_group_health.state() == Some(rss_runtime::TaskState::Running)
-                && self.scope_group_health.observed()
-                && !self.scope_group_health.failed()
-                && self.asset_input_health.state() == Some(rss_runtime::TaskState::Running)
-                && self.asset_input_health.observed()
-                && !self.asset_input_health.failed(),
-        );
-        automation.task = Some(task(status));
-        if matches!(status, None | Some(rss_runtime::TaskState::Pending)) {
-            automation.health = Health::Unknown;
-        }
-        if status != Some(rss_runtime::TaskState::Running) {
-            automation.reasons.push(Reason::WorkerNotRunning);
-        }
-        if self.scopes.task_state() != Some(rss_runtime::TaskState::Running)
-            || self.groups.task_state() != Some(rss_runtime::TaskState::Running)
-            || self.scope_group_health.state() != Some(rss_runtime::TaskState::Running)
-            || self.asset_input_health.state() != Some(rss_runtime::TaskState::Running)
-        {
-            automation.reasons.push(Reason::WorkerNotRunning);
-            automation.health = Health::Unknown;
-        }
-        if group_scan.is_none()
-            || scope_scan.is_none()
-            || !self.scope_group_health.observed()
-            || !self.asset_input_health.observed()
-        {
-            automation.reasons.push(Reason::Unobserved);
-            automation.health = Health::Unknown;
-        }
-        if group_scan.is_some_and(|scan| scan.failure.is_some())
-            || scope_scan.is_some_and(|scan| scan.failure.is_some())
-            || self.scope_group_health.failed()
-            || self.asset_input_health.failed()
-        {
-            automation.reasons.push(Reason::DependencyUnavailable);
-            automation.health = Health::Degraded;
-        }
-        let remaining = || {
-            cutoff.saturating_duration_since(rss_request_context::Clock::now(
-                &crate::lifecycle::RuntimeTimer,
-            ))
-        };
-        let (group_inputs, scope_inputs, compliance_inputs) = tokio::join!(
-            self.groups.input_failed(remaining()),
-            self.scopes.input_failed(remaining()),
-            self.compliance.input_failed(remaining())
-        );
-        for outcome in [
-            group_inputs.map_err(|e| queue_failure(e.into())),
-            scope_inputs.map_err(|e| queue_failure(e.into())),
-            compliance_inputs.map_err(|e| queue_failure(e.into())),
-        ] {
-            match outcome {
-                Ok(false) => {}
-                Ok(true) => {
-                    automation.readiness = Readiness::NotReady;
-                    automation.health = Health::Degraded;
-                    automation.reasons.push(Reason::DependencyUnavailable);
-                }
-                Err(failure) => {
-                    automation.readiness = Readiness::NotReady;
-                    automation.health = Health::Degraded;
-                    automation.reasons.push(health_failure(failure));
-                }
-            }
-        }
-        let assets = self.assets.worker_status();
-        let compliance = self.compliance.worker_status();
-        for (task, observed, failed) in [
-            (assets.task, assets.observed, assets.failed),
-            (compliance.task, compliance.observed, compliance.failed),
-        ] {
-            if task != Some(rss_runtime::TaskState::Running) {
-                automation.readiness = Readiness::NotReady;
-                automation.health = Health::Unknown;
-                automation.reasons.push(Reason::WorkerNotRunning);
-            } else if !observed {
-                automation.readiness = Readiness::NotReady;
-                automation.health = Health::Unknown;
-                automation.reasons.push(Reason::Unobserved);
-            }
-            if failed {
-                automation.readiness = Readiness::NotReady;
-                automation.health = Health::Degraded;
-                automation.reasons.push(Reason::DependencyUnavailable);
-            }
-        }
-        let ingress = self
-            .execution
-            .ingress_health(cutoff)
-            .await
-            .map_err(input_health_error);
-        match ingress {
-            Ok(state) => {
-                if state.suspended {
-                    automation.readiness = Readiness::NotReady;
-                    automation.health = Health::Degraded;
-                    automation.reasons.push(Reason::AutomationSuspended);
-                }
-                automation.dispatch = Some(Dispatch {
-                    event_after: state.event_after,
-                    window_open: state.window_open,
-                });
-                automation
-                    .dependencies
-                    .push(dependency(DependencyName::CommandStorage, None));
-            }
-            Err(failure) => {
-                automation.readiness = Readiness::NotReady;
-                automation.health = Health::Degraded;
-                automation.reasons.push(health_failure(failure));
-                automation.dependencies.push(dependency(
-                    DependencyName::CommandStorage,
-                    Some(health_failure(failure)),
-                ));
-            }
-        }
-        apply_configuration_input(
-            &mut automation,
-            self.planning.configuration_input_suspended(cutoff).await,
-        );
-        apply_configuration_input(
-            &mut automation,
-            self.software
-                .ingress_health(cutoff)
-                .await
-                .map(|state| state.suspended)
-                .map_err(software_health_error),
-        );
-        automation
-    }
-    fn automation_health(&self) -> rss_mdm_policy_service::worker::AutomationHealth {
-        use rss_mdm_policy_service::worker::{AttemptFailure, RunObservation};
-        let mut health = self.planning.automation_health();
-        let groups = self.groups.runner_health();
-        let scopes = self.scopes.runner_health();
-        let project = |s: rss_mdm_inventory_service::WorkerStatus| {
-            (
-                s.scan.map(|v| RunObservation {
-                    failure: v.failure.map(group_runner_failure),
-                    observed_at: v.observed_at,
-                }),
-                s.unresolved_attempts,
-                s.truncated,
-                s.latest_failure.map(|v| AttemptFailure {
-                    stage: v.stage,
-                    failure: group_runner_failure(v.failure),
-                    observed_at: v.observed_at,
-                }),
-            )
-        };
-        let project_compliance = |s: rss_mdm_compliance_service::WorkerStatus| {
-            (
-                s.scan.map(|v| RunObservation {
-                    failure: v.failure.map(group_runner_failure),
-                    observed_at: v.observed_at,
-                }),
-                s.unresolved_attempts,
-                s.truncated,
-                s.latest_failure.map(|v| AttemptFailure {
-                    stage: v.stage,
-                    failure: group_runner_failure(v.failure),
-                    observed_at: v.observed_at,
-                }),
-            )
-        };
-        let observations = [
-            (
-                groups.scan.map(|v| RunObservation {
-                    failure: v.failure.map(group_runner_failure),
-                    observed_at: v.observed_at,
-                }),
-                groups.unresolved_attempts,
-                groups.truncated,
-                groups.latest_failure.map(|v| AttemptFailure {
-                    stage: v.stage,
-                    failure: group_runner_failure(v.failure),
-                    observed_at: v.observed_at,
-                }),
-            ),
-            (
-                scopes.scan.map(|v| RunObservation {
-                    failure: v.failure.map(group_runner_failure),
-                    observed_at: v.observed_at,
-                }),
-                scopes.unresolved_attempts,
-                scopes.truncated,
-                scopes.latest_failure.map(|v| AttemptFailure {
-                    stage: v.stage,
-                    failure: group_runner_failure(v.failure),
-                    observed_at: v.observed_at,
-                }),
-            ),
-            project(self.assets.worker_status()),
-            project_compliance(self.compliance.worker_status()),
-        ];
-        for (scan, unresolved, truncated, latest) in observations {
-            health.scan = merge_observation(health.scan, scan);
-            health.unresolved_attempts = health.unresolved_attempts.saturating_add(unresolved);
-            health.truncated |= truncated;
-            health.latest_failure = health
-                .latest_failure
-                .into_iter()
-                .chain(latest)
-                .max_by_key(|f| f.observed_at);
-        }
-        health
     }
     async fn telemetry_component(&self, cutoff: Instant, detailed: bool) -> Option<Component> {
         let service = self.telemetry.as_ref()?;
@@ -375,7 +444,7 @@ impl RuntimeDiagnostics {
         }
         Some(telemetry)
     }
-    async fn initialization_component(&self, cutoff: Instant) -> Option<Component> {
+    async fn baseline_component(&self, cutoff: Instant) -> Option<Component> {
         match tokio::time::timeout_at(
             cutoff.into(),
             crate::administration::baseline::status(&self.access, &self.tenant.to_string()),
@@ -383,8 +452,7 @@ impl RuntimeDiagnostics {
         .await
         {
             Ok(Ok(Some((phase, blocked, assets, telemetry)))) => {
-                let mut initialization =
-                    component(ComponentName::Initialization, phase == "configured");
+                let mut initialization = component(ComponentName::Baseline, phase == "configured");
                 initialization.queues = vec![
                     Queue {
                         name: QueueName::InitializationAssetsPending,
@@ -413,50 +481,15 @@ impl RuntimeDiagnostics {
             }
             Ok(Ok(None)) => None,
             _ => {
-                let mut initialization = component(ComponentName::Initialization, false);
+                let mut initialization = component(ComponentName::Baseline, false);
                 initialization.health = Health::Unknown;
                 initialization.reasons.push(Reason::DependencyUnavailable);
                 Some(initialization)
             }
         }
     }
-    async fn enrich(&self, cutoff: Instant, inventory: &mut Component, automation: &mut Component) {
-        let (observations, queues, group_queues, scope_queues) = tokio::join!(
-            self.inventory.diagnostics(cutoff),
-            async {
-                let (policy, source, software) = tokio::join!(
-                    self.planning.queue_health(cutoff),
-                    self.execution.input_pending_count(cutoff),
-                    self.software.input_pending_count(cutoff)
-                );
-                let counts = policy?;
-                let pending = source
-                    .map_err(input_health_error)?
-                    .saturating_add(software.map_err(software_health_error)?)
-                    .min(1001);
-                Ok::<_, HealthFailure>([
-                    counts[0], counts[1], counts[2], counts[3], counts[4], pending,
-                ])
-            },
-            self.groups.queue_health(cutoff.saturating_duration_since(
-                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
-            )),
-            self.scopes.queue_health(cutoff.saturating_duration_since(
-                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
-            ))
-        );
-        let group_queues = match (
-            group_queues.map_err(|e| queue_failure(e.into())),
-            scope_queues.map_err(|e| queue_failure(e.into())),
-        ) {
-            (Ok(mut g), Ok(s)) => {
-                for (n, v) in g.iter_mut().zip(s) {
-                    *n = n.saturating_add(v);
-                }
-                Ok(g)
-            }
-            (Err(e), _) | (_, Err(e)) => Err(e),
-        };
+    async fn enrich_inventory(&self, cutoff: Instant, inventory: &mut Component) {
+        let observations = self.inventory.diagnostics(cutoff).await;
         inventory.dependencies.push(dependency(
             DependencyName::InventoryDelivery,
             observations
@@ -502,71 +535,6 @@ impl RuntimeDiagnostics {
                 }
                 _ => (),
             }
-        }
-        let mut queues = merge_owner_queues(queues, group_queues);
-        let remaining = || {
-            cutoff.saturating_duration_since(rss_request_context::Clock::now(
-                &crate::lifecycle::RuntimeTimer,
-            ))
-        };
-        let (query_counts, compliance_counts) = tokio::join!(
-            self.assets.queue_health(remaining()),
-            self.compliance.queue_health(remaining())
-        );
-        queues = merge_owner_queues(
-            merge_owner_queues(queues, query_counts.map_err(|e| queue_failure(e.into()))),
-            compliance_counts.map_err(|e| queue_failure(e.into())),
-        );
-        let values = queues.as_ref().ok();
-        automation.queues = [
-            QueueName::Pending,
-            QueueName::Running,
-            QueueName::Completed,
-            QueueName::Failed,
-            QueueName::Superseded,
-            QueueName::ExecutionInputsPending,
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(i, name)| queue(name, values.map(|v| v[i])))
-        .collect();
-        automation.dependencies.push(dependency(
-            DependencyName::BusinessQueues,
-            queues
-                .as_ref()
-                .err()
-                .map(|failure| health_failure(*failure)),
-        ));
-        if queues.is_err() {
-            automation.health = Health::Degraded;
-        }
-        let health = self.automation_health();
-        automation.runner = Some(Runner {
-            scan: health.scan.map(run_result),
-            unresolved_attempts: health.unresolved_attempts,
-            truncated: health.truncated,
-            latest_failure: health.latest_failure.map(|f| AttemptFailure {
-                stage: match f.stage {
-                    rss_reconcile::Stage::Observe => AttemptStage::Observe,
-                    rss_reconcile::Stage::Apply => AttemptStage::Apply,
-                    rss_reconcile::Stage::Renew => AttemptStage::Renew,
-                    rss_reconcile::Stage::Finish => AttemptStage::Finish,
-                },
-                reason: automation_failure(f.failure),
-                observed_at: f.observed_at,
-            }),
-        });
-        if health.scan.is_some_and(|r| r.failure.is_some()) || health.unresolved_attempts > 0 {
-            automation.health = Health::Degraded;
-        } else if health.scan.is_none() && automation.health == Health::Healthy {
-            automation.health = Health::Unknown;
-            automation.reasons.push(Reason::Unobserved);
-        }
-        if health.truncated {
-            if automation.health != Health::Degraded {
-                automation.health = Health::Unknown;
-            }
-            automation.reasons.push(Reason::ObservationLimit);
         }
     }
     fn inventory_health(&self) -> Component {
@@ -759,49 +727,168 @@ impl RuntimeDiagnostics {
     }
 }
 // Only phases actually owned by each worker participate in readiness.
-fn recovery_component(states: &[rss_mdm_recovery_observation::Health]) -> Component {
+fn recovery_component(
+    name: ComponentName,
+    state: &rss_mdm_recovery_observation::Health,
+) -> Component {
     use rss_mdm_recovery_observation::Phase;
-    let ready = states
-        .iter()
-        .all(rss_mdm_recovery_observation::Health::is_ready);
-    let mut result = component(ComponentName::ExecutionRecovery, ready);
-    result.task = Some(task(
-        states
-            .iter()
-            .find(|s| s.task != Some(rss_runtime::TaskState::Running))
-            .map(|s| s.task)
-            .unwrap_or(Some(rss_runtime::TaskState::Running)),
-    ));
-    let mut failed = false;
-    let mut initializing = false;
-    for state in states {
-        if state.task != Some(rss_runtime::TaskState::Running) {
-            result.reasons.push(Reason::WorkerNotRunning);
-            initializing |= matches!(state.task, None | Some(rss_runtime::TaskState::Pending));
-        }
-        if state.stopping {
-            result.reasons.push(Reason::Stopping);
-        }
-        for phase in state.phases() {
-            match phase {
-                Phase::Initializing => {
-                    initializing = true;
-                    result.reasons.push(Reason::Initializing);
-                }
-                Phase::Failed(kind) => {
-                    failed = true;
-                    result.reasons.push(execution_failure(kind));
-                }
-                Phase::Healthy => (),
-            }
-        }
+    let mut result = worker_component(name, state.task, true, false);
+    result.readiness = if state.is_ready() {
+        Readiness::Ready
+    } else {
+        Readiness::NotReady
+    };
+    if state.stopping {
+        result.reasons.push(Reason::Stopping);
     }
-    if failed {
+    for (name, phase) in std::iter::once((PhaseName::Recovery, state.recovery))
+        .chain(state.relay.map(|phase| (PhaseName::Relay, phase)))
+        .chain(state.inputs.map(|phase| (PhaseName::Inputs, phase)))
+    {
+        let (state, reason) = match phase {
+            Phase::Initializing => (PhaseState::Unobserved, Some(Reason::Initializing)),
+            Phase::Healthy => (PhaseState::Healthy, None),
+            Phase::Failed(kind) => (PhaseState::Failed, Some(execution_failure(kind))),
+        };
+        if let Some(reason) = reason {
+            result.reasons.push(reason);
+        }
+        result.phases.push(PhaseObservation {
+            name,
+            state,
+            reason,
+        });
+    }
+    if state
+        .phases()
+        .any(|phase| matches!(phase, Phase::Failed(_)))
+    {
         result.health = Health::Degraded;
-    } else if initializing {
+    } else if state.phases().any(|phase| phase == Phase::Initializing) {
         result.health = Health::Unknown;
     }
+    result.runner = Some(Runner {
+        scan: match state.scan {
+            Phase::Initializing => None,
+            Phase::Healthy => Some(RunResult {
+                successful: true,
+                reason: None,
+                observed_at: None,
+            }),
+            Phase::Failed(kind) => Some(RunResult {
+                successful: false,
+                reason: Some(execution_failure(kind)),
+                observed_at: None,
+            }),
+        },
+        unresolved_attempts: state.unresolved_attempts,
+        truncated: state.truncated,
+        latest_failure: None,
+    });
     result
+}
+fn worker_component(
+    name: ComponentName,
+    status: Option<rss_runtime::TaskState>,
+    observed: bool,
+    failed: bool,
+) -> Component {
+    let mut value = component(
+        name,
+        status == Some(rss_runtime::TaskState::Running) && observed && !failed,
+    );
+    value.task = Some(task(status));
+    if status != Some(rss_runtime::TaskState::Running) {
+        value.reasons.push(Reason::WorkerNotRunning);
+    }
+    if !observed {
+        value.reasons.push(Reason::Unobserved);
+    }
+    if failed {
+        value.reasons.push(Reason::DependencyUnavailable);
+    } else if !observed || matches!(status, None | Some(rss_runtime::TaskState::Pending)) {
+        value.health = Health::Unknown;
+    }
+    value
+}
+fn delivery_component(name: ComponentName, owner: &crate::local_delivery::Health) -> Component {
+    worker_component(name, owner.state(), owner.observed(), owner.failed())
+}
+fn unmounted(name: ComponentName) -> Component {
+    let mut value = component(name, true);
+    value.mounted = false;
+    value.readiness = Readiness::NotApplicable;
+    value.health = Health::NotApplicable;
+    value
+}
+fn attempt_stage(stage: rss_reconcile::Stage) -> AttemptStage {
+    match stage {
+        rss_reconcile::Stage::Observe => AttemptStage::Observe,
+        rss_reconcile::Stage::Apply => AttemptStage::Apply,
+        rss_reconcile::Stage::Renew => AttemptStage::Renew,
+        rss_reconcile::Stage::Finish => AttemptStage::Finish,
+    }
+}
+fn apply_runner(value: &mut Component, runner: Runner) {
+    if runner.scan.as_ref().is_some_and(|scan| !scan.successful) || runner.unresolved_attempts > 0 {
+        value.health = Health::Degraded;
+        value.readiness = Readiness::NotReady;
+        value.reasons.push(
+            runner
+                .latest_failure
+                .as_ref()
+                .map(|f| f.reason)
+                .or_else(|| runner.scan.as_ref().and_then(|s| s.reason))
+                .unwrap_or(Reason::DependencyUnavailable),
+        );
+    } else if runner.scan.is_none() {
+        value.health = Health::Unknown;
+        value.readiness = Readiness::NotReady;
+        value.reasons.push(Reason::Unobserved);
+    }
+    if runner.truncated {
+        value.health = Health::Degraded;
+        value.readiness = Readiness::NotReady;
+        value.reasons.push(Reason::ObservationLimit);
+    }
+    value.runner = Some(runner);
+}
+fn apply_queues(value: &mut Component, counts: Result<[u64; 5], HealthFailure>) {
+    value.queues = [
+        QueueName::Pending,
+        QueueName::Running,
+        QueueName::Completed,
+        QueueName::Failed,
+        QueueName::Superseded,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, name)| queue(name, counts.as_ref().ok().map(|v| v[i])))
+    .collect();
+    value.dependencies.push(dependency(
+        DependencyName::BusinessQueues,
+        counts.err().map(health_failure),
+    ));
+    if value
+        .dependencies
+        .last()
+        .is_some_and(|d| matches!(d.state, DependencyState::Unavailable))
+    {
+        value.health = Health::Degraded;
+    }
+}
+fn apply_input_queue(value: &mut Component, count: Result<u64, HealthFailure>) {
+    value.queues.push(queue(
+        QueueName::ExecutionInputsPending,
+        count.as_ref().ok().copied(),
+    ));
+    if let Err(failure) = count {
+        value.health = Health::Degraded;
+        value.dependencies.push(dependency(
+            DependencyName::BusinessQueues,
+            Some(health_failure(failure)),
+        ));
+    }
 }
 fn execution_failure(kind: rss_reconcile::ErrorKind) -> Reason {
     use rss_reconcile::ErrorKind;
@@ -820,6 +907,8 @@ fn execution_failure(kind: rss_reconcile::ErrorKind) -> Reason {
 fn component(name: ComponentName, ready: bool) -> Component {
     Component {
         name,
+        mounted: true,
+        phases: Vec::new(),
         readiness: if ready {
             Readiness::Ready
         } else {
@@ -927,20 +1016,6 @@ fn projection(
     }
 }
 
-fn group_runner_failure(
-    kind: rss_reconcile::ErrorKind,
-) -> rss_mdm_policy_service::worker::AutomationFailure {
-    use rss_mdm_policy_service::worker::AutomationFailure as Failure;
-    use rss_reconcile::ErrorKind;
-    match kind {
-        ErrorKind::Transient | ErrorKind::StorageContract => Failure::StorageUnavailable,
-        ErrorKind::Deadline => Failure::Deadline,
-        ErrorKind::CommitUnknown | ErrorKind::RollbackFailed => Failure::SettlementUnknown,
-        ErrorKind::Fenced | ErrorKind::BindingChanged => Failure::OwnershipLost,
-        ErrorKind::Cancelled => Failure::Cancelled,
-        ErrorKind::InvalidInput | ErrorKind::Permanent | ErrorKind::Invariant => Failure::Rejected,
-    }
-}
 fn automation_failure(outcome: rss_mdm_policy_service::worker::AutomationFailure) -> Reason {
     use rss_mdm_policy_service::worker::AutomationFailure;
     match outcome {
@@ -984,34 +1059,6 @@ fn queue_failure(error: crate::Error) -> HealthFailure {
         _ => HealthFailure::Storage,
     }
 }
-fn merge_owner_queues(
-    totals: Result<[u64; 6], HealthFailure>,
-    counts: Result<[u64; 5], HealthFailure>,
-) -> Result<[u64; 6], HealthFailure> {
-    let mut totals = totals?;
-    let counts = counts?;
-    for (total, count) in totals.iter_mut().zip(counts) {
-        *total = total.saturating_add(count).min(1001);
-    }
-    Ok(totals)
-}
-
-// A healthy observation clears only its owner's failure; every owner must have observed success.
-fn merge_observation(
-    a: Option<rss_mdm_policy_service::worker::RunObservation>,
-    b: Option<rss_mdm_policy_service::worker::RunObservation>,
-) -> Option<rss_mdm_policy_service::worker::RunObservation> {
-    match (a, b) {
-        (Some(a), Some(b)) => Some(
-            [a, b]
-                .into_iter()
-                .max_by_key(|o| (o.failure.is_some(), o.observed_at))
-                .expect("two observations"),
-        ),
-        (a, b) => a.or(b).filter(|o| o.failure.is_some()),
-    }
-}
-
 #[cfg(test)]
 #[path = "../tests/api/execution_health.rs"]
 mod tests;

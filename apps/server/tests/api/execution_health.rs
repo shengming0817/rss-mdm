@@ -1,74 +1,62 @@
 use super::*;
 #[test]
-fn every_execution_owner_participates_with_only_its_actual_phases() {
+fn recovery_reports_each_phase_and_keeps_other_owner_success_separate() {
     use rss_mdm_recovery_observation::{Health as OwnerHealth, Phase};
     let healthy = OwnerHealth {
         task: Some(rss_runtime::TaskState::Running),
         stopping: false,
         recovery: Phase::Healthy,
+        scan: Phase::Healthy,
+        unresolved_attempts: 0,
+        truncated: false,
         relay: Some(Phase::Healthy),
         inputs: None,
     };
-    let mut owners = vec![healthy.clone(); 9];
+    let mut failed = healthy.clone();
+    failed.recovery = Phase::Failed(rss_reconcile::ErrorKind::CommitUnknown);
+    failed.unresolved_attempts = 1;
+    let script = recovery_component(ComponentName::ScriptExecution, &failed);
+    let collection = recovery_component(ComponentName::CollectionExecution, &healthy);
+    assert!(matches!(script.readiness, Readiness::NotReady));
+    assert!(matches!(collection.readiness, Readiness::Ready));
+    let value = serde_json::to_value(script).unwrap();
+    assert_eq!(value["name"], "script_execution");
+    assert_eq!(value["runner"]["unresolvedAttempts"], 1);
+    assert_eq!(value["phases"][0]["reason"], "settlement_unknown");
+    assert_eq!(value["phases"][1]["state"], "healthy");
+    assert_eq!(value["phases"].as_array().unwrap().len(), 2);
+    failed.recovery = Phase::Healthy;
+    failed.unresolved_attempts = 0;
     assert!(matches!(
-        recovery_component(&owners).readiness,
-        Readiness::Ready
-    ));
-    for index in 0..owners.len() {
-        owners[index].recovery = Phase::Failed(rss_reconcile::ErrorKind::CommitUnknown);
-        let status = recovery_component(&owners);
-        assert!(matches!(status.readiness, Readiness::NotReady));
-        assert!(
-            status
-                .reasons
-                .iter()
-                .any(|r| matches!(r, Reason::SettlementUnknown))
-        );
-        owners[index] = healthy.clone();
-    }
-    owners[4].relay = Some(Phase::Initializing);
-    assert!(matches!(
-        recovery_component(&owners).readiness,
-        Readiness::NotReady
-    ));
-    owners[4] = healthy;
-    assert!(matches!(
-        recovery_component(&owners).readiness,
+        recovery_component(ComponentName::ScriptExecution, &failed).readiness,
         Readiness::Ready
     ));
 }
 
 #[test]
-fn owner_failure_survives_another_owner_success_until_recovery() {
-    use rss_mdm_policy_service::worker::{AutomationFailure, RunObservation};
-    let source = Some(RunObservation {
-        failure: Some(AutomationFailure::SettlementUnknown),
-        observed_at: Some(1),
-    });
-    let policy = Some(RunObservation {
-        failure: None,
-        observed_at: Some(2),
-    });
-    for (a, b) in [
-        (source, policy),
-        (policy, source),
-        (source, None),
-        (None, source),
-    ] {
-        assert!(matches!(
-            merge_observation(a, b).unwrap().failure,
-            Some(AutomationFailure::SettlementUnknown)
-        ));
-    }
-    let recovered = Some(RunObservation {
-        failure: None,
-        observed_at: Some(3),
-    });
+fn unknown_counts_and_missing_optional_owners_are_not_zero_or_failed() {
+    let mut policy = component(ComponentName::Policy, true);
+    apply_queues(&mut policy, Err(HealthFailure::Storage));
     assert!(
-        merge_observation(policy, recovered)
-            .unwrap()
-            .failure
-            .is_none()
+        policy
+            .queues
+            .iter()
+            .all(|queue| queue.count.is_none() && queue.truncated.is_none())
     );
-    assert!(merge_observation(policy, None).is_none());
+    let optional = unmounted(ComponentName::NativeRecoveryCredentials);
+    assert!(!optional.mounted);
+    assert!(matches!(optional.readiness, Readiness::NotApplicable));
+    assert!(matches!(optional.health, Health::NotApplicable));
+    let count = queue(QueueName::Pending, Some(1001));
+    assert_eq!(count.count, Some(1000));
+    assert_eq!(count.truncated, Some(true));
+}
+
+#[test]
+fn retained_policy_input_failure_revokes_only_its_component() {
+    let mut policy = component(ComponentName::Policy, true);
+    let group = component(ComponentName::Group, true);
+    apply_configuration_input(&mut policy, Ok(true));
+    assert!(matches!(policy.readiness, Readiness::NotReady));
+    assert!(matches!(group.readiness, Readiness::Ready));
 }

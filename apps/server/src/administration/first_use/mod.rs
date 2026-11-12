@@ -238,6 +238,43 @@ impl FirstUse {
         let saved = store::read(&self.audit, &auth.proof, audit).await?;
         self.progress(auth, audit, continuation, saved).await
     }
+    /// Permission-filtered summary of the original first-use projection. Intent,
+    /// free-text reasons and settings evidence remain on their original routes.
+    pub(crate) async fn summary(
+        &self,
+        auth: &RequestAuth,
+        audit: &RequestAudit,
+        continuation: &RequestCredential,
+    ) -> rss_mdm_management_http::runtime_diagnostics::FirstUse {
+        use rss_mdm_management_http::runtime_diagnostics::{
+            FirstUse as Observation, FirstUseStatus, FirstUseStep, FirstUseSummary,
+        };
+        match futures::FutureExt::boxed(self.read(auth, audit, continuation)).await {
+            Ok(progress) => Observation::Available(FirstUseSummary {
+                revision: progress.saved.revision,
+                can_complete: progress.can_complete,
+                complete: progress.complete,
+                steps: progress
+                    .steps
+                    .into_iter()
+                    .map(|step| FirstUseStep {
+                        id: step.id,
+                        status: match step.status {
+                            Status::Ready => FirstUseStatus::Ready,
+                            Status::Unconfigured => FirstUseStatus::Unconfigured,
+                            Status::Pending => FirstUseStatus::Pending,
+                            Status::Unknown => FirstUseStatus::Unknown,
+                            Status::Unavailable => FirstUseStatus::Unavailable,
+                            Status::Forbidden => FirstUseStatus::Forbidden,
+                            Status::Skipped => FirstUseStatus::Skipped,
+                        },
+                    })
+                    .collect(),
+            }),
+            Err(error) if super::permission_denied(&error) => Observation::Forbidden,
+            Err(_) => Observation::Unavailable,
+        }
+    }
     pub(crate) async fn operation(
         &self,
         proof: &AuthorizedPrincipal,

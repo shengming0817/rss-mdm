@@ -27,7 +27,7 @@ Inventory、Scope、Policy、Resource、Software、Content、Telemetry、Command
 
 /livez 表示进程可响应。/readyz 要求启动 admission、首次有界恢复与投影通过，工作任务仍运行且尚未停机；不表示 backlog 已全部追平，健康查询不额外探测 IdP。
 
-经授权的 `GET /api/v1/runtime/diagnostics` 查询当前实例的组件汇总，返回 `alive`、`ready`、`components` 和 `channels`。
+经授权的 `GET /api/v1/runtime/diagnostics` 查询当前实例的组件汇总，返回 `alive`、`ready`、`components`、`channels` 和权限过滤的 `firstUse`。
 管理员通过现有授权规则显式授予租户级 `runtime_diagnostics_read`；该权限不由设备读权限或授权管理权限隐式获得。
 诊断查询为被动会话活动，不产生管理审计；认证或授权库不可用仍拒绝请求，审计依赖故障不替换普通查询响应，没有匿名诊断旁路。
 公开健康探针只返回存活或就绪布尔值，详情和 `/readyz` 消费同一宿主聚合。
@@ -40,22 +40,32 @@ Control、Software、Installation、Native Credential、Script、Collection、En
 可选通道及其子能力在 `channels` 中显示 `disabled / waiting / ready / degraded`，同时给出实际路由 `mounted`、阻断原因及已加载材料版本；不再作为核心组件影响 `/readyz`。材料已保存或已选择不代表当前进程已加载，更不代表网关入口或依赖操作可用。PKI 版本取自当前运行中的 verifier，签名与推送版本对应本进程实际加载的材料。
 `trust_conflict` 表示配置与既有信任发生冲突，属于阻断状态；保留数据库、密钥和信任历史，核对 hostname、租户、用途与材料，不通过清空持久信任绕过冲突。
 
-Automation 的 `bridge` 记录输入转发结果，`runner.scan` 记录独立运行连接池的实际扫描结果；
-两者各自携带观测时间，转发成功不能证明 runner 健康。`runner.unresolvedAttempts` 保留本进程内
+各 owner 的输入状态与 `runner.scan` 分别报告原输入转发和运行连接池的实际扫描结果；
+只在原 owner 持有时间事实时携带观测时间，转发成功不能证明 runner 健康。`runner.unresolvedAttempts` 保留本进程内
 尚未由同一目标成功执行并确认结算消除的故障，`latestFailure` 只返回受控阶段、原因与时间。
 扫描或其它目标成功不会清除这类故障，Retry/Suspended 结算也不算执行恢复。
 最多保留 1000 个故障目标，超出后 `runner.truncated` 持续为 true，health 不能恢复为 healthy，
 因为被丢弃的身份已无法核对；重启开始新的观测窗口。该窗口不替代持久任务队列状态。
 
+`components` 按实际 owner 返回：baseline、Telemetry、Inventory、Policy、Group、Scope、Asset Query、Compliance、Device Associations、两个本地投影，以及设备控制、软件部署、原生安装、Script、Collection、Enrollment、Device Access 和各凭据恢复任务。每项独立报告 readiness、任务与已观察故障；恢复 owner 的 recovery、relay、inputs 分阶段显示。可选组件未装配时明确 `mounted=false`、`not_applicable`，不把缺席当成失败。队列和进度只在原 owner 有事实时返回，不合并不同 owner 的游标或最近失败。
+
+`firstUse` 是原首次使用配置的权限过滤摘要，只包含 revision、complete、canComplete 和步骤状态；缺少原读取权限时为 `forbidden`。它不参与 `/readyz` 判定，也不携带意图、跳过原因或配置证据。响应释放前复验会话与当前授权；授权变化需要重新查询。
+
+初始化遇到已确认回滚的 Policy 暂态锁竞争时，保留原操作身份并短暂退避后重试当前步骤；提交未知、回滚未确认和业务冲突仍保留原恢复路径，不自动当作可重试成功。
+
 队列按真实租户持久事实有界统计，`truncated` 表示计数达到源码定义的观察上限；失败时计数为 null，不能当作无积压。
 Policy 的 pending/running/completed/failed/superseded 沿用既有任务状态，running 表示已转发且未终结，
-不是操作系统任务存活证明；asset_changes_pending 表示尚未转发的资产输入。Inventory delivery_pending 与投影进度分别展示。
+不是操作系统任务存活证明；设备控制和软件部署的 execution_inputs_pending 分别表示尚未转发的输入。Inventory delivery_pending 与投影进度分别展示。
 投影直接消费 RSS 的 invocation 观察和已确认位置，sourceHead 是另一时刻的 scoped journal high-water；
 lagging 是位置比较，不是精确事件数或原子快照。invocationAgeMs 和 completedPassAgeMs 指明本地观察所属运行及最近完成时间，
 旧进度不会被当作当前依赖健康。未读取过 checkpoint、已确认的空 checkpoint 与读取失败分别表达。
 
 局部探测失败时查询仍可返回 HTTP 200 和已知组件结果；响应成功只表示查询成功。授权加载与诊断共用宿主绝对截止时间，
 不逐依赖续期，审计由原 owner 完成结算。诊断不返回设备身份、任务输入、数据库地址、配置、秘密或底层错误原文。
+
+持久任务在原 RSS claim 入口声明租户内的 endpoint 资源。Script run 恢复与 Agent Collection run 恢复允许同设备重叠；同类 run、原生命令、配置、安装、其它执行和计划工作仍互斥。关联与退管声明所有当前成员的资源并保持原多设备事务边界；纯输入和分发任务不占设备资源。前台协议仍依赖业务锁，正常忙锁让出待办，不增加业务失败计数。共享资源领取沿 RSS 的有界扫描与持久截止推进，不承诺全局 FIFO 或固定完成秒数。
+
+启动及执行前由各 owner 从现有业务事实校准资源声明，不复制任务、成员或完成记录。校准保留原 wake version、failures 和 next_run；资源变化后的旧 claim 必须让出后重新领取。资源键不替代注册、授权、Policy 或提交保护。Plain 审计允许上述重叠；Ledger 的原链锁仍可能进一步串行化。
 
 SIGINT/SIGTERM 先停止接入并排空，再取消和 join 工作任务，最后关闭存储及认证 KDF/runtime，整体关闭预算 40 秒。命令 worker 停止领取后等待在途 relay 完成 gateway 事务与 outbox 结算，单任务关闭上限二十秒覆盖领取、接受、结算各六秒的预算；任一并行分支退出会取消另一分支并等待它结算。关键任务异常或关闭失败返回非零；进程重启由部署 owner 决定。被动查询不延长认证 idle，组件事务使用自身预算完成，宿主不以请求 timeout 丢弃其提交结果。
 

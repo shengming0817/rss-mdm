@@ -120,43 +120,6 @@ pub(crate) fn from_state(
         pki: state.pki.clone(),
         clock: state.clock.clone(),
     });
-    let diagnostics = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
-        channels: state.channels.clone(),
-        registration: channels.clone(),
-        pki: state.pki.clone(),
-        apple_store: state.access.apple_store(),
-        access: state.access.archive_pool(),
-        telemetry: state.telemetry.clone(),
-        execution: state.execution.clone(),
-        software: state.software.service.clone(),
-        installation: state.registration.native.clone(),
-        scripts: state.script_work.clone(),
-        collections: state.collection_work.clone(),
-        enrollment: state.registration.worker.clone(),
-        access_tasks: state.access_execution.worker.clone(),
-        credential_tasks: state
-            .credential_execution
-            .as_ref()
-            .map(|v| v.worker.clone())
-            .unwrap_or_default(),
-        recovery: state
-            .credential_execution
-            .as_ref()
-            .map(|v| v.native.clone()),
-        inventory: state.inventory.clone(),
-        apple: state.apple.clone(),
-        clock: state.clock.clone(),
-        planning: state.policy_application.clone(),
-        devices: state.associations.clone(),
-        scopes: state.scopes.clone(),
-        groups: state.groups.clone(),
-        assets: state.assets.clone(),
-        compliance: state.compliance.clone(),
-        scope_group_health: state.scope_group_health.clone(),
-        asset_input_health: state.asset_input_health.clone(),
-        tenant: state.identity.tenant,
-        instance: state.identity.instance.to_string(),
-    });
     let admission = Arc::new(tokio::sync::Semaphore::new(32));
     let management_boundary = rss_mdm_management_http::boundary::Envelope {
         profile: rss_mdm_install_support::StorageProfile::Mdm,
@@ -256,6 +219,48 @@ pub(crate) fn from_state(
             state.audit_store.clone(),
         ),
         channels: channels.clone(),
+    });
+    let diagnostics = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
+        channels: state.channels.clone(),
+        first_use: first_use.clone(),
+        authorization: state.access.authorization_store(),
+        registration: channels.clone(),
+        pki: state.pki.clone(),
+        apple_store: state.access.apple_store(),
+        access: state.access.archive_pool(),
+        telemetry: state.telemetry.clone(),
+        execution: state.execution.clone(),
+        software: state.software.service.clone(),
+        installation: state.registration.native.clone(),
+        scripts: state.script_work.clone(),
+        collections: state.collection_work.clone(),
+        enrollment: state.registration.worker.clone(),
+        access_tasks: state.access_execution.worker.clone(),
+        credential_tasks: state
+            .credential_execution
+            .as_ref()
+            .map(|v| v.worker.iter().map(|worker| (match worker.profile() {
+                rss_mdm_install_support::StorageProfile::Mdm => rss_mdm_management_http::runtime_diagnostics::ComponentName::MdmCredentialTasks,
+                rss_mdm_install_support::StorageProfile::Da => rss_mdm_management_http::runtime_diagnostics::ComponentName::DaCredentialTasks,
+            }, worker.clone())).collect())
+            .unwrap_or_default(),
+        recovery: state
+            .credential_execution
+            .as_ref()
+            .map(|v| v.native.clone()),
+        inventory: state.inventory.clone(),
+        apple: state.apple.clone(),
+        clock: state.clock.clone(),
+        planning: state.policy_application.clone(),
+        devices: state.associations.clone(),
+        scopes: state.scopes.clone(),
+        groups: state.groups.clone(),
+        assets: state.assets.clone(),
+        compliance: state.compliance.clone(),
+        scope_group_health: state.scope_group_health.clone(),
+        asset_input_health: state.asset_input_health.clone(),
+        tenant: state.identity.tenant,
+        instance: state.identity.instance.to_string(),
     });
     let tenant_administration = rss_mdm_management_http::tenant_administration::router(
         Arc::new(
