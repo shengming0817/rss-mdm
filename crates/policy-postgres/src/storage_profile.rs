@@ -147,7 +147,7 @@ CREATE TABLE "###, $work, r###" (
     completed boolean DEFAULT false NOT NULL,
     cursor_kind smallint CHECK(cursor_kind IN(0,1)),
     cursor_id uuid CHECK(cursor_id <> '00000000-0000-0000-0000-000000000000'::uuid),
-    CHECK((cursor_kind IS NULL)=(cursor_id IS NULL)),
+    CONSTRAINT policy_work_cursor_pair CHECK((cursor_kind IS NULL)=(cursor_id IS NULL)),
     replacement_task uuid,
     authority_revision bigint DEFAULT 0 NOT NULL,
     failure text,

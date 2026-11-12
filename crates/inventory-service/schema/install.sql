@@ -48,7 +48,7 @@ CREATE TABLE mdm_assets.asset_query_runs (
     completed boolean NOT NULL DEFAULT false,
     failure text CONSTRAINT asset_query_failure_terminal CHECK(failure IS NULL OR completed),
     cursor_kind smallint CHECK(cursor_kind IN(0,1)), cursor uuid,
-    CHECK((cursor_kind IS NULL)=(cursor IS NULL)),
+    CONSTRAINT asset_query_runs_cursor_pair CHECK((cursor_kind IS NULL)=(cursor IS NULL)),
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
     total bigint DEFAULT 0 NOT NULL,

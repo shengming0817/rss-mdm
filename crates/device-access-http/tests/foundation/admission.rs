@@ -34,7 +34,7 @@ pub async fn verify_and_reject_drift(c: &Context) -> Result<()> {
         .await?;
     let forbidden = sqlx::query("INSERT INTO rss_da.devices(tenant_id,id) VALUES($1::uuid,$2)")
         .bind(c.tenant.to_string())
-        .bind(Uuid::new_v4().to_string())
+        .bind(Uuid::new_v4())
         .execute(&mut *tx)
         .await;
     anyhow::ensure!(

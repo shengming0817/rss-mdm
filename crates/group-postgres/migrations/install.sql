@@ -67,7 +67,7 @@ CREATE TABLE mdm_group.member_runs (
  fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),
  input bytea NOT NULL CHECK(octet_length(input)<=16777216),
  phase text NOT NULL CHECK(phase IN ('reading','diff','ready','published','superseded')),
- cursor_kind smallint, cursor uuid, diff_cursor_kind smallint, diff_cursor uuid, CHECK((cursor_kind IS NULL)=(cursor IS NULL)), CHECK((diff_cursor_kind IS NULL)=(diff_cursor IS NULL)), CHECK(cursor_kind IN(0,1)), CHECK(diff_cursor_kind IN(0,1)),
+ cursor_kind smallint, cursor uuid, diff_cursor_kind smallint, diff_cursor uuid, CONSTRAINT member_runs_cursor_pair CHECK((cursor_kind IS NULL)=(cursor IS NULL)), CONSTRAINT member_runs_diff_cursor_pair CHECK((diff_cursor_kind IS NULL)=(diff_cursor IS NULL)), CHECK(cursor_kind IN(0,1)), CHECK(diff_cursor_kind IN(0,1)),
  processed_count bigint NOT NULL DEFAULT 0 CHECK(processed_count >= 0),
  object_count bigint NOT NULL DEFAULT 0 CHECK(object_count >= 0),
  member_count bigint NOT NULL DEFAULT 0 CHECK(member_count >= 0),
