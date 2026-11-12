@@ -231,7 +231,7 @@ async fn exact_integer_queries_and_live_authorization() -> Result<()> {
 )]
 async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
     let (device, grant) = materials::seed_registration(c).await?;
-    let _principal = materials::authenticated_agent(
+    let principal = materials::authenticated_agent(
         c,
         grant,
         &device,
@@ -273,6 +273,27 @@ async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
     }
     let account = c.account(&[Permission::InventoryRead]).await?;
     let service = f.service(c).await?;
+    // The telemetry role revalidates primary credentials without native protocol column grants.
+    let now: i64 =
+        sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp())*1000000)::bigint")
+            .fetch_one(&c.operator)
+            .await?;
+    let gap: rss_mdm_agent_wire::runtime::TelemetryGapReport = serde_json::from_value(json!({
+        "reportId": Uuid::new_v4(),
+        "deviceId": device,
+        "createdAt": now,
+        "gaps": [{"reason": "capacity", "count": 1, "first": now, "last": now}]
+    }))?;
+    let accepted = service.receive_gap(&principal, &gap, 0).await?;
+    let recovered = service.gap_status(&principal, gap.report_id).await?;
+    anyhow::ensure!(
+        accepted.report_id == gap.report_id
+            && !accepted.replayed
+            && recovered.report_id == gap.report_id
+            && recovered.replayed
+            && recovered.received_at == accepted.received_at,
+        "telemetry role admits the live primary credential and recovers its receipt"
+    );
     let http = http::Http::open(
         c,
         service.clone(),
@@ -426,6 +447,22 @@ async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         "live revoke"
     );
     drop(http);
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
+    sqlx::query(
+        "UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(principal.credential())
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    anyhow::ensure!(
+        matches!(
+            service.gap_status(&principal, gap.report_id).await,
+            Err(rss_mdm_telemetry_service::Error::Denied)
+        ),
+        "revoked primary credential cannot recover the existing telemetry receipt"
+    );
     drop(service);
     Ok(())
 }
