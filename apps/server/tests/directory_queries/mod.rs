@@ -227,7 +227,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         assert_eq!(status, 200, "{restricted_body}");
         assert_eq!(restricted_body["firstUse"]["access"], "forbidden");
         assert!(restricted_body["firstUse"].get("summary").is_none());
-        diagnostics::exercise(&c, &proof, &diagnostic_reader, &restricted, &http).await?;
+        diagnostics::exercise(&c, &manager, &diagnostic_reader, &restricted, &http).await?;
         // Reading the original configuration operation must work in its read-only snapshot.
         let operation: Uuid = sqlx::query_scalar("SELECT operation_id FROM mdm_access.agent_configurations WHERE tenant_id=$1::uuid AND id=$2")
             .bind(c.tenant.to_string()).bind(Uuid::from_u128(7000)).fetch_one(&c.operator).await?;

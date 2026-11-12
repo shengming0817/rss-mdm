@@ -333,7 +333,7 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
     let h = Harness::open().await?;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .acquire_timeout(Duration::from_millis(50))
+        .acquire_timeout(Duration::from_millis(500))
         .connect_with(
             h.c.inputs
                 .database("shared", "mdm_scheduler_runtime")

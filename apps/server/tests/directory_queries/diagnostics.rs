@@ -15,7 +15,7 @@ async fn blocked_read(c: &Context, pid: i32) -> Result<()> {
 
 pub(super) async fn exercise(
     c: &Context,
-    manager: &access::context::AuthorizedPrincipal,
+    manager: &Account,
     reader: &Account,
     http: &Http,
     authorized: &Http,
@@ -24,12 +24,9 @@ pub(super) async fn exercise(
     deadline(c, authorized).await
 }
 
-async fn revocation(
-    c: &Context,
-    manager: &access::context::AuthorizedPrincipal,
-    reader: &Account,
-    http: &Http,
-) -> Result<()> {
+async fn revocation(c: &Context, manager: &Account, reader: &Account, http: &Http) -> Result<()> {
+    // Fixture preparation and host startup consume the earlier proof's deadline.
+    let manager = c.authenticate(manager).await?;
     // A table lock is a controlled PostgreSQL read barrier, not a mocked source.
     // It is held only by this bounded test and always rolled back before asserting.
     let mut blocker = c.operator.begin().await?;
@@ -44,14 +41,14 @@ async fn revocation(
             blocked_read(c, pid).await?;
             access::store::change_rule(
                 &c.audit,
-                manager,
+                &manager,
                 reader.rule,
                 access::Change::<access::Rule> {
                     operation_id: Uuid::new_v4(),
                     expected_revision: 1,
                     value: None,
                 },
-                &c.request(manager)?,
+                &c.request(&manager)?,
             )
             .await?;
             Ok::<_, anyhow::Error>(())

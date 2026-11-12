@@ -497,13 +497,18 @@ fn checkin(entity: &str) -> Option<String> {
 impl Worker {
     /// Calibrate every existing declaration before runners start, including delayed
     /// and suspended work. Binding preserves wake identity and recovery history.
-    pub async fn initialize_resource_bindings(&self) -> std::result::Result<(), Error> {
-        let transactions = &self.service.transactions;
-        let tenant = transactions.tenant;
-        let scope = super::wake::scope(tenant);
-        let mut after = String::new();
-        loop {
-            let page = crate::transaction::inspect(
+    pub fn initialize_resource_bindings(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::result::Result<(), Error>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            let transactions = &self.service.transactions;
+            let tenant = transactions.tenant;
+            let scope = super::wake::scope(tenant);
+            let mut after = String::new();
+            loop {
+                let page = crate::transaction::inspect(
                 &transactions.runtime, tenant, (transactions, scope.clone(), after.clone()),
                 move |(transactions, scope, after), tx| Box::pin(async move {
                     let t = tx.tenant_id().to_string();
@@ -521,10 +526,11 @@ impl Worker {
                     Ok(page)
                 }), crate::transaction::TransactionOwner::Collections,
             ).await?;
-            if page.len() < 64 {
-                return Ok(());
+                if page.len() < 64 {
+                    return Ok(());
+                }
+                after = page.last().expect("nonempty page").clone();
             }
-            after = page.last().expect("nonempty page").clone();
-        }
+        })
     }
 }

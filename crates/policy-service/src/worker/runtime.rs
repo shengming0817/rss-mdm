@@ -45,16 +45,22 @@ impl PolicyWork {
     }
 
     /// Bind the current resource contract before exposing either Policy runner.
-    pub async fn initialize_resource_bindings(&self) -> std::result::Result<(), Error> {
-        let mut owners = vec![(&self.service, jobs::domain(self.profile()))];
-        if let Some(events) = &self.events {
-            owners.push((&events.application, jobs::event_domain(self.profile())));
-        }
-        for (service, domain) in owners {
-            let scope = rss_reconcile::Scope::new(service.tenant, domain).expect("Policy domain");
-            let mut after = String::new();
-            loop {
-                let page = crate::transaction::inspect(&service.runtime, service.tenant,
+    pub fn initialize_resource_bindings(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::result::Result<(), Error>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            let mut owners = vec![(&self.service, jobs::domain(self.profile()))];
+            if let Some(events) = &self.events {
+                owners.push((&events.application, jobs::event_domain(self.profile())));
+            }
+            for (service, domain) in owners {
+                let scope =
+                    rss_reconcile::Scope::new(service.tenant, domain).expect("Policy domain");
+                let mut after = String::new();
+                loop {
+                    let page = crate::transaction::inspect(&service.runtime, service.tenant,
                     (service, scope.clone(), after), |(service, scope, after), tx| Box::pin(async move {
                         let tenant = tx.tenant_id().to_string();
                         let domain = scope.reconciler().to_owned();
@@ -77,13 +83,14 @@ impl PolicyWork {
                         Ok(page)
                     })
                 ).await?;
-                if page.len() < 64 {
-                    break;
+                    if page.len() < 64 {
+                        break;
+                    }
+                    after = page.last().expect("nonempty page").clone();
                 }
-                after = page.last().expect("nonempty page").clone();
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
     fn execution(&self) -> Option<&dyn crate::events::participants::ExecutionEvents> {
         self.events.as_ref().map(|events| events.execution.as_ref())
