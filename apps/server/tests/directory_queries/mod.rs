@@ -1,6 +1,7 @@
 //! Real management routes and PostgreSQL owners. This proof does not exercise device effects.
 mod certificates;
 mod coverage;
+mod diagnostics;
 pub(super) mod history;
 mod materials;
 mod metadata;
@@ -138,6 +139,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
             P::RuntimeDiagnosticsRead,
             P::UserGroupRead,
             P::AuthorizationRead,
+            P::AuthorizationWrite,
         ])
         .await?;
     let proof = c.authenticate(&manager).await?;
@@ -221,10 +223,11 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         assert!(diagnostics["firstUse"]["summary"].get("saved").is_none());
         let access::credential::RequestCredential::Cookie(secret) = diagnostic_reader.credential()? else { anyhow::bail!("cookie fixture") };
         let restricted = Http { client: http.client.clone(), address: http.address, cookie: format!("__Host-identity-session={}", secret.expose()), csrf: secret.csrf() };
-        let (status, restricted) = restricted.get("/api/v1/runtime/diagnostics", &[]).await?;
-        assert_eq!(status, 200, "{restricted}");
-        assert_eq!(restricted["firstUse"]["access"], "forbidden");
-        assert!(restricted["firstUse"].get("summary").is_none());
+        let (status, restricted_body) = restricted.get("/api/v1/runtime/diagnostics", &[]).await?;
+        assert_eq!(status, 200, "{restricted_body}");
+        assert_eq!(restricted_body["firstUse"]["access"], "forbidden");
+        assert!(restricted_body["firstUse"].get("summary").is_none());
+        diagnostics::exercise(&c, &proof, &diagnostic_reader, &restricted, &http).await?;
         // Reading the original configuration operation must work in its read-only snapshot.
         let operation: Uuid = sqlx::query_scalar("SELECT operation_id FROM mdm_access.agent_configurations WHERE tenant_id=$1::uuid AND id=$2")
             .bind(c.tenant.to_string()).bind(Uuid::from_u128(7000)).fetch_one(&c.operator).await?;
