@@ -35,6 +35,7 @@ pub(super) async fn write_in(
 }
 pub async fn enqueue_change_in(
     profile: rss_mdm_install_support::StorageProfile,
+    reconcile: &rss_reconcile_postgres::PgMessagingStore,
     changes: &dyn crate::inputs::ExecutionChanges,
     tx: &mut PgTransaction<'_>,
     policy: &Policy,
@@ -42,6 +43,7 @@ pub async fn enqueue_change_in(
 ) -> Result<()> {
     crate::worker::jobs::enqueue_job_in(
         profile,
+        reconcile,
         tx,
         Uuid::new_v4(),
         &crate::worker::Work::PolicyReconcile { policy: policy.id },

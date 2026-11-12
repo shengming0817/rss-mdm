@@ -102,7 +102,7 @@ MODULES = {
         inputs=('crates/software-service/*','crates/device-service/src/control/*','crates/registration-service/src/installation/*','crates/recovery-credentials/src/native/*','apps/server/tests/execution_owners/*','apps/server/tests/credential_owners/*')),
 
     'planning.owners': dict(prefix='assembly::owner_boundaries_t2::', profiles=('shared',),
-        inputs=('crates/management-http/src/planning/http.rs','crates/scope-service/*','crates/device-service/src/planning*','crates/group-service/*','crates/compliance-service/*','crates/group-postgres/*','crates/compliance-postgres/*','crates/inventory-service/*','crates/resource-postgres/*','crates/scope-postgres/*','crates/policy-postgres/*','apps/server/src/assembly/inventory.rs','apps/server/tests/owner_boundaries/*','apps/server/tests/support/policies.rs','crates/management-http/src/planning/policies/*')),
+        inputs=('apps/server/src/asset_inputs.rs','apps/server/src/local_delivery.rs','apps/server/src/worker_wake.rs','crates/inventory-postgres/*','crates/inventory/*','crates/management-http/src/planning/http.rs','crates/scope-service/*','crates/device-service/src/planning*','crates/group-service/*','crates/compliance-service/*','crates/group-postgres/*','crates/compliance-postgres/*','crates/inventory-service/*','crates/resource-postgres/*','crates/scope-postgres/*','crates/policy-postgres/*','apps/server/src/assembly/inventory.rs','apps/server/tests/owner_boundaries/*','apps/server/tests/support/policies.rs','crates/management-http/src/planning/policies/*')),
 
     'task.scheduled_owners': dict(prefix='assembly::execution_owners_t2::scheduled::', profiles=('shared',),
         inputs=('crates/policy-postgres/*','crates/policy-service/*','crates/software-service/*','crates/inventory-service/src/collection/*','apps/server/src/assembly/policy*','apps/server/tests/execution_owners/*')),
@@ -275,7 +275,7 @@ MODULES = {
                 'apps/server/src/runtime_diagnostics.rs', 'crates/policy-service/src/worker/health.rs',
                 'crates/policy-service/src/worker/completion.rs', 'crates/policy-service/src/configuration/source_changes.rs',
                 'crates/policy-service/schema/configuration-source-changes.sql',
-                'apps/server/src/scope_group_changes.rs', 'apps/server/src/assembly/*',
+                'apps/server/src/local_delivery.rs','apps/server/src/asset_inputs.rs', 'apps/server/src/assembly/*',
                 'apps/server/tests/foundation/lifecycle.rs','apps/server/tests/support/host.rs')),
 }
 SUPPORT = ('apps/server/tests/support/authority.rs',)

@@ -19,7 +19,7 @@ pub(super) async fn seed(
     sqlx::query("UPDATE mdm_scope.tasks SET completed=true,failure='superseded' WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(scope_task).execute(&mut *tx).await?;
     let group = Uuid::new_v4();
     sqlx::query("INSERT INTO mdm_assets.group_tasks(tenant_id,id,target,kind,input,completed,failure) VALUES($1::uuid,$2,$3,'group',$4,true,'superseded')")
-        .bind(c.tenant.to_string()).bind(id).bind(group).bind(json!({"kind":"calculation","authority":[],"group":group,"base_revision":1,"asset_cut":cut,"automatic":true})).execute(&mut *tx).await?;
+        .bind(c.tenant.to_string()).bind(id).bind(group).bind(json!({"kind":"calculation","authority":[],"group":group,"base_revision":1,"asset_cut":cut,"automatic":true,"covered_inputs":0})).execute(&mut *tx).await?;
     let rule = Uuid::new_v4();
     let definition: rss_mdm_compliance_service::Definition = serde_json::from_value(
         json!({"presentation":{"name":"retained"},"severity":"low","enabled":true,"platform":"all","target":{"kind":"all"},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.os.name","op":"eq","value":{"kind":"string","value":"Windows"}}}}),

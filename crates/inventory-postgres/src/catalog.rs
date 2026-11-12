@@ -170,13 +170,10 @@ pub async fn retire_field_in(
     if catalog.definition(key).ok().map(|f| f.version) != Some(expected) {
         return Ok(false);
     }
-    let revision:i64=sqlx::query_scalar("SELECT mdm.record_asset_change($1::uuid,'catalog',jsonb_build_object('field',$2::text),ARRAY[$2::text])")
-        .bind(tenant.to_string()).bind(key.as_str()).fetch_one(&mut *c).await?;
-    sqlx::query("INSERT INTO mdm.field_versions VALUES($1::uuid,$2,$3,$4,NULL)")
+    sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,NULL)")
         .bind(tenant.to_string())
         .bind(key.as_str())
         .bind((expected + 1) as i64)
-        .bind(revision)
         .execute(c)
         .await?;
     Ok(true)

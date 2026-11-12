@@ -17,7 +17,6 @@ pub struct Scopes {
     pub(crate) groups: Arc<rss_mdm_group_postgres::GroupSources>,
     pub(crate) projection: crate::projection::ScopeProjection,
     pub(crate) dependents: Arc<dyn sources::ScopeDependents>,
-    pub(crate) input_state: std::sync::atomic::AtomicU8,
     pub(crate) runner_health: std::sync::Mutex<crate::health::RunnerObservation>,
     pub(crate) task: std::sync::OnceLock<rss_runtime::TaskStatus>,
 }
@@ -76,7 +75,6 @@ impl Scopes {
             dependents: dependencies.dependents,
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &dependencies.cursor_key),
             task: Default::default(),
-            input_state: Default::default(),
             runner_health: Default::default(),
         };
         s.runtime

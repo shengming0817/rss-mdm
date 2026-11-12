@@ -84,7 +84,7 @@ impl PolicyWork {
         claim: &rss_reconcile_postgres::PgClaim,
     ) -> std::result::Result<(), rss_reconcile::Error> {
         self.check_scope(claim.target().scope())?;
-        if (matches!(claim.target().entity(), "inputs" | "schedules")
+        if (claim.target().entity() == "schedules"
             || (self.service.configuration.is_some()
                 && crate::configuration::recovery::owns_entity(claim.target().entity())))
             && claim.target().scope().reconciler() == jobs::domain(self.profile())
@@ -146,8 +146,8 @@ impl Automation {
                 concurrency:EVENT_CONCURRENCY,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:crate::worker_wake::RECOVERY,initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=rss_reconcile::Scope::new(self.service.tenant,jobs::domain(self.profile())).expect("constant domain");
-            let configuration_inputs = self.service.configuration.iter().flat_map(|_| ["configuration-inputs", "configuration-relay"]);
-            for entity in ["inputs", "schedules"].into_iter().chain(configuration_inputs) {
+            let configuration_inputs = self.service.configuration.iter().map(|_| "configuration-relay");
+            for entity in ["schedules"].into_iter().chain(configuration_inputs) {
                 self.store.wake(&rss_reconcile::Target::new(scope.clone(),entity).expect("input target"), &rss_reconcile::ResourceSet::empty(scope.tenant()), &control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;
             }
             let runner=async {rss_reconcile::run_with_notify(self.work.as_ref(),self.as_ref(),&scope,policy,&control,&cancel,signals.automation(),|event| {
@@ -236,8 +236,8 @@ impl PolicyWork {
             if crate::configuration::recovery::owns_entity(claim.target().entity()) {
                 return self.observe_configuration(claim, control).await;
             }
-            if matches!(claim.target().entity(), "inputs" | "schedules") {
-                return self.observe_inputs(claim, control).await;
+            if claim.target().entity() == "schedules" {
+                return self.observe_schedules(claim, control).await;
             }
             let failure = Mutex::new(None);
             let result = self
@@ -310,8 +310,8 @@ impl PolicyWork {
             if crate::configuration::recovery::owns_entity(claim.target().entity()) {
                 return self.apply_configuration(claim, control).await;
             }
-            if matches!(claim.target().entity(), "inputs" | "schedules") {
-                return self.apply_inputs(claim, control).await;
+            if claim.target().entity() == "schedules" {
+                return self.apply_schedules(claim, control).await;
             }
             let failure = Mutex::new(None);
             let attempt =
@@ -374,6 +374,10 @@ impl PolicyWork {
                                                     if done {
                                                         return Ok(());
                                                     }
+                                                    rss_mdm_policy_postgres::work::started_in(
+                                                        profile, tx, id,
+                                                    )
+                                                    .await?;
                                                     match job {
                                                         ref input @ Work::Lifecycle { .. } => {
                                                             ctx.0
@@ -563,15 +567,15 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
 }
 
 impl PolicyWork {
-    async fn observe_inputs<T: rss_reconcile::Timer>(
+    async fn observe_schedules<T: rss_reconcile::Timer>(
         &self,
-        claim: &rss_reconcile_postgres::PgClaim,
+        _claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error> {
         let profile = self.profile();
 
         let now = self.service.clock.unix_seconds().map_err(reconcile_error)?;
-        let schedules = claim.target().entity() == "schedules";
+
         let pending = self
             .service
             .runtime
@@ -583,11 +587,7 @@ impl PolicyWork {
                 (),
                 |_, tx| {
                     Box::pin(async move {
-                        if schedules {
-                            rss_mdm_policy_postgres::schedules::scan_due_in(profile, tx, now).await
-                        } else {
-                            rss_mdm_policy_postgres::work::inputs_pending_in(profile, tx).await
-                        }
+                        rss_mdm_policy_postgres::schedules::scan_due_in(profile, tx, now).await
                     })
                 },
             )
@@ -605,13 +605,11 @@ impl PolicyWork {
             ActualState::present(pending),
         )))
     }
-    async fn apply_inputs<T: rss_reconcile::Timer>(
+    async fn apply_schedules<T: rss_reconcile::Timer>(
         &self,
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, rss_reconcile::Error> {
-        let profile = self.profile();
-
         self.service
             .runtime
             .local_tx_with_context(
@@ -625,28 +623,14 @@ impl PolicyWork {
                         s.audit_store.bind_in(tx).await.map_err(PgError::from)?;
 
                         s.reconcile_messaging
-                            .protect_in(
-                                tx,
-                                claim,
-                                (s, claim.target().entity()),
-                                |(s, entity), tx| {
-                                    Box::pin(async move {
-                                        let result = if *entity == "schedules" {
-                                            s.advance_lifecycle_schedules_in(tx).await
-                                        } else {
-                                            jobs::forward_jobs_in(
-                                                profile,
-                                                &s.reconcile_messaging,
-                                                tx,
-                                            )
-                                            .await
-                                        };
-                                        result
-                                            .map(ProtectedStep::Ready)
-                                            .map_err(|e| fault(e, &Mutex::new(None)))
-                                    })
-                                },
-                            )
+                            .protect_in(tx, claim, s, |s, tx| {
+                                Box::pin(async move {
+                                    let result = s.advance_lifecycle_schedules_in(tx).await;
+                                    result
+                                        .map(ProtectedStep::Ready)
+                                        .map_err(|e| fault(e, &Mutex::new(None)))
+                                })
+                            })
                             .await
                     })
                 },

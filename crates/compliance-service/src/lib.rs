@@ -23,7 +23,6 @@ pub mod tasks;
 
 pub use model::*;
 pub struct Compliance {
-    input_state: std::sync::atomic::AtomicU8,
     worker_health: std::sync::Mutex<crate::worker_health::ObservationState>,
     task_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -49,7 +48,6 @@ impl Compliance {
         Self {
             task_status: Default::default(),
             worker_health: Default::default(),
-            input_state: Default::default(),
             audit_store: d.audit_store,
             runtime: d.runtime.clone(),
             tenant: d.tenant,
@@ -436,15 +434,10 @@ fn authorize(
 
 impl Compliance {
     pub fn worker_status(&self) -> crate::WorkerStatus {
-        let mut status = self
-            .worker_health
+        self.worker_health
             .lock()
             .expect("worker observation")
-            .status(self.task_status.get().map(rss_runtime::TaskStatus::current));
-        let input = self.input_state.load(std::sync::atomic::Ordering::Acquire);
-        status.observed &= input != 0;
-        status.failed |= input == 2;
-        status
+            .status(self.task_status.get().map(rss_runtime::TaskStatus::current))
     }
     pub async fn queue_health(
         &self,
@@ -488,3 +481,5 @@ pub async fn admit_storage_in(
 ) -> std::result::Result<(), sqlx::Error> {
     rss_mdm_compliance_postgres::admit(c, tenant).await
 }
+
+pub mod input_wake;

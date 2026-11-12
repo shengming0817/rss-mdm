@@ -80,8 +80,8 @@ REVOKE ALL ON SEQUENCE mdm.asset_event_ids FROM PUBLIC;
 CREATE TABLE mdm.asset_changes (
  tenant_id uuid NOT NULL, revision bigint NOT NULL CHECK(revision>0),
  source_epoch uuid NOT NULL REFERENCES mdm.asset_epochs(id), writer_xid xid8 NOT NULL,
- kind text NOT NULL CHECK(kind IN ('inventory','manual','device','registration','source','credential','collection','catalog')),
- identity jsonb NOT NULL CHECK(octet_length(identity::text)<=16384),
+ kind text NOT NULL CHECK(kind IN ('inventory','manual','device','source','credential','collection','catalog')),
+ identity jsonb NOT NULL CHECK(octet_length(identity::text)<=65536),
  fields text[] NOT NULL,
  PRIMARY KEY(tenant_id,revision)
 );
@@ -109,19 +109,68 @@ DO $$ DECLARE t text; BEGIN
  END LOOP;
 END $$;
 
--- The business fact and its history event commit atomically, without a tenant head.
+-- Fixed product event encoding of the public RSS message-wire-v1 frames.
+-- ref: rss crates/transactional-messaging/message-wire-v1.md@aa7d4d72a06046691a07237c63a336d8100e9900.
+-- These private helpers do not acquire a partition or settle the caller's transaction.
+CREATE FUNCTION mdm.input_frame(tag integer, value bytea) RETURNS bytea
+LANGUAGE sql IMMUTABLE STRICT SET search_path=pg_catalog AS $$
+ SELECT set_byte(decode('00','hex'),0,tag) || int8send(octet_length(value)::bigint) || value
+$$;
+REVOKE ALL ON FUNCTION mdm.input_frame(integer,bytea) FROM PUBLIC;
+
+CREATE FUNCTION mdm.append_input_event(t uuid, id text, route text, contract text, digest text, payload jsonb) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,mdm AS $$
+DECLARE message bytea; outcome text;
+BEGIN
+ IF t IS DISTINCT FROM nullif(current_setting('rss.tenant_id',true),'')::uuid
+    OR octet_length(payload::text)>131072 THEN
+  RAISE EXCEPTION 'invalid product input event' USING ERRCODE='23514';
+ END IF;
+ message=mdm.input_frame(0,convert_to('rss-transactional-message-v1','UTF8'))
+  ||mdm.input_frame(1,convert_to(id,'UTF8'))||mdm.input_frame(2,uuid_send(t))
+  ||mdm.input_frame(3,int8send(floor(extract(epoch FROM clock_timestamp()))::bigint))
+  ||mdm.input_frame(4,decode('00','hex'))
+  ||mdm.input_frame(5,convert_to('mdm-assets','UTF8'))
+  ||mdm.input_frame(6,convert_to(route,'UTF8'))
+  ||mdm.input_frame(7,convert_to(contract,'UTF8'))
+  ||mdm.input_frame(8,int4send(1))||mdm.input_frame(9,convert_to(digest,'UTF8'))
+  ||mdm.input_frame(10,decode('00','hex'))||mdm.input_frame(14,decode('00','hex'))
+  ||mdm.input_frame(15,int8send(0))||mdm.input_frame(18,convert_to(payload::text,'UTF8'));
+ outcome=rss_transactional_messaging.append_outbox(message,'{"trace":null,"tenant_authority":null}'::jsonb);
+ IF outcome NOT IN ('inserted','already_present') THEN
+  RAISE EXCEPTION 'asset input event conflict' USING ERRCODE='23514';
+ END IF;
+ PERFORM pg_notify('mdm_work_'||replace(t::text,'-',''),'asset_inputs');
+END $$;
+REVOKE ALL ON FUNCTION mdm.append_input_event(uuid,text,text,text,text,jsonb) FROM PUBLIC;
+GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_owner;
+GRANT EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_owner;
+
+-- Fact history and its single transport event share the original source transaction.
 CREATE FUNCTION mdm.record_asset_change(t uuid,k text,i jsonb,f text[]) RETURNS bigint
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,mdm AS $$
-DECLARE v bigint;
+DECLARE v bigint; epoch uuid; identity jsonb; fields text[]; payload jsonb;
 BEGIN
  IF t IS DISTINCT FROM nullif(current_setting('rss.tenant_id',true),'')::uuid THEN
   RAISE EXCEPTION 'asset tenant mismatch' USING ERRCODE='42501';
  END IF;
+ SELECT id INTO STRICT epoch FROM mdm.asset_epochs WHERE active;
  v=nextval('mdm.asset_event_ids');
+ identity=jsonb_build_object('fact',i->>'fact','device',i->>'device',
+  'registrationEpoch',i->>'registrationEpoch','previousRegistrationEpoch',i->>'previousRegistrationEpoch',
+  'source',i->>'source','sourceEpoch',i->>'sourceEpoch','previousSourceEpoch',i->>'previousSourceEpoch',
+  'scope',i->>'scope','fieldScope',i->>'fieldScope','operation',i->>'operation');
+ IF identity->>'fact' IS NULL OR identity->>'operation' IS NULL OR identity->>'operation' NOT IN ('created','updated','deleted','revoked','failed') THEN
+  RAISE EXCEPTION 'invalid asset fact coordinates' USING ERRCODE='23514';
+ END IF;
+ fields=ARRAY(SELECT field FROM (SELECT DISTINCT field FROM unnest(f) field) fields ORDER BY field COLLATE "C");
  INSERT INTO mdm.asset_changes(tenant_id,revision,source_epoch,writer_xid,kind,identity,fields)
- SELECT t,v,id,pg_current_xact_id(),k,i,f FROM mdm.asset_epochs WHERE active;
- IF NOT FOUND THEN RAISE EXCEPTION 'asset epoch missing' USING ERRCODE='23514'; END IF;
- PERFORM pg_catalog.pg_notify('mdm_work_' || replace(t::text,'-',''),'assets_changed');
+ VALUES(t,v,epoch,pg_current_xact_id(),k,identity,fields);
+ payload=jsonb_build_object('v',1,'tenant',t,'revision',v,'historyEpoch',epoch,'kind',k,'identity',identity,'fields',to_jsonb(fields));
+ PERFORM mdm.append_input_event(t,'asset.changed.v1:'||epoch::text||':'||v::text,
+  'asset.changed','mdm.asset.changed','sha256:51142fb9482f4598cecbc514b902dc8572a9b38b6847ea9c352032db27bf4a66',payload);
+ -- Existing device/software lifecycle consumers still use this hint; this chain uses Outbox.
+ PERFORM pg_notify('mdm_work_'||replace(t::text,'-',''),'assets_changed');
  RETURN v;
 END $$;
 REVOKE ALL ON FUNCTION mdm.record_asset_change(uuid,text,jsonb,text[]) FROM PUBLIC;
@@ -135,7 +184,7 @@ BEGIN
  IF TG_OP='DELETE' THEN r=to_jsonb(OLD); d=NULL; ELSE r=to_jsonb(NEW); d=r; END IF;
  t=(r->>'tenant_id')::uuid;
  s=sha256(convert_to(jsonb_build_array(r->>'journal',r->>'generation',r->>'scope')::text,'UTF8'));
- v=mdm.record_asset_change(t,'inventory',jsonb_build_object('device',r->>'registration','scope',r->>'scope','fieldScope',r->>'field_scope'),ARRAY[r->>'field']);
+ v=mdm.record_asset_change(t,'inventory',jsonb_build_object('fact',encode(s,'hex')||':'||(r->>'field')||':'||encode(sha256(convert_to(r->>'field_scope','UTF8')),'hex'),'device',r->>'registration','source',r->>'source','sourceEpoch',r->>'epoch','scope',r->>'scope','fieldScope',r->>'field_scope','operation',CASE WHEN TG_OP='DELETE' OR r->>'state'='deleted' THEN 'deleted' WHEN TG_OP='INSERT' THEN 'created' ELSE 'updated' END),CASE WHEN TG_OP='UPDATE' AND (to_jsonb(NEW)-ARRAY['batch_id','observed_at','received_at','collection_sequence','last_known_batch','last_known_observed','last_known_received'])=(to_jsonb(OLD)-ARRAY['batch_id','observed_at','received_at','collection_sequence','last_known_batch','last_known_observed','last_known_received']) THEN ARRAY[]::text[] ELSE ARRAY[r->>'field'] END);
  INSERT INTO mdm.inventory_history(tenant_id,scope_digest,field,revision,document,field_scope) VALUES(t,s,r->>'field',v,d,r->>'field_scope');
  RETURN NULL;
 END $$;
@@ -150,7 +199,7 @@ BEGIN
  IF TG_OP='UPDATE' AND NEW IS NOT DISTINCT FROM OLD THEN RETURN NEW; END IF;
  IF TG_OP='DELETE' THEN r=to_jsonb(OLD); d=NULL; ELSE r=to_jsonb(NEW); d=r; END IF;
  t=(r->>'tenant_id')::uuid;
- v=mdm.record_asset_change(t,'manual',jsonb_build_object('device',r->>'device'),ARRAY[r->>'field']);
+ v=mdm.record_asset_change(t,'manual',jsonb_build_object('fact',jsonb_build_array(r->>'device',r->>'field')::text,'device',r->>'device','source','manual','operation',CASE WHEN TG_OP='DELETE' OR r->'fact'->'state'->>'kind'='deleted' THEN 'deleted' WHEN TG_OP='INSERT' THEN 'created' ELSE 'updated' END),ARRAY[r->>'field']);
  INSERT INTO mdm.manual_history VALUES(t,r->>'device',r->>'field',v,d);
  RETURN NULL;
 END $$;
@@ -214,7 +263,7 @@ CREATE FUNCTION mdm.append_field_version(t uuid, f text, v bigint, d jsonb) RETU
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $append$
 DECLARE r bigint;
 BEGIN
- r=mdm.record_asset_change(t,'catalog',jsonb_build_object('field',f),ARRAY[f]);
+ r=mdm.record_asset_change(t,'catalog',jsonb_build_object('fact',f,'operation',CASE WHEN d IS NULL THEN 'deleted' WHEN v=1 THEN 'created' ELSE 'updated' END),ARRAY[f]);
  INSERT INTO mdm.field_versions(tenant_id,field,version,revision,definition) VALUES(t,f,v,r,d);
 END;
 $append$;

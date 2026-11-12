@@ -253,5 +253,13 @@
     "deployment_authorities": [],
     "registration": null,
     "platform_sso": null
+  },
+  "asset_input_database": {
+    "host": "postgres.example.test",
+    "port": 5432,
+    "name": "mdm",
+    "user": "mdm_asset_ingress_consumer",
+    "password_file": "/run/secrets/mdm_asset_ingress_consumer_password",
+    "ca_file": "/run/mdm/database-ca.pem"
   }
 }

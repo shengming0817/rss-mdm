@@ -370,7 +370,10 @@ docker compose exec -T gateway nginx -s reload -c /run/gateway/nginx.conf
 
 本次只支持新格式全新安装，不接受旧格式双读、升级或迁移。
 
-Group、Scope、查询、合规与剩余任务共享容量为 2 的调度池，Group→Scope 投影使用另一个容量为 2 的池，均由 App 统一关闭。运行配置必须提供 `scope_group_database`，登录角色为 `mdm_scope_group_consumer`，指向同一产品数据库。部署时为该实际连接角色启用 LOGIN 并设置独立秘密，再执行迁移；安装只授予固定 Group domain / Scope consumer group 的 RSS 消费能力和 Scope 接收状态写权限，不授予 Group 生产者权限。投影池不按租户复制，恢复使用既有 native protector。Scope 的 `mdm.scopes` worker 独立注册、监视和关闭，复用原业务 runtime 与共享调度池，不另建数据库连接池。
+Group、Scope、查询、合规与剩余任务共享容量为 2 的调度池，Group→Scope 投影使用另一个容量为 2 的池，均由 App 统一关闭。运行配置必须提供 `scope_group_database`，登录角色为 `mdm_scope_group_consumer`，指向同一产品数据库。部署时为该实际连接角色启用 LOGIN 并设置独立秘密，再执行迁移；安装只授予固定 Group domain / Scope consumer group 的 RSS 消费能力和 Scope 接收状态写权限，不授予 Group 生产者权限。资产/对象事实投影另用容量为 2 的池，配置 `asset_input_database` 与独立登录角色 `mdm_asset_ingress_consumer`。
+该角色仅具备固定 `mdm-assets` domain / `mdm-asset-inputs` consumer 的 RSS 消费权限与 Reconcile runtime 权限，
+不具备资产或各业务 owner 表写权限，也不具备消息生产权限；原子登记的固定输入目标由产品代码绑定。
+投影池的租户绑定跟随当前 host，恢复使用既有 native protector。Scope 的 `mdm.scopes` worker 独立注册、监视和关闭，复用原业务 runtime 与共享调度池，不另建数据库连接池。
 
 资源、Scope 与执行使用当前全新安装结构。产品配置中的 `storage_binding` 持有 target/lineage/epoch，`business_databases` 持有具名 owner 的独立数据库身份，`publication` 持有发布数据库与 sources，`command_database` 持有共享命令 runtime 数据库连接；具体字段以[配置示例](../../fixtures/mdm-config.example.json)为准。旧 `flow`、综合 `management` 和混合 `tasks` 配置不再接受。`content.storage` 显式选择 `volume` 或启用版本控制的 HTTPS `s3`（[S3 配置示例](../../fixtures/mdm-content-s3.example.json)）；PostgreSQL 持有内容控制状态，`content` 配置共享内容仓，`task_signing` 单独配置任务签名；脚本任务要求两者齐备，软件入库/启用不需要任务私钥，原生协议的 `management` 公开 origin 配置保持独立。本版本按全新安装交付，安装清单只持有当前完整 schema。
 

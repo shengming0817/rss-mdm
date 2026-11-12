@@ -50,13 +50,11 @@ pub(crate) struct Statements {
     pub work_enqueue_in_1: &'static str,
     pub work_read_in_1: &'static str,
     pub work_cursor_in_1: &'static str,
-    pub work_pending_in_1: &'static str,
-    pub work_forwarded_in_1: &'static str,
+    pub work_started_in_1: &'static str,
     pub work_finish_in_1: &'static str,
     pub work_exists_in_1: &'static str,
     pub work_replacement_in_1: &'static str,
     pub work_counts_in_1: &'static str,
-    pub work_inputs_pending_in_1: &'static str,
     pub assignments_upsert_in_1: &'static str,
     pub assignments_objects_in_1: &'static str,
     pub assignments_withdraw_in_1: &'static str,
@@ -145,7 +143,7 @@ CREATE TABLE "###, $work, r###" (
     kind text NOT NULL,
     target text NOT NULL,
     input jsonb NOT NULL,
-    forwarded boolean DEFAULT false NOT NULL,
+    started boolean DEFAULT false NOT NULL,
     completed boolean DEFAULT false NOT NULL,
     cursor text,
     replacement_task uuid,
@@ -164,7 +162,7 @@ ALTER TABLE ONLY "###, $work, r###" FORCE ROW LEVEL SECURITY;
 ALTER TABLE ONLY "###, $work, r###"
     "###, $index_27, r###" PRIMARY KEY (tenant_id, id);
 
-"###, $index_28, " ON ", $work, r###" USING btree (tenant_id, id) WHERE (NOT forwarded);
+"###, $index_28, " ON ", $work, r###" USING btree (tenant_id, id) WHERE (NOT started);
 
 ALTER TABLE "###, $work, r###" ENABLE ROW LEVEL SECURITY;
 
@@ -220,7 +218,7 @@ ALTER TABLE "###, $assignments, r###" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON "###, $assignments, r###" USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON "###, $assignments, ",", $work, ",", $event_batches, ",", $event_members, " TO ", $policy_role, r###";
 GRANT UPDATE(input,availability,reason,target,scope_result,entry_revision) ON "###, $assignments, " TO ", $policy_role, r###";
-GRANT UPDATE(forwarded,completed,cursor,replacement_task,authority_revision,failure,failure_detail) ON "###, $work, " TO ", $policy_role, r###";
+GRANT UPDATE(started,completed,cursor,replacement_task,authority_revision,failure,failure_detail) ON "###, $work, " TO ", $policy_role, r###";
 GRANT UPDATE(decision) ON "###, $event_members, " TO ", $policy_role, r###";
 
 COMMIT;
@@ -249,7 +247,7 @@ GRANT UPDATE(decision) ON "###, $event_members, " TO ", $command, r###";
 GRANT UPDATE(completed,failure) ON "###, $work, " TO ", $command, r###";
 GRANT SELECT,INSERT ON "###, $assignments, ",", $work, " TO ", $policy_role, r###";
 GRANT UPDATE(input,availability,reason,target,scope_result,entry_revision) ON "###, $assignments, " TO ", $policy_role, r###";
-GRANT UPDATE(forwarded,completed,cursor,replacement_task,authority_revision,failure,failure_detail) ON "###, $work, " TO ", $policy_role, r###";
+GRANT UPDATE(started,completed,cursor,replacement_task,authority_revision,failure,failure_detail) ON "###, $work, " TO ", $policy_role, r###";
 COMMIT;
 
 GRANT SELECT,INSERT ON "###, $schedule_scan, " TO ", $policy_role, r###";
@@ -350,15 +348,13 @@ FROM "###, $policies, r###" WHERE tenant_id=$1::uuid
                 candidates_configuration_candidates_on_1: concat!("WITH candidates AS MATERIALIZED (SELECT p.id,p.current_version,(p.definition->>'scope')::uuid AS scope,d.device FROM ", $policies, r###" p CROSS JOIN (SELECT DISTINCT unnest($2::text[]) AS device) d WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND p.definition->'action'->>'kind'='configuration' AND ($3::uuid IS NULL OR (p.id,d.device COLLATE "C")>($3,$4 COLLATE "C")) ORDER BY p.id,d.device COLLATE "C" LIMIT 1001) SELECT *,"###, $scope, r###"channel_admission(scope,'mdm',device) AS admission FROM candidates ORDER BY id,device COLLATE "C""###),
                 candidates_candidates_on_1: concat!("SELECT id,current_version,(definition->>'scope')::uuid AS scope FROM ", $policies, " WHERE tenant_id=$1::uuid AND (state='enabled') AND id>$2 AND definition->'action'->>'kind'=$3 ORDER BY id LIMIT 17"),
                 work_enqueue_in_1: concat!("INSERT INTO ", $work, "(tenant_id,id,kind,target,input) VALUES($1::uuid,$2,$3,$4,$5)"),
-                work_read_in_1: concat!("SELECT input,completed,failure,cursor,forwarded FROM ", $work, " WHERE tenant_id=$1::uuid AND id=$2"),
+                work_read_in_1: concat!("SELECT input,completed,failure,cursor,started FROM ", $work, " WHERE tenant_id=$1::uuid AND id=$2"),
                 work_cursor_in_1: concat!("UPDATE ", $work, " SET cursor=$3 WHERE tenant_id=$1::uuid AND id=$2"),
-                work_pending_in_1: concat!("SELECT id::text,kind FROM ", $work, " WHERE tenant_id=$1::uuid AND NOT forwarded ORDER BY id LIMIT 64"),
-                work_forwarded_in_1: concat!("UPDATE ", $work, " SET forwarded=true WHERE tenant_id=$1::uuid AND id=$2 AND NOT forwarded"),
+                work_started_in_1: concat!("UPDATE ", $work, " SET started=true WHERE tenant_id=$1::uuid AND id=$2 AND NOT started"),
                 work_finish_in_1: concat!("UPDATE ", $work, " SET completed=true,failure=$3 WHERE tenant_id=$1::uuid AND id=$2 AND NOT completed RETURNING target,kind"),
                 work_exists_in_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND id=$2 AND (NOT $3 OR completed))"),
                 work_replacement_in_1: concat!("UPDATE ", $work, " SET replacement_task=$3 WHERE tenant_id=$1::uuid AND id=$2"),
-                work_counts_in_1: concat!("SELECT (SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure IS NULL AND NOT completed AND NOT forwarded LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure IS NULL AND NOT completed AND forwarded LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure IS NULL AND completed LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure IS NOT NULL AND failure<>'superseded' LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure='superseded' LIMIT 1001) q)"),
-                work_inputs_pending_in_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND NOT forwarded)"),
+                work_counts_in_1: concat!("SELECT (SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure IS NULL AND NOT completed AND NOT started LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure IS NULL AND NOT completed AND started LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure IS NULL AND completed LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure IS NOT NULL AND failure<>'superseded' LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure='superseded' LIMIT 1001) q)"),
                 assignments_upsert_in_1: concat!("INSERT INTO ", $assignments, " AS current_assignment(tenant_id,policy,version,object,channel,input,availability,reason,target,scope_result,entry_revision) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(tenant_id,policy,version,object,channel) DO UPDATE SET input=EXCLUDED.input,availability=EXCLUDED.availability,reason=EXCLUDED.reason,target=EXCLUDED.target,scope_result=EXCLUDED.scope_result,entry_revision=EXCLUDED.entry_revision WHERE (current_assignment.input,current_assignment.availability,current_assignment.reason,current_assignment.target,current_assignment.scope_result,current_assignment.entry_revision) IS DISTINCT FROM (EXCLUDED.input,EXCLUDED.availability,EXCLUDED.reason,EXCLUDED.target,EXCLUDED.scope_result,EXCLUDED.entry_revision)"),
                 assignments_objects_in_1: concat!("SELECT object,input->'object' FROM ", $assignments, " WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND reason IS DISTINCT FROM 'source_removed'"),
                 assignments_withdraw_in_1: concat!("UPDATE ", $assignments, r###" SET input=jsonb_set(jsonb_set(jsonb_set(input,'{availability}','"unavailable"'),'{reason}','"source_removed"'),'{admission}','{"state":"excluded"}'),availability='unavailable',reason='source_removed',entry_revision=0 WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND object=ANY($4::text[]) AND reason IS DISTINCT FROM 'source_removed' RETURNING object,target"###),

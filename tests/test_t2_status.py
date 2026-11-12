@@ -244,9 +244,10 @@ class T2Status(unittest.TestCase):
         from ci_registry import ROOT
         for path, expected in (
             ('apps/server/src/owner_storage.rs', ['foundation.lifecycle', 'policy.configuration']),
-            ('apps/server/src/worker_wake.rs', ['foundation.lifecycle']),
+            ('apps/server/src/worker_wake.rs', ['foundation.lifecycle', 'planning.owners']),
             ('apps/server/src/scheduler.rs', ['foundation.lifecycle']),
-            ('apps/server/src/scope_group_changes.rs', ['foundation.lifecycle']),
+            ('apps/server/src/local_delivery.rs', ['foundation.lifecycle', 'planning.owners']),
+            ('apps/server/src/asset_inputs.rs', ['foundation.lifecycle', 'planning.owners']),
             ('apps/server/src/clock.rs', []),
         ):
             with self.subTest(path=path), \

@@ -193,20 +193,26 @@ async fn supported_snapshot_never_authorizes_a_later_write() -> Result<()> {
         let account = c.account(&[Permission::InventoryRead,Permission::DeviceWipe]).await?;
         let p = Arc::new(c.authenticate(&account).await?);
         assert_eq!(capability(&read(&c,&http,&p,&n).await?,"wipe")["devicePrerequisite"]["state"],"supported");
-        let before = effects(&c).await?;
         let mut input = wipe();
         input.action = Action::Wipe { confirmed:false, };
+        let before = effects(&c).await?;
         assert!(matches!(a.service.create_control(&p,&n.device,&input,&c.request(&p)?).await,Err(ControlError::Malformed)));
+        assert_eq!(effects(&c).await?,before);
         let input = wipe();
         change(&c, "DELETE FROM mdm_windows.capabilities WHERE tenant_id = CAST($1 AS uuid) AND device = $2", n.device.clone()).await?;
+        let before = effects(&c).await?;
         assert!(matches!(a.service.create_control(&p,&n.device,&input,&c.request(&p)?).await,Err(ControlError::Unsupported)));
+        assert_eq!(effects(&c).await?,before);
         windows(&c,&n,"10.0.22631.0").await?;
         let input = wipe();
         change(&c, "UPDATE mdm_access.devices SET state = 'revoked' WHERE tenant_id = CAST($1 AS uuid) AND id = $2", n.device.clone()).await?;
+        let before = effects(&c).await?;
         assert!(matches!(a.service.create_control(&p,&n.device,&input,&c.request(&p)?).await,Err(ControlError::Conflict)));
+        assert_eq!(effects(&c).await?,before);
         change(&c, "UPDATE mdm_access.devices SET state = 'active' WHERE tenant_id = CAST($1 AS uuid) AND id = $2", n.device.clone()).await?;
         let input = wipe();
         change(&c, "DELETE FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND id=$2::uuid", account.rule.to_string()).await?;
+        let before = effects(&c).await?;
         assert!(matches!(a.service.create_control(&p,&n.device,&input,&c.request(&p)?).await,Err(ControlError::Forbidden)));
         assert_eq!(effects(&c).await?,before);
         Ok(())
@@ -307,7 +313,9 @@ async fn apple_reads_distinguish_platform_evidence_and_product_configuration() -
         assert_eq!(effects(&c).await?,before);
         let pin="692704";
         let lock=Input { operation_id:Uuid::new_v4(),deadline:time::OffsetDateTime::now_utc().unix_timestamp()+300,action:Action::Lock{confirmed:true,pin:pin.into()} };
+        let before = effects(&c).await?;
         assert!(matches!(a.service.create_control(&p,&n.device,&lock,&c.request(&p)?).await,Err(ControlError::Unsupported)));
+        assert_eq!(effects(&c).await?,before);
         assert!(!format!("{:?}",lock.action).contains(pin));
         assert_eq!(effects(&c).await?,before);
         apple_facts(&c,&a,&n,&p,None,Some("15.0.1")).await?;
@@ -323,7 +331,9 @@ async fn apple_reads_distinguish_platform_evidence_and_product_configuration() -
         let body=read(&c,&http,&p,&n).await?;
         assert_eq!(capability(&body,"wipe")["devicePrerequisite"]["state"],"unsupported");
         assert_eq!(capability(&body,"wipe")["permission"]["allowed"],true);
+        let before = effects(&c).await?;
         assert!(matches!(a.service.create_control(&p,&n.device,&wipe(),&c.request(&p)?).await,Err(ControlError::Unsupported)));
+        assert_eq!(effects(&c).await?,before);
         apple_facts(&c,&a,&n,&p,Some(true),Some("corrupt")).await?;
         assert_eq!(http.get(&c,p.clone(),&n.device).await?.0,503);
         Ok(())

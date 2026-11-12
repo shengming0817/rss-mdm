@@ -359,20 +359,16 @@ impl DurableStore for ComplianceWork {
         {
             return Err(ReconcileError::new(ErrorKind::BindingChanged));
         }
-        let scheduled = if id.is_none() && completion == Completion::Converged {
-            Completion::Reobserve(Duration::from_secs(5))
-        } else {
-            completion
-        };
-        let result = self.schedule.finish(claim, scheduled, &settlement).await;
-        if id.is_none() && (result.is_err() || !matches!(completion, Completion::Deferred(_))) {
-            let healthy = result.is_ok()
-                && matches!(completion, Completion::Converged | Completion::Reobserve(_));
-            self.compliance.input_state.store(
-                if healthy { 1 } else { 2 },
-                std::sync::atomic::Ordering::Release,
-            );
+        if id.is_none() && !matches!(completion, Completion::Deferred(_)) {
+            let failed = !matches!(completion, Completion::Converged | Completion::Reobserve(_));
+            if matches!(
+                self.set_input_failure(claim, failed, &settlement).await?,
+                ReconcileStep::Deferred(_)
+            ) {
+                return Err(ReconcileError::new(ErrorKind::BindingChanged));
+            }
         }
+        let result = self.schedule.finish(claim, completion, &settlement).await;
         if result.is_ok() {
             self.compliance
                 .worker_health
@@ -419,7 +415,6 @@ impl ComplianceWork {
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=Scope::new(self.compliance.tenant,"mdm.compliance").expect("constant scope");
-            self.schedule.wake(&Target::new(scope.clone(), "inputs").expect("input target"), &rss_reconcile::ResourceSet::empty(scope.tenant()), &control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;
                          rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,&cancel,&notify,|event| {
                 if !matches!(event, rss_reconcile::Observation::Deferred { .. }) {
                     eprintln!("{}",serde_json::json!({"event":"mdm_compliance_task_failure","diagnostic":format!("{event:?}")}));
@@ -489,6 +484,53 @@ impl ComplianceWork {
                                         .await
                                         .map(ProtectedStep::Ready)
                                         .map_err(|e| fault(e, &Mutex::new(None)))
+                                })
+                            })
+                            .await
+                    })
+                },
+            )
+            .await
+            .fold(
+                Ok,
+                |e| Err(storage(e)),
+                |e| Err(storage(e)),
+                |_| Err(ReconcileError::new(ErrorKind::RollbackFailed)),
+                |_| Err(unknown()),
+                |e| Err(storage(e)),
+            )
+    }
+}
+
+impl ComplianceWork {
+    async fn set_input_failure<T: Timer>(
+        &self,
+        claim: &PgClaim,
+        failed: bool,
+        control: &Control<'_, T>,
+    ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
+        self.compliance
+            .runtime
+            .local_tx_with_context(
+                self.compliance.tenant,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    control.remaining(),
+                ),
+                (&self.compliance, claim),
+                |(owner, claim), tx| {
+                    Box::pin(async move {
+                        owner
+                            .reconcile_messaging
+                            .protect_in(tx, claim, owner, |_owner, tx| {
+                                Box::pin(async move {
+                                    let tenant = tx.tenant_id();
+                                    tx.with_connection(move |c| {
+                                        Box::pin(async move {
+                                            pg::tasks::set_input_failed(c, tenant, failed).await
+                                        })
+                                    })
+                                    .await?;
+                                    Ok(ProtectedStep::Ready(()))
                                 })
                             })
                             .await

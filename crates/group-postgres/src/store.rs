@@ -318,7 +318,12 @@ impl GroupStore {
             )
             .await?
         {
-            AppendOutcome::Inserted => Ok(()),
+            AppendOutcome::Inserted => {
+                tx.with_connection(|c| Box::pin(async move {
+                    sqlx::query("SELECT pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'group_events')").execute(c).await?;
+                    Ok(())
+                })).await
+            },
             AppendOutcome::AlreadyPresent => Err(StorageFault::OutboxIdentity.error()),
         }
     }

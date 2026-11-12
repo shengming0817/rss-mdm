@@ -108,7 +108,7 @@ macro_rules! policy_admission {
                 concat!($assignments, ".scope_result"),
                 concat!($assignments, ".entry_revision"),
                 concat!($event_members, ".decision"),
-                concat!($work, ".forwarded"),
+                concat!($work, ".started"),
                 concat!($work, ".completed"),
                 concat!($work, ".cursor"),
                 concat!($work, ".replacement_task"),

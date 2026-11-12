@@ -1,4 +1,5 @@
 //! Real independent Group and Compliance consumers of Inventory's bounded facts.
+mod asset_inputs;
 mod preview;
 mod scope_preview;
 use crate::{authority_t2_support::Context, planning_t2_support as planning};
@@ -12,7 +13,7 @@ use uuid::Uuid;
 pub(super) struct Owners {
     pub(super) storage: crate::owner_storage::OwnerRuntime,
     pub(super) groups: Arc<group::Groups>,
-    pub(super) compliance: compliance::Compliance,
+    pub(super) compliance: Arc<compliance::Compliance>,
 }
 impl Owners {
     pub(super) async fn open(c: &Context) -> Result<Self> {
@@ -58,7 +59,7 @@ impl Owners {
         Ok(Self {
             storage,
             groups: Arc::new(service),
-            compliance,
+            compliance: Arc::new(compliance),
         })
     }
     pub(super) async fn create(
@@ -119,6 +120,9 @@ impl Owners {
             .position(|claim| claim.target() == &target)
             .expect("accepted task has a durable target");
         let claim = batch.claims.swap_remove(index);
+        for other in batch.claims {
+            schedule.release(&other, &control).await?;
+        }
         for _ in 0..8 {
             let ReconcileStep::Ready(diff) = worker.observe(&claim, &control).await? else {
                 anyhow::bail!("Group observation deferred")
@@ -129,6 +133,9 @@ impl Owners {
             worker.apply(&claim, diff, &control).await?;
         }
         let (completed,failure):(bool,Option<String>)=sqlx::query_as("SELECT completed,failure FROM mdm_assets.group_tasks WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(task).fetch_one(&c.operator).await?;
+        worker
+            .finish(&claim, rss_reconcile::Completion::Converged, &control)
+            .await?;
         pool.close().await;
         anyhow::ensure!(
             completed && failure.is_none(),
@@ -422,16 +429,12 @@ async fn fact_readers_reject_cross_runtime_and_tenant_and_keep_the_frozen_cut() 
                     .0
                     .changes_page_in(tx, Some(&ctx.4), &ctx.5, 0, None, 1000)
                     .await?;
-                assert!(
-                    changes
-                        .iter()
-                        .any(|e| e.device.as_deref() == Some(first.members[0].device.as_str()))
-                );
-                assert!(
-                    !changes
-                        .iter()
-                        .any(|e| e.device.as_deref() == Some(later.members[0].device.as_str()))
-                );
+                assert!(changes.iter().any(
+                    |e| e.identity.device.as_deref() == Some(first.members[0].device.as_str())
+                ));
+                assert!(!changes.iter().any(
+                    |e| e.identity.device.as_deref() == Some(later.members[0].device.as_str())
+                ));
                 assert!(changes.windows(2).all(|w| w[0].revision < w[1].revision));
                 Ok(())
             })
@@ -501,6 +504,8 @@ async fn reference_creation_serializes_with_group_delete_and_catalog_retirement(
         rss_mdm_inventory_postgres::retire_field_in(&mut retirement, c.tenant, field.key, 1)
             .await?
     );
+    let retired:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.field_versions v JOIN mdm.asset_changes a ON(a.tenant_id,a.revision)=(v.tenant_id,v.revision) JOIN rss_transactional_messaging.outbox o ON o.tenant_id=a.tenant_id AND o.domain='mdm-assets' AND o.envelope->>'id'='asset.changed.v1:'||a.source_epoch::text||':'||a.revision::text WHERE v.tenant_id=$1::uuid AND v.field=$2 AND v.version=2 AND v.definition IS NULL AND a.identity->>'operation'='deleted' AND a.identity->>'fact'=$2)").bind(c.tenant.to_string()).bind(field.key.as_str()).fetch_one(&mut *retirement).await?;
+    assert!(retired, "retirement and its canonical fact commit together");
     let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
         .fetch_one(&mut *retirement)
         .await?;

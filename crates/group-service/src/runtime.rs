@@ -104,7 +104,7 @@ impl GroupWork {
                                             .map_err(|e| fault(e, &Mutex::new(None)))?;
                                         if *reason == "superseded" {
                                             groups
-                                                .retry_superseded_group_in(
+                                                .ensure_group_followup_in(
                                                     tx,
                                                     id,
                                                     candidate.ok_or_else(|| {
@@ -407,20 +407,16 @@ impl DurableStore for GroupWork {
         {
             return Err(ReconcileError::new(ErrorKind::BindingChanged));
         }
-        let scheduled = if id.is_none() && completion == Completion::Converged {
-            Completion::Reobserve(Duration::from_secs(5))
-        } else {
-            completion
-        };
-        let result = self.schedule.finish(claim, scheduled, &settlement).await;
-        if id.is_none() {
-            let healthy = result.is_ok()
-                && matches!(completion, Completion::Converged | Completion::Reobserve(_));
-            self.groups.input_state.store(
-                if healthy { 1 } else { 2 },
-                std::sync::atomic::Ordering::Release,
-            );
+        if id.is_none() && !matches!(completion, Completion::Deferred(_)) {
+            let failed = !matches!(completion, Completion::Converged | Completion::Reobserve(_));
+            if matches!(
+                self.set_input_failure(claim, failed, &settlement).await?,
+                ReconcileStep::Deferred(_)
+            ) {
+                return Err(ReconcileError::new(ErrorKind::BindingChanged));
+            }
         }
+        let result = self.schedule.finish(claim, completion, &settlement).await;
         if result.is_ok() {
             self.groups.record_settled(claim.target(), completion);
         }
@@ -462,7 +458,6 @@ impl GroupWork {
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=Scope::new(self.groups.tenant,"mdm.groups").expect("constant scope");
-            self.schedule.wake(&Target::new(scope.clone(), "inputs").expect("input target"), &rss_reconcile::ResourceSet::empty(scope.tenant()), &control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;
                          rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,&cancel,&notify,|event| {
                 if !matches!(event, rss_reconcile::Observation::Deferred { .. }) {
                     eprintln!("{}",serde_json::json!({"event":"mdm_group_task_failure","diagnostic":format!("{event:?}")}));
@@ -549,5 +544,24 @@ impl GroupWork {
                 |_| Err(unknown()),
                 |e| Err(storage(e)),
             )
+    }
+}
+
+impl GroupWork {
+    async fn set_input_failure<T: Timer>(
+        &self,
+        claim: &PgClaim,
+        failed: bool,
+        control: &Control<'_, T>,
+    ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
+        self.groups.runtime.local_tx_with_context(self.groups.tenant,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),
+            (&self.groups,claim), |(owner,claim),tx|Box::pin(async move {
+                owner.reconcile_messaging.protect_in(tx,claim,owner, |_owner,tx|Box::pin(async move {
+                    let tenant=tx.tenant_id().to_string(); tx.with_connection(move |c|Box::pin(async move {sqlx::query("INSERT INTO mdm_assets.group_dispatch(tenant_id,input_failed) VALUES($1::uuid,$2) ON CONFLICT(tenant_id) DO UPDATE SET input_failed=excluded.input_failed").bind(tenant).bind(failed).execute(c).await?; Ok(())})).await?;
+                    Ok(ProtectedStep::Ready(()))
+                })).await
+            })).await.fold(Ok, |e|Err(storage(e)), |e|Err(storage(e)),
+                |_|Err(ReconcileError::new(ErrorKind::RollbackFailed)), |_|Err(unknown()), |e|Err(storage(e)))
     }
 }

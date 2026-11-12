@@ -33,13 +33,15 @@ pub(crate) enum Work {
     Apple,
     Windows,
     WindowsPush,
+    AssetInputs,
+    GroupEvents,
     Groups,
     Scopes,
     AssetQueries,
     Compliance,
 }
 impl Work {
-    const ALL: [Self; 21] = [
+    const ALL: [Self; 23] = [
         Self::Inventory,
         Self::Devices,
         Self::Policy,
@@ -57,6 +59,8 @@ impl Work {
         Self::Apple,
         Self::Windows,
         Self::WindowsPush,
+        Self::AssetInputs,
+        Self::GroupEvents,
         Self::Groups,
         Self::Scopes,
         Self::AssetQueries,
@@ -81,6 +85,8 @@ impl Work {
             Self::Apple => "apple",
             Self::Windows => "windows",
             Self::WindowsPush => "windows_push",
+            Self::AssetInputs => "asset_inputs",
+            Self::GroupEvents => "group_events",
             Self::Groups => "groups",
             Self::Scopes => "scopes",
             Self::AssetQueries => "asset_queries",
@@ -102,9 +108,6 @@ impl Signals {
     fn received(&self, payload: &str) {
         if payload == "assets_changed" {
             for work in [
-                Work::Groups,
-                Work::Scopes,
-                Work::Compliance,
                 Work::Devices,
                 Work::CommandRecovery,
                 Work::ScriptRecovery,

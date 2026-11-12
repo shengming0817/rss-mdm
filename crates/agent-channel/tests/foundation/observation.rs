@@ -107,7 +107,7 @@ pub async fn enrollment(c: &Context, p: &registration::DevicePrincipal) -> Resul
     );
     let observation = Arc::new(
         rss_observation_postgres::PgStore::new(
-            c.inputs.database("da_runtime").pool().await?,
+            c.inputs.pool("da_runtime").await?,
             clock.clone(),
             deadline,
         )
@@ -139,11 +139,8 @@ pub async fn enrollment(c: &Context, p: &registration::DevicePrincipal) -> Resul
     )?);
     let token = tokio_util::sync::CancellationToken::new();
     let control = Control::new(&clock, clock.cutoff(), &token);
-    let projection = rss_projection_postgres::PgStore::new(
-        c.inputs.database("da_runtime").pool().await?,
-        &control,
-    )
-    .await?;
+    let projection =
+        rss_projection_postgres::PgStore::new(c.inputs.pool("da_runtime").await?, &control).await?;
     let identity = rss_mdm_inventory_postgres::definition();
     projection
         .initialize(

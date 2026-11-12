@@ -3,7 +3,7 @@ use super::*;
 use rss_mdm_group_postgres as g;
 
 impl Groups {
-    pub async fn retry_superseded_group_in(
+    pub async fn ensure_group_followup_in(
         &self,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
@@ -13,7 +13,7 @@ impl Groups {
         let TaskInput::Calculation {
             group: id,
             asset_cut,
-            automatic: true,
+            covered_inputs,
             ..
         } = job
         else {
@@ -25,7 +25,9 @@ impl Groups {
             Err(g::Rejection::NotFound | g::Rejection::Deleted) => return Ok(()),
             Err(_) => return Err(Error::Conflict.into()),
         };
-        if self.group_covers_in(tx, &current, &asset_cut).await? {
+        if self.group_covers_in(tx, &current, &asset_cut).await?
+            && !self.inputs_uncovered_in(tx, id, covered_inputs).await?
+        {
             return Ok(());
         }
         let tenant = self.tenant.to_string();
@@ -83,7 +85,7 @@ impl Groups {
         let tenant = self.tenant.to_string();
         let group = current.id.to_string();
         let dirty: bool = tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT mdm.asset_visible($2,a.revision) AND mdm.asset_visible($3,a.revision) AND (a.kind IN('device','registration','source','credential') OR EXISTS(SELECT FROM mdm_assets.group_fields f WHERE f.tenant_id=a.tenant_id AND f.group_id=$4::uuid AND f.field=ANY(a.fields))))")
+            sqlx::query_scalar("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT EXISTS(SELECT FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM asset_cut_2),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM asset_cut_3),false) AND (a.kind IN('device','source','credential') OR EXISTS(SELECT FROM mdm_assets.group_fields f WHERE f.tenant_id=a.tenant_id AND f.group_id=$4::uuid AND f.field=ANY(a.fields))))")
                 .bind(tenant).bind(before).bind(after).bind(group).fetch_one(c).await
         })).await?;
         let relation_current =
@@ -101,6 +103,13 @@ impl Groups {
             };
         for source in &built.request.sources {
             if !self.source_current_in(tx, source).await? {
+                return Ok(false);
+            }
+            let current = group_checked(self.groups.capture_source_in(tx, source.group).await?)?;
+            if current.coordinates.member_version != source.coordinates.member_version
+                || current.coordinates.authority_version != source.coordinates.authority_version
+                || current.coordinates.definition_version != source.coordinates.definition_version
+            {
                 return Ok(false);
             }
         }
@@ -146,13 +155,13 @@ impl Groups {
                 let f = before.clone();
                 let t = after.clone();
                 let catalog_changed:bool=tx.with_connection(move|c|Box::pin(async move {
-                    sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.asset_changes a JOIN mdm_assets.group_fields f ON f.tenant_id=a.tenant_id AND f.group_id=$4 AND f.field=ANY(a.fields) WHERE a.tenant_id=$1::uuid AND NOT mdm.asset_visible($2,a.revision) AND mdm.asset_visible($3,a.revision) AND a.kind='catalog')")
+                    sqlx::query_scalar("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT EXISTS(SELECT FROM mdm.asset_changes a JOIN mdm_assets.group_fields f ON f.tenant_id=a.tenant_id AND f.group_id=$4 AND f.field=ANY(a.fields) WHERE a.tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM asset_cut_2),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM asset_cut_3),false) AND a.kind='catalog')")
                         .bind(tenant).bind(f).bind(t).bind(id).fetch_one(c).await
                 })).await?;
                 if !catalog_changed {
                     let tenant = self.tenant.to_string();
                     let changed:Vec<String>=tx.with_connection(move|c|Box::pin(async move {
-                        sqlx::query_scalar("SELECT DISTINCT coalesce(a.identity->>'device',(SELECT h.device FROM mdm_access.asset_authority_history h WHERE h.tenant_id=a.tenant_id AND h.kind='registration' AND h.identity=a.identity->>'registration' ORDER BY h.revision DESC LIMIT 1)) COLLATE \"C\" AS device FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT mdm.asset_visible($2,a.revision) AND mdm.asset_visible($3,a.revision) AND (a.kind IN('device','registration','source','credential') OR EXISTS(SELECT FROM mdm_assets.group_fields f WHERE f.tenant_id=a.tenant_id AND f.group_id=$4 AND f.field=ANY(a.fields))) ORDER BY device LIMIT 1001")
+                        sqlx::query_scalar("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT DISTINCT (a.identity->>'device') COLLATE \"C\" AS device FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM asset_cut_2),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM asset_cut_3),false) AND (a.kind IN('device','source','credential') OR EXISTS(SELECT FROM mdm_assets.group_fields f WHERE f.tenant_id=a.tenant_id AND f.group_id=$4 AND f.field=ANY(a.fields))) ORDER BY device LIMIT 1001")
                             .bind(tenant).bind(before).bind(after).bind(id).fetch_all(c).await
                     })).await?;
                     if changed.len() <= 1000 {
@@ -201,7 +210,7 @@ impl Groups {
                 let to = snapshot.id;
                 let from_cut = prior.asset_cut.to_json();
                 let to_cut = snapshot.asset_cut.to_json();
-                let catalog_changed=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm.asset_changes a JOIN mdm_assets.group_fields f ON f.tenant_id=a.tenant_id AND f.group_id=$4 AND f.field=ANY(a.fields) WHERE a.tenant_id=$1::uuid AND NOT mdm.asset_visible($2,a.revision) AND mdm.asset_visible($3,a.revision) AND a.kind='catalog')").bind(tenant.to_string()).bind(from_cut).bind(to_cut).bind(id).fetch_one(c).await})).await?;
+                let catalog_changed=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,bool>("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT EXISTS(SELECT FROM mdm.asset_changes a JOIN mdm_assets.group_fields f ON f.tenant_id=a.tenant_id AND f.group_id=$4 AND f.field=ANY(a.fields) WHERE a.tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM asset_cut_2),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM asset_cut_3),false) AND a.kind='catalog')").bind(tenant.to_string()).bind(from_cut).bind(to_cut).bind(id).fetch_one(c).await})).await?;
                 if !catalog_changed {
                     changed_objects = Some(
                         tx.with_connection(move |c| {
@@ -216,7 +225,9 @@ impl Groups {
             Some(snapshot) => snapshot.group_input(),
             None => asset_cut.input_version(),
         };
+        let covered_inputs = self.covered_inputs_in(tx, id, &asset_cut).await?;
         let job = TaskInput::Calculation {
+            covered_inputs,
             authority,
             group: id,
             base_revision: current.revision.get(),
@@ -531,21 +542,20 @@ impl Groups {
         let TaskInput::Calculation {
             group: id,
             asset_cut,
-            automatic,
+            covered_inputs,
             ..
         } = job
         else {
             return Err(Error::Malformed.into());
         };
         let id = *id;
-        let automatic = *automatic;
         let operation = checked_input(rss_mdm_group::OperationId::parse(&task.to_string()))?;
         // The immutable old input remains historical evidence. Newer input cannot
         // be acknowledged by publishing this old result under its former asset_cut.
         let tenant = self.tenant.to_string();
         let frozen_cut = asset_cut.to_json();
         let mut dirty:bool=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT mdm.asset_visible($2,a.revision) AND (a.kind IN('device','registration','source','credential') OR EXISTS(SELECT FROM mdm_assets.group_fields f WHERE f.tenant_id=a.tenant_id AND f.group_id=$3 AND f.field=ANY(a.fields))))")
+            sqlx::query_scalar("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)) SELECT EXISTS(SELECT FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM asset_cut_2),false) AND (a.kind IN('device','source','credential') OR EXISTS(SELECT FROM mdm_assets.group_fields f WHERE f.tenant_id=a.tenant_id AND f.group_id=$3 AND f.field=ANY(a.fields))))")
                 .bind(tenant).bind(frozen_cut).bind(id).fetch_one(c).await
         })).await?;
         if let Some(snapshot) = object_snapshot(&build.request.input_version)? {
@@ -577,6 +587,14 @@ impl Groups {
                 .current_member_set_in(tx, build.request.group)
                 .await?,
         )?;
+        let definition_changed = if let Some(previous) = previous {
+            checked(self.groups.build_in(tx, previous).await?)?
+                .request
+                .rule_version
+                != build.request.rule_version
+        } else {
+            true
+        };
         let previous_cut = if let Some(previous) = previous {
             Some(
                 input_cut(
@@ -592,7 +610,7 @@ impl Groups {
         let tenant = self.tenant.to_string();
         let next_cut = asset_cut.to_json();
         let identity_changed:bool=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND kind IN('device','registration','source','credential') AND mdm.asset_visible($3,revision) AND NOT mdm.asset_visible($2,revision))")
+            sqlx::query_scalar("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND kind IN('device','source','credential') AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM asset_cut_3),false) AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM asset_cut_2),false))")
                 .bind(tenant).bind(previous_cut).bind(next_cut).fetch_one(c).await
         })).await?;
         let old = group_checked(
@@ -621,12 +639,15 @@ impl Groups {
                 .publish_build_in(tx, operation, authority)
                 .await?,
         )?;
-        let changed =
-            receipt.group.member_version > build.request.base_calculation || authority > old;
+        let changed = receipt.group.member_version > build.request.base_calculation
+            || authority > old
+            || definition_changed;
         if changed {
-            rss_mdm_compliance_postgres::group_changed_in(tx, id).await?;
+            rss_mdm_compliance_postgres::group_changed_in(tx, id, &self.reconcile_messaging)
+                .await?;
         }
-        if dirty && automatic {
+        dirty |= self.inputs_uncovered_in(tx, id, *covered_inputs).await?;
+        if dirty {
             let patch = build.request.patch.as_ref().map(|_| g::MemberPatch {
                 add: vec![],
                 remove: vec![],
@@ -674,28 +695,11 @@ impl Groups {
             let id = stored(Uuid::parse_str(id))?;
             if kind == "group" {
                 let gid = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
-                let current = group_checked(self.groups.lock_reference_target_in(tx, gid).await?)?;
-                self.start_group_job_in(
-                    tx,
-                    GroupStart {
-                        asset_cut: candidate.clone(),
-                        authority: vec![],
-                        id,
-                        task: Uuid::new_v4(),
-                        expected: current.revision.get() as u64,
-                        patch: None,
-                        automatic: true,
-                        at: checked_input(Timepoint::try_from(
-                            self.clock
-                                .unix_seconds()
-                                .ok_or(Error::Unavailable(Failure::Clock))?,
-                        ))?,
-                    },
-                )
-                .await?;
+                self.dispatch_group_in(tx, gid, candidate).await?;
             }
         }
         if rows.len() <= 64 {
+            self.ensure_group_followup_in(tx, task, candidate).await?;
             return self.finish_task_in(tx, task, None).await;
         }
         let tenant = self.tenant.to_string();

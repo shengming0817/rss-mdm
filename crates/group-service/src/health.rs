@@ -4,12 +4,6 @@ impl Groups {
     pub fn task_state(&self) -> Option<rss_runtime::TaskState> {
         self.task_status.get().map(rss_runtime::TaskStatus::current)
     }
-    pub fn input_observed(&self) -> bool {
-        self.input_state.load(std::sync::atomic::Ordering::Acquire) != 0
-    }
-    pub fn input_failed(&self) -> bool {
-        self.input_state.load(std::sync::atomic::Ordering::Acquire) == 2
-    }
     pub async fn queue_health(
         &self,
         budget: std::time::Duration,
@@ -127,5 +121,29 @@ impl Groups {
                 .failures
                 .remove(target);
         }
+    }
+}
+
+impl crate::Groups {
+    /// Read the retained owner outcome without discovering or waking business work.
+    pub async fn input_failed(
+        &self,
+        budget: std::time::Duration,
+    ) -> std::result::Result<bool, crate::Error> {
+        let failed: bool=self.runtime.local_tx_with_context(self.tenant,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget), self,
+            |_,tx| Box::pin(async move { let tenant=tx.tenant_id().to_string();
+                    tx.with_connection(move |c|Box::pin(async move {sqlx::query_scalar("SELECT coalesce((SELECT input_failed FROM mdm_assets.group_dispatch WHERE tenant_id=$1::uuid),false)").bind(tenant).fetch_one(c).await})).await })).await.fold(Ok,
+                |_|Err(crate::Error::Unavailable(crate::Failure::GroupStorage)),
+                |_|Err(crate::Error::Unavailable(crate::Failure::GroupStorage)),
+                |_|Err(crate::Error::RollbackFailed), |_|Err(crate::Error::CommitUnknown), |_|Err(crate::Error::Conflict))?;
+        if !failed {
+            self.runner_health
+                .lock()
+                .expect("runner observation")
+                .failures
+                .retain(|target, _| target.entity() != "inputs");
+        }
+        Ok(failed)
     }
 }

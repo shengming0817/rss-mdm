@@ -153,6 +153,7 @@ pub(crate) fn from_state(
         assets: state.assets.clone(),
         compliance: state.compliance.clone(),
         scope_group_health: state.scope_group_health.clone(),
+        asset_input_health: state.asset_input_health.clone(),
         tenant: state.identity.tenant,
         instance: state.identity.instance.to_string(),
     });

@@ -126,23 +126,36 @@ async fn apply_schema(
         )
         .await?;
     }
-    if name == "scope-group-changes-v1" {
-        rss_transactional_messaging_postgres::grant_local_projection(
-            tx,
+    grant_local_consumer(tx, name).await
+}
+
+async fn grant_local_consumer(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    name: &'static str,
+) -> Result<()> {
+    let (role, domain, consumer) = match name {
+        "scope-group-changes-v1" => (
             "mdm_scope_group_consumer",
-            &rss_transactional_messaging::message::MessagingDomain::parse(
-                rss_mdm_scope_service::group_changes::DOMAIN,
-            )
+            rss_mdm_scope_service::group_changes::DOMAIN,
+            rss_mdm_scope_service::group_changes::CONSUMER,
+        ),
+        "asset-inputs-v1" => (
+            "mdm_asset_ingress_consumer",
+            crate::asset_inputs::DOMAIN,
+            crate::asset_inputs::CONSUMER,
+        ),
+        _ => return Ok(()),
+    };
+    rss_transactional_messaging_postgres::grant_local_projection(
+        tx,
+        role,
+        &rss_transactional_messaging::message::MessagingDomain::parse(domain)
             .expect("constant domain"),
-            &rss_transactional_messaging::inbox::ConsumerGroup::parse(
-                rss_mdm_scope_service::group_changes::CONSUMER,
-            )
+        &rss_transactional_messaging::inbox::ConsumerGroup::parse(consumer)
             .expect("constant consumer"),
-        )
-        .await
-        .map_err(|_| MigrationError::at(name, "local consumer grant"))?;
-    }
-    Ok(())
+    )
+    .await
+    .map_err(|_| MigrationError::at(name, "local consumer grant"))
 }
 
 /// The product receipt is immutable to runtime roles; it is not a live schema snapshot.

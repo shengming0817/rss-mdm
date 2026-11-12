@@ -3800,6 +3800,8 @@ dependencies = [
  "rss-mdm-compliance",
  "rss-mdm-query",
  "rss-mdm-query-postgres",
+ "rss-reconcile",
+ "rss-reconcile-postgres",
  "rss-request-context",
  "rss-transactional-messaging-postgres",
  "serde",

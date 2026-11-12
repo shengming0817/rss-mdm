@@ -1,5 +1,6 @@
 -- Only authorization/fencing kernels; bodies come directly from their owner's installation SQL.
 WITH expected(signature,language,result,definer,returns_set,volatility,names,config,body,roles) AS (VALUES
+ ('mdm_group.input_candidate_groups(uuid[],text[])', 'plpgsql', 'uuid', true, true, 's', ARRAY['p_groups','p_devices']::text[], ARRAY['search_path=pg_catalog']::text[], $6::text, ARRAY['mdm_group_runtime']::text[]),
  ('mdm_group.group_current(uuid)', 'sql', 'boolean', true, false, 'v', ARRAY['p_group']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['mdm_access','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_group_runtime','mdm_command_runtime','mdm_owner']::text[]),
  ('mdm_group.lock_reference_target(uuid)', 'plpgsql', 'mdm_group.groups', true, true, 'v', ARRAY['p_group']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['mdm_group_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_owner']::text[]),
  ('mdm_group.scope_dependencies(uuid)', 'sql', 'uuid', true, true, 's', ARRAY['p_group']::text[], ARRAY['search_path=pg_catalog']::text[], $3::text, ARRAY['mdm_owner','da_owner']::text[]),

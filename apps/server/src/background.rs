@@ -68,6 +68,7 @@ impl BackgroundConfig {
             ("business-scheduler", SCHEDULER_CONNECTIONS),
             ("notifications", 1),
             ("scope-group-delivery", 2),
+            ("asset-input-delivery", 2),
             ("webhook-recovery", AUXILIARY_CONNECTIONS),
             // Direct startup/maintenance probes do not borrow a long-lived pool.
             ("direct-probes", 2),

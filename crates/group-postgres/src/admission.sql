@@ -10,7 +10,7 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='mdm_group' AND c.relkind NOT IN('r','i'))
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
- WHERE n.nspname='mdm_group' AND p.oid NOT IN('mdm_group.group_current(uuid)'::regprocedure,'mdm_group.lock_reference_target(uuid)'::regprocedure,'mdm_group.scope_dependencies(uuid)'::regprocedure,'mdm_group.lock_scope_dependencies(uuid[])'::regprocedure,'mdm_group.scope_source(uuid)'::regprocedure))
+ WHERE n.nspname='mdm_group' AND p.oid NOT IN('mdm_group.input_candidate_groups(uuid[],text[])'::regprocedure,'mdm_group.group_current(uuid)'::regprocedure,'mdm_group.lock_reference_target(uuid)'::regprocedure,'mdm_group.scope_dependencies(uuid)'::regprocedure,'mdm_group.lock_scope_dependencies(uuid[])'::regprocedure,'mdm_group.scope_source(uuid)'::regprocedure))
  AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication
  OR oid IN (SELECT relowner FROM tables) OR has_schema_privilege(oid,'mdm_group','CREATE'))
  AND has_schema_privilege(current_user,'mdm_group','USAGE')
@@ -32,7 +32,7 @@ SELECT
   (t.relname='definition_walk' AND a.attname IN('graph_revision','visited')
   OR t.relname='source_state' AND a.attname IN('definition_version','authority_version')
   OR t.relname='graph_clock' AND a.attname='revision'
-  OR t.relname='groups' AND a.attname IN('presentation','revision','member_version','member_count','rule_version','deleted','member_set','calculation_revision')
+  OR t.relname='groups' AND a.attname IN('presentation','revision','member_version','member_count','rule_version','deleted','member_set','calculation_revision','input_revision','input_epoch','input_xid')
   OR t.relname='member_runs' AND a.attname IN('phase','cursor','diff_cursor','object_count','processed_count','member_count','added','removed','receipt','authority_version'))
  OR has_column_privilege(current_user,t.oid,a.attnum,'REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid,

@@ -103,7 +103,6 @@ impl crate::application::Application {
             run_lifetime_seconds,
             actor: _,
         } = frozen;
-        let tenant = tx.tenant_id();
         let version = policy.version;
         for item in objects {
             if !matches!(item.admission, ScopeAdmission::Eligible { .. }) {
@@ -158,22 +157,14 @@ impl crate::application::Application {
                     occurrence,
                     deadline: end.min(now.saturating_add(i64::from(run_lifetime_seconds))),
                 };
-                crate::worker::jobs::enqueue_job_in(profile, tx, id, &input).await?;
-                self.reconcile_messaging
-                    .wake_in(
-                        tx,
-                        &crate::worker::jobs::job_target(profile, tenant, id),
-                        &rss_reconcile::ResourceSet::empty(tenant),
-                        (),
-                        move |_, tx| {
-                            Box::pin(async move {
-                                rss_mdm_policy_postgres::work::forwarded_in(profile, tx, id)
-                                    .await?;
-                                Ok(())
-                            })
-                        },
-                    )
-                    .await?;
+                crate::worker::jobs::enqueue_job_in(
+                    profile,
+                    &self.reconcile_messaging,
+                    tx,
+                    id,
+                    &input,
+                )
+                .await?;
             }
         }
         if more {
@@ -376,6 +367,7 @@ impl crate::application::Application {
                 if !exists {
                     crate::worker::jobs::enqueue_job_in(
                         profile,
+                        &self.reconcile_messaging,
                         tx,
                         id,
                         &crate::worker::Work::PolicyReconcile { policy },

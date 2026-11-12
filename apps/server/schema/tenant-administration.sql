@@ -15,6 +15,9 @@ BEGIN
  PERFORM pg_advisory_xact_lock(2346);
  IF (SELECT count(*) FROM public.mdm_tenants WHERE NOT deleted AND tenant_id<>(SELECT management_tenant_id FROM public.mdm_installation))>=1024 THEN RAISE EXCEPTION 'tenant capacity'; END IF;
  PERFORM set_config('rss.tenant_id',t::text,true);
+ PERFORM set_config('rss.execution_epoch',e::text,true);
+ PERFORM set_config('rss.storage_target',(SELECT encode(target,'hex') FROM public.mdm_installation),true);
+ PERFORM set_config('rss.storage_lineage',(SELECT encode(lineage,'hex') FROM public.mdm_installation),true);
  INSERT INTO public.mdm_tenants(tenant_id,initial_epoch,name,notes) VALUES(t,e,n,d);
  INSERT INTO rss_transactional_messaging.tenant_epoch(tenant_id,epoch) VALUES(t,e);
  PERFORM mdm.seed_tenant_catalog(t);

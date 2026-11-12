@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mdm.asset.changed.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "v": {
+      "const": 1
+    },
+    "tenant": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "historyEpoch": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "kind": {
+      "enum": [
+        "inventory",
+        "manual",
+        "device",
+        "source",
+        "credential",
+        "collection",
+        "catalog"
+      ]
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fact": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "device": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "registrationEpoch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "previousRegistrationEpoch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "enum": [
+            "manual",
+            "mdm.apple",
+            "mdm.windows",
+            "agent.builtin",
+            "agent.script",
+            "agent.osquery",
+            "agent.native",
+            null
+          ]
+        },
+        "sourceEpoch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "previousSourceEpoch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fieldScope": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation": {
+          "enum": [
+            "created",
+            "updated",
+            "deleted",
+            "revoked",
+            "failed"
+          ]
+        }
+      },
+      "required": [
+        "fact",
+        "device",
+        "registrationEpoch",
+        "previousRegistrationEpoch",
+        "source",
+        "sourceEpoch",
+        "previousSourceEpoch",
+        "scope",
+        "fieldScope",
+        "operation"
+      ]
+    },
+    "fields": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "v",
+    "tenant",
+    "revision",
+    "historyEpoch",
+    "kind",
+    "identity",
+    "fields"
+  ]
+}

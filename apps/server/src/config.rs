@@ -155,6 +155,7 @@ pub struct Config {
     pub access_database: Database,
     pub runtime_database: Database,
     pub scope_group_database: Database,
+    pub asset_input_database: Database,
     pub command_database: Database,
     pub(crate) content: Option<rss_mdm_content_service::Config>,
     pub(crate) task_signing: Option<crate::task_signing::Config>,
@@ -172,8 +173,15 @@ pub(crate) struct Compiled {
 impl Config {
     /// Fence SQL Outbox producers with externally supplied process configuration before any transaction.
     pub fn access_options(&self) -> Result<PgConnectOptions, Error> {
+        self.producer_options(&self.access_database)
+    }
+    /// Bind the Projection SQL producer to the same trusted storage incarnation.
+    pub fn runtime_options(&self) -> Result<PgConnectOptions, Error> {
+        self.producer_options(&self.runtime_database)
+    }
+    fn producer_options(&self, database: &Database) -> Result<PgConnectOptions, Error> {
         let hex = |v: &[u8]| v.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        Ok(self.access_database.options()?.options([
+        Ok(database.options()?.options([
             ("rss.storage_target", hex(&self.storage_binding.target)),
             ("rss.storage_lineage", hex(&self.storage_binding.lineage)),
             (

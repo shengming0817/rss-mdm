@@ -96,3 +96,47 @@ pub struct WorkerStatus {
     /// Most recent unresolved failure.
     pub latest_failure: Option<WorkerAttempt>,
 }
+
+impl crate::Compliance {
+    /// Read the retained owner outcome without discovering or waking business work.
+    pub async fn input_failed(
+        &self,
+        budget: std::time::Duration,
+    ) -> std::result::Result<bool, crate::Error> {
+        let failed = self
+            .runtime
+            .local_tx_with_context(
+                self.tenant,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),
+                self,
+                |_, tx| {
+                    Box::pin(async move {
+                        let tenant = tx.tenant_id();
+                        tx.with_connection(move |c| {
+                            Box::pin(async move {
+                                rss_mdm_compliance_postgres::tasks::input_failed(c, tenant).await
+                            })
+                        })
+                        .await
+                    })
+                },
+            )
+            .await
+            .fold(
+                Ok,
+                |_| Err(crate::Error::Unavailable(crate::Failure::ComplianceStorage)),
+                |_| Err(crate::Error::Unavailable(crate::Failure::ComplianceStorage)),
+                |_| Err(crate::Error::RollbackFailed),
+                |_| Err(crate::Error::CommitUnknown),
+                |_| Err(crate::Error::Conflict),
+            )?;
+        if !failed {
+            self.worker_health
+                .lock()
+                .expect("worker observation")
+                .failed
+                .retain(|target, _| target.entity() != "inputs");
+        }
+        Ok(failed)
+    }
+}

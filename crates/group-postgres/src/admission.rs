@@ -34,6 +34,13 @@ async fn verify_functions(tx: &mut PgTransaction<'_>) -> Result<Option<String>, 
         .split("$$")
         .nth(1)
         .expect("owner lock body");
+    let candidates = crate::MIGRATION_SQL
+        .split_once("CREATE FUNCTION mdm_group.input_candidate_groups(")
+        .expect("owner candidates")
+        .1
+        .split("$$")
+        .nth(1)
+        .expect("owner body");
     let rejected = tx
         .with_connection(move |c| {
             Box::pin(async move {
@@ -45,6 +52,7 @@ async fn verify_functions(tx: &mut PgTransaction<'_>) -> Result<Option<String>, 
                         "CREATE FUNCTION mdm_group.lock_scope_dependencies(",
                     ))
                     .bind(scope_body("CREATE FUNCTION mdm_group.scope_source("))
+                    .bind(candidates)
                     .fetch_optional(c)
                     .await
             })

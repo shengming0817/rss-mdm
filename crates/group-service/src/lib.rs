@@ -32,7 +32,6 @@ pub struct Groups {
     read_pool: sqlx::PgPool,
     pub(crate) task_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
     runner_health: std::sync::Mutex<health::RunnerObservation>,
-    pub(crate) input_state: std::sync::atomic::AtomicU8,
     pub(crate) objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
     pub(crate) tenant: TenantId,
     pub(crate) groups: Arc<rss_mdm_group_postgres::GroupStore>,
@@ -186,7 +185,6 @@ impl Groups {
             read_pool,
             task_status: Default::default(),
             runner_health: Default::default(),
-            input_state: Default::default(),
             objects,
             tenant,
             groups,
@@ -253,3 +251,5 @@ pub const TASKS_SQL: &str = include_str!("../schema/tasks.sql");
 
 /// Exact read capability of the Group application storage.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+
+pub mod input_wake;

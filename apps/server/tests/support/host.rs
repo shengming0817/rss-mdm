@@ -27,6 +27,8 @@ pub(crate) fn configuration(
         serde_json::to_value(inputs.database(profile, "mdm_command_runtime"))?;
     configuration["scope_group_database"] =
         serde_json::to_value(inputs.database(profile, "mdm_scope_group_consumer"))?;
+    configuration["asset_input_database"] =
+        serde_json::to_value(inputs.database(profile, "mdm_asset_ingress_consumer"))?;
     configuration["webhooks"]["recovery_database"] =
         serde_json::to_value(inputs.database(profile, "mdm_webhook_operator"))?;
     configuration["publication"]["database"] =
@@ -48,6 +50,7 @@ pub(crate) fn configuration(
     configuration["device_pki"] = json!([]);
     configuration["native_protection"] = json!({"active_file":inputs.directory.join("native.key"),
         "historical_files":[], "fingerprint_file":inputs.directory.join("fingerprint.key")});
+    configuration["storage_binding"] = json!({"target":inputs.installation.target,"lineage":inputs.installation.lineage,"epoch":1});
     configuration["runtime_binding"]["host_id"] = json!(host);
     configuration["identity"]["instance_id"] = json!(inputs.installation.instance_id);
     Ok(configuration)

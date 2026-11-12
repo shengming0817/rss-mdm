@@ -19,7 +19,8 @@ pub(crate) struct RuntimeDiagnostics {
     pub groups: Arc<rss_mdm_group_service::Groups>,
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub compliance: Arc<rss_mdm_compliance_service::Compliance>,
-    pub scope_group_health: Arc<crate::scope_group_changes::Health>,
+    pub scope_group_health: Arc<crate::local_delivery::Health>,
+    pub(crate) asset_input_health: Arc<crate::local_delivery::Health>,
     pub execution: Arc<rss_mdm_device_service::control::Service>,
     pub software: Arc<rss_mdm_software_service::deployment::SoftwareService>,
     pub recovery: Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
@@ -113,19 +114,22 @@ impl RuntimeDiagnostics {
     )]
     async fn automation_component(&self, cutoff: Instant) -> Component {
         let status = self.planning.automation_state();
+        let group_scan = self.groups.runner_health().scan;
+        let scope_scan = self.scopes.runner_health().scan;
         let mut automation = component(
             ComponentName::Automation,
             status == Some(rss_runtime::TaskState::Running)
                 && self.devices.worker_ready()
+                && group_scan.is_some_and(|scan| scan.failure.is_none())
+                && scope_scan.is_some_and(|scan| scan.failure.is_none())
                 && self.groups.task_state() == Some(rss_runtime::TaskState::Running)
                 && self.scopes.task_state() == Some(rss_runtime::TaskState::Running)
-                && self.scopes.input_observed()
-                && !self.scopes.input_failed()
                 && self.scope_group_health.state() == Some(rss_runtime::TaskState::Running)
-                && self.groups.input_observed()
-                && !self.groups.input_failed()
                 && self.scope_group_health.observed()
-                && !self.scope_group_health.failed(),
+                && !self.scope_group_health.failed()
+                && self.asset_input_health.state() == Some(rss_runtime::TaskState::Running)
+                && self.asset_input_health.observed()
+                && !self.asset_input_health.failed(),
         );
         automation.task = Some(task(status));
         if matches!(status, None | Some(rss_runtime::TaskState::Pending)) {
@@ -137,23 +141,55 @@ impl RuntimeDiagnostics {
         if self.scopes.task_state() != Some(rss_runtime::TaskState::Running)
             || self.groups.task_state() != Some(rss_runtime::TaskState::Running)
             || self.scope_group_health.state() != Some(rss_runtime::TaskState::Running)
+            || self.asset_input_health.state() != Some(rss_runtime::TaskState::Running)
         {
             automation.reasons.push(Reason::WorkerNotRunning);
             automation.health = Health::Unknown;
         }
-        if !self.scopes.input_observed()
-            || !self.groups.input_observed()
+        if group_scan.is_none()
+            || scope_scan.is_none()
             || !self.scope_group_health.observed()
+            || !self.asset_input_health.observed()
         {
             automation.reasons.push(Reason::Unobserved);
             automation.health = Health::Unknown;
         }
-        if self.scopes.input_failed()
-            || self.groups.input_failed()
+        if group_scan.is_some_and(|scan| scan.failure.is_some())
+            || scope_scan.is_some_and(|scan| scan.failure.is_some())
             || self.scope_group_health.failed()
+            || self.asset_input_health.failed()
         {
             automation.reasons.push(Reason::DependencyUnavailable);
             automation.health = Health::Degraded;
+        }
+        let remaining = || {
+            cutoff.saturating_duration_since(rss_request_context::Clock::now(
+                &crate::lifecycle::RuntimeTimer,
+            ))
+        };
+        let (group_inputs, scope_inputs, compliance_inputs) = tokio::join!(
+            self.groups.input_failed(remaining()),
+            self.scopes.input_failed(remaining()),
+            self.compliance.input_failed(remaining())
+        );
+        for outcome in [
+            group_inputs.map_err(|e| queue_failure(e.into())),
+            scope_inputs.map_err(|e| queue_failure(e.into())),
+            compliance_inputs.map_err(|e| queue_failure(e.into())),
+        ] {
+            match outcome {
+                Ok(false) => {}
+                Ok(true) => {
+                    automation.readiness = Readiness::NotReady;
+                    automation.health = Health::Degraded;
+                    automation.reasons.push(Reason::DependencyUnavailable);
+                }
+                Err(failure) => {
+                    automation.readiness = Readiness::NotReady;
+                    automation.health = Health::Degraded;
+                    automation.reasons.push(health_failure(failure));
+                }
+            }
         }
         let assets = self.assets.worker_status();
         let compliance = self.compliance.worker_status();

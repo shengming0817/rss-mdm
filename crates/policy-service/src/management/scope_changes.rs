@@ -8,6 +8,7 @@ pub struct ScopeChanges {
     profile: rss_mdm_install_support::StorageProfile,
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
+    reconcile: rss_reconcile_postgres::PgMessagingStore,
 }
 impl ScopeChanges {
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
@@ -17,11 +18,13 @@ impl ScopeChanges {
         profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
+        reconcile: rss_reconcile_postgres::PgMessagingStore,
     ) -> Self {
         Self {
             profile,
             runtime,
             tenant,
+            reconcile,
         }
     }
     fn validate(&self, tx: &PgTransaction<'_>) -> Result<()> {
@@ -42,6 +45,7 @@ impl ScopeChanges {
         self.validate(tx)?;
         crate::worker::jobs::enqueue_job_in(
             profile,
+            &self.reconcile,
             tx,
             run,
             &crate::worker::Work::PolicyReconcile {

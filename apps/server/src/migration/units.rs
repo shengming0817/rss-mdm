@@ -5,14 +5,14 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ("audit-ledger-v1", rss_ledger_postgres::MIGRATION_SQL),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
         ("projection-v3", rss_projection_postgres::MIGRATION_SQL),
+        (
+            "transactional-messaging-v1",
+            rss_transactional_messaging_postgres::MIGRATION_SQL,
+        ),
         ("inventory-v1", rss_mdm_inventory_postgres::MIGRATION_SQL),
         (
             "inventory-api-reader-v1",
             rss_mdm_inventory_postgres::READER_MIGRATION_SQL,
-        ),
-        (
-            "transactional-messaging-v1",
-            rss_transactional_messaging_postgres::MIGRATION_SQL,
         ),
         ("group-v1", rss_mdm_group_postgres::MIGRATION_SQL),
         (
@@ -342,6 +342,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         (
             "reconcile-runtime-v1",
             include_str!("../../schema/reconcile-runtime.sql"),
+        ),
+        (
+            "asset-inputs-v1",
+            include_str!("../../schema/asset-inputs.sql"),
         ),
         ("group-relations-v1", rss_mdm_group_postgres::RELATIONS_SQL),
         (

@@ -23,6 +23,8 @@ impl Compliance {
             if g.asset_context != rss_mdm_group::AssetContext::Endpoint {
                 return Err(Error::Malformed.into());
             }
+            let source = checked(self.groups.capture_source_in(tx, gid).await?)?;
+            let definition_revision = stored(i64::try_from(source.coordinates.definition_version))?;
             let set = checked(self.groups.current_member_set_in(tx, gid).await?)?;
             let mut ready = g.kind == group::GroupKind::Static;
             let mut asset_cut = None;
@@ -43,7 +45,7 @@ impl Compliance {
                     asset_cut = Some(at.clone());
                     let tenant = t.to_string();
                     let dirty:bool=tx.with_connection(move|c|Box::pin(async move{
-      sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND NOT mdm.asset_visible($2::jsonb,c.revision) AND (c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=$3::uuid AND f.field=ANY(c.fields))))")
+      sqlx::query_scalar("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)) SELECT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,c.source_epoch,c.writer_xid) FROM asset_cut_2),false) AND (c.kind IN('device','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=$3::uuid AND f.field=ANY(c.fields))))")
       .bind(tenant).bind(at.to_json()).bind(id.to_string()).fetch_one(c).await
      })).await?;
                     ready &= !dirty;
@@ -51,7 +53,7 @@ impl Compliance {
             }
             let expected = group::sources::CurrentMembership {
                 id,
-                revision: g.revision.get(),
+                revision: definition_revision,
                 member_set: set
                     .map(|v| stored(Uuid::parse_str(&v.to_string())))
                     .transpose()?,
@@ -62,10 +64,11 @@ impl Compliance {
                     .current_memberships_in(tx, std::slice::from_ref(&expected))
                     .await?,
             )?
-            .contains(&expected);
+            .iter()
+            .any(|current| current.membership == expected);
             groups.push(GroupInput {
                 id,
-                revision: g.revision.get(),
+                revision: definition_revision,
                 member_version: g.member_version as i64,
                 member_set: set
                     .map(|v| stored(Uuid::parse_str(&v.to_string())))
