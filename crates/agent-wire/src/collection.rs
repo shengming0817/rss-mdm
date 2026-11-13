@@ -710,9 +710,9 @@ impl CollectionDefinition {
     pub fn field(&self, key: FieldKey) -> Result<&FieldDefinition> {
         self.0
             .fields
-            .iter()
-            .find(|f| f.key == key)
-            .ok_or(WireError::InvalidValue)
+            .binary_search_by_key(&key, |f| f.key)
+            .map(|index| &self.0.fields[index])
+            .map_err(|_| WireError::InvalidValue)
     }
     /// Exact content identity includes schemas, sources and all definition constraints.
     pub fn fingerprint(&self) -> Result<String> {

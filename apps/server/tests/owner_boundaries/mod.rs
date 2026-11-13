@@ -26,11 +26,11 @@ impl Owners {
             )
             .await?,
         );
-        let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+        let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             storage.runtime.clone(),
             c.audit.binding(),
             group::transaction::deadline(),
-        )
+        ))
         .await?;
         let clock = Arc::new(crate::clock::InventoryClock(Arc::new(
             crate::clock::SystemClock,

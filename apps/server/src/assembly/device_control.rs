@@ -99,11 +99,11 @@ pub(crate) async fn assemble(
             outbox,
             store,
             reconcile: storage.reconcile.clone(),
-            reconcile_messaging: rss_reconcile_postgres::PgMessagingStore::new(
+            reconcile_messaging: Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
                 storage.runtime.clone(),
                 storage.audit.binding(),
                 deadline(),
-            )
+            ))
             .await
             .map_err(|_| Error::Configuration(crate::ConfigIssue::CommandStorage))?,
             tenant: storage.tenant,

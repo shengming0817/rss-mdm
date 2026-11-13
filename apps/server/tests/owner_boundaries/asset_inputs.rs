@@ -110,11 +110,11 @@ async fn canonical_fact_and_atomic_multi_owner_wake() -> Result<()> {
     );
     let runtime = consumer(&c).await?;
     let receiver = asset_inputs::Receiver {
-        messaging: rss_reconcile_postgres::PgMessagingStore::new(
+        messaging: Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
             c.audit.binding(),
             OperationDeadline::from_remaining(Duration::from_secs(6)),
-        )
+        ))
         .await?,
     };
     runtime
@@ -1551,11 +1551,11 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
     .await?;
     let runtime = consumer(&c).await?;
     let receiver = asset_inputs::Receiver {
-        messaging: rss_reconcile_postgres::PgMessagingStore::new(
+        messaging: Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
             c.audit.binding(),
             OperationDeadline::from_remaining(Duration::from_secs(6)),
-        )
+        ))
         .await?,
     };
     let (event, _) = message(&c).await?;

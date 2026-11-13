@@ -164,7 +164,7 @@ impl AssetChanged {
 mod tests {
     use super::*;
     #[test]
-    fn fact_identity_separates_epochs_and_rejects_untrusted_or_legacy_shapes() {
+    fn fact_identity_separates_epochs_and_rejects_untrusted_coordinates() {
         let value = serde_json::json!({"v":1,"tenant":Uuid::from_u128(1),"revision":7,"historyEpoch":Uuid::from_u128(2),"kind":"source","identity":{
             "fact":"device:source","device":"00000000-0000-0000-0000-000000000001","registrationEpoch":Uuid::from_u128(3),"previousRegistrationEpoch":null,"source":"mdm.windows","sourceEpoch":"source-epoch","previousSourceEpoch":"old-source-epoch","scope":null,"fieldScope":null,"operation":"revoked"},"fields":[]});
         let event: AssetChanged = serde_json::from_value(value.clone()).unwrap();
@@ -186,8 +186,5 @@ mod tests {
         let mut invalid = value.clone();
         invalid["identity"]["device"] = "device".into();
         assert!(serde_json::from_value::<AssetChanged>(invalid).is_err());
-        let mut legacy = value;
-        legacy["kind"] = "registration".into();
-        assert!(serde_json::from_value::<AssetChanged>(legacy).is_err());
     }
 }

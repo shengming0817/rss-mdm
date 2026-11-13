@@ -604,12 +604,17 @@ impl InventoryRuntime {
                 Err(error)
                     if matches!(
                         error.kind(),
-                        rss_projection::ErrorKind::Deadline | rss_projection::ErrorKind::Cancelled
+                        rss_projection::ErrorKind::Deadline
+                            | rss_projection::ErrorKind::Cancelled
+                            | rss_projection::ErrorKind::CommitUnknown
+                            | rss_projection::ErrorKind::RollbackFailed
                     ) =>
                 {
                     if token.is_cancelled() {
                         return Ok(());
                     }
+                    // Keep the same fenced execution. The next run rereads its durable
+                    // checkpoint and receipts; an interrupted settlement proves neither outcome.
                     self.readiness.initialized.store(false, Ordering::Release);
                     eprintln!(
                         "{}",

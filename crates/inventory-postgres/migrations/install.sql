@@ -123,7 +123,7 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,mdm AS $$
 DECLARE message bytea; outcome text;
 BEGIN
  IF t IS DISTINCT FROM nullif(current_setting('rss.tenant_id',true),'')::uuid
-    OR octet_length(payload::text)>CASE WHEN route='asset.changed' AND contract='mdm.asset.changed' THEN 1048576 ELSE 131072 END THEN
+    OR octet_length(payload::text)>(CASE WHEN route='asset.changed' AND contract='mdm.asset.changed' THEN 1048576 ELSE 131072 END) THEN
   RAISE EXCEPTION 'invalid product input event' USING ERRCODE='23514';
  END IF;
  message=mdm.input_frame(0,convert_to('rss-transactional-message-v1','UTF8'))

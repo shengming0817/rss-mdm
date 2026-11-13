@@ -29,11 +29,11 @@ async fn change(
             runtime.clone(),
             tenant,
         ),
-        messaging: rss_reconcile_postgres::PgMessagingStore::new(
+        messaging: Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
             binding,
             script::transaction::deadline(),
-        )
+        ))
         .await?,
         targets: Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
             rss_mdm_install_support::StorageProfile::Mdm,
@@ -204,11 +204,11 @@ async fn independent_run_recovery_overlaps_and_existing_bindings_preserve_histor
     let collection_version =
         super::mixed::publish(&h, Uuid::new_v4(), 1, definition, frozen).await?;
     let collection_id = super::mixed::run(&h, collection_version, now() - 400).await?;
-    let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+    let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         h.a.resources.storage.runtime.clone(),
         h.c.audit.binding(),
         script::transaction::deadline(),
-    )
+    ))
     .await?;
     script::transaction::inspect(
         &h.a.resources.storage.runtime,

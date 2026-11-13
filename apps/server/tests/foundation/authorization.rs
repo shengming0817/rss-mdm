@@ -298,7 +298,11 @@ async fn embedded_da_http_binds_authority_before_purpose() -> Result<()> {
             .route_layer(axum::middleware::from_fn_with_state(state, identity_only));
         let app = protected
             .merge(identity)
-            .layer(Extension(crate::clock::monotonic()));
+            .layer(Extension(crate::clock::monotonic()))
+            .layer(axum::middleware::from_fn_with_state(
+                rss_axum::RequestBudget::new(Duration::from_secs(8))?,
+                rss_axum::request_control,
+            ));
         let allowed = c.account(&[Permission::InventoryRead]).await?;
         let denied = c.account(&[Permission::ResourceRead]).await?;
         for (account, path, expected) in [

@@ -97,11 +97,11 @@ where
                     .map_err(|_| unavailable())?,
             );
             let result = async {
-                let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+                let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
                     runtime.clone(),
                     binding,
                     deadline(),
-                )
+                ))
                 .await
                 .map_err(|_| unavailable())?;
                 let (effect, validator) = bind(runtime.clone(), binding, messaging);

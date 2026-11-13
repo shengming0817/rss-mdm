@@ -8,7 +8,7 @@ GRANT EXECUTE ON FUNCTION
  rss_reconcile.wake(uuid,text,text,text[]),
  rss_reconcile.lock_authority(uuid,text,text,uuid,bigint),
  rss_reconcile.lock_execution(uuid,text,text,uuid,bigint,bigint),
- rss_reconcile.claim_due(uuid,text,integer,bigint),
+ rss_reconcile.claim_due(uuid,text,integer,integer,bigint),
  rss_reconcile.renew(uuid,text,text,uuid,bigint,bigint,bigint),
  rss_reconcile.finish(uuid,text,text,uuid,bigint,bigint,bigint,text,bigint,bigint),
  rss_reconcile.release(uuid,text,text,uuid,bigint),

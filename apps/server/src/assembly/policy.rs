@@ -78,12 +78,12 @@ pub(crate) async fn events(
         .await?,
     );
     let software = Arc::new(
-        rss_mdm_software_service::deployment::Transactions::bind(
+        Box::pin(rss_mdm_software_service::deployment::Transactions::bind(
             application.runtime.clone(),
             application.tenant,
             application.audit_store.clone(),
             software_materials,
-        )
+        ))
         .await
         .map_err(super::owner_errors::software)?,
     );
@@ -256,11 +256,11 @@ pub(crate) async fn changes(
     execution: rss_transactional_messaging::fence::ExecutionBinding,
 ) -> Result<Arc<dyn rss_mdm_policy_service::inputs::ExecutionChanges>, crate::Error> {
     let tenant = execution.tenant();
-    let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+    let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         runtime.clone(),
         execution,
         rss_mdm_policy_service::transaction::deadline(),
-    )
+    ))
     .await
     .map_err(|_| crate::Error::Unavailable(crate::Failure::PlanningStorage))?;
     Ok(Arc::new(super::policy_ports::Changes {

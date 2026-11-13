@@ -172,6 +172,39 @@ fn administrator_grant(
 mod tests {
     use super::administrator_grant;
     use rss_mdm_authorization_service::{Grant, Permission, Scope};
+    #[test]
+    fn restored_administrator_requires_the_complete_permission_scope() {
+        let grant = |operation, scope| Grant { operation, scope };
+        assert!(administrator_grant(
+            &grant(Permission::Credentials, Scope::AllDevices),
+            Permission::Credentials
+        ));
+        assert!(!administrator_grant(
+            &grant(
+                Permission::Credentials,
+                Scope::Device {
+                    id: rss_mdm_agent_wire::DeviceId::new_v4()
+                }
+            ),
+            Permission::Credentials
+        ));
+        assert!(!administrator_grant(
+            &grant(Permission::Credentials, Scope::Tenant),
+            Permission::Credentials
+        ));
+        assert!(administrator_grant(
+            &grant(Permission::AuthorizationWrite, Scope::Tenant),
+            Permission::AuthorizationWrite
+        ));
+        assert!(!administrator_grant(
+            &grant(Permission::DeviceWipe, Scope::AllDevices),
+            Permission::Credentials
+        ));
+    }
+}
+
+#[cfg(test)]
+mod t2 {
     #[tokio::test]
     #[ignore = "T2: restored-account authorization SQL shares the original deadline and releases blocked connections"]
     async fn blocked_authorization_read_expires_within_the_original_budget() -> anyhow::Result<()> {
@@ -229,34 +262,5 @@ mod tests {
         lock.rollback().await?;
         c.close().await;
         Ok(())
-    }
-    #[test]
-    fn restored_administrator_requires_the_complete_permission_scope() {
-        let grant = |operation, scope| Grant { operation, scope };
-        assert!(administrator_grant(
-            &grant(Permission::Credentials, Scope::AllDevices),
-            Permission::Credentials
-        ));
-        assert!(!administrator_grant(
-            &grant(
-                Permission::Credentials,
-                Scope::Device {
-                    id: rss_mdm_agent_wire::DeviceId::new_v4()
-                }
-            ),
-            Permission::Credentials
-        ));
-        assert!(!administrator_grant(
-            &grant(Permission::Credentials, Scope::Tenant),
-            Permission::Credentials
-        ));
-        assert!(administrator_grant(
-            &grant(Permission::AuthorizationWrite, Scope::Tenant),
-            Permission::AuthorizationWrite
-        ));
-        assert!(!administrator_grant(
-            &grant(Permission::DeviceWipe, Scope::AllDevices),
-            Permission::Credentials
-        ));
     }
 }

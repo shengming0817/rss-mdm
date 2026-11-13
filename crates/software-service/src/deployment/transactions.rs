@@ -84,18 +84,20 @@ impl Transactions {
             materials.protection.fingerprint_id(),
         )
         .await?;
-        let reconcile_messaging = rss_reconcile_postgres::PgMessagingStore::new(
+        let reconcile_messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
             audit_store.binding(),
             deadline(),
-        )
+        ))
         .await
         .map_err(|_| invalid())?;
-        let bootstrap = rss_mdm_registration_service::installation::Transactions::bind(
-            runtime.clone(),
-            tenant,
-            audit_store.clone(),
-            materials.registration.clone(),
+        let bootstrap = Box::pin(
+            rss_mdm_registration_service::installation::Transactions::bind(
+                runtime.clone(),
+                tenant,
+                audit_store.clone(),
+                materials.registration.clone(),
+            ),
         )
         .await
         .map_err(|_| invalid())?;

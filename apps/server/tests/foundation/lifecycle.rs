@@ -58,7 +58,7 @@ async fn host_reports_its_binding_then_releases_listener_and_database_resources(
         .build()?;
     let (stop, stopped) = tokio::sync::oneshot::channel();
     drop(reservation);
-    let server = crate::serve(
+    let mut server = Box::pin(crate::serve(
         config,
         async move {
             stopped
@@ -66,8 +66,7 @@ async fn host_reports_its_binding_then_releases_listener_and_database_resources(
                 .map_err(|_| std::io::Error::other("test stop sender closed"))
         },
         Arc::new(crate::Monotonic(std::time::Instant::now)),
-    );
-    tokio::pin!(server);
+    ));
     let readiness_url = format!("http://{address}/readyz");
     let observation = tokio::select! {
         result = &mut server => bail!("host exited before readiness: {result:?}"),

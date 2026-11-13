@@ -47,11 +47,11 @@ impl Services {
                 |_| Err(Error::CommitUnknown),
                 |_| Err(Error::Unavailable(Failure::Database)),
             )?;
-        let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+        let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
             audit_store.binding(),
             rss_mdm_inventory_service::transaction::deadline(),
-        )
+        ))
         .await
         .map_err(|_| Error::Unavailable(Failure::Database))?;
         let groups = Arc::new(

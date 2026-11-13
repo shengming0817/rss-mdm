@@ -48,11 +48,11 @@ async fn wake(
         h.a.resources.storage.runtime.clone(),
         h.c.tenant,
     );
-    let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+    let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         h.a.resources.storage.runtime.clone(),
         h.c.audit.binding(),
         script::transaction::deadline(),
-    )
+    ))
     .await?;
     h.a.resources
         .storage

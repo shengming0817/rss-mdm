@@ -416,11 +416,11 @@ async fn rollout_snapshot_invalidates_counts_before_opening_next_stage() -> Resu
 }
 async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Result<()> {
     use std::time::Duration;
-    let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+    let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         a.resources.storage.runtime.clone(),
         c.audit.binding(),
         owner::deadline(),
-    )
+    ))
     .await?;
     owner::transaction::inspect(
         &a.resources.storage.runtime,

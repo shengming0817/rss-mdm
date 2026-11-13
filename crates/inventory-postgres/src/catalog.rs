@@ -230,10 +230,14 @@ pub async fn register_collection_in(
             "collection source is not currently allowed"
         );
         ensure!(
-            field_version_in(c, tenant, field.key, field.version)
-                .await?
-                .as_ref()
-                == Some(field),
+            if current.version == field.version {
+                current == field
+            } else {
+                field_version_in(c, tenant, field.key, field.version)
+                    .await?
+                    .as_ref()
+                    == Some(field)
+            },
             "collection field differs from authoritative version"
         );
     }

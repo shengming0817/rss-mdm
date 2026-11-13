@@ -80,10 +80,9 @@ impl CollectionDefinition {
     pub fn field_scope(&self, key: FieldKey) -> Result<&crate::CollectionScope> {
         self.0
             .fields
-            .iter()
-            .find(|f| f.definition.key == key)
-            .map(|f| &f.scope)
-            .ok_or(Invalid::UnknownField)
+            .binary_search_by_key(&key, |f| f.definition.key)
+            .map(|index| &self.0.fields[index].scope)
+            .map_err(|_| Invalid::UnknownField)
     }
     /// Complete field bindings used by projection and authorized reads.
     pub fn bindings(&self) -> &[CollectionField] {
@@ -109,10 +108,9 @@ impl CollectionDefinition {
     pub fn field(&self, key: FieldKey) -> Result<&FieldDefinition> {
         self.0
             .fields
-            .iter()
-            .find(|f| f.definition.key == key)
-            .map(|f| &f.definition)
-            .ok_or(Invalid::UnknownField)
+            .binary_search_by_key(&key, |f| f.definition.key)
+            .map(|index| &self.0.fields[index].definition)
+            .map_err(|_| Invalid::UnknownField)
     }
     /// Exact content identity includes schemas, sources and all definition constraints.
     pub fn fingerprint(&self) -> Result<String> {

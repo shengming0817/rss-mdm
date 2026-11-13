@@ -51,6 +51,7 @@ pub async fn verify(
     ))?;
     let value = serde_json::json!({
         "identity_policy":example["identity_policy"],
+        "http":example["http"],
         "installation":{"instance":c.inputs.installation.instance_id,"tenant":c.tenant.to_string(),
           "management_tenant":management,"target":c.inputs.installation.target,"lineage":c.inputs.installation.lineage,"epoch":1},
         "database":c.inputs.database("da_access"),"identity_database":c.inputs.database("da_identity_runtime"),

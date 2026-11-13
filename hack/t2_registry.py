@@ -258,7 +258,7 @@ MODULES = {
                 'crates/http-contract/*', 'crates/management-http/src/identity_contract.rs',
                 'apps/server/src/assembly/device_access/*', 'apps/server/tests/foundation/authorization.rs', 'apps/server/tests/foundation/identity_capacity.rs')),
     'foundation.account_recovery': dict(
-        prefix='installation::backup::accounts::tests::', profiles=('account_recovery',),
+        prefix='installation::backup::accounts::t2::', profiles=('account_recovery',),
         inputs=('apps/server/src/installation/backup/accounts.rs', 'apps/server/src/identity/*', 'crates/authorization-service/src/*')),
     'foundation.audit': dict(
         prefix='foundation_t2::audit::', profiles=('audit', 'audit_plain', 'audit_ledger'),

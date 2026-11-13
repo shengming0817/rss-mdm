@@ -20,11 +20,11 @@ fn policy() -> Result<rss_reconcile::Policy> {
     )?)
 }
 pub(super) async fn wake(h: &Harness, collection: bool, policy: Uuid) -> Result<()> {
-    let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+    let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         h.a.resources.storage.runtime.clone(),
         h.c.audit.binding(),
         script::transaction::deadline(),
-    )
+    ))
     .await?;
     script::transaction::inspect(
         &h.a.resources.storage.runtime,

@@ -353,18 +353,17 @@ async fn administrator_for(
     };
     sqlx::query("INSERT INTO rss_da.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3,1,$4)").bind(c.tenant.to_string()).bind(&c.inputs.installation.instance_id).bind(Uuid::new_v4()).bind(serde_json::to_value(rule)?).execute(&mut *tx).await?;
     tx.commit().await?;
-    let issued = c
-        .authority
-        .login_local_bearer(
-            c.sessions.binding(),
-            LoginKey::parse(&login)?,
-            Password::new(password.into())?,
-            rss_identity_postgres::AttemptSource::parse("da-foundation")?,
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                Duration::from_secs(10),
-            ),
-        )
-        .await?;
+    // This SDK future is nested inside the complete protocol proof; keep its state on the heap.
+    let issued = Box::pin(c.authority.login_local_bearer(
+        c.sessions.binding(),
+        LoginKey::parse(&login)?,
+        Password::new(password.into())?,
+        rss_identity_postgres::AttemptSource::parse("da-foundation")?,
+        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+            Duration::from_secs(10),
+        ),
+    ))
+    .await?;
     kdf.close();
     kdf.wait_closed().await;
     Ok(issued.secret().expose().into())

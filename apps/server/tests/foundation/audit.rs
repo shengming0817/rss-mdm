@@ -197,7 +197,7 @@ async fn large_audit_records_and_complete_query_pages_share_current_capacity() -
             .len(),
             2
         );
-        let one_document: i64 = sqlx::query_scalar("SELECT max(octet_length(document::text)) FROM mdm_timeline.facts WHERE tenant_id=$1::uuid AND action='capacity_read'")
+        let one_document: i64 = sqlx::query_scalar("SELECT max(octet_length(document::text))::bigint FROM mdm_timeline.facts WHERE tenant_id=$1::uuid AND action='capacity_read'")
             .bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
         let timeline = c.database.timeline(
             store.clone(),

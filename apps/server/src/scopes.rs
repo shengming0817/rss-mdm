@@ -38,14 +38,17 @@ async fn bind(
                     rss_mdm_scope_service::Failure::Admission,
                 ))
             })?;
-    let reconcile_messaging =
-        rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), audit.binding(), deadline)
-            .await
-            .map_err(|_| {
-                crate::Error::Scope(rss_mdm_scope_service::Error::Unavailable(
-                    rss_mdm_scope_service::Failure::Admission,
-                ))
-            })?;
+    let reconcile_messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
+        runtime.clone(),
+        audit.binding(),
+        deadline,
+    ))
+    .await
+    .map_err(|_| {
+        crate::Error::Scope(rss_mdm_scope_service::Error::Unavailable(
+            rss_mdm_scope_service::Failure::Admission,
+        ))
+    })?;
     let dependencies = rss_mdm_scope_service::Dependencies {
         objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
         groups: Arc::new(groups),

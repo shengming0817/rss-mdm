@@ -112,11 +112,11 @@ impl Transactions {
                 |_| Err(Error::CommitUnknown),
                 |_| Err(Error::Unavailable(Failure::PolicyAdmission)),
             )?;
-        let reconcile_messaging = rss_reconcile_postgres::PgMessagingStore::new(
+        let reconcile_messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
             audit_store.binding(),
             deadline(),
-        )
+        ))
         .await
         .map_err(|_| Error::Unavailable(Failure::PolicyAdmission))?;
         Ok(Self {

@@ -168,8 +168,7 @@ impl Diagnostics {
         let receipt = if da_owner {
             self.da_receipt(l, p).await
         } else {
-            self.original(l.auth, l.audit, l.owner, l.operation, l.query)
-                .await
+            Box::pin(self.original(l.auth, l.audit, l.owner, l.operation, l.query)).await
         };
         let original = section(receipt)?;
         let execution = if da_owner && l.owner == O::DeviceAccess {
@@ -477,7 +476,9 @@ impl Diagnostics {
                     .await
                     .map_err(Into::into)
             }
-            O::Group => s.groups.operation_receipt(p, id).await.map_err(Into::into),
+            O::Group => Box::pin(s.groups.operation_receipt(p, id))
+                .await
+                .map_err(Into::into),
             O::Scope => s.scopes.operation_receipt(p, id).await.map_err(Into::into),
             O::Compliance => s
                 .compliance

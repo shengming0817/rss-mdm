@@ -38,11 +38,11 @@ impl Fixture {
             rss_mdm_inventory_service::transaction::deadline(),
         )
         .await?;
-        let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+        let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             owner.runtime.clone(),
             c.audit.binding(),
             rss_mdm_inventory_service::transaction::deadline(),
-        )
+        ))
         .await?;
         let tenant = c.tenant;
         owner

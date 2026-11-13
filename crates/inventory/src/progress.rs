@@ -3,7 +3,7 @@ use crate::{CollectedValue, CollectionDefinition, FieldKey, Invalid, Result};
 use rss_observation::{Body, Change, Id};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Quality of one expected field in one frozen collection.
 #[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,6 +247,18 @@ impl CollectionProgress {
     }
     /// Retain typed output only when valid; record bounded invalid quality otherwise.
     pub fn observe_value(&mut self, key: FieldKey, value: CollectedValue, at: i64) -> Result<()> {
+        let total = self.value_bytes()?;
+        self.observe_value_bounded(key, value, at, total)
+            .map(|_| ())
+    }
+    // Bulk admission keeps the same accounting without repeatedly encoding prior values.
+    fn observe_value_bounded(
+        &mut self,
+        key: FieldKey,
+        value: CollectedValue,
+        at: i64,
+        total: usize,
+    ) -> Result<usize> {
         rss_contract::Timepoint::try_from(at).map_err(|_| Invalid::Time)?;
         if self.0.finished {
             return Err(Invalid::State);
@@ -261,12 +273,7 @@ impl CollectionProgress {
             .map(|v| v.encode(definition))
             .transpose()?
             .map_or(0, |v| v.len());
-        if self
-            .value_bytes()?
-            .saturating_sub(previous)
-            .saturating_add(bytes.len())
-            > 16 * 1024 * 1024
-        {
+        if total.saturating_sub(previous).saturating_add(bytes.len()) > 16 * 1024 * 1024 {
             return Err(Invalid::Value);
         }
         let digest = format!("{:x}", Sha256::digest(&bytes));
@@ -287,7 +294,9 @@ impl CollectionProgress {
         f.digest = Some(digest);
         f.received_at = Some(at);
         f.quality = quality(f, false);
-        Ok(())
+        Ok(total
+            .saturating_sub(previous)
+            .saturating_add(if f.value.is_some() { bytes.len() } else { 0 }))
     }
     /// Attach a closed native reason without changing acceptance or value quality.
     pub fn reason(&mut self, field: FieldKey, reason: &str) -> Result<()> {
@@ -480,11 +489,12 @@ impl CollectionProgress {
             result.0.definition.field(*key)?;
         }
         let keys: Vec<_> = result.0.fields.keys().copied().collect();
+        let mut total = 0usize;
         for key in keys {
             match values.remove(&key).unwrap_or(NativeValue::Missing) {
                 NativeValue::Value(value) => {
-                    match result.observe_value(key, value, at) {
-                        Ok(()) => (),
+                    match result.observe_value_bounded(key, value, at, total) {
+                        Ok(next) => total = next,
                         Err(Invalid::Value) => {
                             result.observe_invalid(key, at)?;
                             continue;
@@ -496,7 +506,14 @@ impl CollectionProgress {
                     f.quality = quality(f, false);
                 }
                 NativeValue::InvalidItems { items, values } => {
-                    result.observe_invalid_items(key, items, values, at)?
+                    result.observe_invalid_items(key, items, values, at)?;
+                    let bytes = result.0.fields[&key]
+                        .value
+                        .as_ref()
+                        .ok_or(Invalid::Evidence)?
+                        .encode(result.0.definition.field(key)?)?
+                        .len();
+                    total = total.checked_add(bytes).ok_or(Invalid::Value)?;
                 }
                 other => {
                     rss_contract::Timepoint::try_from(at).map_err(|_| Invalid::Time)?;
@@ -527,6 +544,7 @@ impl CollectionProgress {
     /// Read quality from an already verified report; full absence and explicit deletes remain distinct from failure.
     pub fn reported(definition: CollectionDefinition, body: &Body, at: i64) -> Result<Self> {
         let mut values = BTreeMap::new();
+        let mut deleted = BTreeSet::new();
         for change in body.changes() {
             let key = FieldKey::parse(change.key().as_str())?;
             let field = definition.field(key)?;
@@ -535,7 +553,10 @@ impl CollectionProgress {
                     key,
                     match change.value() {
                         Some(bytes) => NativeValue::Value(CollectedValue::decode(field, bytes)?),
-                        None => NativeValue::Missing,
+                        None => {
+                            deleted.insert(key);
+                            NativeValue::Missing
+                        }
                     },
                 )
                 .is_some()
@@ -549,18 +570,12 @@ impl CollectionProgress {
                 .map(|f| (f.key, NativeValue::Failed))
                 .collect();
         }
+        let included: BTreeSet<_> = values.keys().copied().collect();
         let mut result = Self::native(definition, values, at)?;
         result.0.complete_coverage = matches!(body, Body::Snapshot(_));
         for (key, f) in &mut result.0.fields {
-            if (matches!(body, Body::Snapshot(_))
-                && !body
-                    .changes()
-                    .iter()
-                    .any(|c| c.key().as_str() == key.as_str()))
-                || body
-                    .changes()
-                    .iter()
-                    .any(|c| c.key().as_str() == key.as_str() && c.value().is_none())
+            if (matches!(body, Body::Snapshot(_)) && !included.contains(key))
+                || deleted.contains(key)
             {
                 f.terminal = Some(Quality::Deleted);
                 f.quality = Quality::Deleted;

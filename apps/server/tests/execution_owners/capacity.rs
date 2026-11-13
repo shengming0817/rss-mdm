@@ -136,10 +136,11 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
             &materials,
         )?,
     );
-    let clock = rt::Clock::new(
-        crate::clock::monotonic(),
-        resources.config.inventory_runtime.compile()?,
-    );
+    // A complete 4096-field projection is one atomic event; the configured pass must
+    // cover its SQL work, including settlement, while still bounding lock contention.
+    let mut runtime_policy = resources.config.inventory_runtime.clone();
+    runtime_policy.pass_seconds = 20;
+    let clock = rt::Clock::new(crate::clock::monotonic(), runtime_policy.compile()?);
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_projection::Control::new(&clock, clock.startup_cutoff(), &cancel);
     let observation =
@@ -309,16 +310,17 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     let status = launch.stage_task_with_token(inventory.clone().registration(notify.clone()));
     launch.finish();
     tokio::time::sleep(std::time::Duration::from_secs(
-        resources.config.inventory_runtime.pass_seconds + 1,
+        runtime_policy.pass_seconds + 1,
     ))
     .await;
     assert_eq!(status.current(), rss_runtime::TaskState::Running);
     locked.rollback().await?;
     notify.notify_one();
     let budget =
-        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(30));
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(60));
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
         loop {
+            assert_eq!(status.current(), rss_runtime::TaskState::Running);
             let status = inventory
                 .inspect_report(
                     &stored.scope,

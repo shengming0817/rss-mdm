@@ -193,11 +193,11 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
         Arc::new(rt::Readiness::default()),
     ));
     let owner = planning::owner(&c, "mdm_inventory_runtime").await?;
-    let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+    let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         owner.runtime.clone(),
         c.audit.binding(),
         rss_mdm_inventory_service::transaction::deadline(),
-    )
+    ))
     .await?;
     let assets = Arc::new(a::AssetService::new(a::AssetDependencies {
         inventory,

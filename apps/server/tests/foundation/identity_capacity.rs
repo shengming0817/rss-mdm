@@ -24,7 +24,7 @@ async fn actor(
 #[ignore = "T2: nondefault production authentication policy controls real PG admission and HTTP Retry-After"]
 async fn configured_source_window_reaches_http_admission() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
-    let account = c.account(&[]).await?;
+    let account = c.account(&[Permission::InventoryRead]).await?;
     let mut policy = crate::identity::policy::RuntimePolicy::installation();
     policy.authentication.source.limit = 2;
     policy.authentication.source.seconds = 90;
