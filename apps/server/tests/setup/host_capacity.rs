@@ -65,13 +65,21 @@ fn capacity_checks_each_hosts_physical_pools_before_publication() {
             .is_err()
     );
     assert!(Capacity::new(1024, u32::MAX).is_err());
-    let journal = Journal::open(&root.join("installation")).unwrap();
-    journal.save("runtime.json", &value).unwrap();
-    assert!(capacity.project(&mut content).is_err());
-    assert_eq!(
-        journal.load::<Value>("runtime.json").unwrap().unwrap(),
-        value
+    let mut deferred = value.clone();
+    deferred["content"] = Value::Null;
+    assert!(
+        capacity
+            .preflight(&deferred, &super::super::install::ContentStorage::Volume)
+            .is_ok()
     );
+    assert!(
+        capacity
+            .preflight(&deferred, &super::super::install::ContentStorage::S3)
+            .is_err()
+    );
+    assert!(deferred["content"].is_null());
+    deferred["content"] = super::super::application::s3_content(7);
+    assert!(capacity.project(&mut deferred).is_err());
 }
 
 #[test]

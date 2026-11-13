@@ -167,7 +167,7 @@ Apple 原生 MDM 纳入完整部署清单：通过 channels 配置保存 Apple �
 扩容按以下顺序执行；每一步失败都保留同一维护输入和原租户开通 operation，修复原因后重试：
 
 1. 保留现有数据库和 state/content 卷，停止主及附加宿主的 server 和 maintenance。为所有声明宿主设置足够的 `MDM_PG_MAX_CONNECTIONS`，通过正式 Compose 重建 PostgreSQL 并等待健康。只修改环境文件尚未改变实际数据库容量。
-2. 执行 `prepare-hosts --config /var/lib/rss-mdm/maintenance.json`。该命令先校验全部已有和待启动宿主的实际配置；容量不足会拒绝，保留原运行文件、槽位和开通回执。成功准备会为容量发生变化的宿主输出新 revision 和材料摘要。
+2. 执行 `prepare-hosts --config /var/lib/rss-mdm/maintenance.json`。该命令先校验全部已有和待启动宿主的实际配置；显式 S3 安装在连接核验完成前也预留 Content 物理池，避免同轮核验使预算失效。容量不足会拒绝，保留原运行文件、槽位和开通回执。成功准备会为容量发生变化的宿主输出新 revision 和材料摘要。
 3. 重建所有受影响 server，并恢复 maintenance。新增宿主使用下述独立 Compose；导出网关后执行配置检查和 reload。
 4. 再次使用同一维护输入执行 `prepare-hosts`，核对每个宿主 application 的 requested revision/material digest 与实际 HTTPS 观察一致且无 failure。仅账户创建、运行文件导出、旧进程的 readyz 或历史 enabled 均不证明本次配置已生效。
 

@@ -12,6 +12,10 @@ use sqlx::{Connection, PgConnection};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+pub(super) fn s3_content(revision: i64) -> Value {
+    json!({"storage":{"kind":"s3","revision":revision,"max_concurrent":8,"connect_seconds":5},"imports":{},"max_artifact_bytes":8589934592u64,"max_temporary_bytes":17179869184u64,"max_uploads":8,"transfer_seconds":300,"retention_seconds":86400,"max_bundle_entries":4096,"max_expansion_ratio":100})
+}
+
 async fn desired(c: &mut PgConnection, tenant: Uuid, runtime: &mut Value) -> Result<()> {
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
@@ -30,7 +34,7 @@ async fn desired(c: &mut PgConnection, tenant: Uuid, runtime: &mut Value) -> Res
         let initial:Option<i64>=sqlx::query_scalar("SELECT h.revision FROM mdm_content_connections.heads h JOIN mdm_content_connections.versions v USING(tenant_id,revision) WHERE h.tenant_id=$1 AND v.state='qualified' AND NOT v.revoked AND NOT EXISTS(SELECT 1 FROM mdm_content.settings WHERE tenant_id=$1)")
             .bind(tenant).fetch_optional(&mut *tx).await.map_err(|_|Error::Storage)?;
         if let Some(revision) = initial {
-            runtime["content"] = json!({"storage":{"kind":"s3","revision":revision,"max_concurrent":8,"connect_seconds":5},"imports":{},"max_artifact_bytes":8589934592u64,"max_temporary_bytes":17179869184u64,"max_uploads":8,"transfer_seconds":300,"retention_seconds":86400,"max_bundle_entries":4096,"max_expansion_ratio":100});
+            runtime["content"] = s3_content(revision);
         }
     }
     if runtime["native_protocols"]["windows"].is_object() {
@@ -104,7 +108,7 @@ pub(super) async fn preflight(
             return Err(Error::Conflict);
         }
         desired(c, progress.tenant_id, &mut runtime).await?;
-        capacity.project(&mut runtime)?;
+        capacity.preflight(&runtime, &input.content_storage)?;
     }
     Ok(())
 }
@@ -158,7 +162,6 @@ pub(super) async fn reconcile(
             return Err(Error::Conflict);
         }
         let before = fingerprint(&runtime)?;
-        capacity.project(&mut runtime)?;
         desired(c, progress.tenant_id, &mut runtime).await?;
         capacity.project(&mut runtime)?;
         bind_change(&mut runtime, &before)?;

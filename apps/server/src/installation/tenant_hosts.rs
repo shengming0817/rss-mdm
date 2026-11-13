@@ -37,6 +37,7 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
         input.additional_hosts.len(),
         super::postgres::connection_budget(&mut c).await?,
     )?;
+    capacity.preflight(&runtime, &input.content_storage)?;
     capacity.project(&mut runtime)?;
     let mut reservations: BTreeMap<Uuid, usize> =
         journal.load("host-reservations.json")?.unwrap_or_default();
@@ -67,13 +68,13 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
         });
         if let Some(index) = index {
             planned.insert(progress.host_id, index);
-            let mut candidate = additional_runtime(
+            let candidate = additional_runtime(
                 &input.directory,
                 &runtime,
                 &input.additional_hosts[index],
                 &progress,
             )?;
-            capacity.project(&mut candidate)?;
+            capacity.preflight(&candidate, &input.content_storage)?;
         }
     }
     save_slots(input, &journal)?;
@@ -141,6 +142,19 @@ impl Capacity {
             serde_json::from_value(runtime.clone()).map_err(|_| Error::Input)?;
         config.compile().map_err(|_| Error::Input)?;
         Ok(())
+    }
+    pub(super) fn preflight(
+        self,
+        runtime: &Value,
+        storage: &super::install::ContentStorage,
+    ) -> Result<()> {
+        let mut candidate = runtime.clone();
+        // S3 bootstrap defers credentials, not its declared physical connection pools.
+        // Qualification in this same command must not invalidate the allocation.
+        if candidate["content"].is_null() && matches!(storage, super::install::ContentStorage::S3) {
+            candidate["content"] = super::application::s3_content(1);
+        }
+        self.project(&mut candidate)
     }
     pub(super) fn require_current(self, runtime: &Value) -> Result<()> {
         if runtime["background"]["database_host_instances"] != serde_json::json!(self.instances)
@@ -216,7 +230,6 @@ pub(super) async fn activate(
     let binding: super::host::Binding =
         serde_json::from_value(runtime["runtime_binding"].clone()).map_err(|_| Error::Input)?;
     if binding.host_id != progress.host_id
-        || binding.operation_id != progress.operation_id
         || runtime["identity"]["tenant_id"].as_str()
             != Some(progress.tenant_id.to_string().as_str())
     {

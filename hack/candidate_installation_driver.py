@@ -165,14 +165,13 @@ def qualify(owner,origin,other_origin,port,second_backend):
     business.login(first['tenantId'],'administrator',(owner.root/'inputs/administrator-password').read_text().strip())
     status,grants=business.call('GET','/api/v1/authorization')
     check(status==200,'real business authorization')
-    owner.product('prepare-hosts')
     platform=Browser(origin,ca,port)
     # The public host config supplies the actual reserved management tenant.
     status,public=business.call('GET','/api/v1/mdm-host/config.json')
     check(status==200,'public management locator')
     platform.login(public['managementTenant'],'platform',(owner.root/'inputs/platform-password').read_text().strip())
     status,observed=platform.call('GET','/api/v1/tenant-administration/provisionings/'+first['operationId'])
-    check(status==200 and observed['result']['phase']=='enabled','actual first host observation')
+    check(status==200 and observed['result']['phase']=='host_pending' and observed['result']['application'] is None,'unobserved primary before capacity change')
     owner.compose('run','--rm','init')
     repeated=json.loads(owner.read('/var/lib/rss-mdm/installation/installation.json'))['receipt']
     check(first==repeated,'stable seed replay')
@@ -208,7 +207,9 @@ def qualify(owner,origin,other_origin,port,second_backend):
         check(value['background']['database_connection_budget']>156,'actual expanded PostgreSQL budget')
     check(primary_runtime['runtime_binding']['revision']>prior['revision'],'capacity has a new runtime version')
     status,pending=platform.call('GET','/api/v1/tenant-administration/provisionings/'+first['operationId'])
-    check(status==200 and pending['result']['application']['observation']['failure'] is not None,'old process cannot apply new capacity')
+    check(status==200 and pending['result']['application']['requestedRevision']==primary_runtime['runtime_binding']['revision'],'pending primary keeps capacity request')
+    pending_observation=pending['result']['application']['observation']
+    check(pending_observation is None or pending_observation['failure'] is not None,'old process cannot apply new capacity')
     owner.compose('up','-d','--no-deps','--force-recreate','server')
     until(lambda:business.call('GET','/readyz')[0]==200)
     primary_observation=observe_runtime(business,primary_runtime)
@@ -229,6 +230,8 @@ def qualify(owner,origin,other_origin,port,second_backend):
         check(status in (401,403),'platform cannot access business resources')
         owner.product('prepare-hosts',maintenance)
         observe_runtime(peer,secondary_runtime)
+        status,primary_applied=platform.call('GET','/api/v1/tenant-administration/provisionings/'+first['operationId'])
+        check(status==200 and primary_applied['result']['phase']=='enabled' and primary_applied['result']['blocked'] is None,'pending primary resumes with expanded capacity')
         status,observed=platform.call('GET','/api/v1/tenant-administration/provisionings/'+operation)
         check(status==200 and observed['result']['phase']=='enabled','actual second host observation')
         status,replayed=platform.call('POST','/api/v1/tenant-administration/provisionings',
