@@ -52,31 +52,14 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
     super::application::preflight(input, &mut c, capacity).await?;
     let pending: Vec<Value> = sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='host_pending' ORDER BY operation_id LIMIT 32")
         .fetch_all(&mut c).await.map_err(|_|Error::Storage)?;
-    let mut planned = reservations.clone();
-    for original in &pending {
-        let receipt: Receipt =
-            serde_json::from_value(original.clone()).map_err(|_| Error::Corrupt)?;
-        let ReceiptResult::Provisioning(progress) = receipt.result else {
-            return Err(Error::Corrupt);
-        };
-        if progress.host_id == base.runtime_binding.host_id {
-            continue;
-        }
-        let index = planned.get(&progress.host_id).copied().or_else(|| {
-            (0..input.additional_hosts.len())
-                .find(|index| !planned.values().any(|used| used == index))
-        });
-        if let Some(index) = index {
-            planned.insert(progress.host_id, index);
-            let candidate = additional_runtime(
-                &input.directory,
-                &runtime,
-                &input.additional_hosts[index],
-                &progress,
-            )?;
-            capacity.preflight(&candidate, &input.content_storage)?;
-        }
-    }
+    preflight_pending(
+        input,
+        &runtime,
+        &pending,
+        &reservations,
+        capacity,
+        base.runtime_binding.host_id,
+    )?;
     save_slots(input, &journal)?;
     journal.save("runtime.json", &runtime)?;
     super::providers::reconcile::storage(input, &compiled.config, &mut c).await?;
@@ -101,6 +84,42 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
     completed += super::application::reconcile(input, &reservations, &mut c, capacity).await?;
     c.close().await.map_err(|_| Error::Storage)?;
     Ok(completed)
+}
+
+fn preflight_pending(
+    input: &Input,
+    runtime: &Value,
+    pending: &[Value],
+    reservations: &BTreeMap<Uuid, usize>,
+    capacity: Capacity,
+    primary: Uuid,
+) -> Result<()> {
+    let mut planned = reservations.clone();
+    for original in pending {
+        let receipt: Receipt =
+            serde_json::from_value(original.clone()).map_err(|_| Error::Corrupt)?;
+        let ReceiptResult::Provisioning(progress) = receipt.result else {
+            return Err(Error::Corrupt);
+        };
+        if progress.host_id == primary {
+            continue;
+        }
+        let index = planned.get(&progress.host_id).copied().or_else(|| {
+            (0..input.additional_hosts.len())
+                .find(|index| !planned.values().any(|used| used == index))
+        });
+        if let Some(index) = index {
+            planned.insert(progress.host_id, index);
+            let candidate = additional_runtime(
+                &input.directory,
+                runtime,
+                &input.additional_hosts[index],
+                &progress,
+            )?;
+            capacity.preflight(&candidate, &input.content_storage)?;
+        }
+    }
+    Ok(())
 }
 
 /// One allocation for every tenant process sharing the product database.
