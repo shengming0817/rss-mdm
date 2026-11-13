@@ -64,6 +64,51 @@ pub(super) fn fingerprint(runtime: &Value) -> Result<String> {
         Sha256::digest(serde_json::to_vec(&value).map_err(|_| Error::Corrupt)?)
     ))
 }
+pub(super) fn bind_change(runtime: &mut Value, before: &str) -> Result<()> {
+    let digest = fingerprint(runtime)?;
+    if digest != before {
+        let revision = runtime["runtime_binding"]["revision"]
+            .as_u64()
+            .and_then(|r| r.checked_add(1))
+            .filter(|r| *r <= i64::MAX as u64)
+            .ok_or(Error::Corrupt)?;
+        let host = runtime["runtime_binding"]["host_id"].clone();
+        runtime["runtime_binding"] = json!({"host_id":host,"operation_id":Uuid::new_v4(),"revision":revision,"material_digest":digest});
+    }
+    Ok(())
+}
+
+pub(super) async fn preflight(
+    input: &Input,
+    c: &mut PgConnection,
+    capacity: super::tenant_hosts::Capacity,
+) -> Result<()> {
+    let records: Vec<Value> = sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND jsonb_typeof(receipt->'result'->'application')='object'")
+        .fetch_all(&mut *c).await.map_err(|_| Error::Storage)?;
+    for record in records {
+        let receipt: Receipt = serde_json::from_value(record).map_err(|_| Error::Corrupt)?;
+        let ReceiptResult::Provisioning(progress) = receipt.result else {
+            return Err(Error::Corrupt);
+        };
+        let owner = Journal::open(
+            &input
+                .directory
+                .join(format!("rss-mdm-{}", progress.host_id.simple())),
+        )?;
+        let mut runtime: Value = owner
+            .load("requested-runtime.json")?
+            .ok_or(Error::Corrupt)?;
+        if runtime["runtime_binding"]["host_id"] != json!(progress.host_id)
+            || runtime["identity"]["tenant_id"] != json!(progress.tenant_id)
+        {
+            return Err(Error::Conflict);
+        }
+        desired(c, progress.tenant_id, &mut runtime).await?;
+        capacity.project(&mut runtime)?;
+    }
+    Ok(())
+}
+
 pub(super) async fn save(
     c: &mut PgConnection,
     receipt: &Receipt,
@@ -80,7 +125,7 @@ pub(super) async fn reconcile(
     input: &Input,
     slots: &BTreeMap<Uuid, usize>,
     c: &mut PgConnection,
-    connection_budget: u32,
+    capacity: super::tenant_hosts::Capacity,
 ) -> Result<usize> {
     let receipts: Vec<Value> = sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND (receipt->'result'->>'phase'='enabled' OR (receipt->'result'->>'phase'='host_pending' AND jsonb_typeof(receipt->'result'->'application')='object')) ORDER BY operation_id").fetch_all(&mut *c).await.map_err(|_|Error::Storage)?;
     let mut completed = 0;
@@ -113,19 +158,12 @@ pub(super) async fn reconcile(
             return Err(Error::Conflict);
         }
         let before = fingerprint(&runtime)?;
-        runtime["background"]["database_connection_budget"] = json!(connection_budget);
+        capacity.project(&mut runtime)?;
         desired(c, progress.tenant_id, &mut runtime).await?;
-        let digest = fingerprint(&runtime)?;
-        if digest != before {
-            let revision = runtime["runtime_binding"]["revision"]
-                .as_u64()
-                .and_then(|r| r.checked_add(1))
-                .filter(|r| *r <= i64::MAX as u64)
-                .ok_or(Error::Corrupt)?;
-            runtime["runtime_binding"] = json!({"host_id":progress.host_id,"operation_id":Uuid::new_v4(),"revision":revision,"material_digest":digest});
-            // 稳定应用操作先落盘；崩溃后不会生成另一个请求身份。
-            journal.save("requested-runtime.json", &runtime)?;
-        }
+        capacity.project(&mut runtime)?;
+        bind_change(&mut runtime, &before)?;
+        // Persist the complete request before receipts/files; retries reuse this identity.
+        journal.save("requested-runtime.json", &runtime)?;
         let binding: super::host::Binding =
             serde_json::from_value(runtime["runtime_binding"].clone())
                 .map_err(|_| Error::Corrupt)?;

@@ -399,6 +399,7 @@ pub async fn run(request: Request) -> Result<Receipt> {
     if let Some(receipt) = completed(&root, &journal, request.operation_id)? {
         return Ok(receipt);
     }
+    let capacity = super::tenant_hosts::Capacity::current(input, &root)?;
     let base: Value = root.load("runtime.json")?.ok_or(Error::Corrupt)?;
     let base: crate::config::Config = serde_json::from_value(base).map_err(|_| Error::Corrupt)?;
     let mut c = sqlx::PgConnection::connect_with(
@@ -465,6 +466,7 @@ pub async fn run(request: Request) -> Result<Receipt> {
         candidate
     } else {
         let mut runtime: Value = host.load("requested-runtime.json")?.ok_or(Error::Corrupt)?;
+        capacity.require_current(&runtime)?;
         if runtime["runtime_binding"]["revision"].as_u64() != Some(request.expected_revision)
             || runtime["runtime_binding"]["host_id"] != json!(request.host_id)
             || runtime["identity"]["tenant_id"] != json!(tenant)
@@ -492,6 +494,7 @@ pub async fn run(request: Request) -> Result<Receipt> {
         )?;
         runtime
     };
+    capacity.require_current(&candidate)?;
     let binding: super::host::Binding =
         serde_json::from_value(candidate["runtime_binding"].clone()).map_err(|_| Error::Corrupt)?;
     let mut result = Receipt {

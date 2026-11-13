@@ -395,6 +395,9 @@ async fn resume(input: &Input, journal: &Journal, mut saved: Saved) -> Result<Re
         ContentStorage::S3 => serde_json::Value::Null,
     };
     let _: crate::config::Config = serde_json::from_value(runtime.clone()).map_err(invalid)?;
+    super::tenant_hosts::Capacity::new(input.additional_hosts.len(), connection_budget)?
+        .project(&mut runtime)?;
+    super::tenant_hosts::save_slots(input, journal)?;
     journal.save("runtime.json", &runtime)?;
     super::runtime_files::prepare(&input.directory, &input.deployment, &runtime).await?;
     publish_progress(input, &saved, true, None).await?;
