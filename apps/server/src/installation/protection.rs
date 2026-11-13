@@ -290,6 +290,7 @@ async fn reserve_rotation(
                 .map(|(_, w)| w)
         })
         .transpose()?;
+    let capacity = super::tenant_hosts::Capacity::current(input, journal)?;
     let slots: BTreeMap<Uuid, usize> = journal.load("host-reservations.json")?.unwrap_or_default();
     let records:Vec<Value>=sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='enabled' ORDER BY operation_id").fetch_all(&mut *c).await.map_err(|_|Error::Storage)?;
     let mut hosts = Vec::new();
@@ -306,6 +307,7 @@ async fn reserve_rotation(
                 .join(format!("rss-mdm-{}", progress.host_id.simple())),
         )?;
         let runtime: Value = root.load("requested-runtime.json")?.ok_or(Error::Corrupt)?;
+        capacity.require_current(&runtime)?;
         // 存量租户可有不同旧钥；保留各自比较身份与历史读钥。
         let Some(original) = runtime
             .pointer(request.purpose.path())

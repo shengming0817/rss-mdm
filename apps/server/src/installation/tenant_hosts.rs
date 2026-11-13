@@ -26,31 +26,46 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
     validate_slots(input)?;
     let journal = Journal::open(&input.directory)?;
     admit_reconciliation(&journal).await?;
-    for (index, slot) in input.additional_hosts.iter().enumerate() {
-        journal.secret(
-            &format!("host-slot-{index}.json"),
-            &serde_json::to_vec(slot).map_err(|_| Error::Input)?,
-        )?;
-    }
     let mut runtime: Value = journal.load("runtime.json")?.ok_or(Error::Corrupt)?;
     let decoded: crate::config::Config =
         serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
     let compiled = decoded.compile().map_err(|_| Error::Corrupt)?;
     let base = &compiled.config;
-    if (base.background.database_host_instances as usize) < input.additional_hosts.len() + 1 {
-        return Err(Error::Input);
-    }
+    validate_declaration(input, &journal, base.background.database_host_instances)?;
     let mut c = operator_connection(input, base).await?;
-    let connection_budget = super::postgres::connection_budget(&mut c).await?;
-    runtime["background"]["database_connection_budget"] = serde_json::json!(connection_budget);
+    let capacity = Capacity::new(
+        input.additional_hosts.len(),
+        super::postgres::connection_budget(&mut c).await?,
+    )?;
+    capacity.preflight(&runtime, &input.content_storage)?;
+    capacity.project(&mut runtime)?;
+    let mut reservations: BTreeMap<Uuid, usize> =
+        journal.load("host-reservations.json")?.unwrap_or_default();
+    if reservations
+        .values()
+        .any(|index| *index >= input.additional_hosts.len())
+    {
+        return Err(Error::Conflict);
+    }
+    // Validate every existing host before publishing any part of the new allocation.
+    // Optional modules have different physical pools; the primary alone is insufficient.
+    super::application::preflight(input, &runtime, &reservations, &mut c, capacity).await?;
+    let pending: Vec<Value> = sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='host_pending' ORDER BY operation_id LIMIT 32")
+        .fetch_all(&mut c).await.map_err(|_|Error::Storage)?;
+    preflight_pending(
+        input,
+        &runtime,
+        &pending,
+        &reservations,
+        capacity,
+        base.runtime_binding.host_id,
+    )?;
+    save_slots(input, &journal)?;
+    journal.save("runtime.json", &runtime)?;
     super::providers::reconcile::storage(input, &compiled.config, &mut c).await?;
     super::providers::reconcile::wns(input, &mut c).await?;
     super::providers::mail::reconcile(input, &mut c).await?;
     super::providers::webhook::reconcile(input, &mut c).await?;
-    let mut reservations: BTreeMap<Uuid, usize> =
-        journal.load("host-reservations.json")?.unwrap_or_default();
-    let pending: Vec<Value> = sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='host_pending' ORDER BY operation_id LIMIT 32")
-        .fetch_all(&mut c).await.map_err(|_|Error::Storage)?;
     let mut completed = 0;
     for original in pending {
         completed += usize::from(
@@ -61,19 +76,147 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
                 &mut reservations,
                 &mut c,
                 original,
+                capacity,
             )
             .await?,
         );
     }
-    completed +=
-        super::application::reconcile(input, &reservations, &mut c, connection_budget).await?;
+    completed += super::application::reconcile(input, &reservations, &mut c, capacity).await?;
     c.close().await.map_err(|_| Error::Storage)?;
     Ok(completed)
+}
+
+fn preflight_pending(
+    input: &Input,
+    runtime: &Value,
+    pending: &[Value],
+    reservations: &BTreeMap<Uuid, usize>,
+    capacity: Capacity,
+    primary: Uuid,
+) -> Result<()> {
+    let mut planned = reservations.clone();
+    for original in pending {
+        let receipt: Receipt =
+            serde_json::from_value(original.clone()).map_err(|_| Error::Corrupt)?;
+        let ReceiptResult::Provisioning(progress) = receipt.result else {
+            return Err(Error::Corrupt);
+        };
+        if progress.host_id == primary {
+            continue;
+        }
+        let index = planned.get(&progress.host_id).copied().or_else(|| {
+            (0..input.additional_hosts.len())
+                .find(|index| !planned.values().any(|used| used == index))
+        });
+        if let Some(index) = index {
+            planned.insert(progress.host_id, index);
+            let candidate = additional_runtime(
+                &input.directory,
+                runtime,
+                &input.additional_hosts[index],
+                &progress,
+            )?;
+            capacity.preflight(&candidate, &input.content_storage)?;
+        }
+    }
+    Ok(())
+}
+
+/// One allocation for every tenant process sharing the product database.
+#[derive(Clone, Copy)]
+pub(super) struct Capacity {
+    instances: u32,
+    connections: u32,
+}
+impl Capacity {
+    pub(super) fn new(additional: usize, connections: u32) -> Result<Self> {
+        if additional > 1023 {
+            return Err(Error::Input);
+        }
+        Ok(Self {
+            instances: additional as u32 + 1,
+            connections,
+        })
+    }
+    pub(super) fn from_config(config: &crate::config::Config) -> Self {
+        Self {
+            instances: config.background.database_host_instances,
+            connections: config.background.database_connection_budget,
+        }
+    }
+    pub(super) fn current(input: &Input, journal: &Journal) -> Result<Self> {
+        let runtime: Value = journal.load("runtime.json")?.ok_or(Error::Corrupt)?;
+        let config: crate::config::Config =
+            serde_json::from_value(runtime).map_err(|_| Error::Corrupt)?;
+        validate_declaration(input, journal, config.background.database_host_instances)?;
+        if input.additional_hosts.len() + 1 != config.background.database_host_instances as usize {
+            return Err(Error::Conflict);
+        }
+        Ok(Self::from_config(&config))
+    }
+    pub(super) fn project(self, runtime: &mut Value) -> Result<()> {
+        runtime["background"]["database_host_instances"] = serde_json::json!(self.instances);
+        runtime["background"]["database_connection_budget"] = serde_json::json!(self.connections);
+        let config: crate::config::Config =
+            serde_json::from_value(runtime.clone()).map_err(|_| Error::Input)?;
+        config.compile().map_err(|_| Error::Input)?;
+        Ok(())
+    }
+    pub(super) fn preflight(
+        self,
+        runtime: &Value,
+        storage: &super::install::ContentStorage,
+    ) -> Result<()> {
+        let mut candidate = runtime.clone();
+        // S3 bootstrap defers credentials, not its declared physical connection pools.
+        // Qualification in this same command must not invalidate the allocation.
+        if candidate["content"].is_null() && matches!(storage, super::install::ContentStorage::S3) {
+            candidate["content"] = super::application::s3_content(1);
+        }
+        self.project(&mut candidate)
+    }
+    pub(super) fn require_current(self, runtime: &Value) -> Result<()> {
+        if runtime["background"]["database_host_instances"] != serde_json::json!(self.instances)
+            || runtime["background"]["database_connection_budget"]
+                != serde_json::json!(self.connections)
+        {
+            return Err(Error::Conflict);
+        }
+        Ok(())
+    }
+}
+
+fn validate_declaration(input: &Input, journal: &Journal, previous: u32) -> Result<()> {
+    if input.additional_hosts.len() + 1 < previous as usize {
+        return Err(Error::Conflict);
+    }
+    // Also inspect a partially saved append after an interrupted preparation.
+    for index in 0..1023 {
+        let Some(saved) = journal.load::<Value>(&format!("host-slot-{index}.json"))? else {
+            break;
+        };
+        let slot = input.additional_hosts.get(index).ok_or(Error::Conflict)?;
+        if serde_json::to_value(slot).map_err(|_| Error::Input)? != saved {
+            return Err(Error::Conflict);
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn save_slots(input: &Input, journal: &Journal) -> Result<()> {
+    for (index, slot) in input.additional_hosts.iter().enumerate() {
+        journal.secret(
+            &format!("host-slot-{index}.json"),
+            &serde_json::to_vec(slot).map_err(|_| Error::Input)?,
+        )?;
+    }
+    Ok(())
 }
 
 pub(super) fn validate_slots(input: &Input) -> Result<()> {
     let mut origins = std::collections::BTreeSet::from([input.origin.clone()]);
     let mut listeners = std::collections::BTreeSet::from([input.listen]);
+    let mut outputs = std::collections::BTreeSet::from([input.deployment.directory.clone()]);
     if input.additional_hosts.len() > 1023 {
         return Err(Error::Input);
     }
@@ -87,11 +230,66 @@ pub(super) fn validate_slots(input: &Input) -> Result<()> {
             || slot.listen.port() == 0
             || !listeners.insert(slot.listen)
             || !origins.insert(slot.origin.clone())
+            || !outputs.insert(slot.deployment.directory.clone())
         {
             return Err(Error::Input);
         }
     }
     Ok(())
+}
+
+fn prepare_application(
+    directory: &std::path::Path,
+    runtime: &Value,
+    progress: &mut super::model::Provisioning,
+) -> Result<()> {
+    let binding: super::host::Binding =
+        serde_json::from_value(runtime["runtime_binding"].clone()).map_err(|_| Error::Input)?;
+    if binding.host_id != progress.host_id
+        || runtime["identity"]["tenant_id"].as_str()
+            != Some(progress.tenant_id.to_string().as_str())
+    {
+        return Err(Error::Conflict);
+    }
+    // Persist the complete request before files or database receipts depend on it.
+    let owner = Journal::open(&directory.join(format!("rss-mdm-{}", progress.host_id.simple())))?;
+    owner.save("requested-runtime.json", runtime)?;
+    drop(owner);
+    progress.origin = runtime["product_origin"].as_str().map(str::to_owned);
+    progress.application = Some(Application {
+        requested_revision: binding.revision,
+        material_digest: binding.material_digest,
+        operation_id: binding.operation_id,
+        observation: None,
+    });
+    Ok(())
+}
+
+/// Recover only a pending request whose original receipt proves the exact materials.
+pub(super) fn recover_pending_runtime(
+    input: &Input,
+    base: &Value,
+    slots: &BTreeMap<Uuid, usize>,
+    progress: &super::model::Provisioning,
+) -> Result<Value> {
+    if progress.phase != Phase::HostPending {
+        return Err(Error::Corrupt);
+    }
+    let slot = slots
+        .get(&progress.host_id)
+        .and_then(|index| input.additional_hosts.get(*index))
+        .ok_or(Error::Corrupt)?;
+    let runtime = additional_runtime(&input.directory, base, slot, progress)?;
+    let binding: super::host::Binding =
+        serde_json::from_value(runtime["runtime_binding"].clone()).map_err(|_| Error::Corrupt)?;
+    let application = progress.application.as_ref().ok_or(Error::Corrupt)?;
+    if binding.operation_id != application.operation_id
+        || binding.revision != application.requested_revision
+        || binding.material_digest != application.material_digest
+    {
+        return Err(Error::Conflict);
+    }
+    Ok(runtime)
 }
 
 /// The same host completion transition is used by installation and later provisioning.
@@ -102,22 +300,7 @@ pub(super) async fn activate(
     runtime: &Value,
     progress: &mut super::model::Provisioning,
 ) -> Result<()> {
-    let binding: super::host::Binding =
-        serde_json::from_value(runtime["runtime_binding"].clone()).map_err(|_| Error::Input)?;
-    if binding.host_id != progress.host_id
-        || binding.operation_id != progress.operation_id
-        || runtime["identity"]["tenant_id"].as_str()
-            != Some(progress.tenant_id.to_string().as_str())
-    {
-        return Err(Error::Conflict);
-    }
-    progress.origin = runtime["product_origin"].as_str().map(str::to_owned);
-    progress.application = Some(Application {
-        requested_revision: binding.revision,
-        material_digest: binding.material_digest,
-        operation_id: progress.operation_id,
-        observation: None,
-    });
+    prepare_application(directory, runtime, progress)?;
     match runtime_files::apply(directory, deployment, runtime).await {
         Ok(observed) => {
             runtime_files::record_observation(c, runtime, &observed).await?;
@@ -179,6 +362,7 @@ async fn provision_pending(
     reservations: &mut BTreeMap<Uuid, usize>,
     c: &mut sqlx::PgConnection,
     original: Value,
+    capacity: Capacity,
 ) -> Result<bool> {
     let mut completed = 0;
 
@@ -206,6 +390,9 @@ async fn provision_pending(
             value = requested;
         }
         drop(owner);
+        let before = super::application::fingerprint(&value)?;
+        capacity.project(&mut value)?;
+        super::application::bind_change(&mut value, &before)?;
         let _ = activate(c, &input.directory, &input.deployment, &value, progress).await;
     } else {
         let slot = if let Some(index) = reservations.get(&progress.host_id) {
@@ -220,7 +407,10 @@ async fn provision_pending(
             reservations.insert(progress.host_id, index);
             journal.save("host-reservations.json", reservations)?;
             match additional_runtime(&input.directory, runtime, slot, progress) {
-                Ok(candidate) => {
+                Ok(mut candidate) => {
+                    let before = super::application::fingerprint(&candidate)?;
+                    capacity.project(&mut candidate)?;
+                    super::application::bind_change(&mut candidate, &before)?;
                     if activate(c, &input.directory, &slot.deployment, &candidate, progress)
                         .await
                         .is_ok()
@@ -336,3 +526,7 @@ async fn operator_connection(
     }
     Ok(c)
 }
+
+#[cfg(test)]
+#[path = "../../tests/setup/host_capacity.rs"]
+mod tests;

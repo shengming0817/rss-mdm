@@ -268,6 +268,7 @@ pub async fn restore(input: Restore) -> Result<Receipt> {
 }
 
 async fn freeze_backup(input: Request, root: &Journal, journal: &Journal) -> Result<Frozen> {
+    let capacity = super::tenant_hosts::Capacity::current(&input.installation, root)?;
     let runtime: Value = root.load("runtime.json")?.ok_or(Error::Corrupt)?;
     let config: crate::config::Config =
         serde_json::from_value(runtime).map_err(|_| Error::Corrupt)?;
@@ -294,7 +295,7 @@ async fn freeze_backup(input: Request, root: &Journal, journal: &Journal) -> Res
     c.close().await.map_err(|_| Error::Storage)?;
     let mut hosts = Vec::new();
     for receipt in receipts {
-        hosts.push(freeze_host(&input, &slots, receipt).await?);
+        hosts.push(freeze_host(&input, &slots, receipt, capacity).await?);
     }
     if hosts.is_empty() {
         return Err(Error::Conflict);
@@ -330,6 +331,7 @@ async fn freeze_host(
     input: &Request,
     slots: &BTreeMap<Uuid, usize>,
     receipt: Value,
+    capacity: super::tenant_hosts::Capacity,
 ) -> Result<Host> {
     let receipt: crate::administration::tenants::Receipt =
         serde_json::from_value(receipt).map_err(|_| Error::Corrupt)?;
@@ -345,6 +347,7 @@ async fn freeze_host(
     let runtime: Value = owner
         .load("requested-runtime.json")?
         .ok_or(Error::Corrupt)?;
+    capacity.require_current(&runtime)?;
     let applied: super::runtime_files::Applied =
         owner.load("applied.json")?.ok_or(Error::Corrupt)?;
     if runtime["runtime_binding"]["operation_id"] != json!(applied.operation_id)

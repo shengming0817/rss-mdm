@@ -72,7 +72,7 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 `init` 等待数据库健康后运行并退出；`server` 仅在 init 成功后启动。init 的短暂容器内 root 只将部署 secrets 复制为卷内 0600 文件，然后降为 UID10001 执行 Rust 初始化；没有宿主 root 操作或基础设施管理权限。运行后端、网关均为 UID10001，分别只读挂载自己的运行子目录；PostgreSQL 由官方镜像管理数据属主。
 
-正式 Compose 通过 `MDM_PG_MAX_CONNECTIONS` 配置产品 PostgreSQL 的 `max_connections`。声明额外宿主时，为全部宿主一起分配连接容量。安装器从实际 PostgreSQL 读取容量，扣除数据库保留槽和一个部署维护连接，应用启动时按已启用模块的物理连接池核对预算。调整已有部署的容量时，先应用 PostgreSQL 配置，再运行 `prepare-hosts` 生成新的运行版本，重建服务并复验该版本。
+正式 Compose 通过 `MDM_PG_MAX_CONNECTIONS` 配置产品 PostgreSQL 的 `max_connections`。声明额外宿主时，为全部宿主一起分配连接容量。安装器从实际 PostgreSQL 读取容量，扣除数据库保留槽和一个部署维护连接，应用启动时按已启用模块的物理连接池核对预算。宿主数量统一由主宿主加维护输入中的 `additional_hosts` 推导；首次安装不冻结后续扩容上限。调整已有部署时，按下方“后续租户与运行容量”执行 PostgreSQL 扩容、全部宿主配置导出、重建与实际观察。
 
 `installation.json` 的 `stage=initialized` 表示种子初始化完成，不宣称网络或设备效果。检查 HTTPS `/readyz`、实际登录和授权后，用原安装输入执行一次真实宿主观察：
 
@@ -162,7 +162,16 @@ Apple 原生 MDM 纳入完整部署清单：通过 channels 配置保存 Apple �
 
 正式平台会话调用 provisionings API 创建真实租户、管理员和授权。保留每业务进程绑定一个租户的拓扑。账户就绪不意味着运维已部署对应服务；宿主未启动时回执保持 `host_pending`，不会伪报 enabled。
 
-在独立维护输入中沿用原安装配置，追加 `additional_hosts`，每项提供 `origin`、内部 `listen` 和 `deployment`：后者包含运行输出 `directory`、共享 `gateway_directory`、可选 `probe_address`、TLS 文件及可选内容目录，不含镜像、网络或容器参数。例如输出目录 `/var/lib/rss-mdm/runtime/second`，probe 为 `gateway:443`，`gateway_directory` 与主宿主相同。将维护 JSON 导入安装卷后执行一次 `prepare-hosts`，生成运行文件；无需改首次安装输入，也不重做种子初始化。命令及秘密导入方式见[维护材料](operations.md#compose-维护材料与数据库-tls-续期)。
+在独立维护输入中沿用原安装配置，追加 `additional_hosts`，每项提供 `origin`、内部 `listen` 和 `deployment`：后者包含运行输出 `directory`、共享 `gateway_directory`、可选 `probe_address`、TLS 文件及可选内容目录，不含镜像、网络或容器参数。例如输出目录 `/var/lib/rss-mdm/runtime/second`，probe 为 `gateway:443`，`gateway_directory` 与主宿主相同。槽位只允许在末尾追加；保留已有条目的顺序、origin、listen 和输出目录，不支持缩容或替换。将维护 JSON 导入安装卷；首次安装输入保持不变，也不重做种子初始化。命令及秘密导入方式见[维护材料](operations.md#compose-维护材料与数据库-tls-续期)。
+
+扩容按以下顺序执行；每一步失败都保留同一维护输入和原租户开通 operation，修复原因后重试：
+
+1. 保留现有数据库和 state/content 卷，停止主及附加宿主的 server 和 maintenance。为所有声明宿主设置足够的 `MDM_PG_MAX_CONNECTIONS`，通过正式 Compose 重建 PostgreSQL 并等待健康。只修改环境文件尚未改变实际数据库容量。
+2. 执行 `prepare-hosts --config /var/lib/rss-mdm/maintenance.json`。该命令先校验全部已有和待启动宿主的实际配置；显式 S3 安装在连接核验完成前也预留 Content 物理池，避免同轮核验使预算失效。容量不足会拒绝，保留原运行文件、槽位和开通回执。成功准备会为容量发生变化的宿主输出新 revision 和材料摘要。
+3. 重建所有受影响 server，并恢复 maintenance。新增宿主使用下述独立 Compose；导出网关后执行配置检查和 reload。
+4. 再次使用同一维护输入执行 `prepare-hosts`，核对每个宿主 application 的 requested revision/material digest 与实际 HTTPS 观察一致且无 failure。仅账户创建、运行文件导出、旧进程的 readyz 或历史 enabled 均不证明本次配置已生效。
+
+重复准备相同目标不会重新生成配置版本。中断后的部分导出通过原维护输入继续补齐；完成前不要执行配置变更、联合备份或保护轮换，这些入口会拒绝不一致的预算。后续维护统一携带完整槽位声明；原 `installation-input.json` 只用于初装重放，不能替代扩容后的维护输入。
 
 运维使用候选中的 `tenant.compose.yaml` 直接声明新租户实例，沿用主安装的 state、content 卷和数据库网络，设置：
 
@@ -485,7 +494,7 @@ execution epoch 来自原宿主配置，在连接建立时固定；源事件复�
 
 ### 固定候选的完整安装资格
 
-`python3 hack/candidate_installation.py /absolute/candidate` 使用普通 Compose 和空库运行正式初始化，只覆盖必要链路：幂等种子、独立管理员真实认证与授权、第二租户及隔离、Compose 直接持有服务。删除部署控制器的重启、动态编排及 Docker 策略测试。该入口另验证同候选产品库停写后真实 pg_dump/pg_restore、重开、原回执重放及新写入；安全反例、各遥测 provider 与密钥/内容恢复的 T2 当前尚未重建，受控运维演练仍须独立提供实际结果；不使用开发 fixture 冒充正式初始化。
+`python3 hack/candidate_installation.py /absolute/candidate` 使用普通 Compose 和空库运行正式初始化，覆盖幂等种子、独立管理员真实认证与授权、单宿主初装后的预算不足拒绝、真实 PostgreSQL 扩容、全部宿主精确配置应用、原第二租户开通操作重试及租户隔离、Compose 直接持有服务。该入口另验证同候选产品库停写后真实 pg_dump/pg_restore、重开、原回执重放及新写入；安全反例、各遥测 provider 与密钥/内容恢复的 T2 当前尚未重建，受控运维演练仍须独立提供实际结果；不使用开发 fixture 冒充正式初始化。
 
 只有验证与清理都完成才发布 `installation-result.json`，绑定候选/Compose 摘要，并分别记录执行客户端 OS/架构、Docker daemon OS/架构和系统说明、容器目标平台及 daemon 与容器架构是否相同。客户端可能连接远程 Docker，架构相同也不能独立证明物理宿主原生运行；验收人员补充实际宿主和仿真方式。arm64 与 amd64 候选分别运行；仿真、原生及不同宿主的结果分别记录，不能由一台 Mac 推导所有宿主均通过。协议 `candidate_smoke.py` 的合法预置仅证明相应协议接缝，不是本入口的完整初始化证据。浏览器与真机 T3 按各自输入继续，不能用安装、readiness 或 smoke 代替终端效果。
 

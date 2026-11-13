@@ -332,7 +332,7 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init prepare-hosts --config /var/lib/rss-mdm/maintenance.json
 ```
 
-`prepare-hosts` 只执行一次供应方核验、材料版本投影与真实 HTTPS 观察，不启动或重启服务。材料应用时保存原 operation，导出配置后受控重建 server，再重放原操作或运行 prepare-hosts；实际版本未加载时保持 pending。所有原生设备流量都从 gateway 已配置的 HTTPS 域名和端口进入。
+`prepare-hosts` 只执行一次容量校验、供应方核验、材料版本投影与真实 HTTPS 观察，不启动或重启服务。新增宿主须使用包含全部槽位的维护输入，并按[扩容顺序](installation.md#后续租户与运行容量)先落实 PostgreSQL 容量、导出全部受影响配置、重建及复验；容量不足时保留原开通 operation，禁止手工修改运行配置绕过校验。材料应用时保存原 operation，导出配置后受控重建 server，再重放原操作或运行 prepare-hosts；实际版本未加载时保持 pending。所有原生设备流量都从 gateway 已配置的 HTTPS 域名和端口进入。
 
 `rotate-protection` 的 distributing/activating 阶段同样先导出文件，保持原 operation；运维分阶段重建服务，再重复原命令取得真实观察，全部宿主确认后才切换写钥及重加密。不会自动恢复旧容器；需要回退时由运维恢复先前已确认的配置和 Compose 版本，保留原密钥。
 

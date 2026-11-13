@@ -28,12 +28,15 @@ def until(predicate, seconds=180):
 
 class Installation:
     def __init__(self, root, compose, project, environment=None):
-        self.root=root;self.compose_file=compose;self.project=project;self.ports_file=None;self.initialization_file=None
+        self.root=root;self.compose_file=compose;self.project=project;self.ports_file=None
         self.prefix=['docker','compose','--env-file',str(environment or root/'.env'),'-p',project,'-f',str(compose)]
 
-    def compose(self,*args):
-        files=[arg for path in (self.initialization_file,self.ports_file) if path for arg in ('-f',str(path))]
+    def compose(self,*args,rejected=None):
+        files=['-f',str(self.ports_file)] if self.ports_file else []
         result=subprocess.run([*self.prefix,*files,*args],capture_output=True,text=True,timeout=600)
+        if rejected is not None:
+            check(result.returncode != 0 and rejected in result.stderr, 'expected product rejection: '+rejected)
+            return ''
         if result.returncode:raise RuntimeError('Compose action failed: '+args[0])
         return result.stdout.strip()
 
@@ -43,8 +46,8 @@ class Installation:
     def read(self,path):
         return self.script('from pathlib import Path;print(Path('+repr(path)+').read_text(),end="")')
 
-    def product(self,command,path='/var/lib/rss-mdm/installation-input.json'):
-        return self.compose('run','--rm','--no-deps','--user','10001:10001','--entrypoint','/usr/local/bin/rss-mdm-installer','init',command,'--config',path)
+    def product(self,command,path='/var/lib/rss-mdm/installation-input.json',rejected=None):
+        return self.compose('run','--rm','--no-deps','--user','10001:10001','--entrypoint','/usr/local/bin/rss-mdm-installer','init',command,'--config',path,rejected=rejected)
 
     def cleanup(self):
         self.compose('down','--volumes','--remove-orphans')
@@ -122,17 +125,25 @@ def storage_roundtrip(owner, business):
     check(status == 200 and changed['definition']['revision'] == 2, 'candidate post-restore write')
 
 
+def observe_runtime(browser,runtime):
+    status,value=browser.call('GET','/readyz')
+    check(status==200 and value['ready'],'host readiness')
+    observed=value['observation'];binding=runtime['runtime_binding']
+    for public,private in [('hostId','host_id'),('operationId','operation_id'),('revision','revision'),('materialDigest','material_digest')]:
+        check(observed[public]==binding[private],'exact runtime '+public)
+    check(observed['tenantId']==runtime['identity']['tenant_id'] and observed['instanceId']==runtime['identity']['instance_id'],'exact tenant and installation')
+    check(uuid.UUID(observed['processGeneration']).int!=0,'live process generation')
+    return observed
+
+
 def qualify(owner,origin,other_origin,port,second_backend):
-    # Declare both host slots and provision their shared database capacity before installation.
+    # Start with the ordinary one-host deployment; expand through its maintenance input.
     inputs='/var/lib/rss-mdm/inputs/'
     slot=dict(origin=other_origin,listen=second_backend+':8081',deployment=dict(
         directory='/var/lib/rss-mdm/runtime/second',gateway_directory='/var/lib/rss-mdm/runtime/gateway',
         probe_address='gateway:'+str(urlsplit(other_origin).port or 443),
         certificate_file=inputs+'gateway.crt',private_key_file=inputs+'gateway.key',
         trust_file=inputs+'gateway-ca.crt',content_volume='/var/lib/rss-mdm-content'))
-    initialize="import sys;sys.path.insert(0,'/usr/local/lib/rss-mdm');from initialize import run;run("+repr([slot])+")"
-    owner.initialization_file=owner.root/'planned-hosts.compose.json'
-    owner.initialization_file.write_text(json.dumps(dict(services=dict(init=dict(entrypoint=['python3','-c',initialize])))))
     owner.compose('up','-d','postgres')
     owner.compose('run','--rm','init')
     exported=owner.read('/var/lib/rss-mdm/runtime/gateway/gateway-ports.compose.yaml')
@@ -154,14 +165,13 @@ def qualify(owner,origin,other_origin,port,second_backend):
     business.login(first['tenantId'],'administrator',(owner.root/'inputs/administrator-password').read_text().strip())
     status,grants=business.call('GET','/api/v1/authorization')
     check(status==200,'real business authorization')
-    owner.product('prepare-hosts')
     platform=Browser(origin,ca,port)
     # The public host config supplies the actual reserved management tenant.
     status,public=business.call('GET','/api/v1/mdm-host/config.json')
     check(status==200,'public management locator')
     platform.login(public['managementTenant'],'platform',(owner.root/'inputs/platform-password').read_text().strip())
     status,observed=platform.call('GET','/api/v1/tenant-administration/provisionings/'+first['operationId'])
-    check(status==200 and observed['result']['phase']=='enabled','actual first host observation')
+    check(status==200 and observed['result']['phase']=='host_pending' and observed['result']['application'] is None,'unobserved primary before capacity change')
     owner.compose('run','--rm','init')
     repeated=json.loads(owner.read('/var/lib/rss-mdm/installation/installation.json'))['receipt']
     check(first==repeated,'stable seed replay')
@@ -170,7 +180,54 @@ def qualify(owner,origin,other_origin,port,second_backend):
         dict(name='Second organization',administratorLogin='second',administratorPassword='Second-compose-admin-2026!'),operation)
     check(status==202,'real second tenant and administrator')
     second=created['result']
-    owner.product('prepare-hosts')
+    maintenance='/var/lib/rss-mdm/maintenance-second.json'
+    original_input=owner.read('/var/lib/rss-mdm/installation-input.json')
+    original_runtime=owner.read('/var/lib/rss-mdm/installation/runtime.json')
+    check(json.loads(original_runtime)['background']['database_host_instances']==1,'ordinary single-host initialization')
+    request=dict(json.loads(original_input),additional_hosts=[slot])
+    owner.script('from pathlib import Path;p=Path('+repr(maintenance)+');p.write_text('+repr(json.dumps(request))+');p.chmod(0o600)')
+    owner.product('prepare-hosts',maintenance,rejected='host.inputs: input_rejected')
+    check(owner.read('/var/lib/rss-mdm/installation/runtime.json')==original_runtime,'rejected capacity retains runtime')
+    owner.script("from pathlib import Path;assert not Path('/var/lib/rss-mdm/installation/host-slot-0.json').exists();assert not Path('/var/lib/rss-mdm/runtime/second/server/runtime.json').exists()")
+    status,unchanged=platform.call('GET','/api/v1/tenant-administration/provisionings/'+operation)
+    check(status==200 and unchanged==created,'rejected capacity retains original provisioning')
+    # Operations owns the database restart and all process lifecycle actions.
+    owner.compose('stop','server','maintenance')
+    environment=owner.root/'.env'
+    environment.write_text(environment.read_text().replace('MDM_PG_MAX_CONNECTIONS=160','MDM_PG_MAX_CONNECTIONS=320'))
+    owner.compose('up','-d','--wait','--no-deps','--force-recreate','postgres')
+    owner.compose('up','-d','--no-deps','server','maintenance')
+    until(lambda:business.call('GET','/readyz')[0]==200)
+    prior=business.call('GET','/readyz')[1]['observation']
+    # A repairable TLS export failure must not discard the original prepared request.
+    certificate='/var/lib/rss-mdm/inputs/gateway.crt'
+    owner.script('from pathlib import Path;p=Path('+repr(certificate)+');p.rename(str(p)+".held")')
+    try:
+        owner.product('prepare-hosts',maintenance)
+        requests={host:json.loads(owner.read('/var/lib/rss-mdm/installation/rss-mdm-'+uuid.UUID(host).hex+'/requested-runtime.json'))
+                  for host in (first['hostId'],second['hostId'])}
+        for host,value in requests.items():
+            check(value['runtime_binding']['host_id']==host,'failed export retains exact requested host')
+    finally:
+        owner.script('from pathlib import Path;p=Path('+repr(certificate)+');Path(str(p)+".held").rename(p)')
+    owner.product('prepare-hosts',maintenance)
+    for host,value in requests.items():
+        resumed=json.loads(owner.read('/var/lib/rss-mdm/installation/rss-mdm-'+uuid.UUID(host).hex+'/requested-runtime.json'))
+        check(resumed==value,'export repair retains exact request identity and materials')
+    primary_runtime=json.loads(owner.read('/var/lib/rss-mdm/runtime/primary/server/runtime.json'))
+    secondary_runtime=json.loads(owner.read('/var/lib/rss-mdm/runtime/second/server/runtime.json'))
+    for value in (primary_runtime,secondary_runtime):
+        check(value['background']['database_host_instances']==2,'shared host allocation')
+        check(value['background']['database_connection_budget']>156,'actual expanded PostgreSQL budget')
+    check(primary_runtime['runtime_binding']['revision']>prior['revision'],'capacity has a new runtime version')
+    status,pending=platform.call('GET','/api/v1/tenant-administration/provisionings/'+first['operationId'])
+    check(status==200 and pending['result']['application']['requestedRevision']==primary_runtime['runtime_binding']['revision'],'pending primary keeps capacity request')
+    pending_observation=pending['result']['application']['observation']
+    check(pending_observation is None or pending_observation['failure'] is not None,'old process cannot apply new capacity')
+    owner.compose('up','-d','--no-deps','--force-recreate','server')
+    until(lambda:business.call('GET','/readyz')[0]==200)
+    primary_observation=observe_runtime(business,primary_runtime)
+    check(primary_observation['processGeneration']!=prior['processGeneration'],'capacity requires a new process')
     # Ordinary Compose override supplied by the acceptance environment, not by product code.
     second_owner=Installation(owner.root,owner.root/'tenant.compose.yaml',owner.project+'-second',owner.root/'second.env')
     try:
@@ -185,9 +242,23 @@ def qualify(owner,origin,other_origin,port,second_backend):
         peer.login(str(second['tenantId']),'second','Second-compose-admin-2026!')
         status,_=platform.call('GET','/api/v1/resources')
         check(status in (401,403),'platform cannot access business resources')
-        owner.product('prepare-hosts')
+        owner.product('prepare-hosts',maintenance)
+        observe_runtime(peer,secondary_runtime)
+        status,primary_applied=platform.call('GET','/api/v1/tenant-administration/provisionings/'+first['operationId'])
+        check(status==200 and primary_applied['result']['phase']=='enabled' and primary_applied['result']['blocked'] is None,'pending primary resumes with expanded capacity')
         status,observed=platform.call('GET','/api/v1/tenant-administration/provisionings/'+operation)
         check(status==200 and observed['result']['phase']=='enabled','actual second host observation')
+        status,replayed=platform.call('POST','/api/v1/tenant-administration/provisionings',
+            dict(name='Second organization',administratorLogin='second',administratorPassword='Second-compose-admin-2026!'),operation)
+        check(status in (200,202) and replayed['result']['tenantId']==second['tenantId'] and replayed['result']['hostId']==second['hostId'],'original provisioning resumes')
+        owner.product('prepare-hosts',maintenance)
+        for subpath,expected in [('primary',primary_runtime),('second',secondary_runtime)]:
+            current=json.loads(owner.read('/var/lib/rss-mdm/runtime/'+subpath+'/server/runtime.json'))
+            check(current==expected,'repeated preparation retains exact runtime')
+        owner.compose('run','--rm','init')
+        check(owner.read('/var/lib/rss-mdm/installation-input.json')==original_input,'initialization input stays immutable')
+        check(json.loads(owner.read('/var/lib/rss-mdm/installation/installation.json'))['receipt']==first,'initialization replay keeps original identities')
+        check(json.loads(owner.read('/var/lib/rss-mdm/installation/runtime.json'))['background']['database_host_instances']==2,'initialization replay retains expanded allocation')
     finally:
         second_owner.compose('down','--remove-orphans')
     # Inspect actual mounted runtime services; no init/runtime receives engine access.
@@ -203,4 +274,4 @@ def qualify(owner,origin,other_origin,port,second_backend):
         until(lambda:business.call('GET','/readyz')[0]==200)
         until(lambda:business.call('GET','/')==(200,static))
     storage_roundtrip(owner,business)
-    return dict(status='passed',checks=['seed_and_replay','first_host_observation','real_administrators_and_authorization','second_tenant_login_and_isolation','compose_owned_services','same_candidate_product_restore'])
+    return dict(status='passed',checks=['failed_export_retains_request_and_recovers','capacity_rejection_without_publication','single_to_two_host_expansion','exact_runtime_application_and_replay','seed_and_replay','first_host_observation','real_administrators_and_authorization','second_tenant_login_and_isolation','compose_owned_services','same_candidate_product_restore'])
