@@ -143,3 +143,55 @@ fn pending_runtime_keeps_identity_materials_and_stable_capacity_request() {
     );
     assert!(capacity.require_current(&resumed).is_ok());
 }
+
+#[test]
+fn pending_receipt_recovers_only_its_exact_requested_materials() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let base = runtime(&root);
+    let mut input = input(&root);
+    input.additional_hosts.push(slot(&root, "second", 8082));
+    let mut progress = super::super::model::Provisioning {
+        operation_id: Uuid::new_v4(),
+        tenant_id: Uuid::new_v4(),
+        administrator_id: Some(Uuid::new_v4()),
+        host_id: Uuid::new_v4(),
+        revision: 1,
+        phase: Phase::HostPending,
+        blocked: None,
+        origin: None,
+        application: None,
+    };
+    let candidate = additional_runtime(
+        &input.directory,
+        &base,
+        &input.additional_hosts[0],
+        &progress,
+    )
+    .unwrap();
+    prepare_application(&input.directory, &candidate, &mut progress).unwrap();
+    let directory = input
+        .directory
+        .join(format!("rss-mdm-{}", progress.host_id.simple()));
+    {
+        let journal = Journal::open(&directory).unwrap();
+        assert_eq!(
+            journal
+                .load::<Value>("requested-runtime.json")
+                .unwrap()
+                .unwrap(),
+            candidate
+        );
+    }
+    std::fs::remove_file(directory.join("requested-runtime.json")).unwrap();
+    let slots = BTreeMap::from([(progress.host_id, 0)]);
+    assert_eq!(
+        recover_pending_runtime(&input, &base, &slots, &progress).unwrap(),
+        candidate
+    );
+    progress.application.as_mut().unwrap().material_digest = "f".repeat(64);
+    assert!(matches!(
+        recover_pending_runtime(&input, &base, &slots, &progress),
+        Err(Error::Conflict)
+    ));
+}

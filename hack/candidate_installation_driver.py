@@ -199,7 +199,21 @@ def qualify(owner,origin,other_origin,port,second_backend):
     owner.compose('up','-d','--no-deps','server','maintenance')
     until(lambda:business.call('GET','/readyz')[0]==200)
     prior=business.call('GET','/readyz')[1]['observation']
+    # A repairable TLS export failure must not discard the original prepared request.
+    certificate='/var/lib/rss-mdm/inputs/gateway.crt'
+    owner.script('from pathlib import Path;p=Path('+repr(certificate)+');p.rename(str(p)+".held")')
+    try:
+        owner.product('prepare-hosts',maintenance)
+        requests={host:json.loads(owner.read('/var/lib/rss-mdm/installation/rss-mdm-'+uuid.UUID(host).hex+'/requested-runtime.json'))
+                  for host in (first['hostId'],second['hostId'])}
+        for host,value in requests.items():
+            check(value['runtime_binding']['host_id']==host,'failed export retains exact requested host')
+    finally:
+        owner.script('from pathlib import Path;p=Path('+repr(certificate)+');Path(str(p)+".held").rename(p)')
     owner.product('prepare-hosts',maintenance)
+    for host,value in requests.items():
+        resumed=json.loads(owner.read('/var/lib/rss-mdm/installation/rss-mdm-'+uuid.UUID(host).hex+'/requested-runtime.json'))
+        check(resumed==value,'export repair retains exact request identity and materials')
     primary_runtime=json.loads(owner.read('/var/lib/rss-mdm/runtime/primary/server/runtime.json'))
     secondary_runtime=json.loads(owner.read('/var/lib/rss-mdm/runtime/second/server/runtime.json'))
     for value in (primary_runtime,secondary_runtime):
@@ -260,4 +274,4 @@ def qualify(owner,origin,other_origin,port,second_backend):
         until(lambda:business.call('GET','/readyz')[0]==200)
         until(lambda:business.call('GET','/')==(200,static))
     storage_roundtrip(owner,business)
-    return dict(status='passed',checks=['capacity_rejection_without_publication','single_to_two_host_expansion','exact_runtime_application_and_replay','seed_and_replay','first_host_observation','real_administrators_and_authorization','second_tenant_login_and_isolation','compose_owned_services','same_candidate_product_restore'])
+    return dict(status='passed',checks=['failed_export_retains_request_and_recovers','capacity_rejection_without_publication','single_to_two_host_expansion','exact_runtime_application_and_replay','seed_and_replay','first_host_observation','real_administrators_and_authorization','second_tenant_login_and_isolation','compose_owned_services','same_candidate_product_restore'])

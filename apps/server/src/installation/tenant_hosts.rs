@@ -49,7 +49,7 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
     }
     // Validate every existing host before publishing any part of the new allocation.
     // Optional modules have different physical pools; the primary alone is insufficient.
-    super::application::preflight(input, &mut c, capacity).await?;
+    super::application::preflight(input, &runtime, &reservations, &mut c, capacity).await?;
     let pending: Vec<Value> = sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='host_pending' ORDER BY operation_id LIMIT 32")
         .fetch_all(&mut c).await.map_err(|_|Error::Storage)?;
     preflight_pending(
@@ -238,11 +238,8 @@ pub(super) fn validate_slots(input: &Input) -> Result<()> {
     Ok(())
 }
 
-/// The same host completion transition is used by installation and later provisioning.
-pub(super) async fn activate(
-    c: &mut sqlx::PgConnection,
+fn prepare_application(
     directory: &std::path::Path,
-    deployment: &runtime_files::Config,
     runtime: &Value,
     progress: &mut super::model::Provisioning,
 ) -> Result<()> {
@@ -254,6 +251,10 @@ pub(super) async fn activate(
     {
         return Err(Error::Conflict);
     }
+    // Persist the complete request before files or database receipts depend on it.
+    let owner = Journal::open(&directory.join(format!("rss-mdm-{}", progress.host_id.simple())))?;
+    owner.save("requested-runtime.json", runtime)?;
+    drop(owner);
     progress.origin = runtime["product_origin"].as_str().map(str::to_owned);
     progress.application = Some(Application {
         requested_revision: binding.revision,
@@ -261,6 +262,45 @@ pub(super) async fn activate(
         operation_id: binding.operation_id,
         observation: None,
     });
+    Ok(())
+}
+
+/// Recover only a pending request whose original receipt proves the exact materials.
+pub(super) fn recover_pending_runtime(
+    input: &Input,
+    base: &Value,
+    slots: &BTreeMap<Uuid, usize>,
+    progress: &super::model::Provisioning,
+) -> Result<Value> {
+    if progress.phase != Phase::HostPending {
+        return Err(Error::Corrupt);
+    }
+    let slot = slots
+        .get(&progress.host_id)
+        .and_then(|index| input.additional_hosts.get(*index))
+        .ok_or(Error::Corrupt)?;
+    let runtime = additional_runtime(&input.directory, base, slot, progress)?;
+    let binding: super::host::Binding =
+        serde_json::from_value(runtime["runtime_binding"].clone()).map_err(|_| Error::Corrupt)?;
+    let application = progress.application.as_ref().ok_or(Error::Corrupt)?;
+    if binding.operation_id != application.operation_id
+        || binding.revision != application.requested_revision
+        || binding.material_digest != application.material_digest
+    {
+        return Err(Error::Conflict);
+    }
+    Ok(runtime)
+}
+
+/// The same host completion transition is used by installation and later provisioning.
+pub(super) async fn activate(
+    c: &mut sqlx::PgConnection,
+    directory: &std::path::Path,
+    deployment: &runtime_files::Config,
+    runtime: &Value,
+    progress: &mut super::model::Provisioning,
+) -> Result<()> {
+    prepare_application(directory, runtime, progress)?;
     match runtime_files::apply(directory, deployment, runtime).await {
         Ok(observed) => {
             runtime_files::record_observation(c, runtime, &observed).await?;

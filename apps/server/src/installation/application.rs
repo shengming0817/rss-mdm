@@ -84,6 +84,8 @@ pub(super) fn bind_change(runtime: &mut Value, before: &str) -> Result<()> {
 
 pub(super) async fn preflight(
     input: &Input,
+    base: &Value,
+    slots: &BTreeMap<Uuid, usize>,
     c: &mut PgConnection,
     capacity: super::tenant_hosts::Capacity,
 ) -> Result<()> {
@@ -99,9 +101,12 @@ pub(super) async fn preflight(
                 .directory
                 .join(format!("rss-mdm-{}", progress.host_id.simple())),
         )?;
-        let mut runtime: Value = owner
-            .load("requested-runtime.json")?
-            .ok_or(Error::Corrupt)?;
+        let requested: Option<Value> = owner.load("requested-runtime.json")?;
+        drop(owner);
+        let mut runtime = match requested {
+            Some(runtime) => runtime,
+            None => super::tenant_hosts::recover_pending_runtime(input, base, slots, &progress)?,
+        };
         if runtime["runtime_binding"]["host_id"] != json!(progress.host_id)
             || runtime["identity"]["tenant_id"] != json!(progress.tenant_id)
         {
