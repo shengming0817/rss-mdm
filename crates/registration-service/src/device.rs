@@ -152,7 +152,7 @@ pub async fn consumers_in(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
     usage: ConsumerUse,
-) -> Result<Vec<String>, Error> {
+) -> Result<Vec<rss_mdm_agent_wire::DeviceId>, Error> {
     consumers_for_device_in(profile, c, tenant, usage, None).await
 }
 /// Current consumers for one endpoint, using the same registration-owned eligibility rule.
@@ -161,14 +161,15 @@ pub async fn consumers_for_device_in(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
     usage: ConsumerUse,
-    device: Option<&str>,
-) -> Result<Vec<String>, Error> {
+    device: Option<&rss_mdm_agent_wire::DeviceId>,
+) -> Result<Vec<rss_mdm_agent_wire::DeviceId>, Error> {
     sqlx::query_scalar(crate::storage_profile::sql(profile).device_trust_consumers)
         .bind(tenant.to_string())
         .bind(usage.as_str())
-        .bind(device)
+        .bind(device.map(|id| id.into_uuid()))
         .fetch_all(c)
         .await
+        .and_then(crate::database::device_ids)
         .map_err(crate::database::db)
 }
 
@@ -180,7 +181,7 @@ pub async fn consumers_for_device_in(
 pub struct DevicePrincipal {
     profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
     kind: RegistrationKind,
     installation: Uuid,
     credential: Uuid,
@@ -206,7 +207,7 @@ impl DevicePrincipal {
     pub fn tenant(&self) -> TenantId {
         self.tenant
     }
-    pub fn device(&self) -> &str {
+    pub fn device(&self) -> &rss_mdm_agent_wire::DeviceId {
         &self.device
     }
     pub fn kind(&self) -> RegistrationKind {
@@ -240,7 +241,7 @@ pub struct BindRegistration {
 pub struct RegistrationReceipt {
     pub operation_id: Uuid,
     pub request_id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub channel: Channel,
     pub credential: Uuid,
     pub epoch: Uuid,
@@ -248,7 +249,7 @@ pub struct RegistrationReceipt {
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RevocationReceipt {
     pub operation_id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
 }
 
 /// App-owned service; the router and trusted channel adapters share the same policy/store.
@@ -300,7 +301,7 @@ impl DeviceService {
 pub fn scope(
     profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     source: &str,
     epoch: Uuid,
 ) -> Result<Scope, DeviceError> {
@@ -316,7 +317,7 @@ pub fn scope(
 pub fn scope_dataset(
     profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     source: &str,
     epoch: Uuid,
     dataset: &str,
@@ -327,7 +328,7 @@ pub fn scope_dataset(
         // has its own subject within the device. The library Registration wrapper carries deviceId.
         Id::new(if dataset == rss_mdm_inventory::DATASET {
             match profile {
-                rss_mdm_install_support::StorageProfile::Mdm => device.to_owned(),
+                rss_mdm_install_support::StorageProfile::Mdm => device.to_string(),
                 rss_mdm_install_support::StorageProfile::Da => format!("da:{device}"),
             }
         } else {
@@ -339,7 +340,7 @@ pub fn scope_dataset(
             }
         })
         .map_err(|_| DeviceError::InvalidSource)?,
-        Registration::new(device.to_owned()).map_err(|_| DeviceError::InvalidSource)?,
+        Registration::new(device.to_string()).map_err(|_| DeviceError::InvalidSource)?,
         Id::new(source).map_err(|_| DeviceError::InvalidSource)?,
         Id::new(dataset).map_err(|_| DeviceError::InvalidSource)?,
         Epoch::new(epoch.to_string()).map_err(|_| DeviceError::InvalidSource)?,
@@ -370,7 +371,7 @@ impl DeviceService {
         proof: &AuthorizedPrincipal,
         credential: &VerifiedChannelCredential,
         command: &BindRegistration,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         ids: [Uuid; 2],
     ) -> Result<RegistrationReceipt, Error> {
         let profile = self.profile();
@@ -432,7 +433,10 @@ pub async fn authenticate_endpoint_in(
         .await
         .map_err(db)?
         .ok_or(Error::Unauthorized)?;
-    let device: String = row.try_get("device").map_err(db)?;
+    let device: rss_mdm_agent_wire::DeviceId = row
+        .try_get::<uuid::Uuid, _>("device")
+        .and_then(crate::database::device_id)
+        .map_err(db)?;
     store::lock_registration(profile, c, &tenant.to_string(), &device, kind).await?;
     let p = DevicePrincipal {
         profile,

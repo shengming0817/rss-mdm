@@ -34,7 +34,7 @@ pub(crate) async fn principal(
     let enabled = crate::deployment::agent_facts::agent_binding_in(
         tx,
         service.agent_store.clone(),
-        principal.device().to_string(),
+        *principal.device(),
     )
     .await?
     .is_some_and(|b| b.inventory() && b.task());
@@ -44,7 +44,7 @@ pub(crate) async fn principal(
     Ok(())
 }
 pub(crate) fn belongs(run: &db::Run, p: &DevicePrincipal) -> Result<()> {
-    if run.target.device != p.device() {
+    if run.target.device != *p.device() {
         return Err(Error::Unauthorized.into());
     }
     Ok(())
@@ -78,17 +78,16 @@ impl SoftwareService {
         let binding = crate::deployment::agent_facts::agent_binding_in(
             tx,
             service.transactions.agent_store.clone(),
-            p.device().to_string(),
+            *p.device(),
         )
         .await?
         .ok_or(Error::Forbidden)?;
         let software_capable = binding.software();
-        let versions =
-            crate::deployment::sources::admission::agent_versions_in(tx, p.device().to_string())
-                .await?
-                .into_iter()
-                .map(|version| (version, Uuid::new_v4()))
-                .collect::<Vec<_>>();
+        let versions = crate::deployment::sources::admission::agent_versions_in(tx, *p.device())
+            .await?
+            .into_iter()
+            .map(|version| (version, Uuid::new_v4()))
+            .collect::<Vec<_>>();
         let partitions = [];
 
         crate::deployment::transaction::prepare_audit_in(
@@ -102,7 +101,7 @@ impl SoftwareService {
             let policy =
                 db::load_policy_version(&service.transactions.policy_reader, tx, id).await?;
             let target = crate::deployment::Target {
-                device: p.device().into(),
+                device: *p.device(),
             };
             match &policy {
                 db::ScheduledPolicy::Software(software) if software_capable => {
@@ -141,7 +140,7 @@ impl SoftwareService {
         let binding = crate::deployment::agent_facts::agent_binding_in(
             tx,
             self.transactions.agent_store.clone(),
-            p.device().to_string(),
+            *p.device(),
         )
         .await?
         .ok_or(Error::Forbidden)?;
@@ -654,7 +653,7 @@ impl SoftwareService {
     pub async fn agent_cancellations_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         after: Option<Uuid>,
     ) -> Result<Vec<wire::TaskCancellation>> {
         self.transactions.runtime.validate_transaction(tx)?;

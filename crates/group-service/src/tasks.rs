@@ -38,7 +38,8 @@ pub struct TaskState {
     pub input: TaskInput,
     pub completed: bool,
     pub failure: Option<String>,
-    pub cursor: Option<String>,
+    pub cursor: Option<Uuid>,
+    pub definition_progress: Option<super::definition::Cursor>,
 }
 
 impl Groups {
@@ -58,7 +59,7 @@ impl Groups {
         self.check_task_transaction(tx)?;
         let tenant = self.tenant.to_string();
         let row = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("SELECT input,kind,target,completed,failure,cursor FROM mdm_assets.group_tasks WHERE tenant_id=$1::uuid AND id=$2")
+            sqlx::query("SELECT input,kind,target,completed,failure,cursor,definition_progress FROM mdm_assets.group_tasks WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(tenant).bind(id).fetch_optional(c).await
         })).await?.ok_or(Error::NotFound)?;
         let input: TaskInput = stored(serde_json::from_value(row.try_get("input")?))?;
@@ -73,6 +74,11 @@ impl Groups {
             completed: row.try_get("completed")?,
             failure: row.try_get("failure")?,
             cursor: row.try_get("cursor")?,
+            definition_progress: row
+                .try_get::<Option<serde_json::Value>, _>("definition_progress")?
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Unavailable(Failure::GroupStorage))?,
         })
     }
 
@@ -252,7 +258,7 @@ impl Groups {
             "failed"
         } else if state.completed {
             "completed"
-        } else if processed > 0 || state.cursor.is_some() {
+        } else if processed > 0 || (state.cursor.is_some() || state.definition_progress.is_some()) {
             "running"
         } else {
             "pending"

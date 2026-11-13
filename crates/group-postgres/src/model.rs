@@ -216,11 +216,11 @@ pub enum Rejection {
 /// One bytewise object-ID ordered page of a completed operation’s actual membership changes.
 pub struct DeltaPage {
     /// Object IDs added in this page, in bytewise order.
-    pub added: Vec<String>,
+    pub added: Vec<rss_mdm_agent_wire::ObjectRef>,
     /// Object IDs removed in this page, in bytewise order.
-    pub removed: Vec<String>,
+    pub removed: Vec<rss_mdm_agent_wire::ObjectRef>,
     /// Exclusive object-ID cursor for the next page; None when exhausted.
-    pub next: Option<String>,
+    pub next: Option<rss_mdm_agent_wire::ObjectRef>,
 }
 
 /// Successful SQL can still reject a command before effects; caller must handle both layers.

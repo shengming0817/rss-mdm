@@ -6,7 +6,10 @@ const RETRY: Duration = Duration::from_secs(1);
 struct Phase {
     ip: Option<OwnedSemaphorePermit>,
     device: Option<OwnedSemaphorePermit>,
-    result: Option<((uuid::Uuid, String), Result<(), Duration>)>,
+    result: Option<(
+        (uuid::Uuid, rss_mdm_agent_wire::DeviceId),
+        Result<(), Duration>,
+    )>,
 }
 struct Lease {
     owner: Arc<Admission>,
@@ -50,7 +53,7 @@ impl Lease {
             _request: request,
         })
     }
-    fn transition(&self, key: (uuid::Uuid, String)) -> Result<(), Duration> {
+    fn transition(&self, key: (uuid::Uuid, rss_mdm_agent_wire::DeviceId)) -> Result<(), Duration> {
         let mut phase = self.phase.lock().map_err(|_| RETRY)?;
         if let Some((prior, result)) = &phase.result {
             return if prior == &key { *result } else { Err(RETRY) };
@@ -71,10 +74,7 @@ impl Lease {
             if !state.devices.contains_key(&key) && state.devices.len() >= 4096 {
                 return Err(RETRY);
             }
-            let device = state
-                .devices
-                .entry(key.clone())
-                .or_insert_with(|| Peer::new(now));
+            let device = state.devices.entry(key).or_insert_with(|| Peer::new(now));
             device.seen = now;
             let delay = device.request_rate.wait(now);
             if !delay.is_zero() {
@@ -150,13 +150,13 @@ mod tests {
     fn device_rejection_refunds_nat_once_and_keeps_global_charge() {
         let owner = owner();
         let gate = owner.gate("192.0.2.1".parse().unwrap()).unwrap();
-        let key = (uuid::Uuid::new_v4(), "device-a".to_owned());
+        let key = (uuid::Uuid::new_v4(), rss_mdm_agent_wire::DeviceId::new_v4());
         let first = Lease::begin(&gate).unwrap();
-        first.transition(key.clone()).unwrap();
+        first.transition(key).unwrap();
         let second = Lease::begin(&gate).unwrap();
-        second.transition(key.clone()).unwrap();
+        second.transition(key).unwrap();
         let third = Lease::begin(&gate).unwrap();
-        assert_eq!(third.transition(key.clone()), Err(RETRY));
+        assert_eq!(third.transition(key), Err(RETRY));
         {
             let state = owner.state.lock().unwrap();
             assert_eq!(state.peers[&gate.peer].requests.available_permits(), 2);
@@ -172,19 +172,22 @@ mod tests {
             63.0
         );
         pending
-            .transition((uuid::Uuid::new_v4(), "device-b".into()))
+            .transition((uuid::Uuid::new_v4(), rss_mdm_agent_wire::DeviceId::new_v4()))
             .unwrap();
     }
     #[test]
     fn successful_conversion_is_single_use_and_cannot_change_device() {
         let owner = owner();
         let gate = owner.gate("192.0.2.1".parse().unwrap()).unwrap();
-        let key = (uuid::Uuid::new_v4(), "first".to_owned());
+        let key = (uuid::Uuid::new_v4(), rss_mdm_agent_wire::DeviceId::new_v4());
         let lease = Lease::begin(&gate).unwrap();
-        lease.transition(key.clone()).unwrap();
+        lease.transition(key).unwrap();
         let pending = Lease::begin(&gate).unwrap();
-        lease.transition(key.clone()).unwrap();
-        assert_eq!(lease.transition((key.0, "second".into())), Err(RETRY));
+        lease.transition(key).unwrap();
+        assert_eq!(
+            lease.transition((key.0, rss_mdm_agent_wire::DeviceId::new_v4())),
+            Err(RETRY)
+        );
         let state = owner.state.lock().unwrap();
         assert_eq!(state.peers[&gate.peer].request_rate.tokens, 63.0);
         assert_eq!(state.devices[&key].request_rate.tokens, 63.0);
@@ -204,9 +207,9 @@ mod tests {
                 .tokens,
             63.0
         );
-        let key = (uuid::Uuid::new_v4(), "device".to_owned());
+        let key = (uuid::Uuid::new_v4(), rss_mdm_agent_wire::DeviceId::new_v4());
         let outer = Arc::new(Lease::begin(&gate).unwrap());
-        outer.transition(key.clone()).unwrap();
+        outer.transition(key).unwrap();
         let work = outer.clone();
         drop(outer);
         assert_eq!(owner.requests.available_permits(), 7);

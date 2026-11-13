@@ -1,11 +1,23 @@
 {
+  "$defs": {
+    "DeviceId": {
+      "format": "uuid",
+      "maxLength": 36,
+      "minLength": 36,
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "Durable grant receipt; possession of its secret is still required to issue.",
   "properties": {
     "device": {
-      "description": "Registration-owner allocated endpoint identity.",
-      "type": "string"
+      "$ref": "#/$defs/DeviceId",
+      "description": "Registration-owner allocated endpoint identity."
     },
     "expiresAt": {
       "description": "Exclusive validity limit in Unix seconds.",

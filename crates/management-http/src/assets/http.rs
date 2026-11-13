@@ -424,7 +424,7 @@ async fn detail(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
     parameters: ParamInput<CollectionSelector>,
 ) -> std::result::Result<HttpResponse, Error> {
     let selector = params(parameters)?;
@@ -435,7 +435,7 @@ async fn manual(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, key)): Path<(String, String)>,
+    Path((device, key)): Path<(rss_mdm_agent_wire::DeviceId, String)>,
     payload: BodyInput<Operation<ManualChange>>,
 ) -> std::result::Result<HttpResponse, Error> {
     let change = body(payload)?;
@@ -665,7 +665,7 @@ async fn inventory_scopes(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
     payload: std::result::Result<PageBody<ScopePageRequest>, Error>,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<HttpResponse>, Error> {
     let request = payload?.0;
@@ -707,7 +707,7 @@ async fn collection_run(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id)): Path<(String, Uuid)>,
+    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
     parameters: ParamInput<CollectionSelector>,
 ) -> std::result::Result<HttpResponse, Error> {
     let selector = params(parameters)?;
@@ -729,7 +729,7 @@ async fn list_items(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, key)): Path<(String, String)>,
+    Path((device, key)): Path<(rss_mdm_agent_wire::DeviceId, String)>,
     payload: std::result::Result<PageBody<ListPageRequest>, Error>,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<HttpResponse>, Error> {
     let request = payload?.0;
@@ -757,7 +757,7 @@ async fn collection_items(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id, key)): Path<(String, Uuid, String)>,
+    Path((device, id, key)): Path<(rss_mdm_agent_wire::DeviceId, Uuid, String)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<CollectionItemsQuery>,
     >,

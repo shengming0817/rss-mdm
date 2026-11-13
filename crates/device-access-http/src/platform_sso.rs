@@ -436,7 +436,7 @@ async fn complete(
 #[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ConfigurationQuery {
-    device_id: String,
+    device_id: rss_mdm_agent_wire::DeviceId,
 }
 async fn configuration(
     State(app): State<Arc<HttpState>>,

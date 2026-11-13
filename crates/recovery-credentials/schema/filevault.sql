@@ -8,14 +8,14 @@ CREATE TABLE mdm_recovery.filevault_custodies (
   , revision bigint NOT NULL DEFAULT 0 CHECK (revision >= 0)
   , enabled boolean NOT NULL DEFAULT FALSE
   , recipient text
-  , origin_device text NOT NULL
+  , origin_device uuid NOT NULL
   , PRIMARY KEY (tenant_id, id)
   , UNIQUE (tenant_id, id, epoch)
   , FOREIGN KEY (tenant_id, origin_device) REFERENCES mdm_access.devices (tenant_id, id)
 );
 CREATE TABLE mdm_recovery.filevault_sources (
     tenant_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , custody uuid NOT NULL
   , epoch bigint NOT NULL
   , active boolean NOT NULL DEFAULT TRUE
@@ -31,12 +31,12 @@ CREATE TABLE mdm_recovery.filevault_sources (
 );
 CREATE TABLE mdm_recovery.filevault_receipts (
     tenant_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , operation uuid NOT NULL
   , purpose text NOT NULL CHECK (purpose IN ('configure', 'upload', 'link'))
   , digest bytea NOT NULL CHECK (octet_length(digest) = 32)
   , receipt jsonb NOT NULL CHECK (octet_length(CAST(receipt AS text)) <= 8192)
-  , devices text[] NOT NULL CHECK (cardinality(devices) BETWEEN 1 AND 2)
+  , devices uuid[] NOT NULL CHECK (cardinality(devices) BETWEEN 1 AND 2)
   , PRIMARY KEY (tenant_id, device, operation)
   , FOREIGN KEY (tenant_id, device) REFERENCES mdm_access.devices (tenant_id, id)
 );
@@ -54,7 +54,7 @@ GRANT UPDATE(active,revision,enabled,recipient) ON mdm_recovery.filevault_custod
 GRANT UPDATE(custody,epoch,active,association,association_version) ON mdm_recovery.filevault_sources TO mdm_access,mdm_command_runtime;
 COMMIT;
 -- Resolve an authorized display/disclosure device through live ingress membership, not origin metadata.
-CREATE FUNCTION mdm_recovery.filevault_accessible(subject jsonb,device text) RETURNS boolean
+CREATE FUNCTION mdm_recovery.filevault_accessible(subject jsonb,device uuid) RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  SELECT subject->>'kind'='filevault' AND EXISTS(
   SELECT FROM mdm_recovery.filevault_custodies f
@@ -65,7 +65,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
    AND f.active AND s.active AND r.state='active' AND r.id=$2
    AND (s.association IS NULL OR mdm_devices.association_grant_current(s.association,s.association_version,s.device)))
 $$;
-REVOKE ALL ON FUNCTION mdm_recovery.filevault_accessible(jsonb,text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_recovery.filevault_accessible(jsonb,text) TO mdm_access,mdm_command_runtime,mdm_identity_runtime;
+REVOKE ALL ON FUNCTION mdm_recovery.filevault_accessible(jsonb,uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_recovery.filevault_accessible(jsonb,uuid) TO mdm_access,mdm_command_runtime,mdm_identity_runtime;
 
 GRANT UPDATE(coordinates) ON mdm_recovery.native_actions TO mdm_command_runtime;

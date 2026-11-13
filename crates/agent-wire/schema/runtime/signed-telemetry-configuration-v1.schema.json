@@ -455,6 +455,16 @@
         }
       ]
     },
+    "DeviceId": {
+      "format": "uuid",
+      "maxLength": 36,
+      "minLength": 36,
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
     "ExecutorProfile": {
       "description": "Fixed executor identity. There is no arbitrary command string.",
       "oneOf": [
@@ -2077,8 +2087,8 @@
           "description": "Exact collector plan and literal execution inputs."
         },
         "deviceId": {
-          "description": "Trusted device coordinate.",
-          "type": "string"
+          "$ref": "#/$defs/DeviceId",
+          "description": "Trusted device coordinate."
         },
         "executionMillis": {
           "description": "Maximum execution duration for the referenced collector.",

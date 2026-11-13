@@ -623,7 +623,7 @@ async fn enrollment(
         for (key, value) in &input.additional_context.0 {
             // A self-service request owns a new server identity. The terminal DeviceID
             // is descriptive input; it cannot select or supersede another registration.
-            if key == "DeviceID" && !auth.self_service && value != &auth.device {
+            if key == "DeviceID" && !auth.self_service && value != &auth.device.to_string() {
                 return Err(Error::Forbidden);
             }
         }
@@ -769,12 +769,12 @@ fn validate_timestamp(security: Option<&soap::Security>, now: i64) -> Result<(),
 pub async fn retire_in(
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    registration: &str,
+    registration: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<(), Error> {
     sqlx::query("UPDATE mdm_windows.push_channels SET lease_id = NULL, lease_until = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = $2")
-        .bind(tenant).bind(registration).execute(&mut *c).await.map_err(database::db)?;
+        .bind(tenant).bind(registration.into_uuid()).execute(&mut *c).await.map_err(database::db)?;
     sqlx::query("UPDATE mdm_access.management_sessions SET state = 'superseded' WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state IN ('challenge', 'collecting')")
-        .bind(tenant).bind(registration).execute(c).await.map_err(database::db)?;
+        .bind(tenant).bind(registration.into_uuid()).execute(c).await.map_err(database::db)?;
     Ok(())
 }
 

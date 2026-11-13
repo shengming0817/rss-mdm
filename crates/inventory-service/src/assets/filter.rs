@@ -220,7 +220,7 @@ enum InputState {
 }
 fn object(
     tenant: TenantId,
-    key: &str,
+    key: rss_mdm_agent_wire::ObjectRef,
     catalog: &Catalog,
     rule: &g::Rule,
     progress: &evaluation::EvaluationProgress,
@@ -291,7 +291,7 @@ pub(super) fn page(
         .map(|device| {
             object(
                 tenant,
-                &device.scalars.device,
+                rss_mdm_agent_wire::ObjectRef::Endpoint(device.scalars.device),
                 catalog,
                 rule,
                 progress,
@@ -340,7 +340,7 @@ pub(super) fn associated_page(
     for input in inputs {
         objects.push(object(
             tenant,
-            &input.object.key(),
+            input.object,
             catalog,
             rule,
             progress,
@@ -348,8 +348,7 @@ pub(super) fn associated_page(
                 let definition = checked_input(catalog.definition(key))?;
                 let allowed = |device: &DeviceSummary, e: &rss_mdm_inventory::Evidence| {
                     input.members.iter().any(|m| {
-                        m.device == device.scalars.device
-                            && e.device_id.as_deref() == Some(m.device.as_str())
+                        m.device == device.scalars.device && e.device_id.as_ref() == Some(&m.device)
                     })
                 };
                 if matches!(definition.value_type, ValueType::Array { .. }) {
@@ -362,7 +361,7 @@ pub(super) fn associated_page(
                                 .flat_map(|f| f.sources.iter())
                                 .filter(|f| allowed(d, &f.evidence))
                                 .map(|f| rss_mdm_inventory::EndpointArrayFact {
-                                    endpoint: d.scalars.device.clone(),
+                                    endpoint: d.scalars.device,
                                     fact: f.clone(),
                                 })
                         })
@@ -395,7 +394,7 @@ pub(super) fn associated_page(
                                 .flat_map(|f| f.sources.iter())
                                 .filter(|f| allowed(d, &f.evidence))
                                 .map(|f| rss_mdm_inventory::EndpointSourceFact {
-                                    endpoint: d.scalars.device.clone(),
+                                    endpoint: d.scalars.device,
                                     fact: f.clone(),
                                 })
                         })
@@ -427,7 +426,7 @@ pub(super) fn associated_page(
 }
 
 pub struct FactPage {
-    pub contexts: BTreeMap<(String, String), DeviceSummary>,
+    pub contexts: BTreeMap<(rss_mdm_agent_wire::DeviceId, String), DeviceSummary>,
     pub coverage: BTreeSet<String>,
     pub objects: Vec<g::ObjectSnapshot>,
 }

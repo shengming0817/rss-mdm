@@ -115,7 +115,7 @@ pub(crate) async fn many(
                         {
                             continue;
                         }
-                        removals.push((index, device.clone(), native.objects()?));
+                        removals.push((index, *device, native.objects()?));
                         results[index] = true;
                     } else {
                         let retained = matches!(exit, rss_mdm_policy::Exit::Retain)
@@ -135,7 +135,7 @@ pub(crate) async fn many(
         if !removals.is_empty() {
             let devices = removals
                 .iter()
-                .map(|r| r.1.clone())
+                .map(|r| r.1)
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect::<Vec<_>>();
@@ -235,7 +235,7 @@ async fn configuration_claims(
     if input.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let rows=sqlx::query_as::<_,(i64,bool)>("WITH input AS(SELECT value FROM jsonb_array_elements($2)) SELECT (x.value->>'n')::bigint,EXISTS(SELECT 1 FROM mdm_planning.configuration_claims cc JOIN mdm_planning.configuration_operations o ON(o.tenant_id,o.id)=(cc.tenant_id,cc.operation) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(cc.tenant_id,cc.policy) WHERE cc.tenant_id=$1::uuid AND cc.device=x.value->>'device' AND o.authority->>'unit'=x.value->>'unit' AND p.state='enabled') FROM input x").bind(tenant).bind(Value::Array(input)).fetch_all(c).await.map_err(db)?;
+    let rows=sqlx::query_as::<_,(i64,bool)>("WITH input AS(SELECT value FROM jsonb_array_elements($2)) SELECT (x.value->>'n')::bigint,EXISTS(SELECT 1 FROM mdm_planning.configuration_claims cc JOIN mdm_planning.configuration_operations o ON(o.tenant_id,o.id)=(cc.tenant_id,cc.operation) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(cc.tenant_id,cc.policy) WHERE cc.tenant_id=$1::uuid AND cc.device=(x.value->>'device')::uuid AND o.authority->>'unit'=x.value->>'unit' AND p.state='enabled') FROM input x").bind(tenant).bind(Value::Array(input)).fetch_all(c).await.map_err(db)?;
     Ok(rows
         .into_iter()
         .map(|(index, valid)| (index as usize, valid))
@@ -255,7 +255,7 @@ async fn retirement_sources(
         else {
             return Err(Error::Malformed);
         };
-        targets.push((*execution, device.clone()));
+        targets.push((*execution, *device));
         executions.insert(*index, *execution);
     }
     let lifecycle =
@@ -266,7 +266,7 @@ async fn retirement_sources(
         .iter()
         .map(|(n, a)| json!({"n":n,"a":a}))
         .collect::<Vec<_>>();
-    let rows=sqlx::query_as::<_,(i64,bool)>("WITH input AS (SELECT value -> 'a' AS a, CAST(value ->> 'n' AS bigint) AS n FROM jsonb_array_elements($2)) SELECT x.n, EXISTS (SELECT 1 FROM mdm_devices.retirement_work AS w INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (w.tenant_id, w.device) WHERE w.tenant_id = CAST($1 AS uuid) AND w.operation = CAST(x.a ->> 'retirement' AS uuid) AND w.device = CAST(x.a ->> 'registration' AS text) AND w.execution = CAST(x.a ->> 'execution' AS uuid) AND r.id = x.a ->> 'device' AND r.state = 'active') FROM input AS x").bind(tenant).bind(Value::Array(inputs)).fetch_all(c).await.map_err(db)?;
+    let rows=sqlx::query_as::<_,(i64,bool)>("WITH input AS (SELECT value -> 'a' AS a, CAST(value ->> 'n' AS bigint) AS n FROM jsonb_array_elements($2)) SELECT x.n, EXISTS (SELECT 1 FROM mdm_devices.retirement_work AS w INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (w.tenant_id, w.device) WHERE w.tenant_id = CAST($1 AS uuid) AND w.operation = CAST(x.a ->> 'retirement' AS uuid) AND w.device = CAST(x.a ->> 'device' AS uuid) AND w.execution = CAST(x.a ->> 'execution' AS uuid) AND r.state = 'active') FROM input AS x").bind(tenant).bind(Value::Array(inputs)).fetch_all(c).await.map_err(db)?;
     rows.into_iter()
         .map(|(index, valid)| {
             let index = index as usize;

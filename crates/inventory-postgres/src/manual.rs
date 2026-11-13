@@ -7,7 +7,7 @@ use sqlx::Row;
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Assignment {
     /// Stable device identity.
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     /// Manual dictionary key.
     pub field: FieldKey,
     /// CAS revision.
@@ -43,7 +43,9 @@ pub(crate) fn decode_records(rows: Vec<crate::snapshot_record::Record>) -> Resul
                 "scalar assignment contains inline array"
             );
             Ok(Assignment {
-                device: row.try_get("device")?,
+                device: rss_mdm_agent_wire::DeviceId::try_from(
+                    row.try_get::<uuid::Uuid, _>("device")?,
+                )?,
                 field: FieldKey::parse(row.try_get("field")?)?,
                 revision: row.try_get("revision")?,
                 fact,
@@ -57,7 +59,7 @@ pub(crate) fn decode_records(rows: Vec<crate::snapshot_record::Record>) -> Resul
 pub async fn assign_in(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     field: FieldKey,
     expected: i64,
     state: &State,
@@ -78,7 +80,7 @@ pub async fn assign_in(
     };
     rss_mdm_inventory::resolve(definition, vec![fact.clone()])?;
     let old=sqlx::query("SELECT revision,fact,last_known_version FROM mdm.manual_assignments WHERE tenant_id=$1::uuid AND device=$2 AND field=$3 FOR UPDATE")
-        .bind(tenant.to_string()).bind(device).bind(field.as_str()).fetch_optional(&mut *c).await?;
+        .bind(tenant.to_string()).bind(device.into_uuid()).bind(field.as_str()).fetch_optional(&mut *c).await?;
     if old
         .as_ref()
         .map(|row| row.try_get::<i64, _>("revision"))
@@ -121,12 +123,12 @@ pub async fn assign_in(
             .flatten();
     }
     let revision=sqlx::query_scalar("INSERT INTO mdm.manual_assignments(tenant_id,device,field,revision,fact,value_version,last_known_version) SELECT $1::uuid,$2,$3,1,$5,$6,$7 WHERE $4=0 ON CONFLICT(tenant_id,device,field) DO NOTHING RETURNING revision")
-        .bind(tenant.to_string()).bind(device).bind(field.as_str()).bind(expected).bind(&document).bind(&value_version).bind(&last_version).fetch_optional(&mut *c).await?;
+        .bind(tenant.to_string()).bind(device.into_uuid()).bind(field.as_str()).bind(expected).bind(&document).bind(&value_version).bind(&last_version).fetch_optional(&mut *c).await?;
     let revision = if revision.is_some() {
         revision
     } else {
         sqlx::query_scalar("UPDATE mdm.manual_assignments SET revision=revision+1,fact=$5,value_version=$6,last_known_version=$7 WHERE tenant_id=$1::uuid AND device=$2 AND field=$3 AND revision=$4 RETURNING revision")
-            .bind(tenant.to_string()).bind(device).bind(field.as_str()).bind(expected).bind(document).bind(value_version).bind(last_version).fetch_optional(&mut *c).await?
+            .bind(tenant.to_string()).bind(device.into_uuid()).bind(field.as_str()).bind(expected).bind(document).bind(value_version).bind(last_version).fetch_optional(&mut *c).await?
     };
     if revision.is_some()
         && let Some(array) = array

@@ -188,16 +188,11 @@ impl Configuration {
         {
             return Err(WireError::InvalidValue);
         }
-        if let Audience::Device { device } = &self.audience
-            && !crate::runtime::valid_device_id(device)
-        {
-            return Err(WireError::InvalidValue);
-        }
         Ok(())
     }
     /// Match an already authenticated DA identity. This checks audience only, not time,
     /// signature, current publication or native installation; consumers qualify those separately.
-    pub fn permits(&self, identity: &super::ReportIdentity, device: &str) -> bool {
+    pub fn permits(&self, identity: &super::ReportIdentity, device: &crate::DeviceId) -> bool {
         identity.validate().is_ok()
             && self.service_id == identity.service_id
             && self.tenant == identity.tenant

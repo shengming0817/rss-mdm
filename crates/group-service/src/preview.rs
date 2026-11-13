@@ -3,10 +3,11 @@
 //! Synchronous evaluation also retains the core work/byte budgets; a timeout alone is insufficient.
 use super::*;
 use assets::evaluation::EvaluationStep;
+use rss_mdm_agent_wire::ObjectRef;
 use rss_mdm_audit_integration::{AuditIntent, RequestAudit, budget::AuditBudget};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_group::{AssetContext, Decision, GroupSource};
-use rss_mdm_inventory_service::objects::{ObjectRef, ObjectSnapshot};
+use rss_mdm_inventory_service::objects::ObjectSnapshot;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, time::Duration};
 
@@ -246,7 +247,7 @@ impl Groups {
                         snapshot,
                         condition: &request.criteria,
                         rule,
-                        after: after.clone(),
+                        after,
                         limit: limit.min(SCAN_OBJECTS - scanned),
                         selected: None,
                         progress: progress.take(),
@@ -281,7 +282,7 @@ impl Groups {
             }
             let key = after
                 .as_ref()
-                .map(|s| checked_input(rss_mdm_group::ObjectKey::new(self.tenant, s)))
+                .map(|s| checked_input(rss_mdm_group::ObjectKey::new(self.tenant, *s)))
                 .transpose()?;
             let evaluated = rule.evaluate_page(
                 &rss_mdm_group::PageInput {
@@ -316,10 +317,12 @@ impl Groups {
                 .or(after);
             for object in evaluated.objects {
                 if object.decision == Decision::Match {
-                    items.push(group_checked(ObjectRef::from_key(
-                        request.asset_context,
-                        object.key.id(),
-                    ))?);
+                    items.push(group_checked(
+                        rss_mdm_inventory_service::objects::checked_context(
+                            request.asset_context,
+                            &object.key.id(),
+                        ),
+                    )?);
                     if items.len() == SAMPLE_LIMIT {
                         return Ok((items, false));
                     }

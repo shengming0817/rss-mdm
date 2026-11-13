@@ -1,5 +1,5 @@
 use super::*;
-use rss_mdm_scope::Reference;
+use rss_mdm_agent_wire::ObjectRef;
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScopePage {
@@ -18,7 +18,7 @@ enum ScopeItems {
 }
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
 struct ScopeMember {
-    object: rss_mdm_inventory_service::objects::ObjectRef,
+    object: rss_mdm_agent_wire::ObjectRef,
     available: bool,
 }
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
@@ -30,7 +30,7 @@ enum Qualification {
 }
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
 struct ScopeDecision {
-    object: rss_mdm_inventory_service::objects::ObjectRef,
+    object: rss_mdm_agent_wire::ObjectRef,
     /// Frozen qualification of this published result; availability is evaluated now.
     qualification: Qualification,
     available: bool,
@@ -41,8 +41,14 @@ struct ScopeDecision {
 }
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
 struct ScopeSource {
-    reference: Reference,
+    reference: ResolvedSource,
     version: u64,
+}
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ResolvedSource {
+    Direct { object: ObjectRef },
+    Group { id: Uuid },
 }
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -58,10 +64,10 @@ fn sources(refs: &[rss_mdm_scope::SourceRef]) -> transaction::Result<Vec<ScopeSo
         .map(|r| {
             Ok(ScopeSource {
                 reference: match r.id() {
-                    rss_mdm_scope::SourceId::Direct(id) => Reference::Device(id.value().into()),
-                    rss_mdm_scope::SourceId::Group(id) => {
-                        Reference::Group(stored(Uuid::parse_str(id.value()))?)
-                    }
+                    rss_mdm_scope::SourceId::Direct(id) => ResolvedSource::Direct {
+                        object: id.object(),
+                    },
+                    rss_mdm_scope::SourceId::Group(id) => ResolvedSource::Group { id: id.value() },
                 },
                 version: r.version(),
             })
@@ -113,6 +119,12 @@ impl Scopes {
                 )
             })
             .transpose()?;
+        let after = after
+            .map(|object| match object {
+                rss_mdm_agent_wire::ObjectRef::Endpoint(id) => Ok(id),
+                rss_mdm_agent_wire::ObjectRef::Association(_) => Err(Error::Malformed),
+            })
+            .transpose()?;
         let projection = &self.projection;
         let tenant = self.tenant;
         let channel = query.channel;
@@ -125,7 +137,7 @@ impl Scopes {
                     scope,
                     run: result,
                     channel,
-                    after: after.as_deref(),
+                    after: after.as_ref(),
                     limit,
                 },
             )
@@ -146,7 +158,7 @@ impl Scopes {
                             tenant: self.tenant.to_string(),
                             result,
                             binding,
-                            after: after.clone(),
+                            after: rss_mdm_agent_wire::ObjectRef::Endpoint(*after),
                         },
                     )
                 })
@@ -171,12 +183,12 @@ impl Scopes {
                     },
                 )
                 .await?;
-            let object = rss_mdm_inventory_service::objects::ObjectRef::Endpoint(device);
+            let object = rss_mdm_agent_wire::ObjectRef::Endpoint(device);
             let qualification = if d.pending {
                 Qualification::Pending
             } else if d.matched && d.entry > 0 {
                 items.push(ScopeMember {
-                    object: object.clone(),
+                    object,
                     available: d.available,
                 });
                 Qualification::Eligible { entry: d.entry }

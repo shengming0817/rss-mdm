@@ -16,7 +16,7 @@ mod presentation;
 mod snapshot;
 pub mod view_response;
 mod views;
-pub use views::ViewRef;
+use rss_mdm_agent_wire::ObjectRef;
 mod identity;
 pub use identity::Hardware;
 mod identity_projection;
@@ -132,3 +132,15 @@ pub use storage_authority::verify_authority;
 
 /// Fixed device controls and management retirement.
 pub mod control;
+
+/// Product identity validation at native relational boundaries.
+pub(crate) fn device_id(
+    id: uuid::Uuid,
+) -> std::result::Result<rss_mdm_agent_wire::DeviceId, sqlx::Error> {
+    rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+}
+pub(crate) fn device_ids(
+    ids: Vec<uuid::Uuid>,
+) -> std::result::Result<Vec<rss_mdm_agent_wire::DeviceId>, sqlx::Error> {
+    ids.into_iter().map(device_id).collect()
+}

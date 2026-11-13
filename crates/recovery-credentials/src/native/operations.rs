@@ -85,7 +85,7 @@ impl Service {
     pub async fn create_recovery_credential(
         &self,
         proof: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         input: &Input,
         audit: &RequestAudit,
     ) -> std::result::Result<super::AcceptedReceipt, Error> {
@@ -164,7 +164,7 @@ impl Service {
                     if let Action::ReconcileRecoveryLock { operation, .. } = &input.action {
                         let original =
                             storage::load(tx, &service.transactions.protection, *operation).await?;
-                        if original.device != device
+                        if original.device != *device
                             || !service
                                 .transactions
                                 .required_command(tx, &original)
@@ -222,7 +222,7 @@ impl Service {
                         .queue_authorized_in(tx, device, &native, authority, fingerprint, audit)
                         .await?;
                     let binding = Binding {
-                        device: device.into(),
+                        device: *device,
 
                         subject: Subject::RecoveryLock,
                     };
@@ -270,7 +270,7 @@ async fn prepare(
     c: &mut sqlx::PgConnection,
     protection: &credentials::Protection,
     tenant: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     input: &Input,
 ) -> std::result::Result<(Request, vault::NativeAction), credentials::Error> {
     use credentials::Error as E;
@@ -297,7 +297,7 @@ async fn prepare(
             c,
             &credentials::filevault::Source {
                 tenant,
-                device: device.into(),
+                device: *device,
             },
             true,
         )
@@ -306,7 +306,7 @@ async fn prepare(
         None
     };
     let binding = |subject| Binding {
-        device: device.into(),
+        device: *device,
 
         subject,
     };

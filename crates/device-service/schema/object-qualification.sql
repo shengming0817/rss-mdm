@@ -15,7 +15,7 @@ BEGIN
   IF EXISTS(SELECT FROM mdm.asset_changes e WHERE e.tenant_id=tenant
    AND NOT mdm.asset_visible((SELECT from_cut FROM mdm_devices.checkpoints WHERE tenant_id=tenant),e.revision)
    AND (e.kind IN('device','source','credential') OR e.fields && ARRAY['device.serial_number','device.hardware_uuid','device.manufacturer']::text[])
-   AND (e.identity->>'device' IN(SELECT m->>'device' FROM jsonb_array_elements(p_input->'members') m)
+   AND ((e.identity->>'device')::uuid IN(SELECT (m->>'device')::uuid FROM jsonb_array_elements(p_input->'members') m)
     OR e.identity->>'device' IS NULL)
   ) THEN RETURN NULL; END IF;
   -- Automatic matches reject a new competitor before Device fanout. Explicit
@@ -27,18 +27,18 @@ BEGIN
    ) k JOIN mdm_assets.hardware_keys p ON p.tenant_id=a.tenant_id AND p.kind=k.kind AND p.value=k.value
    WHERE a.tenant_id=tenant AND a.id=(p_input#>>'{object,id}')::uuid
     AND a.confirmed_by='device-associations'
-    AND p.device NOT IN(SELECT m->>'device' FROM jsonb_array_elements(p_input->'members') m)
+    AND p.device NOT IN(SELECT (m->>'device')::uuid FROM jsonb_array_elements(p_input->'members') m)
   ) THEN RETURN NULL; END IF;
-  SELECT v.input INTO live FROM mdm_devices.object_heads h JOIN mdm_devices.object_versions v USING(tenant_id,object,revision)
+  SELECT v.input INTO live FROM mdm_devices.object_heads h JOIN mdm_devices.object_versions v USING(tenant_id,object_kind,object_id,revision)
   JOIN mdm_devices.associations a ON(a.tenant_id,a.id)=(v.tenant_id,(p_input#>>'{object,id}')::uuid)
-  WHERE h.tenant_id=tenant AND h.object='association:'||(p_input#>>'{object,id}')
+  WHERE h.tenant_id=tenant AND h.object_kind=1 AND h.object_id=(p_input#>>'{object,id}')::uuid
     AND a.version=(p_input->>'associationVersion')::bigint AND a.state='confirmed';
   IF NOT FOUND OR live->>'verified' IS DISTINCT FROM 'true'
    OR live->'associationVersion' IS DISTINCT FROM p_input->'associationVersion'
    OR live->'members' IS DISTINCT FROM p_input->'members' THEN RETURN NULL; END IF;
   IF EXISTS(SELECT FROM jsonb_array_elements(p_input->'members') member WHERE NOT EXISTS(
    SELECT FROM mdm_devices.members m WHERE m.tenant_id=tenant AND m.association_id=(p_input#>>'{object,id}')::uuid
-    AND NOT m.released AND m.device=member->>'device' AND m.channel=member->>'channel'
+    AND NOT m.released AND m.device=(member->>'device')::uuid AND m.channel=member->>'channel'
   )) THEN RETURN NULL; END IF;
  ELSIF p_input#>>'{object,kind}' IS DISTINCT FROM 'endpoint' THEN
   RAISE EXCEPTION 'invalid device object' USING ERRCODE='23514';

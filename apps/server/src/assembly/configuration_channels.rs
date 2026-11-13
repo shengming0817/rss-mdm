@@ -165,7 +165,7 @@ impl Channels for ConfigurationChannels {
                     cfg::Task::Windows { request } => {
                         windows.push(rss_mdm_windows_channel::results::Read {
                             id: r.id,
-                            device: r.device.clone(),
+                            device: r.device,
 
                             request,
                             values: values && !sensitive,
@@ -243,7 +243,7 @@ impl Channels for ConfigurationChannels {
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         input: &'a cfg::Create,
         owner: String,
     ) -> Pending<'a, Vec<rss_mdm_authorization_service::Permission>> {
@@ -254,7 +254,7 @@ impl Channels for ConfigurationChannels {
                     .previous_profiles(
                         c,
                         tenant.to_string(),
-                        device.into(),
+                        *device,
                         input.target.user_key().into(),
                         identifier.into(),
                     )
@@ -270,7 +270,7 @@ impl Channels for ConfigurationChannels {
                     .previous_declarations(
                         c,
                         tenant.to_string(),
-                        device.into(),
+                        *device,
                         input.target.user_key().into(),
                         owner,
                     )
@@ -366,7 +366,7 @@ impl WindowsEvidence for ConfigurationChannels {
         c: &'a mut PgConnection,
         tenant: TenantId,
         id: Uuid,
-        registration: String,
+        registration: rss_mdm_agent_wire::DeviceId,
         request: rss_mdm_windows_mdm::native::Execution,
     ) -> Pending<'a, rss_mdm_windows_mdm::native::verification::EffectAssessment> {
         Box::pin(async move {
@@ -376,7 +376,7 @@ impl WindowsEvidence for ConfigurationChannels {
                     tenant,
                     &[rss_mdm_windows_channel::results::Read {
                         id,
-                        device: registration.to_string(),
+                        device: registration,
 
                         request,
                         values: false,

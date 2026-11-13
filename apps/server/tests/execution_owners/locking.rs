@@ -339,18 +339,35 @@ async fn partial_endpoint_fence_acquisition_is_rolled_back() -> Result<()> {
     use sqlx::Connection;
     let mut connection = sqlx::PgConnection::connect_with(&c.operator.connect_options()).await?;
     let mut observer = connection.begin().await?;
-    lock_device_in(profile, &mut blocker, &tenant, "z-endpoint").await?;
+    lock_device_in(
+        profile,
+        &mut blocker,
+        &tenant,
+        &rss_mdm_agent_wire::DeviceId::parse("ffffffff-ffff-4fff-8fff-ffffffffffff")?,
+    )
+    .await?;
     assert!(
         !try_lock_devices_in(
             profile,
             &mut attempt,
             &tenant,
-            &["a-endpoint".into(), "z-endpoint".into()]
+            &[
+                rss_mdm_agent_wire::DeviceId::parse("00000000-0000-4000-8000-000000000001")?,
+                rss_mdm_agent_wire::DeviceId::parse("ffffffff-ffff-4fff-8fff-ffffffffffff")?
+            ]
         )
         .await?
     );
     assert!(
-        try_lock_devices_in(profile, &mut observer, &tenant, &["a-endpoint".into()]).await?,
+        try_lock_devices_in(
+            profile,
+            &mut observer,
+            &tenant,
+            &[rss_mdm_agent_wire::DeviceId::parse(
+                "00000000-0000-4000-8000-000000000001"
+            )?]
+        )
+        .await?,
         "the failed batch retained its first fence"
     );
     observer.rollback().await?;

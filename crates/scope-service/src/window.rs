@@ -54,7 +54,7 @@ pub fn after(
     codec: &CursorCodec,
     query: &rss_mdm_query::window::Query,
     binding: &str,
-) -> Result<Option<String>, Error> {
+) -> Result<Option<rss_mdm_agent_wire::ObjectRef>, Error> {
     query
         .cursor()
         .as_ref()
@@ -71,7 +71,7 @@ pub fn after(
 pub fn next(
     codec: &CursorCodec,
     binding: &str,
-    position: Option<String>,
+    position: Option<rss_mdm_agent_wire::ObjectRef>,
 ) -> Result<Option<String>, Error> {
     position
         .map(|p| {

@@ -5,7 +5,7 @@ impl AssetService {
     pub(super) async fn assign_asset(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         field: FieldKey,
         change: &Operation<ManualChange>,
         owner: &Owner,
@@ -16,7 +16,6 @@ impl AssetService {
         if !definition.manual || change.expected_revision >= i64::MAX as u64 {
             return Err(Error::Malformed.into());
         }
-        checked_input(rss_observation::Id::new(device))?;
         let tenant = self.tenant.to_string();
         let id = device.to_owned();
         let exists: bool = tx
@@ -75,7 +74,7 @@ impl AssetService {
             .await?
             .ok_or(Error::Conflict)?;
         Ok(Response::Assignment {
-            device: device.into(),
+            device: *device,
             field,
             revision,
         })

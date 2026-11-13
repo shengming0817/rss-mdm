@@ -74,7 +74,7 @@ pub(super) async fn seed(
     sqlx::query("INSERT INTO mdm_access.registration_operations(tenant_id,actor,instance,operation_id,digest,result,action,device,self_enrollment) VALUES($1::uuid,$2,$3,$4,$5,$6,'agent_settings_update',NULL,false)")
         .bind(c.tenant.to_string()).bind(p.principal_id()).bind(p.instance_id()).bind(id).bind("a".repeat(64)).bind(json!({"revision":11}).to_string()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_devices.operations(tenant_id,operation_id,actor,instance,digest,result) VALUES($1::uuid,$2,$3,$4,$5,$6)")
-        .bind(c.tenant.to_string()).bind(id).bind(p.principal_id()).bind(p.instance_id()).bind(vec![17_u8;32]).bind(json!({"operationId":id,"devices":["original-device"],"state":"active"})).execute(&mut *tx).await?;
+        .bind(c.tenant.to_string()).bind(id).bind(p.principal_id()).bind(p.instance_id()).bind(vec![17_u8;32]).bind(json!({"operationId":id,"devices":["ee6773b3-afb2-4aa3-a726-37a6d8e31b56"],"state":"active"})).execute(&mut *tx).await?;
     pki_receipts(&mut tx, &c.tenant.to_string(), id).await?;
     sqlx::query("INSERT INTO mdm_webhook.operations(tenant_id,id,fingerprint,response) VALUES($1::uuid,$2,$3,$4)")
         .bind(c.tenant.to_string()).bind(id).bind(vec![17_u8;32]).bind(json!({"id":Uuid::new_v4(),"revision":12,"enabled":false})).execute(&mut *tx).await?;
@@ -95,13 +95,13 @@ pub(super) async fn seed(
         ),
     ] {
         let actor = format!(
-            "self-service:{}:{}:original-device",
+            "self-service:{}:{}:ee6773b3-afb2-4aa3-a726-37a6d8e31b56",
             p.instance_id(),
             Uuid::new_v4()
         );
         let response = json!({"requestId":id,"runId":Uuid::new_v4(),"policyId":Uuid::new_v4(),"policyRevision":revision,"policyVersion":Uuid::new_v4()});
         let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new("INSERT INTO ");
-        query.push(table).push("(tenant_id,actor,id,fingerprint,response,device) VALUES($1::uuid,$2,$3,$4,$5,'original-device')");
+        query.push(table).push("(tenant_id,actor,id,fingerprint,response,device) VALUES($1::uuid,$2,$3,$4,$5,'ee6773b3-afb2-4aa3-a726-37a6d8e31b56')");
         query
             .build()
             .bind(c.tenant.to_string())
@@ -113,7 +113,7 @@ pub(super) async fn seed(
             .await?;
         let query = url::form_urlencoded::Serializer::new(String::new())
             .append_pair("actor", &actor)
-            .append_pair("device", "original-device")
+            .append_pair("device", "ee6773b3-afb2-4aa3-a726-37a6d8e31b56")
             .finish();
         invocations.push((
             owner,

@@ -4,7 +4,7 @@ REVOKE ALL ON SCHEMA mdm_telemetry FROM PUBLIC;
 CREATE TABLE mdm_telemetry.batches (
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , credential uuid NOT NULL
   , source text NOT NULL CHECK (source IN ('agent.native', 'agent.script', 'agent.osquery'))
   , epoch uuid NOT NULL
@@ -56,7 +56,7 @@ GRANT UPDATE(version,digest,retired_through) ON mdm_telemetry.definition_progres
 
 -- Admission cardinality only: no sampled values and no second series store.
 CREATE TABLE mdm_telemetry.resources (
- tenant_id uuid NOT NULL, device text NOT NULL, field text NOT NULL, resource text NOT NULL,
+ tenant_id uuid NOT NULL, device uuid NOT NULL, field text NOT NULL, resource text NOT NULL,
  PRIMARY KEY(tenant_id,device,field,resource)
 );
 ALTER TABLE mdm_telemetry.resources ENABLE ROW LEVEL SECURITY;
@@ -80,7 +80,7 @@ GRANT UPDATE(result) ON mdm_telemetry.maintenance TO mdm_telemetry_runtime;
 -- Scheduling coordinates only; immutable field history and RSS remain authoritative.
 CREATE TABLE mdm_telemetry.retention_targets (
  tenant_id uuid NOT NULL,id bytea NOT NULL CHECK(octet_length(id)=32),
- device text NOT NULL,field text NOT NULL,version bigint NOT NULL CHECK(version>0),resource text NOT NULL,
+ device uuid NOT NULL,field text NOT NULL,version bigint NOT NULL CHECK(version>0),resource text NOT NULL,
  stream jsonb NOT NULL,dimensions jsonb NOT NULL,
  due_at bigint NOT NULL CHECK(due_at>=0),next_check bigint NOT NULL CHECK(next_check>=0),
  phase smallint NOT NULL CHECK(phase IN(0,1,2)),result jsonb,PRIMARY KEY(tenant_id,id)
@@ -118,7 +118,7 @@ GRANT SELECT,INSERT ON mdm_telemetry.storage_binding TO mdm_telemetry_runtime;
 CREATE TABLE mdm_telemetry.gap_reports (
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , input_digest bytea NOT NULL CHECK (octet_length(input_digest) = 32)
   , report jsonb NOT NULL CHECK (jsonb_typeof(report) = 'object')
   , received_at bigint NOT NULL CHECK (received_at >= 0)

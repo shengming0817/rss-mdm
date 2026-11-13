@@ -4,7 +4,7 @@ CREATE TABLE mdm_access.agent_native_enrollments (
   , task uuid NOT NULL
   , attempt uuid NOT NULL
   , operation uuid NOT NULL
-  , source_device text NOT NULL
+  , source_device uuid NOT NULL
   , request uuid NOT NULL
   , request_digest text NOT NULL
   , authority jsonb NOT NULL

@@ -28,11 +28,11 @@ ALTER TABLE ONLY mdm_assets.asset_query_facets FORCE ROW LEVEL SECURITY;
 CREATE TABLE mdm_assets.asset_query_results (
     tenant_id uuid NOT NULL,
     run uuid NOT NULL,
-    device text NOT NULL COLLATE pg_catalog."C",
+    device uuid NOT NULL,
     sort_key bytea NOT NULL,
     document bytea NOT NULL,
     digest bytea NOT NULL,
-    CONSTRAINT asset_query_results_device_check CHECK (((octet_length(device) >= 1) AND (octet_length(device) <= 256))),
+    CONSTRAINT asset_query_results_device_check CHECK(device <> '00000000-0000-0000-0000-000000000000'::uuid),
     CONSTRAINT asset_query_results_digest_check CHECK ((octet_length(digest) = 32)),
     CONSTRAINT asset_query_results_document_check CHECK ((octet_length(document) <= 1048576)),
     CONSTRAINT asset_query_results_sort_key_check CHECK ((octet_length(sort_key) <= 1024))
@@ -47,7 +47,8 @@ CREATE TABLE mdm_assets.asset_query_runs (
     started boolean NOT NULL DEFAULT false,
     completed boolean NOT NULL DEFAULT false,
     failure text CONSTRAINT asset_query_failure_terminal CHECK(failure IS NULL OR completed),
-    cursor text,
+    cursor_kind smallint CHECK(cursor_kind IN(0,1)), cursor uuid,
+    CONSTRAINT asset_query_runs_cursor_pair CHECK((cursor_kind IS NULL)=(cursor IS NULL)),
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
     total bigint DEFAULT 0 NOT NULL,

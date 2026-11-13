@@ -49,7 +49,8 @@ fn assessment_preserves_all_platform_sources_and_field_datasets() {
     let sources = ["agent.builtin", "agent.script", "agent.osquery"]
         .map(|source| SourceReference {
             source: source.into(),
-            device_id: "device".into(),
+            device_id: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
+                .unwrap(),
             epoch: "epoch".into(),
         })
         .to_vec();
@@ -61,7 +62,10 @@ fn assessment_preserves_all_platform_sources_and_field_datasets() {
             .map(|dataset| FactReference {
                 source: "mdm.windows".into(),
                 dataset: Some(dataset.into()),
-                device_id: Some("device".into()),
+                device_id: Some(
+                    rss_mdm_agent_wire::DeviceId::parse("00000000-0000-0000-0000-000000000001")
+                        .unwrap(),
+                ),
                 epoch: Some("epoch".into()),
                 snapshot_id: format!("{dataset}-snapshot"),
                 observed_at: 1,

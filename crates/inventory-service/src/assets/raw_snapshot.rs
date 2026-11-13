@@ -4,7 +4,7 @@ use rss_mdm_inventory::{ArrayFact, Catalog, CollectionScope, Source, SourceFact,
 
 #[derive(serde::Deserialize)]
 struct SourceRow {
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
     channel: String,
     source: String,
     epoch: String,
@@ -26,7 +26,7 @@ pub async fn read_on(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
     cut: &rss_mdm_inventory::AssetCut,
-    ids: &[String],
+    ids: &[rss_mdm_agent_wire::DeviceId],
     catalog: &Catalog,
     scope: &CollectionScope,
 ) -> Result<Vec<DeviceSummary>> {
@@ -41,7 +41,7 @@ pub async fn read_on(
     let raw: Value =
         sqlx::query_scalar(crate::storage_profile::sql(profile).assets_raw_snapshot_read_on_1)
             .bind(tenant.to_string())
-            .bind(ids)
+            .bind(ids.iter().map(|id| id.into_uuid()).collect::<Vec<_>>())
             .bind(keys)
             .bind(cut.to_json())
             .bind(stored(serde_json::to_value(scope))?)
@@ -53,7 +53,7 @@ pub async fn read_on(
 pub fn decode(
     profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
-    ids: &[String],
+    ids: &[rss_mdm_agent_wire::DeviceId],
     catalog: &Catalog,
     scope: &CollectionScope,
     raw: Value,
@@ -67,10 +67,10 @@ pub fn decode(
         .iter()
         .map(|id| {
             (
-                id.clone(),
+                *id,
                 DeviceView {
                     collection_scope: scope.clone(),
-                    device: id.clone(),
+                    device: *id,
                     channels: BTreeSet::new(),
                     fields: BTreeMap::new(),
                     lists: BTreeMap::new(),
@@ -107,8 +107,10 @@ pub fn decode(
         stored(serde_json::from_value(raw["manual"].clone()))?,
         stored(serde_json::from_value(raw["versions"].clone()))?,
     ))?;
-    let mut scalars: BTreeMap<(String, FieldKey), Vec<SourceFact>> = BTreeMap::new();
-    let mut arrays: BTreeMap<(String, FieldKey), Vec<ArrayFact>> = BTreeMap::new();
+    let mut scalars: BTreeMap<(rss_mdm_agent_wire::DeviceId, FieldKey), Vec<SourceFact>> =
+        BTreeMap::new();
+    let mut arrays: BTreeMap<(rss_mdm_agent_wire::DeviceId, FieldKey), Vec<ArrayFact>> =
+        BTreeMap::new();
     for row in facts.scalars {
         if &row.fact.evidence.scope != scope {
             continue;
@@ -117,7 +119,7 @@ pub fn decode(
             .get(&row.scope)
             .ok_or(Error::Unavailable(Failure::AssetsStorage))?;
         scalars
-            .entry((device.clone(), row.field))
+            .entry((*device, row.field))
             .or_default()
             .push(row.fact);
     }
@@ -129,7 +131,7 @@ pub fn decode(
             .get(&row.scope)
             .ok_or(Error::Unavailable(Failure::AssetsStorage))?;
         arrays
-            .entry((device.clone(), row.field))
+            .entry((*device, row.field))
             .or_default()
             .push(row.fact);
     }
@@ -181,7 +183,7 @@ pub fn decode(
                 let key = definition.key;
                 if matches!(definition.value_type, ValueType::Array { .. }) {
                     let facts = arrays
-                        .remove(&(id.clone(), key))
+                        .remove(&(id, key))
                         .unwrap_or_default()
                         .into_iter()
                         .filter(|f| definition.sources.contains_key(&f.evidence.source))
@@ -192,7 +194,7 @@ pub fn decode(
                     );
                 } else {
                     let facts = scalars
-                        .remove(&(id.clone(), key))
+                        .remove(&(id, key))
                         .unwrap_or_default()
                         .into_iter()
                         .filter(|f| definition.sources.contains_key(&f.evidence.source))
@@ -217,7 +219,7 @@ pub async fn scalar_devices_on(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
     cut: &AssetCut,
-    ids: &[String],
+    ids: &[rss_mdm_agent_wire::DeviceId],
     catalog: &Catalog,
 ) -> Result<Vec<DeviceView>> {
     let catalog = stored(Catalog::new(

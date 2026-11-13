@@ -1,4 +1,4 @@
-use crate::{DeviceId, GroupId};
+use crate::{GroupId, ScopedObjectId};
 use rss_contract::Timepoint;
 use rss_request_context::TenantId;
 use std::num::NonZeroU64;
@@ -6,8 +6,8 @@ use std::num::NonZeroU64;
 /// Source roles cannot be confused with device members at the API boundary.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum SourceId {
-    /// A direct device source; its complete resolution must contain exactly that device.
-    Direct(DeviceId),
+    /// A direct object source; its complete resolution must contain exactly that object.
+    Direct(ScopedObjectId),
     /// A caller-expanded group snapshot, which may legitimately have no members.
     Group(GroupId),
 }
@@ -65,10 +65,10 @@ pub enum ExclusionReason {
     UnknownExclusion,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Deterministic source matches and exclusions for one targeted device.
+/// Deterministic source matches and exclusions for one targeted object.
 pub struct MemberExplanation {
-    /// Targeted device, whether retained or excluded.
-    pub object: DeviceId,
+    /// Targeted object, whether retained or excluded.
+    pub object: ScopedObjectId,
     /// Sorted unique target source references that include the device.
     pub targets: Vec<SourceRef>,
     /// Sorted unique limitation references that include the device.
@@ -79,7 +79,7 @@ pub struct MemberExplanation {
     pub reasons: Vec<ExclusionReason>,
 }
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-/// Source validation failure; [`crate::resolve_device`] returns no partial membership set.
+/// Source validation failure; [`crate::resolve_object`] returns no partial membership set.
 pub enum ScopeError {
     #[error("too many source memberships in a device input")]
     /// One device references more than the bounded target/limitation/exclusion set.

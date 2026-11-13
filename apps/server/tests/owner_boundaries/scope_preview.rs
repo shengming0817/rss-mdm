@@ -10,7 +10,7 @@ async fn members(
     c: &Context,
     p: &AuthorizedPrincipal,
     id: Uuid,
-    objects: Vec<rss_mdm_inventory_service::objects::ObjectRef>,
+    objects: Vec<rss_mdm_agent_wire::ObjectRef>,
 ) -> Result<()> {
     let result = owners
         .groups
@@ -55,14 +55,7 @@ async fn draft_algebra_is_read_only_and_enforces_live_permissions() -> Result<()
     let a = planning::endpoint(&c).await?;
     let b = planning::endpoint(&c).await?;
     let id = owners.create(&c, &p, None).await?;
-    members(
-        &owners,
-        &c,
-        &p,
-        id,
-        vec![a.object.clone(), b.object.clone()],
-    )
-    .await?;
+    members(&owners, &c, &p, id, vec![a.object, b.object]).await?;
     let mut request = Request {
         owner: rss_mdm_scope::ScopeOwner {
             policy: Uuid::new_v4(),
@@ -71,14 +64,14 @@ async fn draft_algebra_is_read_only_and_enforces_live_permissions() -> Result<()
         definition: ScopeDefinition {
             targets: BTreeSet::from([Reference::Group(id)]),
             limitations: None,
-            exclusions: BTreeSet::from([Reference::Device(b.members[0].device.clone())]),
+            exclusions: BTreeSet::from([Reference::Device(b.members[0].device)]),
         },
         channel: Channel::Mdm,
         editing: None,
     };
     let before = super::preview::business_state(&c).await?;
     let result = scopes.preview(&p, &request, &c.request(&p)?).await?;
-    assert_eq!(result.items, vec![a.object.clone()]);
+    assert_eq!(result.items, vec![a.object]);
     assert!(result.scan_complete && !result.has_unknown);
     assert_eq!(result.stop_reason, StopReason::Complete);
     assert_eq!(
@@ -89,11 +82,9 @@ async fn draft_algebra_is_read_only_and_enforces_live_permissions() -> Result<()
     request.definition.limitations = Some(BTreeSet::new());
     let result = scopes.preview(&p, &request, &c.request(&p)?).await?;
     assert!(result.items.is_empty() && result.scan_complete);
-    request.definition.limitations = Some(BTreeSet::from([Reference::Device(
-        a.members[0].device.clone(),
-    )]));
+    request.definition.limitations = Some(BTreeSet::from([Reference::Device(a.members[0].device)]));
     let result = scopes.preview(&p, &request, &c.request(&p)?).await?;
-    assert_eq!(result.items, vec![a.object.clone()]);
+    assert_eq!(result.items, vec![a.object]);
     request.channel = Channel::Agent;
     let result = scopes.preview(&p, &request, &c.request(&p)?).await?;
     assert!(result.scan_complete && result.items.is_empty());
@@ -286,10 +277,10 @@ async fn unknown_and_unfinished_sources_are_distinct_from_empty() -> Result<()> 
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     assert!(rss_mdm_inventory_postgres::publish_field_in(&mut tx, c.tenant, 0, &field).await?);
     tx.commit().await?;
-    let mut targets = BTreeSet::from([Reference::Device(object.members[0].device.clone())]);
+    let mut targets = BTreeSet::from([Reference::Device(object.members[0].device)]);
     for _ in 0..16 {
         let endpoint = planning::endpoint(&c).await?;
-        targets.insert(Reference::Device(endpoint.members[0].device.clone()));
+        targets.insert(Reference::Device(endpoint.members[0].device));
     }
     let condition = serde_json::from_value(
         json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.os.name","op":"eq","value":{"kind":"string","value":"Windows"}}}),
@@ -302,7 +293,7 @@ async fn unknown_and_unfinished_sources_are_distinct_from_empty() -> Result<()> 
             stage: None,
         },
         definition: ScopeDefinition {
-            targets: BTreeSet::from([Reference::Device(object.members[0].device.clone())]),
+            targets: BTreeSet::from([Reference::Device(object.members[0].device)]),
             limitations: None,
             exclusions: BTreeSet::from([Reference::Group(group)]),
         },
@@ -344,8 +335,8 @@ async fn frozen_membership_does_not_follow_current_heads() -> Result<()> {
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     sqlx::query("INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through) VALUES($1::uuid,$2,$3,1)")
         .bind(c.tenant.to_string()).bind(snapshot).bind(published.cut.to_json()).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object,revision,input,devices) VALUES($1::uuid,$2,1,$3,$4),($1::uuid,$2,2,NULL,'{}')")
-        .bind(c.tenant.to_string()).bind(object.object.key()).bind(serde_json::to_value(&object)?).bind(vec![object.members[0].device.clone()]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object_kind,object_id,revision,input,devices) VALUES($1::uuid,$2,$3,1,$4,$5),($1::uuid,$2,$3,2,NULL,'{}')")
+        .bind(c.tenant.to_string()).bind(object.object.kind()).bind(object.object.uuid()).bind(serde_json::to_value(&object)?).bind(vec![object.members[0].device.into_uuid()]).execute(&mut *tx).await?;
     tx.commit().await?;
     let reader = rss_mdm_device_service::planning::PlanningObjects;
     let mut connection = c.operator.acquire().await?;
@@ -446,7 +437,7 @@ async fn frozen_set_absence_matches_formal_scope_publication() -> Result<()> {
             stage: None,
         },
         definition: ScopeDefinition {
-            targets: BTreeSet::from([Reference::Device(new.members[0].device.clone())]),
+            targets: BTreeSet::from([Reference::Device(new.members[0].device)]),
             limitations: None,
             exclusions: BTreeSet::from([Reference::Group(group)]),
         },
@@ -454,7 +445,7 @@ async fn frozen_set_absence_matches_formal_scope_publication() -> Result<()> {
         editing: None,
     };
     let preview = scopes.preview(&p, &draft, &c.request(&p)?).await?;
-    assert_eq!(preview.items, vec![new.object.clone()]);
+    assert_eq!(preview.items, vec![new.object]);
     assert!(preview.scan_complete && !preview.has_unknown);
     let policies = crate::policy_management_t2_support::Fixture::open(&c).await?;
     let saved = policies.create(&c, &p, draft.definition.clone()).await?;
@@ -591,6 +582,113 @@ async fn lifecycle_replay_rechecks_historical_group_authority() -> Result<()> {
     ));
     f.close().await?;
     drop(groups);
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "T2: composite UUID object pages preserve kind, tenant and continuation order"]
+async fn uuid_object_pages_preserve_kind_and_tenant() -> Result<()> {
+    use rss_mdm_agent_wire::{DeviceId, ObjectRef};
+    use rss_mdm_inventory_service::objects::{DeviceObject, ObjectReader};
+    let foreign = rss_request_context::TenantId::parse(&Uuid::new_v4().to_string())?;
+    let c = Context::open("shared", &[foreign]).await?;
+    let endpoint = planning::endpoint(&c).await?;
+    let published = planning::published(&c, &endpoint).await?;
+    let foreign_cut = rss_mdm_inventory_postgres::capture_asset_cut(&c.operator, foreign).await?;
+    let snapshot = Uuid::new_v4();
+    let low = DeviceId::try_from(Uuid::from_u128(1))?;
+    let high = DeviceId::try_from(Uuid::from_u128(u128::MAX))?;
+    let mut expected = vec![
+        ObjectRef::Association(low.into_uuid()),
+        ObjectRef::Endpoint(high),
+        ObjectRef::Endpoint(low),
+    ];
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
+    sqlx::query("INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through) VALUES($1::uuid,$2,$3,1)")
+        .bind(c.tenant.to_string()).bind(snapshot).bind(published.cut.to_json()).execute(&mut *tx).await?;
+    for object in &expected {
+        let input = DeviceObject {
+            object: *object,
+            association_version: None,
+            verified: false,
+            members: vec![],
+        };
+        sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object_kind,object_id,revision,input,devices) VALUES($1::uuid,$2,$3,1,$4,$5)")
+            .bind(c.tenant.to_string()).bind(object.kind()).bind(object.uuid()).bind(serde_json::to_value(input)?).bind(vec![low.into_uuid(),high.into_uuid()]).execute(&mut *tx).await?;
+    }
+    // The same snapshot and object UUIDs exist in both tenants, with distinct content.
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(foreign.to_string())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through) VALUES($1::uuid,$2,$3,1)")
+        .bind(foreign.to_string()).bind(snapshot).bind(foreign_cut.to_json()).execute(&mut *tx).await?;
+    let foreign_objects = [
+        ObjectRef::Endpoint(low),
+        ObjectRef::Association(high.into_uuid()),
+    ];
+    for object in foreign_objects {
+        let input = DeviceObject {
+            object,
+            association_version: None,
+            verified: true,
+            members: vec![],
+        };
+        sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object_kind,object_id,revision,input,devices) VALUES($1::uuid,$2,$3,1,$4,$5)")
+            .bind(foreign.to_string()).bind(object.kind()).bind(object.uuid()).bind(serde_json::to_value(input)?).bind(vec![high.into_uuid()]).execute(&mut *tx).await?;
+    }
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(c.tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
+    expected.sort();
+    let reader = rss_mdm_device_service::planning::PlanningObjects;
+    let mut actual = Vec::new();
+    let mut after = None;
+    loop {
+        let page = reader
+            .page(&mut tx, c.tenant, snapshot, after, 1, None)
+            .await?;
+        if page.is_empty() {
+            break;
+        }
+        assert_eq!(page.len(), 1);
+        assert!(
+            !page[0].verified,
+            "foreign object content leaked into this tenant"
+        );
+        after = Some(page[0].object);
+        actual.push(page[0].object);
+        assert!(actual.len() <= expected.len(), "continuation must advance");
+    }
+    assert_eq!(actual, expected);
+    let selected = reader
+        .page(
+            &mut tx,
+            c.tenant,
+            snapshot,
+            None,
+            3,
+            Some(vec![ObjectRef::Association(low.into_uuid())]),
+        )
+        .await?;
+    assert_eq!(
+        selected.iter().map(|v| v.object).collect::<Vec<_>>(),
+        vec![ObjectRef::Association(low.into_uuid())]
+    );
+    let foreign_page = reader
+        .page(&mut tx, foreign, snapshot, None, 3, None)
+        .await?;
+    assert_eq!(
+        foreign_page.iter().map(|v| v.object).collect::<Vec<_>>(),
+        foreign_objects
+    );
+    assert!(
+        foreign_page.iter().all(|v| v.verified),
+        "original tenant content leaked into the foreign snapshot"
+    );
+    tx.rollback().await?;
     c.close().await;
     Ok(())
 }

@@ -178,7 +178,7 @@ pub async fn result<F: Serialize>(
     c: &mut PgConnection,
     t: TenantId,
     task: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     document: &Assessment<F>,
 ) -> Result<()> {
     tenant(c, t).await?;
@@ -190,7 +190,7 @@ pub async fn result<F: Serialize>(
     .bind(task.to_string())
     .bind(document.rule_id.to_string())
     .bind(document.rule_version)
-    .bind(device)
+    .bind(device.into_uuid())
     .bind(document.evaluated_at)
     .bind(serde_json::to_string(document).map_err(|_| corrupt())?)
     .execute(c)
@@ -202,10 +202,10 @@ pub async fn result_at<F: DeserializeOwned>(
     c: &mut PgConnection,
     t: TenantId,
     task: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<Assessment<F>>> {
     tenant(c, t).await?;
-    let raw:Option<String>=sqlx::query_scalar("SELECT document::text FROM mdm_compliance.results WHERE tenant_id=$1::uuid AND task=$2::uuid AND device=$3").bind(t.to_string()).bind(task.to_string()).bind(device).fetch_optional(c).await?;
+    let raw:Option<String>=sqlx::query_scalar("SELECT document::text FROM mdm_compliance.results WHERE tenant_id=$1::uuid AND task=$2::uuid AND device=$3").bind(t.to_string()).bind(task.to_string()).bind(device.into_uuid()).fetch_optional(c).await?;
     raw.map(|s| {
         let value: Assessment<F> = serde_json::from_str(&s).map_err(|_| corrupt())?;
         value.validate().map_err(|_| corrupt())?;
@@ -298,21 +298,27 @@ pub async fn webhook_changes<F: DeserializeOwned>(
     t: TenantId,
     run: Uuid,
     previous: Option<Uuid>,
-    after: Option<String>,
+    after: Option<rss_mdm_agent_wire::DeviceId>,
     limit: i64,
-) -> Result<Vec<(String, Assessment<F>)>> {
+) -> Result<Vec<(rss_mdm_agent_wire::DeviceId, Assessment<F>)>> {
     tenant(c, t).await?;
     if !(1..=33).contains(&limit) {
         return Err(corrupt());
     }
-    let rows=sqlx::query("SELECT n.device,n.document::text FROM mdm_compliance.results n LEFT JOIN mdm_compliance.results o ON o.tenant_id=n.tenant_id AND o.task=$3::uuid AND o.device=n.device WHERE n.tenant_id=$1::uuid AND n.task=$2 AND ($4::text IS NULL OR n.device COLLATE \"C\">$4 COLLATE \"C\") AND (o.document->>'status' IS DISTINCT FROM n.document->>'status' OR o.document->>'reason' IS DISTINCT FROM n.document->>'reason') ORDER BY n.device COLLATE \"C\" LIMIT $5")
-        .bind(t.to_string()).bind(run).bind(previous).bind(after).bind(limit).fetch_all(c).await?;
+    let rows=sqlx::query("SELECT n.device,n.document::text FROM mdm_compliance.results n LEFT JOIN mdm_compliance.results o ON o.tenant_id=n.tenant_id AND o.task=$3::uuid AND o.device=n.device WHERE n.tenant_id=$1::uuid AND n.task=$2 AND ($4::uuid IS NULL OR n.device>$4) AND (o.document->>'status' IS DISTINCT FROM n.document->>'status' OR o.document->>'reason' IS DISTINCT FROM n.document->>'reason') ORDER BY n.device LIMIT $5")
+        .bind(t.to_string()).bind(run).bind(previous).bind(after.map(|id|id.into_uuid())).bind(limit).fetch_all(c).await?;
     rows.into_iter()
         .map(|r| {
             let a: Assessment<F> =
                 serde_json::from_str(r.try_get("document")?).map_err(|_| corrupt())?;
             a.validate().map_err(|_| corrupt())?;
-            Ok((r.try_get("device")?, a))
+            Ok((
+                r.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+                    rss_mdm_agent_wire::DeviceId::try_from(id)
+                        .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+                })?,
+                a,
+            ))
         })
         .collect()
 }

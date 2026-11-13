@@ -471,17 +471,17 @@ impl HttpState {
 pub async fn retire_in(
     tx: &mut sqlx::PgConnection,
     tenant: &str,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
 ) -> Result<(), Error> {
     use crate::database::db;
-    sqlx::query("UPDATE mdm_apple.ade_enrollments SET revoked = TRUE WHERE tenant_id = CAST($1 AS uuid) AND enrollment = (SELECT request_id FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2)").bind(tenant).bind(&device).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.ade_enrollments SET revoked = TRUE WHERE tenant_id = CAST($1 AS uuid) AND enrollment = (SELECT request_id FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2)").bind(tenant).bind(device.into_uuid()).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.account_flows SET revoked = TRUE, material = NULL, profile = NULL WHERE tenant_id = CAST($1 AS uuid) AND enrollment = (SELECT request_id FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2)")
-        .bind(tenant).bind(&device).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.devices SET state = 'retired', bootstrap = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text)").bind(tenant).bind(device.to_string()).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.channels SET state = 'retired', material = NULL, material_digest = NULL, push_lease_until = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(tenant).bind(&device).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.scep_attempts SET state = 'superseded' WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text)").bind(tenant).bind(device.to_string()).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.profiles SET retired_at = COALESCE(retired_at, CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint)) WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(tenant).bind(&device).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.declarations SET retired_at = COALESCE(retired_at, CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint)) WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(tenant).bind(&device).execute(&mut *tx).await.map_err(db)?;
+        .bind(tenant).bind(device.into_uuid()).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.devices SET state = 'retired', bootstrap = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(tenant).bind(device.into_uuid()).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.channels SET state = 'retired', material = NULL, material_digest = NULL, push_lease_until = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(tenant).bind(device.into_uuid()).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.scep_attempts SET state = 'superseded' WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(tenant).bind(device.into_uuid()).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.profiles SET retired_at = COALESCE(retired_at, CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint)) WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(tenant).bind(device.into_uuid()).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.declarations SET retired_at = COALESCE(retired_at, CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint)) WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(tenant).bind(device.into_uuid()).execute(&mut *tx).await.map_err(db)?;
     Ok(())
 }
 

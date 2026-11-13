@@ -3,8 +3,9 @@ use axum::{
     Extension, Json,
     extract::{Path, State},
 };
+use rss_mdm_agent_wire::ObjectRef;
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_device_service::{Associations, Confirm, Revoke, ViewRef};
+use rss_mdm_device_service::{Associations, Confirm, Revoke};
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{
     Router,
@@ -137,14 +138,8 @@ pub(crate) fn register(
         None => router,
     }
 }
-fn reference(kind: String, id: String) -> Result<ViewRef, Error> {
-    match kind.as_str() {
-        "endpoint" => Ok(ViewRef::Endpoint(id)),
-        "association" => Ok(ViewRef::Association(
-            Uuid::parse_str(&id).map_err(|_| Error::Malformed)?,
-        )),
-        _ => Err(Error::Malformed),
-    }
+fn reference(kind: String, id: String) -> Result<ObjectRef, Error> {
+    ObjectRef::from_path(&kind, &id).map_err(|_| Error::Malformed)
 }
 async fn list(
     State(s): State<Arc<Associations>>,
@@ -232,8 +227,8 @@ async fn detail(
     );
     let reference = reference(kind, id)?;
     match &reference {
-        ViewRef::Endpoint(id) => audit.target_device(id),
-        ViewRef::Association(id) => audit.target(&id.to_string()),
+        ObjectRef::Endpoint(id) => audit.target_device(id),
+        ObjectRef::Association(id) => audit.target(&id.to_string()),
     }
     Ok(Json(
         s.view(
@@ -337,7 +332,7 @@ async fn candidates(
     State(s): State<Arc<Associations>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<CandidatesQuery>,
     >,

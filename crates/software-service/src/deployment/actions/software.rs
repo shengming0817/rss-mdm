@@ -128,7 +128,7 @@ pub(crate) async fn slot_in(
         let Some(binding) = crate::deployment::agent_facts::agent_binding_in(
             tx,
             service.agent_store.clone(),
-            target.device.clone(),
+            target.device,
         )
         .await?
         else {
@@ -143,7 +143,7 @@ pub(crate) async fn slot_in(
             return Ok(Preparation::NotEligible);
         }
         let Some((platform, architecture)) =
-            db::agent_profile_in(service, tx, target.device.clone()).await?
+            db::agent_profile_in(service, tx, target.device).await?
         else {
             return Ok(Preparation::NotEligible);
         };
@@ -172,7 +172,7 @@ pub(crate) async fn slot_in(
     };
     let source = service.source.clone();
     let tenant_id = tx.tenant_id();
-    let device = target.device.clone();
+    let device = target.device;
     let devices = tx
         .with_connection(move |c| {
             Box::pin(async move { Ok(source.effect_devices(c, tenant_id, &device).await) })
@@ -215,7 +215,7 @@ pub(crate) async fn slot_in(
         sqlx::query_as(r#"
             WITH effects AS (
                 SELECT r.* FROM mdm_software_deployment.action_runs r
-                WHERE r.tenant_id=$1::uuid AND r.device=ANY($3::text[]) AND ($7::uuid IS NULL OR r.id<>$7)
+                WHERE r.tenant_id=$1::uuid AND r.device=ANY($3::uuid[]) AND ($7::uuid IS NULL OR r.id<>$7)
                   AND r.software_effect->'target'=$2::jsonb->'target'
                   AND (r.software_effect->'resource'=$2::jsonb->'resource' OR EXISTS(SELECT 1 FROM jsonb_array_elements_text(r.software_effect->'packages') a JOIN jsonb_array_elements_text($2::jsonb->'packages') b ON a.value=b.value))
             )
@@ -234,7 +234,7 @@ pub(crate) async fn slot_in(
                    count(*) FILTER(WHERE software_effect=$2 AND policy_version=$4 AND occurrence LIKE $6)
             FROM effects
         "#)
-            .bind(tenant).bind(key).bind(&device).bind(version).bind(now).bind(prefix).bind(existing).fetch_one(c).await
+            .bind(tenant).bind(key).bind(device.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).bind(version).bind(now).bind(prefix).bind(existing).fetch_one(c).await
     })).await?;
     if satisfied && !pending {
         return Ok(Preparation::Satisfied);
@@ -266,14 +266,14 @@ pub(crate) async fn slot_in(
             }
             Trigger::Registration => now,
             Trigger::Once { .. } | Trigger::Interval { .. } | Trigger::Weekly { .. } => {
-                let Some(due) = schedule.due(-1, now, target.device.as_bytes())? else {
+                let Some(due) = schedule.due(-1, now, target.device.to_string().as_bytes())? else {
                     return Ok(Preparation::NotEligible);
                 };
                 due.coordinate
             }
         }
     };
-    let Some(slot) = schedule.occurrence(coordinate, target.device.as_bytes())? else {
+    let Some(slot) = schedule.occurrence(coordinate, target.device.to_string().as_bytes())? else {
         return Ok(Preparation::NotEligible);
     };
     let available = slot.available_at.max(now);
@@ -297,11 +297,11 @@ pub(crate) async fn slot_in(
     };
     let tenant = tx.tenant_id().to_string();
     let version = policy.id;
-    let device = target.device.clone();
+    let device = target.device;
     let key = occurrence.clone();
     let (exists, active): (bool, i64) = tx.with_connection(move |c| Box::pin(async move {
         sqlx::query_as("SELECT EXISTS(SELECT 1 FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2::uuid AND device=$3 AND occurrence=$4 AND ($6::uuid IS NULL OR id<>$6)), (SELECT count(*) FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND device=$3 AND state->>'execution' IN ('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$5 AND ($6::uuid IS NULL OR id<>$6))")
-            .bind(tenant).bind(version).bind(&device).bind(key).bind(now).bind(existing).fetch_one(c).await
+            .bind(tenant).bind(version).bind(device.into_uuid()).bind(key).bind(now).bind(existing).fetch_one(c).await
     })).await?;
     if active >= 128 {
         return Ok(Preparation::Waiting(std::time::Duration::from_secs(5)));

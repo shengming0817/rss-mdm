@@ -95,7 +95,7 @@ pub(crate) async fn admit(
     if let Some(i) = identity
         && (i.service_id != p.installation()
             || i.tenant.to_string() != p.tenant().to_string()
-            || i.device_id != p.device())
+            || i.device_id != *p.device())
     {
         return Err(Error::Forbidden);
     }

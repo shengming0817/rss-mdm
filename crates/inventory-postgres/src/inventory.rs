@@ -123,7 +123,9 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
             .body()
             .map_err(|e| rejected(event.position(), e))?
             .ok_or_else(|| rejected(event.position(), rss_projection::ErrorKind::SourceContract))?;
-        let registration = record.scope().registration().as_str().to_owned();
+        let registration =
+            rss_mdm_agent_wire::DeviceId::parse(record.scope().registration().as_str())
+                .map_err(|error| rejected(event.position(), error))?;
         let source = record.scope().source().as_str().to_owned();
         let epoch = record.scope().epoch().as_str().to_owned();
         tx.with_connection(move |conn| Box::pin(async move {
@@ -142,7 +144,7 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
                     if let model::Scalar::Array(values)=&canonical {array=Some(crate::arrays::prepare(definition,values).map_err(crate::arrays::storage_error)?);("known",None)}
                     else {("known",Some(serde_json::to_string(&canonical).expect("scalar encoding"))) }},Some(model::CollectedValue::Unknown { reason })=>(match reason { model::UnknownReason::UnorderedConflict=>"unknown_conflict", model::UnknownReason::Incomplete=>"unknown_incomplete", model::UnknownReason::NativeStatus=>"unknown_native", model::UnknownReason::EvidenceLimit=>"unknown_limit" },None),Some(model::CollectedValue::Null)=>("null",None),Some(model::CollectedValue::Deleted)=>("deleted",None),Some(model::CollectedValue::Unsupported)=>("unsupported",None),None=>("deleted",None)};
                 let changed=sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence,field_scope,value_version,last_known_version) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$7,CASE WHEN $11='known' THEN $8 END,CASE WHEN $11='known' THEN $9 END,CASE WHEN $11='known' THEN $10 END,$12,$13,$14,$15,$16,$17,$17) ON CONFLICT(tenant_id,journal,generation,scope,field,field_scope) DO UPDATE SET coverage=excluded.coverage,collection_sequence=excluded.collection_sequence,value=excluded.value,value_version=excluded.value_version,state=excluded.state,batch_id=excluded.batch_id,observed_at=excluded.observed_at,received_at=excluded.received_at,last_known=CASE WHEN excluded.state='known' THEN excluded.value ELSE mdm.inventory.last_known END,last_known_version=CASE WHEN excluded.state='known' THEN excluded.value_version ELSE mdm.inventory.last_known_version END,last_known_batch=CASE WHEN excluded.state='known' THEN excluded.batch_id ELSE mdm.inventory.last_known_batch END,last_known_observed=CASE WHEN excluded.state='known' THEN excluded.observed_at ELSE mdm.inventory.last_known_observed END,last_known_received=CASE WHEN excluded.state='known' THEN excluded.received_at ELSE mdm.inventory.last_known_received END WHERE mdm.inventory.collection_sequence<=excluded.collection_sequence")
-                    .bind(&tenant).bind(&journal).bind(&generation).bind(&scope).bind(&coverage).bind(change.key().as_str()).bind(value).bind(&batch).bind(observed).bind(received).bind(state).bind(&registration).bind(&source).bind(&epoch).bind(sequence).bind(&field_scope).bind(array.as_ref().map(|a|&a.metadata.version)).execute(&mut *conn).await?.rows_affected();
+                    .bind(&tenant).bind(&journal).bind(&generation).bind(&scope).bind(&coverage).bind(change.key().as_str()).bind(value).bind(&batch).bind(observed).bind(received).bind(state).bind(registration.into_uuid()).bind(&source).bind(&epoch).bind(sequence).bind(&field_scope).bind(array.as_ref().map(|a|&a.metadata.version)).execute(&mut *conn).await?.rows_affected();
                 if changed>0 && let Some(array)=array {crate::arrays::store(conn,tenant_id,&array).await.map_err(crate::arrays::storage_error)?;}
             }
             Ok(())

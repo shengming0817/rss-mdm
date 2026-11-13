@@ -51,12 +51,12 @@ use std::collections::BTreeMap;
 pub(crate) fn decide(
     operation: &Operation,
     lifecycle: bool,
-    registration: Option<String>,
+    registration: Option<rss_mdm_agent_wire::DeviceId>,
     source: bool,
 ) -> Result<Authorization> {
     let reason = if !lifecycle {
         Some(BlockReason::LifecycleBlocked)
-    } else if registration != Some(operation.device.clone()) {
+    } else if registration != Some(operation.device) {
         Some(BlockReason::DeviceInactive)
     } else if !source {
         Some(BlockReason::SourceInvalid)
@@ -101,7 +101,7 @@ pub(crate) async fn batch(
     let tenant = queries.tenant.to_string();
     let targets = operations
         .values()
-        .map(|o| (o.id, o.device.clone()))
+        .map(|o| (o.id, o.device))
         .collect::<Vec<_>>();
     let t = tenant.clone();
     let lifecycle = queries
@@ -116,7 +116,7 @@ pub(crate) async fn batch(
         let devices = operations
             .values()
             .filter_map(|o| match o.request.task.purpose() {
-                Ok(p) if p == purpose => Some(Ok(o.device.clone())),
+                Ok(p) if p == purpose => Some(Ok(o.device)),
                 Ok(_) => None,
                 Err(e) => Some(Err(crate::deployment::transaction::Fault::from(e))),
             })
@@ -138,7 +138,7 @@ pub(crate) async fn batch(
             .await
         }?;
         for device in rows {
-            registrations.insert((device.clone(), purpose.as_str()), Some(device));
+            registrations.insert((device, purpose.as_str()), Some(device));
         }
     }
     let mut decisions = BTreeMap::new();
@@ -146,10 +146,7 @@ pub(crate) async fn batch(
     let mut requests = Vec::new();
     for operation in operations.values() {
         let registration = registrations
-            .get(&(
-                operation.device.clone(),
-                operation.request.task.purpose()?.as_str(),
-            ))
+            .get(&(operation.device, operation.request.task.purpose()?.as_str()))
             .cloned()
             .flatten();
         let decision = decide(

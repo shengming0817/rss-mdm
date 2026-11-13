@@ -67,7 +67,7 @@ impl AdmissionPort for Admission {
         &'a self,
         c: &'a mut PgConnection,
         tenant: Uuid,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         after: Option<Uuid>,
         limit: u16,
     ) -> Pending<'a, (Vec<AccessPolicyOption>, Option<Uuid>)> {
@@ -75,7 +75,7 @@ impl AdmissionPort for Admission {
             if tenant.to_string() != self.tenant.to_string() || limit == 0 || limit > 100 {
                 return Err(Error::Forbidden);
             }
-            let ids:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM rss_da.policies WHERE tenant_id=$1 AND ($2::uuid IS NULL OR id>$2) AND rss_da.access_policy(id,$3,0)->>'state'='eligible' ORDER BY id LIMIT 2").bind(tenant).bind(after).bind(device).fetch_all(&mut *c).await.map_err(db)?;
+            let ids:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM rss_da.policies WHERE tenant_id=$1 AND ($2::uuid IS NULL OR id>$2) AND rss_da.access_policy(id,$3,0)->>'state'='eligible' ORDER BY id LIMIT 2").bind(tenant).bind(after).bind(device.into_uuid()).fetch_all(&mut *c).await.map_err(db)?;
             if ids.len() > 1 {
                 return Err(Error::Corrupt);
             }
@@ -97,7 +97,7 @@ impl AdmissionPort for Admission {
         &'a self,
         c: &'a mut PgConnection,
         tenant: Uuid,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         policy: Uuid,
     ) -> Pending<'a, PolicySelection> {
         Box::pin(device_access::execution::admission::policy_on(
@@ -121,7 +121,7 @@ impl AdmissionPort for Admission {
             if p.kind() == rss_mdm_registration_service::device::RegistrationKind::Agent {
                 let store = self.agent.as_ref().ok_or(Error::Unsupported)?;
                 let native = store
-                    .binding(c, self.tenant.to_string(), p.device().to_string())
+                    .binding(c, self.tenant.to_string(), *p.device())
                     .await?
                     .ok_or(Error::Forbidden)?;
                 return device_access::execution::admission::native_local_session(native);
@@ -129,7 +129,7 @@ impl AdmissionPort for Admission {
             self.session(
                 c,
                 &rss_mdm_registration_service::device::endpoints::DaRegistration {
-                    device: target.device().into(),
+                    device: *target.device(),
                 },
             )
             .await
@@ -158,7 +158,7 @@ impl AdmissionPort for Admission {
                 self.session(
                     c,
                     &rss_mdm_registration_service::device::endpoints::DaRegistration {
-                        device: b.device.clone(),
+                        device: b.device,
                     },
                 )
                 .await?

@@ -92,15 +92,15 @@ pub(crate) struct EndpointIdentity {
 pub(crate) struct World {
     pub endpoints: Vec<EndpointIdentity>,
     pub associations: Vec<Association>,
-    by_device: BTreeMap<String, BTreeMap<&'static str, usize>>,
-    by_hardware: BTreeMap<&'static str, BTreeMap<String, BTreeSet<String>>>,
-    revoked_pairs: BTreeSet<(String, String)>,
+    by_device: BTreeMap<rss_mdm_agent_wire::DeviceId, BTreeMap<&'static str, usize>>,
+    by_hardware: BTreeMap<&'static str, BTreeMap<String, BTreeSet<rss_mdm_agent_wire::DeviceId>>>,
+    revoked_pairs: BTreeSet<(rss_mdm_agent_wire::DeviceId, rss_mdm_agent_wire::DeviceId)>,
 }
 impl World {
     fn insert(&mut self, endpoint: EndpointIdentity) {
         let index = self.endpoints.len();
         self.by_device
-            .entry(endpoint.member.device.clone())
+            .entry(endpoint.member.device)
             .or_default()
             .insert(endpoint.member.channel.as_str(), index);
         for (kind, value) in endpoint.hardware.keys() {
@@ -109,7 +109,7 @@ impl World {
                 .or_default()
                 .entry(value.clone())
                 .or_default()
-                .insert(endpoint.member.device.clone());
+                .insert(endpoint.member.device);
         }
         self.endpoints.push(endpoint);
     }
@@ -202,14 +202,14 @@ impl World {
 pub(crate) async fn local_world(
     c: &mut PgConnection,
     tenant: TenantId,
-    ids: &[String],
+    ids: &[rss_mdm_agent_wire::DeviceId],
     associations: &[Uuid],
 ) -> Result<World> {
     if ids.len() > 200 || associations.len() > 100 {
         return Err(Error::Malformed);
     }
     let value:serde_json::Value=sqlx::query_scalar("SELECT mdm_devices.read_world($1,$2,ARRAY['device.serial_number','device.hardware_uuid','device.manufacturer']::text[])")
-        .bind(associations).bind(ids).fetch_one(c).await?;
+        .bind(associations).bind(ids.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).fetch_one(c).await?;
     Ok(crate::snapshot::decode_world(&value, tenant, ids)?.0)
 }
 async fn add_peers(c: &mut PgConnection, tenant: TenantId, world: &mut World) -> Result<()> {
@@ -223,7 +223,7 @@ async fn add_peers(c: &mut PgConnection, tenant: TenantId, world: &mut World) ->
         })
         .collect::<BTreeSet<_>>();
     let (kinds, values): (Vec<_>, Vec<_>) = keys.into_iter().unzip();
-    let peers:Vec<(String,String,String)>=sqlx::query_as("SELECT q.kind,q.value,p.device FROM unnest($2::text[],$3::text[]) q(kind,value) CROSS JOIN LATERAL (SELECT DISTINCT device FROM mdm_assets.hardware_keys h WHERE h.tenant_id=$1::uuid AND h.kind=q.kind AND h.value=q.value ORDER BY device LIMIT 3) p")
+    let peers:Vec<(String,String,Uuid)>=sqlx::query_as("SELECT q.kind,q.value,p.device FROM unnest($2::text[],$3::text[]) q(kind,value) CROSS JOIN LATERAL (SELECT DISTINCT device FROM mdm_assets.hardware_keys h WHERE h.tenant_id=$1::uuid AND h.kind=q.kind AND h.value=q.value ORDER BY device LIMIT 3) p")
         .bind(tenant.to_string()).bind(kinds).bind(values).fetch_all(c).await?;
     for (kind, value, device) in peers {
         let kind = match kind.as_str() {
@@ -237,14 +237,14 @@ async fn add_peers(c: &mut PgConnection, tenant: TenantId, world: &mut World) ->
             .or_default()
             .entry(value)
             .or_default()
-            .insert(device);
+            .insert(crate::device_id(device)?);
     }
     Ok(())
 }
 pub(crate) fn from_snapshot(
     endpoints: Vec<EndpointIdentity>,
     associations: Vec<Association>,
-    peers: Vec<(String, String, String)>,
+    peers: Vec<(String, String, rss_mdm_agent_wire::DeviceId)>,
 ) -> Result<World> {
     let mut world = endpoint_world(endpoints);
     world.revoked_pairs = associations
@@ -275,16 +275,16 @@ pub(crate) fn from_snapshot(
 struct Stamp {
     endpoints: Vec<EndpointIdentity>,
     associations: BTreeMap<Uuid, i64>,
-    peers: BTreeMap<&'static str, BTreeMap<String, BTreeSet<String>>>,
-    revoked: BTreeSet<(String, String)>,
+    peers: BTreeMap<&'static str, BTreeMap<String, BTreeSet<rss_mdm_agent_wire::DeviceId>>>,
+    revoked: BTreeSet<(rss_mdm_agent_wire::DeviceId, rss_mdm_agent_wire::DeviceId)>,
 }
 pub(crate) struct PreparedWorld {
     pub world: World,
-    ids: Vec<String>,
+    ids: Vec<rss_mdm_agent_wire::DeviceId>,
     stamp: Stamp,
 }
 impl PreparedWorld {
-    pub(crate) fn devices(&self) -> &[String] {
+    pub(crate) fn devices(&self) -> &[rss_mdm_agent_wire::DeviceId] {
         &self.ids
     }
 
@@ -320,7 +320,11 @@ impl PreparedWorld {
         Ok(stamp(c, tenant, &self.ids).await? == self.stamp)
     }
 }
-async fn stamp(c: &mut PgConnection, tenant: TenantId, ids: &[String]) -> Result<Stamp> {
+async fn stamp(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    ids: &[rss_mdm_agent_wire::DeviceId],
+) -> Result<Stamp> {
     let t = tenant.to_string();
     let mut endpoints = local_world(c, tenant, ids, &[]).await?.endpoints;
     endpoints.sort_by(|a, b| {
@@ -330,14 +334,17 @@ async fn stamp(c: &mut PgConnection, tenant: TenantId, ids: &[String]) -> Result
     let mut indexed = endpoint_world(endpoints.clone());
     add_peers(c, tenant, &mut indexed).await?;
     let associations: Vec<(Uuid, i64)> = sqlx::query_as("SELECT DISTINCT a.id,a.version FROM mdm_devices.associations a JOIN mdm_devices.members m ON(m.tenant_id,m.association_id)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND m.device=ANY($2) AND NOT m.released ORDER BY a.id")
-        .bind(&t).bind(ids).fetch_all(&mut *c).await?;
-    let revoked: Vec<(String,String)> = sqlx::query_as("SELECT a.device,b.device FROM mdm_devices.members a JOIN mdm_devices.members b USING(tenant_id,association_id) JOIN mdm_devices.associations r ON(r.tenant_id,r.id)=(a.tenant_id,a.association_id) WHERE a.tenant_id=$1::uuid AND a.device=ANY($2) AND b.device=ANY($2) AND a.device<b.device AND r.state='revoked'")
-        .bind(&t).bind(ids).fetch_all(c).await?;
+        .bind(&t).bind(ids.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).fetch_all(&mut *c).await?;
+    let revoked: Vec<(Uuid,Uuid)> = sqlx::query_as("SELECT a.device,b.device FROM mdm_devices.members a JOIN mdm_devices.members b USING(tenant_id,association_id) JOIN mdm_devices.associations r ON(r.tenant_id,r.id)=(a.tenant_id,a.association_id) WHERE a.tenant_id=$1::uuid AND a.device=ANY($2) AND b.device=ANY($2) AND a.device<b.device AND r.state='revoked'")
+        .bind(&t).bind(ids.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).fetch_all(c).await?;
     Ok(Stamp {
         endpoints,
         associations: associations.into_iter().collect(),
         peers: indexed.by_hardware,
-        revoked: revoked.into_iter().map(|(a, b)| pair(&a, &b)).collect(),
+        revoked: revoked
+            .into_iter()
+            .map(|(a, b)| Ok(pair(&crate::device_id(a)?, &crate::device_id(b)?)))
+            .collect::<std::result::Result<_, sqlx::Error>>()?,
     })
 }
 /// Read and compute under the affected device fences, without the tenant publication lock.
@@ -345,21 +352,21 @@ async fn stamp(c: &mut PgConnection, tenant: TenantId, ids: &[String]) -> Result
 pub(crate) async fn affected_devices_on(
     c: &mut PgConnection,
     tenant: TenantId,
-    device: &str,
-) -> Result<Vec<String>> {
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<Vec<rss_mdm_agent_wire::DeviceId>> {
     let t = tenant.to_string();
-    let mut ids: BTreeSet<String> = sqlx::query_scalar("SELECT DISTINCT p.device FROM mdm_assets.hardware_keys k CROSS JOIN LATERAL (SELECT DISTINCT device FROM mdm_assets.hardware_keys WHERE tenant_id=k.tenant_id AND kind=k.kind AND value=k.value ORDER BY device LIMIT 3) p WHERE k.tenant_id=$1::uuid AND k.device=$2")
-        .bind(&t).bind(device).fetch_all(&mut *c).await?.into_iter().collect();
-    ids.insert(device.into());
-    let associated: Vec<String> = sqlx::query_scalar("SELECT peer.device FROM mdm_devices.members anchor JOIN mdm_devices.members peer USING(tenant_id,association_id) WHERE anchor.tenant_id=$1::uuid AND anchor.device=$2 AND NOT anchor.released")
-        .bind(&t).bind(device).fetch_all(&mut *c).await?;
+    let mut ids: BTreeSet<rss_mdm_agent_wire::DeviceId> = sqlx::query_scalar("SELECT DISTINCT p.device FROM mdm_assets.hardware_keys k CROSS JOIN LATERAL (SELECT DISTINCT device FROM mdm_assets.hardware_keys WHERE tenant_id=k.tenant_id AND kind=k.kind AND value=k.value ORDER BY device LIMIT 3) p WHERE k.tenant_id=$1::uuid AND k.device=$2")
+        .bind(&t).bind(device.into_uuid()).fetch_all(&mut *c).await.and_then(crate::device_ids)?.into_iter().collect();
+    ids.insert(*device);
+    let associated: Vec<rss_mdm_agent_wire::DeviceId> = sqlx::query_scalar("SELECT peer.device FROM mdm_devices.members anchor JOIN mdm_devices.members peer USING(tenant_id,association_id) WHERE anchor.tenant_id=$1::uuid AND anchor.device=$2 AND NOT anchor.released")
+        .bind(&t).bind(device.into_uuid()).fetch_all(&mut *c).await.and_then(crate::device_ids)?;
     ids.extend(associated);
     Ok(ids.into_iter().collect())
 }
 pub(crate) async fn affected_world(
     c: &mut PgConnection,
     tenant: TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<PreparedWorld>> {
     let t = tenant.to_string();
     let ids = affected_devices_on(c, tenant, device).await?;
@@ -377,7 +384,7 @@ pub(crate) async fn affected_world(
         return Ok(None);
     }
     let association_ids: Vec<Uuid> = sqlx::query_scalar("SELECT DISTINCT association_id FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=ANY($2) AND NOT released ORDER BY association_id")
-        .bind(&t).bind(&ids).fetch_all(&mut *c).await?;
+        .bind(&t).bind(ids.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).fetch_all(&mut *c).await?;
     let mut world = local_world(c, tenant, &ids, &association_ids).await?;
     let stamp = stamp(c, tenant, &ids).await?;
     let mut canonical = world.endpoints.clone();
@@ -400,12 +407,11 @@ pub(crate) async fn affected_world(
     Ok(Some(PreparedWorld { world, ids, stamp }))
 }
 
-fn pair(a: &str, b: &str) -> (String, String) {
-    if a < b {
-        (a.into(), b.into())
-    } else {
-        (b.into(), a.into())
-    }
+fn pair(
+    a: &rss_mdm_agent_wire::DeviceId,
+    b: &rss_mdm_agent_wire::DeviceId,
+) -> (rss_mdm_agent_wire::DeviceId, rss_mdm_agent_wire::DeviceId) {
+    if a < b { (*a, *b) } else { (*b, *a) }
 }
 
 pub(crate) fn evidence(world: &World, members: &[Member]) -> BTreeMap<String, Hardware> {
@@ -423,7 +429,7 @@ pub(crate) async fn endpoint_page(
     c: &mut PgConnection,
     tenant: TenantId,
     cut: &rss_mdm_inventory::AssetCut,
-    ids: &[String],
+    ids: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<Vec<EndpointIdentity>> {
     let catalog = rss_mdm_inventory_postgres::catalog_at_in(c, tenant, cut)
         .await
@@ -469,15 +475,12 @@ pub(crate) fn endpoint_facts(
 ) -> Result<Vec<EndpointIdentity>> {
     let primary = primary
         .into_iter()
-        .map(|member| ((member.device.clone(), member.channel.as_str()), member))
+        .map(|member| ((member.device, member.channel.as_str()), member))
         .collect::<BTreeMap<_, _>>();
     let mut result = Vec::new();
     for device in devices {
         for channel in [Channel::Mdm, Channel::Agent] {
-            let Some(member) = primary
-                .get(&(device.device.clone(), channel.as_str()))
-                .cloned()
-            else {
+            let Some(member) = primary.get(&(device.device, channel.as_str())).cloned() else {
                 continue;
             };
             let mut hardware = Hardware::default();
@@ -496,7 +499,7 @@ pub(crate) fn endpoint_facts(
                     let e = &fact.evidence;
                     if e.source == Source::Manual
                         || e.source.channel() != Some(channel)
-                        || e.device_id.as_deref() != Some(member.device.as_str())
+                        || e.device_id.as_ref() != Some(&member.device)
                     {
                         continue;
                     }
@@ -547,21 +550,23 @@ mod tests {
     }
     #[test]
     fn indexed_matching_counts_a_pair_once_and_keeps_conflicting_competitors() {
-        let endpoint = |device: &str, channel: Channel, hardware: Hardware| EndpointIdentity {
+        let endpoint = |device: &rss_mdm_agent_wire::DeviceId,
+                        channel: Channel,
+                        hardware: Hardware| EndpointIdentity {
             member: Member {
-                device: device.into(),
+                device: *device,
                 channel,
             },
             hardware,
         };
         let mut world = World::default();
         world.insert(endpoint(
-            "mdm",
+            &rss_mdm_agent_wire::DeviceId::try_from(Uuid::from_u128(1)).unwrap(),
             Channel::Mdm,
             hardware("SERIAL", "6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
         ));
         world.insert(endpoint(
-            "agent",
+            &rss_mdm_agent_wire::DeviceId::try_from(Uuid::from_u128(2)).unwrap(),
             Channel::Agent,
             hardware("SERIAL", "6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
         ));
@@ -569,7 +574,7 @@ mod tests {
         let agent = world.peer(&mdm).unwrap().clone();
         assert!(world.unique(&[mdm.member.clone(), agent.member.clone()], &mdm.hardware));
         world.insert(endpoint(
-            "third",
+            &rss_mdm_agent_wire::DeviceId::try_from(Uuid::from_u128(3)).unwrap(),
             Channel::Mdm,
             hardware("SERIAL", "6ba7b811-9dad-11d1-80b4-00c04fd430c8"),
         ));

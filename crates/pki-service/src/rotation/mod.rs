@@ -42,7 +42,7 @@ pub struct Blocker {
     pub kind: BlockerKind,
     #[schemars(extend("x-rss-maxUtf8Bytes" = 1024))]
     pub id: String,
-    pub device: Option<String>,
+    pub device: Option<rss_mdm_agent_wire::DeviceId>,
     pub state: String,
     pub deadline: Option<i64>,
     pub revocation_state: Option<String>,
@@ -364,7 +364,7 @@ pub static BLOCKER_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Binding
             &[
                 rss_mdm_query_postgres::Source::column("kind", "kind COLLATE \"C\""),
                 rss_mdm_query_postgres::Source::column("id", "id COLLATE \"C\""),
-                rss_mdm_query_postgres::Source::column("device", "device COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column("device", "device"),
                 rss_mdm_query_postgres::Source::column("state", "state COLLATE \"C\""),
                 rss_mdm_query_postgres::Source::column("deadline", "deadline"),
                 rss_mdm_query_postgres::Source::column(

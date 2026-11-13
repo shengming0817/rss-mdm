@@ -187,7 +187,7 @@ impl Maintenance {
                         .await??;
                         changed = true;
                         if let Some(copy_owner) = &service.copies {
-                            let value = registration.clone();
+                            let value = registration;
                             let copies = tx
                                 .with_connection(move |c| {
                                     Box::pin(async move {

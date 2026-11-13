@@ -42,7 +42,7 @@ fn trust_is_bound_to_material_authority_and_revision() {
     let ack = Acknowledgement {
         operation: Uuid::from_u128(2),
         version: 1,
-        device_id: Uuid::from_u128(3).to_string(),
+        device_id: rss_mdm_agent_wire::DeviceId::try_from(Uuid::from_u128(3)).unwrap(),
 
         revision: 1,
         digest,
@@ -103,7 +103,7 @@ fn observation_rejects_false_applied_and_unbounded_or_ambiguous_coordinates() {
     let mut value = Observation {
         operation: uuid::Uuid::new_v4(),
         version: 1,
-        device_id: uuid::Uuid::new_v4().to_string(),
+        device_id: rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::new_v4()).unwrap(),
 
         sequence: 1,
         target_revision: Some(2),

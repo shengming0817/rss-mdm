@@ -7,7 +7,7 @@ use uuid::Uuid;
 pub enum Reader<'a> {
     Management {
         proof: &'a AuthorizedPrincipal,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     },
     Agent {
         device: &'a DevicePrincipal,
@@ -111,7 +111,7 @@ impl Query {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct Member {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct Scope {
@@ -122,7 +122,7 @@ pub(crate) struct Scope {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Watermark {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub generation: Uuid,
     pub revision: i64,
 }
@@ -133,7 +133,7 @@ pub(crate) struct Cursor {
     pub changes: bool,
     pub through: Vec<Watermark>,
     pub since: Vec<Watermark>,
-    pub after: Option<(i64, String, i64)>,
+    pub after: Option<(i64, rss_mdm_agent_wire::DeviceId, i64)>,
     pub as_of: i64,
     pub caught_up: bool,
 }

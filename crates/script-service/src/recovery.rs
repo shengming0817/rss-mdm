@@ -125,7 +125,7 @@ pub async fn recover_one(
     service.transactions.validate_in(tx)?;
     let target = storage::read_run(tx, id).await?.target;
     let tenant = tx.tenant_id().to_string();
-    let device = target.device.clone();
+    let device = target.device;
     tx.with_connection(move |c| {
         Box::pin(async move {
             Ok(
@@ -145,7 +145,7 @@ pub async fn recover_one(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 tenant,
-                target.device.clone(),
+                target.device,
             ))
         })
         .await?;

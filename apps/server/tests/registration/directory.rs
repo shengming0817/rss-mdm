@@ -7,15 +7,19 @@ use rss_mdm_registration_service::enrollment::registration::read;
 use rss_request_context::TenantId;
 use uuid::Uuid;
 
-async fn seed(c: &Context, tenant: TenantId, device: &str) -> Result<Uuid> {
+async fn seed(
+    c: &Context,
+    tenant: TenantId,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<Uuid> {
     let grant = Uuid::new_v4();
     let mut tx = c.operator.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(tenant.to_string())
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO mdm_access.certificate_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,state,expires_at) VALUES($1::uuid,$2,$2,'download','directory-fixture',$3,$4,'windows',repeat('0',64),repeat('1',64),'consumed',clock_timestamp()+interval '1 hour')").bind(tenant.to_string()).bind(grant).bind(&c.inputs.installation.instance_id).bind(device).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id,channel,certificate_grant_id,state,purpose,epoch) VALUES($1::uuid,$2,'agent',$3,'active','primary',$4)").bind(tenant.to_string()).bind(device).bind(grant).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.certificate_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,state,expires_at) VALUES($1::uuid,$2,$2,'download','directory-fixture',$3,$4,'windows',repeat('0',64),repeat('1',64),'consumed',clock_timestamp()+interval '1 hour')").bind(tenant.to_string()).bind(grant).bind(&c.inputs.installation.instance_id).bind(device.into_uuid()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id,channel,certificate_grant_id,state,purpose,epoch) VALUES($1::uuid,$2,'agent',$3,'active','primary',$4)").bind(tenant.to_string()).bind(device.into_uuid()).bind(grant).bind(Uuid::new_v4()).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(grant)
 }
@@ -25,7 +29,7 @@ async fn registration_read_preserves_grant_and_tenant_authority() -> Result<()> 
     let other = TenantId::parse(&Uuid::new_v4().to_string())?;
     let c = Context::open("shared", &[other]).await?;
     let result = async {
-        let device = Uuid::new_v4().to_string();
+        let device = rss_mdm_agent_wire::DeviceId::new_v4();
         let grant = seed(&c, c.tenant, &device).await?;
         let foreign = seed(&c, other, &device).await?;
         assert_ne!(grant, foreign);
@@ -62,7 +66,7 @@ async fn registration_read_preserves_grant_and_tenant_authority() -> Result<()> 
                 StorageProfile::Mdm,
                 &store,
                 &proof,
-                &Uuid::new_v4().to_string()
+                &rss_mdm_agent_wire::DeviceId::new_v4()
             )
             .await,
             Err(rss_mdm_registration_service::Error::NotFound)

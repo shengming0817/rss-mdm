@@ -177,7 +177,9 @@ async fn deliver_on(
         != Sha256::digest(serde_json::to_vec(input)?).to_vec()
         || row.try_get::<Vec<u8>, _>("input_digest")?
             != Sha256::digest(serde_json::to_vec(&input.input)?).to_vec()
-        || row.try_get::<String, _>("device")? != input.device
+        || row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+            rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+        })? != input.device
         || row.try_get::<uuid::Uuid, _>("credential")? != input.credential
         || row.try_get::<uuid::Uuid, _>("epoch")? != input.epoch
     {

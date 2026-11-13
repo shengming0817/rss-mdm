@@ -352,7 +352,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     let ack = Acknowledgement {
         version: 1,
         operation: Uuid::new_v4(),
-        device_id: receipt.device.to_string(),
+        device_id: receipt.device,
 
         revision: trust_public.revision,
         digest: trust_public.installation_digest()?,
@@ -635,7 +635,7 @@ async fn unknown_recovery(
     base: &str,
     token: &str,
     old_export: Uuid,
-    old_device: &str,
+    old_device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<()> {
     use base64::{Engine, engine::general_purpose::STANDARD};
     use rss_mdm_agent_wire::{da, enroll};
@@ -749,14 +749,14 @@ async fn unknown_recovery(
     )
     .await?;
     assert_eq!(registration.device, grant.device);
-    assert_ne!(registration.device, old_device);
+    assert_ne!(registration.device, *old_device);
     let history: (i64, i64, i64, i64) = sqlx::query_as(
         "SELECT
           (SELECT count(*) FROM rss_da.report_history WHERE tenant_id=$1 AND device=$2),
           (SELECT count(*) FROM rss_da.report_history WHERE tenant_id=$1 AND device=$3),
-          (SELECT count(*) FROM rss_da.policies WHERE tenant_id=$1 AND definition#>>'{target,device}'=$2),
-          (SELECT count(*) FROM rss_da.policies WHERE tenant_id=$1 AND definition#>>'{target,device}'=$3)")
-        .bind(registration.tenant).bind(old_device).bind(&registration.device)
+          (SELECT count(*) FROM rss_da.policies WHERE tenant_id=$1 AND (definition#>>'{target,device}')::uuid=$2),
+          (SELECT count(*) FROM rss_da.policies WHERE tenant_id=$1 AND (definition#>>'{target,device}')::uuid=$3)")
+        .bind(registration.tenant).bind(old_device.into_uuid()).bind(registration.device.into_uuid())
         .fetch_one(&c.operator).await?;
     assert!(
         history.0 > 0 && history.2 > 0,
@@ -778,7 +778,7 @@ async fn unknown_recovery(
             .json(&rss_mdm_agent_wire::task_trust::Acknowledgement {
                 version: 1,
                 operation: Uuid::new_v4(),
-                device_id: registration.device.clone(),
+                device_id: registration.device,
 
                 revision: trust.revision,
                 digest: trust.installation_digest()?,

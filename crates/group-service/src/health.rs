@@ -12,8 +12,8 @@ impl Groups {
             let tenant=tx.tenant_id().to_string();
             tx.with_connection(move |c|Box::pin(async move {
                 let row:(i64,i64,i64,i64,i64)=sqlx::query_as("SELECT
-                    (SELECT count(*) FROM (SELECT 1 FROM mdm_assets.group_tasks j WHERE tenant_id=$1::uuid AND NOT completed AND cursor IS NULL AND NOT EXISTS(SELECT FROM mdm_group.member_runs r WHERE(r.tenant_id,r.id)=(j.tenant_id,j.id) AND r.processed_count>0) LIMIT 1001) q),
-                    (SELECT count(*) FROM (SELECT 1 FROM mdm_assets.group_tasks j WHERE tenant_id=$1::uuid AND NOT completed AND (cursor IS NOT NULL OR EXISTS(SELECT FROM mdm_group.member_runs r WHERE(r.tenant_id,r.id)=(j.tenant_id,j.id) AND r.processed_count>0)) LIMIT 1001) q),
+                    (SELECT count(*) FROM (SELECT 1 FROM mdm_assets.group_tasks j WHERE tenant_id=$1::uuid AND NOT completed AND cursor IS NULL AND definition_progress IS NULL AND NOT EXISTS(SELECT FROM mdm_group.member_runs r WHERE(r.tenant_id,r.id)=(j.tenant_id,j.id) AND r.processed_count>0) LIMIT 1001) q),
+                    (SELECT count(*) FROM (SELECT 1 FROM mdm_assets.group_tasks j WHERE tenant_id=$1::uuid AND NOT completed AND (cursor IS NOT NULL OR definition_progress IS NOT NULL OR EXISTS(SELECT FROM mdm_group.member_runs r WHERE(r.tenant_id,r.id)=(j.tenant_id,j.id) AND r.processed_count>0)) LIMIT 1001) q),
                     (SELECT count(*) FROM (SELECT 1 FROM mdm_assets.group_tasks WHERE tenant_id=$1::uuid AND completed AND failure IS NULL LIMIT 1001) q),
                     (SELECT count(*) FROM (SELECT 1 FROM mdm_assets.group_tasks WHERE tenant_id=$1::uuid AND failure IS NOT NULL AND failure<>'superseded' LIMIT 1001) q),
                     (SELECT count(*) FROM (SELECT 1 FROM mdm_assets.group_tasks WHERE tenant_id=$1::uuid AND failure='superseded' LIMIT 1001) q)")

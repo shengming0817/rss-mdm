@@ -39,15 +39,15 @@ pub(super) async fn assignments(
         let page=async {
         let after=rss_mdm_scope_service::window::after(codec,query,&binding).map_err(window)?;
         if matches!(p.definition.action,Action::UnmanageDevice {..}) {
-            return super::retirement::assignments_on(s,c,&p,after.as_deref(),limit,codec,&binding).await;
+            return super::retirement::assignments_on(s,c,&p,after,limit,codec,&binding).await;
         }
-        let source=s.source.clone();let tenant=s.tenant;let scope=p.definition.scope;let cursor=after.clone();let channel=match p.definition.action.target_channel() {Some(rss_mdm_policy::SoftwareChannel::Agent)=>rss_mdm_inventory::Channel::Agent,Some(rss_mdm_policy::SoftwareChannel::Mdm)=>rss_mdm_inventory::Channel::Mdm,None=>return Err(Error::Malformed)};
-        let mut objects=source.assignment_objects_on(c,tenant,scope,channel,cursor.as_deref(),limit).await.map_err(super::source)?;
-        let t=tenant.to_string();let version=p.version;let channel_name=channel.as_str();let cursor=after.clone();
-        let retired=sqlx::query_scalar::<_,serde_json::Value>("SELECT input FROM mdm_policy.assignments WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND channel=$4 AND reason='source_removed' AND object>coalesce($5,'') COLLATE \"C\" ORDER BY object LIMIT $6").bind(t).bind(id).bind(version).bind(channel_name).bind(cursor).bind((limit+1) as i64).fetch_all(&mut *c).await.map_err(sql)?;
+        let source=s.source.clone();let tenant=s.tenant;let scope=p.definition.scope;let cursor=after;let channel=match p.definition.action.target_channel() {Some(rss_mdm_policy::SoftwareChannel::Agent)=>rss_mdm_inventory::Channel::Agent,Some(rss_mdm_policy::SoftwareChannel::Mdm)=>rss_mdm_inventory::Channel::Mdm,None=>return Err(Error::Malformed)};
+        let mut objects=source.assignment_objects_on(c,tenant,scope,channel,cursor,limit).await.map_err(super::source)?;
+        let t=tenant.to_string();let version=p.version;let channel_name=channel.as_str();let cursor=after;
+        let retired=sqlx::query_scalar::<_,serde_json::Value>("SELECT input FROM mdm_policy.assignments WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND channel=$4 AND reason='source_removed' AND ($5::smallint IS NULL OR (object_kind,object_id)>($5,$6::uuid)) ORDER BY object_kind,object_id LIMIT $7").bind(t).bind(id).bind(version).bind(channel_name).bind(cursor.map(|o|o.kind())).bind(cursor.map(|o|o.uuid())).bind((limit+1) as i64).fetch_all(&mut *c).await.map_err(sql)?;
         for value in retired {let row:rss_mdm_scope_service::channels::AssignmentObject=serde_json::from_value(value).map_err(|_|Error::Malformed)?;if !objects.iter().any(|o|o.object==row.object){objects.push(row);}}
-        objects.sort_by_key(|o|o.object.key());
-        let more=objects.len()>limit;objects.truncate(limit);let next=if more {objects.last().map(|o|o.object.key())}else{None};
+        objects.sort_by_key(|o|o.object);
+        let more=objects.len()>limit;objects.truncate(limit);let next=if more {objects.last().map(|o|o.object)}else{None};
         let script_policy=if matches!(p.definition.action,Action::Execution{..}) {
             Some(rss_mdm_script_service::policy::read_on(c,&s.policy_reader,&p).await.map_err(script_fault)?)
         }else{None};
@@ -90,13 +90,13 @@ pub(super) async fn assignments(
                     }else{
                         let capacity=super::super::capacity::available_on(c,tenant,device,now).await.map_err(|_|Error::Unavailable(Failure::Database))?;
                         let (admission,current_record,latest_run)=if let Some(policy)=&script_policy {
-                            let target_state=rss_mdm_script_service::Target{device:device.clone(),};
+                            let target_state=rss_mdm_script_service::Target{device:*device,};
                             let (admission,record)=rss_mdm_script_service::assignment::state_on(c,tenant,policy,object.admission,Arc::new(super::super::agent_facts::AgentFacts),&target_state,now,capacity).await.map_err(script_fault)?;
                             let latest=rss_mdm_script_service::queries::latest_assignment_on(c,tenant,id,target).await.map_err(script_fault)?.map(RecurringRun::Script);
                             (admission,record,latest)
                         }else{
                             let policy=collection_policy.as_ref().ok_or(Error::Unavailable(Failure::CommandInvariant))?;
-                            let target_state=rss_mdm_inventory_service::collection::execution::model::Target{device:device.clone(),};
+                            let target_state=rss_mdm_inventory_service::collection::execution::model::Target{device:*device,};
                             let scope=super::super::collection_ports::admission(object.admission);
                             let (admission,record)=s.collections.assignment_state_on(c,policy,scope,Arc::new(super::super::agent_facts::AgentFacts),&target_state,now,capacity).await?;
                             let latest=rss_mdm_inventory_service::collection::execution::queries::latest_assignment_on(c,tenant,id,target,channel).await?.map(RecurringRun::Collection);

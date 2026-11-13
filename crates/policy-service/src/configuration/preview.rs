@@ -23,7 +23,7 @@ pub struct Response {
 #[derive(schemars::JsonSchema, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Target {
-    pub object: rss_mdm_scope_service::channels::ObjectRef,
+    pub object: rss_mdm_agent_wire::ObjectRef,
     pub channel: rss_mdm_inventory::Channel,
     pub availability: rss_mdm_scope_service::channels::Availability,
     pub reason: Option<String>,
@@ -104,10 +104,10 @@ impl Previews {
    let scope=input.definition.scope;let channel=rss_mdm_inventory::Channel::Mdm;
    let binding=rss_mdm_scope_service::window::binding_on(&self.source,&mut tx,proof,&authority,PREVIEW_SCHEMA.id,scope,&json!([input.definition,input.scope_result])).await?;
    let after=rss_mdm_scope_service::window::after(codec,query,&binding)?;
-   let mut objects=self.source.assignment_objects_on(&mut tx,self.publications.tenant,scope,channel,after.as_deref(),query.limit()).await?;
+   let mut objects=self.source.assignment_objects_on(&mut tx,self.publications.tenant,scope,channel,after,query.limit()).await?;
    let result=self.source.preview_scope_on(&mut tx,self.publications.tenant,scope,channel,None).await?.result;
    if input.scope_result.is_some_and(|r|r!=result){return Err(Error::Conflict.into())}
-   let more=objects.len()>query.limit();objects.truncate(query.limit());let next=if more{objects.last().map(|o|o.object.key())}else{None};
+   let more=objects.len()>query.limit();objects.truncate(query.limit());let next=if more{objects.last().map(|o|o.object)}else{None};
    let items=objects.into_iter().map(|o|Target{object:o.object,channel:o.channel,availability:o.availability,reason:o.reason,target:o.target,eligibility:o.admission,task_admission:None}).collect();
    let page=Response{action:input.definition.action.clone(),scope_result:result,items,next_cursor:rss_mdm_scope_service::window::next(codec,&binding,next)?};
    tx.rollback().await?;Ok::<_,Fault>((page,authority))

@@ -4,7 +4,7 @@ REVOKE ALL ON SCHEMA mdm_timeline FROM PUBLIC;
 CREATE TABLE mdm_timeline.facts (
  tenant_id uuid NOT NULL, position bigint NOT NULL CHECK(position>=0), source text NOT NULL, event_id text NOT NULL,
  recorded_at bigint NOT NULL CHECK(recorded_at>=0), instance_id uuid, operation_id uuid,
- actor text NOT NULL, action text NOT NULL, outcome text NOT NULL, devices text[] NOT NULL, operations uuid[] NOT NULL,
+ actor text NOT NULL, action text NOT NULL, outcome text NOT NULL, devices uuid[] NOT NULL, operations uuid[] NOT NULL,
  activity jsonb CHECK(octet_length(activity::text)<=16384),
  activity_digest bytea CHECK(activity_digest IS NULL OR octet_length(activity_digest)=32),
  CHECK((activity IS NULL)=(activity_digest IS NULL)),
@@ -26,11 +26,11 @@ GRANT USAGE ON SCHEMA mdm_timeline,mdm_planning,mdm_assets TO mdm_access;
 -- Read-only correlation belongs to Flow and remains tenant-filtered by RLS.
 GRANT SELECT ON mdm_devices.unmanage_runs,mdm_assets.operations,mdm_devices.control_requests,mdm_devices.control_operations,mdm_policy.versions TO mdm_access;
 CREATE TABLE mdm_timeline.activity_streams (
- tenant_id uuid NOT NULL, device text NOT NULL, generation uuid NOT NULL, revision bigint NOT NULL DEFAULT 0 CHECK(revision>=0),
+ tenant_id uuid NOT NULL, device uuid NOT NULL, generation uuid NOT NULL, revision bigint NOT NULL DEFAULT 0 CHECK(revision>=0),
  PRIMARY KEY(tenant_id,device)
 );
 CREATE TABLE mdm_timeline.activity_entries (
- tenant_id uuid NOT NULL, device text NOT NULL, revision bigint NOT NULL CHECK(revision>0), position bigint NOT NULL,
+ tenant_id uuid NOT NULL, device uuid NOT NULL, revision bigint NOT NULL CHECK(revision>0), position bigint NOT NULL,
  PRIMARY KEY(tenant_id,device,revision),UNIQUE(tenant_id,device,position),
  FOREIGN KEY(tenant_id,position) REFERENCES mdm_timeline.facts(tenant_id,position)
 );

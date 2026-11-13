@@ -42,7 +42,7 @@ pub struct Snapshot {
     pub instance: Option<String>,
     pub action: &'static str,
     pub target: Option<String>,
-    pub device_target: Option<String>,
+    pub device_target: Option<rss_mdm_agent_wire::DeviceId>,
     pub operation_id: Option<Uuid>,
     pub operation_owner: Option<crate::operation::OperationOwner>,
     pub receipt_actor: Option<String>,
@@ -303,19 +303,21 @@ impl RequestAudit {
             "mdm"
         };
         if kind == TargetKind::Device {
-            state.snapshot.device_target = state.snapshot.target.clone();
+            state.snapshot.device_target = state
+                .snapshot
+                .target
+                .as_deref()
+                .and_then(|value| value.parse().ok());
         }
     }
     /// Source-owned device target, distinct from a generic management resource ID.
     /// Neutral audit coordinates, never authentication or an authorization grant.
-    pub fn target_device(&self, device: &str) {
+    pub fn target_device(&self, device: &rss_mdm_agent_wire::DeviceId) {
         let mut state = self.0.state.lock().expect("audit lock");
-        let value =
-            (device.len() <= 256 && !device.is_empty() && !device.chars().any(char::is_control))
-                .then(|| device.to_owned());
-        state.snapshot.target_type = if value.is_some() { "device" } else { "mdm" };
+        let value = Some(device.to_string());
+        state.snapshot.target_type = "device";
         state.snapshot.target = value.clone();
-        state.snapshot.device_target = value;
+        state.snapshot.device_target = Some(*device);
     }
     /// Select the namespace at the actual business boundary, not from a client hint.
     pub fn operation_owner(&self, owner: crate::operation::OperationOwner) {
@@ -345,7 +347,7 @@ impl RequestAudit {
         state.snapshot.action = action;
     }
     /// Bind a device actor only after the producer validates the active registration credential.
-    pub fn identify_device(&self, device: &str) {
+    pub fn identify_device(&self, device: &rss_mdm_agent_wire::DeviceId) {
         let mut state = self.0.state.lock().expect("audit lock");
         state.snapshot.actor = Some(format!("device:{device}"));
         state.snapshot.actor_kind = "device";
@@ -479,7 +481,7 @@ mod tests {
         let registration = Uuid::new_v4();
         a.operation(key, "enrollment_create", crate::AuditIntent::Management);
         a.target("sensitive-target-not-for-logs");
-        a.target_device(&registration.to_string());
+        a.target_device(&rss_mdm_agent_wire::DeviceId::try_from(registration).unwrap());
         a.set_principal("sensitive-actor", "sensitive-instance");
         let event = |reason| a.0.failure_event(&a.snapshot(), reason);
         assert_eq!(

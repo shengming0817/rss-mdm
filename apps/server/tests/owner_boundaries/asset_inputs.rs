@@ -101,8 +101,8 @@ async fn canonical_fact_and_atomic_multi_owner_wake() -> Result<()> {
     let event: rss_mdm_inventory::AssetChanged = serde_json::from_slice(message.payload())?;
     event.validate()?;
     assert_eq!(
-        event.identity.device.as_deref(),
-        Some(device.members[0].device.as_str())
+        event.identity.device.as_ref(),
+        Some(&device.members[0].device)
     );
     assert!(event.identity.registration_epoch.is_some());
     assert!(!String::from_utf8(message.payload().clone())?.contains("locator"));
@@ -196,7 +196,7 @@ async fn late_commits_and_bounded_pages_do_not_use_sequence_as_commit_order() ->
         "UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND device=$2",
     )
     .bind(c.tenant.to_string())
-    .bind(&a.members[0].device)
+    .bind(a.members[0].device.into_uuid())
     .execute(&mut *late)
     .await?;
     let low: i64 =
@@ -212,7 +212,7 @@ async fn late_commits_and_bounded_pages_do_not_use_sequence_as_commit_order() ->
         "UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND device=$2",
     )
     .bind(c.tenant.to_string())
-    .bind(&b.members[0].device)
+    .bind(b.members[0].device.into_uuid())
     .execute(&mut *early)
     .await?;
     early.commit().await?;
@@ -254,7 +254,7 @@ async fn late_commits_and_bounded_pages_do_not_use_sequence_as_commit_order() ->
         "UPDATE mdm_access.report_sources SET enabled=true WHERE tenant_id=$1::uuid AND device=$2",
     )
     .bind(c.tenant.to_string())
-    .bind(&a.members[0].device)
+    .bind(a.members[0].device.into_uuid())
     .execute(&mut *rolled)
     .await?;
     let rolled_id: i64 =
@@ -268,7 +268,7 @@ async fn late_commits_and_bounded_pages_do_not_use_sequence_as_commit_order() ->
     let mut batch = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     // Legal owner transitions in one source transaction cross the real 1000-event boundary.
     for enabled in (0..1001).map(|n| n % 2 == 0) {
-        sqlx::query("UPDATE mdm_access.report_sources SET enabled=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(c.tenant.to_string()).bind(&a.members[0].device).bind(enabled).execute(&mut *batch).await?;
+        sqlx::query("UPDATE mdm_access.report_sources SET enabled=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(c.tenant.to_string()).bind(a.members[0].device.into_uuid()).bind(enabled).execute(&mut *batch).await?;
     }
     batch.commit().await?;
     let upper = cut(&c).await?;
@@ -568,7 +568,7 @@ async fn definition(c: &Context) -> Result<rss_mdm_inventory::CollectionDefiniti
 }
 async fn inventory(
     c: &Context,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     definition: &rss_mdm_inventory::CollectionDefinition,
     value: bool,
 ) -> Result<()> {
@@ -576,13 +576,13 @@ async fn inventory(
 }
 async fn inventory_field(
     c: &Context,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     definition: &rss_mdm_inventory::CollectionDefinition,
     field: &str,
     value: bool,
 ) -> Result<()> {
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND device=$2 AND source='mdm.windows'").bind(c.tenant.to_string()).bind(device).fetch_one(&mut *tx).await?;
+    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND device=$2 AND source='mdm.windows'").bind(c.tenant.to_string()).bind(device.into_uuid()).fetch_one(&mut *tx).await?;
     let scope = rss_mdm_registration_service::device::scope_dataset(
         StorageProfile::Mdm,
         c.tenant,
@@ -593,7 +593,7 @@ async fn inventory_field(
     )?;
     let projection = rss_mdm_inventory_postgres::projection_scope(c.tenant);
     sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$10,$6,$7,1,1,'known',$8,'mdm.windows',$9,1,'{\"kind\":\"device\"}') ON CONFLICT(tenant_id,journal,generation,scope,field,field_scope) DO UPDATE SET value=excluded.value,batch_id=excluded.batch_id,collection_sequence=mdm.inventory.collection_sequence+1")
-        .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(serde_json::to_string(&rss_mdm_inventory::Scalar::Boolean(value))?).bind(Uuid::new_v4().to_string()).bind(device).bind(epoch.to_string()).bind(field).execute(&mut *tx).await?;
+        .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(serde_json::to_string(&rss_mdm_inventory::Scalar::Boolean(value))?).bind(Uuid::new_v4().to_string()).bind(device.into_uuid()).bind(epoch.to_string()).bind(field).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -661,7 +661,7 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     )
     .await?;
     wait_sql(&c,"SELECT EXISTS(SELECT FROM mdm_scope.scopes s JOIN mdm_scope.scope_channel_results r ON(r.tenant_id,r.run)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.channel='mdm' AND r.matched)",scope).await?;
-    let (run,entry):(Uuid,i64)=sqlx::query_as("SELECT s.resolution,r.entry_revision FROM mdm_scope.scopes s JOIN mdm_scope.scope_channel_results r ON(r.tenant_id,r.run)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.device=$3 AND r.channel='mdm'").bind(c.tenant.to_string()).bind(scope).bind(&device.members[0].device).fetch_one(&c.operator).await?;
+    let (run,entry):(Uuid,i64)=sqlx::query_as("SELECT s.resolution,r.entry_revision FROM mdm_scope.scopes s JOIN mdm_scope.scope_channel_results r ON(r.tenant_id,r.run)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.device=$3 AND r.channel='mdm'").bind(c.tenant.to_string()).bind(scope).bind(device.members[0].device.into_uuid()).fetch_one(&c.operator).await?;
     wait_sql(&c,"SELECT EXISTS(SELECT FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2 AND started AND completed AND failure IS NULL) AND EXISTS(SELECT FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid AND gateway_accepted)",run).await?;
     let policy_scheduled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_policy.work w JOIN rss_reconcile.targets t ON t.tenant_id=w.tenant_id AND t.entity='job:'||w.id::text AND t.reconciler='mdm.policy' WHERE w.tenant_id=$1::uuid AND w.id=$2 AND w.started AND w.completed)").bind(c.tenant.to_string()).bind(run).fetch_one(&c.operator).await?;
     assert!(policy_scheduled);
@@ -737,7 +737,7 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
         work_after, work_before,
         "same facts do not duplicate Policy effects"
     );
-    let retained:i64=sqlx::query_scalar("SELECT r.entry_revision FROM mdm_scope.scopes s JOIN mdm_scope.scope_channel_results r ON(r.tenant_id,r.run)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.device=$3 AND r.channel='mdm'").bind(c.tenant.to_string()).bind(scope).bind(&device.members[0].device).fetch_one(&c.operator).await?;
+    let retained:i64=sqlx::query_scalar("SELECT r.entry_revision FROM mdm_scope.scopes s JOIN mdm_scope.scope_channel_results r ON(r.tenant_id,r.run)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.device=$3 AND r.channel='mdm'").bind(c.tenant.to_string()).bind(scope).bind(device.members[0].device.into_uuid()).fetch_one(&c.operator).await?;
     assert_eq!(retained, entry, "continuous membership retains its entry");
     workers.close().await?;
     for _ in 0..33 {
@@ -755,7 +755,7 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     wait_sql(&c,"SELECT s.resolution IS NOT NULL AND NOT EXISTS(SELECT FROM mdm_scope.scope_channel_results r WHERE(r.tenant_id,r.run)=(s.tenant_id,s.resolution) AND r.channel='mdm' AND r.matched) FROM mdm_scope.scopes s WHERE s.tenant_id=$1::uuid AND s.id=$2",scope).await?;
     inventory(&c, &device.members[0].device, &definition, true).await?;
     wait_sql(&c,"SELECT EXISTS(SELECT FROM mdm_scope.scopes s JOIN mdm_scope.scope_channel_results r ON(r.tenant_id,r.run)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.channel='mdm' AND r.matched)",scope).await?;
-    let reentry:i64=sqlx::query_scalar("SELECT r.entry_revision FROM mdm_scope.scopes s JOIN mdm_scope.scope_channel_results r ON(r.tenant_id,r.run)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.device=$3 AND r.channel='mdm'").bind(c.tenant.to_string()).bind(scope).bind(&device.members[0].device).fetch_one(&c.operator).await?;
+    let reentry:i64=sqlx::query_scalar("SELECT r.entry_revision FROM mdm_scope.scopes s JOIN mdm_scope.scope_channel_results r ON(r.tenant_id,r.run)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.device=$3 AND r.channel='mdm'").bind(c.tenant.to_string()).bind(scope).bind(device.members[0].device.into_uuid()).fetch_one(&c.operator).await?;
     assert!(
         reentry > entry,
         "actual exit and reentry allocate a new identity"
@@ -767,7 +767,7 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
         "UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id=$1::uuid AND device=$2",
     )
     .bind(c.tenant.to_string())
-    .bind(&device.members[0].device)
+    .bind(device.members[0].device.into_uuid())
     .execute(&mut *change)
     .await?;
     change.commit().await?;
@@ -815,26 +815,20 @@ async fn coalesced_static_edit_and_scope_request_are_not_acknowledged_by_old_tas
     let a = planning::endpoint(&c).await?;
     let b = planning::endpoint(&c).await?;
     let id = owners.create(&c, &proof, None).await?;
-    let edit = |device: String, expected_revision| group::Command::Group {
+    let edit = |device: rss_mdm_agent_wire::DeviceId, expected_revision| group::Command::Group {
         id,
         change: Box::new(group::operation::Operation {
             operation_id: Uuid::new_v4(),
             expected_revision,
             input: group::GroupChange::Members {
-                add: vec![rss_mdm_inventory_service::objects::ObjectRef::Endpoint(
-                    device,
-                )],
+                add: vec![rss_mdm_agent_wire::ObjectRef::Endpoint(device)],
                 remove: vec![],
             },
         }),
     };
     let first = owners
         .groups
-        .execute(
-            &edit(a.members[0].device.clone(), 1),
-            &c.request(&proof)?,
-            &proof,
-        )
+        .execute(&edit(a.members[0].device, 1), &c.request(&proof)?, &proof)
         .await?;
     owners
         .settle(
@@ -844,11 +838,7 @@ async fn coalesced_static_edit_and_scope_request_are_not_acknowledged_by_old_tas
         .await?;
     let second = owners
         .groups
-        .execute(
-            &edit(b.members[0].device.clone(), 2),
-            &c.request(&proof)?,
-            &proof,
-        )
+        .execute(&edit(b.members[0].device, 2), &c.request(&proof)?, &proof)
         .await?;
     let task = Uuid::parse_str(second["task"].as_str().context("second static task")?)?;
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
@@ -856,7 +846,7 @@ async fn coalesced_static_edit_and_scope_request_are_not_acknowledged_by_old_tas
         "UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND device=$2",
     )
     .bind(c.tenant.to_string())
-    .bind(&a.members[0].device)
+    .bind(a.members[0].device.into_uuid())
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -982,16 +972,14 @@ async fn rule_status(
     c: &Context,
     owners: &Owners,
     account: &crate::authority_t2_support::Account,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     rule: Uuid,
 ) -> Result<rss_mdm_compliance::Current> {
     let proof = c.authenticate(account).await?;
     let current = owners
         .compliance
         .execute(
-            &compliance::Command::Current {
-                device: device.into(),
-            },
+            &compliance::Command::Current { device: *device },
             &c.request(&proof)?,
             &proof,
         )
@@ -1018,7 +1006,7 @@ async fn members(
     owners: &Owners,
     account: &crate::authority_t2_support::Account,
     group: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     add: bool,
 ) -> Result<()> {
     let proof = c.authenticate(account).await?;
@@ -1029,7 +1017,7 @@ async fn members(
     .bind(group)
     .fetch_one(&c.operator)
     .await?;
-    let object = rss_mdm_inventory_service::objects::ObjectRef::Endpoint(device.into());
+    let object = rss_mdm_agent_wire::ObjectRef::Endpoint(device.to_owned());
     owners
         .groups
         .execute(
@@ -1039,7 +1027,7 @@ async fn members(
                     operation_id: Uuid::new_v4(),
                     expected_revision: revision as u64,
                     input: group::GroupChange::Members {
-                        add: if add { vec![object.clone()] } else { vec![] },
+                        add: if add { vec![object] } else { vec![] },
                         remove: if add { vec![] } else { vec![object] },
                     },
                 }),

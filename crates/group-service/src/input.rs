@@ -8,9 +8,9 @@ pub(crate) struct ConditionPageRequest<'a> {
     pub snapshot: Option<&'a ObjectSnapshot>,
     pub condition: &'a criteria::Condition,
     pub rule: &'a rss_mdm_group::Rule,
-    pub after: Option<String>,
+    pub after: Option<rss_mdm_agent_wire::ObjectRef>,
     pub limit: usize,
-    pub selected: Option<Vec<String>>,
+    pub selected: Option<Vec<rss_mdm_agent_wire::ObjectRef>>,
     pub progress: Option<EvaluationProgress>,
 }
 
@@ -52,7 +52,7 @@ impl Groups {
                 .await?;
             let ids: Vec<_> = inputs
                 .iter()
-                .flat_map(|o| o.members.iter().map(|m| m.device.clone()))
+                .flat_map(|o| o.members.iter().map(|m| m.device))
                 .collect::<std::collections::BTreeSet<_>>()
                 .into_iter()
                 .collect();
@@ -65,13 +65,15 @@ impl Groups {
                 .asset_page_in(
                     tx,
                     cut,
-                    after,
+                    after.map(endpoint).transpose()?,
                     limit,
                     &assets::ReadScope {
                         collection_scope: rss_mdm_inventory::CollectionScope::Device,
                         subject: "group".into(),
                         authority: "internal".into(),
-                        devices: selected.map(|ids| ids.into_iter().collect()),
+                        devices: selected
+                            .map(|ids| ids.into_iter().map(endpoint).collect::<Result<_>>())
+                            .transpose()?,
                     },
                 )
                 .await?;
@@ -145,5 +147,15 @@ impl Groups {
             sqlx::query_scalar("SELECT input_revision>$3 FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted")
                 .bind(tenant).bind(group).bind(covered).fetch_optional(c).await
         })).await?.unwrap_or(false))
+    }
+}
+
+/// Endpoint-only catalog inputs reject associations instead of dropping the kind.
+pub(crate) fn endpoint(
+    object: rss_mdm_agent_wire::ObjectRef,
+) -> Result<rss_mdm_agent_wire::DeviceId> {
+    match object {
+        rss_mdm_agent_wire::ObjectRef::Endpoint(id) => Ok(id),
+        rss_mdm_agent_wire::ObjectRef::Association(_) => Err(Error::Conflict.into()),
     }
 }

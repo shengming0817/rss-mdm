@@ -11,7 +11,7 @@ pub use rss_mdm_agent_wire::activities::{
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActivityTarget {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
 }
 
 /// Exact producer references. A definition step is qualified by its run and attempt.

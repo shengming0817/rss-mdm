@@ -18,7 +18,7 @@ fn value(id: &str, name: &str, version: &str, publisher: &str, state: &str) -> S
 }
 fn array() -> ArrayInput {
     ArrayInput {
-        endpoint: "device-a".into(),
+        endpoint: rss_mdm_agent_wire::DeviceId::try_from(Uuid::from_u128(1)).unwrap(),
         source: SoftwareSource::Installations,
         platform: Platform::Windows,
         value: rss_mdm_inventory::ArrayValue {
@@ -32,7 +32,7 @@ fn array() -> ArrayInput {
             scope: CollectionScope::Device,
             source: Source::MdmWindows,
             dataset: Some("software".into()),
-            device_id: Some(Uuid::new_v4().to_string()),
+            device_id: Some(rss_mdm_agent_wire::DeviceId::new_v4()),
 
             epoch: Some(Uuid::new_v4().to_string()),
             snapshot_id: "snapshot".into(),

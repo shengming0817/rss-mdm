@@ -81,7 +81,12 @@ impl WindowsDeviceTrust {
         }
         Ok(end)
     }
-    pub fn profile(&self, csr: &Csr, device: &str, now: i64) -> Result<IssuanceProfile, Error> {
+    pub fn profile(
+        &self,
+        csr: &Csr,
+        device: &rss_mdm_agent_wire::DeviceId,
+        now: i64,
+    ) -> Result<IssuanceProfile, Error> {
         let end = self.issuance_end(now)?;
         Ok(IssuanceProfile {
             version: 1,

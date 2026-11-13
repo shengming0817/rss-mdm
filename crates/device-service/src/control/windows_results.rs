@@ -7,7 +7,7 @@ pub type Pending<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, crate::control::Error>> + Send + 'a>>;
 pub struct Read {
     pub id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub request: rss_mdm_windows_mdm::native::Execution,
     pub values: bool,
 }
@@ -20,7 +20,11 @@ pub trait Store: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        checks: Vec<(usize, String, rss_mdm_windows_mdm::native::Request)>,
+        checks: Vec<(
+            usize,
+            rss_mdm_agent_wire::DeviceId,
+            rss_mdm_windows_mdm::native::Request,
+        )>,
     ) -> Pending<'a, BTreeMap<usize, crate::control::device_control::Applicability>>;
 
     fn sent<'a>(

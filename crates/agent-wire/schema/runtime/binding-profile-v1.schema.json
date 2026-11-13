@@ -281,6 +281,16 @@
         }
       ]
     },
+    "DeviceId": {
+      "format": "uuid",
+      "maxLength": 36,
+      "minLength": 36,
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
     "FieldDefinition": {
       "additionalProperties": false,
       "description": "A published field version. No time-based expiry and no execution permission.",
@@ -903,11 +913,8 @@
       "type": "array"
     },
     "deviceId": {
-      "description": "Server-owned product device identity.",
-      "maxLength": 256,
-      "minLength": 1,
-      "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F-\\u009F]*$",
-      "type": "string"
+      "$ref": "#/$defs/DeviceId",
+      "description": "Server-owned product device identity."
     },
     "epoch": {
       "description": "Observation epoch for this registration.",

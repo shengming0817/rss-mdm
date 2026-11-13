@@ -225,7 +225,7 @@ impl Snapshot {
         &self,
         proof: &AuthorizedPrincipal,
         operation: Permission,
-        device: Option<&str>,
+        device: Option<&rss_mdm_agent_wire::DeviceId>,
     ) -> Result<(), AuthorizationError> {
         self.installation
             .as_ref()
@@ -235,9 +235,6 @@ impl Snapshot {
         proof
             .check_live()
             .map_err(|_| AuthorizationError::Unauthorized)?;
-        if let Some(device) = device {
-            rss_observation::Id::new(device).map_err(|_| AuthorizationError::Malformed)?;
-        }
         if let Some(key) = self.key(proof)? {
             return if key
                 .metadata
@@ -298,7 +295,8 @@ impl Snapshot {
     pub fn inventory_devices(
         &self,
         proof: &AuthorizedPrincipal,
-    ) -> Result<Option<std::collections::BTreeSet<String>>, AuthorizationError> {
+    ) -> Result<Option<std::collections::BTreeSet<rss_mdm_agent_wire::DeviceId>>, AuthorizationError>
+    {
         self.devices_for(proof, Permission::InventoryRead)
     }
     /// Project the current device grants for an existing device-scoped operation.
@@ -307,7 +305,8 @@ impl Snapshot {
         &self,
         proof: &AuthorizedPrincipal,
         permission: Permission,
-    ) -> Result<Option<std::collections::BTreeSet<String>>, AuthorizationError> {
+    ) -> Result<Option<std::collections::BTreeSet<rss_mdm_agent_wire::DeviceId>>, AuthorizationError>
+    {
         proof
             .check_live()
             .map_err(|_| AuthorizationError::Unauthorized)?;
@@ -325,7 +324,7 @@ impl Snapshot {
                 .into_iter()
                 .filter_map(|g| {
                     if let Scope::Device { id } = &g.scope {
-                        Some(id.clone())
+                        Some(*id)
                     } else {
                         None
                     }
@@ -362,7 +361,7 @@ impl Snapshot {
                 match &grant.scope {
                     Scope::AllDevices => all = true,
                     Scope::Device { id } => {
-                        devices.insert(id.clone());
+                        devices.insert(*id);
                     }
                     Scope::Tenant => return Err(AuthorizationError::Forbidden),
                 }

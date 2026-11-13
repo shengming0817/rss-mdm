@@ -8,14 +8,23 @@ fn failed() -> Error {
 }
 pub(crate) fn aad(
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 
     user: &str,
     revision: i64,
     purpose: &str,
 ) -> Result<DerivedAad, Error> {
+    aad_coordinate(tenant, device.into_uuid(), user, revision, purpose)
+}
+pub(crate) fn aad_coordinate(
+    tenant: &str,
+    coordinate: uuid::Uuid,
+    user: &str,
+    revision: i64,
+    purpose: &str,
+) -> Result<DerivedAad, Error> {
     let tenant = TenantId::parse(tenant).map_err(|_| failed())?;
-    let owner = serde_json::to_string(&(device, user, revision)).map_err(|_| failed())?;
+    let owner = serde_json::to_string(&(coordinate, user, revision)).map_err(|_| failed())?;
     ProtectionContext::new(tenant, &owner, purpose, 1)
         .map(|context| context.derive())
         .map_err(|_| failed())
@@ -51,7 +60,7 @@ pub(crate) async fn token(
             &aad(&tenant, p.device(), user, 0, "apple.push.compare")?,
         )
         .map_err(|_| failed())?;
-    let old=sqlx::query("SELECT state, token_revision, material_digest, push_outcome FROM mdm_apple.channels WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 FOR UPDATE").bind(&tenant).bind(p.device()).bind(user).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
+    let old=sqlx::query("SELECT state, token_revision, material_digest, push_outcome FROM mdm_apple.channels WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 FOR UPDATE").bind(&tenant).bind(p.device().into_uuid()).bind(user).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
     let revision = if let Some(old) = old {
         if old
             .try_get::<String, _>("state")
@@ -84,9 +93,9 @@ pub(crate) async fn token(
         )
         .map_err(|_| failed())?;
     sqlx::query("INSERT INTO mdm_apple.channels (tenant_id, device, user_key, state, material, material_digest, token_revision) VALUES (CAST($1 AS uuid), $2, $3, 'active', $4, $5, $6) ON CONFLICT (tenant_id, device, user_key) DO UPDATE SET state = 'active', material = excluded.material, material_digest = excluded.material_digest, token_revision = excluded.token_revision, next_push = clock_timestamp(), push_id = NULL, push_lease_until = NULL, push_status = NULL, push_outcome = NULL, push_failures = 0")
-        .bind(&tenant).bind(p.device()).bind(user).bind(sealed).bind(digest.as_slice()).bind(revision).execute(&mut *c).await.map_err(crate::database::db)?;
+        .bind(&tenant).bind(p.device().into_uuid()).bind(user).bind(sealed).bind(digest.as_slice()).bind(revision).execute(&mut *c).await.map_err(crate::database::db)?;
     if user.is_empty() {
-        sqlx::query("UPDATE mdm_apple.devices SET state = 'active' WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(&tenant).bind(p.device()).execute(&mut *c).await.map_err(crate::database::db)?;
+        sqlx::query("UPDATE mdm_apple.devices SET state = 'active' WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(&tenant).bind(p.device().into_uuid()).execute(&mut *c).await.map_err(crate::database::db)?;
     }
     crate::notify(c, "apple")
         .await
@@ -98,7 +107,7 @@ pub(crate) async fn bootstrap_allowed(
     c: &mut PgConnection,
     p: &crate::device::DevicePrincipal,
 ) -> Result<(), Error> {
-    let value:Option<serde_json::Value>=sqlx::query_scalar("SELECT context FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND accepted AND context IS NOT NULL AND user_key = '' ORDER BY received_at DESC, id DESC LIMIT 1").bind(p.tenant().to_string()).bind(p.device()).fetch_optional(c).await.map_err(crate::database::db)?;
+    let value:Option<serde_json::Value>=sqlx::query_scalar("SELECT context FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND accepted AND context IS NOT NULL AND user_key = '' ORDER BY received_at DESC, id DESC LIMIT 1").bind(p.tenant().to_string()).bind(p.device().into_uuid()).fetch_optional(c).await.map_err(crate::database::db)?;
     let context = value
         .map(serde_json::from_value::<rss_mdm_apple_mdm::applicability::Context>)
         .transpose()

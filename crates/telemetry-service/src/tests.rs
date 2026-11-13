@@ -111,7 +111,7 @@ fn replay_keeps_sample_identity_and_large_integer_exact_across_batch_ids() {
         &definitions,
         &first,
         stream(),
-        "device",
+        &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
         3_000_000,
     )
     .unwrap()
@@ -123,7 +123,7 @@ fn replay_keeps_sample_identity_and_large_integer_exact_across_batch_ids() {
         &definitions,
         &second,
         stream(),
-        "device",
+        &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
         4_000_000,
     )
     .unwrap()
@@ -159,7 +159,7 @@ fn three_destinations_validate_input_and_do_not_turn_failure_into_zero() {
             &definitions,
             &point,
             stream(),
-            "device",
+            &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
             3_000_000,
         )
         .unwrap();
@@ -178,7 +178,7 @@ fn three_destinations_validate_input_and_do_not_turn_failure_into_zero() {
                 &definitions,
                 &point,
                 stream(),
-                "device",
+                &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
                 3_000_000
             ),
             Err(crate::Error::Invalid)
@@ -196,7 +196,7 @@ fn missing_configured_fields_and_expired_backfill_fail_before_durable_admission(
             &definitions,
             &point,
             stream(),
-            "device",
+            &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
             4_000_000_000
         )
         .is_err()
@@ -215,7 +215,7 @@ fn missing_configured_fields_and_expired_backfill_fail_before_durable_admission(
             &definitions,
             &point,
             stream(),
-            "device",
+            &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
             3_000_000
         )
         .is_err()
@@ -238,7 +238,7 @@ fn counter_requires_explicit_nonnegative_interval_and_reset_boundary() {
             &definitions,
             &point,
             stream(),
-            "device",
+            &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
             3_000_000
         )
         .is_err()
@@ -253,7 +253,7 @@ fn counter_requires_explicit_nonnegative_interval_and_reset_boundary() {
         &definitions,
         &point,
         stream(),
-        "device",
+        &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
         3_000_000,
     )
     .unwrap()
@@ -274,7 +274,7 @@ fn counter_requires_explicit_nonnegative_interval_and_reset_boundary() {
             &definitions,
             &point,
             stream(),
-            "device",
+            &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
             3_000_000
         )
         .is_err()
@@ -314,7 +314,7 @@ fn independent_counters_keep_each_fields_reset_and_missing_does_not_invent_inter
         &definitions,
         &point,
         stream(),
-        "device",
+        &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
         3_000_000,
     )
     .unwrap()
@@ -343,7 +343,7 @@ fn independent_counters_keep_each_fields_reset_and_missing_does_not_invent_inter
             &definitions,
             &point,
             stream(),
-            "device",
+            &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
             3_000_000
         )
         .is_err()
@@ -359,7 +359,7 @@ fn independent_counters_keep_each_fields_reset_and_missing_does_not_invent_inter
         &definitions,
         &point,
         stream(),
-        "device",
+        &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
         3_000_000,
     )
     .unwrap()
@@ -429,7 +429,7 @@ fn array_counters_use_declared_per_resource_reset_paths() {
         &definitions,
         &point,
         stream(),
-        "device",
+        &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
         3_000_000,
     )
     .unwrap()
@@ -457,7 +457,7 @@ fn array_counters_use_declared_per_resource_reset_paths() {
             &definitions,
             &point,
             stream(),
-            "device",
+            &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
             3_000_000
         )
         .is_err()
@@ -505,7 +505,8 @@ fn current_destination_encoding_is_bounded_even_when_the_wire_body_fits() {
     assert!(serde_json::to_vec(&point).unwrap().len() < 4 * 1024 * 1024);
     let mut accepted = crate::admission::Accepted {
         tenant: "11111111-1111-4111-8111-111111111111".into(),
-        device: "device".into(),
+        device: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
+            .unwrap(),
 
         credential: uuid::Uuid::new_v4(),
 
@@ -573,7 +574,8 @@ fn failed_current_needs_no_historical_context(
         }
         let accepted = crate::admission::Accepted {
             tenant: "11111111-1111-4111-8111-111111111111".into(),
-            device: "device".into(),
+            device: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
+                .unwrap(),
 
             credential: uuid::Uuid::new_v4(),
 
@@ -667,7 +669,8 @@ fn raw_extensions_are_preserved_but_only_declared_values_become_facts() {
         let raw_bytes = serde_json::to_vec(&point).unwrap();
         let accepted = crate::admission::Accepted {
             tenant: "11111111-1111-4111-8111-111111111111".into(),
-            device: "device".into(),
+            device: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
+                .unwrap(),
 
             credential: uuid::Uuid::new_v4(),
 

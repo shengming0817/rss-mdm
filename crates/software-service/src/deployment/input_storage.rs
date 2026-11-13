@@ -10,7 +10,7 @@ use zeroize::Zeroizing;
 #[derive(Serialize)]
 pub(crate) struct Identity<'a> {
     pub operation: Uuid,
-    pub device: &'a str,
+    pub device: &'a rss_mdm_agent_wire::DeviceId,
 }
 #[derive(Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -77,8 +77,9 @@ pub(crate) fn open_row(
     row: &PgRow,
     column: &str,
 ) -> Result<Create, Error> {
-    let device: String = row
-        .try_get("device")
+    let device: rss_mdm_agent_wire::DeviceId = row
+        .try_get::<Uuid, _>("device")
+        .and_then(crate::deployment::database::device_id)
         .map_err(crate::deployment::database::db)?;
     let identity = Identity {
         operation,

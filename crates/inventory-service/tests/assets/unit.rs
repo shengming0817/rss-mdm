@@ -115,7 +115,8 @@ fn registered_sensitive_paths_feed_group_sets_without_an_extra_grant() {
     let mut device = DeviceView {
         collection_scope: rss_mdm_inventory::CollectionScope::Device,
         lists: BTreeMap::new(),
-        device: "device".into(),
+        device: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
+            .unwrap(),
         channels: BTreeSet::new(),
         quality: vec![],
         revisions: BTreeMap::new(),
@@ -219,7 +220,8 @@ fn installed_id_groups_use_existing_sets_and_preserve_unknown_states() {
         let device = DeviceView {
             collection_scope: rss_mdm_inventory::CollectionScope::Device,
             lists: BTreeMap::new(),
-            device: "device".into(),
+            device: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
+                .unwrap(),
             channels: BTreeSet::new(),
             quality: vec![],
             revisions: BTreeMap::new(),

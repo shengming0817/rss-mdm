@@ -202,10 +202,7 @@ pub static OPERATION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindi
             &OPERATIONS,
             &[
                 rss_mdm_query_postgres::Source::required_column("actor", "actor COLLATE \"C\""),
-                rss_mdm_query_postgres::Source::required_column(
-                    "operationId",
-                    "operation::text COLLATE \"C\"",
-                ),
+                rss_mdm_query_postgres::Source::required_column("operationId", "operation"),
                 rss_mdm_query_postgres::Source::column("instance", "instance COLLATE \"C\""),
             ],
         )

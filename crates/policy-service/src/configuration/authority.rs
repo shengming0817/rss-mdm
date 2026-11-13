@@ -16,7 +16,7 @@ pub enum Authority {
         tenant: String,
         policy: Uuid,
         version: Uuid,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         remove: bool,
     },
     Retirement {
@@ -24,7 +24,7 @@ pub enum Authority {
         tenant: String,
         retirement: Uuid,
         version: Uuid,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         execution: Uuid,
         required: Vec<Permission>,
     },
@@ -149,7 +149,7 @@ impl Authority {
                 )
                 .await
                 .map_err(Error::from)?;
-                let current:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_devices.retirement_work AS w INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (w.tenant_id, w.device) WHERE w.tenant_id = CAST($1 AS uuid) AND w.operation = $2 AND w.device = $3 AND w.execution = $4 AND r.state = 'active')").bind(tenant).bind(retirement).bind(device).bind(execution).fetch_one(c).await.map_err(db)?;
+                let current:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_devices.retirement_work AS w INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (w.tenant_id, w.device) WHERE w.tenant_id = CAST($1 AS uuid) AND w.operation = $2 AND w.device = $3 AND w.execution = $4 AND r.state = 'active')").bind(tenant).bind(retirement).bind(device.into_uuid()).bind(execution).fetch_one(c).await.map_err(db)?;
                 Ok(allowed && current)
             }
             Self::Policy {
@@ -192,7 +192,7 @@ impl Authority {
                                     rss_mdm_apple_mdm::native::request::Request::Declarations { .. }
                             }
                         );
-                    let claimed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.configuration_claims cc JOIN mdm_planning.configuration_operations o ON(o.tenant_id,o.id)=(cc.tenant_id,cc.operation) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(cc.tenant_id,cc.policy) WHERE cc.tenant_id=$1::uuid AND cc.device=$2 AND o.authority->>'unit'=$3 AND p.state='enabled')").bind(tenant).bind(device).bind(unit).fetch_one(c).await.map_err(db)?;
+                    let claimed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.configuration_claims cc JOIN mdm_planning.configuration_operations o ON(o.tenant_id,o.id)=(cc.tenant_id,cc.operation) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(cc.tenant_id,cc.policy) WHERE cc.tenant_id=$1::uuid AND cc.device=$2 AND o.authority->>'unit'=$3 AND p.state='enabled')").bind(tenant).bind(device.into_uuid()).bind(unit).fetch_one(c).await.map_err(db)?;
                     return Ok(retained
                         || row
                             .try_get::<Option<bool>, _>("live")

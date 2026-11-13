@@ -14,7 +14,7 @@ impl ConfigurationCleanup for Cleanup {
         &'a self,
         tx: &'a mut PgTransaction<'_>,
         retirement: Uuid,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         audit: &'a RequestAudit,
     ) -> Pin<Box<dyn Future<Output = Result<Progress>> + Send + 'a>> {
         Box::pin(async move {

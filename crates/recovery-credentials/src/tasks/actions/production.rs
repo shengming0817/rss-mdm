@@ -102,7 +102,7 @@ pub(crate) async fn accept_for_device(
         return Ok(());
     }
     let tenant = tx.tenant_id().to_string();
-    let device = target.device.clone();
+    let device = target.device;
     let allow_explicit = trigger.explicit();
     let explicit = tx
         .with_connection(move |c| {
@@ -113,7 +113,7 @@ pub(crate) async fn accept_for_device(
                 )
                 .bind(tenant)
                 .bind(version)
-                .bind(device)
+                .bind(device.into_uuid())
                 .bind(now)
                 .bind(allow_explicit)
                 .fetch_optional(c)
@@ -143,7 +143,7 @@ pub(crate) async fn accept_for_device(
                 _ => return Ok(()),
             },
             Trigger::Once { .. } | Trigger::Interval { .. } | Trigger::Weekly { .. } => {
-                let due = schedule.due(-1, now, target.device.as_bytes())?;
+                let due = schedule.due(-1, now, target.device.to_string().as_bytes())?;
                 let Some(due) = due else {
                     return Ok(());
                 };
@@ -156,7 +156,7 @@ pub(crate) async fn accept_for_device(
     } else {
         policy_occurrence(frequency, target, &entry_source, entry, &event)
     };
-    let Some(slot) = schedule.occurrence(coordinate, target.device.as_bytes())? else {
+    let Some(slot) = schedule.occurrence(coordinate, target.device.to_string().as_bytes())? else {
         return Ok(());
     };
     let available = slot.available_at.max(now);
@@ -243,7 +243,7 @@ pub(crate) async fn queue_run_in(
     let reader = service.source.clone();
     let tenant = tx.tenant_id();
     let scope = policy.policy.definition.scope;
-    let device = target.device.clone();
+    let device = target.device;
     let evidence = tx
         .with_connection(move |c| {
             Box::pin(async move {
@@ -269,7 +269,7 @@ pub(crate) async fn queue_run_in(
         return Err(Error::Conflict.into());
     }
     let tenant = tx.tenant_id().to_string();
-    let registration = target.device.clone();
+    let registration = target.device;
     let target = target.clone();
     let digest = fingerprint.clone();
     let origin = checked_input(serde_json::to_value(origin))?;
@@ -282,7 +282,7 @@ pub(crate) async fn queue_run_in(
             .bind(tenant)
             .bind(id)
             .bind(version)
-            .bind(target.device)
+            .bind(target.device.into_uuid())
             .bind(occurrence)
             .bind(available)
             .bind(deadline)
@@ -355,8 +355,7 @@ pub async fn policy_pending_in(
     now: i64,
 ) -> Result<(bool, Option<i64>)> {
     let tenant = tx.tenant_id().to_string();
-    let device = target.device.clone();
-    let registration = target.device.to_string();
+    let device = target.device;
     let value = tx
         .with_connection(move |c| {
             Box::pin(async move {
@@ -366,9 +365,8 @@ pub async fn policy_pending_in(
                 )
                 .bind(tenant)
                 .bind(owner.to_string())
-                .bind(device)
+                .bind(device.into_uuid())
                 .bind(now)
-                .bind(registration)
                 .bind(version)
                 .fetch_one(c)
                 .await
@@ -412,7 +410,7 @@ pub(crate) async fn occurrence_available_in(
     now: i64,
 ) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
-    let device = target.device.clone();
+    let device = target.device;
     let key = occurrence.to_owned();
     let exists: bool = tx
         .with_connection(move |c| {
@@ -423,7 +421,7 @@ pub(crate) async fn occurrence_available_in(
                 )
                 .bind(tenant)
                 .bind(version)
-                .bind(device)
+                .bind(device.into_uuid())
                 .bind(key)
                 .fetch_one(c)
                 .await

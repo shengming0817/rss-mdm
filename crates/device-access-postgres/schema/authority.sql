@@ -6,9 +6,9 @@ CREATE TABLE rss_da.operations (
 );
 CREATE TABLE rss_da.agent_delivery (
     tenant_id uuid NOT NULL
-  , da_device text NOT NULL
+  , da_device uuid NOT NULL
   , agent_installation uuid NOT NULL
-  , agent_device text NOT NULL
+  , agent_device uuid NOT NULL
   , enabled boolean NOT NULL
   , revision bigint NOT NULL CHECK (revision > 0)
   , PRIMARY KEY (tenant_id, da_device)
@@ -18,7 +18,7 @@ CREATE UNIQUE INDEX da_device_delivery_current ON rss_da.agent_delivery(tenant_i
 CREATE UNIQUE INDEX da_agent_delivery_current ON rss_da.agent_delivery(tenant_id,agent_installation,agent_device) WHERE enabled;
 CREATE TABLE rss_da.deployment_evidence (
     tenant_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , authority uuid NOT NULL
   , sequence bigint NOT NULL CHECK (sequence > 0)
   , fingerprint text NOT NULL CHECK (length(fingerprint) = 64)
@@ -49,7 +49,7 @@ GRANT UPDATE(tenant_id) ON rss_da.agent_delivery TO da_identity_runtime,da_comma
 
 CREATE TABLE rss_da.report_heads (
     tenant_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , kind text NOT NULL CHECK (kind IN ('status', 'application'))
   , integrity text NOT NULL CHECK (octet_length(integrity) <= 4096)
   , document jsonb NOT NULL CHECK (octet_length(CAST(document AS text)) <= 131072)
@@ -58,7 +58,7 @@ CREATE TABLE rss_da.report_heads (
 );
 CREATE TABLE rss_da.report_history (
     tenant_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , kind text NOT NULL CHECK (kind IN ('status', 'application'))
   , sequence bigint NOT NULL CHECK (sequence > 0)
   , operation uuid

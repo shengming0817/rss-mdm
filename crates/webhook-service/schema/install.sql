@@ -18,7 +18,7 @@ CREATE TABLE mdm_webhook.events (
  PRIMARY KEY(tenant_id,id)
 );
 CREATE TABLE mdm_webhook.compliance_sources (
- tenant_id uuid NOT NULL, id uuid NOT NULL, document jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT clock_timestamp(), cursor text, complete boolean NOT NULL DEFAULT false, PRIMARY KEY(tenant_id,id)
+ tenant_id uuid NOT NULL, id uuid NOT NULL, document jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT clock_timestamp(), cursor uuid, complete boolean NOT NULL DEFAULT false, PRIMARY KEY(tenant_id,id)
 );
 CREATE TABLE mdm_webhook.fanout (
  tenant_id uuid NOT NULL, id uuid NOT NULL, snapshot jsonb NOT NULL,

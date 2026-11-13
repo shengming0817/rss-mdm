@@ -13,12 +13,8 @@ pub struct ReportIdentity {
     /// Owning tenant.
     pub tenant: Uuid,
     /// Original device identity, checked against the authenticated transport.
-    #[serde(
-        rename = "deviceId",
-        deserialize_with = "crate::runtime::profile_device"
-    )]
-    #[schemars(schema_with = "crate::runtime::device_schema")]
-    pub device_id: String,
+    #[serde(rename = "deviceId")]
+    pub device_id: crate::DeviceId,
 }
 /// A reported diagnostic, never proof that login is permitted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -80,7 +76,6 @@ impl StatusReport {
     pub fn validate(&self) -> Result<(), WireError> {
         if self.identity.service_id.is_nil()
             || self.identity.tenant.is_nil()
-            || !crate::runtime::valid_device_id(&self.identity.device_id)
             || self.sequence < 1
             || self.observed_at.is_some_and(|v| v < 0)
             || self.contract_version != 1
@@ -157,10 +152,7 @@ pub struct ApplicationReport {
 impl ReportIdentity {
     /// Check the identity shape; the authenticated owner must still compare all coordinates.
     pub fn validate(&self) -> Result<(), WireError> {
-        if self.service_id.is_nil()
-            || self.tenant.is_nil()
-            || !crate::runtime::valid_device_id(&self.device_id)
-        {
+        if self.service_id.is_nil() || self.tenant.is_nil() {
             return Err(WireError::InvalidValue);
         }
         Ok(())

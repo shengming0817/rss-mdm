@@ -1,5 +1,5 @@
 WITH expected_columns(name,type,required) AS (VALUES
- ('tenant_id','uuid',true),('from_cut','jsonb',false),('to_cut','jsonb',false),('event_after','bigint',true),('page_through','bigint',false),('cursor','text',false),
+ ('tenant_id','uuid',true),('from_cut','jsonb',false),('to_cut','jsonb',false),('event_after','bigint',true),('page_through','bigint',false),('cursor','uuid',false),
  ('relation_consumed','bigint',true),('relation_watermark','bigint',true),('relation_cursor','bigint',false),
  ('failure','text',false),('failure_generation','bigint',true)
 ), execution_roles AS (
@@ -12,7 +12,7 @@ SELECT EXISTS(SELECT 1 FROM pg_class c WHERE c.oid=to_regclass('mdm_planning.con
  AND c.relowner NOT IN(SELECT oid FROM reachable)
  AND (SELECT count(*) FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped)=(SELECT count(*) FROM expected_columns)
  AND NOT EXISTS(SELECT 1 FROM expected_columns e LEFT JOIN pg_attribute a ON a.attrelid=c.oid AND a.attname=e.name AND a.attnum>0 AND NOT a.attisdropped
-  WHERE a.attname IS NULL OR a.atttypid<>to_regtype(e.type) OR a.attnotnull<>e.required OR (e.name='cursor' AND a.attcollation<>'pg_catalog."C"'::regcollation))
+  WHERE a.attname IS NULL OR a.atttypid<>to_regtype(e.type) OR a.attnotnull<>e.required OR (e.name='cursor' AND a.attcollation<>0))
  AND EXISTS(SELECT 1 FROM pg_constraint k WHERE k.conrelid=c.oid AND k.contype='p' AND k.convalidated AND NOT k.condeferrable
   AND k.conkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=c.oid AND attname='tenant_id')])
  AND has_table_privilege(current_user,c.oid,'SELECT') AND has_table_privilege(current_user,c.oid,'INSERT')

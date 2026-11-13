@@ -40,7 +40,7 @@ pub async fn advance_in(
         .try_get::<Option<serde_json::Value>, _>("to_cut")?
         .unwrap_or_else(|| candidate.to_json());
     let after: i64 = row.try_get("event_after")?;
-    let cursor: Option<String> = row.try_get("cursor")?;
+    let cursor: Option<uuid::Uuid> = row.try_get("cursor")?;
     let through = match row.try_get::<Option<i64>, _>("page_through")? {
         Some(value) => Some(value),
         None => {
@@ -67,22 +67,22 @@ pub async fn advance_in(
     })).await?;
     let tenant = tx.tenant_id().to_string();
     let devices=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar::<_,String>(r#"WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)),changed AS (
-            SELECT DISTINCT (a.identity->>'device') COLLATE "C" AS device
+        sqlx::query_scalar::<_,uuid::Uuid>(r#"WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)),changed AS (
+            SELECT DISTINCT (a.identity->>'device')::uuid AS device
             FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM asset_cut_2),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM asset_cut_3),false) AND a.revision>$4 AND a.revision<=$5
             AND (a.kind IN('device','source','credential'))
-        ) SELECT device FROM changed WHERE device IS NOT NULL AND ($6::text IS NULL OR device>$6 COLLATE "C") ORDER BY device COLLATE "C" LIMIT 33"#)
-            .bind(tenant).bind(from).bind(to).bind(after).bind(through).bind(cursor).fetch_all(c).await
+        ) SELECT device FROM changed WHERE device IS NOT NULL AND ($6::uuid IS NULL OR device>$6) ORDER BY device LIMIT 33"#)
+            .bind(tenant).bind(from).bind(to).bind(after).bind(through).bind(cursor).fetch_all(c).await.and_then(crate::configuration::device_ids)
     })).await?;
     service
         .wake_devices_in(tx, &devices[..devices.len().min(32)])
         .await?;
     let more = devices.len() > 32;
-    let next = more.then(|| devices[31].clone());
+    let next = more.then(|| devices[31]);
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("UPDATE mdm_planning.configuration_source_dispatch SET event_after=$2,page_through=$3,cursor=$4 WHERE tenant_id=$1::uuid")
-            .bind(tenant).bind(if more {after}else{through}).bind(more.then_some(through)).bind(next).execute(c).await?;Ok(())
+            .bind(tenant).bind(if more {after}else{through}).bind(more.then_some(through)).bind(next.map(|id|id.into_uuid())).execute(c).await?;Ok(())
     })).await?;
     relation_page_in(tx, service, source).await
 }

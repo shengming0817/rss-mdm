@@ -26,14 +26,14 @@ pub async fn request_in(
     let windows_profile: String =
         sqlx::query_scalar(crate::storage_profile::sql(profile).device_linked_request_in_1)
             .bind(&tenant)
-            .bind(parent.device())
+            .bind(parent.device().into_uuid())
             .fetch_one(&mut *c)
             .await
             .map_err(db)?;
     sqlx::query(crate::storage_profile::sql(profile).device_linked_request_in_3)
         .bind(tenant)
         .bind(id)
-        .bind(parent.device())
+        .bind(parent.device().into_uuid())
         .bind(parent.credential())
         .bind(operation)
         .bind(windows_profile)
@@ -66,7 +66,7 @@ pub async fn bind_in(
     let row = sqlx::query(crate::storage_profile::sql(profile).device_linked_bind_in_1)
         .bind(&tenant)
         .bind(request)
-        .bind(parent.device())
+        .bind(parent.device().into_uuid())
         .bind(parent.credential())
         .fetch_optional(&mut *c)
         .await
@@ -75,7 +75,7 @@ pub async fn bind_in(
     let prior: Vec<Uuid> =
         sqlx::query_scalar(crate::storage_profile::sql(profile).device_linked_prior_credentials)
             .bind(&tenant)
-            .bind(parent.device())
+            .bind(parent.device().into_uuid())
             .bind(request)
             .fetch_all(&mut *c)
             .await
@@ -88,7 +88,7 @@ pub async fn bind_in(
     // Supersede only earlier WinDC contexts. The main registration and its work survive.
     sqlx::query(crate::storage_profile::sql(profile).device_linked_bind_in_3)
         .bind(&tenant)
-        .bind(parent.device())
+        .bind(parent.device().into_uuid())
         .bind(request)
         .execute(&mut *c)
         .await
@@ -101,7 +101,7 @@ pub async fn bind_in(
     sqlx::query(crate::storage_profile::sql(profile).device_linked_bind_in_5)
         .bind(&tenant)
         .bind(ids[0])
-        .bind(parent.device())
+        .bind(parent.device().into_uuid())
         .bind(locator)
         .bind(request)
         .execute(&mut *c)
@@ -117,7 +117,7 @@ pub async fn bind_in(
     Ok(RegistrationReceipt {
         operation_id: row.try_get("issuance_operation").map_err(db)?,
         request_id: request,
-        device: parent.device().into(),
+        device: *parent.device(),
         channel: Channel::Mdm,
         credential: ids[0],
         epoch: ids[1],
@@ -139,7 +139,7 @@ pub async fn ready_in(
     Ok(
         sqlx::query(crate::storage_profile::sql(profile).device_linked_ready_in_1)
             .bind(p.tenant().to_string())
-            .bind(p.device())
+            .bind(p.device().into_uuid())
             .bind(request)
             .execute(c)
             .await
@@ -164,7 +164,7 @@ pub async fn revoke_in(
     let credentials: Vec<Uuid> =
         sqlx::query_scalar(crate::storage_profile::sql(profile).device_linked_revoke_credentials)
             .bind(&tenant)
-            .bind(p.device())
+            .bind(p.device().into_uuid())
             .bind(request)
             .fetch_all(&mut *c)
             .await
@@ -176,7 +176,7 @@ pub async fn revoke_in(
     }
     sqlx::query(crate::storage_profile::sql(profile).device_linked_revoke_state)
         .bind(tenant)
-        .bind(p.device())
+        .bind(p.device().into_uuid())
         .bind(request)
         .execute(c)
         .await

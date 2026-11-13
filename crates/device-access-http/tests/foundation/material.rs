@@ -273,10 +273,16 @@ pub fn verify(signed: &da::SignedConfiguration, trust: &da::ConfigurationTrust) 
 pub async fn administrator(c: &Context) -> Result<String> {
     administrator_for(c, None).await
 }
-pub async fn device_administrator(c: &Context, device: &str) -> Result<String> {
+pub async fn device_administrator(
+    c: &Context,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<String> {
     administrator_for(c, Some(device)).await
 }
-async fn administrator_for(c: &Context, device: Option<&str>) -> Result<String> {
+async fn administrator_for(
+    c: &Context,
+    device: Option<&rss_mdm_agent_wire::DeviceId>,
+) -> Result<String> {
     use rss_identity_core::account::{LoginKey, Password};
     use rss_mdm_authorization_service as access;
     let principal = Uuid::new_v4();
@@ -316,7 +322,7 @@ async fn administrator_for(c: &Context, device: Option<&str>) -> Result<String> 
         grants: if let Some(device) = device {
             vec![access::Grant {
                 operation: access::Permission::ConfigurationWrite,
-                scope: access::Scope::Device { id: device.into() },
+                scope: access::Scope::Device { id: *device },
             }]
         } else {
             [

@@ -35,7 +35,7 @@ pub(crate) async fn device(
     sink: Option<&dyn EventSink>,
     c: &mut PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     channel: &str,
     state: &str,
 ) -> Result<(), crate::Error> {
@@ -56,9 +56,9 @@ pub(crate) async fn device(
         version: 1,
         occurred_at: events::now_on(c).await.map_err(|_| crate::Error::Storage)?,
         tenant_id: Uuid::parse_str(tenant).map_err(|_| crate::Error::Malformed)?,
-        device_id: device.into(),
+        device_id: *device,
         data: EventData::Registration {
-            device_id: device.into(),
+            device_id: *device,
             channel: channel.into(),
             state: state.into(),
         },

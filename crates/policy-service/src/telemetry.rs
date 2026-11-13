@@ -82,7 +82,7 @@ impl Reader {
     pub async fn current_on(
         &self,
         c: &mut sqlx::PgConnection,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         policy: Uuid,
         version: Uuid,
     ) -> Result<FrozenProfile, Error> {
@@ -150,7 +150,7 @@ pub(crate) async fn current_on(
     tenant: TenantId,
     objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
     c: &mut sqlx::PgConnection,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     policy: Uuid,
     version: Uuid,
 ) -> Result<FrozenProfile, Error> {

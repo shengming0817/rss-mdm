@@ -25,7 +25,7 @@ async fn idle(
     c: &Context,
 ) -> Result<plist::Dictionary> {
     let mut dict = plist::Dictionary::new();
-    dict.insert("UDID".into(), p.device().into());
+    dict.insert("UDID".into(), p.device().to_string().into());
     dict.insert("Status".into(), "Idle".into());
     let bytes = plist_send(d, apple, p, c, dict).await?;
     Ok(if bytes.is_empty() {
@@ -42,7 +42,7 @@ async fn manifest(
 ) -> Result<Value> {
     let mut dict = plist::Dictionary::new();
     dict.insert("MessageType".into(), "DeclarativeManagement".into());
-    dict.insert("UDID".into(), p.device().into());
+    dict.insert("UDID".into(), p.device().to_string().into());
     dict.insert("Endpoint".into(), "declaration-items".into());
     let exchange = rss_mdm_apple_channel::ddm::prepare(apple.clone(), &dict, None)?;
     let reply = d
@@ -52,7 +52,9 @@ async fn manifest(
     assert_eq!(reply.status, 200);
     Ok(serde_json::from_slice(&reply.bytes)?)
 }
-fn object(device: &str) -> Result<rss_mdm_inventory_service::objects::DeviceObject> {
+fn object(
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<rss_mdm_inventory_service::objects::DeviceObject> {
     Ok(serde_json::from_value(
         json!({"object":{"kind":"endpoint","id":device},"associationVersion":null,"verified":true,"members":[{"device":device,"channel":"mdm"}]}),
     )?)
@@ -117,7 +119,7 @@ async fn next_command(
             .unwrap()
             .to_owned();
         let mut response = plist::Dictionary::new();
-        response.insert("UDID".into(), p.device().into());
+        response.insert("UDID".into(), p.device().to_string().into());
         response.insert("Status".into(), "Acknowledged".into());
         response.insert("CommandUUID".into(), id.into());
         match kind {
@@ -208,7 +210,7 @@ async fn reconcile(
     c: &Context,
     owner: &crate::owner_storage::OwnerRuntime,
     cfg: &Arc<rss_mdm_policy_service::configuration::Transactions>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     worker: &rss_mdm_policy_service::worker::PolicyWork,
 ) -> Result<()> {
     for pass in 0..3 {
@@ -300,7 +302,7 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
         "INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2)",
     )
     .bind(c.tenant.to_string())
-    .bind(&n.device)
+    .bind(n.device.into_uuid())
     .execute(&mut *seed)
     .await?;
     seed.commit().await?;
@@ -336,7 +338,14 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
                     .and_then(plist::Value::as_string)
                     .unwrap(),
             )?;
-            manage(&d, &apple, &p, &c, receipt(&n.device, id, None)?).await?;
+            manage(
+                &d,
+                &apple,
+                &p,
+                &c,
+                receipt(&n.device.to_string(), id, None)?,
+            )
+            .await?;
         }
     }
     let initial = manifest(&d, &apple, &p, &c).await?;
@@ -356,7 +365,7 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
     }}}});
     let mut report = plist::Dictionary::new();
     report.insert("MessageType".into(), "DeclarativeManagement".into());
-    report.insert("UDID".into(), n.device.clone().into());
+    report.insert("UDID".into(), n.device.to_string().into());
     report.insert("Endpoint".into(), "status".into());
     report.insert(
         "Data".into(),
@@ -407,7 +416,14 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
             .and_then(plist::Value::as_string)
             .unwrap(),
     )?;
-    manage(&d, &apple, &p, &c, receipt(&n.device, attempt, None)?).await?;
+    manage(
+        &d,
+        &apple,
+        &p,
+        &c,
+        receipt(&n.device.to_string(), attempt, None)?,
+    )
+    .await?;
     assert!(
         manifest(&d, &apple, &p, &c).await?["Declarations"]["Configurations"]
             .as_array()
@@ -492,7 +508,7 @@ async fn policy_profile_reservation_dispatch_and_observation() -> Result<()> {
         "INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2)",
     )
     .bind(c.tenant.to_string())
-    .bind(&n.device)
+    .bind(n.device.into_uuid())
     .execute(&mut *seed)
     .await?;
     seed.commit().await?;
@@ -517,7 +533,14 @@ async fn policy_profile_reservation_dispatch_and_observation() -> Result<()> {
     assert!(signed.status.success());
     let manifest = plist::Value::from_reader(std::io::Cursor::new(signed.stdout))?;
     let attempt = Uuid::parse_str(packet["CommandUUID"].as_string().unwrap())?;
-    let response = manage(&d, &apple, &p, &c, receipt(&n.device, attempt, None)?).await?;
+    let response = manage(
+        &d,
+        &apple,
+        &p,
+        &c,
+        receipt(&n.device.to_string(), attempt, None)?,
+    )
+    .await?;
     let query = if response.is_empty() {
         next_command(&d, &apple, &p, &c, "ProfileList").await?
     } else {
@@ -528,7 +551,7 @@ async fn policy_profile_reservation_dispatch_and_observation() -> Result<()> {
         Some("ProfileList")
     );
     let mut report = plist::Dictionary::new();
-    report.insert("UDID".into(), n.device.clone().into());
+    report.insert("UDID".into(), n.device.to_string().into());
     report.insert("Status".into(), "Acknowledged".into());
     report.insert("CommandUUID".into(), query["CommandUUID"].clone());
     report.insert("ProfileList".into(), plist::Value::Array(vec![manifest]));
@@ -546,7 +569,7 @@ async fn policy_profile_reservation_dispatch_and_observation() -> Result<()> {
             .bind(tenant)
             .execute(&mut *tx)
             .await?;
-        let visible:i64=sqlx::query_scalar("SELECT count(tenant_id) FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND device=$2 AND identifier='org.example.policy.firewall'").bind(c.tenant.to_string()).bind(&n.device).fetch_one(&mut *tx).await?;
+        let visible:i64=sqlx::query_scalar("SELECT count(tenant_id) FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND device=$2 AND identifier='org.example.policy.firewall'").bind(c.tenant.to_string()).bind(n.device.into_uuid()).fetch_one(&mut *tx).await?;
         assert_eq!(visible, expected);
         tx.rollback().await?;
     }

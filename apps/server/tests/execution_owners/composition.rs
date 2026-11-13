@@ -11,7 +11,7 @@ async fn shared_capacity_counts_each_owner_and_isolates_other_devices() -> Resul
     sqlx::query("INSERT INTO mdm_devices.unmanage_runs (tenant_id, id, policy_version, origin, source_objects, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint) SELECT tenant_id, gen_random_uuid(), policy_version, origin, source_objects, device, 'capacity:' || n, created_at, available_at, deadline, state, dispatch_fingerprint FROM mdm_script.runs CROSS JOIN generate_series(1, 63) AS n WHERE tenant_id = CAST($1 AS uuid) AND id = $2").bind(h.c.tenant.to_string()).bind(id).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_inventory.collection_tasks (tenant_id, id, policy_version, channel, origin, source_objects, device, occurrence, created_at, available_at, deadline, agent_state, dispatch_fingerprint) SELECT tenant_id, gen_random_uuid(), policy_version, 'agent', origin, source_objects, device, 'capacity:' || n, created_at, available_at, deadline, state, dispatch_fingerprint FROM mdm_script.runs CROSS JOIN generate_series(1, 63) AS n WHERE tenant_id = CAST($1 AS uuid) AND id = $2").bind(h.c.tenant.to_string()).bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
-    let capacity = |device: String| {
+    let capacity = |device: rss_mdm_agent_wire::DeviceId| {
         script::transaction::inspect(
             &h.a.resources.storage.runtime,
             h.c.tenant,
@@ -26,14 +26,14 @@ async fn shared_capacity_counts_each_owner_and_isolates_other_devices() -> Resul
             },
         )
     };
-    assert!(capacity(h.p.device().into()).await?);
+    assert!(capacity(*h.p.device()).await?);
     h.run(version, "capacity", now() + 300).await?;
-    assert!(!capacity(h.p.device().into()).await?);
-    assert!(capacity("another-device".into()).await?);
+    assert!(!capacity(*h.p.device()).await?);
+    assert!(capacity(rss_mdm_agent_wire::DeviceId::new_v4()).await?);
     let mut tx = command::seed_transaction(&h.c).await?;
     sqlx::query("UPDATE mdm_inventory.collection_tasks SET agent_state=jsonb_set(agent_state,'{cancellation}','\"confirmed\"') WHERE tenant_id=$1::uuid AND id=(SELECT id FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid LIMIT 1)").bind(h.c.tenant.to_string()).execute(&mut *tx).await?;
     tx.commit().await?;
-    assert!(capacity(h.p.device().into()).await?);
+    assert!(capacity(*h.p.device()).await?);
     h.close().await
 }
 #[tokio::test]
@@ -58,7 +58,7 @@ async fn original_self_service_receipt_replays_after_policy_kind_changes() -> Re
         policy_version: version,
     };
     let mut tx = command::seed_transaction(&h.c).await?;
-    sqlx::query("INSERT INTO mdm_script.receipts (tenant_id, actor, id, fingerprint, response, device) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6)").bind(h.c.tenant.to_string()).bind(format!("self-service:device:{}",h.p.device())).bind(input.operation_id).bind(script::transaction::fingerprint(&input)?).bind(serde_json::to_value(&accepted)?).bind(h.p.device()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_script.receipts (tenant_id, actor, id, fingerprint, response, device) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6)").bind(h.c.tenant.to_string()).bind(format!("self-service:device:{}",h.p.device())).bind(input.operation_id).bind(script::transaction::fingerprint(&input)?).bind(serde_json::to_value(&accepted)?).bind(h.p.device().into_uuid()).execute(&mut *tx).await?;
     // A currently forbidden action makes a classify-first implementation observably fail.
     let changed: rss_mdm_policy::Definition = serde_json::from_value(
         json!({"scope":h.scope,"action":{"kind":"unmanage_device","runLifetimeSeconds":300,"schedule":{"trigger":{"kind":"manual"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null}}}),

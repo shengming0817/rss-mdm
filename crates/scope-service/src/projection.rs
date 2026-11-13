@@ -9,6 +9,11 @@ use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use sqlx::Row;
 use std::sync::Arc;
 use uuid::Uuid;
+#[derive(Clone, Copy)]
+struct SourcePosition {
+    source: i32,
+    object: rss_mdm_agent_wire::ObjectRef,
+}
 pub struct ScopeProjection {
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
@@ -101,7 +106,19 @@ impl ScopeProjection {
         }
         match row.try_get::<&str, _>("phase")? {
             "sources" => {
-                self.stage(tx, id, row.try_get("source_cursor")?).await?;
+                let after = match (
+                    row.try_get::<Option<i32>, _>("source_cursor_source")?,
+                    row.try_get::<Option<i16>, _>("source_cursor_kind")?,
+                    row.try_get::<Option<Uuid>, _>("source_cursor")?,
+                ) {
+                    (None, None, None) => None,
+                    (Some(source), Some(kind), Some(id)) => Some(SourcePosition {
+                        source,
+                        object: stored(rss_mdm_agent_wire::ObjectRef::from_parts(kind, id))?,
+                    }),
+                    _ => return Err(Error::Conflict.into()),
+                };
+                self.stage(tx, id, after).await?;
                 Ok(false)
             }
             "project" => {
@@ -118,24 +135,25 @@ impl ScopeProjection {
         &self,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
-        after: Option<String>,
+        after: Option<SourcePosition>,
     ) -> Result<()> {
         let profile = self.profile();
-
         let tenant = self.tenant.to_string();
         tx.with_connection(move |c| {
             Box::pin(async move {
-                let rows = sqlx::query_as::<_, (String, serde_json::Value)>(
+                let rows = sqlx::query_as::<_, (i32, i16, Uuid, serde_json::Value)>(
                     crate::storage_profile::sql(profile).projection_stage_1,
                 )
                 .bind(&tenant)
                 .bind(id)
-                .bind(after)
+                .bind(after.map(|p| p.source))
+                .bind(after.map(|p| p.object.kind()))
+                .bind(after.map(|p| p.object.uuid()))
                 .fetch_all(&mut *c)
                 .await?;
                 let more = rows.len() > 1000;
-                let last = rows.iter().take(1000).next_back().map(|r| r.0.clone());
-                let inputs: Vec<_> = rows.into_iter().take(1000).map(|r| r.1).collect();
+                let last = rows.iter().take(1000).next_back().map(|r| (r.0, r.1, r.2));
+                let inputs = rows.into_iter().take(1000).map(|r| r.3).collect::<Vec<_>>();
                 sqlx::query(crate::storage_profile::sql(profile).projection_stage_2)
                     .bind(&tenant)
                     .bind(id)
@@ -145,7 +163,9 @@ impl ScopeProjection {
                 sqlx::query(crate::storage_profile::sql(profile).projection_stage_3)
                     .bind(tenant)
                     .bind(id)
-                    .bind(last)
+                    .bind(last.map(|r| r.0))
+                    .bind(last.map(|r| r.1))
+                    .bind(last.map(|r| r.2))
                     .bind(if more { "sources" } else { "project" })
                     .execute(c)
                     .await?;
@@ -164,7 +184,11 @@ impl ScopeProjection {
     ) -> Result<()> {
         let profile = self.profile();
 
-        let after: Option<String> = progress.try_get("projection_cursor")?;
+        let after_channel: Option<String> = progress.try_get("projection_cursor_channel")?;
+        let after: Option<Uuid> = progress.try_get("projection_cursor")?;
+        if after_channel.is_some() != after.is_some() {
+            return Err(Error::Conflict.into());
+        }
         let previous: Option<Uuid> = progress.try_get("previous_resolution")?;
         let epoch: i64 = progress.try_get("next_entry")?;
         let hashes: serde_json::Value = progress.try_get("channel_hashes")?;
@@ -172,11 +196,12 @@ impl ScopeProjection {
         let page = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    sqlx::query_as::<_, (String, String, String)>(
+                    sqlx::query_as::<_, (String, Uuid)>(
                         crate::storage_profile::sql(profile).projection_project_1,
                     )
                     .bind(tenant.to_string())
                     .bind(id)
+                    .bind(after_channel)
                     .bind(after)
                     .fetch_all(c)
                     .await
@@ -185,13 +210,13 @@ impl ScopeProjection {
             .await?;
         let mut hashes: std::collections::BTreeMap<String, String> =
             stored(serde_json::from_value(hashes))?;
-        for (channel, device, _) in page.iter().take(16) {
+        for (channel, device) in page.iter().take(16) {
             let channel = match channel.as_str() {
                 "agent" => rss_mdm_inventory::Channel::Agent,
                 "mdm" => rss_mdm_inventory::Channel::Mdm,
                 _ => return Err(Error::Malformed.into()),
             };
-            let device = device.clone();
+            let device = stored(rss_mdm_agent_wire::DeviceId::try_from(*device))?;
             let frozen = frozen.clone();
             let row_hash = tx
                 .with_connection(move |c| {
@@ -207,7 +232,7 @@ impl ScopeProjection {
                         .bind(tenant.to_string())
                         .bind(id)
                         .bind(channel.as_str())
-                        .bind(&device)
+                        .bind(device.into_uuid())
                         .fetch_all(&mut *c)
                         .await?;
                         let target = identities
@@ -225,7 +250,7 @@ impl ScopeProjection {
                             .bind(tenant.to_string())
                             .bind(previous)
                             .bind(channel.as_str())
-                            .bind(&device)
+                            .bind(device.into_uuid())
                             .bind(&target)
                             .fetch_optional(&mut *c)
                             .await?
@@ -237,7 +262,7 @@ impl ScopeProjection {
                             .bind(tenant.to_string())
                             .bind(id)
                             .bind(channel.as_str())
-                            .bind(&device)
+                            .bind(device.into_uuid())
                             .bind(matched)
                             .bind(pending)
                             .bind(&target)
@@ -259,14 +284,15 @@ impl ScopeProjection {
             hashes.insert(key.into(), format!("{:x}", digest.finalize()));
         }
         let hashes = checked_input(serde_json::to_value(hashes))?;
-        let next = page.iter().take(16).next_back().map(|r| r.2.clone());
+        let next = page.iter().take(16).next_back().map(|r| (r.0.clone(), r.1));
         let more = page.len() > 16;
         tx.with_connection(move |c| {
             Box::pin(async move {
                 sqlx::query(crate::storage_profile::sql(profile).projection_project_5)
                     .bind(tenant.to_string())
                     .bind(id)
-                    .bind(next)
+                    .bind(next.as_ref().map(|r| r.0.clone()))
+                    .bind(next.map(|r| r.1))
                     .bind(if more { "project" } else { "ready" })
                     .bind(hashes)
                     .execute(c)

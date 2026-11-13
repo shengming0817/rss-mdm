@@ -134,7 +134,7 @@ async fn save_result(
         .bind(proof.instance)
         .bind(issuance)
         .bind(facts.action)
-        .bind(&facts.device_target)
+        .bind(facts.device_target.map(|id| id.into_uuid()))
         .bind(self_enrollment)
         .execute(&mut *tx)
         .await
@@ -274,7 +274,10 @@ pub async fn diagnostic_receipt(
                             return Ok(None);
                         }
                         let action: String = row.try_get("action").map_err(db)?;
-                        let device: Option<String> = row.try_get("device").map_err(db)?;
+                        let device: Option<rss_mdm_agent_wire::DeviceId> = row
+                            .try_get::<Option<uuid::Uuid>, _>("device")
+                            .and_then(|id| id.map(crate::database::device_id).transpose())
+                            .map_err(db)?;
                         if !row.try_get::<bool, _>("self_enrollment").map_err(db)? {
                             let (permission, target) = match action.as_str() {
                                 "registration_admission_change"
@@ -289,11 +292,11 @@ pub async fn diagnostic_receipt(
                                 | "enrollment_resume"
                                 | "enrollment_cancel" => (
                                     Permission::Enrollment,
-                                    Some(device.as_deref().ok_or(Error::Corrupt)?),
+                                    Some(device.as_ref().ok_or(Error::Corrupt)?),
                                 ),
                                 "credential_revoke" => (
                                     Permission::Credentials,
-                                    Some(device.as_deref().ok_or(Error::Corrupt)?),
+                                    Some(device.as_ref().ok_or(Error::Corrupt)?),
                                 ),
                                 "agent_settings_update" | "agent_configuration_revoke" => {
                                     (Permission::AgentEnrollmentRead, None)
@@ -303,7 +306,7 @@ pub async fn diagnostic_receipt(
                                 }
                                 "device_certificate_result" | "da_registration_revoke" => (
                                     Permission::Credentials,
-                                    Some(device.as_deref().ok_or(Error::Corrupt)?),
+                                    Some(device.as_ref().ok_or(Error::Corrupt)?),
                                 ),
                                 _ => return Err(Error::Corrupt),
                             };
@@ -322,7 +325,7 @@ pub async fn diagnostic_receipt(
                             .or_else(|| raw.get("grantId"))
                             .and_then(serde_json::Value::as_str)
                             .map(str::to_owned)
-                            .or(device);
+                            .or_else(|| device.map(|id| id.to_string()));
                         if action == "device_certificate_result" {
                             summary.object = raw.as_str().map(str::to_owned);
                         }

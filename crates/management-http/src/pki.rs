@@ -211,7 +211,7 @@ async fn publish(
 async fn agent_trust_observation(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
 ) -> Result<Json<Option<rss_mdm_agent_wire::pki::ObservedInstallation>>, Error> {
     s.registry
         .agent_trust_observation(&auth.proof, &device)

@@ -47,7 +47,7 @@ fn proof<'a>(
 async fn list(
     State(app): State<Arc<crate::HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
     query: OwnedQuery<Directory<Requests>>,
 ) -> Result<CollectionResponse<Json<Page<Projection<Request>>>>, Error> {
     let p = proof(&app, &auth)?;
@@ -65,7 +65,7 @@ async fn list(
 async fn read(
     State(app): State<Arc<crate::HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((device, attempt)): Path<(String, Uuid)>,
+    Path((device, attempt)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
 ) -> Result<Json<Request>, Error> {
     let p = proof(&app, &auth)?;
     let now = app
@@ -80,7 +80,7 @@ async fn read(
 async fn operations(
     State(app): State<Arc<crate::HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((device, attempt)): Path<(String, Uuid)>,
+    Path((device, attempt)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
     query: OwnedQuery<Directory<Operations>>,
 ) -> Result<CollectionResponse<Json<Page<Projection<pki::Operation>>>>, Error> {
     let p = proof(&app, &auth)?;
@@ -94,7 +94,7 @@ async fn operations(
 async fn operation(
     State(app): State<Arc<crate::HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((device, attempt, operation)): Path<(String, Uuid, Uuid)>,
+    Path((device, attempt, operation)): Path<(rss_mdm_agent_wire::DeviceId, Uuid, Uuid)>,
     identity: Result<HttpQuery<pki::ReceiptIdentity>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<Option<rss_mdm_pki_service::recovery::Receipt>>, Error> {
     let HttpQuery(identity) = identity.map_err(|_| Error::Malformed)?;

@@ -1757,13 +1757,23 @@
           }
         ]
       },
+      "DeviceId": {
+        "format": "uuid",
+        "maxLength": 36,
+        "minLength": 36,
+        "not": {
+          "const": "00000000-0000-0000-0000-000000000000"
+        },
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        "type": "string"
+      },
       "Reference": {
         "oneOf": [
           {
             "additionalProperties": false,
             "properties": {
               "id": {
-                "type": "string"
+                "$ref": "#/$defs/DeviceId"
               },
               "kind": {
                 "const": "device",
@@ -1912,15 +1922,25 @@
           }
         ]
       },
+      "DeviceId": {
+        "format": "uuid",
+        "maxLength": 36,
+        "minLength": 36,
+        "not": {
+          "const": "00000000-0000-0000-0000-000000000000"
+        },
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        "type": "string"
+      },
       "ObjectRef": {
-        "description": "A directory object, never an executable registration identity.",
+        "description": "A directory/calculation object; associations must be resolved before device execution.",
         "oneOf": [
           {
             "additionalProperties": false,
-            "description": "One original endpoint.",
+            "description": "One independently registered endpoint.",
             "properties": {
               "id": {
-                "type": "string"
+                "$ref": "#/$defs/DeviceId"
               },
               "kind": {
                 "const": "endpoint",
@@ -1935,10 +1955,16 @@
           },
           {
             "additionalProperties": false,
-            "description": "One product association whose members must be resolved by its owner.",
+            "description": "One association, with its own identity and member authority.",
             "properties": {
               "id": {
                 "format": "uuid",
+                "maxLength": 36,
+                "minLength": 36,
+                "not": {
+                  "const": "00000000-0000-0000-0000-000000000000"
+                },
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
                 "type": "string"
               },
               "kind": {
@@ -1965,7 +1991,7 @@
             "additionalProperties": false,
             "properties": {
               "id": {
-                "type": "string"
+                "$ref": "#/$defs/DeviceId"
               },
               "kind": {
                 "const": "device",
@@ -2134,13 +2160,23 @@
   },
   "PolicyScopeRead": {
     "$defs": {
+      "DeviceId": {
+        "format": "uuid",
+        "maxLength": 36,
+        "minLength": 36,
+        "not": {
+          "const": "00000000-0000-0000-0000-000000000000"
+        },
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        "type": "string"
+      },
       "Reference": {
         "oneOf": [
           {
             "additionalProperties": false,
             "properties": {
               "id": {
-                "type": "string"
+                "$ref": "#/$defs/DeviceId"
               },
               "kind": {
                 "const": "device",
@@ -3177,6 +3213,16 @@
         ],
         "type": "object"
       },
+      "DeviceId": {
+        "format": "uuid",
+        "maxLength": 36,
+        "minLength": 36,
+        "not": {
+          "const": "00000000-0000-0000-0000-000000000000"
+        },
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        "type": "string"
+      },
       "ExactResourceBinding": {
         "additionalProperties": false,
         "description": "Exact selection for a script or native configuration.",
@@ -3511,7 +3557,7 @@
             "additionalProperties": false,
             "properties": {
               "id": {
-                "type": "string"
+                "$ref": "#/$defs/DeviceId"
               },
               "kind": {
                 "const": "device",
@@ -5792,6 +5838,16 @@
           }
         ]
       },
+      "DeviceId": {
+        "format": "uuid",
+        "maxLength": 36,
+        "minLength": 36,
+        "not": {
+          "const": "00000000-0000-0000-0000-000000000000"
+        },
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        "type": "string"
+      },
       "ExactResourceBinding": {
         "additionalProperties": false,
         "description": "Exact selection for a script or native configuration.",
@@ -6123,7 +6179,7 @@
             "additionalProperties": false,
             "properties": {
               "id": {
-                "type": "string"
+                "$ref": "#/$defs/DeviceId"
               },
               "kind": {
                 "const": "device",

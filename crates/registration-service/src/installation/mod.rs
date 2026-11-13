@@ -52,7 +52,7 @@ pub struct Installation {
     pub id: Uuid,
     pub policy: Uuid,
     pub version: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub platform: rss_mdm_policy::Platform,
     pub source: rss_mdm_inventory::ReportSource,
     pub release: Uuid,

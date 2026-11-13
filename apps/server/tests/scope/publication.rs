@@ -66,13 +66,13 @@ async fn snapshot(
 async fn admission(
     s: &Scopes,
     scope: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<(serde_json::Value, serde_json::Value)> {
     Ok(transaction::inspect(&s.runtime, s.tenant, (scope, device.to_owned()), |ctx, tx| Box::pin(async move {
-        let (scope, device) = ctx.clone();
+        let (scope, device) = *ctx;
         Ok(tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_as("SELECT mdm_scope.scope_state($1,NULL),mdm_scope.channel_admission($1,'mdm',$2)")
-                .bind(scope).bind(&device).fetch_one(c).await
+                .bind(scope).bind(device.into_uuid()).fetch_one(c).await
         })).await?)
     })).await?)
 }
@@ -126,7 +126,7 @@ async fn publication_is_atomic_replayable_and_rejects_stale_definition() -> Resu
         committed,
         (run, 1, 2, "published".into(), "published".into(), true, 1)
     );
-    let rows:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_scope.scope_channel_results r JOIN mdm_scope.scopes s ON(s.tenant_id,s.resolution)=(r.tenant_id,r.run) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.device=$3 AND r.matched AND NOT r.pending AND r.entry_revision=1").bind(c.tenant.to_string()).bind(old.scope).bind(&object.members[0].device).fetch_one(&c.operator).await?;
+    let rows:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_scope.scope_channel_results r JOIN mdm_scope.scopes s ON(s.tenant_id,s.resolution)=(r.tenant_id,r.run) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.device=$3 AND r.matched AND NOT r.pending AND r.entry_revision=1").bind(c.tenant.to_string()).bind(old.scope).bind(object.members[0].device.into_uuid()).fetch_one(&c.operator).await?;
     assert_eq!(rows, 1);
     drop(s);
     let restarted = open(&c).await?;

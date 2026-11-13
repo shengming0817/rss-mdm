@@ -29,7 +29,7 @@ enum Change {
 pub(crate) async fn prepare(
     c: &mut PgConnection,
     tenant: TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<Prepared>> {
     let Some(input) = identity::affected_world(c, tenant, device).await? else {
         return Ok(None);
@@ -41,8 +41,8 @@ pub(crate) async fn prepare(
         if old.state == State::Revoked {
             continue;
         }
-        occupied.extend(old.members.iter().map(|m| m.device.clone()));
-        if !old.members.iter().any(|m| m.device == device) {
+        occupied.extend(old.members.iter().map(|m| m.device));
+        if !old.members.iter().any(|m| m.device == *device) {
             continue;
         }
         let effective = world.effective(old.clone());
@@ -83,7 +83,7 @@ pub(crate) async fn prepare(
             continue;
         };
         let members = vec![mdm.member.clone(), agent.member.clone()];
-        if !members.iter().any(|m| m.device == device)
+        if !members.iter().any(|m| m.device == *device)
             || occupied.contains(&agent.member.device)
             || !world.unique(&members, &mdm.hardware)
             || !world.unique(&members, &agent.hardware)
@@ -97,7 +97,7 @@ pub(crate) async fn prepare(
             identity::evidence(world, &members),
             State::Confirmed,
         ));
-        occupied.extend(members.iter().map(|m| m.device.clone()));
+        occupied.extend(members.iter().map(|m| m.device));
     }
     Ok(Some(Prepared { input, changes }))
 }

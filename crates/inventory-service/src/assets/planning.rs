@@ -6,7 +6,7 @@ use sqlx::Row;
 pub struct AssetPage {
     pub catalog: rss_mdm_inventory::Catalog,
     pub devices: Vec<DeviceSummary>,
-    pub next: Option<String>,
+    pub next: Option<rss_mdm_agent_wire::DeviceId>,
 }
 #[derive(Clone)]
 pub struct SnapshotReader {
@@ -41,8 +41,8 @@ impl SnapshotReader {
         &self,
         tx: &mut PgTransaction<'_>,
         cut: &rss_mdm_inventory::AssetCut,
-        devices: &[String],
-    ) -> Result<BTreeSet<String>> {
+        devices: &[rss_mdm_agent_wire::DeviceId],
+    ) -> Result<BTreeSet<rss_mdm_agent_wire::DeviceId>> {
         let profile = self.profile;
 
         self.check_in(tx, cut)?;
@@ -51,7 +51,7 @@ impl SnapshotReader {
         }
         let tenant = self.tenant.to_string();
         let devices = devices.to_vec();
-        let rows: Vec<String> = tx
+        let rows: Vec<rss_mdm_agent_wire::DeviceId> = tx
             .with_connection_context(&mut (cut,), move |(cut,), c| {
                 Box::pin(async move {
                     crate::device::read::live_at(profile, c, tenant, devices, cut).await
@@ -64,7 +64,7 @@ impl SnapshotReader {
         &self,
         tx: &mut PgTransaction<'_>,
         cut: &rss_mdm_inventory::AssetCut,
-        after: Option<String>,
+        after: Option<rss_mdm_agent_wire::DeviceId>,
         limit: usize,
         scope: &ReadScope,
     ) -> Result<AssetPage> {
@@ -82,7 +82,7 @@ impl SnapshotReader {
             .unwrap_or_default()
             .into_iter()
             .collect();
-        let mut ids: Vec<String> = tx
+        let mut ids: Vec<rss_mdm_agent_wire::DeviceId> = tx
             .with_connection_context(&mut (cut,), move |(cut,), c| {
                 Box::pin(async move {
                     crate::device::read::page_at(
@@ -101,7 +101,7 @@ impl SnapshotReader {
             .await?;
         let more = ids.len() > limit;
         ids.truncate(limit);
-        let next = more.then(|| ids.last().expect("nonempty lookahead page").clone());
+        let next = more.then(|| *ids.last().expect("nonempty lookahead page"));
         let catalog = catalog_at_in(tx, self.tenant, cut).await?;
         let mut devices = self
             .summary_devices_at_in(tx, cut, &ids, &catalog, &scope.collection_scope)
@@ -120,7 +120,7 @@ impl SnapshotReader {
         &self,
         tx: &mut PgTransaction<'_>,
         cut: &rss_mdm_inventory::AssetCut,
-        ids: &[String],
+        ids: &[rss_mdm_agent_wire::DeviceId],
         catalog: &rss_mdm_inventory::Catalog,
         collection_scope: &rss_mdm_inventory::CollectionScope,
     ) -> Result<Vec<DeviceSummary>> {
@@ -144,7 +144,7 @@ impl SnapshotReader {
         &self,
         tx: &mut PgTransaction<'_>,
         cut: &AssetCut,
-        ids: &[String],
+        ids: &[rss_mdm_agent_wire::DeviceId],
         catalog: &rss_mdm_inventory::Catalog,
     ) -> Result<Vec<DeviceSummary>> {
         self.summary_devices_at_in(
@@ -191,7 +191,7 @@ impl SnapshotReader {
         use rss_mdm_inventory::CollectionScope as S;
         self.check_in(tx, cut)?;
         selection.validate()?;
-        let ids: Vec<_> = devices.iter().map(|d| d.scalars.device.clone()).collect();
+        let ids: Vec<_> = devices.iter().map(|d| d.scalars.device).collect();
         if authorization
             .devices
             .as_ref()
@@ -235,9 +235,9 @@ impl SnapshotReader {
                                     cut,
                                 )
                                 .await?;
-                                let registrations: Vec<String> = sources
+                                let registrations: Vec<Uuid> = sources
                                     .iter()
-                                    .map(|r| r.try_get("device"))
+                                    .map(|r| r.try_get::<Uuid, _>("device"))
                                     .collect::<std::result::Result<_, sqlx::Error>>()?;
                                 sqlx::query_scalar(
                                     crate::storage_profile::sql(profile)
@@ -276,15 +276,20 @@ impl SnapshotReader {
             }
         };
         let keys: Vec<_> = associated.map_or_else(
-            || devices.iter().map(|d| d.scalars.device.clone()).collect(),
-            |inputs| inputs.iter().map(|i| i.object.key()).collect(),
+            || {
+                devices
+                    .iter()
+                    .map(|d| rss_mdm_agent_wire::ObjectRef::Endpoint(d.scalars.device))
+                    .collect()
+            },
+            |inputs| inputs.iter().map(|i| i.object).collect(),
         );
         let mut objects = keys
             .iter()
             .map(|key| {
                 Ok(g::ObjectSnapshot {
                     memberships: BTreeMap::new(),
-                    key: checked_input(g::ObjectKey::new(self.tenant, key))?,
+                    key: checked_input(g::ObjectKey::new(self.tenant, *key))?,
                     quantifier,
                     complete: true,
                     contexts: BTreeMap::new(),
@@ -385,7 +390,7 @@ impl SnapshotReader {
                 }
                 if associated.is_none() {
                     contexts.insert(
-                        (scoped[index].scalars.device.clone(), digest(&scope)?),
+                        (scoped[index].scalars.device, digest(&scope)?),
                         scoped[index].clone(),
                     );
                 }

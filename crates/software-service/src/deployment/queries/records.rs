@@ -51,7 +51,7 @@ pub enum Origin {
 pub struct ExecutionMetadata {
     pub id: Uuid,
     pub kind: ExecutionKind,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     origin: Origin,
     pub policy: Option<Uuid>,
     deadline: i64,
@@ -101,7 +101,7 @@ pub struct RunSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     attempt_id: Option<Uuid>,
     pub task_id: Uuid,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
     occurrence: String,
     pub available_at: i64,
     deadline: i64,
@@ -127,7 +127,7 @@ pub struct RunDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     attempt_id: Option<Uuid>,
     task_id: Uuid,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
     available_at: i64,
     deadline: i64,
     state: RunState,
@@ -231,7 +231,7 @@ pub struct InstallationObservation {
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRegistration {
-    pub device_id: String,
+    pub device_id: rss_mdm_agent_wire::DeviceId,
     pub state: String,
     pub capabilities: Option<Vec<String>>,
 }
@@ -275,7 +275,7 @@ pub struct Capability {
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Assignment {
-    pub object: crate::deployment::scope::ObjectRef,
+    pub object: rss_mdm_agent_wire::ObjectRef,
     pub channel: Option<rss_mdm_inventory::Channel>,
     pub availability: crate::deployment::scope::Availability,
     pub reason: Option<String>,
@@ -298,7 +298,7 @@ pub struct Preview {
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewTarget {
-    pub object: crate::deployment::scope::ObjectRef,
+    pub object: rss_mdm_agent_wire::ObjectRef,
     pub channel: Option<rss_mdm_inventory::Channel>,
     pub availability: crate::deployment::scope::Availability,
     pub reason: Option<String>,

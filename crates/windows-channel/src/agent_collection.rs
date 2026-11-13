@@ -96,7 +96,7 @@ pub async fn receive(
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
 ) -> Result<s::Message, Error> {
     let rows=sqlx::query("SELECT w.id, w.channel_state, w.template_state, r.sealed_at FROM mdm_windows.collections AS w INNER JOIN mdm_access.collection_runs AS r USING (tenant_id, id) WHERE w.tenant_id = CAST($1 AS uuid) AND w.device = $2 AND w.session_id = $3 AND w.kind = 'agent' AND w.protocol_epoch = $4 ORDER BY w.first_command")
-        .bind(p.tenant().to_string()).bind(p.device()).bind(message.header.session_id.to_string()).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(message.header.session_id.to_string()).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
     let mut consumed = std::collections::BTreeSet::new();
     for row in rows {
         let id: Uuid = row.try_get("id").map_err(db)?;
@@ -360,7 +360,7 @@ pub async fn send(
     if response.header.message_id as usize >= limits.session_messages {
         return Ok(false);
     }
-    let old=sqlx::query("SELECT w.id, w.session_id, w.channel_state, w.template_state, r.sealed_at FROM mdm_windows.collections AS w INNER JOIN mdm_access.collection_runs AS r USING (tenant_id, id) INNER JOIN mdm_access.management_sessions AS s ON (s.tenant_id, s.device, s.session_id) = (w.tenant_id, w.device, w.session_id) AND s.protocol_epoch = w.protocol_epoch WHERE w.tenant_id = CAST($1 AS uuid) AND w.device = $2 AND w.kind = 'agent' AND (w.session_id = $3 OR (s.state = 'complete' AND r.sealed_at IS NULL AND (r.deadline IS NULL OR r.deadline > clock_timestamp()))) AND w.protocol_epoch = $4 ORDER BY w.session_id = $3 DESC, w.first_command DESC LIMIT 1").bind(p.tenant().to_string()).bind(p.device()).bind(response.header.session_id.to_string()).bind(p.epoch()).fetch_optional(&mut *c).await.map_err(db)?;
+    let old=sqlx::query("SELECT w.id, w.session_id, w.channel_state, w.template_state, r.sealed_at FROM mdm_windows.collections AS w INNER JOIN mdm_access.collection_runs AS r USING (tenant_id, id) INNER JOIN mdm_access.management_sessions AS s ON (s.tenant_id, s.device, s.session_id) = (w.tenant_id, w.device, w.session_id) AND s.protocol_epoch = w.protocol_epoch WHERE w.tenant_id = CAST($1 AS uuid) AND w.device = $2 AND w.kind = 'agent' AND (w.session_id = $3 OR (s.state = 'complete' AND r.sealed_at IS NULL AND (r.deadline IS NULL OR r.deadline > clock_timestamp()))) AND w.protocol_epoch = $4 ORDER BY w.session_id = $3 DESC, w.first_command DESC LIMIT 1").bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(response.header.session_id.to_string()).bind(p.epoch()).fetch_optional(&mut *c).await.map_err(db)?;
     let (id, query, mut state) = if let Some(row) = old {
         if row
             .try_get::<Option<i64>, _>("sealed_at")
@@ -407,7 +407,7 @@ pub async fn send(
             )
             .await?;
             sqlx::query("INSERT INTO mdm_windows.collections (tenant_id, id, device, session_id, request_message, first_command, channel_state, template_state, kind, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, 'agent', $9)")
-                .bind(p.tenant().to_string()).bind(id).bind(p.device()).bind(response.header.session_id.to_string())
+                .bind(p.tenant().to_string()).bind(id).bind(p.device().into_uuid()).bind(response.header.session_id.to_string())
                 .bind(i64::from(response.header.message_id)).bind(i64::from(first))
                 .bind(serde_json::to_value(&query).map_err(|_| protocol())?).bind(sealed).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
         }
@@ -442,7 +442,7 @@ pub async fn send(
                 &crate::protection::collection_aad(&scope, id, response.header.session_id)?,
             )
             .map_err(|_| protocol())?;
-        sqlx::query("INSERT INTO mdm_windows.collections (tenant_id, id, device, session_id, request_message, first_command, channel_state, template_state, kind, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, 'agent', $9)").bind(p.tenant().to_string()).bind(id).bind(p.device()).bind(response.header.session_id.to_string()).bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(serde_json::to_value(&query).map_err(|_|protocol())?).bind(bytes).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_windows.collections (tenant_id, id, device, session_id, request_message, first_command, channel_state, template_state, kind, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, 'agent', $9)").bind(p.tenant().to_string()).bind(id).bind(p.device().into_uuid()).bind(response.header.session_id.to_string()).bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(serde_json::to_value(&query).map_err(|_|protocol())?).bind(bytes).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
         (id, query, state)
     };
     let count = state

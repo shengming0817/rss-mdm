@@ -144,23 +144,23 @@ impl Port for Reads {
                 let binding=rss_mdm_scope_service::window::binding_on(&s.source,c,proof,&authority,rss_mdm_policy::pages::PREVIEW_SCHEMA.id,scope,&json!([input.definition,input.scope_result])).await.map_err(window)?;
                 let after=rss_mdm_scope_service::window::after(codec,query,&binding).map_err(window)?;
                 let limit=query.limit();
-                let mut objects=s.source.assignment_objects_on(c,s.tenant,scope,channel,after.as_deref(),limit).await.map_err(source)?;
+                let mut objects=s.source.assignment_objects_on(c,s.tenant,scope,channel,after,limit).await.map_err(source)?;
                 let result=s.source.preview_scope_on(c,s.tenant,scope,channel,None).await.map_err(source)?.result;
                 if input.scope_result.is_some_and(|r|r!=result) {return Err(Error::Conflict);}
                 let more=objects.len()>limit;objects.truncate(limit);
-                let next=if more{objects.last().map(|o|o.object.key())}else{None};
+                let next=if more{objects.last().map(|o|o.object)}else{None};
                 let mut items=Vec::with_capacity(objects.len());
                 for mut object in objects {
                     let admission=if let Some(target)=&object.target {
                         let state=if let Some(preview)=&script_preview {
-                            let target=rss_mdm_script_service::Target{device:target.device.clone(),};
+                            let target=rss_mdm_script_service::Target{device:target.device,};
                             match preview.eligibility_on(c,s.tenant,Arc::new(super::super::agent_facts::AgentFacts),&target).await.map_err(script_fault)? {
                                 rss_mdm_script_service::eligibility::Eligibility::Eligible=>"eligible",
                                 rss_mdm_script_service::eligibility::Eligibility::Ineligible=>"unsupported_capability",
                                 rss_mdm_script_service::eligibility::Eligibility::Unknown=>"channel_unknown",
                             }
                         }else if let Some(preview)=&collection_preview {
-                            let target=rss_mdm_inventory_service::collection::execution::model::Target{device:target.device.clone(),};
+                            let target=rss_mdm_inventory_service::collection::execution::model::Target{device:target.device,};
                             if s.collections.eligible_on(c,preview,Arc::new(super::super::agent_facts::AgentFacts),&target).await? {"eligible"}else{"unsupported_capability"}
                         }else{unreachable!()};
                         if state!="eligible" {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some("target_unavailable".into());}
@@ -238,7 +238,7 @@ async fn enrollment(
                 let limit = query.limit();
                 let mut objects = s
                     .source
-                    .assignment_objects_on(c, s.tenant, scope, channel, after.as_deref(), limit)
+                    .assignment_objects_on(c, s.tenant, scope, channel, after, limit)
                     .await
                     .map_err(source)?;
                 let result = s
@@ -253,7 +253,7 @@ async fn enrollment(
                 let more = objects.len() > limit;
                 objects.truncate(limit);
                 let next = if more {
-                    objects.last().map(|o| o.object.key())
+                    objects.last().map(|o| o.object)
                 } else {
                     None
                 };
@@ -355,7 +355,7 @@ async fn access_credentials(
                 let limit = query.limit();
                 let mut objects = s
                     .source
-                    .assignment_objects_on(c, s.tenant, scope, channel, after.as_deref(), limit)
+                    .assignment_objects_on(c, s.tenant, scope, channel, after, limit)
                     .await
                     .map_err(source)?;
                 let result = s
@@ -370,14 +370,14 @@ async fn access_credentials(
                 let more = objects.len() > limit;
                 objects.truncate(limit);
                 let next = if more {
-                    objects.last().map(|o| o.object.key())
+                    objects.last().map(|o| o.object)
                 } else {
                     None
                 };
                 let mut items = Vec::new();
                 for mut object in objects {
                     let admission = if let Some(target) = &object.target {
-                        let binding=s.enrollment.agent_store.binding(c,s.tenant.to_string(),target.device.clone()).await.map_err(|_|Error::Unavailable(Failure::Database))?;
+                        let binding=s.enrollment.agent_store.binding(c,s.tenant.to_string(),target.device).await.map_err(|_|Error::Unavailable(Failure::Database))?;
                         let allowed=binding.is_some_and(|b|match &input.definition.action {
                             Action::DeviceAccess{windows,..}=>rss_mdm_device_access_postgres::device_access::execution::admission::capable(&b,windows),
                             Action::Credential{architecture,..}=>rss_mdm_recovery_credentials::tasks::credential_tasks::capable(&b,*architecture),_=>false
@@ -462,16 +462,8 @@ async fn retirement(
                 .map_err(window)?;
                 let after =
                     rss_mdm_scope_service::window::after(codec, query, &binding).map_err(window)?;
-                super::retirement::preview_on(
-                    s,
-                    c,
-                    input,
-                    after.as_deref(),
-                    query.limit(),
-                    codec,
-                    &binding,
-                )
-                .await
+                super::retirement::preview_on(s, c, input, after, query.limit(), codec, &binding)
+                    .await
             })
         },
     )

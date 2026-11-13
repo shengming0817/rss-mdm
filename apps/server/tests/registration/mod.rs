@@ -92,7 +92,7 @@ async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
     )
     .bind(c.tenant.to_string())
     .bind(bootstrap)
-    .bind(&other.device)
+    .bind(other.device.into_uuid())
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -110,7 +110,7 @@ async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
     )
     .bind(c.tenant.to_string())
     .bind(bootstrap)
-    .bind(&n.device)
+    .bind(n.device.into_uuid())
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;

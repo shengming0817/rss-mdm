@@ -59,9 +59,9 @@ pub(crate) async fn occurrence_available_in(
     now: i64,
 ) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
-    let device = target.device.clone();
+    let device = target.device;
     let occurrence = occurrence.to_owned();
-    let exists=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM rss_da.access_runs WHERE tenant_id=$1::uuid AND policy_version=$2 AND device=$3 AND occurrence=$4)").bind(tenant).bind(version).bind(device).bind(occurrence).fetch_one(c).await})).await?;
+    let exists=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM rss_da.access_runs WHERE tenant_id=$1::uuid AND policy_version=$2 AND device=$3 AND occurrence=$4)").bind(tenant).bind(version).bind(device.into_uuid()).bind(occurrence).fetch_one(c).await})).await?;
     Ok(!exists
         && service
             .capacity
@@ -113,7 +113,7 @@ pub(crate) async fn queue_run_in(
     let origin = stored(serde_json::to_value(origin))?;
     tx.with_connection(move|c|Box::pin(async move{
         sqlx::query("INSERT INTO rss_da.access_runs (tenant_id, id, policy_version, device, occurrence, available_at, deadline, state, dispatch_fingerprint, created_at, origin, access_binding) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $6, $10, $11)")
-            .bind(tenant).bind(id).bind(version).bind(target.device).bind(occurrence).bind(now).bind(deadline).bind(state).bind(fingerprint).bind(origin).bind(document).execute(c).await?;Ok(())
+            .bind(tenant).bind(id).bind(version).bind(target.device.into_uuid()).bind(occurrence).bind(now).bind(deadline).bind(state).bind(fingerprint).bind(origin).bind(document).execute(c).await?;Ok(())
     })).await?;
     super::wake::run_in(&service.reconcile_messaging, tx, id).await?;
     let audit = rss_mdm_audit_integration::RequestAudit::new(

@@ -9,7 +9,7 @@ CREATE TABLE mdm_script.runs (
     resource_id text NOT NULL CHECK(octet_length(resource_id) BETWEEN 1 AND 256),
     origin jsonb NOT NULL CHECK(origin IN ('"system"','"policy"','"human"','"ai"')),
     source_objects jsonb NOT NULL,
-    device text NOT NULL,
+    device uuid NOT NULL,
     occurrence text NOT NULL CHECK(octet_length(occurrence) BETWEEN 1 AND 256),
     created_at bigint NOT NULL CHECK(created_at>=0),
     available_at bigint NOT NULL CHECK(available_at>=0),
@@ -30,7 +30,7 @@ CREATE POLICY tenant ON mdm_script.runs
  WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 
 CREATE TABLE mdm_script.receipts (
-    device text NOT NULL,
+    device uuid NOT NULL,
     tenant_id uuid NOT NULL,
     actor text NOT NULL,
     id uuid NOT NULL,
@@ -60,7 +60,7 @@ CREATE POLICY tenant ON mdm_script.output_chunks
 
 CREATE TABLE mdm_script.agent_admission (
     tenant_id uuid NOT NULL,
-    device text NOT NULL,
+    device uuid NOT NULL,
     policy_after uuid,
     PRIMARY KEY(tenant_id,device)
 );

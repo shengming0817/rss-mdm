@@ -157,7 +157,7 @@ fn device_request_coordinates_are_explicit_and_generic_targets_clear_them() {
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.target_device("device-a");
+    audit.target_device(&rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap());
     let payload = |fact: Fact| {
         let event = fact
             .event(rss_contract::Timepoint::try_from(1i64).unwrap())
@@ -166,7 +166,7 @@ fn device_request_coordinates_are_explicit_and_generic_targets_clear_them() {
     };
     assert_eq!(
         payload(Fact::request(&audit, 403, "denied").unwrap())["details"]["deviceId"],
-        "device-a"
+        "00000000-0000-0000-0000-000000000001"
     );
     audit.target("saved-query-id");
     assert!(payload(Fact::request(&audit, 403, "denied").unwrap())["details"].is_null());
@@ -342,7 +342,7 @@ fn receipt_subject_is_not_the_authenticated_actor_or_a_run_namespace() {
         "self_service_invoke",
         AuditIntent::Management,
     );
-    let device = uuid::Uuid::new_v4().to_string();
+    let device = rss_mdm_agent_wire::DeviceId::new_v4();
     audit.identify_device(&device);
     let request = uuid::Uuid::new_v4();
     audit.owned_operation(

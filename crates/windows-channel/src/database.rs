@@ -84,3 +84,8 @@ pub(crate) fn db(e: sqlx::Error) -> Error {
         Error::Unavailable(Failure::Database)
     }
 }
+
+/// Validate product UUIDs at this native channel's persistence boundary.
+pub(crate) fn device_id(id: uuid::Uuid) -> Result<rss_mdm_agent_wire::DeviceId, sqlx::Error> {
+    rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+}

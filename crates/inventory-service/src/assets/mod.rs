@@ -560,9 +560,9 @@ pub async fn timeline_device_in(
     tenant: &str,
     actor: &str,
     operation: Uuid,
-) -> std::result::Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar("SELECT response->'asset'->>'device' FROM mdm_assets.operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3 AND response->'asset'->>'kind'='assignment'")
-        .bind(tenant).bind(actor).bind(operation).fetch_optional(c).await.map(Option::flatten)
+) -> std::result::Result<Option<rss_mdm_agent_wire::DeviceId>, sqlx::Error> {
+    sqlx::query_scalar("SELECT (response->'asset'->>'device')::uuid FROM mdm_assets.operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3 AND response->'asset'->>'kind'='assignment'")
+        .bind(tenant).bind(actor).bind(operation).fetch_optional(c).await.map(Option::flatten).and_then(|id|id.map(crate::database::device_id).transpose())
 }
 
 /// Current field authority, independent of asset-history pagination.
@@ -663,7 +663,7 @@ impl AssetService {
                 },
                 Response::Assignment{device,field:_,revision}=>{
                     grant.require(p,Permission::InventoryRead,Some(&device))?;
-                    s.object=Some(device);s.revision=Some(revision);
+                    s.object=Some(device.to_string());s.revision=Some(revision);
                 },
                 Response::FieldLayoutWritten{revision}=>{
                     grant.require(p,Permission::InventoryFieldsWrite,None)?;

@@ -25,13 +25,13 @@ pub struct Run {
     pub fingerprint: Vec<u8>,
     pub phase: String,
     pub source_index: usize,
-    pub source_cursor: Option<String>,
-    pub evaluation_cursor: Option<String>,
+    pub source_cursor: Option<rss_mdm_agent_wire::ObjectRef>,
+    pub evaluation_cursor: Option<rss_mdm_agent_wire::ObjectRef>,
     pub object_count: usize,
     pub member_count: u64,
 }
 pub struct SourceMember {
-    pub object: String,
+    pub object: rss_mdm_agent_wire::ObjectRef,
     pub unknown: bool,
     pub input: Value,
 }
@@ -49,6 +49,22 @@ fn invariant() -> BindingError {
 impl From<sqlx::Error> for BindingError {
     fn from(e: sqlx::Error) -> Self {
         Self::Storage(e.into())
+    }
+}
+fn object_cursor(
+    row: &sqlx::postgres::PgRow,
+    kind: &str,
+    id: &str,
+) -> Result<Option<rss_mdm_agent_wire::ObjectRef>, BindingError> {
+    match (
+        row.try_get::<Option<i16>, _>(kind)?,
+        row.try_get::<Option<Uuid>, _>(id)?,
+    ) {
+        (None, None) => Ok(None),
+        (Some(kind), Some(id)) => rss_mdm_agent_wire::ObjectRef::from_parts(kind, id)
+            .map(Some)
+            .map_err(|_| invariant()),
+        _ => Err(invariant()),
     }
 }
 impl ScopeBinding {
@@ -344,11 +360,11 @@ impl ScopeBinding {
     ) -> Result<(), BindingError> {
         let profile = self.profile();
 
-        let (kinds, targets): (Vec<String>, Vec<String>) = refs
+        let (kinds, targets): (Vec<String>, Vec<Uuid>) = refs
             .into_iter()
             .map(|r| match r {
-                rss_mdm_scope::Reference::Device(id) => ("device".into(), id),
-                rss_mdm_scope::Reference::Group(id) => ("group".into(), id.to_string()),
+                rss_mdm_scope::Reference::Device(id) => ("device".into(), id.into_uuid()),
+                rss_mdm_scope::Reference::Group(id) => ("group".into(), id),
             })
             .unzip();
         let tenant = self.tenant.to_string();
@@ -439,8 +455,12 @@ impl ScopeBinding {
                 fingerprint: r.try_get("fingerprint")?,
                 phase: r.try_get("phase")?,
                 source_index: r.try_get::<i32, _>("source_index")? as usize,
-                source_cursor: r.try_get("source_cursor")?,
-                evaluation_cursor: r.try_get("evaluation_cursor")?,
+                source_cursor: object_cursor(&r, "source_cursor_kind", "source_cursor")?,
+                evaluation_cursor: object_cursor(
+                    &r,
+                    "evaluation_cursor_kind",
+                    "evaluation_cursor",
+                )?,
                 object_count: r.try_get::<i64, _>("object_count")? as usize,
                 member_count: r.try_get::<i64, _>("member_count")? as u64,
             })
@@ -453,18 +473,20 @@ impl ScopeBinding {
         run: Uuid,
         index: usize,
         members: Vec<SourceMember>,
-        cursor: Option<String>,
+        cursor: Option<rss_mdm_agent_wire::ObjectRef>,
         more: bool,
     ) -> Result<(), BindingError> {
         let profile = self.profile();
 
         self.validate_in(tx)?;
         let tenant = self.tenant.to_string();
+        let mut object_kinds = Vec::new();
         let mut objects = Vec::new();
         let mut unknown = Vec::new();
         let mut inputs = Vec::new();
         for m in members {
-            objects.push(m.object);
+            object_kinds.push(m.object.kind());
+            objects.push(m.object.uuid());
             unknown.push(m.unknown);
             inputs.push(m.input);
         }
@@ -474,6 +496,7 @@ impl ScopeBinding {
                     .bind(&tenant)
                     .bind(run)
                     .bind(index as i32)
+                    .bind(object_kinds)
                     .bind(objects)
                     .bind(unknown)
                     .bind(inputs)
@@ -483,7 +506,8 @@ impl ScopeBinding {
                     .bind(tenant)
                     .bind(run)
                     .bind((index + usize::from(!more)) as i32)
-                    .bind(if more { cursor } else { None })
+                    .bind(if more { cursor.map(|o| o.kind()) } else { None })
+                    .bind(if more { cursor.map(|o| o.uuid()) } else { None })
                     .execute(c)
                     .await?;
                 Ok(())
@@ -754,41 +778,53 @@ impl ScopeBinding {
         self.validate_in(tx)?;
         let tenant = self.tenant.to_string();
         let id = run.id;
-        let after = run.evaluation_cursor.clone();
+        let after = run.evaluation_cursor;
         let limit = 1000usize.min(16000 / source_count.max(1));
-        let mut devices = tx
+        let rows = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    sqlx::query_scalar::<_, String>(
-                        crate::storage_profile::sql(profile).store_evaluate_page_in_1,
-                    )
-                    .bind(tenant)
-                    .bind(id)
-                    .bind(targets)
-                    .bind(after)
-                    .bind((limit + 1) as i64)
-                    .fetch_all(c)
-                    .await
+                    sqlx::query(crate::storage_profile::sql(profile).store_evaluate_page_in_1)
+                        .bind(tenant)
+                        .bind(id)
+                        .bind(targets)
+                        .bind(after.map(|o| o.kind()))
+                        .bind(after.map(|o| o.uuid()))
+                        .bind((limit + 1) as i64)
+                        .fetch_all(c)
+                        .await
                 })
             })
             .await?;
+        let mut devices = rows
+            .into_iter()
+            .map(|r| {
+                rss_mdm_agent_wire::ObjectRef::from_parts(
+                    r.try_get("object_kind")?,
+                    r.try_get("object_id")?,
+                )
+                .map_err(|_| invariant())
+            })
+            .collect::<Result<Vec<_>, BindingError>>()?;
         let more = devices.len() > limit;
         devices.truncate(limit);
         check_page_count(run.object_count, devices.len())?;
         let matched = vec![true; devices.len()];
         let explanations: Vec<Value> = devices
             .iter()
-            .map(|key| serde_json::json!({"objectKey":key,"reasons":[],"identityRevision":0}))
+            .map(|key| serde_json::json!({"object":key,"reasons":[],"identityRevision":0}))
             .collect();
         let count = devices.len() as i64;
         let last = devices.last().cloned();
         let tenant = self.tenant.to_string();
+        let kinds = devices.iter().map(|o| o.kind()).collect::<Vec<_>>();
+        let ids = devices.iter().map(|o| o.uuid()).collect::<Vec<_>>();
         tx.with_connection(move |c| {
             Box::pin(async move {
                 sqlx::query(crate::storage_profile::sql(profile).store_evaluate_page_in_2)
                     .bind(&tenant)
                     .bind(id)
-                    .bind(devices)
+                    .bind(kinds)
+                    .bind(ids)
                     .bind(matched)
                     .bind(explanations)
                     .execute(&mut *c)
@@ -797,7 +833,8 @@ impl ScopeBinding {
                     .bind(tenant)
                     .bind(id)
                     .bind(count)
-                    .bind(last)
+                    .bind(last.map(|o| o.kind()))
+                    .bind(last.map(|o| o.uuid()))
                     .bind(if more { "evaluate" } else { "project" })
                     .execute(c)
                     .await?;
@@ -805,6 +842,7 @@ impl ScopeBinding {
             })
         })
         .await?;
+
         Ok(())
     }
 }
@@ -1059,7 +1097,7 @@ impl ScopeBinding {
         &self,
         tx: &mut PgTransaction<'_>,
         window: &RelationWindow,
-        devices: Vec<String>,
+        devices: Vec<rss_mdm_agent_wire::DeviceId>,
     ) -> Result<Vec<Uuid>, BindingError> {
         let profile = self.profile();
 
@@ -1073,7 +1111,7 @@ impl ScopeBinding {
                         crate::storage_profile::sql(profile).store_relation_targets_in_1,
                     )
                     .bind(tenant)
-                    .bind(devices)
+                    .bind(devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>())
                     .bind(cursor)
                     .fetch_all(c)
                     .await

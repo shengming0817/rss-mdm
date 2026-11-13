@@ -1,9 +1,9 @@
 BEGIN;
 GRANT USAGE ON SCHEMA rss_da TO da_identity_runtime;
 GRANT SELECT(instance_id,target,lineage) ON rss_da.installation_binding TO da_identity_runtime;
-GRANT EXECUTE ON FUNCTION rss_da.deployment_valid_until(text,jsonb,uuid,bigint) TO da_identity_runtime;
+GRANT EXECUTE ON FUNCTION rss_da.deployment_valid_until(uuid,jsonb,uuid,bigint) TO da_identity_runtime;
 GRANT EXECUTE ON FUNCTION rss_da.platform_session_qualifications(uuid,jsonb,bigint) TO da_identity_runtime;
-GRANT EXECUTE ON FUNCTION rss_da.access_policy(uuid,text,bigint) TO da_identity_runtime;
+GRANT EXECUTE ON FUNCTION rss_da.access_policy(uuid,uuid,bigint) TO da_identity_runtime;
 GRANT SELECT ON rss_da.psso_sources,rss_da.psso_tokens TO da_identity_runtime;
 GRANT UPDATE(tenant_id) ON rss_da.psso_sources TO da_identity_runtime;
 GRANT SELECT ON rss_da.psso_password_providers TO da_identity_runtime;
@@ -32,7 +32,7 @@ GRANT UPDATE(agent_installation,agent_device,enabled,revision) ON rss_da.agent_d
 GRANT SELECT ON rss_da.authorization_installation TO da_identity_runtime;
 GRANT SELECT,INSERT ON rss_da.policies,rss_da.policy_versions TO da_identity_runtime;
 GRANT UPDATE(revision,current_version,version_number,state,definition,author,updated_at) ON rss_da.policies TO da_identity_runtime;
-GRANT EXECUTE ON FUNCTION rss_da.lock_policy(uuid),rss_da.current_da_registration(text),rss_da.access_binding_ready(jsonb),rss_da.active_access_binding(uuid,bigint,bigint) TO da_identity_runtime;
+GRANT EXECUTE ON FUNCTION rss_da.lock_policy(uuid),rss_da.current_da_registration(uuid),rss_da.access_binding_ready(jsonb),rss_da.active_access_binding(uuid,bigint,bigint) TO da_identity_runtime;
 GRANT SELECT ON rss_da.recovery_entries,rss_da.recovery_versions,rss_da.recovery_disclosures TO da_identity_runtime;
 GRANT INSERT ON rss_da.recovery_disclosures TO da_identity_runtime;
 GRANT UPDATE(tenant_id) ON rss_da.recovery_entries,rss_da.recovery_versions TO da_identity_runtime;

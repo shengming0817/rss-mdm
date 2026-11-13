@@ -83,8 +83,7 @@ pub async fn check_on(
     profile: wire::ExecutorProfile,
 ) -> Result<Eligibility> {
     let mut agents =
-        agent_facts::agent_targets_on(c, tenant, store.clone(), vec![target.device.clone()])
-            .await?;
+        agent_facts::agent_targets_on(c, tenant, store.clone(), vec![target.device]).await?;
     let Some(agent) = agents.pop() else {
         return Ok(Eligibility::Unknown);
     };
@@ -92,7 +91,7 @@ pub async fn check_on(
         return Ok(Eligibility::Ineligible);
     }
     let tenant = tenant.to_string();
-    let device = target.device.clone();
+    let device = target.device;
     let Some(input) = store.announcement(c, tenant, device).await? else {
         return Ok(Eligibility::Unknown);
     };
@@ -127,7 +126,7 @@ pub async fn collection_requirements_on(
     requirements: &rss_mdm_resource::Applicability,
 ) -> Result<bool> {
     let tenant = tenant.to_string();
-    let device = target.device.clone();
+    let device = target.device;
     let Some(input) = store.announcement(c, tenant, device).await? else {
         return Ok(false);
     };
@@ -181,7 +180,7 @@ pub async fn require_on(
         return Ok(Eligibility::Ineligible);
     }
     let Some(binding) =
-        agent_facts::agent_binding_on(c, tenant, store.clone(), target.device.clone()).await?
+        agent_facts::agent_binding_on(c, tenant, store.clone(), target.device).await?
     else {
         return Ok(Eligibility::Unknown);
     };

@@ -8,8 +8,8 @@ pub struct Assignment {
     pub policy: Uuid,
     /// Immutable publication identity.
     pub version: Uuid,
-    /// Canonical object key.
-    pub object: String,
+    /// Typed endpoint or association identity.
+    pub object: rss_mdm_agent_wire::ObjectRef,
     /// Chosen channel.
     pub channel: String,
     /// Complete bounded assignment facts.
@@ -38,7 +38,8 @@ pub async fn upsert_in(
                 .bind(tenant)
                 .bind(a.policy)
                 .bind(a.version)
-                .bind(a.object)
+                .bind(a.object.kind())
+                .bind(a.object.uuid())
                 .bind(a.channel)
                 .bind(a.input)
                 .bind(if a.available { "ready" } else { "unavailable" })
@@ -59,16 +60,26 @@ pub async fn objects_in(
     tx: &mut PgTransaction<'_>,
     policy: Uuid,
     version: Uuid,
-) -> Result<Vec<(String, Value)>, PgError> {
+) -> Result<Vec<rss_mdm_agent_wire::ObjectRef>, PgError> {
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            sqlx::query_as(crate::storage_profile::sql(profile).assignments_objects_in_1)
-                .bind(tenant)
-                .bind(policy)
-                .bind(version)
-                .fetch_all(c)
-                .await
+            sqlx::query_as::<_, (i16, Uuid)>(
+                crate::storage_profile::sql(profile).assignments_objects_in_1,
+            )
+            .bind(tenant)
+            .bind(policy)
+            .bind(version)
+            .fetch_all(c)
+            .await
+            .and_then(|rows| {
+                rows.into_iter()
+                    .map(|(kind, id)| {
+                        rss_mdm_agent_wire::ObjectRef::from_parts(kind, id)
+                            .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+                    })
+                    .collect()
+            })
         })
     })
     .await
@@ -79,18 +90,32 @@ pub async fn withdraw_in(
     tx: &mut PgTransaction<'_>,
     policy: Uuid,
     version: Uuid,
-    objects: Vec<String>,
-) -> Result<Vec<(String, Option<Value>)>, PgError> {
+    objects: Vec<rss_mdm_agent_wire::ObjectRef>,
+) -> Result<Vec<(rss_mdm_agent_wire::ObjectRef, Option<Value>)>, PgError> {
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            sqlx::query_as(crate::storage_profile::sql(profile).assignments_withdraw_in_1)
-                .bind(tenant)
-                .bind(policy)
-                .bind(version)
-                .bind(objects)
-                .fetch_all(c)
-                .await
+            sqlx::query_as::<_, (i16, Uuid, Option<Value>)>(
+                crate::storage_profile::sql(profile).assignments_withdraw_in_1,
+            )
+            .bind(tenant)
+            .bind(policy)
+            .bind(version)
+            .bind(objects.iter().map(|o| o.kind()).collect::<Vec<_>>())
+            .bind(objects.iter().map(|o| o.uuid()).collect::<Vec<_>>())
+            .fetch_all(c)
+            .await
+            .and_then(|rows| {
+                rows.into_iter()
+                    .map(|(kind, id, target)| {
+                        Ok((
+                            rss_mdm_agent_wire::ObjectRef::from_parts(kind, id)
+                                .map_err(|e| sqlx::Error::Decode(Box::new(e)))?,
+                            target,
+                        ))
+                    })
+                    .collect()
+            })
         })
     })
     .await

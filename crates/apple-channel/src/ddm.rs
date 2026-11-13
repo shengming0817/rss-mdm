@@ -33,7 +33,7 @@ struct Publication {
 }
 pub(crate) fn aad_parts(
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 
     user: &str,
     id: Uuid,
@@ -74,7 +74,7 @@ async fn publications(
     user: &str,
 ) -> Result<Vec<(Uuid, String, Publication)>, Error> {
     let rows=sqlx::query("SELECT operation, owner, snapshot FROM mdm_apple.declarations WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND retired_at IS NULL ORDER BY operation LIMIT 17")
-        .bind(p.tenant().to_string()).bind(p.device()).bind(user).fetch_all(c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(user).fetch_all(c).await.map_err(db)?;
     if rows.len() > MAX_PUBLICATIONS {
         return Err(Error::Conflict);
     }
@@ -118,7 +118,7 @@ pub(crate) async fn candidates(
     user: &str,
 ) -> Result<Vec<Uuid>, Error> {
     sqlx::query_scalar("SELECT operation FROM mdm_apple.declarations WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND retired_at IS NULL ORDER BY operation")
-        .bind(p.tenant().to_string()).bind(p.device()).bind(user).fetch_all(c).await.map_err(db)
+        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(user).fetch_all(c).await.map_err(db)
 }
 async fn retain(
     c: &mut PgConnection,
@@ -127,7 +127,7 @@ async fn retain(
     authorized: &[Uuid],
 ) -> Result<(), Error> {
     sqlx::query("UPDATE mdm_apple.declarations SET retired_at = CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint) WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND retired_at IS NULL AND NOT operation = ANY($4)")
-        .bind(p.tenant().to_string()).bind(p.device()).bind(user).bind(authorized).execute(c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(user).bind(authorized).execute(c).await.map_err(db)?;
     Ok(())
 }
 pub(crate) async fn publish(
@@ -244,9 +244,9 @@ pub(crate) async fn publish(
         &bytes,
     )?;
     sqlx::query("UPDATE mdm_apple.declarations SET retired_at = CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint) WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND owner = $4 AND retired_at IS NULL")
-        .bind(p.tenant().to_string()).bind(p.device()).bind(user).bind(&command.owner).execute(&mut *c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(user).bind(&command.owner).execute(&mut *c).await.map_err(db)?;
     sqlx::query("INSERT INTO mdm_apple.declarations (tenant_id, operation, device, user_key, owner, snapshot, legacy_released_at) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, CASE WHEN $7 THEN CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint) END)")
-        .bind(p.tenant().to_string()).bind(command.operation).bind(p.device()).bind(user).bind(&command.owner).bind(sealed).bind(new.legacy.is_empty()).execute(&mut *c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(command.operation).bind(p.device().into_uuid()).bind(user).bind(&command.owner).bind(sealed).bind(new.legacy.is_empty()).execute(&mut *c).await.map_err(db)?;
     Ok(Ok(set.tokens()))
 }
 struct Exchange {

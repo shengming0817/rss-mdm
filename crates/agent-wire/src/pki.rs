@@ -9,7 +9,7 @@ pub const API_VERSION: u8 = 1;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/pki/manifest.json");
 /// SHA-256 of the ordered schema file bytes named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "67bd54c69db163d73dbb6d0d7a8fb4d2b2c3c7f489d1469aa8c646bbe13a0106";
+    "202c5fb6f3ea60bce9ddf95917e4907d56aac1506e75856ac314f64243537c56";
 
 const MAX_REVISION: u64 = i64::MAX as u64;
 const MAX_ISSUERS: usize = 16;
@@ -255,12 +255,8 @@ pub struct Observation {
     #[schemars(extend("const" = 1))]
     pub version: u8,
     /// Original device identity, checked against the authenticated transport.
-    #[serde(
-        rename = "deviceId",
-        deserialize_with = "crate::runtime::profile_device"
-    )]
-    #[schemars(schema_with = "crate::runtime::device_schema")]
-    pub device_id: String,
+    #[serde(rename = "deviceId")]
+    pub device_id: crate::DeviceId,
 
     /// Monotonic sequence within this device identity and domain.
     #[schemars(extend("minimum" = 1, "maximum" = i64::MAX))]
@@ -333,7 +329,6 @@ impl Observation {
         };
         if self.version != API_VERSION
             || self.operation.is_nil()
-            || !crate::runtime::valid_device_id(&self.device_id)
             || !number(self.sequence)
             || self.observed_at < 0
             || !material(self.target_revision, &self.target_digest)

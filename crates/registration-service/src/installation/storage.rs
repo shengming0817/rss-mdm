@@ -38,7 +38,7 @@ pub async fn bind_command_in(
 
 pub struct Operation {
     pub id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub request: Create,
     pub authority: Authority,
     pub revision: i64,
@@ -81,7 +81,9 @@ fn decode_operation(
 ) -> Result<Operation> {
     Ok(Operation {
         id,
-        device: row.try_get("device")?,
+        device: row
+            .try_get::<uuid::Uuid, _>("device")
+            .and_then(crate::database::device_id)?,
         request: crate::installation::input_storage::open_row(
             protection, tenant, id, row, "request",
         )?,
@@ -165,13 +167,13 @@ pub async fn execution_started(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<b
 
 pub async fn current_registration(
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     purpose: crate::Purpose,
-) -> Result<String> {
+) -> Result<rss_mdm_agent_wire::DeviceId> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let t = tenant.clone();
-    let d = device.clone();
+    let d = device;
     tx.with_connection(move |c| {
         Box::pin(async move {
             Ok(crate::installation::device::store::lock_channel(
@@ -227,7 +229,7 @@ pub async fn read_on(
 
 pub async fn require_source(
     tx: &mut PgTransaction<'_>,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
     source: rss_mdm_inventory::ReportSource,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
@@ -251,7 +253,7 @@ pub async fn require_source(
 pub async fn authorized_native(
     tx: &mut PgTransaction<'_>,
     proof: &crate::installation::authorization::context::AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     permissions: &[crate::installation::authorization::Permission],
 ) -> Result<crate::installation::authorization::Snapshot> {
     if permissions.is_empty() {
@@ -312,7 +314,7 @@ pub async fn authority_valid(
 pub async fn receipt_valid(tx: &mut PgTransaction<'_>, op: &Operation) -> Result<bool> {
     Ok(
         match current_registration(tx, &op.device, op.request.task.purpose()?).await {
-            Ok(current) => current == op.device.clone(),
+            Ok(current) => current == op.device,
             Err(Fault::Request(Error::Conflict | Error::WindowsDeclaredEnrollmentNotReady)) => {
                 false
             }

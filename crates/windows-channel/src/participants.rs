@@ -160,14 +160,18 @@ pub trait Departure: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: &'a str,
-        registration: String,
+        registration: rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, ()>;
 }
 pub trait WakeDemand: Send + Sync {
     fn candidates<'a>(
         &'a self,
         c: &'a mut PgConnection,
-        after: &'a str,
-    ) -> Pending<'a, Vec<String>>;
-    fn pending<'a>(&'a self, c: &'a mut PgConnection, device: &'a str) -> Pending<'a, bool>;
+        after: Option<rss_mdm_agent_wire::DeviceId>,
+    ) -> Pending<'a, Vec<rss_mdm_agent_wire::DeviceId>>;
+    fn pending<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        device: &'a rss_mdm_agent_wire::DeviceId,
+    ) -> Pending<'a, bool>;
 }

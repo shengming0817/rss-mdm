@@ -9,7 +9,8 @@ fn main() {
     let configuration = TelemetryConfiguration {
         resource_digest: [8; 32],
         tenant_id: id,
-        device_id: "telemetry-vector".into(),
+        device_id: rss_mdm_agent_wire::DeviceId::parse("23cd0f4e-49b6-52d1-8ac2-483415aa70ff")
+            .unwrap(),
 
         source_epoch: id,
         issued_at: 1000,

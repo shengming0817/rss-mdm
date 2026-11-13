@@ -391,11 +391,13 @@ fn scalar(field: &Field, operator: Operator, input: String) -> Result<Value> {
             "false" => Value::Bool(false),
             _ => return Err(Error::Invalid),
         },
-        Kind::Uuid => Value::from(
-            uuid::Uuid::parse_str(&input)
-                .map_err(|_| Error::Invalid)?
-                .to_string(),
-        ),
+        Kind::Uuid => {
+            let id = uuid::Uuid::parse_str(&input).map_err(|_| Error::Invalid)?;
+            if id.is_nil() || id.to_string() != input {
+                return Err(Error::Invalid);
+            }
+            Value::String(input)
+        }
         _ => Value::from(input),
     };
     let value = match field.normalizer {

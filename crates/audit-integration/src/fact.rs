@@ -89,7 +89,7 @@ impl Fact {
             result,
             None,
         )?;
-        match fact.snapshot.device_target.clone() {
+        match fact.snapshot.device_target {
             Some(device) => fact.with_details(serde_json::json!({"deviceId":device})),
             None => Ok(fact),
         }

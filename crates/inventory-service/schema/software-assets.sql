@@ -24,28 +24,28 @@ CREATE TABLE mdm_assets.software_buckets (
  PRIMARY KEY(tenant_id,run,id), FOREIGN KEY(tenant_id,run) REFERENCES mdm_assets.asset_query_runs(tenant_id,id)
 );
 CREATE TABLE mdm_assets.software_objects (
- tenant_id uuid NOT NULL, run uuid NOT NULL, object text NOT NULL CHECK(octet_length(object)<=512),
+ tenant_id uuid NOT NULL, run uuid NOT NULL, object_kind smallint NOT NULL CHECK(object_kind IN(0,1)), object_id uuid NOT NULL CHECK(object_id <> '00000000-0000-0000-0000-000000000000'::uuid),
  document jsonb NOT NULL CHECK(octet_length(document::text)<=16777216),
- PRIMARY KEY(tenant_id,run,object), FOREIGN KEY(tenant_id,run) REFERENCES mdm_assets.asset_query_runs(tenant_id,id)
+ PRIMARY KEY(tenant_id,run,object_kind,object_id), FOREIGN KEY(tenant_id,run) REFERENCES mdm_assets.asset_query_runs(tenant_id,id)
 );
 CREATE TABLE mdm_assets.software_members (
- tenant_id uuid NOT NULL, run uuid NOT NULL, bucket text NOT NULL, object text NOT NULL,
+ tenant_id uuid NOT NULL, run uuid NOT NULL, bucket text NOT NULL, object_kind smallint NOT NULL CHECK(object_kind IN(0,1)), object_id uuid NOT NULL CHECK(object_id <> '00000000-0000-0000-0000-000000000000'::uuid),
  selected boolean NOT NULL,
  compliance text NOT NULL CHECK(compliance IN('disabled','compliant','non_compliant','unknown')),
- PRIMARY KEY(tenant_id,run,bucket,object),
+ PRIMARY KEY(tenant_id,run,bucket,object_kind,object_id),
  FOREIGN KEY(tenant_id,run,bucket) REFERENCES mdm_assets.software_buckets(tenant_id,run,id),
- FOREIGN KEY(tenant_id,run,object) REFERENCES mdm_assets.software_objects(tenant_id,run,object)
+ FOREIGN KEY(tenant_id,run,object_kind,object_id) REFERENCES mdm_assets.software_objects(tenant_id,run,object_kind,object_id)
 );
 CREATE TABLE mdm_assets.software_evidence (
- tenant_id uuid NOT NULL, run uuid NOT NULL, bucket text NOT NULL, object text NOT NULL,
+ tenant_id uuid NOT NULL, run uuid NOT NULL, bucket text NOT NULL, object_kind smallint NOT NULL CHECK(object_kind IN(0,1)), object_id uuid NOT NULL CHECK(object_id <> '00000000-0000-0000-0000-000000000000'::uuid),
  id text NOT NULL CHECK(octet_length(id)=64), selected boolean NOT NULL, confirmed boolean NOT NULL,
  document jsonb NOT NULL CHECK(octet_length(document::text)<=1048576),
  dimensions jsonb NOT NULL CHECK(octet_length(dimensions::text)<=65536),
- PRIMARY KEY(tenant_id,run,bucket,object,id),
+ PRIMARY KEY(tenant_id,run,bucket,object_kind,object_id,id),
  FOREIGN KEY(tenant_id,run,bucket) REFERENCES mdm_assets.software_buckets(tenant_id,run,id)
 );
-CREATE INDEX software_members_selected ON mdm_assets.software_members(tenant_id,run,bucket,object) WHERE selected;
-CREATE INDEX software_evidence_object ON mdm_assets.software_evidence(tenant_id,run,object,bucket COLLATE "C") WHERE confirmed;
+CREATE INDEX software_members_selected ON mdm_assets.software_members(tenant_id,run,bucket,object_kind,object_id) WHERE selected;
+CREATE INDEX software_evidence_object ON mdm_assets.software_evidence(tenant_id,run,object_kind,object_id,bucket COLLATE "C") WHERE confirmed;
 DO $$
 DECLARE t text;
 BEGIN

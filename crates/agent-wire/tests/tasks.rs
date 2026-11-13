@@ -38,7 +38,8 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
         projection: ScriptProjection::None,
         wire_version: 1,
         tenant_id: id,
-        device_id: "device".into(),
+        device_id: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
+            .unwrap(),
         platform: TaskPlatform::Macos,
         architecture: TaskArchitecture::Aarch64,
 
@@ -102,7 +103,7 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
             s.content.sha256 = [3; 32];
         },
         |s: &mut TaskSpec| {
-            s.device_id.push_str("-other");
+            s.device_id = rss_mdm_agent_wire::DeviceId::new_v4();
         },
         |s: &mut TaskSpec| {
             s.permit = TaskPermit::Start;
@@ -159,7 +160,8 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
         },
         wire_version: 1,
         tenant_id: id,
-        device_id: "device".into(),
+        device_id: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
+            .unwrap(),
         platform: TaskPlatform::Windows,
         architecture: TaskArchitecture::X86_64,
 

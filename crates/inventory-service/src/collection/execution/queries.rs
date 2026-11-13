@@ -9,7 +9,7 @@ pub struct Metadata {
     pub task_id: Uuid,
     pub policy_id: Uuid,
     pub version_id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub occurrence: String,
     pub available_at: i64,
     pub deadline: i64,
@@ -91,8 +91,9 @@ pub async fn detail_on(
     proof: &AuthorizedPrincipal,
     grant: &Snapshot,
 ) -> Result<Detail> {
-    let target:Option<(String,bool)>=sqlx::query_as("SELECT r.device,r.channel='agent' FROM mdm_inventory.collection_tasks r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.id=$3").bind(tenant).bind(policy).bind(id).fetch_optional(&mut *c).await?;
+    let target:Option<(Uuid,bool)>=sqlx::query_as("SELECT r.device,r.channel='agent' FROM mdm_inventory.collection_tasks r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.id=$3").bind(tenant).bind(policy).bind(id).fetch_optional(&mut *c).await?;
     let (device, raw_evidence) = target.ok_or(Error::NotFound)?;
+    let device = crate::database::device_id(device)?;
     grant.require(proof, Permission::OperationRead, Some(&device))?;
     grant.require(proof, Permission::InventoryRead, Some(&device))?;
     if raw_evidence {
@@ -134,7 +135,7 @@ pub async fn latest_assignment_on(
     channel: rss_mdm_inventory::Channel,
 ) -> Result<Option<Summary>> {
     select(true).push(" AND v.policy=$2 AND r.device=$3 AND r.channel=$4 ORDER BY r.available_at DESC,r.id DESC LIMIT 1")
-        .build_query_scalar::<serde_json::Value>().bind(tenant.to_string()).bind(policy).bind(&target.device)
+        .build_query_scalar::<serde_json::Value>().bind(tenant.to_string()).bind(policy).bind(target.device.into_uuid())
         .bind(channel.as_str()).fetch_optional(c).await?
         .map(|v|crate::transaction::stored(serde_json::from_value(v))).transpose()
 }
@@ -207,7 +208,7 @@ mod tests {
             .is_err()
         );
         let id = Uuid::new_v4();
-        let common = json!({"taskId":id,"policyId":id,"versionId":id,"device":"device","occurrence":"once","availableAt":1,"deadline":100,"report":null});
+        let common = json!({"taskId":id,"policyId":id,"versionId":id,"device":id,"occurrence":"once","availableAt":1,"deadline":100,"report":null});
         let mut agent = common.clone();
         agent["channel"] = json!("agent");
         agent["state"] =

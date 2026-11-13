@@ -232,7 +232,7 @@ fn read(op: &storage::Operation, values: bool) -> Result<crate::deployment::wind
     });
     Ok(crate::deployment::windows_results::Read {
         id: op.id,
-        device: op.device.to_string(),
+        device: op.device,
 
         request: request.clone(),
         values: values && !sensitive,
@@ -295,7 +295,7 @@ pub(super) async fn settle_dispatch_failures(
 
     let ids = tx.with_connection(move |c| Box::pin(async move {
         sqlx::query_scalar::<_, Uuid>("SELECT o.id FROM mdm_software_deployment.operations AS o INNER JOIN rss_device_command.commands AS d ON d.tenant_id = o.tenant_id AND d.command_id = CAST(o.id AS text) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2 AND o.dispatch_failure IS NOT NULL AND d.terminal_at IS NULL ORDER BY o.id LIMIT 64")
-            .bind(tenant).bind(&registration).fetch_all(c).await
+            .bind(tenant).bind(registration.into_uuid()).fetch_all(c).await
     })).await?;
     for id in ids {
         let op = storage::load(tx, &service.transactions.protection, id).await?;

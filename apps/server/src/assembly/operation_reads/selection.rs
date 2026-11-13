@@ -25,7 +25,7 @@ struct Continuation {
 async fn candidates(
     c: &mut sqlx::PgConnection,
     tenant: String,
-    allowed: Option<Vec<String>>,
+    allowed: Option<Vec<rss_mdm_agent_wire::DeviceId>>,
     q: &Query,
     after: Option<&Position>,
     bounds: (i64, usize),
@@ -239,7 +239,7 @@ pub(super) async fn statistics(
     p: &AuthorizedPrincipal,
     grant: &Grant,
     q: &Query,
-    allowed: Option<Vec<String>>,
+    allowed: Option<Vec<rss_mdm_agent_wire::DeviceId>>,
     now: i64,
 ) -> Result<Value, Error> {
     if !classified(q) {

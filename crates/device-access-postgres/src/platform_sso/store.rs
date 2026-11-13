@@ -58,7 +58,7 @@ pub async fn source(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<Sour
 }
 pub async fn put(c: &mut PgConnection, tenant: &str, s: &Source) -> Result<(), Error> {
     sqlx::query("INSERT INTO rss_da.psso_sources (tenant_id, id, kind, device, binding, parent, version, revoked, signing_kid, document) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (tenant_id, id) DO UPDATE SET parent = excluded.parent, version = excluded.version, revoked = excluded.revoked, signing_kid = excluded.signing_kid, document = excluded.document")
-        .bind(tenant).bind(s.id).bind(s.kind.as_str()).bind(&s.object.device).bind(s.binding).bind(s.parent).bind(s.version).bind(s.revoked).bind(s.signing.as_ref().map(crypto::kid).transpose()?).bind(serde_json::to_value(s).map_err(|_|Error::Malformed)?).execute(c).await.map_err(db)?;
+        .bind(tenant).bind(s.id).bind(s.kind.as_str()).bind(s.object.device.into_uuid()).bind(s.binding).bind(s.parent).bind(s.version).bind(s.revoked).bind(s.signing.as_ref().map(crypto::kid).transpose()?).bind(serde_json::to_value(s).map_err(|_|Error::Malformed)?).execute(c).await.map_err(db)?;
     Ok(())
 }
 pub async fn current_object(

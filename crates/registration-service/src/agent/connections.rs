@@ -108,7 +108,7 @@ pub struct UnconfirmedDevices {
 #[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceStatus {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub installed_revision: Option<u64>,
     pub origin: Option<String>,
     pub received_at: Option<i64>,
@@ -117,7 +117,7 @@ pub struct DeviceStatus {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Observation {
     pub target_revision: Option<u64>,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub acknowledgement: Option<w::Acknowledgement>,
     pub received_at: Option<i64>,
     pub failure: Option<FailureObservation>,
@@ -770,7 +770,7 @@ impl Service {
         }
         let p = self.authenticate(peer).await?;
         audit.identify_device(p.device());
-        audit.target(p.device());
+        audit.target_device(p.device());
         audit.owned_operation(
             rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
@@ -809,7 +809,7 @@ impl Service {
                         .agent_connections_acknowledge_connections_1,
                 )
                 .bind(service.tenant.to_string())
-                .bind(p.device())
+                .bind(p.device().into_uuid())
                 .bind(input.operation_id)
                 .fetch_optional(&mut *c)
                 .await
@@ -828,7 +828,7 @@ impl Service {
                         .agent_connections_acknowledge_connections_2,
                 )
                 .bind(service.tenant.to_string())
-                .bind(p.device())
+                .bind(p.device().into_uuid())
                 .fetch_one(&mut *c)
                 .await
                 .map_err(db)?;
@@ -840,7 +840,7 @@ impl Service {
                         .agent_connections_acknowledge_connections_3,
                 )
                 .bind(service.tenant.to_string())
-                .bind(p.device())
+                .bind(p.device().into_uuid())
                 .bind(input.operation_id)
                 .bind(input.revision as i64)
                 .bind(serde_json::to_value(input).map_err(|_| Error::Malformed)?)
@@ -870,7 +870,7 @@ impl Service {
         }
         let principal = self.authenticate(peer).await?;
         audit.identify_device(principal.device());
-        audit.target(principal.device());
+        audit.target_device(principal.device());
         audit.owned_operation(
             rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
@@ -900,7 +900,7 @@ impl Service {
                         .agent_connections_report_connection_failure_1,
                 )
                 .bind(service.tenant.to_string())
-                .bind(p.device())
+                .bind(p.device().into_uuid())
                 .bind(input.operation_id)
                 .fetch_optional(&mut *c)
                 .await
@@ -924,7 +924,7 @@ impl Service {
                         .agent_connections_report_connection_failure_2,
                 )
                 .bind(service.tenant.to_string())
-                .bind(p.device())
+                .bind(p.device().into_uuid())
                 .bind(input.operation_id)
                 .bind(input.revision as i64)
                 .bind(document)
@@ -994,7 +994,10 @@ impl Service {
         };
         let mut items = Vec::new();
         for row in rows {
-            let device: String = row.try_get("device").map_err(db)?;
+            let device: rss_mdm_agent_wire::DeviceId = row
+                .try_get::<uuid::Uuid, _>("device")
+                .and_then(crate::database::device_id)
+                .map_err(db)?;
             match snapshot.require(p, Permission::InventoryRead, Some(&device)) {
                 Ok(()) => {}
                 Err(rss_mdm_authorization_service::error::AuthorizationError::Forbidden) => {
@@ -1030,7 +1033,7 @@ impl Service {
     pub async fn connection_observation(
         &self,
         p: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<Option<Observation>, Failure> {
         let profile = self.profile();
 
@@ -1059,7 +1062,7 @@ impl Service {
             crate::storage_profile::sql(profile).agent_connections_connection_observation_1,
         )
         .bind(p.tenant_id())
-        .bind(device)
+        .bind(device.into_uuid())
         .fetch_optional(&mut *tx)
         .await
         .map_err(db)?;
@@ -1072,7 +1075,10 @@ impl Service {
                         .map(u64::try_from)
                         .transpose()
                         .map_err(|_| Error::Corrupt)?,
-                    device: r.try_get("device").map_err(db)?,
+                    device: r
+                        .try_get::<uuid::Uuid, _>("device")
+                        .and_then(crate::database::device_id)
+                        .map_err(db)?,
 
                     acknowledgement: r
                         .try_get::<Option<serde_json::Value>, _>("document")

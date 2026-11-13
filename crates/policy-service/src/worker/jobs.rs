@@ -26,7 +26,13 @@ pub async fn read_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
-) -> Result<(Work, bool, Option<String>, Option<String>, bool)> {
+) -> Result<(
+    Work,
+    bool,
+    Option<String>,
+    Option<rss_mdm_agent_wire::ObjectRef>,
+    bool,
+)> {
     let row = rss_mdm_policy_postgres::work::read_in(profile, tx, id)
         .await?
         .ok_or(Error::NotFound)?;

@@ -10,7 +10,7 @@ CREATE TABLE rss_da.access_runs (
   , origin jsonb NOT NULL CHECK (origin IN ('"system"', '"policy"', '"human"', '"ai"'))
   , access_binding jsonb NOT NULL
   , binding_id uuid GENERATED ALWAYS AS (CAST(access_binding ->> 'id' AS uuid)) STORED
-  , device text NOT NULL
+  , device uuid NOT NULL
   , occurrence text NOT NULL CHECK (octet_length(occurrence) BETWEEN 1 AND 256)
   , created_at bigint NOT NULL CHECK (created_at >= 0)
   , available_at bigint NOT NULL CHECK (available_at >= 0)
@@ -75,7 +75,7 @@ GRANT UPDATE(input_revision) ON rss_da.access_policy_recovery TO da_policy_runti
 COMMIT;
 -- Registration retirement participates on the initiating audit connection.
 BEGIN;
-CREATE FUNCTION rss_da.save_retired_access_run(p_device text,p_run uuid,p_previous jsonb,p_state jsonb) RETURNS boolean
+CREATE FUNCTION rss_da.save_retired_access_run(p_device uuid,p_run uuid,p_previous jsonb,p_state jsonb) RETURNS boolean
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
  WITH changed AS (
@@ -89,6 +89,6 @@ CREATE FUNCTION rss_da.save_retired_access_run(p_device text,p_run uuid,p_previo
  RETURNING a.id
  ) SELECT EXISTS(SELECT 1 FROM changed);
 $$;
-REVOKE ALL ON FUNCTION rss_da.save_retired_access_run(text,uuid,jsonb,jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION rss_da.save_retired_access_run(text,uuid,jsonb,jsonb) TO da_access,da_command_runtime;
+REVOKE ALL ON FUNCTION rss_da.save_retired_access_run(uuid,uuid,jsonb,jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rss_da.save_retired_access_run(uuid,uuid,jsonb,jsonb) TO da_access,da_command_runtime;
 COMMIT;

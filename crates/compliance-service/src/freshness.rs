@@ -60,7 +60,7 @@ impl Compliance {
     AND NOT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,c.source_epoch,c.writer_xid) FROM cuts WHERE cut=x."assetCut"),false)
       AND(c.kind IN('device','source','credential') OR EXISTS(SELECT 1 FROM mdm_compliance.fields f WHERE f.tenant_id=c.tenant_id AND f.rule_id=x.rule AND f.field=ANY(c.fields)))
       AND(c.identity->>'device' IS NULL OR jsonb_array_length(x.groups)=0 OR EXISTS(
-        SELECT FROM mdm_group.input_candidate_groups(ARRAY(SELECT (g->>'id')::uuid FROM jsonb_array_elements(x.groups) g),ARRAY[c.identity->>'device']))))
+        SELECT FROM mdm_group.input_candidate_groups(ARRAY(SELECT (g->>'id')::uuid FROM jsonb_array_elements(x.groups) g),ARRAY[(c.identity->>'device')::uuid]))))
    "#).bind(tenant).bind(document).bind(current).fetch_all(c).await
   })).await?;
         ids.into_iter()

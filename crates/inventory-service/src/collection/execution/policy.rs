@@ -54,7 +54,7 @@ impl CollectionPolicy {
         &self,
         c: &mut sqlx::PgConnection,
         tenant: rss_request_context::TenantId,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> Result<Option<rss_mdm_policy::pages::TaskAdmission>> {
         use rss_mdm_policy::pages::{TaskAdmission as A, TaskAdmissionState as S};
@@ -96,7 +96,7 @@ impl CollectionPolicy {
         c: &mut sqlx::PgConnection,
         tenant: rss_request_context::TenantId,
         scope: Admission,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> Result<std::result::Result<i64, rss_mdm_policy::pages::TaskAdmission>> {
         if let Some(reason) = self.base_on(c, tenant, device, now).await? {
@@ -108,7 +108,7 @@ impl CollectionPolicy {
         &self,
         service: &Transactions,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> Result<Option<i64>> {
         super::storage::lock_device(tx, device).await?;
@@ -197,7 +197,7 @@ impl CollectionPolicy {
 
             let source = service.source.clone();
             let tenant = tx.tenant_id();
-            let device = run.target.device.clone();
+            let device = run.target.device;
             let evidence = run.source_objects.clone();
             if !tx
                 .with_connection(move |c| {
@@ -234,7 +234,7 @@ pub async fn agent_source_on(
     target: &Target,
 ) -> Result<bool> {
     Ok(sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = 'agent.native' AND enabled)")
-        .bind(tenant.to_string()).bind(target.device.clone()).fetch_one(c).await?)
+        .bind(tenant.to_string()).bind(target.device.into_uuid()).fetch_one(c).await?)
 }
 pub async fn agent_source_in(tx: &mut PgTransaction<'_>, target: &Target) -> Result<bool> {
     let tenant = tx.tenant_id();
@@ -265,13 +265,10 @@ impl CollectionPolicy {
         let frozen = self.agent()?;
         let target = &run.target;
         let plan = frozen.definition.spec().plan.clone();
-        let binding = super::agent_facts::agent_binding_in(
-            tx,
-            service.agent_store.clone(),
-            target.device.clone(),
-        )
-        .await?
-        .ok_or(Error::Forbidden)?;
+        let binding =
+            super::agent_facts::agent_binding_in(tx, service.agent_store.clone(), target.device)
+                .await?
+                .ok_or(Error::Forbidden)?;
         let execution = checked_input(wire::NativeExecutionBinding::bind(
             &plan,
             &binding.execution_context,
@@ -287,7 +284,7 @@ impl CollectionPolicy {
             wire_version: wire::COLLECTION_TASK_VERSION,
             execution,
             tenant_id: checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
-            device_id: target.device.clone(),
+            device_id: target.device,
 
             platform: plan.platform(),
             architecture: match frozen.input.architecture {

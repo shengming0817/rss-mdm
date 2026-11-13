@@ -48,7 +48,7 @@ fn query_error(e: rss_mdm_query::Error) -> Error {
 async fn authorize(
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<String, Error> {
     rss_mdm_authorization_service::lock_shared_on(
         p.authority_profile(),
@@ -71,7 +71,7 @@ impl Service {
     pub async fn latest_report(
         &self,
         p: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         kind: Kind,
     ) -> Result<Option<View>, Error> {
         self.read_with_session(p,(self,p,device,kind),|ctx,c|Box::pin(async move{
@@ -79,7 +79,7 @@ impl Service {
             endpoints::lock_da_in(c,p.tenant_id(),device).await?;
             let r=endpoints::current_da_in(c,p.tenant_id(),device).await?.ok_or(Error::NotFound)?;
             let row=sqlx::query("SELECT document, receipt FROM rss_da.report_heads WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND kind = $3")
-                .bind(p.tenant_id()).bind(&r.device).bind(kind.name()).fetch_optional(&mut *c).await.map_err(db)?;
+                .bind(p.tenant_id()).bind(r.device.into_uuid()).bind(kind.name()).fetch_optional(&mut *c).await.map_err(db)?;
             let now=crate::platform_sso::store::now(c).await?;
             row.map(|r|view(&r,kind,now,service.report_limits.stale_seconds)).transpose()
         })).await
@@ -87,7 +87,7 @@ impl Service {
     pub async fn report_history(
         &self,
         p: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         input: &Query,
     ) -> Result<Page, Error> {
         let q = WINDOW
@@ -101,7 +101,7 @@ impl Service {
             let after:Option<i64>=input.cursor.as_ref().map(|v|service.cursor.decode_bounded(v,&binding,4096)).transpose().map_err(query_error)?;
             let now=crate::platform_sso::store::now(c).await?;
             let mut rows=sqlx::query("SELECT sequence, document, receipt FROM rss_da.report_history WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND kind = $3 AND received_at > $4 AND (CAST($5 AS bigint) IS NULL OR sequence < $5) ORDER BY sequence DESC LIMIT $6")
-                .bind(p.tenant_id()).bind(&r.device).bind(input.kind.name()).bind(now-i64::from(service.report_limits.history_seconds)).bind(after).bind(q.limit() as i64+1).fetch_all(c).await.map_err(db)?;
+                .bind(p.tenant_id()).bind(r.device.into_uuid()).bind(input.kind.name()).bind(now-i64::from(service.report_limits.history_seconds)).bind(after).bind(q.limit() as i64+1).fetch_all(c).await.map_err(db)?;
             let more=rows.len()>q.limit();rows.truncate(q.limit());
             let next_cursor=if more {Some(service.cursor.encode_bounded(&binding,&rows.last().ok_or(Error::Corrupt)?.try_get::<i64,_>("sequence").map_err(db)?,4096).map_err(query_error)?)}else{None};
             Ok(Page{items:rows.iter().map(|r|view(r,input.kind,now,service.report_limits.stale_seconds)).collect::<Result<_,_>>()?,next_cursor})

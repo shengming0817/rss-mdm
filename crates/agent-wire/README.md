@@ -2,6 +2,9 @@
 
 `rss-mdm-agent-wire` 是独立可消费的纯协议 crate，版本 `1.0.0`，最低 Rust `1.96.0`。`enroll` 持有注册生命周期 DTO；`runtime` 持有运行消息、采集定义与值、任务 DTO、静态约束、规范签名字节及内容摘要；`pki` 持有共享设备信任与安装确认 DTO、静态约束及规范安装摘要。当前 HTTP API、消息 wireVersion、capability 与 PKI 格式保持 V1；Collection 任务格式及全部任务签名域均为 V1；注册族只维护当前 CSR 必填请求与完整签名配置文件，旧普通请求期限字段及 AuthorizationRequest shape 已退出。V1 标识不代表跨 revision 的结构兼容；采集 scope 与 claim environment 是本次必填契约，相关采集指纹与报告摘要随之改变。PKI 与任务信任使用稳定 serviceId，注册文件嵌入签名连接配置；当前结构和摘要随本次更新。
 
+设备身份唯一使用 `DeviceId(Uuid)`：新注册生成 v4，已有值接受任意非零 UUID；JSON、路径和 UUID 查询字面量仅接受小写带连字符格式。`ObjectRef` 以 `{kind, id}` 表达 endpoint/association，关系存储顺序为 0/1 加 UUID；相同 UUID 的不同种类或不同租户互不等同。签名、摘要、AAD 与 SAN 在各自文本编码边界使用规范 UUID。Windows DeviceID、Apple UDID 和 RSS Command/Observation 仍遵循各自原生契约。独立 Agent 必须固定本次交付 revision 并同步设备 DTO、持久状态和签名向量；本仓验证不代表跨仓联调。
+
+
 采集 DTO 由本包拥有，服务端在 Agent ingress 转成 Inventory 值。执行资格、当前凭据可用性和软件结果判定由 software-service 持有，上下文 revision 的更新规则由 agent-channel 持有。协议包不依赖 RSS、Identity 或 MDM 业务 crate，不执行设备操作、网络请求或运行时 schema 验证。 `osquery::SqlTemplate` 唯一持有正式模板的静态 SQL、参数字面化、表列和平台约束；执行参数、映像验证与字段投影仍由消费者拥有。CI 校验正常、build、可选及平台条件生产依赖；开发测试中的签名验证不进入交付闭包。
 
 ## 固定版本消费
@@ -107,7 +110,7 @@ BitLocker conversion/lock 沿用既有 Inventory 闭合词汇，无法读取时�
 Agent 达到预算须返回 Truncated 的有界结果，保留旧事实，不能偷偷切换到未校验分块。
 
 `device.unmanage.v1` 提供固定的管理员授权退出任务。独立签名域
-`rss-mdm-agent-unmanage-v1-ed25519` 绑定 tenant/device/registration/generation、
+`rss-mdm-agent-unmanage-v1-ed25519` 绑定 tenant/device、
 retirement、task/attempt、permit/expiry/deadline 和 Policy 授权；不携带脚本或删除路径。
 Agent 仅对本安装身份执行，Offer 不授权卸载，必须取得 Start。
 `unmanage_result` 区分 completed、failed、unknown；响应丢失不能推定 completed。

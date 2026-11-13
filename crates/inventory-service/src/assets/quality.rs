@@ -44,7 +44,9 @@ pub(super) fn decode_record(row: &Record) -> Result<QualityRun> {
         complete: attempts.coverage_complete(),
         source,
         channel: source.channel().ok_or(Error::Malformed)?,
-        device: coordinate.registration().as_str().to_owned(),
+        device: stored(rss_mdm_agent_wire::DeviceId::parse(
+            coordinate.registration().as_str(),
+        ))?,
         epoch: stored(Uuid::parse_str(coordinate.epoch().as_str()))?,
 
         run_id: stored(Uuid::parse_str(&row.id))?,

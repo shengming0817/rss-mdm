@@ -220,9 +220,7 @@ impl Reconciler<PgClaim> for ComplianceWork {
                                             if state.completed {
                                                 return Ok(());
                                             }
-                                            compliance
-                                                .task_cursor_in(tx, id, state.cursor.clone())
-                                                .await?;
+                                            compliance.task_cursor_in(tx, id, state.cursor).await?;
                                             compliance
                                                 .advance(
                                                     tx,

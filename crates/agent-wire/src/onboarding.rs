@@ -84,8 +84,7 @@ pub struct EnrollmentTaskSpec {
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub tenant_id: Uuid,
     /// Independent source Agent device.
-    #[schemars(extend("minLength" = 1, "maxLength" = 256, "pattern" = "^[^\\p{Cc}]+$"))]
-    pub device_id: String,
+    pub device_id: crate::DeviceId,
     /// Actual local operating system.
     pub platform: TaskPlatform,
     /// Actual local processor architecture.
@@ -124,9 +123,6 @@ impl EnrollmentTaskSpec {
             || self.task_id.is_nil()
             || self.attempt_id.is_nil()
             || self.expires_at <= 0
-            || self.device_id.is_empty()
-            || self.device_id.chars().count() > 256
-            || self.device_id.chars().any(char::is_control)
             || key_id.is_empty()
             || key_id.len() > 128
             || key_id.chars().any(char::is_control)

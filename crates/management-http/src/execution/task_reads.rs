@@ -98,7 +98,7 @@ pub struct RunPage {
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Assignment {
-    pub object: rss_mdm_scope_service::channels::ObjectRef,
+    pub object: rss_mdm_agent_wire::ObjectRef,
     pub channel: Option<rss_mdm_inventory::Channel>,
     pub availability: rss_mdm_scope_service::channels::Availability,
     pub reason: Option<String>,
@@ -151,7 +151,7 @@ pub struct Preview {
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewTarget {
-    pub object: rss_mdm_scope_service::channels::ObjectRef,
+    pub object: rss_mdm_agent_wire::ObjectRef,
     pub channel: Option<rss_mdm_inventory::Channel>,
     pub availability: rss_mdm_scope_service::channels::Availability,
     pub reason: Option<String>,

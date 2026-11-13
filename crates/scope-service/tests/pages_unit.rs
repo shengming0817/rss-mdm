@@ -17,13 +17,17 @@ fn cursors_bind_tenant_owner_result_and_projection() {
             tenant: "tenant-a".into(),
             result,
             binding: binding.clone(),
-            after: "device-1".into(),
+            after: rss_mdm_agent_wire::ObjectRef::Endpoint(
+                rss_mdm_agent_wire::DeviceId::try_from(Uuid::from_u128(1)).unwrap(),
+            ),
         },
     )
     .unwrap();
     assert_eq!(
         decode(&key, &token, "tenant-a", result, &binding).unwrap(),
-        "device-1"
+        rss_mdm_agent_wire::ObjectRef::Endpoint(
+            rss_mdm_agent_wire::DeviceId::try_from(Uuid::from_u128(1)).unwrap()
+        )
     );
     assert!(decode(&key, &token, "tenant-b", result, &binding).is_err());
     assert!(decode(&key, &token, "tenant-a", Uuid::new_v4(), &binding).is_err());

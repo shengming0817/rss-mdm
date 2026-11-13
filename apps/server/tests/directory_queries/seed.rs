@@ -465,7 +465,7 @@ async fn device_row(c: &Context, _p: &AuthorizedPrincipal, cases: &mut Cases) ->
             cases,
             "/api/v1/device-views",
             format!("search=icontains={term}"),
-            format!("endpoint:{endpoint}"),
+            endpoint.to_string(),
         );
     }
     Ok(())
@@ -474,14 +474,14 @@ async fn device_observations(
     c: &Context,
     source: rss_mdm_inventory::Source,
     observations: &[(&str, &str)],
-) -> Result<String> {
+) -> Result<rss_mdm_agent_wire::DeviceId> {
     let object = planning::endpoint(c).await?;
     let member = &object.members[0];
     let registration = &member.device;
     let mut tx = seed_transaction(c).await?;
     if source == rss_mdm_inventory::Source::MdmApple {
-        sqlx::query("UPDATE mdm_access.requests SET source = 'mdm.apple', windows_profile = NULL WHERE tenant_id = CAST($1 AS uuid) AND id = (SELECT request_id FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2)").bind(c.tenant.to_string()).bind(registration).execute(&mut *tx).await?;
-        sqlx::query("UPDATE mdm_access.report_sources SET source = 'mdm.apple' WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(c.tenant.to_string()).bind(registration).execute(&mut *tx).await?;
+        sqlx::query("UPDATE mdm_access.requests SET source = 'mdm.apple', windows_profile = NULL WHERE tenant_id = CAST($1 AS uuid) AND id = (SELECT request_id FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2)").bind(c.tenant.to_string()).bind(registration.into_uuid()).execute(&mut *tx).await?;
+        sqlx::query("UPDATE mdm_access.report_sources SET source = 'mdm.apple' WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(c.tenant.to_string()).bind(registration.into_uuid()).execute(&mut *tx).await?;
     }
     let collection = Uuid::new_v4().to_string();
     let fields = observations
@@ -499,7 +499,7 @@ async fn device_observations(
     let definition =
         rss_mdm_inventory::CollectionDefinition::new(&collection, "1", source, fields)?;
     rss_mdm_inventory_postgres::register_collection_in(&mut tx, c.tenant, &definition).await?;
-    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = $3").bind(c.tenant.to_string()).bind(registration).bind(source.as_str()).fetch_one(&mut *tx).await?;
+    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = $3").bind(c.tenant.to_string()).bind(registration.into_uuid()).bind(source.as_str()).fetch_one(&mut *tx).await?;
     let stream = rss_mdm_registration_service::device::scope_dataset(
         rss_mdm_install_support::StorageProfile::Mdm,
         c.tenant,
@@ -517,7 +517,7 @@ async fn device_observations(
             .field(key)?
             .canonical_value(rss_mdm_inventory::Scalar::String((*value).into()))?;
         sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,1,2,'known',$9,$11,$10,1,'{\"kind\":\"device\"}')")
-            .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(&scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(field).bind(serde_json::to_string(&value)?).bind(&batch).bind(registration.to_string()).bind(epoch.to_string()).bind(source.as_str()).execute(&mut *tx).await?;
+            .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(&scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(field).bind(serde_json::to_string(&value)?).bind(&batch).bind(registration.into_uuid()).bind(epoch.to_string()).bind(source.as_str()).execute(&mut *tx).await?;
     }
     let fields = observations
         .iter()
@@ -529,10 +529,10 @@ async fn device_observations(
     assert_eq!(facts.scalars.len(), observations.len());
     tx.commit().await?;
     check_device_snapshot(c, &member.device).await?;
-    Ok(member.device.clone())
+    Ok(member.device)
 }
 
-async fn check_device_snapshot(c: &Context, device: &str) -> Result<()> {
+async fn check_device_snapshot(c: &Context, device: &rss_mdm_agent_wire::DeviceId) -> Result<()> {
     let cut = rss_mdm_inventory_postgres::capture_asset_cut(&c.operator, c.tenant).await?;
     let mut tx = seed_transaction(c).await?;
     let catalog = rss_mdm_inventory_postgres::catalog_at_in(&mut tx, c.tenant, &cut).await?;

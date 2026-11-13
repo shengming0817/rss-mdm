@@ -23,7 +23,7 @@ async fn native_directory_serializes_the_actual_owner_and_respects_projection() 
             execution: h.a.service.clone(),
         };
         let locator = rss_mdm_management_http::operation_diagnostics::LocatorQuery {
-            device: Some(native.device.clone()),
+            device: Some(native.device),
             ..Default::default()
         };
         let result = operations
@@ -145,14 +145,14 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
             apple:Arc::new(rss_mdm_apple_channel::flow_store::Store{protection:h.a.resources.protection.clone()}),
             tasks:h.a.task_reads.clone(),registration:h.a.registration.native.clone(),recovery:None,execution:h.a.service.clone(),
         });
-        for (owner,id,device) in [(rss_mdm_audit_integration::operation::OperationOwner::Script,script,h.p.device()),(rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,collection,h.p.device()),(rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,native,native_object.members[0].device.as_str())] {
-            let locator=rss_mdm_management_http::operation_diagnostics::LocatorQuery{device:Some(device.into()),..Default::default()};
+        for (owner,id,device) in [(rss_mdm_audit_integration::operation::OperationOwner::Script,script,h.p.device()),(rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,collection,h.p.device()),(rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,native,&native_object.members[0].device)] {
+            let locator=rss_mdm_management_http::operation_diagnostics::LocatorQuery{device:Some(*device),..Default::default()};
             let result=operations.diagnostic(&h.c.read_auth(proof.clone()),owner,id,&locator).await?;
             assert_eq!(result.original.unwrap().accepted,Some(true));
             let evidence=serde_json::to_value(result.execution?.unwrap())?;
             assert_eq!(evidence["owner"],if owner==rss_mdm_audit_integration::operation::OperationOwner::Script{"script"}else{"collection"});
             assert!(!evidence.to_string().contains("stdout"));
-            let wrong=rss_mdm_management_http::operation_diagnostics::LocatorQuery{device:Some(Uuid::new_v4().to_string()),..Default::default()};
+            let wrong=rss_mdm_management_http::operation_diagnostics::LocatorQuery{device:Some(rss_mdm_agent_wire::DeviceId::new_v4()),..Default::default()};
             let missing=operations.diagnostic(&h.c.read_auth(proof.clone()),owner,id,&wrong).await?;
             assert!(missing.original.is_none() && missing.execution?.is_none());
         }
@@ -161,7 +161,7 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
         sqlx::query("UPDATE mdm_script.runs SET result=$3 WHERE tenant_id=$1::uuid AND id=$2")
             .bind(h.c.tenant.to_string()).bind(script).bind(json!({"private":"must-not-escape"})).execute(&mut *tx).await?;
         tx.commit().await?;
-        let result=operations.diagnostic(&h.c.read_auth(proof.clone()),rss_mdm_audit_integration::operation::OperationOwner::Script,script,&rss_mdm_management_http::operation_diagnostics::LocatorQuery{device:Some(h.p.device().into()),..Default::default()}).await?;
+        let result=operations.diagnostic(&h.c.read_auth(proof.clone()),rss_mdm_audit_integration::operation::OperationOwner::Script,script,&rss_mdm_management_http::operation_diagnostics::LocatorQuery{device:Some(*h.p.device()),..Default::default()}).await?;
         assert_eq!(result.original.unwrap().accepted,Some(true));
         assert!(matches!(result.execution,Err(rss_mdm_management_http::Error::Unavailable(_))));
         let mut tx=command::seed_transaction(&h.c).await?;
@@ -224,11 +224,11 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
             // Raw Agent Collection detail still requires its separate sensitive permission.
             assert!(matches!(rss_mdm_management_http::execution::task_reads::Reads::run(h.a.task_reads.as_ref(),&h.c.read_auth(proof.clone()),&h.c.request(&proof)?,collection_policy,collection).await,Err(rss_mdm_management_http::Error::Forbidden)));
             assert!(rss_mdm_management_http::execution::task_reads::Reads::run(h.a.task_reads.as_ref(),&h.c.read_auth(proof.clone()),&h.c.request(&proof)?,native_policy,native).await.is_ok());
-            let rule=rss_mdm_authorization_service::Rule{subject:rss_mdm_authorization_service::Subject::User{user:account.user.clone()},grants:vec![rss_mdm_authorization_service::Grant{operation:Permission::OperationRead,scope:rss_mdm_authorization_service::Scope::Device{id:h.p.device().into()}}]};
+            let rule=rss_mdm_authorization_service::Rule{subject:rss_mdm_authorization_service::Subject::User{user:account.user.clone()},grants:vec![rss_mdm_authorization_service::Grant{operation:Permission::OperationRead,scope:rss_mdm_authorization_service::Scope::Device{id:*h.p.device()}}]};
             sqlx::query("UPDATE mdm_access.authorization_rules SET document=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(account.rule).bind(serde_json::to_value(rule)?).execute(&h.c.operator).await?;
             let page:Value=client.get(format!("{base}/operations")).send().await?.error_for_status()?.json().await?;
             assert_eq!(page["items"].as_array().unwrap().len(),2);
-            assert!(page["items"].as_array().unwrap().iter().all(|v|v["device"]==h.p.device()));
+            assert!(page["items"].as_array().unwrap().iter().all(|v|v["device"]==h.p.device().to_string()));
             let stats:Value=client.get(format!("{base}/operations/statistics")).send().await?.error_for_status()?.json().await?;
             assert_eq!(stats["statistics"]["total"],2);
             Ok::<(),anyhow::Error>(())
@@ -319,9 +319,9 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
     let h = Harness::open().await?;
     let result = async {
         let endpoint = crate::planning_t2_support::endpoint(&h.c).await?;
-        let device = endpoint.members[0].device.clone();
-        let manual = crate::planning_t2_support::endpoint(&h.c).await?.members[0].device.clone();
-        let empty = crate::planning_t2_support::endpoint(&h.c).await?.members[0].device.clone();
+        let device = endpoint.members[0].device;
+        let manual = crate::planning_t2_support::endpoint(&h.c).await?.members[0].device;
+        let empty = crate::planning_t2_support::endpoint(&h.c).await?.members[0].device;
         let mut seed = command::seed_transaction(&h.c).await?;
         let field = rss_mdm_inventory::FieldKey::parse("custom.query_presence")?;
         let definition_field:rss_mdm_inventory::FieldDefinition=serde_json::from_value(json!({"key":field,"version":1,"valueType":{"kind":"string","maxLength":256,"allowEmpty":false},"nullable":true,"manual":true,"sources":{"mdm.windows":0,"manual":0},"platforms":["windows","macos"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null}))?;
@@ -329,15 +329,15 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
         let definition = rss_mdm_inventory::CollectionDefinition::new("presence", "1", rss_mdm_inventory::Source::MdmWindows, vec![rss_mdm_inventory::CollectionField{definition:definition_field,scope:rss_mdm_inventory::CollectionScope::Device}])?;
         rss_mdm_inventory_postgres::register_collection_in(&mut seed,h.c.tenant,&definition).await?;
         let registration = &endpoint.members[0].device;
-        let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = 'mdm.windows'").bind(h.c.tenant.to_string()).bind(registration).fetch_one(&mut *seed).await?;
+        let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = 'mdm.windows'").bind(h.c.tenant.to_string()).bind(registration.into_uuid()).fetch_one(&mut *seed).await?;
         let scope=rss_mdm_registration_service::device::scope_dataset(rss_mdm_install_support::StorageProfile::Mdm,h.c.tenant,registration,"mdm.windows",epoch,"presence")?.encode()?;
         let projection=rss_mdm_inventory_postgres::projection_scope(h.c.tenant);
         sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,1,2,'known',$9,'mdm.windows',$10,1,'{\"kind\":\"device\"}')")
-            .bind(h.c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(field.as_str()).bind(serde_json::to_string(&rss_mdm_inventory::Scalar::String("observed".into()))?).bind(Uuid::new_v4().to_string()).bind(registration.to_string()).bind(epoch.to_string()).execute(&mut *seed).await?;
+            .bind(h.c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(field.as_str()).bind(serde_json::to_string(&rss_mdm_inventory::Scalar::String("observed".into()))?).bind(Uuid::new_v4().to_string()).bind(registration.into_uuid()).bind(epoch.to_string()).execute(&mut *seed).await?;
         let evidence=rss_mdm_inventory::Evidence{scope:rss_mdm_inventory::CollectionScope::Device,source:rss_mdm_inventory::Source::Manual,dataset:None,device_id:None,epoch:None,snapshot_id:Uuid::new_v4().to_string(),observed_at:1,received_at:2,actor:Some("presence-fixture".into())};
         assert_eq!(rss_mdm_inventory_postgres::assign_in(&mut seed,h.c.tenant,&manual,field,0,&rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("manual".into())),&evidence).await?,Some(1));
         seed.commit().await?;
-        let expected=std::collections::BTreeMap::from([(device.clone(),true),(manual.clone(),true),(empty.clone(),false)]);
+        let expected=std::collections::BTreeMap::from([(device,true),(manual,true),(empty,false)]);
         let devices = Arc::new(rss_mdm_registration_service::DeviceService::new(
             h.c.database.registration(),
             h.c.tenant.to_string(),
@@ -385,18 +385,18 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
             } else if path.starts_with("/devices?") {
                 let rows = value["items"].as_array().expect("directory must contain an items array");
                 for (id,present) in &expected {
-                    let row=rows.iter().find(|row|row["id"]==*id).expect("seeded endpoint in directory");
+                    let row=rows.iter().find(|row|row["id"]==id.to_string()).expect("seeded endpoint in directory");
                     assert_eq!(row["inventoryAvailable"],*present);
                 }
             } else {
                 let id = value["id"].as_str().expect("detail must contain its endpoint id");
                 assert_eq!(path,format!("/devices/{id}"));
-                assert_eq!(value["inventoryAvailable"],expected[id]);
+                assert_eq!(value["inventoryAvailable"],expected[&rss_mdm_agent_wire::DeviceId::parse(id)?]);
                 assert!(!value["capabilities"].as_array().expect("detail capabilities").is_empty());
             }
         }
         let mut seed=command::seed_transaction(&h.c).await?;
-        sqlx::query("UPDATE mdm_access.report_sources SET enabled = FALSE WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(h.c.tenant.to_string()).bind(registration).execute(&mut *seed).await?;
+        sqlx::query("UPDATE mdm_access.report_sources SET enabled = FALSE WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(h.c.tenant.to_string()).bind(registration.into_uuid()).execute(&mut *seed).await?;
         seed.commit().await?;
         let response=app.oneshot(axum::http::Request::builder().uri(format!("/devices/{device}")).body(axum::body::Body::empty())?).await?;
         assert_eq!(response.status(),axum::http::StatusCode::OK);

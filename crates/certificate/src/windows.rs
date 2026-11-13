@@ -152,7 +152,7 @@ pub fn valid_at(tbs: &TbsCertificate, now: i64) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct IssuanceProfile {
     pub version: u8,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub start: i64,
     pub end: i64,
     pub spki: [u8; 32],
@@ -168,9 +168,6 @@ impl IssuanceProfile {
         }
         let profile: Self = serde_json::from_slice(bytes).map_err(invalid)?;
         if profile.version != 1
-            || profile.device.is_empty()
-            || profile.device.len() > 256
-            || profile.device.chars().any(char::is_control)
             || profile.start <= 0
             || profile.end <= profile.start
             || profile.end - profile.start > 90 * 86400

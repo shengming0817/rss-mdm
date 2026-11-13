@@ -2,11 +2,17 @@
 use crate::deployment::transaction::*;
 use rss_transactional_messaging_postgres::PgTransaction;
 /// Registration owns the only endpoint fence. Keep it through authorization and effects.
-pub(crate) async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
+pub(crate) async fn lock_device(
+    tx: &mut PgTransaction<'_>,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<()> {
     lock_devices(tx, &[device.to_owned()]).await
 }
 /// Discover the complete transaction target set before taking any channel or run locks.
-pub(crate) async fn lock_devices(tx: &mut PgTransaction<'_>, devices: &[String]) -> Result<()> {
+pub(crate) async fn lock_devices(
+    tx: &mut PgTransaction<'_>,
+    devices: &[rss_mdm_agent_wire::DeviceId],
+) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let devices = devices.to_vec();
     tx.with_connection(move |c| {
@@ -59,7 +65,7 @@ pub async fn now(tx: &mut PgTransaction<'_>) -> Result<i64> {
 pub async fn authorized(
     tx: &mut PgTransaction<'_>,
     proof: &crate::deployment::authorization::context::AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     permission: crate::deployment::authorization::Permission,
 ) -> Result<crate::deployment::authorization::Snapshot> {
     let snapshot = current(tx, proof).await?;

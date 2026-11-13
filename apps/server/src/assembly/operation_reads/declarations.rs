@@ -7,7 +7,7 @@ impl Operations {
     pub(super) async fn declarations_read(
         &self,
         request: &rss_mdm_authorization_service::context::RequestAuth,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         query: &Query,
         audit: &RequestAudit,
         codec: &CursorCodec,

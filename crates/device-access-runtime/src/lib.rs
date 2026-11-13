@@ -65,7 +65,7 @@ impl Runtime {
             platform: r.platform.clone(),
             evidence: r.evidence,
             agent: r.agent_facts,
-            broker_query: r.broker_query.unwrap_or(pg::broker_release_query!("SELECT NULL::uuid AS tenant_id,NULL::uuid AS installation,NULL::text AS device,NULL::uuid AS registration,NULL::bigint AS generation,NULL::text AS platform,NULL::jsonb AS capabilities,NULL::jsonb AS execution_context WHERE false")),
+            broker_query: r.broker_query.unwrap_or(pg::broker_release_query!("SELECT NULL::uuid AS tenant_id,NULL::uuid AS installation,NULL::uuid AS device,NULL::uuid AS registration,NULL::bigint AS generation,NULL::text AS platform,NULL::jsonb AS capabilities,NULL::jsonb AS execution_context WHERE false")),
         });
         let platform = Arc::new(pg::platform_sso::Context {
             tenant: r.tenant,

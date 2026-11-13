@@ -1,4 +1,5 @@
 //! Software consumes Scope qualifications and current association evidence on the borrowed connection.
+use rss_mdm_agent_wire::ObjectRef;
 use std::{future::Future, pin::Pin};
 use uuid::Uuid;
 
@@ -21,7 +22,7 @@ pub struct ScopeResult {
 }
 pub struct RolloutPage {
     pub targets: Vec<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
-    pub after: Option<String>,
+    pub after: Option<rss_mdm_agent_wire::DeviceId>,
     pub has_more: bool,
     pub scanned: u64,
 }
@@ -29,7 +30,7 @@ pub struct RolloutPage {
 #[derive(Clone, Debug)]
 pub struct ScopePreview {
     pub result: Uuid,
-    pub devices: Vec<String>,
+    pub devices: Vec<rss_mdm_agent_wire::DeviceId>,
 }
 #[derive(Debug, thiserror::Error)]
 pub enum SourceError {
@@ -77,42 +78,18 @@ pub struct DeviceObject {
     pub members: Vec<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
 }
 
-#[derive(
-    schemars::JsonSchema, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
-)]
-#[serde(
-    tag = "kind",
-    content = "id",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
-pub enum ObjectRef {
-    /// One original endpoint.
-    Endpoint(String),
-    /// One product association whose members must be resolved by its owner.
-    Association(Uuid),
-}
-
 #[derive(Clone, Debug)]
 pub struct ObjectChange {
     pub identity_changed: bool,
     pub position: i64,
-    pub object: String,
-    pub old_devices: Vec<String>,
-    pub new_devices: Vec<String>,
+    pub object: rss_mdm_agent_wire::ObjectRef,
+    pub old_devices: Vec<rss_mdm_agent_wire::DeviceId>,
+    pub new_devices: Vec<rss_mdm_agent_wire::DeviceId>,
 }
 
 use rss_request_context::TenantId;
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
-impl ObjectRef {
-    pub fn key(&self) -> String {
-        match self {
-            Self::Endpoint(id) => format!("endpoint:{id}"),
-            Self::Association(id) => format!("association:{id}"),
-        }
-    }
-}
 
 pub trait Sources: Send + Sync {
     fn rollout_input_on<'a>(
@@ -128,7 +105,7 @@ pub trait Sources: Send + Sync {
         tenant: TenantId,
         runs: &'a [Uuid],
         channel: Channel,
-        after: Option<&'a str>,
+        after: Option<rss_mdm_agent_wire::DeviceId>,
     ) -> Pending<'a, RolloutPage>;
     fn preview_scope_on<'a>(
         &'a self,
@@ -136,7 +113,7 @@ pub trait Sources: Send + Sync {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        after: Option<&'a str>,
+        after: Option<rss_mdm_agent_wire::DeviceId>,
     ) -> Pending<'a, ScopePreview>;
     fn assignment_objects_on<'a>(
         &'a self,
@@ -144,7 +121,7 @@ pub trait Sources: Send + Sync {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        after: Option<&'a str>,
+        after: Option<rss_mdm_agent_wire::ObjectRef>,
         limit: usize,
     ) -> Pending<'a, Vec<AssignmentObject>>;
     fn evidence_on<'a>(
@@ -153,14 +130,14 @@ pub trait Sources: Send + Sync {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, Vec<DeviceObject>>;
     fn evidence_valid_on<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
         channel: Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         evidence: &'a [DeviceObject],
     ) -> Pending<'a, bool>;
     fn admission_on<'a>(
@@ -169,7 +146,7 @@ pub trait Sources: Send + Sync {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, ScopeAdmission>;
     fn query_coordinate_on<'a>(
         &'a self,
@@ -182,14 +159,14 @@ pub trait Sources: Send + Sync {
         c: &'a mut PgConnection,
         scope: Uuid,
         channel: Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, ScopeAdmission>;
     fn effect_devices<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        device: &'a str,
-    ) -> Pending<'a, Vec<String>>;
+        device: &'a rss_mdm_agent_wire::DeviceId,
+    ) -> Pending<'a, Vec<rss_mdm_agent_wire::DeviceId>>;
     fn change_head<'a>(&'a self, c: &'a mut PgConnection, tenant: TenantId) -> Pending<'a, i64>;
     fn changes<'a>(
         &'a self,

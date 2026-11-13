@@ -36,7 +36,7 @@ pub(crate) async fn principal(
     let enabled = crate::tasks::agent_facts::agent_binding_in(
         tx,
         service.agent_store.clone(),
-        principal.device().to_string(),
+        *principal.device(),
     )
     .await?
     .is_some_and(|b| {
@@ -50,7 +50,7 @@ pub(crate) async fn principal(
     Ok(())
 }
 pub(crate) fn belongs(run: &db::Run, p: &DevicePrincipal) -> Result<()> {
-    if run.target.device != p.device() || run.target.device != p.device() {
+    if run.target.device != *p.device() || run.target.device != *p.device() {
         return Err(Error::Unauthorized.into());
     }
     Ok(())
@@ -94,11 +94,11 @@ impl Service {
         let binding = crate::tasks::agent_facts::agent_binding_in(
             tx,
             service.transactions.agent_store.clone(),
-            p.device().to_string(),
+            *p.device(),
         )
         .await?
         .ok_or(Error::Forbidden)?;
-        let versions = crate::tasks::policy::agent_versions_in(profile, tx, p.device().to_string())
+        let versions = crate::tasks::policy::agent_versions_in(profile, tx, *p.device())
             .await?
             .into_iter()
             .map(|version| (version, Uuid::new_v4()))
@@ -116,7 +116,7 @@ impl Service {
             let policy =
                 db::load_policy_version(&service.transactions.policy_reader, tx, id).await?;
             let target = crate::tasks::Target {
-                device: p.device().into(),
+                device: *p.device(),
             };
             if crate::tasks::credential_tasks::capable(&binding, policy.frozen.input.architecture) {
                 super::production::accept_for_device(
@@ -157,7 +157,7 @@ impl Service {
         let binding = crate::tasks::agent_facts::agent_binding_in(
             tx,
             self.transactions.agent_store.clone(),
-            p.device().to_string(),
+            *p.device(),
         )
         .await?
         .ok_or(Error::Forbidden)?;
@@ -516,7 +516,7 @@ impl Service {
     pub async fn agent_cancellations_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        registration: String,
+        registration: rss_mdm_agent_wire::DeviceId,
         after: Option<Uuid>,
     ) -> Result<Vec<wire::TaskCancellation>> {
         let profile = self.profile();
@@ -530,7 +530,7 @@ use rss_mdm_audit_integration::RequestAudit;
 pub(crate) async fn lock_device(
     _profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();

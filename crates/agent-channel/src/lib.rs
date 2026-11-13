@@ -582,7 +582,7 @@ async fn builtin_collections(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     epoch: Uuid,
 ) -> Result<Vec<wire::CollectionDefinition>, Error> {
     let key = rss_mdm_inventory::builtin::MDM_ENROLLMENT;

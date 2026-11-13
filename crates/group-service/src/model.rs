@@ -29,8 +29,8 @@ pub enum GroupChange {
         criteria: criteria::Condition,
     },
     Members {
-        add: Vec<rss_mdm_inventory_service::objects::ObjectRef>,
-        remove: Vec<rss_mdm_inventory_service::objects::ObjectRef>,
+        add: Vec<rss_mdm_agent_wire::ObjectRef>,
+        remove: Vec<rss_mdm_agent_wire::ObjectRef>,
     },
     Delete,
     Recompute {},

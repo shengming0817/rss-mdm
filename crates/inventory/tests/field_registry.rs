@@ -213,7 +213,9 @@ fn source_precedence_is_explicit_and_deletion_preserves_other_facts() {
             scope: CollectionScope::Device,
             source,
             dataset: Some("collector".into()),
-            device_id: Some("device".into()),
+            device_id: Some(
+                rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
+            ),
             epoch: Some("epoch".into()),
             snapshot_id: "batch".into(),
             observed_at: 1,

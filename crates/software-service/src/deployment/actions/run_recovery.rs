@@ -75,7 +75,10 @@ pub(crate) async fn needs_step(
     Ok(true)
 }
 /// Foreground protocol requests keep their existing bounded device/channel wait.
-pub(crate) async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
+pub(crate) async fn lock_device(
+    tx: &mut PgTransaction<'_>,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     tx.with_connection(move |c| {
@@ -94,7 +97,10 @@ pub(crate) async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Res
     Ok(())
 }
 /// Background claims yield a busy device to RSS instead of occupying a slot waiting.
-pub(crate) async fn try_lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<bool> {
+pub(crate) async fn try_lock_device(
+    tx: &mut PgTransaction<'_>,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let selected = device.to_owned();
     let acquired = tx

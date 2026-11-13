@@ -233,7 +233,7 @@ fn all_aggregate_branches_preserve_statistics_and_string_boundaries() {
 }
 #[test]
 fn mounted_requests_require_canonical_strings_including_nested_coverage() {
-    let value = json!({"device":"device","field":"field","resource":"device","startMicros":"0","endMicros":i64::MAX.to_string(),"maxPoints":10,"mode":"history"});
+    let value = json!({"device":"11111111-2222-4333-8444-555555555555","field":"field","resource":"device","startMicros":"0","endMicros":i64::MAX.to_string(),"maxPoints":10,"mode":"history"});
     let request: service::HistoryRequest = serde_json::from_value::<HistoryRequest>(value.clone())
         .unwrap()
         .into();

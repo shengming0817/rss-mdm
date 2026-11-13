@@ -97,13 +97,13 @@ impl Signing {
             return Err(Error::Forbidden);
         }
         let (tenant, device) = match &payload {
-            TaskPayload::DeviceAccess(v) => (v.tenant_id, v.device_id.as_str()),
-            TaskPayload::Credential(v) => (v.tenant_id, v.device_id.as_str()),
-            TaskPayload::Collection(v) => (v.tenant_id, v.device_id.as_str()),
-            TaskPayload::Script(v) => (v.tenant_id, v.device_id.as_str()),
-            TaskPayload::Software(v) => (v.tenant_id, v.device_id.as_str()),
-            TaskPayload::Enrollment(v) => (v.tenant_id, v.device_id.as_str()),
-            TaskPayload::Unmanage(v) => (v.tenant_id, v.device_id.as_str()),
+            TaskPayload::DeviceAccess(v) => (v.tenant_id, &v.device_id),
+            TaskPayload::Credential(v) => (v.tenant_id, &v.device_id),
+            TaskPayload::Collection(v) => (v.tenant_id, &v.device_id),
+            TaskPayload::Script(v) => (v.tenant_id, &v.device_id),
+            TaskPayload::Software(v) => (v.tenant_id, &v.device_id),
+            TaskPayload::Enrollment(v) => (v.tenant_id, &v.device_id),
+            TaskPayload::Unmanage(v) => (v.tenant_id, &v.device_id),
         };
         if tenant.to_string() != p.tenant().to_string() || device != p.device() {
             return Err(Error::Forbidden);

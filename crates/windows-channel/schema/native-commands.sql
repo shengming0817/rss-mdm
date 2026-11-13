@@ -4,7 +4,7 @@ CREATE TABLE mdm_windows.native_commands (
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
   , command_id text GENERATED ALWAYS AS (CAST(id AS text)) STORED
-  , device text NOT NULL
+  , device uuid NOT NULL
   , PRIMARY KEY (tenant_id, id)
   , UNIQUE (tenant_id, id, device)
   , FOREIGN KEY (tenant_id, command_id) REFERENCES rss_device_command.commands (tenant_id, command_id)

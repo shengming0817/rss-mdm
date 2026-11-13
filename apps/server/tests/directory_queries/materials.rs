@@ -70,7 +70,7 @@ pub(super) async fn seed(c: &Context, cases: &mut Vec<(String, String, Value)>) 
         "SELECT association_id FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=$2",
     )
     .bind(c.tenant.to_string())
-    .bind(agent.device())
+    .bind(agent.device().into_uuid())
     .fetch_one(&mut *tx)
     .await?;
     tx.rollback().await?;
@@ -91,7 +91,7 @@ pub(super) async fn seed(c: &Context, cases: &mut Vec<(String, String, Value)>) 
     let mut tx = seed_transaction(c).await?;
     let operation = Uuid::new_v4();
     let binding = recovery::Binding {
-        device: device.clone(),
+        device,
         subject: recovery::Subject::LocalAdministrator {
             sid: "S-1-5-21-1-2-3-500".into(),
         },

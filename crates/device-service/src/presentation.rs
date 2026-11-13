@@ -19,10 +19,11 @@ pub(crate) fn project(
 ) -> Result<()> {
     let raw = assets
         .iter()
-        .map(|d| (d.scalars.device.clone(), &d.scalars))
+        .map(|d| (d.scalars.device, &d.scalars))
         .collect::<BTreeMap<_, _>>();
     for endpoint in rows {
-        let id = endpoint["id"].as_str().ok_or(Error::Storage)?.to_owned();
+        let id: rss_mdm_agent_wire::DeviceId =
+            serde_json::from_value(endpoint["id"].clone()).map_err(|_| Error::Storage)?;
         let device = raw.get(&id).ok_or(Error::Storage)?;
         let sensitive = permits(snapshot, proof, Permission::InventorySensitiveRead, &id)?;
         let fields = device
@@ -75,7 +76,7 @@ fn permits(
     snapshot: &Snapshot,
     proof: &AuthorizedPrincipal,
     permission: Permission,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<bool> {
     match snapshot.require(proof, permission, permission.device().then_some(device)) {
         Ok(()) => Ok(true),

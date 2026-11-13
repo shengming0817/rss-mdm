@@ -5,7 +5,7 @@ use sqlx::Row;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunView {
     pub id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub source: rss_mdm_inventory::Source,
     pub epoch: Uuid,
     pub delivery: crate::inventory_runtime::DeliveryStatus,
@@ -30,14 +30,14 @@ impl AssetService {
     pub async fn collection_receipt(
         &self,
         p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
         crate::transaction::inspect(&self.runtime,self.tenant,(self,p,device),|ctx,tx|Box::pin(async move{
             let(s,p,device)=*ctx;
             query_authority(tx,p).await?.require(p,rss_mdm_authorization_service::Permission::InventoryRead,Some(device))?;
-            let tenant=s.tenant.to_string();let device_key=device.to_string();
+            let tenant=s.tenant.to_string();let device_key=device.into_uuid();
             let row=tx.with_connection(move|c|Box::pin(async move{
                 sqlx::query("SELECT c.started_at, c.sealed_at, c.result FROM mdm_access.collection_runs AS c INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (c.tenant_id, c.device) WHERE c.tenant_id = CAST($1 AS uuid) AND c.id = $2 AND r.id = $3")
                     .bind(tenant).bind(id).bind(device_key).fetch_optional(c).await
@@ -45,14 +45,14 @@ impl AssetService {
             p.check_live()?;
             row.map(|row|{
                 let mut value=rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
-                value.object=Some(device.into());value.recorded_at=Some(row.try_get("started_at")?);value.completed_at=row.try_get("sealed_at")?;value.state=Some(row.try_get("result")?);value.executions.push(id);Ok(value)
+                value.object=Some(device.to_string());value.recorded_at=Some(row.try_get("started_at")?);value.completed_at=row.try_get("sealed_at")?;value.state=Some(row.try_get("result")?);value.executions.push(id);Ok(value)
             }).transpose()
         }),crate::transaction::TransactionOwner::Assets).await
     }
     pub(super) async fn collection_run(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         scope: &ReadScope,
     ) -> Result<RunView> {
@@ -67,7 +67,7 @@ impl AssetService {
         let device = device.to_owned();
         let row=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query("SELECT c.device, c.source, c.sequence, c.started_at, c.sealed_at, c.result, c.reason, c.delivery_pending, c.scope, c.batch, c.digest, c.progress_version, CASE WHEN v.metadata_bytes <= 67108864 THEN CAST(v.metadata AS text) END AS metadata FROM mdm_access.collection_runs AS c INNER JOIN mdm_access.collection_versions AS v ON (v.tenant_id, v.version) = (c.tenant_id, c.progress_version) INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (c.tenant_id, c.device) WHERE c.tenant_id = CAST($1 AS uuid) AND c.id = $2 AND r.id = $3")
-                .bind(tenant.to_string()).bind(id).bind(device).fetch_optional(c).await
+                .bind(tenant.to_string()).bind(id).bind(device.into_uuid()).fetch_optional(c).await
         })).await?.ok_or(Error::NotFound)?;
         let progress: crate::collection::summary::Summary = stored(
             crate::collection::summary::Summary::decode(row.try_get("metadata")?),
@@ -129,7 +129,10 @@ impl AssetService {
             coverage: stored(definition.coverage())?,
             complete: progress.coverage_complete(),
             id,
-            device: row.try_get("device")?,
+            device: row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+                rss_mdm_agent_wire::DeviceId::try_from(id)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+            })?,
 
             source: stored(rss_mdm_inventory::Source::parse(row.try_get("source")?))?,
             dataset: definition.dataset().into(),
@@ -164,7 +167,7 @@ impl AssetService {
     pub(super) async fn collection_items(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         field: FieldKey,
         scope: &ReadScope,

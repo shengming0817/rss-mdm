@@ -9,7 +9,12 @@ pub async fn current(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<boo
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
         tenant,
-        row.try_get("device").map_err(db)?,
+        &row.try_get::<uuid::Uuid, _>("device")
+            .and_then(|id| {
+                rss_mdm_agent_wire::DeviceId::try_from(id)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+            })
+            .map_err(db)?,
         ReportSource::MdmApple,
         row.try_get("epoch").map_err(db)?,
     )
@@ -35,6 +40,6 @@ pub async fn current(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<boo
         _ => return Ok(false),
     };
     let active: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_apple.channels AS ch INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (ch.tenant_id, ch.device) WHERE ch.tenant_id = CAST($1 AS uuid) AND ch.device = $2 AND ch.user_key = $3 AND ch.state = 'active' AND r.state = 'active')")
-        .bind(tenant).bind(row.try_get::<String,_>("device").map_err(db)?).bind(user).fetch_one(c).await.map_err(db)?;
+        .bind(tenant).bind(row.try_get::<Uuid, _>("device").map_err(db)?).bind(user).fetch_one(c).await.map_err(db)?;
     Ok(current && active && row.try_get::<bool, _>("live").map_err(db)?)
 }

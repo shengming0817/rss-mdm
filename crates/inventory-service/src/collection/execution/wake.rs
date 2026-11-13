@@ -61,10 +61,11 @@ pub(crate) async fn resources_in(
         .and_then(|s| Uuid::parse_str(s).ok())
     {
         let tenant = tx.tenant_id().to_string();
-        let (device, channel): (String, String) = tx.with_connection(move |c| Box::pin(async move {
+        let (device, channel): (Uuid, String) = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_as("SELECT device,channel FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(tenant).bind(id).fetch_one(c).await
         })).await?;
+        let device = crate::database::device_id(device)?;
         let work = match channel.as_str() {
             "agent" => Work::AgentCollectionRecovery,
             "mdm" => Work::Exclusive,
@@ -80,7 +81,11 @@ pub(crate) async fn resources_in(
         ));
     }
     if let Some(device) = entity.strip_prefix("checkin:") {
-        return Ok(resources::device(tx.tenant_id(), device, Work::Exclusive));
+        return Ok(resources::device(
+            tx.tenant_id(),
+            &rss_mdm_agent_wire::DeviceId::parse(device).map_err(|_| Error::Malformed)?,
+            Work::Exclusive,
+        ));
     }
     if entity
         .strip_prefix("policy:")

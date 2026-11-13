@@ -37,8 +37,8 @@ pub trait Store: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        devices: Vec<String>,
-    ) -> Pending<'a, std::collections::BTreeMap<String, Binding>>;
+        devices: Vec<rss_mdm_agent_wire::DeviceId>,
+    ) -> Pending<'a, std::collections::BTreeMap<rss_mdm_agent_wire::DeviceId, Binding>>;
     /// Original task bytes visible to this transaction, independent of current execution eligibility.
     fn payload<'a>(
         &'a self,
@@ -51,17 +51,17 @@ pub trait Store: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, Option<rss_mdm_agent_wire::runtime::TaskClaimRequest>>;
     fn binding<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, Option<Binding>> {
         Box::pin(async move {
             Ok(self
-                .bindings(c, tenant, vec![device.clone()])
+                .bindings(c, tenant, vec![device])
                 .await?
                 .remove(&device))
         })
@@ -70,7 +70,7 @@ pub trait Store: Send + Sync {
 pub async fn agent_binding_in(
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     store: std::sync::Arc<dyn Store>,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
 ) -> crate::control::transaction::Result<Option<Binding>> {
     let tenant = tx.tenant_id();
     tx.with_connection(move |c| {
@@ -82,19 +82,19 @@ pub async fn agent_binding_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     store: std::sync::Arc<dyn Store>,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
 ) -> crate::control::transaction::Result<Option<Binding>> {
     Ok(store.binding(c, tenant.to_string(), device).await?)
 }
 
 pub struct RegisteredAgent {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub binding: Binding,
 }
 pub async fn agent_targets_in(
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     store: std::sync::Arc<dyn Store>,
-    devices: Vec<String>,
+    devices: Vec<rss_mdm_agent_wire::DeviceId>,
 ) -> crate::control::transaction::Result<Vec<RegisteredAgent>> {
     let tenant = tx.tenant_id();
     tx.with_connection(move |c| {
@@ -106,7 +106,7 @@ pub async fn agent_targets_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     store: std::sync::Arc<dyn Store>,
-    devices: Vec<String>,
+    devices: Vec<rss_mdm_agent_wire::DeviceId>,
 ) -> crate::control::transaction::Result<Vec<RegisteredAgent>> {
     let devices = rss_mdm_registration_service::device::read::active_channel_in(
         rss_mdm_install_support::StorageProfile::Mdm,

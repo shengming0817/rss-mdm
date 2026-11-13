@@ -20,7 +20,7 @@ impl Groups {
         let cut = stored(rss_mdm_inventory::AssetCut::from_json(to.clone()))?;
         let after: i64 = row.try_get("event_after")?;
         let mut through: Option<i64> = row.try_get("page_through")?;
-        let cursor: Option<String> = row.try_get("cursor")?;
+        let cursor: Option<Uuid> = row.try_get("cursor")?;
         if through.is_none() {
             let from_cut = from
                 .clone()
@@ -57,7 +57,7 @@ impl Groups {
         cut: &rss_mdm_inventory::AssetCut,
         after_event: i64,
         through: i64,
-        cursor: Option<String>,
+        cursor: Option<Uuid>,
     ) -> Result<()> {
         let from_cut = from
             .map(rss_mdm_inventory::AssetCut::from_json)
@@ -83,8 +83,7 @@ impl Groups {
             }
         }
         let after = cursor
-            .as_deref()
-            .map(|s| stored(rss_mdm_group::GroupId::parse(s)))
+            .map(|id| stored(rss_mdm_group::GroupId::parse(&id.to_string())))
             .transpose()?;
         let mut groups = checked(
             self.groups
@@ -99,12 +98,12 @@ impl Groups {
         )?;
         let tenant = self.tenant.to_string();
         let fields: Vec<_> = fields.into_iter().collect();
-        let affected: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar("SELECT DISTINCT hit.group_id::text FROM unnest($2::text[]) changed(field) CROSS JOIN LATERAL (SELECT f.group_id FROM mdm_assets.group_fields f WHERE f.tenant_id=$1::uuid AND f.field=changed.field AND ($3::uuid IS NULL OR f.group_id>$3::uuid) ORDER BY f.group_id LIMIT 33) hit ORDER BY hit.group_id::text LIMIT 33")
+        let affected: Vec<Uuid> = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT DISTINCT hit.group_id FROM unnest($2::text[]) changed(field) CROSS JOIN LATERAL (SELECT f.group_id FROM mdm_assets.group_fields f WHERE f.tenant_id=$1::uuid AND f.field=changed.field AND ($3::uuid IS NULL OR f.group_id>$3::uuid) ORDER BY f.group_id LIMIT 33) hit ORDER BY hit.group_id LIMIT 33")
                 .bind(tenant).bind(fields).bind(cursor).fetch_all(c).await
         })).await?;
         for id in affected {
-            groups.push(stored(rss_mdm_group::GroupId::parse(&id))?);
+            groups.push(stored(rss_mdm_group::GroupId::parse(&id.to_string()))?);
         }
         groups.sort_unstable();
         groups.dedup();
@@ -112,8 +111,13 @@ impl Groups {
             self.dispatch_group_in(tx, *group, cut).await?;
         }
         if groups.len() > 32 {
-            self.dispatch_cursor_in(tx, after_event, Some(through), Some(groups[31].to_string()))
-                .await
+            self.dispatch_cursor_in(
+                tx,
+                after_event,
+                Some(through),
+                Some(stored(Uuid::parse_str(&groups[31].to_string()))?),
+            )
+            .await
         } else {
             self.dispatch_cursor_in(tx, through, None, None).await
         }
@@ -177,7 +181,7 @@ impl Groups {
         tx: &mut PgTransaction<'_>,
         event_after: i64,
         page_through: Option<i64>,
-        cursor: Option<String>,
+        cursor: Option<Uuid>,
     ) -> Result<()> {
         let tenant = self.tenant.to_string();
         tx.with_connection(move |c| Box::pin(async move {

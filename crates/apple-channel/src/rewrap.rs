@@ -42,7 +42,7 @@ fn aad(tenant: &str, table: &str, column: &str, row: &PgRow) -> Result<DerivedAa
         "profiles" => crate::profiles::aad(row),
         "declarations" | "status_reports" => crate::ddm::aad_parts(
             tenant,
-            &text("device")?,
+            &crate::database::device_id(id("device")?).map_err(db)?,
             &text("user_key")?,
             id(if table == "status_reports" {
                 "id"
@@ -57,7 +57,7 @@ fn aad(tenant: &str, table: &str, column: &str, row: &PgRow) -> Result<DerivedAa
         ),
         "attempts" => crate::protection::aad(
             tenant,
-            &text("device")?,
+            &crate::database::device_id(id("device")?).map_err(db)?,
             id("id")?,
             if column == "request" {
                 crate::protection::Part::Request
@@ -67,14 +67,14 @@ fn aad(tenant: &str, table: &str, column: &str, row: &PgRow) -> Result<DerivedAa
         ),
         "devices" => crate::material::aad(
             tenant,
-            &text("device")?,
+            &crate::database::device_id(id("device")?).map_err(db)?,
             "",
             number("bootstrap_revision")?,
             "apple.bootstrap",
         ),
         "channels" => crate::material::aad(
             tenant,
-            &text("device")?,
+            &crate::database::device_id(id("device")?).map_err(db)?,
             &text("user_key")?,
             number("token_revision")?,
             "apple.push.material",

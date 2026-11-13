@@ -4,10 +4,10 @@ use super::*;
 fn largest_result_identity_and_facet_fit_the_signed_cursor_budget() {
     let codec = CursorCodec::new(&[3; 32]).unwrap();
     let binding = "f".repeat(64);
-    // Even worst-case JSON escaping of all 256 stored bytes stays bounded.
+    // UUID positions and worst-case facet escaping fit the signed envelope.
     for position in [
         Position::Items {
-            device: "\0".repeat(256),
+            device: rss_mdm_agent_wire::DeviceId::new_v4(),
         },
         Position::Facet {
             facet: Facet::OsVersions,

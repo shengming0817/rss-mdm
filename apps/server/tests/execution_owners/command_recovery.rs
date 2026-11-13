@@ -4,28 +4,30 @@ use rss_reconcile::{DurableStore, ReconcileStep, Reconciler};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-async fn candidate(h: &Harness, domain: &str) -> Result<(String, Uuid)> {
+async fn candidate(h: &Harness, domain: &str) -> Result<(rss_mdm_agent_wire::DeviceId, Uuid)> {
     let object = planning::endpoint(&h.c).await?;
     let target = &object.members[0];
     let id = Uuid::new_v4();
     let mut tx = command::seed_transaction(&h.c).await?;
     sqlx::query("INSERT INTO rss_device_command.authorities(tenant_id,device_id,generation,authority_epoch) VALUES($1::uuid,$2,1,1)").bind(h.c.tenant.to_string()).bind(id).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_access.command_authorities (tenant_id, device, command_device, generation, epoch) VALUES (CAST($1 AS uuid), $2, $3, 1, 1)").bind(h.c.tenant.to_string()).bind(&target.device).bind(id).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.command_authorities (tenant_id, device, command_device, generation, epoch) VALUES (CAST($1 AS uuid), $2, $3, 1, 1)").bind(h.c.tenant.to_string()).bind(target.device.into_uuid()).bind(id).execute(&mut *tx).await?;
     // Text IDs intentionally do not parse as UUID. The unrelated expired command must be untouched.
     sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,version) VALUES($1::uuid,$2,$3,1,1,$4,2000000,1000000,$5,$2,$4,'published',1000000,2)")
         .bind(h.c.tenant.to_string()).bind(format!("foreign:{id}" )).bind(id).bind(vec![1u8;32]).bind(domain).execute(&mut *tx).await?;
     tx.commit().await?;
-    Ok((target.device.clone(), id))
+    Ok((target.device, id))
 }
 async fn claim_device(
     h: &Harness,
     scope: rss_reconcile::Scope,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     control: &rss_reconcile::Control<'_, rss_mdm_device_service::control::recovery::Timer>,
 ) -> Result<rss_reconcile_postgres::PgClaim> {
     let store = &h.a.resources.storage.reconcile;
-    let target =
-        rss_reconcile::Target::new(scope, format!("{:x}", Sha256::digest(device.as_bytes())))?;
+    let target = rss_reconcile::Target::new(
+        scope,
+        format!("{:x}", Sha256::digest(device.to_string().as_bytes())),
+    )?;
     store
         .wake(
             &target,
@@ -141,7 +143,10 @@ async fn native_consumers_never_recover_another_owners_commands() -> Result<()> 
     h.close().await
 }
 
-async fn control_page(h: &Harness, device: &str) -> Result<rss_reconcile::DriftKind> {
+async fn control_page(
+    h: &Harness,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<rss_reconcile::DriftKind> {
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &cancel);
@@ -176,12 +181,12 @@ async fn legal_candidates_page_across_restart_and_late_orphans() -> Result<()> {
     let mut tx = command::seed_transaction(&h.c).await?;
     // Include an already-observed live command with unchanged version, and 64 terminal
     // commands not yet observed by the owner. No worker or notification receiver is running.
-    sqlx::query("UPDATE rss_device_command.commands AS d SET status = 'cancelled', version = version + 1, terminal_at = queued_at + 1 FROM mdm_devices.control_operations AS o WHERE (o.tenant_id, CAST(o.id AS text)) = (d.tenant_id, d.command_id) AND o.tenant_id = CAST($1 AS uuid) AND o.device = $2 AND o.id <> $3").bind(h.c.tenant.to_string()).bind(native.device.clone()).bind(Uuid::from_u128(1)).execute(&mut *tx).await?;
+    sqlx::query("UPDATE rss_device_command.commands AS d SET status = 'cancelled', version = version + 1, terminal_at = queued_at + 1 FROM mdm_devices.control_operations AS o WHERE (o.tenant_id, CAST(o.id AS text)) = (d.tenant_id, d.command_id) AND o.tenant_id = CAST($1 AS uuid) AND o.device = $2 AND o.id <> $3").bind(h.c.tenant.to_string()).bind(native.device.into_uuid()).bind(Uuid::from_u128(1)).execute(&mut *tx).await?;
     // A non-UUID text ID after all legal IDs must not be silently skipped by cursor decoding.
     sqlx::query("INSERT INTO rss_device_command.commands SELECT tenant_id,'zz-orphan',device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,'zz-orphan',outbox_fingerprint,status,version,published_at,received_at,terminal_at FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2").bind(h.c.tenant.to_string()).bind(&first).execute(&mut *tx).await?;
     tx.commit().await?;
     control_page(&h, &native.device).await?;
-    let (observed,cursor):(i64,Option<String>)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_devices.control_operations WHERE tenant_id=$1::uuid AND device=$2 AND observed_command_version>1),recovery_after FROM mdm_devices.control_recovery WHERE tenant_id=$1::uuid AND device=$2").bind(h.c.tenant.to_string()).bind(&native.device).fetch_one(&h.c.operator).await?;
+    let (observed,cursor):(i64,Option<String>)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_devices.control_operations WHERE tenant_id=$1::uuid AND device=$2 AND observed_command_version>1),recovery_after FROM mdm_devices.control_recovery WHERE tenant_id=$1::uuid AND device=$2").bind(h.c.tenant.to_string()).bind(native.device.into_uuid()).fetch_one(&h.c.operator).await?;
     assert_eq!(
         observed, 63,
         "the unchanged live first command still occupies one candidate slot"
@@ -195,7 +200,7 @@ async fn legal_candidates_page_across_restart_and_late_orphans() -> Result<()> {
         still_unobserved, 1,
         "the later-page orphan rolls back its complete owner page"
     );
-    let unchanged:Option<String>=sqlx::query_scalar("SELECT recovery_after FROM mdm_devices.control_recovery WHERE tenant_id=$1::uuid AND device=$2").bind(h.c.tenant.to_string()).bind(&native.device).fetch_one(&h.c.operator).await?;
+    let unchanged:Option<String>=sqlx::query_scalar("SELECT recovery_after FROM mdm_devices.control_recovery WHERE tenant_id=$1::uuid AND device=$2").bind(h.c.tenant.to_string()).bind(native.device.into_uuid()).fetch_one(&h.c.operator).await?;
     assert_eq!(unchanged, cursor);
     let mut tx = command::seed_transaction(&h.c).await?;
     sqlx::query("DELETE FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id='zz-orphan'").bind(h.c.tenant.to_string()).execute(&mut *tx).await?;
@@ -209,7 +214,7 @@ async fn legal_candidates_page_across_restart_and_late_orphans() -> Result<()> {
         control_page(&h, &native.device).await?,
         rss_reconcile::DriftKind::Converged
     );
-    let observed:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_devices.control_operations WHERE tenant_id=$1::uuid AND device=$2 AND observed_command_version>1").bind(h.c.tenant.to_string()).bind(&native.device).fetch_one(&h.c.operator).await?;
+    let observed:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_devices.control_operations WHERE tenant_id=$1::uuid AND device=$2 AND observed_command_version>1").bind(h.c.tenant.to_string()).bind(native.device.into_uuid()).fetch_one(&h.c.operator).await?;
     assert_eq!(observed, 65);
     h.close().await
 }

@@ -24,7 +24,7 @@ pub struct LocatorQuery {
     pub include_audit: bool,
     pub actor: Option<String>,
     pub instance: Option<Uuid>,
-    pub device: Option<String>,
+    pub device: Option<rss_mdm_agent_wire::DeviceId>,
     pub target: Option<String>,
     /// Continue both evidence sections with the unchanged locator and includeAudit=true.
     pub cursor: Option<String>,
@@ -36,7 +36,7 @@ impl LocatorQuery {
             .as_ref()
             .is_some_and(|v| !self.include_audit || v.is_empty() || v.len() > 4096)
             || self.instance.is_some_and(|v| v.is_nil())
-            || [&self.actor, &self.device, &self.target]
+            || [&self.actor, &self.target]
                 .into_iter()
                 .flatten()
                 .any(|v| v.is_empty() || v.len() > 256 || v.chars().any(char::is_control))
@@ -308,9 +308,11 @@ mod tests {
         assert!(LocatorParameters::parse("tenant=another").is_err());
         assert!(LocatorParameters::parse("owner=policy").is_err());
         assert!(
-            LocatorParameters::parse("includeAudit=true&device=one")
-                .unwrap()
-                .include_audit
+            LocatorParameters::parse(
+                "includeAudit=true&device=11111111-2222-4333-8444-555555555555"
+            )
+            .unwrap()
+            .include_audit
         );
     }
     #[test]

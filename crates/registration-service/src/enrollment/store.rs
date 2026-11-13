@@ -19,7 +19,10 @@ pub fn authorization(row: PgRow) -> Result<Authorization, Error> {
     Ok(Authorization {
         self_service: row.try_get("self_service").map_err(db)?,
         id: uuid(&row, "id")?,
-        device: row.try_get("device").map_err(db)?,
+        device: row
+            .try_get::<uuid::Uuid, _>("device")
+            .and_then(crate::database::device_id)
+            .map_err(db)?,
         actor: row.try_get("actor").map_err(db)?,
         instance: row.try_get("instance").map_err(db)?,
         credential_ref: uuid(&row, "credential_ref")?,
@@ -72,7 +75,7 @@ pub async fn create_enrollment(
     if key.is_nil() {
         return Err(Error::Malformed);
     }
-    let password_digest = password.digest(proof.tenant_id(), &key.to_string())?;
+    let password_digest = password.digest(proof.tenant_id(), key)?;
     if source == ReportSource::AgentBuiltin {
         return Err(Error::Malformed);
     }
@@ -204,8 +207,8 @@ async fn create_enrollment_on(
         )
         .await?;
     }
-    let device = Uuid::new_v4().to_string();
-    let password_digest = password.digest(proof.tenant_id(), &device)?;
+    let device = rss_mdm_agent_wire::DeviceId::new_v4();
+    let password_digest = password.digest(proof.tenant_id(), device.into_uuid())?;
     let id = Uuid::new_v4();
     let grant = Uuid::new_v4();
     sqlx::query(crate::storage_profile::sql(profile).enrollment_store_create_enrollment_on_2)
@@ -213,7 +216,7 @@ async fn create_enrollment_on(
         .bind(grant.to_string())
         .bind(proof.principal_id())
         .bind(proof.instance_id())
-        .bind(&device)
+        .bind(device.into_uuid())
         .execute(&mut *tx)
         .await
         .map_err(db)?;
@@ -224,7 +227,7 @@ async fn create_enrollment_on(
     .bind(id.to_string())
     .bind(grant.to_string())
     .bind(source.as_str())
-    .bind(&device)
+    .bind(device.into_uuid())
     .bind(password_digest)
     .bind(session.to_string())
     .bind(Uuid::new_v4().to_string())
@@ -242,7 +245,7 @@ async fn create_enrollment_on(
         enrollment_id: id,
         status: "pending".into(),
         expires_at: expires,
-        device_id: device.clone(),
+        device_id: device,
         source,
     };
     permission.check()?;
@@ -263,7 +266,7 @@ pub async fn enrollment_target(
     database: &crate::Store,
     proof: &AuthorizedPrincipal,
     id: Uuid,
-) -> Result<String, Error> {
+) -> Result<rss_mdm_agent_wire::DeviceId, Error> {
     if profile != proof.profile() {
         return Err(crate::Error::Forbidden);
     }
@@ -271,7 +274,9 @@ pub async fn enrollment_target(
     let mut tx = database.begin(proof.tenant_id()).await?;
     let row = request(profile, &mut tx, proof.tenant_id(), id).await?;
     same_actor(&row, proof)?;
-    row.try_get("device").map_err(db)
+    row.try_get::<uuid::Uuid, _>("device")
+        .and_then(crate::database::device_id)
+        .map_err(db)
 }
 pub async fn change_enrollment(
     profile: rss_mdm_install_support::StorageProfile,
@@ -285,7 +290,7 @@ pub async fn change_enrollment(
     let proof = permission.proof;
     permission.check()?;
     let password_digest = resume
-        .map(|(p, _)| p.digest(proof.tenant_id(), permission.device()))
+        .map(|(p, _)| p.digest(proof.tenant_id(), permission.device().into_uuid()))
         .transpose()?;
     let action = if resume.is_some() {
         "enrollment_resume"
@@ -398,7 +403,12 @@ async fn change_enrollment_on(
     if row.try_get::<bool, _>("self_service").map_err(db)? != permission.self_service() {
         return Err(Error::Forbidden);
     }
-    if row.try_get::<String, _>("device").map_err(db)? != permission.device() {
+    if row
+        .try_get::<uuid::Uuid, _>("device")
+        .and_then(crate::database::device_id)
+        .map_err(db)?
+        != *permission.device()
+    {
         return Err(Error::Forbidden);
     }
     if resume.is_some() {
@@ -498,12 +508,15 @@ pub async fn enrollment_authorization(
 ) -> Result<Authorization, Error> {
     let mut tx = database.begin(tenant).await?;
     let row = request(profile, &mut tx, tenant, id).await?;
-    let device: String = row.try_get("device").map_err(db)?;
+    let device: rss_mdm_agent_wire::DeviceId = row
+        .try_get::<uuid::Uuid, _>("device")
+        .and_then(crate::database::device_id)
+        .map_err(db)?;
     let state: String = row.try_get("state").map_err(db)?;
     if state == "cancelled"
         || state != "bound" && !row.try_get::<bool, _>("live").map_err(db)?
         || !super::equal(
-            &password.digest(tenant, &device)?,
+            &password.digest(tenant, device.into_uuid())?,
             &row.try_get::<String, _>("password_digest").map_err(db)?,
         )
     {
@@ -559,7 +572,10 @@ pub async fn owned_permission<'a>(
     let mut tx = database.begin(proof.tenant_id()).await?;
     let row = request(profile, &mut tx, proof.tenant_id(), id).await?;
     same_actor(&row, proof)?;
-    let device: String = row.try_get("device").map_err(db)?;
+    let device: rss_mdm_agent_wire::DeviceId = row
+        .try_get::<uuid::Uuid, _>("device")
+        .and_then(crate::database::device_id)
+        .map_err(db)?;
     if row.try_get::<bool, _>("self_service").map_err(db)? {
         proof.self_enrollment(&device).map_err(Into::into)
     } else {

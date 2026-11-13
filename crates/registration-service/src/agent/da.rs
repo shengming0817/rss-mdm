@@ -84,7 +84,7 @@ impl RegistrationService {
     pub async fn recover(
         &self,
         p: &AuthorizedPrincipal,
-        registration: String,
+        registration: rss_mdm_agent_wire::DeviceId,
         input: &da::GrantRequest,
         a: &RequestAudit,
     ) -> Result<da::Grant, Failure> {
@@ -164,21 +164,27 @@ impl RegistrationService {
                     let row =
                         sqlx::query(crate::storage_profile::sql(profile).da_current_registration)
                             .bind(&tenant)
-                            .bind(registration)
+                            .bind(registration.into_uuid())
                             .fetch_optional(&mut *c)
                             .await
                             .map_err(db)?
                             .ok_or(Error::Forbidden)?;
                     (
-                        row.try_get::<String, _>("device").map_err(db)?,
+                        row.try_get::<uuid::Uuid, _>("device")
+                            .and_then(crate::database::device_id)
+                            .map_err(db)?,
                         Some(row.try_get::<Uuid, _>("credential").map_err(db)?),
                     )
                 } else {
                     (
                         old.as_ref()
-                            .map(|r| r.try_get::<String, _>("device").map_err(db))
+                            .map(|r| {
+                                r.try_get::<uuid::Uuid, _>("device")
+                                    .and_then(crate::database::device_id)
+                                    .map_err(db)
+                            })
                             .transpose()?
-                            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+                            .unwrap_or_else(rss_mdm_agent_wire::DeviceId::new_v4),
                         None,
                     )
                 };
@@ -228,12 +234,17 @@ impl RegistrationService {
                     let row =
                         sqlx::query(crate::storage_profile::sql(profile).da_current_registration)
                             .bind(&tenant)
-                            .bind(registration)
+                            .bind(registration.into_uuid())
                             .fetch_optional(&mut *c)
                             .await
                             .map_err(db)?
                             .ok_or(Error::Forbidden)?;
-                    if row.try_get::<String, _>("device").map_err(db)? != device {
+                    if row
+                        .try_get::<uuid::Uuid, _>("device")
+                        .and_then(crate::database::device_id)
+                        .map_err(db)?
+                        != device
+                    {
                         return Err(Error::Forbidden);
                     }
                     Some(row.try_get::<Uuid, _>("credential").map_err(db)?)
@@ -262,7 +273,7 @@ impl RegistrationService {
                     .bind(source)
                     .bind(actor)
                     .bind(instance)
-                    .bind(device)
+                    .bind(device.into_uuid())
                     .bind(secret_digest(&tenant, id, &input.secret))
                     .bind(&*d)
                     .bind(&*bound)
@@ -372,7 +383,7 @@ impl RegistrationService {
     pub async fn revoke(
         &self,
         p: &AuthorizedPrincipal,
-        registration: String,
+        registration: rss_mdm_agent_wire::DeviceId,
         operation: Uuid,
         a: &RequestAudit,
     ) -> Result<crate::device::RevocationReceipt, Failure> {
@@ -391,12 +402,15 @@ impl RegistrationService {
                 let tenant = s.tenant.to_string();
                 let row = sqlx::query(crate::storage_profile::sql(profile).da_registration)
                     .bind(&tenant)
-                    .bind(&*registration)
+                    .bind(registration.into_uuid())
                     .fetch_optional(&mut *c)
                     .await
                     .map_err(db)?
                     .ok_or(Error::Forbidden)?;
-                let device: String = row.try_get("device").map_err(db)?;
+                let device: rss_mdm_agent_wire::DeviceId = row
+                    .try_get::<uuid::Uuid, _>("device")
+                    .and_then(crate::database::device_id)
+                    .map_err(db)?;
                 rss_mdm_authorization_service::lock_on(
                     p.authority_profile(),
                     c,
@@ -453,7 +467,7 @@ impl RegistrationService {
                 .await?;
                 let value = crate::device::RevocationReceipt {
                     operation_id: *operation,
-                    device: registration.clone(),
+                    device: *registration,
                 };
                 crate::operations::save(
                     profile,
@@ -475,13 +489,16 @@ impl RegistrationService {
     }
 }
 enum Authority<'a> {
-    Administrator(&'a AuthorizedPrincipal, Option<String>),
+    Administrator(
+        &'a AuthorizedPrincipal,
+        Option<rss_mdm_agent_wire::DeviceId>,
+    ),
     Device(&'a DevicePrincipal),
 }
 impl Authority<'_> {
-    fn target(&self) -> Option<&str> {
+    fn target(&self) -> Option<&rss_mdm_agent_wire::DeviceId> {
         match self {
-            Self::Administrator(_, v) => v.as_deref(),
+            Self::Administrator(_, v) => v.as_ref(),
             Self::Device(p) => Some(p.device()),
         }
     }
@@ -490,7 +507,10 @@ fn receipt(row: &PgRow) -> Result<da::Grant, Error> {
     Ok(da::Grant {
         grant_id: row.try_get("id").map_err(db)?,
         operation_id: row.try_get("operation_id").map_err(db)?,
-        device: row.try_get("device").map_err(db)?,
+        device: row
+            .try_get::<uuid::Uuid, _>("device")
+            .and_then(crate::database::device_id)
+            .map_err(db)?,
         expires_at: row.try_get("expiry").map_err(db)?,
     })
 }

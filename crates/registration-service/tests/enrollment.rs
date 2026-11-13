@@ -2,13 +2,15 @@ use super::*;
 #[test]
 fn password_is_canonical_256_bits_and_domain_separated() {
     let password = Password::new(random()).unwrap();
+    let device = uuid::Uuid::from_u128(1);
+    let other = uuid::Uuid::from_u128(2);
     assert_ne!(
-        password.digest("tenant-a", "device").unwrap(),
-        password.digest("tenant-b", "device").unwrap()
+        password.digest("tenant-a", device).unwrap(),
+        password.digest("tenant-b", device).unwrap()
     );
     assert_ne!(
-        password.digest("tenant-a", "device").unwrap(),
-        password.digest("tenant-a", "other").unwrap()
+        password.digest("tenant-a", device).unwrap(),
+        password.digest("tenant-a", other).unwrap()
     );
     for bad in [
         String::new(),

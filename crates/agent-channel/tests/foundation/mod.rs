@@ -28,7 +28,7 @@ impl registration::participants::capacity::DeviceCapacity for Capacity {
     fn available_in<'a>(
         &'a self,
         tx: &'a mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> std::pin::Pin<
         Box<
@@ -67,14 +67,15 @@ fn execution_context() -> w::SoftwareExecutionContext {
     }
 }
 async fn accepted(c: &Context, p: &registration::DevicePrincipal) -> Result<Uuid> {
-    use rss_mdm_inventory_service::objects::{DeviceObject, ObjectRef};
+    use rss_mdm_agent_wire::ObjectRef;
+    use rss_mdm_inventory_service::objects::DeviceObject;
     use sha2::{Digest, Sha256};
     let object = DeviceObject {
-        object: ObjectRef::Endpoint(p.device().into()),
+        object: ObjectRef::Endpoint(*p.device()),
         association_version: None,
         verified: true,
         members: vec![registration::device::endpoints::PrimaryRegistration {
-            device: p.device().into(),
+            device: *p.device(),
             channel: rss_mdm_inventory::Channel::Agent,
         }],
     };
@@ -116,7 +117,7 @@ async fn accepted(c: &Context, p: &registration::DevicePrincipal) -> Result<Uuid
     let mut tx = c.seed().await?;
     sqlx::query("INSERT INTO rss_da.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'enabled',$4,$5,$6)").bind(c.tenant.to_string()).bind(policy).bind(version).bind(serde_json::to_value(definition)?).bind(serde_json::to_value(actor)?).bind(at).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_da.policy_versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'request_mdm_enrollment',$4,$5)").bind(c.tenant.to_string()).bind(version).bind(policy).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO rss_da.enrollment_runs (tenant_id, id, policy_version, origin, source_objects, device, occurrence, created_at, available_at, deadline, state, gateway_accepted, dispatch_fingerprint) VALUES (CAST($1 AS uuid), $2, $3, '\"policy\"', $4, $5, 'once', $6, $6, $7, $8, TRUE, $9)").bind(c.tenant.to_string()).bind(run).bind(version).bind(json!([object])).bind(p.device()).bind(at).bind(at+300).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(at+300,at)?)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO rss_da.enrollment_runs (tenant_id, id, policy_version, origin, source_objects, device, occurrence, created_at, available_at, deadline, state, gateway_accepted, dispatch_fingerprint) VALUES (CAST($1 AS uuid), $2, $3, '\"policy\"', $4, $5, 'once', $6, $6, $7, $8, TRUE, $9)").bind(c.tenant.to_string()).bind(run).bind(version).bind(json!([object])).bind(p.device().into_uuid()).bind(at).bind(at+300).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(at+300,at)?)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(run)
 }
@@ -161,7 +162,7 @@ async fn exercise(c: &Context) -> Result<()> {
             registration::agent::Binding {
                 profile: DA,
                 tenant: c.tenant,
-                device: device.clone(),
+                device,
 
                 epoch: p.epoch(),
                 operation: Uuid::new_v4(),
@@ -346,7 +347,7 @@ async fn exercise(c: &Context) -> Result<()> {
         result,
         serde_json::to_value(w::EnrollmentEntryOutcome::Opened)?
     );
-    let count:i64=sqlx::query_scalar("SELECT count(*) FROM rss_da.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND channel = 'mdm'").bind(c.tenant.to_string()).bind(&device).fetch_one(&c.operator).await?;
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM rss_da.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND channel = 'mdm'").bind(c.tenant.to_string()).bind(device.into_uuid()).fetch_one(&c.operator).await?;
     assert_eq!(count, 0, "Opened is UI evidence only");
     let forbidden:Vec<String>=sqlx::query_scalar("SELECT nspname::text FROM pg_namespace WHERE nspname IN('mdm_devices','mdm_apple','mdm_windows','mdm_access','mdm_agent','mdm_policy','mdm_scope','mdm_recovery','mdm_webhook')").fetch_all(&c.operator).await?;
     assert!(
@@ -359,7 +360,7 @@ async fn exercise(c: &Context) -> Result<()> {
         .execute(&mut *tx)
         .await?;
     let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_da.devices WHERE id = $1")
-        .bind(&device)
+        .bind(device.into_uuid())
         .fetch_one(&mut *tx)
         .await?;
     assert_eq!(visible, 0);
@@ -373,7 +374,7 @@ async fn exercise(c: &Context) -> Result<()> {
         "UPDATE rss_da.devices SET state = 'revoked' WHERE tenant_id = CAST($1 AS uuid) AND id = $2",
     )
     .bind(c.tenant.to_string())
-    .bind(&device)
+    .bind(device.into_uuid())
     .execute(&mut *revoke)
     .await?;
     let next = w::TaskClaimRequest::new(Uuid::new_v4(), vec![], context.clone())?;

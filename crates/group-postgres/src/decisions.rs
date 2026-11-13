@@ -81,7 +81,7 @@ pub struct FieldEvidence {
 #[serde(deny_unknown_fields)]
 pub struct DecisionRecord {
     /// Stable device identity.
-    pub device: String,
+    pub object: rss_mdm_agent_wire::ObjectRef,
     /// Rule or explicit manual authority.
     pub origin: DecisionOrigin,
     /// Overall membership decision.
@@ -91,9 +91,9 @@ pub struct DecisionRecord {
     /// Bounded referenced field provenance.
     pub provenance: Vec<FieldEvidence>,
 }
-pub(crate) fn manual(device: String) -> DecisionRecord {
+pub(crate) fn manual(object: rss_mdm_agent_wire::ObjectRef) -> DecisionRecord {
     DecisionRecord {
-        device,
+        object,
         origin: DecisionOrigin::Manual,
         decision: DecisionValue::Match,
         explanations: vec![],
@@ -102,7 +102,7 @@ pub(crate) fn manual(device: String) -> DecisionRecord {
 }
 pub(crate) fn evaluated(object: rss_mdm_group::ObjectEvaluation) -> DecisionRecord {
     DecisionRecord {
-        device: object.key.id().into(),
+        object: object.key.id(),
         origin: DecisionOrigin::Rule,
         decision: match object.decision {
             rss_mdm_group::Decision::Match => DecisionValue::Match,
@@ -145,7 +145,7 @@ impl GroupStore {
         &self,
         tx: &mut PgTransaction<'_>,
         id: OperationId,
-        after: Option<String>,
+        after: Option<rss_mdm_agent_wire::ObjectRef>,
         limit: usize,
         max_bytes: usize,
     ) -> InTransaction<DecisionPage> {
@@ -158,7 +158,7 @@ impl GroupStore {
         &self,
         tx: &mut PgTransaction<'_>,
         id: OperationId,
-        objects: &[String],
+        objects: &[rss_mdm_agent_wire::ObjectRef],
         max_bytes: usize,
     ) -> InTransaction<SourceDecisions> {
         self.sources
@@ -170,7 +170,7 @@ impl GroupStore {
         &self,
         tx: &mut PgTransaction<'_>,
         id: OperationId,
-        after: Option<String>,
+        after: Option<rss_mdm_agent_wire::ObjectRef>,
         limit: usize,
     ) -> InTransaction<DeltaPage> {
         crate::store::input!(self.check_transaction(tx)?);
@@ -183,20 +183,22 @@ impl GroupStore {
         }
         let tenant = self.tenant.to_string();
         let mut rows=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT object_id,added FROM mdm_group.member_changes WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND ($3::text IS NULL OR object_id>$3 COLLATE \"C\") ORDER BY object_id LIMIT $4")
-                .bind(tenant).bind(id.to_string()).bind(after).bind((limit+1) as i64).fetch_all(c).await
+            sqlx::query("SELECT object_kind,object_id,added FROM mdm_group.member_changes WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND ($3::smallint IS NULL OR (object_kind,object_id)>($3,$4::uuid)) ORDER BY object_kind,object_id LIMIT $5")
+                .bind(tenant).bind(id.to_string()).bind(after.map(|o|o.kind())).bind(after.map(|o|o.uuid())).bind((limit+1) as i64).fetch_all(c).await
         })).await?;
         let more = rows.len() > limit;
         rows.truncate(limit);
         let next = if more {
-            Some(rows.last().ok_or_else(stored_shape)?.try_get("object_id")?)
+            Some(crate::storage::object(
+                rows.last().ok_or_else(stored_shape)?,
+            )?)
         } else {
             None
         };
         let mut added = Vec::new();
         let mut removed = Vec::new();
         for row in rows {
-            let id = row.try_get("object_id")?;
+            let id = crate::storage::object(&row)?;
             if row.try_get("added")? {
                 added.push(id);
             } else {

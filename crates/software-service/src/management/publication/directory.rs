@@ -131,7 +131,7 @@ rss_mdm_query_postgres::Source::column("resource", "s.resource COLLATE \"C\""),
 rss_mdm_query_postgres::Source::column("version", "s.version COLLATE \"C\""),
 rss_mdm_query_postgres::Source::column("withdrawn", "((a.directory->>'withdrawn')::boolean OR w.id IS NOT NULL)"),
 rss_mdm_query_postgres::Source::column("withdrawal", "(CASE WHEN w.id IS NULL THEN NULL WHEN w.complete THEN 'withdrawn' WHEN a.directory->>'outcome'='published' THEN CASE WHEN t.id IS NULL OR NOT t.attempted THEN 'preflight_retryable' ELSE 'unknown' END WHEN a.directory->>'outcome'='not_applied' THEN 'not_published' ELSE 'waiting_publication' END) COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("operationId", "ARRAY(SELECT o.id::text FROM mdm_publication.operations o WHERE o.tenant_id=s.tenant_id AND o.response->>'record'=s.record)")]).expect("Complete public model storage binding")
+rss_mdm_query_postgres::Source::column("operationId", "ARRAY(SELECT o.id FROM mdm_publication.operations o WHERE o.tenant_id=s.tenant_id AND o.response->>'record'=s.record)")]).expect("Complete public model storage binding")
     });
 
 pub static TARGET_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =

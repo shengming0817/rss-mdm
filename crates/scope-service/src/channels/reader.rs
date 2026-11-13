@@ -42,7 +42,7 @@ impl ChannelTargets {
         c: &'a mut PgConnection,
         tenant: TenantId,
         scope: Uuid,
-        after: Option<&'a str>,
+        after: Option<rss_mdm_agent_wire::ObjectRef>,
         limit: usize,
     ) -> Pending<'a, Vec<DeviceAssignment>> {
         let profile = self.profile();
@@ -92,7 +92,7 @@ impl ChannelTargets {
         tenant: TenantId,
         runs: &'a [Uuid],
         channel: Channel,
-        after: Option<&'a str>,
+        after: Option<rss_mdm_agent_wire::DeviceId>,
     ) -> Pending<'a, RolloutPage> {
         let profile = self.profile();
 
@@ -101,20 +101,25 @@ impl ChannelTargets {
                 [root, stage, ..] => (root, stage),
                 _ => return Err(SourceError::Invariant),
             };
-            let mut rows = sqlx::query_as::<_, (String, Value, bool)>(
+            let mut rows = sqlx::query_as::<_, (Uuid, Value, bool)>(
                 crate::storage_profile::sql(profile).channels_reader_rollout_devices_on_1,
             )
             .bind(tenant.to_string())
             .bind(root)
             .bind(stage)
             .bind(&runs[2..])
-            .bind(after)
+            .bind(after.map(|id| id.into_uuid()))
             .bind(channel.as_str())
             .fetch_all(c)
             .await?;
             let has_more = rows.len() > 16;
             rows.truncate(16);
-            let after = rows.last().map(|r| r.0.clone());
+            let after = rows
+                .last()
+                .map(|r| {
+                    rss_mdm_agent_wire::DeviceId::try_from(r.0).map_err(|_| SourceError::Invariant)
+                })
+                .transpose()?;
             let scanned = rows.len() as u64;
             let targets = rows
                 .into_iter()
@@ -135,13 +140,13 @@ impl ChannelTargets {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        after: Option<&'a str>,
+        after: Option<rss_mdm_agent_wire::DeviceId>,
     ) -> Pending<'a, ScopePreview> {
         let profile = self.profile();
 
-        Box::pin(super::targets::devices_on(
-            profile, c, tenant, scope, channel, after,
-        ))
+        Box::pin(async move {
+            super::targets::devices_on(profile, c, tenant, scope, channel, after.as_ref()).await
+        })
     }
 
     pub fn assignment_objects_on<'a>(
@@ -150,7 +155,7 @@ impl ChannelTargets {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        after: Option<&'a str>,
+        after: Option<rss_mdm_agent_wire::ObjectRef>,
         limit: usize,
     ) -> Pending<'a, Vec<AssignmentObject>> {
         let profile = self.profile();
@@ -172,7 +177,7 @@ impl ChannelTargets {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, Vec<DeviceObject>> {
         let profile = self.profile();
 
@@ -191,7 +196,7 @@ impl ChannelTargets {
         c: &'a mut PgConnection,
         tenant: TenantId,
         channel: Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         evidence: &'a [DeviceObject],
     ) -> Pending<'a, bool> {
         Box::pin(super::targets::evidence_valid_on(
@@ -211,7 +216,7 @@ impl ChannelTargets {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, ScopeAdmission> {
         let profile = self.profile();
 

@@ -8,7 +8,7 @@ use sqlx::Row;
 #[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PrimaryRegistration {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub channel: Channel,
 }
 /// Current active primary and credential. Renewal leaves registration identity unchanged.
@@ -16,19 +16,19 @@ pub async fn current_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     channel: Channel,
 ) -> Result<Option<PrimaryRegistration>, Error> {
     let row = sqlx::query(crate::storage_profile::sql(profile).device_endpoints_current_in_1)
         .bind(tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(channel.as_str())
         .fetch_optional(c)
         .await
         .map_err(db)?;
     row.map(|_| {
         Ok(PrimaryRegistration {
-            device: device.into(),
+            device: *device,
             channel,
         })
     })
@@ -39,21 +39,24 @@ pub async fn current_page_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    devices: &[String],
+    devices: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<Vec<PrimaryRegistration>, Error> {
     if devices.len() > 1000 {
         return Err(Error::Malformed);
     }
     let rows = sqlx::query(crate::storage_profile::sql(profile).device_endpoints_current_page_in_1)
         .bind(tenant)
-        .bind(devices)
+        .bind(devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>())
         .fetch_all(c)
         .await
         .map_err(db)?;
     rows.into_iter()
         .map(|row| {
             Ok(PrimaryRegistration {
-                device: row.try_get("device").map_err(db)?,
+                device: row
+                    .try_get::<uuid::Uuid, _>("device")
+                    .and_then(crate::database::device_id)
+                    .map_err(db)?,
                 channel: match row.try_get::<&str, _>("channel").map_err(db)? {
                     "mdm" => Channel::Mdm,
                     "agent" => Channel::Agent,
@@ -69,14 +72,14 @@ pub async fn page_at(
     c: &mut sqlx::PgConnection,
     tenant: &str,
     cut: &rss_mdm_inventory::AssetCut,
-    devices: &[String],
+    devices: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<Vec<PrimaryRegistration>, Error> {
     if devices.len() > 1000 || cut.tenant().to_string() != tenant {
         return Err(Error::Malformed);
     }
     let rows = sqlx::query(crate::storage_profile::sql(profile).device_endpoints_page_at_1)
         .bind(tenant)
-        .bind(devices)
+        .bind(devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>())
         .bind(cut.to_json())
         .fetch_all(c)
         .await
@@ -84,7 +87,10 @@ pub async fn page_at(
     rows.into_iter()
         .map(|row| {
             Ok(PrimaryRegistration {
-                device: row.try_get("device").map_err(db)?,
+                device: row
+                    .try_get::<uuid::Uuid, _>("device")
+                    .and_then(crate::database::device_id)
+                    .map_err(db)?,
                 channel: match row.try_get::<&str, _>("channel").map_err(db)? {
                     "mdm" => Channel::Mdm,
                     "agent" => Channel::Agent,
@@ -99,7 +105,7 @@ pub async fn lock_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     channel: Channel,
 ) -> Result<(), Error> {
     super::store::lock_channel(profile, c, tenant, device, channel).await
@@ -109,18 +115,19 @@ pub async fn page_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    after: &str,
+    after: Option<rss_mdm_agent_wire::DeviceId>,
     limit: i64,
-) -> Result<Vec<String>, Error> {
+) -> Result<Vec<rss_mdm_agent_wire::DeviceId>, Error> {
     if !(1..=1001).contains(&limit) {
         return Err(Error::Malformed);
     }
     sqlx::query_scalar(crate::storage_profile::sql(profile).device_endpoints_page_in_1)
         .bind(tenant)
-        .bind(after)
+        .bind(after.map(|id| id.into_uuid()))
         .bind(limit)
         .fetch_all(c)
         .await
+        .and_then(crate::database::device_ids)
         .map_err(db)
 }
 
@@ -130,21 +137,22 @@ pub async fn candidate_page_in(
     c: &mut sqlx::PgConnection,
     tenant: &str,
     channel: Channel,
-    after: &str,
-    allowed: Option<Vec<String>>,
+    after: Option<rss_mdm_agent_wire::DeviceId>,
+    allowed: Option<Vec<rss_mdm_agent_wire::DeviceId>>,
     limit: i64,
-) -> Result<Vec<String>, Error> {
+) -> Result<Vec<rss_mdm_agent_wire::DeviceId>, Error> {
     if !(1..=1001).contains(&limit) {
         return Err(Error::Malformed);
     }
     sqlx::query_scalar(crate::storage_profile::sql(profile).device_endpoints_candidate_page_in_1)
         .bind(tenant)
         .bind(channel.as_str())
-        .bind(after)
-        .bind(allowed)
+        .bind(after.map(|id| id.into_uuid()))
+        .bind(allowed.map(|ids| ids.into_iter().map(|id| id.into_uuid()).collect::<Vec<_>>()))
         .bind(limit)
         .fetch_all(c)
         .await
+        .and_then(crate::database::device_ids)
         .map_err(db)
 }
 
@@ -152,7 +160,7 @@ pub async fn candidate_page_in(
 #[derive(Clone, Debug)]
 pub struct Lifecycle {
     /// Stable endpoint identity in this tenant.
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     /// A primary registration, active credential and enabled source exist together.
     pub managed: bool,
     /// Platform agreed by every live authenticated source, when known.
@@ -166,8 +174,8 @@ pub async fn lifecycle_page_at(
     c: &mut sqlx::PgConnection,
     tenant: &str,
     cut: &rss_mdm_inventory::AssetCut,
-    after: Option<String>,
-    selected: Option<Vec<String>>,
+    after: Option<rss_mdm_agent_wire::DeviceId>,
+    selected: Option<Vec<rss_mdm_agent_wire::DeviceId>>,
     limit: usize,
 ) -> Result<Vec<Lifecycle>, Error> {
     if cut.tenant().to_string() != tenant
@@ -176,9 +184,14 @@ pub async fn lifecycle_page_at(
     {
         return Err(Error::Malformed);
     }
-    let ids: Vec<String> = if let Some(selected) = selected {
-        sqlx::query_scalar("SELECT id FROM unnest($1::text[]) id WHERE id COLLATE \"C\">coalesce($2,'') COLLATE \"C\" ORDER BY id COLLATE \"C\" LIMIT $3")
-            .bind(selected).bind(after).bind(limit as i64).fetch_all(&mut *c).await.map_err(db)?
+    let ids = if let Some(mut selected) = selected {
+        selected.sort_unstable();
+        selected.dedup();
+        selected
+            .into_iter()
+            .filter(|id| after.is_none_or(|after| *id > after))
+            .take(limit)
+            .collect::<Vec<_>>()
     } else {
         super::read::page_at(
             profile,
@@ -196,7 +209,7 @@ pub async fn lifecycle_page_at(
     let rows =
         sqlx::query(crate::storage_profile::sql(profile).device_endpoints_lifecycle_page_at_1)
             .bind(tenant)
-            .bind(ids)
+            .bind(ids.iter().map(|id| id.into_uuid()).collect::<Vec<_>>())
             .bind(cut.to_json())
             .fetch_all(c)
             .await
@@ -219,7 +232,10 @@ pub async fn lifecycle_page_at(
                 }
             };
             Ok(Lifecycle {
-                device: r.try_get("device").map_err(db)?,
+                device: r
+                    .try_get::<uuid::Uuid, _>("device")
+                    .and_then(crate::database::device_id)
+                    .map_err(db)?,
                 managed: r.try_get("managed").map_err(db)?,
                 platform,
                 platform_conflict: conflict,
@@ -253,13 +269,13 @@ pub async fn current_members_on(
 #[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DaRegistration {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
 }
 /// Uses the registrar's lifecycle fence; callers retain it until their transaction settles.
 pub async fn lock_da_in(
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<(), Error> {
     super::store::lock_registration(
         rss_mdm_install_support::StorageProfile::Da,
@@ -273,12 +289,12 @@ pub async fn lock_da_in(
 pub async fn current_da_in(
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<DaRegistration>, Error> {
     let value: Option<serde_json::Value> = sqlx::query_scalar(
         "SELECT rss_da.current_da_registration($1) WHERE current_setting('rss.tenant_id',true)=$2",
     )
-    .bind(device)
+    .bind(device.into_uuid())
     .bind(tenant)
     .fetch_one(c)
     .await
@@ -290,7 +306,7 @@ pub async fn current_da_in(
 
 /// Shared registrar projection installed only for DA's independent registration profile.
 pub const DA_INSTALL_SQL: &str = r#"
-CREATE FUNCTION rss_da.current_da_registration(p_device text) RETURNS jsonb
+CREATE FUNCTION rss_da.current_da_registration(p_device uuid) RETURNS jsonb
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  SELECT jsonb_build_object('device',r.id)
  FROM rss_da.devices r
@@ -298,6 +314,6 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  AND EXISTS(SELECT FROM rss_da.credentials k JOIN rss_da.certificate_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id)
   WHERE (k.tenant_id,k.device)=(r.tenant_id,r.id) AND k.state='active' AND i.not_before<=extract(epoch FROM statement_timestamp()) AND i.not_after>extract(epoch FROM statement_timestamp()))
 $$;
-REVOKE ALL ON FUNCTION rss_da.current_da_registration(text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION rss_da.current_da_registration(text) TO da_access,da_command_runtime,da_policy_runtime,da_identity_runtime;
+REVOKE ALL ON FUNCTION rss_da.current_da_registration(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rss_da.current_da_registration(uuid) TO da_access,da_command_runtime,da_policy_runtime,da_identity_runtime;
 "#;

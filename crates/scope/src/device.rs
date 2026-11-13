@@ -21,9 +21,9 @@ pub enum Membership {
     Failed,
 }
 /// A single-device slice of the scope algebra. No collection of devices is needed.
-pub struct DeviceInput {
+pub struct ObjectInput {
     /// Tenant-scoped device being considered.
-    pub device: DeviceId,
+    pub object: ScopedObjectId,
     /// All target sources, including confirmed nonmatches.
     pub targets: Vec<SourceMembership>,
     /// None is unrestricted; Some([]) deliberately allows no devices.
@@ -35,7 +35,7 @@ pub struct DeviceInput {
 /// Resolve one device using target union, optional limitation union and exclusions.
 /// Every supplied source is checked, including sources that do not match the device.
 /// The caller enumerates candidates from sealed target sets and owns page completeness.
-pub fn resolve_device(input: &DeviceInput) -> Result<Option<MemberExplanation>, ScopeError> {
+pub fn resolve_object(input: &ObjectInput) -> Result<Option<MemberExplanation>, ScopeError> {
     let limits = input.limitations.as_deref().unwrap_or_default();
     if input
         .targets
@@ -49,10 +49,10 @@ pub fn resolve_device(input: &DeviceInput) -> Result<Option<MemberExplanation>, 
     let mut seen = BTreeMap::new();
     for membership in input.targets.iter().chain(limits).chain(&input.exclusions) {
         let source = &membership.source;
-        if source.id().tenant() != input.device.tenant() {
+        if source.id().tenant() != input.object.tenant() {
             return Err(ScopeError::SourceTenantMismatch {
                 source_ref: source.clone(),
-                expected: input.device.tenant(),
+                expected: input.object.tenant(),
             });
         }
         let contains = match membership.contains {
@@ -62,7 +62,7 @@ pub fn resolve_device(input: &DeviceInput) -> Result<Option<MemberExplanation>, 
             Membership::Failed => return Err(ScopeError::SourceFailed(source.clone())),
         };
         if let SourceId::Direct(id) = source.id()
-            && contains != Some(id == &input.device)
+            && contains != Some(id == &input.object)
         {
             return Err(ScopeError::InvalidDirectSource(source.clone()));
         }
@@ -90,7 +90,7 @@ pub fn resolve_device(input: &DeviceInput) -> Result<Option<MemberExplanation>, 
         return Ok(None);
     }
     let mut result = explanation(
-        input.device.clone(),
+        input.object,
         targets,
         matching(limits),
         matching(&input.exclusions),
@@ -119,7 +119,7 @@ pub fn resolve_device(input: &DeviceInput) -> Result<Option<MemberExplanation>, 
 }
 
 pub(crate) fn explanation(
-    object: DeviceId,
+    object: ScopedObjectId,
     targets: BTreeSet<SourceRef>,
     limitations: BTreeSet<SourceRef>,
     exclusions: BTreeSet<SourceRef>,

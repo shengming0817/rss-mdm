@@ -49,7 +49,7 @@ SELECT
  EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=t.oid AND contype='p' AND pg_get_constraintdef(oid)='PRIMARY KEY (tenant_id, journal, generation, scope, field, field_scope)') AS identity,
  (SELECT jsonb_agg(jsonb_build_array(attname,format_type(atttypid,atttypmod),attnotnull) ORDER BY attnum)
  FROM pg_attribute WHERE attrelid=t.oid AND attnum>0 AND NOT attisdropped) @>
- '[ ["tenant_id","uuid",true],["journal","text",true],["generation","text",true],["scope","text",true],["coverage","text",true],["field","text",true],["value","text",false],["batch_id","text",true],["observed_at","bigint",true],["received_at","bigint",true],["state","text",true],["last_known","text",false],["last_known_batch","text",false],["last_known_observed","bigint",false],["last_known_received","bigint",false],["registration","text",true],["source","text",true],["epoch","text",true],["collection_sequence","bigint",true],["field_scope","text",true],["value_version","text",false],["last_known_version","text",false] ]'::jsonb
+ '[ ["tenant_id","uuid",true],["journal","text",true],["generation","text",true],["scope","text",true],["coverage","text",true],["field","text",true],["value","text",false],["batch_id","text",true],["observed_at","bigint",true],["received_at","bigint",true],["state","text",true],["last_known","text",false],["last_known_batch","text",false],["last_known_observed","bigint",false],["last_known_received","bigint",false],["registration","uuid",true],["source","text",true],["epoch","text",true],["collection_sequence","bigint",true],["field_scope","text",true],["value_version","text",false],["last_known_version","text",false] ]'::jsonb
  AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=t.oid AND conname='inventory_value_state' AND convalidated
  AND pg_get_constraintdef(oid)='CHECK (((state = ''known''::text) = ((value IS NOT NULL) OR (value_version IS NOT NULL))))')
  AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=t.oid AND conname='inventory_state_check' AND convalidated
@@ -162,7 +162,7 @@ pub async fn verify_collections(c: &mut sqlx::PgConnection) -> Result<()> {
                 ["tenant_id", "uuid", true],
                 ["scope", "text", true],
                 ["run", "text", true],
-                ["device", "text", true],
+                ["device", "uuid", true],
                 ["source", "text", true],
                 ["epoch", "text", true],
                 ["coverage", "text", true],

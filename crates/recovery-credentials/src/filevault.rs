@@ -12,7 +12,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct Source {
     pub tenant: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
 }
 impl Source {
     pub fn agent(p: &rss_mdm_registration_service::DevicePrincipal) -> Result<Self, Error> {
@@ -23,12 +23,12 @@ impl Source {
         }
         Ok(Self {
             tenant: Uuid::parse_str(&p.tenant().to_string()).map_err(|_| Error::Malformed)?,
-            device: p.device().into(),
+            device: *p.device(),
         })
     }
     async fn require_current(&self, c: &mut PgConnection) -> Result<(), Error> {
         let active: bool = sqlx::query_scalar("SELECT EXISTS (SELECT FROM mdm_access.devices WHERE tenant_id = $1 AND id = $2 AND state = 'active' AND channel IN ('agent', 'mdm') AND purpose = 'primary')")
-            .bind(self.tenant).bind(&self.device).fetch_one(c).await?;
+            .bind(self.tenant).bind(self.device.into_uuid()).fetch_one(c).await?;
         if !active {
             return Err(Error::Forbidden);
         }
@@ -43,15 +43,15 @@ pub async fn source_binding(
 ) -> Result<Option<Binding>, Error> {
     source.require_current(c).await?;
     let mut id: Option<Uuid> = sqlx::query_scalar("SELECT s.custody FROM mdm_recovery.filevault_sources AS s INNER JOIN mdm_recovery.filevault_custodies AS f ON (f.tenant_id, f.id, f.epoch) = (s.tenant_id, s.custody, s.epoch) WHERE s.tenant_id = $1 AND s.device = $2 AND s.active AND f.active AND (s.association IS NULL OR mdm_devices.association_grant_current(s.association, s.association_version, s.device))")
-        .bind(source.tenant).bind(&source.device).fetch_optional(&mut *c).await?;
+        .bind(source.tenant).bind(source.device.into_uuid()).fetch_optional(&mut *c).await?;
     if id.is_none() && create {
         // An explicit administrative configuration may start a new independent custody;
         // it never revives the old grant or copies its material.
         let custody = Uuid::new_v4();
         sqlx::query("INSERT INTO mdm_recovery.filevault_custodies(tenant_id,id,origin_device) VALUES($1,$2,$3)")
-            .bind(source.tenant).bind(custody).bind(&source.device).execute(&mut *c).await?;
+            .bind(source.tenant).bind(custody).bind(source.device.into_uuid()).execute(&mut *c).await?;
         sqlx::query("INSERT INTO mdm_recovery.filevault_sources (tenant_id, device, custody, epoch) VALUES ($1, $2, $3, 1) ON CONFLICT (tenant_id, device) DO UPDATE SET custody = excluded.custody, epoch = excluded.epoch, active = TRUE, association = NULL, association_version = NULL")
-            .bind(source.tenant).bind(&source.device).bind(custody).execute(&mut *c).await?;
+            .bind(source.tenant).bind(source.device.into_uuid()).bind(custody).execute(&mut *c).await?;
         id = Some(custody);
     }
     let Some(id) = id else {
@@ -60,7 +60,9 @@ pub async fn source_binding(
     let row=sqlx::query("SELECT epoch,origin_device FROM mdm_recovery.filevault_custodies WHERE tenant_id=$1 AND id=$2 AND active FOR UPDATE")
         .bind(source.tenant).bind(id).fetch_optional(c).await?.ok_or(Error::Conflict)?;
     Ok(Some(Binding {
-        device: row.try_get("origin_device")?,
+        device: row
+            .try_get::<Uuid, _>("origin_device")
+            .and_then(crate::storage::device_id)?,
 
         subject: Subject::Filevault {
             custody: id,
@@ -74,7 +76,7 @@ pub async fn active(c: &mut PgConnection, tenant: Uuid, binding: &Binding) -> Re
         return Err(Error::Malformed);
     };
     let valid:bool=sqlx::query_scalar("SELECT EXISTS (SELECT FROM mdm_recovery.filevault_custodies AS f WHERE f.tenant_id = $1 AND f.id = $2 AND f.epoch = $3 AND f.active AND f.origin_device = $4 AND EXISTS (SELECT FROM mdm_recovery.filevault_sources AS s INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (s.tenant_id, s.device) WHERE s.tenant_id = f.tenant_id AND s.custody = f.id AND s.epoch = f.epoch AND s.active AND r.state = 'active' AND (s.association IS NULL OR mdm_devices.association_grant_current(s.association, s.association_version, s.device))))")
-        .bind(tenant).bind(custody).bind(epoch).bind(&binding.device).fetch_one(c).await?;
+        .bind(tenant).bind(custody).bind(epoch).bind(binding.device.into_uuid()).fetch_one(c).await?;
     if valid { Ok(()) } else { Err(Error::Conflict) }
 }
 fn coordinates(binding: &Binding) -> Result<(Uuid, i64), Error> {
@@ -144,7 +146,7 @@ pub async fn configure(
     source.require_current(c).await?;
     let digest = Sha256::digest(serde_json::to_vec(input).map_err(|_| Error::Malformed)?).to_vec();
     if let Some(row)=sqlx::query("SELECT digest, receipt, purpose FROM mdm_recovery.filevault_receipts WHERE tenant_id = $1 AND device = $2 AND operation = $3")
-        .bind(source.tenant).bind(&source.device).bind(input.operation_id).fetch_optional(&mut *c).await? {
+        .bind(source.tenant).bind(source.device.into_uuid()).bind(input.operation_id).fetch_optional(&mut *c).await? {
         if row.try_get::<String,_>("purpose")? != "configure" || row.try_get::<Vec<u8>,_>("digest")? != digest {return Err(Error::Conflict);}
         return serde_json::from_value(row.try_get("receipt")?).map_err(|_|Error::Integrity);
     }
@@ -172,8 +174,8 @@ pub async fn configure(
     }
     let result = configuration(c, source, protection).await?;
     sqlx::query("INSERT INTO mdm_recovery.filevault_receipts (tenant_id, device, operation, purpose, digest, receipt, devices) VALUES ($1, $2, $3, 'configure', $4, $5, $6)")
-        .bind(source.tenant).bind(&source.device).bind(input.operation_id).bind(digest)
-        .bind(serde_json::to_value(&result).map_err(|_|Error::Malformed)?).bind(vec![source.device.clone()]).execute(c).await?;
+        .bind(source.tenant).bind(source.device.into_uuid()).bind(input.operation_id).bind(digest)
+        .bind(serde_json::to_value(&result).map_err(|_|Error::Malformed)?).bind(vec![source.device.into_uuid()]).execute(c).await?;
     Ok(result)
 }
 pub async fn receipt(
@@ -183,7 +185,7 @@ pub async fn receipt(
 ) -> Result<Option<w::Receipt>, Error> {
     source.require_current(c).await?;
     let value:Option<serde_json::Value>=sqlx::query_scalar("SELECT receipt FROM mdm_recovery.filevault_receipts WHERE tenant_id = $1 AND device = $2 AND operation = $3 AND purpose = 'upload'")
-        .bind(source.tenant).bind(&source.device).bind(operation).fetch_optional(c).await?;
+        .bind(source.tenant).bind(source.device.into_uuid()).bind(operation).fetch_optional(c).await?;
     value
         .map(|v| serde_json::from_value(v).map_err(|_| Error::Integrity))
         .transpose()
@@ -273,7 +275,7 @@ pub async fn receive(
     source.require_current(c).await?;
     let digest = Sha256::digest(serde_json::to_vec(input).map_err(|_| Error::Malformed)?).to_vec();
     if let Some(row)=sqlx::query("SELECT digest, receipt FROM mdm_recovery.filevault_receipts WHERE tenant_id = $1 AND device = $2 AND operation = $3 AND purpose = 'upload'")
-        .bind(source.tenant).bind(&source.device).bind(input.operation_id).fetch_optional(&mut *c).await? {
+        .bind(source.tenant).bind(source.device.into_uuid()).bind(input.operation_id).fetch_optional(&mut *c).await? {
         if row.try_get::<Vec<u8>,_>("digest")?!=digest {return Err(Error::Conflict);}
         return serde_json::from_value(row.try_get("receipt")?).map_err(|_|Error::Integrity);
     }
@@ -281,7 +283,7 @@ pub async fn receive(
         "SELECT count(*) FROM mdm_recovery.filevault_receipts WHERE tenant_id = $1 AND device = $2",
     )
     .bind(source.tenant)
-    .bind(&source.device)
+    .bind(source.device.into_uuid())
     .fetch_one(&mut *c)
     .await?;
     if count >= 4096 {
@@ -322,20 +324,20 @@ pub async fn receive(
         escrowed: true,
     };
     sqlx::query("INSERT INTO mdm_recovery.filevault_receipts (tenant_id, device, operation, purpose, digest, receipt, devices) VALUES ($1, $2, $3, 'upload', $4, $5, $6)")
-        .bind(source.tenant).bind(&source.device).bind(input.operation_id).bind(digest)
-        .bind(serde_json::to_value(&receipt).map_err(|_|Error::Malformed)?).bind(vec![source.device.clone()]).execute(c).await?;
+        .bind(source.tenant).bind(source.device.into_uuid()).bind(input.operation_id).bind(digest)
+        .bind(serde_json::to_value(&receipt).map_err(|_|Error::Malformed)?).bind(vec![source.device.into_uuid()]).execute(c).await?;
     Ok(receipt)
 }
 /// Revoke only this ingress. A surviving source keeps the same custody and encrypted history.
 pub async fn retire_source(
     c: &mut PgConnection,
     tenant: &str,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
 ) -> Result<(), Error> {
     sqlx::query("UPDATE mdm_recovery.filevault_sources AS s SET association = NULL, association_version = NULL FROM mdm_recovery.filevault_custodies AS f WHERE s.tenant_id = CAST($1 AS uuid) AND (s.tenant_id, s.custody, s.epoch) = (f.tenant_id, f.id, f.epoch) AND f.origin_device = $2 AND s.device <> $2 AND s.active AND s.association IS NOT NULL AND mdm_devices.association_grant_current(s.association, s.association_version, s.device)")
-        .bind(tenant).bind(&registration).execute(&mut *c).await?;
+        .bind(tenant).bind(registration.into_uuid()).execute(&mut *c).await?;
     sqlx::query("UPDATE mdm_recovery.filevault_sources SET active = FALSE WHERE tenant_id = CAST($1 AS uuid) AND device = $2")
-        .bind(tenant).bind(&registration).execute(&mut *c).await?;
+        .bind(tenant).bind(registration.into_uuid()).execute(&mut *c).await?;
     sqlx::query("UPDATE mdm_recovery.filevault_custodies AS f SET active = FALSE, enabled = FALSE, revision = revision + 1 WHERE tenant_id = CAST($1 AS uuid) AND active AND NOT EXISTS (SELECT FROM mdm_recovery.filevault_sources AS s INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (s.tenant_id, s.device) WHERE s.tenant_id = f.tenant_id AND s.custody = f.id AND s.epoch = f.epoch AND s.active AND r.state = 'active' AND (s.association IS NULL OR mdm_devices.association_grant_current(s.association, s.association_version, s.device)))")
         .bind(tenant).execute(&mut *c).await?;
     sqlx::query("UPDATE mdm_recovery.entries e SET retired=true,current_version=NULL FROM mdm_recovery.filevault_custodies f WHERE e.tenant_id=$1::uuid AND e.subject->>'kind'='filevault' AND (f.tenant_id,f.id::text,f.epoch::text)=(e.tenant_id,e.subject->>'custody',e.subject->>'epoch') AND NOT f.active")
@@ -362,7 +364,7 @@ pub async fn merge(
     }
     let tenant = left.tenant;
     let qualified:bool=sqlx::query_scalar("SELECT mdm_devices.association_grant_current($1,$2,$3) AND mdm_devices.association_grant_current($1,$2,$4)")
-        .bind(association).bind(association_version).bind(&left.device).bind(&right.device).fetch_one(&mut *c).await?;
+        .bind(association).bind(association_version).bind(left.device.into_uuid()).bind(right.device.into_uuid()).fetch_one(&mut *c).await?;
     if !qualified {
         return Err(Error::Forbidden);
     }

@@ -22,7 +22,7 @@ CREATE TABLE mdm_compliance.groups (
 );
 CREATE INDEX rules_by_group ON mdm_compliance.groups(tenant_id,group_id,rule_id);
 CREATE TABLE mdm_compliance.results (
- tenant_id uuid NOT NULL, task uuid NOT NULL, rule_id uuid NOT NULL, rule_revision bigint NOT NULL CHECK(rule_revision>0), device text NOT NULL,
+ tenant_id uuid NOT NULL, task uuid NOT NULL, rule_id uuid NOT NULL, rule_revision bigint NOT NULL CHECK(rule_revision>0), device uuid NOT NULL,
  evaluated_at bigint NOT NULL, document jsonb NOT NULL CHECK(octet_length(document::text)<=262144),
  CONSTRAINT result_document_identity CHECK(coalesce(document->>'ruleId'=rule_id::text AND document->>'ruleVersion'=rule_revision::text,false)),
  PRIMARY KEY(tenant_id,task,device), FOREIGN KEY(tenant_id,rule_id,rule_revision) REFERENCES mdm_compliance.versions(tenant_id,rule_id,revision)
@@ -49,7 +49,7 @@ CREATE TABLE mdm_compliance.runs (
  input jsonb NOT NULL CHECK(octet_length(input::text)<=1048576),
  CHECK(coalesce(input->>'rule'=rule_id::text AND (input->>'revision')::bigint=rule_revision,false)),
  completed boolean NOT NULL DEFAULT false,started boolean NOT NULL DEFAULT false,
- failure text CHECK(failure IS NULL OR completed),cursor text,detail jsonb,
+ failure text CHECK(failure IS NULL OR completed),cursor uuid,detail jsonb,
  PRIMARY KEY(tenant_id,id),FOREIGN KEY(tenant_id,rule_id,rule_revision) REFERENCES mdm_compliance.versions(tenant_id,rule_id,revision)
 );
 CREATE TABLE mdm_compliance.evaluations (
@@ -79,7 +79,7 @@ CREATE TABLE mdm_compliance.dispatch (
  tenant_id uuid PRIMARY KEY,from_cut jsonb, to_cut jsonb,
  input_failed boolean NOT NULL DEFAULT false,
  event_after bigint NOT NULL DEFAULT 0 CHECK(event_after>=0),
- page_through bigint CHECK(page_through>event_after),cursor text
+ page_through bigint CHECK(page_through>event_after),cursor uuid
 );
 ALTER TABLE mdm_compliance.dispatch ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_compliance.dispatch FORCE ROW LEVEL SECURITY;

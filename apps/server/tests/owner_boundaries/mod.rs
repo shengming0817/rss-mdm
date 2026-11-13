@@ -166,7 +166,7 @@ pub(super) async fn scope(c: &Context, groups: &[Uuid]) -> Result<Uuid> {
     .await?;
     sqlx::query("INSERT INTO mdm_scope.scope_versions(tenant_id,id,revision,definition) VALUES($1::uuid,$2,1,$3)").bind(c.tenant.to_string()).bind(id).bind(serde_json::to_value(definition)?).execute(&mut *tx).await?;
     for group in groups {
-        sqlx::query("INSERT INTO mdm_scope.scope_sources(tenant_id,scope,kind,target) VALUES($1::uuid,$2,'group',$3)").bind(c.tenant.to_string()).bind(id).bind(group.to_string()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_scope.scope_sources(tenant_id,scope,kind,target) VALUES($1::uuid,$2,'group',$3)").bind(c.tenant.to_string()).bind(id).bind(group).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     Ok(id)
@@ -429,12 +429,16 @@ async fn fact_readers_reject_cross_runtime_and_tenant_and_keep_the_frozen_cut() 
                     .0
                     .changes_page_in(tx, Some(&ctx.4), &ctx.5, 0, None, 1000)
                     .await?;
-                assert!(changes.iter().any(
-                    |e| e.identity.device.as_deref() == Some(first.members[0].device.as_str())
-                ));
-                assert!(!changes.iter().any(
-                    |e| e.identity.device.as_deref() == Some(later.members[0].device.as_str())
-                ));
+                assert!(
+                    changes
+                        .iter()
+                        .any(|e| e.identity.device.as_ref() == Some(&first.members[0].device))
+                );
+                assert!(
+                    !changes
+                        .iter()
+                        .any(|e| e.identity.device.as_ref() == Some(&later.members[0].device))
+                );
                 assert!(changes.windows(2).all(|w| w[0].revision < w[1].revision));
                 Ok(())
             })

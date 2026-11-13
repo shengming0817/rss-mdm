@@ -116,7 +116,7 @@ impl Signing {
             || p.channel() != Some(rss_mdm_inventory::Channel::Agent)
             || p.purpose() != rss_mdm_registration_service::device::Purpose::Primary
             || configuration.tenant_id.to_string() != p.tenant().to_string()
-            || configuration.device_id != p.device()
+            || configuration.device_id != *p.device()
         {
             return Err(Error::Forbidden);
         }
@@ -154,7 +154,7 @@ impl Signing {
         if self.usage != Use::AgentTask
             || p.tenant() != self.tenant
             || configuration.tenant_id.to_string() != p.tenant().to_string()
-            || configuration.device_id != p.device()
+            || configuration.device_id != *p.device()
         {
             return Err(Error::Forbidden);
         }

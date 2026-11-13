@@ -44,7 +44,7 @@ pub(super) async fn seed(
         sqlx::query("INSERT INTO mdm_policy.requests(tenant_id,id,fingerprint,receipt) VALUES($1,$2,$3,$4)").bind(tenant).bind(id).bind(vec![17u8;32]).bind(json!({"operationId":id,"policyId":policy,"versionId":Uuid::new_v4(),"deadline":1700000010})).execute(&mut *tx).await?;
         let caller = rss_mdm_policy_service::events::Caller::Management { actor: p.actor() };
         sqlx::query("INSERT INTO mdm_policy.event_batches(tenant_id,id,request,actor,caller,device,input,fingerprint,created_at,deadline) VALUES($1,$2,$2,$3,$4,$5,$6,$7,1700000000,1700000010)")
-            .bind(tenant).bind(id).bind(serde_json::to_string(&caller)?).bind(serde_json::to_value(caller)?).bind(device).bind(json!({"operationId":id,"event":event,"source":{"kind":"human"},"executionContext":null})).bind(vec![17u8;32]).execute(&mut *tx).await?;
+            .bind(tenant).bind(id).bind(serde_json::to_string(&caller)?).bind(serde_json::to_value(caller)?).bind(device.into_uuid()).bind(json!({"operationId":id,"event":event,"source":{"kind":"human"},"executionContext":null})).bind(vec![17u8;32]).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO mdm_policy.event_members(tenant_id,batch,id,policy,revision,version,target,authority,decision) VALUES($1,$2,$2,$3,1,$4,$5,$6,$7)")
             .bind(tenant).bind(id).bind(policy).bind(Uuid::new_v4()).bind(json!({"device":device})).bind(json!({"permissions":[],"retirement_target":null})).bind(json!({"state":"expired"})).execute(&mut *tx).await?;
         let subscription =
@@ -56,7 +56,7 @@ pub(super) async fn seed(
             version: 1,
             occurred_at: time::OffsetDateTime::now_utc().unix_timestamp(),
             tenant_id: tenant,
-            device_id: device.clone(),
+            device_id: *device,
             data: rss_mdm_webhook_service::model::EventData::Test,
         };
         event.validate()?;

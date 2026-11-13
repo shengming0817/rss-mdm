@@ -41,10 +41,10 @@ fn query_error(e: rss_mdm_query::Error) -> Error {
 fn column(name: &str) -> rss_mdm_query::Result<&'static str> {
     use ExecutionColumn::*;
     Ok(match execution_column(name)? {
-        Id => "id::text COLLATE \"C\"",
+        Id => "id",
         Kind => "kind COLLATE \"C\"",
-        Device => "device COLLATE \"C\"",
-        Policy => "policy::text COLLATE \"C\"",
+        Device => "device",
+        Policy => "policy",
         Status => "status COLLATE \"C\"",
         Origin => "source_kind COLLATE \"C\"",
         Deadline => "deadline",
@@ -81,7 +81,7 @@ fn check_sources(rows: i64, limit: i64, stage: &'static str) -> Result<(), Error
 
 fn relation(
     tenant: String,
-    allowed: Option<Vec<String>>,
+    allowed: Option<Vec<rss_mdm_agent_wire::DeviceId>>,
     source_limit: i64,
     source_rows: Option<i64>,
 ) -> sqlx::QueryBuilder<sqlx::Postgres> {
@@ -118,7 +118,13 @@ fn relation(
     }
     sql.push("),source_budget AS MATERIALIZED(SELECT CASE WHEN EXISTS(SELECT id FROM source_probe GROUP BY id HAVING count(*)>1) THEN -1 ELSE rows END AS rows FROM source_count),visible AS(SELECT * FROM executions WHERE (SELECT rows FROM source_budget) BETWEEN 0 AND ").push_bind(source_limit);
     if let Some(ids) = allowed {
-        sql.push(" AND device=ANY(").push_bind(ids).push(")");
+        sql.push(" AND device=ANY(")
+            .push_bind(
+                ids.into_iter()
+                    .map(rss_mdm_agent_wire::DeviceId::into_uuid)
+                    .collect::<Vec<_>>(),
+            )
+            .push(")");
     }
     sql.push(") ");
     sql
@@ -134,7 +140,7 @@ impl Operations {
         proof: &AuthorizedPrincipal,
         grant: &Grant,
         now: i64,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         redacted: bool,
     ) -> Result<Detail, Error> {
@@ -153,7 +159,7 @@ impl Operations {
         proof: &AuthorizedPrincipal,
         grant: &Grant,
         now: i64,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         redacted: bool,
         owner: super::native_ownership::Owner,
@@ -460,7 +466,7 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
     fn declarations<'a>(
         &'a self,
         request: &'a rss_mdm_authorization_service::context::RequestAuth,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         query: &'a rss_mdm_query::window::Query,
         audit: &'a RequestAudit,
         codec: &'a CursorCodec,
@@ -519,7 +525,7 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
                             else{return Err(Error::Unavailable(Failure::CommandInvariant));}
                         }
                     })};
-                    let detail_url=match metadata.kind{KindOfOperation::Command=>format!("/api/v1/devices/{}/operations/{}",url::form_urlencoded::byte_serialize(metadata.device.as_bytes()).collect::<String>().replace('+',"%20"),metadata.id),KindOfOperation::ActionRun=>format!("/api/v1/policies/{}/runs/{}",metadata.policy.ok_or(Error::Conflict)?,metadata.id)};
+                    let detail_url=match metadata.kind{KindOfOperation::Command=>format!("/api/v1/devices/{}/operations/{}",url::form_urlencoded::byte_serialize(metadata.device.to_string().as_bytes()).collect::<String>().replace('+',"%20"),metadata.id),KindOfOperation::ActionRun=>format!("/api/v1/policies/{}/runs/{}",metadata.policy.ok_or(Error::Conflict)?,metadata.id)};
                     items.push(q.project_typed(Item{metadata,evidence,authorization,reauthorization,detail_url}).map_err(query_error)?);
                 }
                 Ok(Page{items,next_cursor:page.next_cursor})
@@ -557,7 +563,7 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
     fn detail<'a>(
         &'a self,
         request: &'a rss_mdm_authorization_service::context::RequestAuth,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         audit: &'a RequestAudit,
     ) -> rss_mdm_management_http::execution::task_reads::Pending<'a, Detail> {
@@ -577,7 +583,7 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
     fn change<'a>(
         &'a self,
         request: &'a rss_mdm_authorization_service::context::RequestAuth,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         change: &'a rss_mdm_device_service::control::Change,
         reauthorization: Option<

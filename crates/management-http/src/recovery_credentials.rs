@@ -79,7 +79,7 @@ async fn list(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Directory<ListQuery>,
     >,
@@ -113,7 +113,7 @@ async fn disclose(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id, version)): Path<(String, Uuid, i64)>,
+    Path((device, id, version)): Path<(rss_mdm_agent_wire::DeviceId, Uuid, i64)>,
 ) -> Result<DisclosureResponse, Error> {
     let value = s
         .credentials
@@ -125,7 +125,7 @@ async fn revoke(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id, version)): Path<(String, Uuid, i64)>,
+    Path((device, id, version)): Path<(rss_mdm_agent_wire::DeviceId, Uuid, i64)>,
 ) -> Result<Json<Material>, Error> {
     s.credentials
         .revoke(&auth.proof, &device, id, version, &audit)
@@ -159,7 +159,7 @@ async fn configure_filevault(
     State(s): State<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
     input: Result<
         Json<rss_mdm_recovery_credentials::filevault::Configure>,
         axum::extract::rejection::JsonRejection,
@@ -182,7 +182,7 @@ async fn link_filevault(
     State(s): State<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
     input: Result<
         Json<rss_mdm_recovery_credentials::FilevaultLink>,
         axum::extract::rejection::JsonRejection,
@@ -205,7 +205,7 @@ async fn read_filevault_configuration(
     State(s): State<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
 ) -> Result<Json<rss_mdm_agent_wire::filevault::Configuration>, Error> {
     audit.set_action(
         "filevault_configuration_read",

@@ -6,7 +6,7 @@ pub async fn required(
     tx: &mut PgTransaction<'_>,
     _key: &rss_mdm_native_protection::Protector,
     owner: Arc<dyn super::apple_facts::AppleProfiles>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     input: &Create,
 ) -> Result<Vec<crate::control::authorization::Permission>> {
     let mut required = input.task.permissions()?;
@@ -41,7 +41,7 @@ pub async fn required(
 pub async fn own(
     tx: &mut PgTransaction<'_>,
     owner: Arc<dyn super::apple_facts::AppleProfiles>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     input: &Create,
 ) -> Result<()> {
     if input.profile_target().is_none() {
@@ -52,7 +52,7 @@ pub async fn own(
     };
     let target = super::apple_facts::AppleRegistration {
         tenant: tx.tenant_id().to_string(),
-        device: device.into(),
+        device: *device,
     };
     let command = super::apple_facts::AppleCommand {
         operation: input.operation_id,

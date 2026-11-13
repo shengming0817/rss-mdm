@@ -75,7 +75,7 @@ CREATE TABLE "###, $versions, r###" (
  PRIMARY KEY(tenant_id,usage,revision), UNIQUE(tenant_id,usage,operation_id)
 );
 CREATE TABLE "###, $acknowledgements, r###" (
- tenant_id uuid NOT NULL, usage text NOT NULL CHECK(usage IN('agent_task','da_configuration')), operation_id uuid NOT NULL, device text NOT NULL,
+ tenant_id uuid NOT NULL, usage text NOT NULL CHECK(usage IN('agent_task','da_configuration')), operation_id uuid NOT NULL, device uuid NOT NULL,
  revision bigint NOT NULL CHECK(revision>0),
  digest text NOT NULL, PRIMARY KEY(tenant_id,usage,operation_id),
  FOREIGN KEY(tenant_id,usage,revision) REFERENCES "###, $versions, r###"(tenant_id,usage,revision)
@@ -113,7 +113,7 @@ GRANT SELECT(usage,tenant_id,device,revision,digest) ON "###, $acknowledgements,
 "###),
                 observations_install: concat!(r###"BEGIN;
 CREATE TABLE "###, $observations, r###" (
- tenant_id uuid NOT NULL, usage text NOT NULL CHECK(usage IN('agent_task','da_configuration')), device text NOT NULL,
+ tenant_id uuid NOT NULL, usage text NOT NULL CHECK(usage IN('agent_task','da_configuration')), device uuid NOT NULL,
  sequence bigint NOT NULL CHECK(sequence>0), operation uuid NOT NULL,
  body jsonb NOT NULL CHECK(jsonb_typeof(body)='object'),
  received_at bigint NOT NULL DEFAULT floor(extract(epoch FROM clock_timestamp()))::bigint,
@@ -142,7 +142,7 @@ COMMIT;
                 trust_load_1: concat!("SELECT private_key FROM ", $keys, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND key_id=$2"),
                 trust_selected_trust_1: concat!("SELECT body,revision,digest FROM ", $versions, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND revision=$2"),
                 trust_operation_1: concat!("SELECT body FROM ", $versions, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND operation_id=$2"),
-                trust_retire_1: concat!("SELECT EXISTS(SELECT 1 FROM unnest($3::text[]) r(id) WHERE NOT EXISTS(SELECT 1 FROM ", $acknowledgements, " a JOIN ", $versions, " v USING(tenant_id,usage,revision) WHERE a.tenant_id=$1::uuid AND a.usage='", $usage, "' AND a.device=r.id AND a.digest=v.digest AND EXISTS(SELECT 1 FROM jsonb_array_elements(v.body->'keys') k WHERE k->>'id'=$2 AND k->>'state'='verify_only')))") ,
+                trust_retire_1: concat!("SELECT EXISTS(SELECT 1 FROM unnest($3::uuid[]) r(id) WHERE NOT EXISTS(SELECT 1 FROM ", $acknowledgements, " a JOIN ", $versions, " v USING(tenant_id,usage,revision) WHERE a.tenant_id=$1::uuid AND a.usage='", $usage, "' AND a.device=r.id AND a.digest=v.digest AND EXISTS(SELECT 1 FROM jsonb_array_elements(v.body->'keys') k WHERE k->>'id'=$2 AND k->>'state'='verify_only')))") ,
                 trust_rewrap_1: concat!("SELECT key_id,private_key FROM ", $keys, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND substring(private_key FROM 1 FOR $2)<>$3 ORDER BY key_id LIMIT 64 FOR UPDATE"),
                 trust_rewrap_2: concat!("UPDATE ", $keys, " SET private_key=$3 WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND key_id=$2"),
                 observations_record_in_1: concat!("INSERT INTO ", $observations, "(usage,tenant_id,device,sequence,operation,body) VALUES('", $usage, "',$1::uuid,$2,$3,$4,$5) ON CONFLICT DO NOTHING"),

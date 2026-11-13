@@ -14,14 +14,14 @@ impl Transactions {
         &self,
         tx: &mut PgTransaction<'_>,
         entity: &str,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<rss_mdm_agent_wire::DeviceId>> {
         let digest = entity
             .strip_prefix("configuration:")
             .ok_or(Error::Malformed)?
             .to_owned();
         let tenant = tx.tenant_id().to_string();
         Ok(tx.with_connection(move|c|Box::pin(async move{
-            sqlx::query_scalar("SELECT device FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND mdm_planning.configuration_device_key(device)=$2").bind(tenant).bind(digest).fetch_optional(c).await
+            sqlx::query_scalar("SELECT device FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND mdm_planning.configuration_device_key(device)=$2").bind(tenant).bind(digest).fetch_optional(c).await.and_then(|id|id.map(crate::configuration::device_id).transpose())
         })).await?)
     }
     pub(crate) async fn work_pending_in(
@@ -40,7 +40,7 @@ impl Transactions {
         };
         let tenant = tx.tenant_id().to_string();
         Ok(tx.with_connection(move|c|Box::pin(async move{
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2 AND input_revision>observed_revision) OR EXISTS(SELECT 1 FROM mdm_planning.configuration_operations o LEFT JOIN rss_device_command.commands c ON(c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND(c.terminal_at IS NULL OR (c.command_id IS NULL OR c.version<>o.observed_command_version OR c.outbox_domain IS DISTINCT FROM $3 OR c.device_id IS DISTINCT FROM (SELECT a.command_device FROM mdm_access.command_authorities a WHERE a.tenant_id=o.tenant_id AND a.device=o.device)))) OR EXISTS(SELECT 1 FROM mdm_planning.configuration_recovery WHERE tenant_id=$1::uuid AND device=$2 AND recovery_after IS NOT NULL) OR EXISTS(SELECT FROM rss_device_command.commands c JOIN mdm_access.command_authorities a ON(a.tenant_id,a.command_device)=(c.tenant_id,c.device_id) LEFT JOIN mdm_planning.configuration_operations o ON(o.tenant_id,o.id::text,o.device)=(c.tenant_id,c.command_id,a.device) WHERE c.tenant_id=$1::uuid AND a.device=$2 AND c.outbox_domain=$3 AND o.id IS NULL)").bind(tenant).bind(device).bind(messaging_domain().as_str().to_owned()).fetch_one(c).await
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2 AND input_revision>observed_revision) OR EXISTS(SELECT 1 FROM mdm_planning.configuration_operations o LEFT JOIN rss_device_command.commands c ON(c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND(c.terminal_at IS NULL OR (c.command_id IS NULL OR c.version<>o.observed_command_version OR c.outbox_domain IS DISTINCT FROM $3 OR c.device_id IS DISTINCT FROM (SELECT a.command_device FROM mdm_access.command_authorities a WHERE a.tenant_id=o.tenant_id AND a.device=o.device)))) OR EXISTS(SELECT 1 FROM mdm_planning.configuration_recovery WHERE tenant_id=$1::uuid AND device=$2 AND recovery_after IS NOT NULL) OR EXISTS(SELECT FROM rss_device_command.commands c JOIN mdm_access.command_authorities a ON(a.tenant_id,a.command_device)=(c.tenant_id,c.device_id) LEFT JOIN mdm_planning.configuration_operations o ON(o.tenant_id,o.id::text,o.device)=(c.tenant_id,c.command_id,a.device) WHERE c.tenant_id=$1::uuid AND a.device=$2 AND c.outbox_domain=$3 AND o.id IS NULL)").bind(tenant).bind(device.into_uuid()).bind(messaging_domain().as_str().to_owned()).fetch_one(c).await
         })).await?)
     }
     pub(crate) async fn prepare_work_in(
@@ -48,12 +48,12 @@ impl Transactions {
         tx: &mut PgTransaction<'_>,
         entity: &str,
         audit: &RequestAudit,
-    ) -> Result<rss_reconcile::ReconcileStep<Option<String>>> {
+    ) -> Result<rss_reconcile::ReconcileStep<Option<rss_mdm_agent_wire::DeviceId>>> {
         let device = if entity.starts_with("configuration:") {
             let device = self.device_in(tx, entity).await?;
             if let Some(device) = &device {
                 let tenant = tx.tenant_id().to_string();
-                let selected = device.clone();
+                let selected = *device;
                 let locked = tx
                     .with_connection(move |c| {
                         Box::pin(async move {
@@ -76,8 +76,8 @@ impl Transactions {
                 }
                 storage::lock_device(tx, device).await?;
                 let tenant = tx.tenant_id().to_string();
-                let name = device.clone();
-                tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT input_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(tenant).bind(name).fetch_one(c).await?;Ok(())})).await?;
+                let name = *device;
+                tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT input_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(tenant).bind(name.into_uuid()).fetch_one(c).await?;Ok(())})).await?;
             }
             device
         } else {
@@ -90,7 +90,7 @@ impl Transactions {
         &self,
         tx: &mut PgTransaction<'_>,
         entity: &str,
-        device: Option<&str>,
+        device: Option<&rss_mdm_agent_wire::DeviceId>,
         cut: Option<&rss_mdm_inventory::AssetCut>,
         audit: &RequestAudit,
     ) -> Result<()> {
@@ -110,7 +110,7 @@ impl Transactions {
     async fn recover_device_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         audit: &RequestAudit,
     ) -> Result<()> {
         match storage::current_registration(
@@ -134,7 +134,7 @@ impl Transactions {
         let tenant = tx.tenant_id();
         let name = device.to_owned();
         let Some((command_device,_generation,epoch,cursor))=tx.with_connection(move|c|Box::pin(async move{
-            sqlx::query_as::<_,(Uuid,i64,i64,Option<String>)>("SELECT a.command_device, a.generation, a.epoch, CASE WHEN r.authority_epoch = a.epoch THEN r.recovery_after END FROM mdm_access.command_authorities AS a LEFT JOIN mdm_planning.configuration_recovery AS r USING (tenant_id, device) WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = $2 FOR UPDATE OF a").bind(tenant.to_string()).bind(name).fetch_optional(c).await
+            sqlx::query_as::<_,(Uuid,i64,i64,Option<String>)>("SELECT a.command_device, a.generation, a.epoch, CASE WHEN r.authority_epoch = a.epoch THEN r.recovery_after END FROM mdm_access.command_authorities AS a LEFT JOIN mdm_planning.configuration_recovery AS r USING (tenant_id, device) WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = $2 FOR UPDATE OF a").bind(tenant.to_string()).bind(name.into_uuid()).fetch_optional(c).await
         })).await? else{return Ok(())};
         let scope = dc::Scope::new(
             tenant,
@@ -216,15 +216,15 @@ impl Transactions {
             tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_planning.configuration_operations SET observed_command_version=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant.to_string()).bind(id).bind(version).execute(c).await?;Ok(())})).await?;
             if command.status().is_terminal() {
                 self.changes
-                    .configuration_progressed_in(tx, &[device.into()])
+                    .configuration_progressed_in(tx, &[*device])
                     .await?;
-                self.wake_devices_in(tx, &[device.into()]).await?;
+                self.wake_devices_in(tx, &[*device]).await?;
             }
         }
         let cursor = candidates.after;
         let name = device.to_owned();
         tx.with_connection(move|c|Box::pin(async move{
-            sqlx::query("INSERT INTO mdm_planning.configuration_recovery(tenant_id,device,authority_epoch,recovery_after) VALUES($1::uuid,$2,$3,$4) ON CONFLICT(tenant_id,device) DO UPDATE SET authority_epoch=excluded.authority_epoch,recovery_after=excluded.recovery_after").bind(tenant.to_string()).bind(name).bind(epoch).bind(cursor).execute(c).await?;Ok(())
+            sqlx::query("INSERT INTO mdm_planning.configuration_recovery(tenant_id,device,authority_epoch,recovery_after) VALUES($1::uuid,$2,$3,$4) ON CONFLICT(tenant_id,device) DO UPDATE SET authority_epoch=excluded.authority_epoch,recovery_after=excluded.recovery_after").bind(tenant.to_string()).bind(name.into_uuid()).bind(epoch).bind(cursor).execute(c).await?;Ok(())
         })).await?;
         Ok(())
     }
@@ -350,9 +350,7 @@ pub(crate) fn activity(
         ActivityKind::Execution
     };
     let mut activity = Activity::new(kind, phase);
-    activity.target = Some(ActivityTarget {
-        device: op.device.clone(),
-    });
+    activity.target = Some(ActivityTarget { device: op.device });
     activity.links.operation = Some(op.id);
     match &op.authority {
         A::Policy {
@@ -406,7 +404,7 @@ struct CommandCandidates {
 async fn command_candidates_in(
     tx: &mut PgTransaction<'_>,
     scope: dc::Scope,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     after: Option<&dc::CommandId>,
 ) -> Result<CommandCandidates> {
     let tenant = tx.tenant_id().to_string();
@@ -428,7 +426,7 @@ async fn command_candidates_in(
              AND ($3::text IS NULL OR c.command_id COLLATE "C">$3 COLLATE "C")
            ORDER BY c.command_id COLLATE "C" LIMIT 65)
         ) SELECT command_id,operation,observed FROM candidates ORDER BY command_id COLLATE "C" LIMIT 65"#)
-        .bind(tenant).bind(device).bind(after).bind(command_device).bind(domain).fetch_all(c).await
+        .bind(tenant).bind(device.into_uuid()).bind(after).bind(command_device).bind(domain).fetch_all(c).await
     })).await?;
     let more = rows.len() > 64;
     rows.truncate(64);

@@ -264,7 +264,7 @@ impl Timeline {
                     .find(|v| v.device == head.device)
                     .map_or(0, |v| v.revision);
                 sql.push("(f.device=")
-                    .push_bind(head.device.clone())
+                    .push_bind(head.device.into_uuid())
                     .push(" AND f.revision>")
                     .push_bind(since)
                     .push(")");
@@ -283,7 +283,7 @@ impl Timeline {
         if let Some((at, device, rev)) = &token.after {
             if changes {
                 sql.push(" AND (f.device,f.revision)>(")
-                    .push_bind(device.clone())
+                    .push_bind(device.into_uuid())
                     .push(",")
                     .push_bind(*rev)
                     .push(")");
@@ -291,7 +291,7 @@ impl Timeline {
                 sql.push(" AND (f.recorded_at,f.device,f.revision)<(")
                     .push_bind(*at)
                     .push(",")
-                    .push_bind(device.clone())
+                    .push_bind(device.into_uuid())
                     .push(",")
                     .push_bind(*rev)
                     .push(")");
@@ -313,7 +313,10 @@ impl Timeline {
             items.push(decode_row(&row)?);
             last = Some((
                 row.try_get("recorded_at")?,
-                row.try_get("device")?,
+                row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+                    rss_mdm_agent_wire::DeviceId::try_from(id)
+                        .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+                })?,
                 row.try_get("revision")?,
             ));
         }
@@ -362,14 +365,10 @@ impl Timeline {
         c: &mut PgConnection,
         scope: &Scope,
     ) -> Result<(Vec<Watermark>, bool, i64), Error> {
-        let devices = scope
-            .members
-            .iter()
-            .map(|m| m.device.clone())
-            .collect::<Vec<_>>();
+        let devices = scope.members.iter().map(|m| m.device).collect::<Vec<_>>();
         // Heads and source coverage must share one statement snapshot. A later commit
         // remains discoverable by the anti-join and receives a later publication revision.
-        let row=sqlx::query("SELECT COALESCE((SELECT jsonb_agg(jsonb_build_object('device',device,'generation',generation,'revision',revision)) FROM mdm_timeline.activity_streams WHERE tenant_id=$1::uuid AND device=ANY($2)),'[]'::jsonb) AS heads, NOT EXISTS(SELECT 1 FROM rss_audit.records r WHERE r.tenant_id=$1::uuid AND r.source_id='mdm.business' AND NOT EXISTS(SELECT 1 FROM mdm_timeline.facts f WHERE f.tenant_id=r.tenant_id AND f.source=r.source_id AND f.event_id=r.event_id)) AS caught_up,extract(epoch FROM statement_timestamp())::bigint AS observed").bind(self.tenant.to_string()).bind(devices).fetch_one(c).await?;
+        let row=sqlx::query("SELECT COALESCE((SELECT jsonb_agg(jsonb_build_object('device',device,'generation',generation,'revision',revision)) FROM mdm_timeline.activity_streams WHERE tenant_id=$1::uuid AND device=ANY($2)),'[]'::jsonb) AS heads, NOT EXISTS(SELECT 1 FROM rss_audit.records r WHERE r.tenant_id=$1::uuid AND r.source_id='mdm.business' AND NOT EXISTS(SELECT 1 FROM mdm_timeline.facts f WHERE f.tenant_id=r.tenant_id AND f.source=r.source_id AND f.event_id=r.event_id)) AS caught_up,extract(epoch FROM statement_timestamp())::bigint AS observed").bind(self.tenant.to_string()).bind(devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).fetch_one(c).await?;
         let rows: Vec<Watermark> =
             serde_json::from_value(row.try_get("heads")?).map_err(|_| Error::Integrity)?;
         let mut heads: Vec<Watermark> = scope
@@ -378,7 +377,7 @@ impl Timeline {
             .map(|m| {
                 let found = rows.iter().find(|v| v.device == m.device);
                 Watermark {
-                    device: m.device.clone(),
+                    device: m.device,
                     generation: found.map_or(Uuid::nil(), |v| v.generation),
                     revision: found.map_or(0, |v| v.revision),
                 }
@@ -501,14 +500,14 @@ fn scope_filter(
             .find(|h| h.device == m.device)
             .map_or(0, |h| h.revision);
         sql.push("(e.device=")
-            .push_bind(m.device.clone())
+            .push_bind(m.device.into_uuid())
             .push(" AND e.revision<=")
             .push_bind(head.revision);
         if changes {
             sql.push(" AND e.revision>").push_bind(since);
         }
-        sql.push(" AND f.activity->'target'->>'device'=")
-            .push_bind(m.device.clone())
+        sql.push(" AND (f.activity->'target'->>'device')::uuid=")
+            .push_bind(m.device.into_uuid())
             .push(")");
     }
     if scope.members.is_empty() {

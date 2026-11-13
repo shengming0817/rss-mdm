@@ -12,7 +12,12 @@ pub(crate) enum Part {
 fn failure() -> Error {
     Error::Unavailable(Failure::AppleStorage)
 }
-pub(crate) fn aad(tenant: &str, device: &str, id: Uuid, part: Part) -> Result<DerivedAad, Error> {
+pub(crate) fn aad(
+    tenant: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
+    id: Uuid,
+    part: Part,
+) -> Result<DerivedAad, Error> {
     let tenant = TenantId::parse(tenant).map_err(|_| failure())?;
     let owner = serde_json::to_string(&(device, id)).map_err(|_| failure())?;
     let purpose = match part {
@@ -27,7 +32,7 @@ pub(crate) fn aad(tenant: &str, device: &str, id: Uuid, part: Part) -> Result<De
 pub(crate) fn seal(
     protection: &Protector,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 
     id: Uuid,
     part: Part,
@@ -40,7 +45,7 @@ pub(crate) fn seal(
 pub(crate) fn open(
     protection: &Protector,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 
     id: Uuid,
     part: Part,

@@ -95,10 +95,7 @@ impl Preview {
         {
             return Ok(Eligibility::Ineligible);
         }
-        let Some(binding) = store
-            .binding(c, tenant.to_string(), target.device.clone())
-            .await?
-        else {
+        let Some(binding) = store.binding(c, tenant.to_string(), target.device).await? else {
             return Ok(Eligibility::Unknown);
         };
         let platform = match self.platform {

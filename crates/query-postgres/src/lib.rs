@@ -2,13 +2,22 @@
 //! ref: sqlx sqlx-core/src/query_builder.rs@v0.9.0 (bind parameters).
 use rss_mdm_query::{
     Error, Expression, Operator, Result,
-    directory::{Position, Query},
+    directory::{Kind, Position, Query},
 };
 use serde_json::Value;
 use sqlx::{Postgres, QueryBuilder};
 mod bindings;
 pub use bindings::{Bindings, Columns, Source};
-fn value(sql: &mut QueryBuilder<Postgres>, v: &Value) -> Result<()> {
+fn value(sql: &mut QueryBuilder<Postgres>, v: &Value, kind: &Kind) -> Result<()> {
+    if kind.scalar() == Kind::Uuid {
+        let text = v.as_str().ok_or(Error::Invalid)?;
+        let id = uuid::Uuid::parse_str(text).map_err(|_| Error::Invalid)?;
+        if id.is_nil() || id.to_string() != text {
+            return Err(Error::Invalid);
+        }
+        sql.push_bind(id);
+        return Ok(());
+    }
     match v {
         Value::String(v) => {
             sql.push_bind(v.clone());
@@ -104,7 +113,7 @@ fn expression(
                 if i > 0 {
                     sql.push(",");
                 }
-                value(sql, v)?;
+                value(sql, v, &schema.field(field)?.kind)?;
             }
             sql.push("]::")
                 .push(bindings::sql_type(&schema.field(field)?.kind)?)
@@ -141,7 +150,7 @@ fn expression(
             sql.push("strpos(upper(lower((")
                 .push(columns.column(field)?)
                 .push(") COLLATE pg_catalog.\"pg_c_utf8\")),upper(lower((");
-            value(sql, &values[0])?;
+            value(sql, &values[0], &schema.field(field)?.kind)?;
             sql.push(") COLLATE pg_catalog.\"pg_c_utf8\")))>0");
         }
         Expression::Compare {
@@ -167,7 +176,7 @@ fn expression(
                 if i > 0 {
                     sql.push(",");
                 }
-                value(sql, v)?;
+                value(sql, v, &schema.field(field)?.kind)?;
             }
             if operator.set() {
                 sql.push(")");
@@ -220,7 +229,7 @@ pub fn page_limit(
                     sql.push(" IS NULL");
                 } else {
                     sql.push(" IS NOT DISTINCT FROM ");
-                    value(sql, &p.0[j])?;
+                    value(sql, &p.0[j], &q.schema().field(&prefix.field)?.kind)?;
                 }
                 sql.push(" AND ");
             }
@@ -230,7 +239,7 @@ pub fn page_limit(
                 sql.push("(")
                     .push(columns.column(&sort.field)?)
                     .push(if sort.descending { " < " } else { " > " });
-                value(sql, &p.0[i])?;
+                value(sql, &p.0[i], &q.schema().field(&sort.field)?.kind)?;
                 if columns.nullable(&sort.field) {
                     sql.push(" OR ")
                         .push(columns.column(&sort.field)?)

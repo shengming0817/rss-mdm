@@ -31,13 +31,13 @@ GRANT SELECT ON TABLE mdm_registration_tasks.operations TO mdm_access;
 GRANT EXECUTE ON FUNCTION mdm_registration_tasks.installation_status(uuid) TO mdm_access,mdm_command_runtime,mdm_policy_runtime;
 
 
-GRANT EXECUTE ON FUNCTION mdm_registration_tasks.windows_pending_operations(text,uuid) TO mdm_access;
+GRANT EXECUTE ON FUNCTION mdm_registration_tasks.windows_pending_operations(uuid,uuid) TO mdm_access;
 
 
-GRANT EXECUTE ON FUNCTION mdm_registration_tasks.windows_wake_candidates(text) TO mdm_access;
+GRANT EXECUTE ON FUNCTION mdm_registration_tasks.windows_wake_candidates(uuid) TO mdm_access;
 
 
-GRANT EXECUTE ON FUNCTION mdm_registration_tasks.retirement_commands(text,text),mdm_registration_tasks.save_retired_command(text,uuid,bigint,bigint) TO mdm_access,mdm_command_runtime,mdm_policy_runtime;
+GRANT EXECUTE ON FUNCTION mdm_registration_tasks.retirement_commands(uuid,text),mdm_registration_tasks.save_retired_command(uuid,uuid,bigint,bigint) TO mdm_access,mdm_command_runtime,mdm_policy_runtime;
 
 
 -- Explicit integration privileges owned by this capability.

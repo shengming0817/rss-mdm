@@ -10,7 +10,7 @@ pub struct Record {
     pub task_id: Uuid,
     pub policy_id: Uuid,
     pub version_id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub occurrence: String,
     pub available_at: i64,
     pub deadline: i64,
@@ -58,14 +58,15 @@ pub async fn detail_on(
         return Err(crate::Error::Forbidden.into());
     }
 
-    let device: Option<String> = sqlx::query_scalar(
+    let device: Option<rss_mdm_agent_wire::DeviceId> = sqlx::query_scalar(
         crate::storage_profile::sql(profile).enrollment_tasks_queries_detail_on_1,
     )
     .bind(tenant)
     .bind(policy)
     .bind(id)
     .fetch_optional(&mut *c)
-    .await?;
+    .await
+    .and_then(|id| id.map(crate::database::device_id).transpose())?;
     grant.require(
         proof,
         Permission::OperationRead,
@@ -100,8 +101,8 @@ pub async fn assignment_ids_on(
     )
     .bind(tenant.to_string())
     .bind(policy)
-    .bind(&target.device)
-    .bind(&target.device)
+    .bind(target.device.into_uuid())
+    .bind(target.device.into_uuid())
     .bind(channel.as_str())
     .fetch_all(c)
     .await?)
@@ -112,7 +113,7 @@ pub async fn state_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     materials: &Materials,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     frozen: &crate::enrollment::task::FrozenEnrollment,
     now: i64,
 ) -> Result<rss_mdm_policy::pages::TaskAdmission> {
@@ -146,7 +147,7 @@ pub async fn state_on(
     }
     let state = match materials
         .inventory
-        .enrollment_on(c, tenant, target.device.clone())
+        .enrollment_on(c, tenant, target.device)
         .await?
     {
         rss_mdm_inventory::channel::Observation::ProjectionPending { .. } => {
@@ -168,7 +169,7 @@ pub async fn assignment_state_on(
     tenant: rss_request_context::TenantId,
     materials: &Materials,
     policy: &rss_mdm_policy::Policy,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     now: i64,
 ) -> Result<rss_mdm_policy::pages::TaskAdmission> {
     let value: serde_json::Value = sqlx::query_scalar(

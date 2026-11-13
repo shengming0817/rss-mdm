@@ -57,7 +57,7 @@ impl Queries {
             let tenant = self.tenant.to_string();
             let id = p.id;
             let channel_name = channel.as_str();
-            state.operations=sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_software_deployment.operations o WHERE o.tenant_id=$1::uuid AND o.device=$3 AND $4='mdm' AND EXISTS(SELECT 1 FROM mdm_policy.versions v WHERE v.tenant_id=o.tenant_id AND v.id=o.policy_version AND v.policy=$2) UNION SELECT r.id FROM mdm_software_deployment.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.device=$3 AND v.action_kind=ANY(CASE WHEN $4='mdm' THEN ARRAY['ensure_agent_installed'] ELSE ARRAY['software'] END) ORDER BY id").bind(tenant).bind(id).bind(device).bind(channel_name).fetch_all(&mut *c).await?;
+            state.operations=sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_software_deployment.operations o WHERE o.tenant_id=$1::uuid AND o.device=$3 AND $4='mdm' AND EXISTS(SELECT 1 FROM mdm_policy.versions v WHERE v.tenant_id=o.tenant_id AND v.id=o.policy_version AND v.policy=$2) UNION SELECT r.id FROM mdm_software_deployment.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.device=$3 AND v.action_kind=ANY(CASE WHEN $4='mdm' THEN ARRAY['ensure_agent_installed'] ELSE ARRAY['software'] END) ORDER BY id").bind(tenant).bind(id).bind(device.into_uuid()).bind(channel_name).fetch_all(&mut *c).await?;
         }
         Ok(state)
     }

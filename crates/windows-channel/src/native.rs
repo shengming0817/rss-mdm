@@ -109,7 +109,7 @@ pub async fn result_eligible_on(
     reference: &s::Reference,
 ) -> std::result::Result<bool, Error> {
     let row=sqlx::query("SELECT a.operation, a.phase AS receipt_phase, a.ordinal = (SELECT max(b.ordinal) FROM mdm_windows.attempts AS b WHERE b.tenant_id = a.tenant_id AND b.operation = a.operation AND b.phase = a.phase) AS latest FROM mdm_windows.attempts AS a INNER JOIN mdm_windows.attempt_items AS i ON (i.tenant_id, i.attempt) = (a.tenant_id, a.id) WHERE (a.tenant_id = CAST($1 AS uuid) AND a.device = $2 AND a.credential = $3 AND a.session = $4 AND a.message = $5 AND i.command = $6 AND i.uri = $7) AND a.protocol_epoch = $8")
- .bind(p.tenant().to_string()).bind(p.device()).bind(p.credential()).bind(i64::from(session)).bind(i64::from(reference.message_id)).bind(i64::from(reference.command_id)).bind(&reference.uri).bind(p.epoch()).fetch_optional(&mut *c).await.map_err(db)?;
+ .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(p.credential()).bind(i64::from(session)).bind(i64::from(reference.message_id)).bind(i64::from(reference.command_id)).bind(&reference.uri).bind(p.epoch()).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
         return collection_result_eligible(source, c, protection, p, session, reference).await;
     };
@@ -124,7 +124,7 @@ async fn collection_result_eligible(
     reference: &s::Reference,
 ) -> std::result::Result<bool, Error> {
     let rows=sqlx::query("SELECT w.id, w.kind, w.template_state, r.scope, r.sealed_at IS NULL AND CASE w.kind WHEN 'agent' THEN r.deadline IS NULL OR r.deadline > clock_timestamp() WHEN 'template' THEN r.deadline IS NOT NULL AND r.deadline > clock_timestamp() ELSE FALSE END AS live FROM mdm_windows.collections AS w INNER JOIN mdm_access.collection_runs AS r USING (tenant_id, id) WHERE w.tenant_id = CAST($1 AS uuid) AND w.device = $2 AND w.session_id = $3 AND w.protocol_epoch = $4")
-        .bind(p.tenant().to_string()).bind(p.device()).bind(session.to_string()).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(session.to_string()).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
     for row in rows {
         let id = row.try_get("id").map_err(db)?;
         let scope = serde_json::from_str(&row.try_get::<String, _>("scope").map_err(db)?)
@@ -149,7 +149,7 @@ async fn collection_result_eligible(
     }
     // Capability prerequisites are bounded, registration-owned reads, never user operations.
     sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_windows.capability_queries WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND session = $3 AND ((version_command = $4 AND $5 = './DevDetail/SwV') OR (edition_command = $4 AND $5 = './Vendor/MSFT/DeviceStatus/OS/Edition'))) AND capability_queries.protocol_epoch = $6)" )
-        .bind(p.tenant().to_string()).bind(p.device()).bind(i64::from(session)).bind(i64::from(reference.command_id)).bind(&reference.uri).bind(p.epoch()).fetch_one(c).await.map_err(db)
+        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(i64::from(session)).bind(i64::from(reference.command_id)).bind(&reference.uri).bind(p.epoch()).fetch_one(c).await.map_err(db)
 }
 /// Consume exact native references under the authenticated registration generation.
 pub async fn receive_on(
@@ -168,7 +168,7 @@ pub async fn receive_on(
     let tenant = p.tenant().to_string();
     let session = i64::from(message.header.session_id);
     let rows=sqlx::query("SELECT a.phase AS receipt_phase, a.id, a.operation, a.message, a.request, a.ordinal = (SELECT max(latest.ordinal) FROM mdm_windows.attempts AS latest WHERE latest.tenant_id = a.tenant_id AND latest.operation = a.operation AND latest.phase = a.phase) AS latest FROM mdm_windows.attempts AS a WHERE (a.tenant_id = CAST($1 AS uuid) AND a.device = $2 AND a.credential = $3 AND a.session = $4) AND a.protocol_epoch = $5 ORDER BY a.ordinal")
- .bind(&tenant).bind(p.device()).bind(p.credential()).bind(session).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
+ .bind(&tenant).bind(p.device().into_uuid()).bind(p.credential()).bind(session).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
     let mut consumed = std::collections::BTreeSet::new();
     for row in rows {
         let attempt: Uuid = row.try_get("id").map_err(db)?;
@@ -312,10 +312,10 @@ async fn receive_capabilities(
     history: &s::Expected,
 ) -> std::result::Result<(), Error> {
     let tenant = p.tenant().to_string();
-    let reg = p.device().to_string();
+    let reg = p.device().into_uuid();
     let session = i64::from(message.header.session_id);
-    let query=sqlx::query("SELECT request, version_command, edition_command, os_version, edition, version_status, edition_status FROM mdm_windows.capability_queries WHERE (tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND session = $3) AND capability_queries.protocol_epoch = $4")
- .bind(&tenant).bind(&reg).bind(session).bind(p.epoch()).fetch_optional(&mut *c).await.map_err(db)?;
+    let query=sqlx::query("SELECT request, version_command, edition_command, os_version, edition, version_status, edition_status FROM mdm_windows.capability_queries WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND session = $3) AND capability_queries.protocol_epoch = $4")
+ .bind(&tenant).bind(reg).bind(session).bind(p.epoch()).fetch_optional(&mut *c).await.map_err(db)?;
     if let Some(row) = query {
         let ids = [
             row.try_get::<i64, _>("version_command").map_err(db)? as u32,
@@ -369,8 +369,8 @@ async fn receive_capabilities(
                 }
                 consumed.insert((sent.header.message_id, *id));
             }
-            sqlx::query("UPDATE mdm_windows.capability_queries SET os_version = $4, edition = $5, version_status = $6, edition_status = $7 WHERE (tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND session = $3) AND capability_queries.protocol_epoch = $8")
-   .bind(&tenant).bind(&reg).bind(session).bind(&values[0]).bind(&values[1]).bind(statuses[0]).bind(statuses[1]).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
+            sqlx::query("UPDATE mdm_windows.capability_queries SET os_version = $4, edition = $5, version_status = $6, edition_status = $7 WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND session = $3) AND capability_queries.protocol_epoch = $8")
+   .bind(&tenant).bind(reg).bind(session).bind(&values[0]).bind(&values[1]).bind(statuses[0]).bind(statuses[1]).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
             if statuses
                 .iter()
                 .all(|status| matches!(status, Some(200 | 214)))
@@ -384,9 +384,9 @@ async fn receive_capabilities(
                 )
                 .is_ok()
             {
-                let changed=sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS (SELECT 1 FROM mdm_windows.capabilities WHERE (tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND os_version = $3 AND edition = $4) AND capabilities.protocol_epoch = $5)").bind(&tenant).bind(&reg).bind(version).bind(edition as i32).bind(p.epoch()).fetch_one(&mut *c).await.map_err(db)?;
+                let changed=sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS (SELECT 1 FROM mdm_windows.capabilities WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND os_version = $3 AND edition = $4) AND capabilities.protocol_epoch = $5)").bind(&tenant).bind(reg).bind(version).bind(edition as i32).bind(p.epoch()).fetch_one(&mut *c).await.map_err(db)?;
                 sqlx::query("INSERT INTO mdm_windows.capabilities(tenant_id,device,protocol_epoch,os_version,edition,session,observed_at) VALUES($1::uuid,$2,$3,$4,$5,$6,floor(extract(epoch FROM clock_timestamp()))::bigint) ON CONFLICT(tenant_id,device,protocol_epoch) DO UPDATE SET os_version=excluded.os_version,edition=excluded.edition,session=excluded.session,observed_at=excluded.observed_at")
-    .bind(&tenant).bind(&reg).bind(p.epoch()).bind(version).bind(edition as i32).bind(session).execute(&mut *c).await.map_err(db)?;
+    .bind(&tenant).bind(reg).bind(p.epoch()).bind(version).bind(edition as i32).bind(session).execute(&mut *c).await.map_err(db)?;
                 if changed {
                     source.wake_configuration(c, p).await?;
                 }
@@ -465,7 +465,7 @@ pub(crate) async fn send_on(
     if msg as usize >= limits.session_messages {
         return Ok(false);
     }
-    let exists:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_windows.capability_queries WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND session = $3) AND capability_queries.protocol_epoch = $4)").bind(&tenant).bind(p.device()).bind(session).bind(p.epoch()).fetch_one(&mut *c).await.map_err(db)?;
+    let exists:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_windows.capability_queries WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND session = $3) AND capability_queries.protocol_epoch = $4)").bind(&tenant).bind(p.device().into_uuid()).bind(session).bind(p.epoch()).fetch_one(&mut *c).await.map_err(db)?;
     let mut pending = false;
     if !exists {
         let id = crate::device::store::allocate_commands_in(
@@ -493,11 +493,11 @@ pub(crate) async fn send_on(
                 )?,
             )
             .map_err(|_| protocol())?;
-        sqlx::query("INSERT INTO mdm_windows.capability_queries (tenant_id, device, session, request, version_command, edition_command, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7)").bind(&tenant).bind(p.device()).bind(session).bind(wire).bind(i64::from(id)).bind(i64::from(id+1)).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_windows.capability_queries (tenant_id, device, session, request, version_command, edition_command, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7)").bind(&tenant).bind(p.device().into_uuid()).bind(session).bind(wire).bind(i64::from(id)).bind(i64::from(id+1)).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
         response.commands.extend(request.commands);
         pending = true;
     }
-    let cap=sqlx::query_as::<_,(String,i32)>("SELECT os_version, edition FROM mdm_windows.capabilities WHERE (tenant_id = CAST($1 AS uuid) AND device = $2) AND capabilities.protocol_epoch = $3").bind(&tenant).bind(p.device()).bind(p.epoch()).fetch_optional(&mut *c).await.map_err(db)?;
+    let cap=sqlx::query_as::<_,(String,i32)>("SELECT os_version, edition FROM mdm_windows.capabilities WHERE (tenant_id = CAST($1 AS uuid) AND device = $2) AND capabilities.protocol_epoch = $3").bind(&tenant).bind(p.device().into_uuid()).bind(p.epoch()).fetch_optional(&mut *c).await.map_err(db)?;
     for op in source.candidates(c, p).await? {
         if !op.dispatch || !op.matches || (op.user && !user_available) {
             continue;
@@ -529,7 +529,7 @@ pub(crate) async fn send_on(
                 continue;
             }
         }
-        let old=sqlx::query("SELECT a.id,a.ordinal,a.phase,a.session,a.platform,a.declared_versions,a.device,a.protocol_epoch FROM mdm_windows.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND a.device=$3 ORDER BY a.ordinal DESC LIMIT 1").bind(&tenant).bind(op.id).bind(p.device()).fetch_optional(&mut *c).await.map_err(db)?;
+        let old=sqlx::query("SELECT a.id,a.ordinal,a.phase,a.session,a.platform,a.declared_versions,a.device,a.protocol_epoch FROM mdm_windows.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND a.device=$3 ORDER BY a.ordinal DESC LIMIT 1").bind(&tenant).bind(op.id).bind(p.device().into_uuid()).fetch_optional(&mut *c).await.map_err(db)?;
         let items = if let Some(old) = &old {
             sqlx::query("SELECT command,item_ordinal,kind,uri,status,receipt_accepted,value,value IS NOT NULL AS has_value,result_accepted FROM mdm_windows.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2")
                 .bind(&tenant).bind(old.try_get::<Uuid, _>("id").map_err(db)?)
@@ -624,7 +624,9 @@ pub(crate) async fn send_on(
                 let value = if let Some(sealed) = sealed {
                     let aad = result_aad(
                         p.tenant(),
-                        old.try_get::<&str, _>("device").map_err(db)?,
+                        &old.try_get::<Uuid, _>("device")
+                            .and_then(crate::database::device_id)
+                            .map_err(db)?,
                         old.try_get("protocol_epoch").map_err(db)?,
                         attempt,
                         item.try_get("command").map_err(db)?,
@@ -935,7 +937,7 @@ pub(crate) async fn send_on(
                 )?,
             )
             .map_err(|_| protocol())?;
-        sqlx::query("INSERT INTO mdm_windows.attempts (tenant_id, id, operation, ordinal, credential, session, message, phase, request, platform, declared_versions, device, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)").bind(&tenant).bind(attempt).bind(op.id).bind(ordinal).bind(p.credential()).bind(session).bind(msg).bind(phase.as_str()).bind(wire).bind(platform.map(serde_json::to_value).transpose().map_err(|_|protocol())?).bind(if phase == AttemptPhase::Observe { versions.map(serde_json::to_value).transpose().map_err(|_|protocol())? } else { None }).bind(p.device()).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_windows.attempts (tenant_id, id, operation, ordinal, credential, session, message, phase, request, platform, declared_versions, device, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)").bind(&tenant).bind(attempt).bind(op.id).bind(ordinal).bind(p.credential()).bind(session).bind(msg).bind(phase.as_str()).bind(wire).bind(platform.map(serde_json::to_value).transpose().map_err(|_|protocol())?).bind(if phase == AttemptPhase::Observe { versions.map(serde_json::to_value).transpose().map_err(|_|protocol())? } else { None }).bind(p.device().into_uuid()).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
         for item in expected_items(&command)? {
             sqlx::query("INSERT INTO mdm_windows.attempt_items(tenant_id,attempt,command,item_ordinal,kind,uri,parent_command) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)").bind(&tenant).bind(attempt).bind(i64::from(item.command)).bind(item.ordinal).bind(item.kind).bind(item.uri).bind(item.parent.map(i64::from)).execute(&mut *c).await.map_err(db)?;
         }
@@ -956,7 +958,7 @@ pub(crate) async fn send_on(
         break;
     }
     let rows = sqlx::query("SELECT a.operation, i.kind, i.status, i.value IS NOT NULL AS has_value, i.receipt_accepted, i.result_accepted FROM mdm_windows.attempts AS a INNER JOIN mdm_windows.attempt_items AS i ON (i.tenant_id, i.attempt) = (a.tenant_id, a.id) WHERE (a.tenant_id = CAST($1 AS uuid) AND a.device = $2 AND a.session = $3) AND a.protocol_epoch = $4")
-      .bind(&tenant).bind(p.device()).bind(session).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
+      .bind(&tenant).bind(p.device().into_uuid()).bind(session).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
     let mut outstanding = false;
     for row in rows {
         if item_evidence(&row, ReceiptRole::Execute)?.pending()
@@ -1005,7 +1007,9 @@ fn declared_query_needed(
             .map(|v| {
                 let aad = result_aad(
                     p.tenant(),
-                    old.try_get::<&str, _>("device").map_err(db)?,
+                    &old.try_get::<Uuid, _>("device")
+                        .and_then(crate::database::device_id)
+                        .map_err(db)?,
                     old.try_get("protocol_epoch").map_err(db)?,
                     attempt,
                     item.try_get("command").map_err(db)?,
@@ -1120,14 +1124,14 @@ pub async fn replay_on(
     m: &Message,
 ) -> std::result::Result<(), Error> {
     let ids=sqlx::query_scalar::<_,Uuid>("SELECT DISTINCT a.operation FROM mdm_windows.attempts AS a WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = $2 AND a.credential = $3 AND a.session = $4 AND (a.message = $5 OR EXISTS (SELECT 1 FROM mdm_windows.attempt_frames AS f WHERE f.tenant_id = a.tenant_id AND f.attempt = a.id AND f.message = $5)) AND a.protocol_epoch = $6")
-      .bind(p.tenant().to_string()).bind(p.device()).bind(p.credential()).bind(i64::from(m.header.session_id)).bind(i64::from(m.header.message_id)).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
+      .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(p.credential()).bind(i64::from(m.header.session_id)).bind(i64::from(m.header.message_id)).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
     for id in ids {
         if !source.operation(c, p, id).await?.replay {
             return Err(Error::Forbidden);
         }
     }
     let collections=sqlx::query("SELECT w.id, w.template_state, r.scope FROM mdm_windows.collections AS w INNER JOIN mdm_access.collection_runs AS r USING (tenant_id, id) WHERE w.tenant_id = CAST($1 AS uuid) AND w.device = $2 AND w.session_id = $3 AND w.kind = 'template' AND w.protocol_epoch = $4")
-        .bind(p.tenant().to_string()).bind(p.device()).bind(m.header.session_id.to_string()).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(m.header.session_id.to_string()).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
     for row in collections {
         let id = row.try_get("id").map_err(db)?;
         let scope = serde_json::from_str(&row.try_get::<String, _>("scope").map_err(db)?)
@@ -1196,7 +1200,7 @@ fn atomic_ancestor(
 
 pub(crate) fn result_aad(
     tenant: TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     protocol_epoch: Uuid,
     attempt: Uuid,
     command: i64,

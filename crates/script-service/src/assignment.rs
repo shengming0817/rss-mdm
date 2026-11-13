@@ -82,7 +82,7 @@ pub async fn state_on(
                 .await?
         {
             let next = schedule
-                .next_after(now, target.device.as_bytes())?
+                .next_after(now, target.device.to_string().as_bytes())?
                 .map(|o| o.available_at);
             return Ok((
                 TaskAdmission::new(S::FrequencyConsumed, None).not_before(next),
@@ -92,7 +92,7 @@ pub async fn state_on(
         let state = if !capacity {
             S::CapacityBusy
         } else if candidate.available > now {
-            waiting_time_reason(schedule, now, target.device.as_bytes())?
+            waiting_time_reason(schedule, now, target.device.to_string().as_bytes())?
         } else {
             S::WaitingCheckIn
         };
@@ -129,7 +129,7 @@ pub async fn state_on(
         Trigger::Registration => (S::WaitingCheckIn, None),
         _ => {
             let next = schedule
-                .next_after(now, target.device.as_bytes())?
+                .next_after(now, target.device.to_string().as_bytes())?
                 .map(|o| o.available_at);
             (
                 if next.is_some() {

@@ -66,7 +66,9 @@ impl Scopes {
                     return Ok(scan);
                 }
                 let records = match &source.reference {
-                    Reference::Device(id) if after.is_none() => vec![(id.clone(), false)],
+                    Reference::Device(id) if after.is_none() => {
+                        vec![(ObjectRef::Endpoint(*id), false)]
+                    }
                     Reference::Device(_) => break,
                     Reference::Group(_) => {
                         let Some(set) = source.coordinates.member_set else {
@@ -79,7 +81,7 @@ impl Scopes {
                         }
                         let page = self
                             .groups
-                            .build_decisions_in(tx, set, after.clone(), limit, reads.bytes)
+                            .build_decisions_in(tx, set, after, limit, reads.bytes)
                             .await?;
                         let page = match page {
                             Err(Rejection::PageBudgetExceeded) => {
@@ -96,7 +98,7 @@ impl Scopes {
                         if page.items.is_empty() {
                             break;
                         }
-                        after = page.items.last().map(|d| d.device.clone());
+                        after = page.items.last().map(|d| d.object);
                         if !reads.take(page.items.len()) {
                             scan.reason = StopReason::WorkBudget;
                             return Ok(scan);
@@ -105,7 +107,7 @@ impl Scopes {
                             .into_iter()
                             .filter_map(|d| match d.decision {
                                 DecisionValue::NoMatch => None,
-                                state => Some((d.device, state != DecisionValue::Match)),
+                                state => Some((d.object, state != DecisionValue::Match)),
                             })
                             .collect()
                     }
@@ -115,8 +117,8 @@ impl Scopes {
                     scan.reason = StopReason::WorkBudget;
                     return Ok(scan);
                 }
-                if matches!(source.reference, Reference::Device(_)) {
-                    after = Some(String::new());
+                if let Reference::Device(id) = source.reference {
+                    after = Some(ObjectRef::Endpoint(id));
                 }
                 for (key, _) in records {
                     let Some(object) = self
@@ -152,7 +154,7 @@ impl Scopes {
                             scan.reason = StopReason::WorkBudget;
                             return Ok(scan);
                         };
-                        seen.insert(member.device.clone());
+                        seen.insert(member.device);
                         let explanation = crate::channels::targets::frozen_explanation(
                             self.tenant,
                             frozen,
@@ -175,7 +177,7 @@ impl Scopes {
                         scan.has_unknown |=
                             pending || rows.iter().any(|r| r.unknown || !r.input.verified);
                         if matched {
-                            scan.items.push(ObjectRef::Endpoint(member.device.clone()));
+                            scan.items.push(ObjectRef::Endpoint(member.device));
                         }
                         if scan.items.len() == SAMPLE_LIMIT {
                             scan.reason = StopReason::SampleLimit;
@@ -192,14 +194,17 @@ impl Scopes {
         &self,
         tx: &mut PgTransaction<'_>,
         source: &SourceSet,
-        key: &str,
+        key: &ObjectRef,
         cut: &AssetCut,
         reads: &mut Reads<'_>,
     ) -> transaction::Result<Option<DeviceObject>> {
         if !reads.take(1) {
             return Ok(None);
         }
-        let object = group_checked(ObjectRef::from_key(source.coordinates.asset_context, key))?;
+        let object = group_checked(rss_mdm_inventory_service::objects::checked_context(
+            source.coordinates.asset_context,
+            key,
+        ))?;
         let reader = self.objects.clone();
         let tenant = self.tenant;
         if let Some(snapshot) = &source.snapshot {
@@ -243,7 +248,7 @@ impl Scopes {
         &self,
         tx: &mut PgTransaction<'_>,
         frozen: &ScopeInput,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         channel: Channel,
         cut: &AssetCut,
         reads: &mut Reads<'_>,
@@ -258,7 +263,9 @@ impl Scopes {
                     if id != device {
                         continue;
                     }
-                    let Some(input) = self.preview_object_in(tx, source, id, cut, reads).await?
+                    let Some(input) = self
+                        .preview_object_in(tx, source, &ObjectRef::Endpoint(*id), cut, reads)
+                        .await?
                     else {
                         return Ok(None);
                     };
@@ -294,7 +301,13 @@ impl Scopes {
                         objects
                     } else {
                         let Some(input) = self
-                            .preview_object_in(tx, source, device, cut, reads)
+                            .preview_object_in(
+                                tx,
+                                source,
+                                &ObjectRef::Endpoint(*device),
+                                cut,
+                                reads,
+                            )
                             .await?
                         else {
                             return Ok(None);
@@ -307,8 +320,8 @@ impl Scopes {
                     let keys = objects
                         .iter()
                         .map(|o| match source.coordinates.asset_context {
-                            rss_mdm_group::AssetContext::Endpoint => device.to_owned(),
-                            rss_mdm_group::AssetContext::AssociatedDevice => o.object.key(),
+                            rss_mdm_group::AssetContext::Endpoint => ObjectRef::Endpoint(*device),
+                            rss_mdm_group::AssetContext::AssociatedDevice => o.object,
                         })
                         .collect::<Vec<_>>();
                     if !reads.take(keys.len()) {
@@ -345,7 +358,7 @@ impl Scopes {
                 if input
                     .members
                     .iter()
-                    .any(|m| m.device == device && m.channel == channel)
+                    .any(|m| m.device == *device && m.channel == channel)
                 {
                     rows.push(SourceRow {
                         source: index,

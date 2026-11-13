@@ -74,7 +74,7 @@ pub struct ArrayFact {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EndpointArrayFact {
     /// Owning endpoint.
-    pub endpoint: String,
+    pub endpoint: rss_mdm_agent_wire::DeviceId,
     /// Source fact.
     pub fact: ArrayFact,
 }
@@ -240,11 +240,6 @@ pub fn resolve_device_array(
 ) -> Result<ResolvedDeviceArray> {
     if sources.len() > 256 {
         return Err(Invalid::SourceLimit);
-    }
-    if sources.iter().any(|s| {
-        s.endpoint.is_empty() || s.endpoint.len() > 256 || s.endpoint.chars().any(char::is_control)
-    }) {
-        return Err(Invalid::Evidence);
     }
     sources.sort_by(|a, b| {
         (

@@ -17,7 +17,7 @@ pub struct QueryTask {
     pub summary: Summary,
     pub completed: bool,
     pub failure: Option<String>,
-    pub cursor: Option<String>,
+    pub cursor: Option<rss_mdm_agent_wire::ObjectRef>,
     pub started: bool,
 }
 pub fn target(tenant: TenantId, task: Uuid) -> rss_reconcile::Target {
@@ -39,7 +39,7 @@ impl AssetService {
         self.check_query_transaction(tx)?;
         let tenant = self.tenant.to_string();
         let row = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("SELECT input,completed,failure,cursor,started,total,matched,unknown FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND id=$2")
+            sqlx::query("SELECT input,completed,failure,cursor_kind,cursor,started,total,matched,unknown FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(tenant).bind(task).fetch_optional(c).await
         })).await?.ok_or(Error::NotFound)?;
         Ok(QueryTask {
@@ -51,7 +51,16 @@ impl AssetService {
             input: stored(serde_json::from_value(row.try_get("input")?))?,
             completed: row.try_get("completed")?,
             failure: row.try_get("failure")?,
-            cursor: row.try_get("cursor")?,
+            cursor: match (
+                row.try_get::<Option<i16>, _>("cursor_kind")?,
+                row.try_get::<Option<Uuid>, _>("cursor")?,
+            ) {
+                (None, None) => None,
+                (Some(kind), Some(id)) => {
+                    Some(stored(rss_mdm_agent_wire::ObjectRef::from_parts(kind, id))?)
+                }
+                _ => return Err(Error::Unavailable(Failure::AssetsStorage).into()),
+            },
             started: row.try_get("started")?,
         })
     }
@@ -91,13 +100,13 @@ impl AssetService {
         &self,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
-        cursor: Option<String>,
+        cursor: Option<rss_mdm_agent_wire::ObjectRef>,
     ) -> Result<()> {
         self.check_query_transaction(tx)?;
         let tenant = self.tenant.to_string();
         let changed = tx.with_connection(move |c| Box::pin(async move {
-            Ok(sqlx::query("UPDATE mdm_assets.asset_query_runs SET cursor=$3,started=true WHERE tenant_id=$1::uuid AND id=$2 AND NOT completed")
-                .bind(tenant).bind(task).bind(cursor).execute(c).await?.rows_affected())
+            Ok(sqlx::query("UPDATE mdm_assets.asset_query_runs SET cursor_kind=$3,cursor=$4,started=true WHERE tenant_id=$1::uuid AND id=$2 AND NOT completed")
+                .bind(tenant).bind(task).bind(cursor.map(|o|o.kind())).bind(cursor.map(|o|o.uuid())).execute(c).await?.rows_affected())
         })).await?;
         if changed != 1 {
             return Err(Error::Conflict.into());

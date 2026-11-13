@@ -145,7 +145,9 @@ CREATE TABLE "###, $work, r###" (
     input jsonb NOT NULL,
     started boolean DEFAULT false NOT NULL,
     completed boolean DEFAULT false NOT NULL,
-    cursor text,
+    cursor_kind smallint CHECK(cursor_kind IN(0,1)),
+    cursor_id uuid CHECK(cursor_id <> '00000000-0000-0000-0000-000000000000'::uuid),
+    CONSTRAINT policy_work_cursor_pair CHECK((cursor_kind IS NULL)=(cursor_id IS NULL)),
     replacement_task uuid,
     authority_revision bigint DEFAULT 0 NOT NULL,
     failure text,
@@ -170,7 +172,7 @@ CREATE POLICY tenant ON "###, $work, r###" USING ((tenant_id = (NULLIF(current_s
 
 CREATE TABLE "###, $event_batches, r###" (
  tenant_id uuid NOT NULL, id uuid NOT NULL, request uuid NOT NULL, actor text NOT NULL,
- caller jsonb NOT NULL, device text NOT NULL, input jsonb NOT NULL,
+ caller jsonb NOT NULL, device uuid NOT NULL, input jsonb NOT NULL,
  fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),
  created_at bigint NOT NULL, deadline bigint NOT NULL CHECK(deadline>created_at),
  PRIMARY KEY(tenant_id,id), UNIQUE(tenant_id,actor,request)
@@ -205,20 +207,20 @@ CREATE POLICY tenant ON "###, $event_members, r###" USING(tenant_id=nullif(curre
 CREATE TABLE "###, $assignments, r###" (
  tenant_id uuid NOT NULL, policy uuid NOT NULL, version uuid NOT NULL,
  entry_revision bigint NOT NULL CHECK(entry_revision>=0),
- object text COLLATE "C" NOT NULL, channel text NOT NULL CHECK(channel IN('agent','mdm')),
+ object_kind smallint NOT NULL CHECK(object_kind IN(0,1)), object_id uuid NOT NULL CHECK(object_id <> '00000000-0000-0000-0000-000000000000'::uuid), channel text NOT NULL CHECK(channel IN('agent','mdm')),
  input jsonb NOT NULL, availability text NOT NULL CHECK(availability IN('ready','unavailable')),
  reason text, target jsonb, scope_result uuid NOT NULL,
- PRIMARY KEY(tenant_id,policy,version,object,channel),
+ PRIMARY KEY(tenant_id,policy,version,object_kind,object_id,channel),
  FOREIGN KEY(tenant_id,version) REFERENCES "###, $versions, r###"(tenant_id,id),
  CHECK((availability='ready')=(reason IS NULL)), CHECK(availability<>'ready' OR target IS NOT NULL)
 );
-"###, $index_31, " ON ", $assignments, r###"(tenant_id,(target->>'device'),policy,version) WHERE channel='mdm';
+"###, $index_31, " ON ", $assignments, r###"(tenant_id,((target->>'device')::uuid),policy,version) WHERE channel='mdm';
 ALTER TABLE "###, $assignments, r###" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "###, $assignments, r###" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON "###, $assignments, r###" USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON "###, $assignments, ",", $work, ",", $event_batches, ",", $event_members, " TO ", $policy_role, r###";
 GRANT UPDATE(input,availability,reason,target,scope_result,entry_revision) ON "###, $assignments, " TO ", $policy_role, r###";
-GRANT UPDATE(started,completed,cursor,replacement_task,authority_revision,failure,failure_detail) ON "###, $work, " TO ", $policy_role, r###";
+GRANT UPDATE(started,completed,cursor_kind,cursor_id,replacement_task,authority_revision,failure,failure_detail) ON "###, $work, " TO ", $policy_role, r###";
 GRANT UPDATE(decision) ON "###, $event_members, " TO ", $policy_role, r###";
 
 COMMIT;
@@ -247,7 +249,7 @@ GRANT UPDATE(decision) ON "###, $event_members, " TO ", $command, r###";
 GRANT UPDATE(completed,failure) ON "###, $work, " TO ", $command, r###";
 GRANT SELECT,INSERT ON "###, $assignments, ",", $work, " TO ", $policy_role, r###";
 GRANT UPDATE(input,availability,reason,target,scope_result,entry_revision) ON "###, $assignments, " TO ", $policy_role, r###";
-GRANT UPDATE(started,completed,cursor,replacement_task,authority_revision,failure,failure_detail) ON "###, $work, " TO ", $policy_role, r###";
+GRANT UPDATE(started,completed,cursor_kind,cursor_id,replacement_task,authority_revision,failure,failure_detail) ON "###, $work, " TO ", $policy_role, r###";
 COMMIT;
 
 GRANT SELECT,INSERT ON "###, $schedule_scan, " TO ", $policy_role, r###";
@@ -315,7 +317,7 @@ FROM "###, $policies, r###" WHERE tenant_id=$1::uuid
                 telemetry_is_current_on_2: concat!("SELECT true FROM ", $policies, " WHERE tenant_id=$1::uuid AND id=$2 AND current_version=$3 AND state='enabled'"),
                 events_replay_in_1: concat!("SELECT fingerprint,id,(SELECT count(*) FROM ", $event_members, " m WHERE(m.tenant_id,m.batch)=(b.tenant_id,b.id)) FROM ", $event_batches, " b WHERE tenant_id=$1::uuid AND actor=$2 AND request=$3"),
                 event_operation: concat!("SELECT id,created_at FROM ", $event_batches, " WHERE tenant_id=$1::uuid AND actor=$2 AND request=$3 AND device=$4"),
-                event_member_operation: concat!("SELECT policy,revision,decision->>'state' FROM ", $event_members, " WHERE tenant_id=$1::uuid AND id=$2 AND target->>'device'=$3"),
+                event_member_operation: concat!("SELECT policy,revision,decision->>'state' FROM ", $event_members, " WHERE tenant_id=$1::uuid AND id=$2 AND (target->>'device')::uuid=$3"),
                 events_matching_policies_in_1: concat!("SELECT id FROM ", $policies, " WHERE tenant_id=$1::uuid AND definition->>'customEvent'=$2 AND state<>'archived' ORDER BY id LIMIT 1001"),
                 events_insert_batch_in_1: concat!("INSERT INTO ", $event_batches, "(tenant_id,id,request,actor,caller,device,input,fingerprint,created_at,deadline) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10)"),
                 events_insert_member_in_1: concat!("INSERT INTO ", $event_members, "(tenant_id,batch,id,policy,revision,version,target,authority,decision) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)"),
@@ -344,20 +346,20 @@ FROM "###, $policies, r###" WHERE tenant_id=$1::uuid
                 directory_policies_in_1: concat!("SELECT jsonb_build_object('id',id,'toolName','policy_' || replace(id::text,'-',''),'alias',definition->>'alias','customEvent',definition->>'customEvent','revision',revision,'version',version_number,'versionId',current_version,'state',state,'definition',definition,'action',definition->'action'->>'kind','scope',definition->>'scope','resource',definition->'action'->'resource'->>'id','category',definition->'selfService'->'presentation'->>'category') FROM ", $policies, " WHERE tenant_id="),
                 directory_events_in_1: concat!("SELECT jsonb_build_object('id',m.id,'policyId',m.policy,'versionId',m.version,'revision',m.revision,'state',m.decision->>'state','decision',m.decision) AS row FROM ", $event_members, " m JOIN ", $event_batches, " b ON(b.tenant_id,b.id)=(m.tenant_id,m.batch) WHERE b.tenant_id="),
                 directory_batch_exists_in_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $event_batches, " WHERE tenant_id=$1::uuid AND id=$2 AND device=$3)"),
-                candidates_native_interests_on_1: concat!("SELECT DISTINCT a.target->>'device' FROM ", $policies, " p JOIN ", $assignments, " a ON(a.tenant_id,a.policy,a.version)=(p.tenant_id,p.id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND p.definition->'action'->>'kind'=ANY($3::text[]) AND (p.definition->'action'->>'kind'<>'software' OR p.definition->'action'->>'channel'='mdm') AND a.channel='mdm' AND a.target->>'device'=ANY($2::text[]) AND a.input->'admission'->>'state'<>'excluded' ORDER BY 1"),
-                candidates_configuration_candidates_on_1: concat!("WITH candidates AS MATERIALIZED (SELECT p.id,p.current_version,(p.definition->>'scope')::uuid AS scope,d.device FROM ", $policies, r###" p CROSS JOIN (SELECT DISTINCT unnest($2::text[]) AS device) d WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND p.definition->'action'->>'kind'='configuration' AND ($3::uuid IS NULL OR (p.id,d.device COLLATE "C")>($3,$4 COLLATE "C")) ORDER BY p.id,d.device COLLATE "C" LIMIT 1001) SELECT *,"###, $scope, r###"channel_admission(scope,'mdm',device) AS admission FROM candidates ORDER BY id,device COLLATE "C""###),
+                candidates_native_interests_on_1: concat!("SELECT DISTINCT (a.target->>'device')::uuid FROM ", $policies, " p JOIN ", $assignments, " a ON(a.tenant_id,a.policy,a.version)=(p.tenant_id,p.id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND p.definition->'action'->>'kind'=ANY($3::text[]) AND (p.definition->'action'->>'kind'<>'software' OR p.definition->'action'->>'channel'='mdm') AND a.channel='mdm' AND (a.target->>'device')::uuid=ANY($2::uuid[]) AND a.input->'admission'->>'state'<>'excluded' ORDER BY 1"),
+                candidates_configuration_candidates_on_1: concat!("WITH candidates AS MATERIALIZED (SELECT p.id,p.current_version,(p.definition->>'scope')::uuid AS scope,d.device FROM ", $policies, r###" p CROSS JOIN (SELECT DISTINCT unnest($2::uuid[]) AS device) d WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND p.definition->'action'->>'kind'='configuration' AND ($3::uuid IS NULL OR (p.id,d.device)>($3,$4)) ORDER BY p.id,d.device LIMIT 1001) SELECT *,"###, $scope, r###"channel_admission(scope,'mdm',device) AS admission FROM candidates ORDER BY id,device"###),
                 candidates_candidates_on_1: concat!("SELECT id,current_version,(definition->>'scope')::uuid AS scope FROM ", $policies, " WHERE tenant_id=$1::uuid AND (state='enabled') AND id>$2 AND definition->'action'->>'kind'=$3 ORDER BY id LIMIT 17"),
                 work_enqueue_in_1: concat!("INSERT INTO ", $work, "(tenant_id,id,kind,target,input) VALUES($1::uuid,$2,$3,$4,$5)"),
-                work_read_in_1: concat!("SELECT input,completed,failure,cursor,started FROM ", $work, " WHERE tenant_id=$1::uuid AND id=$2"),
-                work_cursor_in_1: concat!("UPDATE ", $work, " SET cursor=$3 WHERE tenant_id=$1::uuid AND id=$2"),
+                work_read_in_1: concat!("SELECT input,completed,failure,cursor_kind,cursor_id,started FROM ", $work, " WHERE tenant_id=$1::uuid AND id=$2"),
+                work_cursor_in_1: concat!("UPDATE ", $work, " SET cursor_kind=$3,cursor_id=$4 WHERE tenant_id=$1::uuid AND id=$2"),
                 work_started_in_1: concat!("UPDATE ", $work, " SET started=true WHERE tenant_id=$1::uuid AND id=$2 AND NOT started"),
                 work_finish_in_1: concat!("UPDATE ", $work, " SET completed=true,failure=$3 WHERE tenant_id=$1::uuid AND id=$2 AND NOT completed RETURNING target,kind"),
                 work_exists_in_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND id=$2 AND (NOT $3 OR completed))"),
                 work_replacement_in_1: concat!("UPDATE ", $work, " SET replacement_task=$3 WHERE tenant_id=$1::uuid AND id=$2"),
                 work_counts_in_1: concat!("SELECT (SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure IS NULL AND NOT completed AND NOT started LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure IS NULL AND NOT completed AND started LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure IS NULL AND completed LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure IS NOT NULL AND failure<>'superseded' LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure='superseded' LIMIT 1001) q)"),
-                assignments_upsert_in_1: concat!("INSERT INTO ", $assignments, " AS current_assignment(tenant_id,policy,version,object,channel,input,availability,reason,target,scope_result,entry_revision) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(tenant_id,policy,version,object,channel) DO UPDATE SET input=EXCLUDED.input,availability=EXCLUDED.availability,reason=EXCLUDED.reason,target=EXCLUDED.target,scope_result=EXCLUDED.scope_result,entry_revision=EXCLUDED.entry_revision WHERE (current_assignment.input,current_assignment.availability,current_assignment.reason,current_assignment.target,current_assignment.scope_result,current_assignment.entry_revision) IS DISTINCT FROM (EXCLUDED.input,EXCLUDED.availability,EXCLUDED.reason,EXCLUDED.target,EXCLUDED.scope_result,EXCLUDED.entry_revision)"),
-                assignments_objects_in_1: concat!("SELECT object,input->'object' FROM ", $assignments, " WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND reason IS DISTINCT FROM 'source_removed'"),
-                assignments_withdraw_in_1: concat!("UPDATE ", $assignments, r###" SET input=jsonb_set(jsonb_set(jsonb_set(input,'{availability}','"unavailable"'),'{reason}','"source_removed"'),'{admission}','{"state":"excluded"}'),availability='unavailable',reason='source_removed',entry_revision=0 WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND object=ANY($4::text[]) AND reason IS DISTINCT FROM 'source_removed' RETURNING object,target"###),
+                assignments_upsert_in_1: concat!("INSERT INTO ", $assignments, " AS current_assignment(tenant_id,policy,version,object_kind,object_id,channel,input,availability,reason,target,scope_result,entry_revision) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(tenant_id,policy,version,object_kind,object_id,channel) DO UPDATE SET input=EXCLUDED.input,availability=EXCLUDED.availability,reason=EXCLUDED.reason,target=EXCLUDED.target,scope_result=EXCLUDED.scope_result,entry_revision=EXCLUDED.entry_revision WHERE (current_assignment.input,current_assignment.availability,current_assignment.reason,current_assignment.target,current_assignment.scope_result,current_assignment.entry_revision) IS DISTINCT FROM (EXCLUDED.input,EXCLUDED.availability,EXCLUDED.reason,EXCLUDED.target,EXCLUDED.scope_result,EXCLUDED.entry_revision)"),
+                assignments_objects_in_1: concat!("SELECT DISTINCT object_kind,object_id FROM ", $assignments, " WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND reason IS DISTINCT FROM 'source_removed'"),
+                assignments_withdraw_in_1: concat!("UPDATE ", $assignments, r###" SET input=jsonb_set(jsonb_set(jsonb_set(input,'{availability}','"unavailable"'),'{reason}','"source_removed"'),'{admission}','{"state":"excluded"}'),availability='unavailable',reason='source_removed',entry_revision=0 WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND (object_kind,object_id) IN(SELECT * FROM unnest($4::smallint[],$5::uuid[])) AND reason IS DISTINCT FROM 'source_removed' RETURNING object_kind,object_id,target"###),
                 object_manifest: concat!(r###"{"tables":[""###, $assignments, r###"",""###, $event_batches, r###"",""###, $event_members, r###"",""###, $policies, r###"",""###, $requests, r###"",""###, $schedule_scan, r###"",""###, $triggers, r###"",""###, $versions, r###"",""###, $work, r###""],"functions":[""###, $policy_schema, r###"lock_policy"],"views":[]}"###),
                 access_contract: concat!(r###"{"tables":[],"functions":[{"name":""###, $policy_schema, r###"lock_policy","search_path":"search_path=pg_catalog"}],"external_relations":["###, $access_contract_external_relations, r###"],"verified_schemas":[]}"###),
                 directory_event_batches: concat!("SELECT jsonb_build_object('request',b.input,'id',b.id,'operationId',b.request,'event',b.input->>'event','createdAt',b.created_at,'deadline',b.deadline,'processingFailure',(SELECT failure FROM ", $work, " WHERE tenant_id=b.tenant_id AND id=b.id),'members',(SELECT count(*) FROM ", $event_members, " m WHERE(m.tenant_id,m.batch)=(b.tenant_id,b.id)),'admission',(SELECT coalesce(jsonb_object_agg(state,n),'{}'::jsonb) FROM(SELECT decision->>'state' state,count(*) n FROM ", $event_members, " WHERE tenant_id=b.tenant_id AND batch=b.id GROUP BY decision->>'state') counts)) AS row FROM ", $event_batches, " b WHERE b.tenant_id="),

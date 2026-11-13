@@ -57,7 +57,7 @@ async fn device(
     State(service): State<Arc<Timeline>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
     params: rss_mdm_http_contract::query::OwnedQuery<DeviceQuery>,
 ) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Page>>, Error> {
     (async {
@@ -100,7 +100,7 @@ async fn activities(
     State(service): State<Arc<Timeline>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
     params: rss_mdm_http_contract::query::OwnedQuery<ActivityQuery>,
 ) -> Result<
     rss_mdm_http_contract::CollectionResponse<
@@ -130,7 +130,7 @@ async fn activity(
     State(service): State<Arc<Timeline>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id)): Path<(String, String)>,
+    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, String)>,
 ) -> Result<Json<rss_mdm_agent_wire::activities::ManagementActivityDetail>, Error> {
     audit.set_action(
         "management_activity_read",

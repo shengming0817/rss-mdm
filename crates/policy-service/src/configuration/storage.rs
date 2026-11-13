@@ -2,7 +2,7 @@ use super::*;
 use sqlx::Row;
 pub struct Operation {
     pub id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub request: Create,
     pub authority: authority::Authority,
     pub revision: i64,
@@ -45,7 +45,9 @@ fn decode_operation(
 ) -> Result<Operation> {
     Ok(Operation {
         id,
-        device: row.try_get("device")?,
+        device: row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+            rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+        })?,
         request: super::input_storage::open_row(protection, tenant, id, row, "request")?,
         authority: stored(serde_json::from_str(
             &row.try_get::<String, _>("authority")?,
@@ -70,13 +72,13 @@ fn decode_operation(
 
 pub async fn current_registration(
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     purpose: rss_mdm_registration_service::Purpose,
-) -> Result<String> {
+) -> Result<rss_mdm_agent_wire::DeviceId> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let t = tenant.clone();
-    let d = device.clone();
+    let d = device;
     tx.with_connection(move |c| {
         Box::pin(async move {
             Ok(rss_mdm_registration_service::device::store::lock_channel(
@@ -119,7 +121,7 @@ pub async fn current_registration(
 
 pub async fn require_source(
     tx: &mut PgTransaction<'_>,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
     source: rss_mdm_inventory::ReportSource,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
@@ -151,7 +153,10 @@ pub async fn owns_on(
 }
 
 pub use crate::action_admission::now;
-pub async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
+pub async fn lock_device(
+    tx: &mut PgTransaction<'_>,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     tx.with_connection(move |c| {
@@ -191,11 +196,11 @@ pub async fn authority_decision(
         }
         Err(e) => return Err(e),
     };
-    if current != operation.device.clone() {
+    if current != operation.device {
         return Ok(Authorization(false));
     }
     let tenant = tx.tenant_id().to_string();
-    let device = operation.device.clone();
+    let device = operation.device;
     let id = operation.id;
     let allowed = tx
         .with_connection(move |c| {
@@ -237,7 +242,7 @@ pub async fn receipt_valid(
     operation: &Operation,
 ) -> Result<bool> {
     match current_registration(tx, &operation.device, operation.request.task.purpose()?).await {
-        Ok(current) if current == operation.device.clone() => {}
+        Ok(current) if current == operation.device => {}
         Ok(_) | Err(Fault::Request(Error::Conflict | Error::WindowsDeclaredEnrollmentNotReady)) => {
             return Ok(false);
         }
@@ -306,8 +311,8 @@ pub async fn association_on(
     c: &mut sqlx::PgConnection,
     tenant: &str,
     id: Uuid,
-) -> std::result::Result<Option<(String, Option<Uuid>)>, sqlx::Error> {
-    sqlx::query_as("SELECT device,NULL::uuid FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_optional(c).await
+) -> std::result::Result<Option<(rss_mdm_agent_wire::DeviceId, Option<Uuid>)>, sqlx::Error> {
+    sqlx::query_as("SELECT device,NULL::uuid FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_optional(c).await.and_then(|row: Option<(uuid::Uuid, Option<uuid::Uuid>)>| row.map(|(id,operation)| Ok((rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e|sqlx::Error::Decode(Box::new(e)))?,operation))).transpose())
 }
 
 /// Bounded immutable ownership probe; authorization does not affect persistent membership.

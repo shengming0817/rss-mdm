@@ -241,3 +241,30 @@ pub(crate) async fn insert_operation(
             .bind(tenant).bind(op.id.to_string()).bind(op.group.to_string()).bind(op.digest).bind(op.request).bind(receipt).bind(hash).bind(op.as_of).execute(c).await?;Ok(())
     })).await
 }
+
+/// Decode a relational object identity through its single value-type owner.
+pub(crate) fn object(
+    row: &sqlx::postgres::PgRow,
+) -> Result<rss_mdm_agent_wire::ObjectRef, PgError> {
+    rss_mdm_agent_wire::ObjectRef::from_parts(
+        row.try_get("object_kind")?,
+        row.try_get("object_id")?,
+    )
+    .map_err(|_| stored_shape())
+}
+pub(crate) fn cursor(
+    row: &sqlx::postgres::PgRow,
+    kind: &str,
+    id: &str,
+) -> Result<Option<rss_mdm_agent_wire::ObjectRef>, PgError> {
+    match (
+        row.try_get::<Option<i16>, _>(kind)?,
+        row.try_get::<Option<uuid::Uuid>, _>(id)?,
+    ) {
+        (None, None) => Ok(None),
+        (Some(kind), Some(id)) => rss_mdm_agent_wire::ObjectRef::from_parts(kind, id)
+            .map(Some)
+            .map_err(|_| stored_shape()),
+        _ => Err(stored_shape()),
+    }
+}

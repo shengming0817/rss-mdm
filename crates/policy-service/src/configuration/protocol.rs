@@ -81,7 +81,7 @@ pub async fn settle_dispatch_failures(
 
     let ids = tx.with_connection(move |c| Box::pin(async move {
         sqlx::query_scalar::<_, Uuid>("SELECT o.id FROM mdm_planning.configuration_operations AS o INNER JOIN rss_device_command.commands AS d ON d.tenant_id = o.tenant_id AND d.command_id = CAST(o.id AS text) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2 AND o.dispatch_failure IS NOT NULL AND d.terminal_at IS NULL ORDER BY o.id LIMIT 64")
-            .bind(tenant).bind(&registration).fetch_all(c).await
+            .bind(tenant).bind(registration.into_uuid()).fetch_all(c).await
     })).await?;
     for id in ids {
         let op = storage::load(tx, &service.protection, id).await?;
@@ -121,7 +121,7 @@ async fn effect_assessment(
 ) -> Result<rss_mdm_windows_mdm::native::verification::EffectAssessment> {
     let tenant = tx.tenant_id();
     let id = op.id;
-    let registration = op.device.clone();
+    let registration = op.device;
     let Task::Windows { request } = &op.request.task else {
         return Err(Error::Malformed.into());
     };

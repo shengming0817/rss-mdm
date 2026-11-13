@@ -7,7 +7,7 @@ use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row as _;
 /// Trusted storage roots; every service model field must bind before execution.
 pub static SOURCES: &[rss_mdm_query_postgres::Source] = &[
-    Source::column("id", "id::text COLLATE \"C\""),
+    Source::column("id", "id"),
     Source::column("kind", "kind COLLATE \"C\""),
     Source::column("systemSelector", "system_selector COLLATE \"C\""),
     Source::column("assetContext", "asset_context COLLATE \"C\""),

@@ -309,10 +309,13 @@ impl Service {
         result
     }
 }
-async fn device(tx: &mut PgTransaction<'_>, entity: &str) -> Result<Option<String>> {
+async fn device(
+    tx: &mut PgTransaction<'_>,
+    entity: &str,
+) -> Result<Option<rss_mdm_agent_wire::DeviceId>> {
     let tenant = tx.tenant_id().to_string();
     let entity = entity.to_owned();
-    Ok(tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT device FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND mdm_devices.recovery_key(device)=$2").bind(tenant).bind(entity).fetch_optional(c).await})).await?)
+    Ok(tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT device FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND mdm_devices.recovery_key(device)=$2").bind(tenant).bind(entity).fetch_optional(c).await.and_then(|id| id.map(crate::device_id).transpose())})).await?)
 }
 
 pub(crate) async fn resources_in(
@@ -325,9 +328,9 @@ pub(crate) async fn resources_in(
         .and_then(|s| Uuid::parse_str(s).ok())
     {
         let tenant = tx.tenant_id().to_string();
-        let devices: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
+        let devices: Vec<rss_mdm_agent_wire::DeviceId> = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_scalar("SELECT device FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2 ORDER BY device")
-                .bind(tenant).bind(id).fetch_all(c).await
+                .bind(tenant).bind(id).fetch_all(c).await.and_then(crate::device_ids)
         })).await?;
         return Ok(resources::devices(tx.tenant_id(), &devices)?);
     }
@@ -358,7 +361,7 @@ pub(crate) enum PreparedRecovery {
     Native(actions::run_recovery::Work, Uuid),
     Policy(Uuid),
 
-    Device(String),
+    Device(rss_mdm_agent_wire::DeviceId),
 }
 /// Discover only this bounded operation under existing owner fences. No effect precedes claim validation.
 /// None is normal endpoint contention; a prepared value retains its business locks for apply.
@@ -380,9 +383,9 @@ pub(crate) async fn prepare(
         PreparedRecovery::Retirement(batch)
     } else if let Some(work) = actions::run_recovery::Work::parse(entity) {
         let t = tenant.to_string();
-        let device: String = tx.with_connection(move |c| Box::pin(async move {
+        let device: rss_mdm_agent_wire::DeviceId = tx.with_connection(move |c| Box::pin(async move {
             match work {
-                actions::run_recovery::Work::Run(id) => sqlx::query_scalar("SELECT device FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(id).fetch_one(c).await,
+                actions::run_recovery::Work::Run(id) => sqlx::query_scalar("SELECT device FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(id).fetch_one(c).await.and_then(crate::device_id),
             }
         })).await?;
         let actions::run_recovery::Work::Run(id) = work;
@@ -457,7 +460,7 @@ pub(crate) async fn apply_prepared(
 
         PreparedRecovery::Device(name) => {
             let tenant = service.transactions.tenant.to_string();
-            let key = name.clone();
+            let key = name;
             let registration = storage::current_registration(
                 tx,
                 &name,
@@ -472,7 +475,7 @@ pub(crate) async fn apply_prepared(
                 )
                 .await?;
             }
-            let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT CAST(a.command_device AS text), a.generation, a.epoch, CASE WHEN r.authority_epoch = a.epoch THEN r.recovery_after END AS recovery_after FROM mdm_access.command_authorities AS a LEFT JOIN mdm_devices.control_recovery AS r USING (tenant_id, device) WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = $2 FOR UPDATE OF a").bind(tenant).bind(key).fetch_one(c).await})).await?;
+            let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT CAST(a.command_device AS text), a.generation, a.epoch, CASE WHEN r.authority_epoch = a.epoch THEN r.recovery_after END AS recovery_after FROM mdm_access.command_authorities AS a LEFT JOIN mdm_devices.control_recovery AS r USING (tenant_id, device) WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = $2 FOR UPDATE OF a").bind(tenant).bind(key.into_uuid()).fetch_one(c).await})).await?;
             let scope = dc::Scope::new(
                 service.transactions.tenant,
                 stored(dc::DeviceId::parse(
@@ -587,7 +590,7 @@ pub(crate) async fn apply_prepared(
             }
             let cursor = candidates.after;
             let tenant = service.transactions.tenant.to_string();
-            tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_devices.control_recovery(tenant_id,device,authority_epoch,recovery_after) SELECT tenant_id,device,epoch,$3 FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND device=$2 ON CONFLICT(tenant_id,device) DO UPDATE SET authority_epoch=excluded.authority_epoch,recovery_after=excluded.recovery_after").bind(tenant).bind(name).bind(cursor).execute(c).await?;Ok(())})).await?;
+            tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_devices.control_recovery(tenant_id,device,authority_epoch,recovery_after) SELECT tenant_id,device,epoch,$3 FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND device=$2 ON CONFLICT(tenant_id,device) DO UPDATE SET authority_epoch=excluded.authority_epoch,recovery_after=excluded.recovery_after").bind(tenant).bind(name.into_uuid()).bind(cursor).execute(c).await?;Ok(())})).await?;
             Ok(false)
         }
     }
@@ -627,7 +630,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
             let tenant=service.transactions.tenant.to_string();
             Ok(tx.with_connection(move |c| Box::pin(async move {
                 sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_devices.control_operations o LEFT JOIN rss_device_command.commands c ON(c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND(c.terminal_at IS NULL OR (c.command_id IS NULL OR c.version<>o.observed_command_version OR c.outbox_domain IS DISTINCT FROM $3 OR c.device_id IS DISTINCT FROM (SELECT a.command_device FROM mdm_access.command_authorities a WHERE a.tenant_id=o.tenant_id AND a.device=o.device)))) OR EXISTS(SELECT FROM rss_device_command.commands c JOIN mdm_access.command_authorities a ON(a.tenant_id,a.command_device)=(c.tenant_id,c.device_id) LEFT JOIN mdm_devices.control_operations o ON(o.tenant_id,o.id::text,o.device)=(c.tenant_id,c.command_id,a.device) WHERE c.tenant_id=$1::uuid AND a.device=$2 AND c.outbox_domain=$3 AND o.id IS NULL)")
-                    .bind(tenant).bind(device).bind(messaging_domain().as_str().to_owned()).fetch_one(c).await
+                    .bind(tenant).bind(device.into_uuid()).bind(messaging_domain().as_str().to_owned()).fetch_one(c).await
             })).await?)
         })).await;
             audit.finalize(
@@ -763,7 +766,7 @@ struct CommandCandidates {
 async fn command_candidates_in(
     tx: &mut PgTransaction<'_>,
     scope: dc::Scope,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     after: Option<&dc::CommandId>,
 ) -> Result<CommandCandidates> {
     let tenant = tx.tenant_id().to_string();
@@ -785,7 +788,7 @@ async fn command_candidates_in(
              AND ($3::text IS NULL OR c.command_id COLLATE "C">$3 COLLATE "C")
            ORDER BY c.command_id COLLATE "C" LIMIT 65)
         ) SELECT command_id,operation,observed FROM candidates ORDER BY command_id COLLATE "C" LIMIT 65"#)
-        .bind(tenant).bind(device).bind(after).bind(command_device).bind(domain).fetch_all(c).await
+        .bind(tenant).bind(device.into_uuid()).bind(after).bind(command_device).bind(domain).fetch_all(c).await
     })).await?;
     let more = rows.len() > 64;
     rows.truncate(64);

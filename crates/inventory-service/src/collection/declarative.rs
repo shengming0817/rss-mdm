@@ -123,7 +123,7 @@ pub async fn receive(
         .await
         .map_err(|_| Error::Malformed)?;
     sqlx::query("INSERT INTO mdm_access.collection_runs (tenant_id, id, device, source, epoch, scope, sequence, started_at, attempts, result, deadline, evidence) VALUES (CAST($1 AS uuid), $2, $3, 'mdm.apple', $4, $5, $6, $7, $8, 'pending', clock_timestamp(), $9)")
-        .bind(p.tenant.to_string()).bind(report.id).bind(&p.device).bind(target.epoch).bind(scope.encode().map_err(|_|Error::Malformed)?).bind(target.sequence)
+        .bind(p.tenant.to_string()).bind(report.id).bind(p.device.into_uuid()).bind(target.epoch).bind(scope.encode().map_err(|_|Error::Malformed)?).bind(target.sequence)
         .bind(report.received_at).bind(serde_json::to_string(&progress).map_err(|_|Error::Malformed)?).bind(report.evidence).execute(&mut *c).await.map_err(db)?;
     let mut run = store::load_on(
         rss_mdm_install_support::StorageProfile::Mdm,

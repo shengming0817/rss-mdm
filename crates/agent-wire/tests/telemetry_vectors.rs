@@ -37,7 +37,7 @@ fn signed_configuration_binds_destination_authority_and_lease() {
         let mut altered = signed.configuration.clone();
         match change {
             0 => altered.tenant_id = uuid::Uuid::new_v4(),
-            1 => altered.device_id.push('x'),
+            1 => altered.device_id = rss_mdm_agent_wire::DeviceId::new_v4(),
             2 => altered.source_epoch = uuid::Uuid::new_v4(),
             3 => altered.policy_version = uuid::Uuid::new_v4(),
             4 => altered.expires_at -= 1,

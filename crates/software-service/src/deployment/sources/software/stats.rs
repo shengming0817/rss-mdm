@@ -15,7 +15,7 @@ pub(super) struct Input {
 struct Build {
     input: Input,
     generation: Uuid,
-    cursor: Option<String>,
+    cursor: Option<rss_mdm_agent_wire::DeviceId>,
     complete: bool,
     counts: StageCounts,
 }
@@ -105,7 +105,10 @@ impl SoftwareAssignment {
                     Some(Build {
                         input,
                         generation: row.try_get("generation")?,
-                        cursor: row.try_get("cursor")?,
+                        cursor: row
+                            .try_get::<Option<Uuid>, _>("cursor")?
+                            .map(crate::deployment::database::device_id)
+                            .transpose()?,
                         complete: row.try_get("membership_complete")?,
                         counts: crate::deployment::stored(serde_json::from_value(
                             row.try_get("counts")?,
@@ -138,13 +141,13 @@ impl SoftwareAssignment {
                 let reader = service.source.clone();
                 let tenant = tx.tenant_id();
                 let runs = build.input.runs.clone();
-                let cursor = build.cursor.clone();
+                let cursor = build.cursor;
                 let channel = self.channel();
                 let page = tx
                     .with_connection(move |c| {
                         Box::pin(async move {
                             Ok(reader
-                                .rollout_devices_on(c, tenant, &runs, channel, cursor.as_deref())
+                                .rollout_devices_on(c, tenant, &runs, channel, cursor)
                                 .await)
                         })
                     })
@@ -177,7 +180,7 @@ impl SoftwareAssignment {
                 let tenant = tx.tenant_id().to_string();
                 let mut changes=tx.with_connection(move|c|Box::pin(async move {
                     let query=if results{"SELECT device,revision FROM mdm_software_deployment.software_result_changes WHERE tenant_id=$1::uuid AND policy=$4 AND revision>$2 AND revision<=$3 ORDER BY revision LIMIT 17"}else{"SELECT device,revision FROM mdm_software_deployment.software_binding_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 AND $4::uuid IS NOT NULL ORDER BY revision LIMIT 17"};
-                    sqlx::query_as::<_,(String,i64)>(query).bind(tenant).bind(after).bind(through).bind(policy).fetch_all(c).await
+                    sqlx::query_as::<_,(Uuid,i64)>(query).bind(tenant).bind(after).bind(through).bind(policy).fetch_all(c).await
                 })).await?;
                 let more = changes.len() > 16;
                 changes.truncate(16);
@@ -187,8 +190,14 @@ impl SoftwareAssignment {
                     through
                 };
                 for (device, _) in changes {
-                    if let Some(target) =
-                        member_in(tx, version, index, build.generation, &device).await?
+                    if let Some(target) = member_in(
+                        tx,
+                        version,
+                        index,
+                        build.generation,
+                        &crate::deployment::database::device_id(device)?,
+                    )
+                    .await?
                     {
                         self.reduce_in(service, tx, index, &target, &mut build, now)
                             .await?;
@@ -249,9 +258,9 @@ impl SoftwareAssignment {
     ) -> Result<()> {
         let version = self.version.ok_or(Error::Malformed)?;
         let tenant = tx.tenant_id().to_string();
-        let device = target.device.clone();
+        let device = target.device;
         let generation = build.generation;
-        let old:Option<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT counts FROM mdm_software_deployment.software_stats_members WHERE tenant_id=$1::uuid AND version=$2 AND stage=$3 AND device=$4 AND generation=$5").bind(tenant).bind(version).bind(index as i32).bind(device).bind(generation).fetch_optional(c).await})).await?;
+        let old:Option<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT counts FROM mdm_software_deployment.software_stats_members WHERE tenant_id=$1::uuid AND version=$2 AND stage=$3 AND device=$4 AND generation=$5").bind(tenant).bind(version).bind(index as i32).bind(device.into_uuid()).bind(generation).fetch_optional(c).await})).await?;
         let old: StageCounts = match old {
             Some(v) => crate::deployment::stored(serde_json::from_value(v))?,
             None => StageCounts::default(),
@@ -261,9 +270,9 @@ impl SoftwareAssignment {
             ..Default::default()
         };
         let tenant = tx.tenant_id().to_string();
-        let device = target.device.clone();
+        let device = target.device;
         let prefix = format!("software:stage:{}:%", self.stages()[index].scope);
-        let result=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(serde_json::Value,Option<serde_json::Value>)>("SELECT state, result FROM mdm_software_deployment.action_runs WHERE tenant_id = CAST($1 AS uuid) AND policy_version = $2 AND device = $3 AND occurrence LIKE $4 ORDER BY created_at DESC, id DESC LIMIT 1").bind(tenant).bind(version).bind(device).bind(prefix).fetch_optional(c).await})).await?;
+        let result=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(serde_json::Value,Option<serde_json::Value>)>("SELECT state, result FROM mdm_software_deployment.action_runs WHERE tenant_id = CAST($1 AS uuid) AND policy_version = $2 AND device = $3 AND occurrence LIKE $4 ORDER BY created_at DESC, id DESC LIMIT 1").bind(tenant).bind(version).bind(device.into_uuid()).bind(prefix).fetch_optional(c).await})).await?;
         let mut waiting_until = None;
         if let Some((state, result)) = result {
             count.reported = u64::from(result.is_some());
@@ -313,7 +322,7 @@ impl SoftwareAssignment {
             for binding in crate::deployment::agent_facts::agent_targets_in(
                 tx,
                 service.agent_store.clone(),
-                vec![target.device.clone()],
+                vec![target.device],
             )
             .await?
             {
@@ -336,10 +345,10 @@ impl SoftwareAssignment {
             unsupported_capability
         );
         let tenant = tx.tenant_id().to_string();
-        let device = target.device.clone();
+        let device = target.device;
         let target = crate::deployment::checked_input(serde_json::to_value(target))?;
         let counts = crate::deployment::checked_input(serde_json::to_value(count))?;
-        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_software_deployment.software_stats_members(tenant_id,version,stage,device,generation,target,counts,waiting_until) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(tenant_id,version,stage,device) DO UPDATE SET generation=EXCLUDED.generation,target=EXCLUDED.target,counts=EXCLUDED.counts,waiting_until=EXCLUDED.waiting_until").bind(tenant).bind(version).bind(index as i32).bind(device).bind(generation).bind(target).bind(counts).bind(waiting_until).execute(c).await?;Ok(())})).await?;
+        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_software_deployment.software_stats_members(tenant_id,version,stage,device,generation,target,counts,waiting_until) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(tenant_id,version,stage,device) DO UPDATE SET generation=EXCLUDED.generation,target=EXCLUDED.target,counts=EXCLUDED.counts,waiting_until=EXCLUDED.waiting_until").bind(tenant).bind(version).bind(index as i32).bind(device.into_uuid()).bind(generation).bind(target).bind(counts).bind(waiting_until).execute(c).await?;Ok(())})).await?;
         Ok(())
     }
 }
@@ -348,11 +357,11 @@ async fn member_in(
     version: Uuid,
     index: usize,
     generation: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<Original>> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
-    let target:Option<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT target FROM mdm_software_deployment.software_stats_members WHERE tenant_id=$1::uuid AND version=$2 AND stage=$3 AND generation=$4 AND device=$5").bind(tenant).bind(version).bind(index as i32).bind(generation).bind(device).fetch_optional(c).await})).await?;
+    let target:Option<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT target FROM mdm_software_deployment.software_stats_members WHERE tenant_id=$1::uuid AND version=$2 AND stage=$3 AND generation=$4 AND device=$5").bind(tenant).bind(version).bind(index as i32).bind(generation).bind(device.into_uuid()).fetch_optional(c).await})).await?;
     target
         .map(|v| crate::deployment::stored(serde_json::from_value(v)))
         .transpose()
@@ -365,12 +374,12 @@ async fn save(
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let input = crate::deployment::checked_input(serde_json::to_value(&build.input))?;
-    let cursor = build.cursor.clone();
+    let cursor = build.cursor;
     let generation = build.generation;
     let complete = build.complete;
     let ready = build.counts.ready;
     let counts = crate::deployment::checked_input(serde_json::to_value(&build.counts))?;
-    tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_software_deployment.software_stage_stats(tenant_id,version,stage,input,cursor,generation,membership_complete,ready,counts) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,version,stage) DO UPDATE SET input=EXCLUDED.input,cursor=EXCLUDED.cursor,generation=EXCLUDED.generation,membership_complete=EXCLUDED.membership_complete,ready=EXCLUDED.ready,counts=EXCLUDED.counts").bind(tenant).bind(version).bind(index as i32).bind(input).bind(cursor).bind(generation).bind(complete).bind(ready).bind(counts).execute(c).await?;Ok(())})).await?;
+    tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_software_deployment.software_stage_stats(tenant_id,version,stage,input,cursor,generation,membership_complete,ready,counts) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,version,stage) DO UPDATE SET input=EXCLUDED.input,cursor=EXCLUDED.cursor,generation=EXCLUDED.generation,membership_complete=EXCLUDED.membership_complete,ready=EXCLUDED.ready,counts=EXCLUDED.counts").bind(tenant).bind(version).bind(index as i32).bind(input).bind(cursor.map(|id| id.into_uuid())).bind(generation).bind(complete).bind(ready).bind(counts).execute(c).await?;Ok(())})).await?;
     Ok(())
 }
 

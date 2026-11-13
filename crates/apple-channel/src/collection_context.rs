@@ -58,7 +58,7 @@ pub(crate) async fn prepare(
     protection: &rss_mdm_native_protection::Protector,
     tenant: &str,
     collection: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 
     sequence: i64,
     deadline: &str,
@@ -121,7 +121,7 @@ pub(crate) async fn prepare(
                 &bytes,
             )?;
             sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, collection, phase, request, state, collection_sequence, deadline) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 'pending', $7, CAST(CAST($8 AS text) AS timestamptz))")
-                .bind(tenant).bind(id).bind(device).bind(collection).bind(phase).bind(request).bind(sequence).bind(deadline).execute(&mut *c).await.map_err(db)?;
+                .bind(tenant).bind(id).bind(device.into_uuid()).bind(collection).bind(phase).bind(request).bind(sequence).bind(deadline).execute(&mut *c).await.map_err(db)?;
             crate::notify(c, "apple").await.map_err(db)?;
             return Ok(None);
         }
@@ -179,7 +179,7 @@ pub(crate) async fn security_valid(
         "SELECT access_rights FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2",
     )
     .bind(&tenant)
-    .bind(p.device())
+    .bind(p.device().into_uuid())
     .fetch_one(c)
     .await
     .map_err(db)?;

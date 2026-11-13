@@ -30,11 +30,11 @@ impl WakeScan {
 }
 struct Wake {
     id: Uuid,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
     revision: i64,
     uri: zeroize::Zeroizing<String>,
 }
-fn audit(tenant: &str, id: Uuid, device: &str) -> RequestAudit {
+fn audit(tenant: &str, id: Uuid, device: &rss_mdm_agent_wire::DeviceId) -> RequestAudit {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
@@ -49,7 +49,7 @@ fn audit(tenant: &str, id: Uuid, device: &str) -> RequestAudit {
         "windows_push",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.target(device);
+    audit.target_device(device);
     audit
 }
 pub async fn cycle(
@@ -62,10 +62,10 @@ pub async fn cycle(
 ) -> Result<WakeScan, Error> {
     let mut scan = WakeScan::default();
     let Some(push) = &w.push else { return Ok(scan) };
-    let mut after = String::new();
+    let mut after = None;
     loop {
         let mut read = dbase.begin_read(tenant).await?;
-        let candidates = eligibility.candidates(&mut read, &after).await?;
+        let candidates = eligibility.candidates(&mut read, after).await?;
         let count = candidates.len();
         scan.candidates += count;
         let Some(last) = candidates.last().cloned() else {
@@ -73,14 +73,14 @@ pub async fn cycle(
             return Ok(scan);
         };
         // Always advance by the raw work page, including absent or disabled routes.
-        after = last;
+        after = Some(last);
         if let Some(revision) = push.material_revision
             && !crate::wns_materials::is_selected(&mut read, tenant, revision).await?
         {
             return Err(Error::Conflict);
         }
         let rows = sqlx::query("SELECT p.device, p.revision, CAST(EXTRACT(EPOCH FROM GREATEST(p.next_push, COALESCE(p.lease_until, p.next_push)) - clock_timestamp()) AS double precision) AS wait_seconds FROM mdm_windows.push_channels AS p INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (p.tenant_id, p.device) WHERE p.tenant_id = CAST($1 AS uuid) AND p.device = ANY($2) AND p.configuration = $3 AND p.attempt_until > clock_timestamp() AND (p.outcome IS NULL OR p.outcome IN ('accepted', 'retryable', 'unknown')) AND r.state = 'active' ORDER BY p.device")
-            .bind(tenant).bind(&candidates).bind(push.configuration.as_slice()).fetch_all(&mut *read).await.map_err(db)?;
+            .bind(tenant).bind(candidates.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).bind(push.configuration.as_slice()).fetch_all(&mut *read).await.map_err(db)?;
         read.rollback().await.map_err(db)?;
         for row in rows {
             let seconds: f64 = row.try_get("wait_seconds").map_err(db)?;
@@ -124,17 +124,22 @@ async fn attempt(
 ) -> Result<Option<Duration>, Error> {
     let Some(push) = &w.push else { return Ok(None) };
     let revision: i64 = row.try_get("revision").map_err(db)?;
-    let device: String = row.try_get("device").map_err(db)?;
+    let device: rss_mdm_agent_wire::DeviceId = row
+        .try_get::<uuid::Uuid, _>("device")
+        .and_then(|id| {
+            rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+        })
+        .map_err(db)?;
     let id = Uuid::new_v4();
     let audit = audit(tenant, id, &device);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(3));
     let outcome=store.write(TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
-            &budget.source_control(),(store,&audit,eligibility,tenant,device.as_str(),revision,id,push.configuration,push.material_revision),|inputs,tx|Box::pin(async move {
+            &budget.source_control(),(store,&audit,eligibility,tenant,&device,revision,id,push.configuration,push.material_revision),|inputs,tx|Box::pin(async move {
                 let (store,audit,eligibility,tenant,device,revision,id,configuration,material_revision)=*inputs;
                 let sealed=tx.with_connection_context(&mut (eligibility,tenant,device,revision,id,configuration,material_revision),|(eligibility,tenant,device,revision,id,configuration,material_revision),c|Box::pin(async move {
                     if !eligibility.pending(c, device).await? { return Ok::<_,Error>(None) }
                     sqlx::query_scalar::<_,Vec<u8>>("UPDATE mdm_windows.push_channels SET lease_id = $5, lease_until = clock_timestamp() + CAST('30 seconds' AS interval), settled_id = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND revision = $3 AND configuration = $4 AND attempt_until > clock_timestamp() AND next_push <= clock_timestamp() AND (lease_until IS NULL OR lease_until <= clock_timestamp()) AND (outcome IS NULL OR outcome IN ('accepted', 'retryable', 'unknown')) AND (CAST($6 AS bigint) IS NULL OR EXISTS (SELECT 1 FROM mdm_wns.versions AS w WHERE w.tenant_id = CAST($1 AS uuid) AND w.revision = $6 AND w.selected AND NOT w.revoked AND w.qualified_at IS NOT NULL)) RETURNING uri")
-                        .bind(*tenant).bind(*device).bind(*revision).bind(configuration.as_slice()).bind(*id).bind(*material_revision).fetch_optional(c).await.map_err(db)
+                        .bind(*tenant).bind(device.into_uuid()).bind(*revision).bind(configuration.as_slice()).bind(*id).bind(*material_revision).fetch_optional(c).await.map_err(db)
                 })).await?;
                 if sealed.is_some() {
 
@@ -167,7 +172,7 @@ async fn attempt(
     );
     let wake = Wake {
         id,
-        device: device.to_string(),
+        device,
 
         revision,
         uri,
@@ -196,7 +201,7 @@ async fn settle(
         let (store,audit,key,tenant,wake,status,outcome,retry_after)=*inputs;
         let changed=tx.with_connection_context(&mut (key,tenant,wake,status,outcome,retry_after),|(key,tenant,wake,status,outcome,retry_after),c|Box::pin(async move {
             let row=sqlx::query("SELECT revision, configuration, digest, lease_id, settled_id, failures, status, outcome FROM mdm_windows.push_channels WHERE tenant_id = CAST($1 AS uuid) AND device = $2 FOR UPDATE")
-                .bind(*tenant).bind(&wake.device).fetch_optional(&mut *c).await.map_err(db)?;
+                .bind(*tenant).bind(wake.device.into_uuid()).fetch_optional(&mut *c).await.map_err(db)?;
             let Some(row)=row else {return Ok::<_,Error>(None)};
 
             let revision: i64 = row.try_get("revision").map_err(db)?;
@@ -215,7 +220,7 @@ async fn settle(
                     return Ok(Some((false, RECONCILE)));
                 }
                 sqlx::query("UPDATE mdm_windows.push_channels SET lease_id = NULL, lease_until = NULL, settled_id = $3, status = $4, outcome = 'unregistered', failures = 0 WHERE tenant_id = CAST($1 AS uuid) AND device = $2")
-                    .bind(*tenant).bind(&wake.device).bind(wake.id).bind(i32::from(*status)).execute(c).await.map_err(db)?;
+                    .bind(*tenant).bind(wake.device.into_uuid()).bind(wake.id).bind(i32::from(*status)).execute(c).await.map_err(db)?;
                 return Ok(Some((true, RECONCILE)));
             }
 
@@ -232,7 +237,7 @@ async fn settle(
             };
             let delay=if matches!(*outcome, PushOutcome::Retryable | PushOutcome::Unknown) {(15i64*(1<<failures)).max(retry_seconds)} else {120};
             let wait: f64 = sqlx::query_scalar("UPDATE mdm_windows.push_channels SET lease_id = NULL, lease_until = NULL, settled_id = $4, status = $5, outcome = $6, failures = $7, next_push = GREATEST(clock_timestamp() + make_interval(secs => CAST($8 AS double precision)), to_timestamp(CAST($9 AS double precision))) WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND revision = $3 RETURNING CAST(GREATEST(0, EXTRACT(EPOCH FROM next_push - clock_timestamp())) AS double precision)")
-                .bind(*tenant).bind(&wake.device).bind(wake.revision).bind(wake.id).bind(i32::from(*status)).bind(outcome.as_str()).bind(failures).bind(delay as f64).bind(retry_at.map(|at|at as f64)).fetch_one(c).await.map_err(db)?;
+                .bind(*tenant).bind(wake.device.into_uuid()).bind(wake.revision).bind(wake.id).bind(i32::from(*status)).bind(outcome.as_str()).bind(failures).bind(delay as f64).bind(retry_at.map(|at|at as f64)).fetch_one(c).await.map_err(db)?;
             Ok(Some((true, Duration::from_secs_f64(wait.min(RECONCILE.as_secs_f64())))))
         })).await?;
         if let Some((changed,_))=changed {

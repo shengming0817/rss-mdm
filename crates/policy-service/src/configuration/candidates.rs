@@ -24,8 +24,8 @@ pub struct CandidatePage {
     pub has_more: bool,
 }
 pub struct ConfigurationCandidates {
-    pub items: Vec<(String, PolicyCandidate)>,
-    pub scanned_after: Option<(Uuid, String)>,
+    pub items: Vec<(rss_mdm_agent_wire::DeviceId, PolicyCandidate)>,
+    pub scanned_after: Option<(Uuid, rss_mdm_agent_wire::DeviceId)>,
     pub has_more: bool,
 }
 
@@ -40,8 +40,8 @@ impl PolicyCandidates {
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        devices: &'a [String],
-        after: Option<&'a (Uuid, String)>,
+        devices: &'a [rss_mdm_agent_wire::DeviceId],
+        after: Option<&'a (Uuid, rss_mdm_agent_wire::DeviceId)>,
     ) -> Pending<'a, ConfigurationCandidates> {
         Box::pin(async move {
             let rows = rss_mdm_policy_postgres::candidates::configuration_candidates_on(
@@ -57,8 +57,12 @@ impl PolicyCandidates {
             let mut items = Vec::new();
             for row in rows.into_iter().take(1000) {
                 let policy = row.try_get("id")?;
-                let device: String = row.try_get("device")?;
-                scanned_after = Some((policy, device.clone()));
+                let device: rss_mdm_agent_wire::DeviceId =
+                    row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+                        rss_mdm_agent_wire::DeviceId::try_from(id)
+                            .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+                    })?;
+                scanned_after = Some((policy, device));
                 let admission: ScopeAdmission = serde_json::from_value(row.try_get("admission")?)
                     .map_err(|_| SourceError::Invariant)?;
                 if admission != ScopeAdmission::Excluded {
@@ -82,7 +86,7 @@ impl PolicyCandidates {
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         kind: CandidateKind,
         after: Uuid,
     ) -> Pending<'a, CandidatePage> {

@@ -33,7 +33,7 @@ fn accepted(ids: Vec<Uuid>, native: bool) -> Decision {
 /// Resolve the exact currently assigned channel; never silently choose an ambiguous registration.
 pub async fn target_in(
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     channel: &str,
 ) -> Result<Option<Target>> {
     let tenant = tx.tenant_id().to_string();
@@ -107,8 +107,8 @@ impl crate::deployment::transactions::Transactions {
         self.validate_policy_transaction_in(tx)?;
         let channel = if matches!(policy.definition.action, Action::UnmanageDevice { .. }) {
             let tenant = tx.tenant_id().to_string();
-            let registration = target.device.clone();
-            let channel:String=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT channel FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2").bind(tenant).bind(&registration).fetch_one(c).await})).await?;
+            let registration = target.device;
+            let channel:String=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT channel FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2").bind(tenant).bind(registration.into_uuid()).fetch_one(c).await})).await?;
             if channel == "mdm" {
                 crate::deployment::scope::Channel::Mdm
             } else {
@@ -269,7 +269,7 @@ impl crate::deployment::transactions::Transactions {
         crate::deployment::agent_facts::agent_context_in(
             tx,
             self.agent_store.clone(),
-            target.device.clone(),
+            target.device,
             context,
         )
         .await
@@ -299,7 +299,7 @@ impl crate::deployment::transactions::Transactions {
         self.validate_policy_transaction_in(tx)?;
         let tenant = tx.tenant_id().to_string();
         let target = target.clone();
-        Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active')").bind(tenant).bind(&target.device).fetch_one(c).await})).await?)
+        Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active')").bind(tenant).bind(target.device.into_uuid()).fetch_one(c).await})).await?)
     }
     /// Return only operation progress, never script output or protected request inputs.
     pub async fn policy_event_operation_in(

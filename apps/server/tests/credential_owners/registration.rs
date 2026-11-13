@@ -67,15 +67,14 @@ async fn access_binding_requires_current_device_authority() -> Result<()> {
 async fn delivery_lifecycle(
     c: &Context,
     agent: &rss_mdm_registration_service::DevicePrincipal,
-    _agent_device: &str,
+    _agent_device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<()> {
     use base64::{Engine, engine::general_purpose::STANDARD};
     use rss_mdm_device_access_postgres::delivery;
     use rss_mdm_install_support::StorageProfile;
     use rss_mdm_registration_service::device::{self, endpoints::DaRegistration};
     use sha2::{Digest, Sha256};
-    let device = format!("da-{}", Uuid::new_v4());
-    let device = device.as_str();
+    let device = &rss_mdm_agent_wire::DeviceId::new_v4();
     let (peer, certificate, csr) =
         material::peer_material(c, device, rss_mdm_agent_wire::pki::Purpose::DaDevice)
             .await
@@ -89,7 +88,7 @@ async fn delivery_lifecycle(
     let receipt = rss_mdm_agent_wire::da::Registration {
         service_id: Uuid::parse_str(&c.inputs.installation.instance_id)?,
         tenant,
-        device: device.into(),
+        device: *device,
 
         credential,
         issuance_id: issuance,
@@ -97,12 +96,12 @@ async fn delivery_lifecycle(
     };
     let mut tx = seed(c).await?;
     sqlx::query("INSERT INTO rss_da.certificate_grants(certificate_purpose,tenant_id,id,operation_id,source,actor,instance,device,secret_digest,request_digest,state,expires_at) VALUES('da_device',$1,$2,$2,'administrator','seed',$3,$4,repeat('0',64),repeat('1',64),'consumed',clock_timestamp()+interval '1 hour')")
-        .bind(tenant).bind(grant).bind(&c.inputs.installation.instance_id).bind(device).execute(&mut *tx).await?;
+        .bind(tenant).bind(grant).bind(&c.inputs.installation.instance_id).bind(device.into_uuid()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_da.devices (tenant_id, id, channel, certificate_grant_id, state, purpose, epoch) VALUES ($1, $2, NULL, $3, 'active', 'da_device', $4)")
-        .bind(tenant).bind(device).bind(grant).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+        .bind(tenant).bind(device.into_uuid()).bind(grant).bind(Uuid::new_v4()).execute(&mut *tx).await?;
     let fingerprint = format!("{:x}", Sha256::digest(&certificate));
     sqlx::query("INSERT INTO rss_da.credentials (tenant_id, id, device, channel, locator, state, purpose) VALUES ($1, $2, $3, NULL, $4, 'active', 'da_device')")
-        .bind(tenant).bind(credential).bind(device).bind(&fingerprint).execute(&mut *tx).await?;
+        .bind(tenant).bind(credential).bind(device.into_uuid()).bind(&fingerprint).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_da.certificate_issuances(tenant_id,id,grant_id,operation_id,request_digest,authority_digest,csr,spki,identity,profile,not_before,not_after,state,certificate_chain,metadata,fingerprint,activation_operation,activation_digest,activation_result,credential) VALUES($1,$2,$3,$4,repeat('1',64),repeat('2',64),$5,$6,$7,'{}',$8,$9,'issued',$10,$11,$12,$4,repeat('3',64),$13,$14)")
         .bind(tenant).bind(issuance).bind(grant).bind(operation).bind(csr)
         .bind(meta.spki.iter().map(|v|format!("{v:02x}")).collect::<String>()).bind(&meta.identity)
@@ -132,9 +131,7 @@ async fn delivery_lifecycle(
     let mut tx = seed(c).await?;
     assert!(delivery::resolve_on(&mut tx, agent).await.is_err());
     tx.rollback().await?;
-    let anchor = DaRegistration {
-        device: device.into(),
-    };
+    let anchor = DaRegistration { device: *device };
     let person = Box::pin(super::da_authorization::authorize(c, agent, &anchor))
         .await
         .context("authorize Agent delivery using the real Identity proof")?;
@@ -155,18 +152,18 @@ async fn delivery_lifecycle(
             .await?
             .unwrap()
             .device,
-        agent.device()
+        *agent.device()
     );
-    sqlx::query("UPDATE rss_da.agent_delivery SET enabled=false,revision=2 WHERE tenant_id=$1 AND da_device=$2").bind(tenant).bind(device).execute(&mut *tx).await?;
+    sqlx::query("UPDATE rss_da.agent_delivery SET enabled=false,revision=2 WHERE tenant_id=$1 AND da_device=$2").bind(tenant).bind(device.into_uuid()).execute(&mut *tx).await?;
     assert!(delivery::resolve_on(&mut tx, agent).await.is_err());
-    sqlx::query("UPDATE rss_da.agent_delivery SET enabled=true,revision=3,agent_device=$3 WHERE tenant_id=$1 AND da_device=$2").bind(tenant).bind(device).bind("unknown-agent").execute(&mut *tx).await?;
+    sqlx::query("UPDATE rss_da.agent_delivery SET enabled=true,revision=3,agent_device=$3 WHERE tenant_id=$1 AND da_device=$2").bind(tenant).bind(device.into_uuid()).bind(Uuid::new_v4()).execute(&mut *tx).await?;
     assert!(delivery::resolve_on(&mut tx, agent).await.is_err());
     sqlx::query(
         "UPDATE rss_da.agent_delivery SET agent_device=$3 WHERE tenant_id=$1 AND da_device=$2",
     )
     .bind(tenant)
-    .bind(device)
-    .bind(agent.device())
+    .bind(device.into_uuid())
+    .bind(agent.device().into_uuid())
     .execute(&mut *tx)
     .await?;
     sqlx::query("UPDATE rss_da.credentials SET state = 'revoked' WHERE tenant_id = $1 AND id = $2")

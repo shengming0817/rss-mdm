@@ -10,7 +10,7 @@ impl Transactions {
             .iter()
             .map(|(op, status)| channels::ObservationRead {
                 id: op.id,
-                device: op.device.to_string(),
+                device: op.device,
 
                 task: op.request.task.clone(),
                 profile: op.request.profile_target().is_some(),

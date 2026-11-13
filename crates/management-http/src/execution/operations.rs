@@ -31,7 +31,7 @@ pub struct Statistics {
 pub struct Metadata {
     pub id: Uuid,
     pub kind: KindOfOperation,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub origin: String,
     pub policy: Option<Uuid>,
     pub deadline: i64,
@@ -144,7 +144,7 @@ pub trait Reads: Send + Sync {
     fn declarations<'a>(
         &'a self,
         proof: &'a RequestAuth,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         query: &'a rss_mdm_query::window::Query,
         audit: &'a RequestAudit,
         codec: &'a CursorCodec,
@@ -166,14 +166,14 @@ pub trait Reads: Send + Sync {
     fn detail<'a>(
         &'a self,
         proof: &'a RequestAuth,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         audit: &'a RequestAudit,
     ) -> Pending<'a, Detail>;
     fn change<'a>(
         &'a self,
         proof: &'a RequestAuth,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         change: &'a rss_mdm_device_service::control::Change,
         reauthorization: Option<

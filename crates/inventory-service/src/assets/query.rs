@@ -87,8 +87,14 @@ impl AssetService {
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         job: &QueryInput,
-        after: Option<String>,
+        after: Option<rss_mdm_agent_wire::ObjectRef>,
     ) -> Result<()> {
+        let after = after
+            .map(|o| match o {
+                rss_mdm_agent_wire::ObjectRef::Endpoint(id) => Ok(id),
+                _ => Err(Error::Unavailable(Failure::AssetsStorage)),
+            })
+            .transpose()?;
         let QueryInput {
             query: q,
             scope,
@@ -110,7 +116,7 @@ impl AssetService {
                 self.runtime.clone(),
                 self.tenant,
             ))
-            .asset_page_in(tx, cut, after.clone(), limit, scope)
+            .asset_page_in(tx, cut, after, limit, scope)
             .await
             {
                 Err(crate::transaction::Fault::Request(Error::Unavailable(
@@ -123,7 +129,12 @@ impl AssetService {
             };
             let key = after
                 .as_ref()
-                .map(|s| stored(g::ObjectKey::new(self.tenant, s)))
+                .map(|s| {
+                    stored(g::ObjectKey::new(
+                        self.tenant,
+                        rss_mdm_agent_wire::ObjectRef::Endpoint(*s),
+                    ))
+                })
                 .transpose()?;
             let decisions = if let Some(rule) = &rule {
                 let evaluation_progress = self.evaluation(tx, task).await?;
@@ -201,11 +212,7 @@ impl AssetService {
             .iter()
             .filter(|d| **d == g::Decision::Unknown)
             .count() as i64;
-        let last = page
-            .devices
-            .last()
-            .map(|d| d.scalars.device.clone())
-            .or(after);
+        let last = page.devices.last().map(|d| d.scalars.device).or(after);
         let done = page.next.is_none();
         let mut ids = Vec::new();
         let mut keys = Vec::new();
@@ -281,8 +288,8 @@ impl AssetService {
             let updated=sqlx::query("UPDATE mdm_assets.asset_query_runs SET total=total+$3,matched=matched+$4,unknown=unknown+$5 WHERE tenant_id=$1::uuid AND id=$2::uuid AND total+$3<=1000000")
                 .bind(&tenant).bind(task.to_string()).bind(total).bind(matched).bind(unknown).execute(&mut *c).await?.rows_affected();
             if updated!=1 {return Ok(false);}
-            sqlx::query("INSERT INTO mdm_assets.asset_query_results SELECT $1::uuid,$2::uuid,d,k,b,h FROM unnest($3::text[],$4::bytea[],$5::bytea[],$6::bytea[]) AS p(d,k,b,h)")
-                .bind(&tenant).bind(task.to_string()).bind(ids).bind(keys).bind(documents).bind(digests).execute(&mut *c).await?;
+            sqlx::query("INSERT INTO mdm_assets.asset_query_results SELECT $1::uuid,$2::uuid,d,k,b,h FROM unnest($3::uuid[],$4::bytea[],$5::bytea[],$6::bytea[]) AS p(d,k,b,h)")
+                .bind(&tenant).bind(task.to_string()).bind(ids.iter().map(|id|id.into_uuid()).collect::<Vec<_>>()).bind(keys).bind(documents).bind(digests).execute(&mut *c).await?;
             sqlx::query("INSERT INTO mdm_assets.asset_query_facets SELECT $1::uuid,$2::uuid,k,l,n FROM unnest($3::text[],$4::text[],$5::bigint[]) AS p(k,l,n) ON CONFLICT(tenant_id,run,kind,label) DO UPDATE SET total=mdm_assets.asset_query_facets.total+excluded.total")
                 .bind(&tenant).bind(task.to_string()).bind(kinds).bind(labels).bind(counts).execute(&mut *c).await?;
             Ok(true)
@@ -290,7 +297,8 @@ impl AssetService {
         if !accepted {
             return Err(Error::Unavailable(Failure::AssetObjectLimit).into());
         }
-        self.query_cursor_in(tx, task, last).await?;
+        self.query_cursor_in(tx, task, last.map(rss_mdm_agent_wire::ObjectRef::Endpoint))
+            .await?;
         if done {
             self.finish_query_in(tx, task, None).await?;
         }

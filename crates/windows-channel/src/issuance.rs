@@ -29,7 +29,7 @@ impl IssuanceAuthority<'_> {
             Self::Password(a, p) => Coordinates {
                 tenant: p.tenant_id().into(),
                 id: a.id,
-                device: a.device.clone(),
+                device: a.device,
                 actor: a.actor.clone(),
                 instance: a.instance.clone(),
                 version: a.version,
@@ -87,7 +87,7 @@ pub struct Intent {
     pub profile: Vec<u8>,
     pub issuer: Vec<u8>,
     pub configuration: String,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub credential: Uuid,
     pub epoch: Uuid,
     pub sealed: Vec<u8>,
@@ -109,7 +109,13 @@ pub(crate) fn intent(row: sqlx::postgres::PgRow) -> Result<Intent, Error> {
         profile: row.try_get("profile").map_err(db)?,
         issuer: row.try_get("issuer").map_err(db)?,
         configuration: row.try_get("configuration").map_err(db)?,
-        device: row.try_get("device").map_err(db)?,
+        device: row
+            .try_get::<uuid::Uuid, _>("device")
+            .and_then(|id| {
+                rss_mdm_agent_wire::DeviceId::try_from(id)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+            })
+            .map_err(db)?,
         credential: uuid(&row, "credential")?,
         epoch: uuid(&row, "epoch")?,
         sealed: row.try_get("secrets").map_err(db)?,
@@ -192,7 +198,7 @@ async fn issue_intent_on(
     input: (&[u8], EnrollmentType),
     protocol_device: Option<&str>,
     now: i64,
-) -> Result<(Intent, Option<(Uuid, Uuid, String)>), Error> {
+) -> Result<(Intent, Option<(Uuid, Uuid, rss_mdm_agent_wire::DeviceId)>), Error> {
     let d = authority.coordinates();
     let (csr, enrollment_type) = input;
     if let Some(device) = protocol_device {
@@ -215,8 +221,12 @@ async fn issue_intent_on(
     {
         let mut old = intent(old)?;
         if old.device != d.device
-            || protocol_device
-                .is_some_and(|value| old.protocol_device.as_deref().unwrap_or(&d.device) != value)
+            || protocol_device.is_some_and(|value| {
+                old.protocol_device
+                    .as_deref()
+                    .unwrap_or(&d.device.to_string())
+                    != value
+            })
             || old.enrollment_type != enrollment_type
             || old.csr != csr
             || old.configuration != windows.configuration
@@ -228,7 +238,7 @@ async fn issue_intent_on(
         let replacement = (previous != old.signing_attempt).then_some((
             previous,
             old.signing_attempt,
-            old.device.clone(),
+            old.device,
         ));
         return Ok((old, replacement));
     }
@@ -254,7 +264,7 @@ async fn issue_intent_on(
         profile: windows.ca.profile(&verified, &d.device, now)?.encode()?,
         issuer: windows.ca.der()?,
         configuration: windows.configuration.clone(),
-        device: d.device.clone(),
+        device: d.device,
         credential: Uuid::new_v4(),
         epoch: Uuid::new_v4(),
         sealed: windows
@@ -281,7 +291,7 @@ async fn issue_intent_on(
             profile: &intent.profile,
             issuer: &intent.issuer,
             configuration: &intent.configuration,
-            device: intent.device.clone(),
+            device: intent.device,
             credential: intent.credential.to_string(),
             epoch: intent.epoch.to_string(),
             secrets: &intent.sealed,
@@ -600,7 +610,7 @@ async fn complete_on(
                     request_id: d.id,
                     source: ReportSource::MdmWindows,
                 },
-                d.device.clone(),
+                d.device,
                 [intent.credential, intent.epoch],
             )
             .await?
@@ -871,8 +881,9 @@ pub(crate) async fn prepare_transaction<C: Send, R: Send>(
         &'a mut sqlx::PgConnection,
     ) -> std::pin::Pin<
         Box<
-            dyn std::future::Future<Output = Result<(R, Option<(Uuid, Uuid, String)>), Error>>
-                + Send
+            dyn std::future::Future<
+                    Output = Result<(R, Option<(Uuid, Uuid, rss_mdm_agent_wire::DeviceId)>), Error>,
+                > + Send
                 + 'a,
         >,
     > + Send,

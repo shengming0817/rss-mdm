@@ -10,7 +10,7 @@ pub struct Record {
     pub task_id: Uuid,
     pub policy_id: Uuid,
     pub version_id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub occurrence: String,
     pub available_at: i64,
     pub deadline: i64,
@@ -54,13 +54,14 @@ pub async fn detail_on(
     proof: &AuthorizedPrincipal,
     grant: &Snapshot,
 ) -> Result<Record> {
-    let device: Option<String> =
+    let device: Option<rss_mdm_agent_wire::DeviceId> =
         sqlx::query_scalar(crate::storage_profile::sql(profile).tasks_queries_detail_on_1)
             .bind(tenant)
             .bind(policy)
             .bind(id)
             .fetch_optional(&mut *c)
-            .await?;
+            .await
+            .and_then(|id| id.map(crate::storage::device_id).transpose())?;
     grant.require(
         proof,
         Permission::OperationRead,
@@ -92,7 +93,7 @@ pub async fn diagnostic_on(
     {
         return Err(Error::Forbidden.into());
     }
-    let device = locator.device.as_deref().ok_or(Error::Malformed)?;
+    let device = locator.device.as_ref().ok_or(Error::Malformed)?;
     grant.require(proof, Permission::OperationRead, Some(device))?;
     let relation = match proof.profile() {
         rss_mdm_install_support::StorageProfile::Mdm => RELATION_SQL,
@@ -105,7 +106,7 @@ pub async fn diagnostic_on(
         .build_query_scalar()
         .bind(proof.tenant_id())
         .bind(locator.operation_id)
-        .bind(device)
+        .bind(device.into_uuid())
         .fetch_optional(&mut *c)
         .await?;
     match policy {
@@ -137,7 +138,7 @@ pub async fn assignment_ids_on(
         sqlx::query_scalar(crate::storage_profile::sql(profile).tasks_queries_assignment_ids_on_1)
             .bind(tenant.to_string())
             .bind(policy)
-            .bind(&target.device)
+            .bind(target.device.into_uuid())
             .bind(channel.as_str())
             .fetch_all(c)
             .await?,

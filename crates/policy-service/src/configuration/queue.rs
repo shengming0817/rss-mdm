@@ -7,13 +7,13 @@ use rss_transactional_messaging::{message::*, outbox::PendingMessage};
 use sha2::{Digest, Sha256};
 fn dispatch(
     tenant: TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     input: &Create,
     coordinate: dc::Coordinate,
     now: i64,
 ) -> Result<PendingMessage<Vec<u8>>> {
     let payload = checked_input(serde_json::to_vec(&DispatchV1 {
-        device: device.into(),
+        device: *device,
         operation_id: input.operation_id,
         generation: coordinate.generation(),
         epoch: coordinate.epoch(),
@@ -47,7 +47,7 @@ impl Transactions {
     pub(crate) async fn queue_authorized_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         input: &Create,
         mut authority: Authority,
         fingerprint: Vec<u8>,
@@ -78,15 +78,15 @@ impl Transactions {
         input.validate(now)?;
         let registration = storage::current_registration(tx, device, input.task.purpose()?).await?;
         if input.task.purpose()? == rss_mdm_registration_service::Purpose::Primary {
-            storage::require_source(tx, registration.clone(), input.task.source()).await?;
+            storage::require_source(tx, registration, input.task.source()).await?;
         }
         if matches!(input.task, Task::Windows { .. })
             && matches!(input.target, NativeTarget::EnrolledUser)
         {
             let target = input.target.clone();
-            let registration = registration.clone();
+
             let allowed=tx.with_connection(move|c| Box::pin(async move {
-                let profile: Option<String> = sqlx::query_scalar("SELECT q.windows_profile FROM mdm_access.devices d JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(d.tenant_id,d.request_id) WHERE d.tenant_id=$1::uuid AND d.id=$2 AND d.state='active'").bind(tenant.to_string()).bind(&registration).fetch_one(c).await?;
+                let profile: Option<String> = sqlx::query_scalar("SELECT q.windows_profile FROM mdm_access.devices d JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(d.tenant_id,d.request_id) WHERE d.tenant_id=$1::uuid AND d.id=$2 AND d.state='active'").bind(tenant.to_string()).bind(registration.into_uuid()).fetch_one(c).await?;
                 Ok(target.matches_windows_context(profile.as_deref() == Some("Full")))
             })).await?;
             if !allowed {
@@ -108,7 +108,7 @@ impl Transactions {
         self.store.queue(tx, spec, message).await?;
         let binding = rss_mdm_registration_service::command_authority::CommandBinding {
             operation: id,
-            device: registration.to_string(),
+            device: registration,
         };
         let windows = matches!(input.task, Task::Windows { .. });
         let value = binding.clone();
@@ -166,7 +166,7 @@ impl Transactions {
         let name = device.to_owned();
         let digest = fingerprint.clone();
         tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_planning.configuration_operations (tenant_id, id, device, request, fingerprint, generation, epoch, authority, dispatch_fingerprint, policy_version, input_context) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)").bind(tenant.to_string()).bind(id).bind(name).bind(request).bind(digest).bind(bound.coordinate.generation()).bind(bound.coordinate.epoch()).bind(authority).bind(dispatch_fingerprint).bind(policy_version).bind(input_context).execute(c).await?;
+            sqlx::query("INSERT INTO mdm_planning.configuration_operations (tenant_id, id, device, request, fingerprint, generation, epoch, authority, dispatch_fingerprint, policy_version, input_context) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)").bind(tenant.to_string()).bind(id).bind(name.into_uuid()).bind(request).bind(digest).bind(bound.coordinate.generation()).bind(bound.coordinate.epoch()).bind(authority).bind(dispatch_fingerprint).bind(policy_version).bind(input_context).execute(c).await?;
             Ok(())
         })).await?;
         if input.profile_target().is_some() {
@@ -174,7 +174,7 @@ impl Transactions {
                 return Err(Error::Malformed.into());
             };
             let reservation = channels::Reservation {
-                device: device.into(),
+                device: *device,
                 binding,
                 target: input.target.clone(),
                 request: request.clone(),

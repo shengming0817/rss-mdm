@@ -189,7 +189,7 @@ impl Transactions {
             .map_err(|_| Error::Malformed)?;
         let secret = zeroize::Zeroizing::new(URL_SAFE_NO_PAD.encode(random));
         let task = task(&deployment, frozen.platform, installation, id, &secret)?;
-        let registration = frozen.device.clone();
+        let registration = frozen.device;
         let source = frozen.source;
         let release = frozen.release;
         let deadline = frozen.deadline;
@@ -199,7 +199,7 @@ impl Transactions {
         let download_origin = frozen.download_origin.clone();
         let facts = checked_input(serde_json::to_value(&frozen))?;
         tx.with_connection(move|c|Box::pin(async move {
-            let credential:Uuid=sqlx::query_scalar("SELECT id FROM mdm_access.credentials WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND channel = 'mdm' AND purpose = 'primary' AND state = 'active'").bind(tenant.to_string()).bind(&registration).fetch_one(&mut *c).await?;
+            let credential:Uuid=sqlx::query_scalar("SELECT id FROM mdm_access.credentials WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND channel = 'mdm' AND purpose = 'primary' AND state = 'active'").bind(tenant.to_string()).bind(registration.into_uuid()).fetch_one(&mut *c).await?;
             let proof=serde_json::json!({"installation":installation,"device":registration,"credential":credential,"source":source,"runtime":null,"bootstrap":id});
             sqlx::query("INSERT INTO mdm_access.agent_bootstraps(tenant_id,id,installation,installation_facts,delivery,source,release,issuer,provisioner,challenge,deadline,download_origin,state) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'prepared')").bind(tenant.to_string()).bind(id).bind(installation).bind(facts).bind(delivery).bind(proof).bind(release).bind(issuer).bind(provisioner).bind(challenge).bind(deadline).bind(download_origin).execute(c).await?;Ok(())
         })).await?;
@@ -211,7 +211,7 @@ impl Transactions {
             task,
         };
         let required = input.task.permissions()?;
-        let device = frozen.device.clone();
+        let device = frozen.device;
         let fingerprint = protection::fingerprint(
             &self.protection,
             tenant,
@@ -242,7 +242,7 @@ impl Transactions {
     async fn queue_bootstrap_command_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         input: &Create,
         authority: Authority,
         fingerprint: Vec<u8>,
@@ -272,14 +272,14 @@ impl Transactions {
     pub async fn recover_bootstrap_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         audit: &RequestAudit,
     ) -> Result<()> {
         self.validate_in(tx)?;
         let now = storage::now(tx).await?;
         let tenant = tx.tenant_id();
         let device = device.to_owned();
-        let rows=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(Uuid,Uuid)>("SELECT id,installation FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND installation_facts->>'device'=$2 AND active AND state='issued' AND deadline<=$3 AND (installation_facts->>'deadline')::bigint>$3 ORDER BY installation").bind(tenant.to_string()).bind(device).bind(now).fetch_all(c).await})).await?;
+        let rows=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(Uuid,Uuid)>("SELECT id,installation FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND (installation_facts->>'device')::uuid=$2 AND active AND state='issued' AND deadline<=$3 AND (installation_facts->>'deadline')::bigint>$3 ORDER BY installation").bind(tenant.to_string()).bind(device.into_uuid()).bind(now).fetch_all(c).await})).await?;
         for (id, installation) in rows {
             let reader = self.materials.installations.clone();
             let current = tx
@@ -302,7 +302,7 @@ impl Transactions {
     pub async fn cleanup_bootstrap_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         audit: &RequestAudit,
     ) -> Result<()> {
         self.validate_in(tx)?;
@@ -310,7 +310,7 @@ impl Transactions {
         let tenant = tx.tenant_id();
         let device = device.to_owned();
         tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_access.agent_bootstraps SET cleanup_complete=true WHERE tenant_id=$1::uuid AND cleanup IS NOT NULL AND NOT cleanup_complete AND mdm_registration_tasks.installation_status(cleanup)='applied'").bind(tenant.to_string()).execute(c).await?;Ok(())})).await?;
-        let rows=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(Uuid,serde_json::Value)>("SELECT b.id, b.installation_facts FROM mdm_access.agent_bootstraps AS b WHERE b.tenant_id = CAST($1 AS uuid) AND b.installation_facts ->> 'device' = $2 AND NOT b.cleanup_complete AND b.cleanup_retry_at <= $3 AND (b.cleanup IS NULL OR mdm_registration_tasks.installation_status(b.cleanup) IN ('rejected', 'cancelled', 'timed_out', 'superseded') OR EXISTS (SELECT 1 FROM mdm_registration_tasks.operations AS o WHERE o.tenant_id = b.tenant_id AND o.id = b.cleanup AND CAST(o.input_context ->> 'deadline' AS bigint) <= $3)) AND b.state IN ('issued', 'consumed') AND EXISTS (SELECT 1 FROM mdm_access.devices AS r WHERE r.tenant_id = b.tenant_id AND r.id = CAST(b.source ->> 'device' AS text) AND r.state = 'active') FOR UPDATE OF b").bind(tenant.to_string()).bind(device).bind(now).fetch_all(c).await})).await?;
+        let rows=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(Uuid,serde_json::Value)>("SELECT b.id, b.installation_facts FROM mdm_access.agent_bootstraps AS b WHERE b.tenant_id = CAST($1 AS uuid) AND (b.installation_facts ->> 'device')::uuid = $2 AND NOT b.cleanup_complete AND b.cleanup_retry_at <= $3 AND (b.cleanup IS NULL OR mdm_registration_tasks.installation_status(b.cleanup) IN ('rejected', 'cancelled', 'timed_out', 'superseded') OR EXISTS (SELECT 1 FROM mdm_registration_tasks.operations AS o WHERE o.tenant_id = b.tenant_id AND o.id = b.cleanup AND CAST(o.input_context ->> 'deadline' AS bigint) <= $3)) AND b.state IN ('issued', 'consumed') AND EXISTS (SELECT 1 FROM mdm_access.devices AS r WHERE r.tenant_id = b.tenant_id AND r.id = CAST(b.source ->> 'device' AS uuid) AND r.state = 'active') FOR UPDATE OF b").bind(tenant.to_string()).bind(device.into_uuid()).bind(now).fetch_all(c).await})).await?;
         for (id, value) in rows {
             let installation: Installation = stored(serde_json::from_value(value))?;
             let reader = self.materials.installations.clone();
@@ -331,7 +331,7 @@ impl Transactions {
                 target: NativeTarget::Device,
                 task: cleanup_task(installation.platform, id),
             };
-            let device = installation.device.clone();
+            let device = installation.device;
             let required = input.task.permissions()?;
             let fingerprint = protection::fingerprint(
                 &self.protection,

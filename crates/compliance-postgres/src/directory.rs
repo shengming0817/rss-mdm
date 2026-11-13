@@ -2,7 +2,7 @@ use super::*;
 use rss_mdm_query::directory::{Position, Query};
 use rss_mdm_query_postgres::Source;
 pub static SOURCES: &[rss_mdm_query_postgres::Source] = &[
-    Source::column("id", "r.id::text COLLATE \"C\""),
+    Source::column("id", "r.id"),
     Source::column("revision", "r.revision"),
     Source::column(
         "name",

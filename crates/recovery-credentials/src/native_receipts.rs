@@ -27,7 +27,7 @@ impl NativeReceipts {
         c: &mut PgConnection,
         tenant: Uuid,
         operation: Uuid,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         report: &plist::Dictionary,
         status: ReceiptStatus,
     ) -> Result<(), Error> {

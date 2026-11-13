@@ -10,7 +10,7 @@ use sqlx::{PgConnection, Row};
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub type ChangePage = (Vec<Event>, Option<String>);
+pub type ChangePage = (Vec<Event>, Option<rss_mdm_agent_wire::DeviceId>);
 
 /// The host maps event selection and published compliance changes without a reverse dependency.
 pub trait Eligibility: Send + Sync + 'static {
@@ -24,7 +24,7 @@ pub trait Eligibility: Send + Sync + 'static {
         &'a self,
         c: &'a mut PgConnection,
         source: &'a events::CompliancePublication,
-        after: Option<String>,
+        after: Option<rss_mdm_agent_wire::DeviceId>,
     ) -> BoxFuture<'a, Result<ChangePage, Error>>;
 }
 #[derive(Serialize, Deserialize)]
@@ -134,7 +134,13 @@ async fn compliance_step<H: Eligibility>(
         return Ok(true);
     }
     let (events, next) = host
-        .compliance_page(c, source, row.try_get("cursor")?)
+        .compliance_page(
+            c,
+            source,
+            row.try_get::<Option<Uuid>, _>("cursor")?
+                .map(|id| rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|_| Error::Invalid))
+                .transpose()?,
+        )
         .await?;
     if events.len() > PAGE as usize {
         return Err(Error::Storage);
@@ -143,7 +149,7 @@ async fn compliance_step<H: Eligibility>(
         events::emit_derived_on(c, &event, Some(source.id)).await?;
     }
     let complete = next.is_none();
-    sqlx::query("UPDATE mdm_webhook.compliance_sources SET cursor=$3,complete=$4 WHERE tenant_id=$1 AND id=$2").bind(source.tenant).bind(source.id).bind(next).bind(complete).execute(c).await?;
+    sqlx::query("UPDATE mdm_webhook.compliance_sources SET cursor=$3,complete=$4 WHERE tenant_id=$1 AND id=$2").bind(source.tenant).bind(source.id).bind(next.map(|id|id.into_uuid())).bind(complete).execute(c).await?;
     Ok(complete)
 }
 async fn step<H: Eligibility>(

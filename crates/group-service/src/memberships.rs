@@ -15,7 +15,7 @@ impl Groups {
     pub async fn memberships(
         &self,
         proof: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         query: &Query,
         audit: &RequestAudit,
     ) -> std::result::Result<Memberships, Error> {
@@ -114,13 +114,10 @@ impl Groups {
         &self,
         c: &mut sqlx::PgConnection,
         p: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         q: &Query,
         authority: &str,
     ) -> Result<Memberships> {
-        if device.is_empty() || device.len() > 255 {
-            return Err(Error::Malformed.into());
-        }
         if !crate::device::read::registered(
             rss_mdm_install_support::StorageProfile::Mdm,
             c,
@@ -153,11 +150,7 @@ impl Groups {
                     .map_err(|_| Error::Conflict.into())
             })
             .transpose()?;
-        let keys = resolved
-            .objects
-            .iter()
-            .map(rss_mdm_inventory_service::objects::ObjectRef::key)
-            .collect::<Vec<_>>();
+        let keys = resolved.objects;
         let mut items = group_checked(
             self.groups
                 .memberships_on(c, device, &keys, after, q.limit())
@@ -173,9 +166,11 @@ impl Groups {
                 .ok_or(Error::Conflict)?
                 .iter()
                 .map(|v| {
-                    group_checked(rss_mdm_inventory_service::objects::ObjectRef::from_key(
+                    group_checked(rss_mdm_inventory_service::objects::checked_context(
                         context,
-                        v.as_str().ok_or(Error::Conflict)?,
+                        &stored(serde_json::from_value::<rss_mdm_agent_wire::ObjectRef>(
+                            v.clone(),
+                        ))?,
                     ))
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -266,7 +261,7 @@ pub struct Membership {
     pub input_version: String,
     pub as_of: i64,
     pub rule_current: bool,
-    pub objects: Vec<rss_mdm_inventory_service::objects::ObjectRef>,
+    pub objects: Vec<rss_mdm_agent_wire::ObjectRef>,
     pub association_current: Option<bool>,
     pub input_current: bool,
     pub evaluation: Evaluation,

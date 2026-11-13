@@ -242,7 +242,7 @@ async fn current(
     State(s): State<Arc<Compliance>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
 ) -> std::result::Result<Json<CurrentView>, Error> {
     run(&s, &a, &audit, Command::Current { device })
         .await
@@ -253,7 +253,7 @@ async fn history(
     State(s): State<Arc<Compliance>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
     params: rss_mdm_http_contract::query::OwnedQuery<ComplianceHistoryQuery>,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Json<History>>, Error> {
     (async {

@@ -11,7 +11,7 @@ use sqlx::Row;
 struct Cursor {
     kind: String,
     tenant: String,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
     authority: String,
     asset_cut: AssetCut,
     after: String,
@@ -21,13 +21,12 @@ impl AssetService {
     pub(super) async fn inventory_scopes(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         access: &ReadScope,
         limit: usize,
         token: Option<&str>,
         candidate: &AssetCut,
     ) -> Result<Response> {
-        checked_input(rss_observation::Id::new(device))?;
         if !(1..=1000).contains(&limit) {
             return Err(Error::Malformed.into());
         }
@@ -77,7 +76,7 @@ impl AssetService {
             .into_iter()
             .map(|row| {
                 Ok(serde_json::json!({
-                    "device":row.try_get::<String,_>("device")?,
+                    "device":row.try_get::<uuid::Uuid, _>("device").and_then(|id| rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e))))?,
                     "source":row.try_get::<String,_>("source")?,
                     "epoch":row.try_get::<String,_>("epoch")?,
                 }))
@@ -128,7 +127,7 @@ impl AssetService {
             let cursor = Cursor {
                 kind: "inventory-scopes-v1".into(),
                 tenant: self.tenant.to_string(),
-                device: device.into(),
+                device: *device,
                 authority,
                 asset_cut: cut.clone(),
                 after: selected.last().ok_or(Error::Malformed)?.clone(),
@@ -153,20 +152,25 @@ impl AssetService {
             })
             .collect::<Result<_>>()?;
         Ok(Response::InventoryScopes {
-            device: device.into(),
+            device: *device,
             asset_cut: cut,
             items,
             next_cursor,
         })
     }
 
-    fn scope_cursor(&self, token: &str, device: &str, authority: &str) -> Result<Cursor> {
+    fn scope_cursor(
+        &self,
+        token: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
+        authority: &str,
+    ) -> Result<Cursor> {
         let cursor: Cursor = CursorCodec::from_key(self.asset_cursor_key.clone())
             .decode_bounded(token, "inventory-scopes", windows::MAX_CURSOR_BYTES)
             .map_err(|_| Error::Conflict)?;
         if cursor.kind != "inventory-scopes-v1"
             || cursor.tenant != self.tenant.to_string()
-            || cursor.device != device
+            || cursor.device != *device
             || cursor.authority != authority
             || cursor.asset_cut.tenant().to_string() != self.tenant.to_string()
         {
@@ -179,15 +183,15 @@ impl AssetService {
 const SCOPES: &str = r#"
 WITH authority AS (
  SELECT device,source,epoch FROM jsonb_to_recordset($2::jsonb)
- AS a(device text,source text,epoch text)
+ AS a(device uuid,source text,epoch text)
 ), streams AS (
  SELECT h.scope FROM mdm_access.collection_history h
- JOIN authority a ON a.device=h.scope::jsonb->>'registration'
+ JOIN authority a ON a.device=(h.scope::jsonb->>'registration')::uuid
    AND a.source=h.scope::jsonb->>'source' AND a.epoch=h.scope::jsonb->>'epoch'
  WHERE h.tenant_id=$1::uuid AND mdm.asset_visible($3::jsonb,h.revision)
  UNION
  SELECT c.identity->>'scope' FROM mdm.asset_changes c
- JOIN authority a ON a.device=c.identity->>'device'
+ JOIN authority a ON a.device=(c.identity->>'device')::uuid
    AND a.source=(c.identity->>'scope')::jsonb->>'source'
    AND a.epoch=(c.identity->>'scope')::jsonb->>'epoch'
  WHERE c.tenant_id=$1::uuid AND c.kind='inventory' AND mdm.asset_visible($3::jsonb,c.revision)
@@ -202,7 +206,7 @@ WITH authority AS (
  ORDER BY h.scope_digest,h.field,h.field_scope,h.revision DESC
 ), facts AS (
  SELECT (h.field_scope::jsonb)::text AS scope FROM inventory h
- JOIN authority a ON a.device=h.document->>'registration'
+ JOIN authority a ON a.device=(h.document->>'registration')::uuid
    AND a.source=h.document->>'source' AND a.epoch=h.document->>'epoch'
  WHERE h.document IS NOT NULL AND h.document->>'state'<>'deleted'
    AND h.document->>'journal'=$7 AND h.document->>'generation'=$8
@@ -216,7 +220,7 @@ WITH authority AS (
    f->'scope' AS scope,
    (v.metadata->'fields'->(f->'definition'->>'key')->>'quality') AS quality
  FROM runs h
- JOIN authority a ON a.device=h.scope::jsonb->>'registration'
+ JOIN authority a ON a.device=(h.scope::jsonb->>'registration')::uuid
    AND a.source=h.scope::jsonb->>'source' AND a.epoch=h.scope::jsonb->>'epoch'
  JOIN mdm_access.collection_versions v ON v.tenant_id=$1::uuid AND v.version=h.document->>'progress_version'
  CROSS JOIN LATERAL jsonb_array_elements(v.metadata->'definition'->'fields') f

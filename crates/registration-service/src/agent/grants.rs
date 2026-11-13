@@ -73,7 +73,7 @@ impl Service {
                     .bind(&tenant)
                     .bind(id)
                     .bind(input.operation_id)
-                    .bind(Uuid::new_v4().to_string())
+                    .bind(rss_mdm_agent_wire::DeviceId::new_v4().into_uuid())
                     .bind(platform(input.platform))
                     .bind(secret_digest(&tenant, id, &input.secret))
                     .bind(&*d)
@@ -182,7 +182,10 @@ impl Service {
                     crate::device::registration_user::initialize_on(
                         profile,
                         c,
-                        &current.try_get::<String, _>("device").map_err(db)?,
+                        &current
+                            .try_get::<uuid::Uuid, _>("device")
+                            .and_then(crate::database::device_id)
+                            .map_err(db)?,
                         &p.user()?,
                     )
                     .await?;
@@ -331,7 +334,7 @@ impl Service {
     pub async fn recovery(
         &self,
         p: &AuthorizedPrincipal,
-        device_id: &str,
+        device_id: &rss_mdm_agent_wire::DeviceId,
         input: &wire::GrantRequest,
         a: &RequestAudit,
     ) -> Result<wire::GrantReceipt, Failure> {
@@ -358,12 +361,15 @@ impl Service {
                         crate::storage_profile::sql(profile).certificate_grants_recovery_1,
                     )
                     .bind(&tenant)
-                    .bind(*device_id)
+                    .bind(device_id.into_uuid())
                     .fetch_optional(&mut *c)
                     .await
                     .map_err(db)?
                     .ok_or(Error::Forbidden)?;
-                    let device: String = row.try_get("device").map_err(db)?;
+                    let device: rss_mdm_agent_wire::DeviceId = row
+                        .try_get::<uuid::Uuid, _>("device")
+                        .and_then(crate::database::device_id)
+                        .map_err(db)?;
                     p.credentials(&device)?;
                     if row.try_get::<String, _>("state").map_err(db)? != "active" {
                         return Err(Error::Forbidden);
@@ -398,7 +404,7 @@ impl Service {
                         .bind(input.operation_id)
                         .bind(p.principal_id())
                         .bind(p.instance_id())
-                        .bind(&device)
+                        .bind(device.into_uuid())
                         .bind(platform(input.platform))
                         .bind(secret_digest(&tenant, id, &input.secret))
                         .bind(&*digest)
@@ -433,8 +439,12 @@ fn owned(p: &AuthorizedPrincipal, row: &PgRow) -> Result<(), Error> {
     {
         p.check_live().map_err(Into::into)
     } else {
-        p.credentials(&row.try_get::<String, _>("device").map_err(db)?)
-            .map_err(Into::into)
+        p.credentials(
+            &row.try_get::<uuid::Uuid, _>("device")
+                .and_then(crate::database::device_id)
+                .map_err(db)?,
+        )
+        .map_err(Into::into)
     }
 }
 async fn progress(
@@ -488,7 +498,7 @@ impl Service {
         let bound = hex(csr(&input.csr)?.spki());
         let d = digest(&(principal.device(), principal.credential(), input))?;
         a.identify_device(principal.device());
-        a.target(principal.device());
+        a.target_device(principal.device());
         a.owned_operation(
             rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
@@ -509,7 +519,7 @@ impl Service {
                 let row =
                     sqlx::query(crate::storage_profile::sql(profile).certificate_grants_renew_1)
                         .bind(&tenant)
-                        .bind(p.device())
+                        .bind(p.device().into_uuid())
                         .fetch_one(&mut *c)
                         .await
                         .map_err(db)?;
@@ -545,7 +555,7 @@ impl Service {
                     .bind(input.operation_id)
                     .bind(row.try_get::<String, _>("actor").map_err(db)?)
                     .bind(row.try_get::<String, _>("instance").map_err(db)?)
-                    .bind(p.device())
+                    .bind(p.device().into_uuid())
                     .bind(platform(input.platform))
                     .bind(secret_digest(&tenant, id, &input.secret))
                     .bind(&*d)

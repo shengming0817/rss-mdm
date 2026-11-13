@@ -6,7 +6,7 @@ pub type Pending<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, crate::installation::Error>> + Send + 'a>>;
 pub struct AppleRegistration {
     pub tenant: String,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
 }
 pub trait AppleProfiles: Send + Sync {
     fn operation_permissions<'a>(
@@ -33,7 +33,7 @@ pub trait AppleProfiles: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         user_key: String,
         identifier: String,
     ) -> Pending<'a, Vec<Uuid>>;

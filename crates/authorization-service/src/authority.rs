@@ -33,11 +33,11 @@ impl OperationAuthority {
     pub fn from_proof(
         snapshot: &Snapshot,
         proof: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         permission: Permission,
     ) -> Result<Self, Error> {
         snapshot.require(proof, permission, Some(device))?;
-        let scope = Scope::Device { id: device.into() };
+        let scope = Scope::Device { id: *device };
         let basis = if let Some(key) = snapshot.key(proof)? {
             AuthorityBasis::ApiKey {
                 authority_revision: key.authority_revision,
@@ -245,7 +245,9 @@ mod tests {
     use super::*;
     #[test]
     fn future_device_authority_cannot_be_derived_from_one_device() {
-        let device = Scope::Device { id: "one".into() };
+        let device = Scope::Device {
+            id: rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
+        };
         let scoped = Grant {
             operation: Permission::Enrollment,
             scope: device.clone(),

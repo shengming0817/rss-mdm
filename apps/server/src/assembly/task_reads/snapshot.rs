@@ -37,7 +37,7 @@ impl Reads {
                 &'c Snapshot,
                 i64,
                 &'c mut Option<(
-                    String,
+                    rss_mdm_agent_wire::DeviceId,
                     Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
                 )>,
             ) -> std::pin::Pin<

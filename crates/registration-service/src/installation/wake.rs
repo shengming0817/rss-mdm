@@ -2,7 +2,7 @@ use super::*;
 pub async fn wake_native_in(
     messaging: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<()> {
     messaging
         .wake_in(

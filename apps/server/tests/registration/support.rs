@@ -132,7 +132,7 @@ pub async fn counts(c: &Context) -> Result<(i64, i64)> {
 #[derive(Serialize)]
 struct InputIdentity<'a> {
     operation: Uuid,
-    device: &'a str,
+    device: &'a rss_mdm_agent_wire::DeviceId,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -221,16 +221,16 @@ pub async fn installation(
         tenant: c.tenant.to_string(),
         policy,
         version,
-        device: n.device.clone(),
+        device: n.device,
         operation: id,
     };
     let object = rss_mdm_inventory_service::objects::DeviceObject {
-        object: rss_mdm_inventory_service::objects::ObjectRef::Endpoint(n.device.clone()),
+        object: rss_mdm_agent_wire::ObjectRef::Endpoint(n.device),
         association_version: None,
         verified: true,
         members: vec![
             rss_mdm_registration_service::device::endpoints::PrimaryRegistration {
-                device: n.device.clone(),
+                device: n.device,
                 channel: rss_mdm_inventory::Channel::Mdm,
             },
         ],
@@ -278,12 +278,12 @@ pub async fn installation(
     let frozen = serde_json::to_value(frozen)?;
     sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'ensure_agent_installed',$4,$5)").bind(c.tenant.to_string()).bind(version).bind(policy).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).execute(&mut *tx).await?;
     let command_device = Uuid::new_v4();
-    sqlx::query("INSERT INTO mdm_access.command_authorities (tenant_id, device, command_device, generation, epoch) VALUES (CAST($1 AS uuid), $2, $3, 1, 1)").bind(c.tenant.to_string()).bind(&n.device).bind(command_device).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.command_authorities (tenant_id, device, command_device, generation, epoch) VALUES (CAST($1 AS uuid), $2, $3, 1, 1)").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(command_device).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_device_command.authorities(tenant_id,device_id,generation,authority_epoch) VALUES($1::uuid,$2,1,1)").bind(c.tenant.to_string()).bind(command_device).execute(&mut *tx).await?;
     let fingerprint = input.digest(key, c.tenant, &n.device)?.as_bytes().to_vec();
     sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,version) VALUES($1::uuid,$2,$3,1,1,$4,$5,$6,'mdm.software.deployment.v1',$2,$4,'published',$6,2)").bind(c.tenant.to_string()).bind(id.to_string()).bind(command_device).bind(&fingerprint).bind(deadline*1_000_000).bind(now()*1_000_000).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_software_deployment.operations (tenant_id, id, device, request, input_context, fingerprint, generation, epoch, authority, dispatch_fingerprint, gateway_accepted, policy_version, observed_command_version) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 1, 1, $7, $6, TRUE, $8, 2)").bind(c.tenant.to_string()).bind(id).bind(&n.device).bind(sealed).bind(serde_json::to_value(metadata)?).bind(&fingerprint).bind(serde_json::to_value(authority)?).bind(version).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_windows.native_commands (tenant_id, id, device) VALUES (CAST($1 AS uuid), $2, $3)").bind(c.tenant.to_string()).bind(id).bind(n.device.clone()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_software_deployment.operations (tenant_id, id, device, request, input_context, fingerprint, generation, epoch, authority, dispatch_fingerprint, gateway_accepted, policy_version, observed_command_version) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 1, 1, $7, $6, TRUE, $8, 2)").bind(c.tenant.to_string()).bind(id).bind(n.device.into_uuid()).bind(sealed).bind(serde_json::to_value(metadata)?).bind(&fingerprint).bind(serde_json::to_value(authority)?).bind(version).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_windows.native_commands (tenant_id, id, device) VALUES (CAST($1 AS uuid), $2, $3)").bind(c.tenant.to_string()).bind(id).bind(n.device.into_uuid()).execute(&mut *tx).await?;
     let attempt = Uuid::new_v4();
     let owner::Task::Windows {
         request: rss_mdm_windows_mdm::native::Execution::Msi { job },
@@ -296,7 +296,7 @@ pub async fn installation(
         header: rss_mdm_windows_mdm::syncml::Header {
             session_id: 1,
             message_id: 1,
-            target: n.device.clone(),
+            target: n.device.to_string(),
             source: "https://localhost/windows/management".into(),
             credential: None,
             meta: None,
@@ -318,17 +318,17 @@ pub async fn installation(
         )?
         .derive(),
     )?;
-    sqlx::query("INSERT INTO mdm_windows.attempts (tenant_id, id, operation, device, ordinal, credential, session, message, phase, request, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, 1, $5, 1, 1, 'execute', $6, $7)").bind(c.tenant.to_string()).bind(attempt).bind(id).bind(n.device.clone()).bind(n.credential).bind(request).bind(n.epoch).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_windows.attempts (tenant_id, id, operation, device, ordinal, credential, session, message, phase, request, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, 1, $5, 1, 1, 'execute', $6, $7)").bind(c.tenant.to_string()).bind(attempt).bind(id).bind(n.device.into_uuid()).bind(n.credential).bind(request).bind(n.epoch).execute(&mut *tx).await?;
     let digest = format!("{:x}", Sha256::digest(&n.root));
     let body = serde_json::to_vec(&n.trust)?;
     sqlx::query("INSERT INTO mdm_pki.issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES($1::uuid,'windows',$2,1,'active',$3,'step_ca',$4)").bind(c.tenant.to_string()).bind(&digest).bind(&n.root).bind(now()+86400).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_pki.trust(tenant_id,purpose,revision,body) VALUES($1::uuid,'windows',1,$2)").bind(c.tenant.to_string()).bind(&body).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_pki.certificates (tenant_id, purpose, fingerprint, issuer, serial, device, not_after, certificate, verification_version, verification_trust) VALUES (CAST($1 AS uuid), 'windows', $2, $3, $4, $5, $6, $7, 1, $8)").bind(c.tenant.to_string()).bind(Sha256::digest(&n.certificate).to_vec()).bind(&digest).bind(&m.serial).bind(n.device.clone()).bind(now()+3600).bind(&n.certificate).bind(Sha256::digest(&body).to_vec()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_pki.certificates (tenant_id, purpose, fingerprint, issuer, serial, device, not_after, certificate, verification_version, verification_trust) VALUES (CAST($1 AS uuid), 'windows', $2, $3, $4, $5, $6, $7, 1, $8)").bind(c.tenant.to_string()).bind(Sha256::digest(&n.certificate).to_vec()).bind(&digest).bind(&m.serial).bind(n.device.into_uuid()).bind(now()+3600).bind(&n.certificate).bind(Sha256::digest(&body).to_vec()).execute(&mut *tx).await?;
     let facts = rss_mdm_registration_service::installation::Installation {
         id,
         policy,
         version,
-        device: n.device.clone(),
+        device: n.device,
 
         platform: rss_mdm_policy::Platform::Windows,
         source: rss_mdm_inventory::ReportSource::MdmWindows,

@@ -104,7 +104,7 @@ impl crate::Retirement for CertificateRetirement {
         c: &'a mut sqlx::PgConnection,
         _facts: &'a mut Vec<rss_mdm_audit_integration::Fact>,
         tenant: &'a str,
-        registration: &'a str,
+        registration: &'a rss_mdm_agent_wire::DeviceId,
         _state: &'a str,
     ) -> crate::agent::Pending<'a, ()> {
         Box::pin(async move {
@@ -118,4 +118,14 @@ impl crate::Retirement for CertificateRetirement {
             .map_err(|_| Error::Storage)
         })
     }
+}
+
+/// Validate a native PostgreSQL UUID at the registration storage boundary.
+pub(crate) fn device_id(id: uuid::Uuid) -> Result<rss_mdm_agent_wire::DeviceId, sqlx::Error> {
+    rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+}
+pub(crate) fn device_ids(
+    ids: Vec<uuid::Uuid>,
+) -> Result<Vec<rss_mdm_agent_wire::DeviceId>, sqlx::Error> {
+    ids.into_iter().map(device_id).collect()
 }

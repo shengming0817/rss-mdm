@@ -122,7 +122,8 @@ fn invocation_schema_matches_literal_argument_and_environment_validation() {
         let spec = SoftwareTaskSpec {
             wire_version: 1,
             tenant_id: id,
-            device_id: "device".into(),
+            device_id: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
+                .unwrap(),
             platform: TaskPlatform::Windows,
             architecture: TaskArchitecture::X86_64,
 

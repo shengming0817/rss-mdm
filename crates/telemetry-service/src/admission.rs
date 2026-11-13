@@ -13,7 +13,7 @@ use uuid::Uuid;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Accepted {
     pub tenant: String,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub credential: Uuid,
     #[schemars(with = "rss_mdm_agent_wire::runtime::Source")]
     pub source: rss_mdm_inventory::Source,
@@ -90,7 +90,7 @@ pub(crate) async fn receive_on(
         .await?;
     if let Some(row) = sqlx::query("SELECT device, input_digest, received_at, delivery FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND id = $2")
         .bind(service.tenant.to_string()).bind(input.batch_id).fetch_optional(&mut *c).await? {
-        if row.try_get::<String,_>("device")? != principal.device()
+        if row.try_get::<uuid::Uuid, _>("device").and_then(|id| rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e))))? != *principal.device()
             || row.try_get::<Vec<u8>,_>("input_digest")? != digest { return Err(Error::Conflict); }
         return Ok(TelemetryReceipt { batch_id: input.batch_id, received_at: row.try_get("received_at")?, replayed: true, delivery: delivery(row.try_get("delivery")?)? });
     }
@@ -192,7 +192,7 @@ pub(crate) async fn receive_on(
     }
     let accepted = Accepted {
         tenant: service.tenant.to_string(),
-        device: principal.device().into(),
+        device: *principal.device(),
 
         credential: principal.credential(),
 
@@ -224,7 +224,7 @@ pub(crate) async fn receive_on(
         crate::retention::register(c, service.tenant, history, now).await?;
     }
     let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND delivery <> 'published'")
-        .bind(service.tenant.to_string()).bind(principal.device()).fetch_one(&mut *c).await?;
+        .bind(service.tenant.to_string()).bind(principal.device().into_uuid()).fetch_one(&mut *c).await?;
     if pending >= i64::from(service.limits.pending_batches) {
         return Err(Error::Capacity);
     }
@@ -265,7 +265,7 @@ pub(crate) async fn receive_on(
         }
     }
     sqlx::query("INSERT INTO mdm_telemetry.batches (tenant_id,id,device,credential,source,epoch,policy,policy_version,input_digest,context_digest,fields,received_at,delivery,first_observed,last_observed,quality,observations,current_assets) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending',$13,$14,$15,$16,$17)")
-        .bind(service.tenant.to_string()).bind(input.batch_id).bind(principal.device()).bind(principal.credential())
+        .bind(service.tenant.to_string()).bind(input.batch_id).bind(principal.device().into_uuid()).bind(principal.credential())
         .bind(accepted.source.as_str()).bind(epoch).bind(input.configuration().policy).bind(input.configuration().policy_version).bind(digest).bind(Sha256::digest(serde_json::to_vec(&accepted)?).to_vec()).bind(fields).bind(now).bind(first).bind(last).bind(serde_json::to_value(quality)?).bind(input.observations.iter().map(|v|v.id).collect::<Vec<_>>()).bind(accepted.profile.spec().projection!=rss_mdm_resource::TelemetryProjection::History).execute(&mut *c).await?;
     crate::delivery::append_on(c, &accepted).await?;
     Ok(TelemetryReceipt {
@@ -307,7 +307,7 @@ pub(crate) async fn status_on(
         return Err(Error::Denied);
     }
     let row = sqlx::query("SELECT received_at, delivery FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND device = $3")
-        .bind(service.tenant.to_string()).bind(batch).bind(principal.device()).fetch_optional(c).await?.ok_or(Error::NotFound)?;
+        .bind(service.tenant.to_string()).bind(batch).bind(principal.device().into_uuid()).fetch_optional(c).await?.ok_or(Error::NotFound)?;
     Ok(TelemetryReceipt {
         batch_id: batch,
         received_at: row.try_get("received_at")?,
@@ -321,7 +321,7 @@ pub(crate) async fn capable_on(
     store: &dyn rss_mdm_script_service::agent_facts::Store,
     c: &mut PgConnection,
     tenant: TenantId,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
     frozen: &rss_mdm_policy_service::telemetry::FrozenProfile,
 ) -> Result<(), Error> {
     use rss_mdm_agent_wire::runtime as w;
@@ -329,7 +329,7 @@ pub(crate) async fn capable_on(
     use rss_mdm_resource as r;
     let target = &frozen.profile.spec().template;
     let binding = store
-        .binding(c, tenant.to_string(), registration.clone())
+        .binding(c, tenant.to_string(), registration)
         .await
         .map_err(|_| Error::Storage)?
         .ok_or(Error::Unsupported)?;
@@ -453,10 +453,10 @@ async fn admit_resources_on(
             .max_resources;
         for resource in resources {
             sqlx::query("INSERT INTO mdm_telemetry.resources VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING")
-                .bind(tenant.to_string()).bind(&accepted.device).bind(&field).bind(resource).execute(&mut *c).await?;
+                .bind(tenant.to_string()).bind(accepted.device.into_uuid()).bind(&field).bind(resource).execute(&mut *c).await?;
         }
         let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_telemetry.resources WHERE tenant_id=$1::uuid AND device=$2 AND field=$3")
-            .bind(tenant.to_string()).bind(&accepted.device).bind(&field).fetch_one(&mut *c).await?;
+            .bind(tenant.to_string()).bind(accepted.device.into_uuid()).bind(&field).fetch_one(&mut *c).await?;
         if count > i64::from(maximum) {
             return Err(Error::Capacity);
         }

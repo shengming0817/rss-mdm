@@ -48,8 +48,8 @@ impl PolicyCandidates {
         &'a self,
         connection: &'a mut PgConnection,
         tenant: TenantId,
-        devices: &'a [String],
-    ) -> Pending<'a, Vec<String>> {
+        devices: &'a [rss_mdm_agent_wire::DeviceId],
+    ) -> Pending<'a, Vec<rss_mdm_agent_wire::DeviceId>> {
         let kinds = ["ensure_agent_installed", "software"];
         Box::pin(async move {
             Ok(rss_mdm_policy_postgres::candidates::native_interests_on(
@@ -67,7 +67,7 @@ impl PolicyCandidates {
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         kind: CandidateKind,
         after: Uuid,
     ) -> Pending<'a, CandidatePage> {

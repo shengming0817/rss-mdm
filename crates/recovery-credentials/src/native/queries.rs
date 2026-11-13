@@ -44,13 +44,13 @@ impl Service {
         c: &mut sqlx::PgConnection,
         proof: &AuthorizedPrincipal,
         grant: &Snapshot,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
     ) -> Result<Detail> {
         grant.require(proof, Permission::OperationRead, Some(device))?;
         let s = &self.transactions;
         let op = storage::load_on(c, s.tenant, &s.protection, id).await?;
-        if op.device != device {
+        if op.device != *device {
             return Err(Error::Forbidden.into());
         }
         let status: String = sqlx::query_scalar("SELECT mdm_recovery_tasks.native_status($1)")

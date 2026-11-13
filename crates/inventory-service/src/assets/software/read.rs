@@ -1,37 +1,43 @@
 //! All views address the same completed task and revalidate its input coordinates.
 use super::*;
+use rss_mdm_agent_wire::ObjectRef;
 use rss_mdm_query::cursor::CursorCodec;
 use serde::de::DeserializeOwned;
 use sqlx::Row;
 impl AssetService {
-    fn software_page(
+    fn software_page<T: DeserializeOwned>(
         &self,
         scope: &ReadScope,
         binding: &impl serde::Serialize,
         page: &Page,
-    ) -> Result<(usize, String, String)> {
+    ) -> Result<(usize, Option<T>, String)> {
         if !(1..=1000).contains(&page.limit) {
             return Err(Error::Malformed.into());
         }
         let binding = digest(&("software-assets", self.tenant.to_string(), scope, binding))?;
         let position = if let Some(token) = &page.cursor {
-            CursorCodec::from_key(self.asset_cursor_key.clone())
-                .decode::<String>(
-                    &checked_input(rss_contract::PageCursor::parse(token))?,
-                    &binding,
-                )
-                .map_err(|_| Error::Conflict)?
+            Some(
+                CursorCodec::from_key(self.asset_cursor_key.clone())
+                    .decode::<T>(
+                        &checked_input(rss_contract::PageCursor::parse(token))?,
+                        &binding,
+                    )
+                    .map_err(|_| Error::Conflict)?,
+            )
         } else {
-            String::new()
+            None
         };
         Ok((page.limit, position, binding))
     }
-    fn software_next(&self, binding: &str, position: Option<&str>) -> Result<Option<String>> {
+    fn software_next<T: serde::Serialize + ?Sized>(
+        &self,
+        binding: &str,
+        position: Option<&T>,
+    ) -> Result<Option<String>> {
         position
             .map(|value| {
                 Ok(checked_input(
-                    CursorCodec::from_key(self.asset_cursor_key.clone())
-                        .encode(binding, &value.to_owned()),
+                    CursorCodec::from_key(self.asset_cursor_key.clone()).encode(binding, &value),
                 )?
                 .as_str()
                 .to_owned())
@@ -46,10 +52,10 @@ impl AssetService {
         page: &Page,
     ) -> Result<(Vec<Record<T>>, Option<String>)> {
         let revision = self.software_revision(tx, false).await?;
-        let (limit, after, binding) = self.software_page(scope, &(kind, revision), page)?;
+        let (limit, after, binding) = self.software_page::<Uuid>(scope, &(kind, revision), page)?;
         let tenant = self.tenant.to_string();
         let rows = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("SELECT id,octet_length(document::text) bytes FROM mdm_assets.software_records WHERE tenant_id=$1::uuid AND kind=$2 AND document IS NOT NULL AND id::text COLLATE \"C\">$3 COLLATE \"C\" ORDER BY id LIMIT $4")
+            sqlx::query("SELECT id,octet_length(document::text) bytes FROM mdm_assets.software_records WHERE tenant_id=$1::uuid AND kind=$2 AND document IS NOT NULL AND ($3::uuid IS NULL OR id>$3) ORDER BY id LIMIT $4")
                 .bind(tenant).bind(kind).bind(after).bind((limit+1) as i64).fetch_all(c).await
         })).await?;
         let mut more = rows.len() > limit;
@@ -64,11 +70,7 @@ impl AssetService {
             bytes += size;
             ids.push(row.try_get::<Uuid, _>("id")?);
         }
-        let next = if more {
-            ids.last().map(ToString::to_string)
-        } else {
-            None
-        };
+        let next = if more { ids.last().copied() } else { None };
         let tenant = self.tenant.to_string();
         let rows = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query("SELECT id,revision,document FROM mdm_assets.software_records WHERE tenant_id=$1::uuid AND kind=$2 AND id=ANY($3) ORDER BY id")
@@ -84,7 +86,7 @@ impl AssetService {
                 })
             })
             .collect::<Result<_>>()?;
-        Ok((items, self.software_next(&binding, next.as_deref())?))
+        Ok((items, self.software_next(&binding, next.as_ref())?))
     }
     pub(super) async fn software_read(
         &self,
@@ -137,10 +139,10 @@ impl AssetService {
         match command {
             Command::Coverage { page, .. } => {
                 let (limit, after, binding) =
-                    self.software_page(scope, &(id, "coverage", &coordinates), page)?;
+                    self.software_page::<ObjectRef>(scope, &(id, "coverage", &coordinates), page)?;
                 let tenant = self.tenant.to_string();
                 let metadata=tx.with_connection(move|c|Box::pin(async move {
-                    sqlx::query("SELECT object,octet_length(document::text) bytes FROM mdm_assets.software_objects WHERE tenant_id=$1::uuid AND run=$2 AND object COLLATE \"C\">$3 COLLATE \"C\" ORDER BY object COLLATE \"C\" LIMIT $4").bind(tenant).bind(id).bind(after).bind((limit+1) as i64).fetch_all(c).await
+                    sqlx::query("SELECT object_kind,object_id,octet_length(document::text) bytes FROM mdm_assets.software_objects WHERE tenant_id=$1::uuid AND run=$2 AND ($3::smallint IS NULL OR (object_kind,object_id)>($3,$4::uuid)) ORDER BY object_kind,object_id LIMIT $5").bind(tenant).bind(id).bind(after.map(ObjectRef::kind)).bind(after.map(ObjectRef::uuid)).bind((limit+1) as i64).fetch_all(c).await
                 })).await?;
                 let mut more = metadata.len() > limit;
                 let mut ids = Vec::new();
@@ -155,19 +157,16 @@ impl AssetService {
                         break;
                     }
                     bytes += size;
-                    ids.push(row.try_get::<String, _>("object")?);
+                    ids.push(stored(ObjectRef::from_parts(
+                        row.try_get("object_kind")?,
+                        row.try_get("object_id")?,
+                    ))?);
                 }
-                let next_cursor = self.software_next(
-                    &binding,
-                    if more {
-                        ids.last().map(String::as_str)
-                    } else {
-                        None
-                    },
-                )?;
+                let next_cursor =
+                    self.software_next(&binding, if more { ids.last() } else { None })?;
                 let tenant = self.tenant.to_string();
                 let rows:Vec<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move {
-                    sqlx::query_scalar("SELECT document FROM mdm_assets.software_objects WHERE tenant_id=$1::uuid AND run=$2 AND object=ANY($3) ORDER BY object COLLATE \"C\"").bind(tenant).bind(id).bind(ids).fetch_all(c).await
+                    sqlx::query_scalar("SELECT document FROM mdm_assets.software_objects WHERE tenant_id=$1::uuid AND run=$2 AND EXISTS(SELECT FROM unnest($3::smallint[],$4::uuid[]) s(kind,id) WHERE (object_kind,object_id)=(s.kind,s.id)) ORDER BY object_kind,object_id").bind(tenant).bind(id).bind(ids.iter().map(|o|o.kind()).collect::<Vec<_>>()).bind(ids.iter().map(|o|o.uuid()).collect::<Vec<_>>()).fetch_all(c).await
                 })).await?;
                 let items = rows
                     .into_iter()
@@ -190,10 +189,10 @@ impl AssetService {
             }
             Command::Buckets { page, .. } => {
                 let (limit, after, binding) =
-                    self.software_page(scope, &(id, "buckets", &coordinates), page)?;
+                    self.software_page::<String>(scope, &(id, "buckets", &coordinates), page)?;
                 let tenant = self.tenant.to_string();
                 let rows = tx.with_connection(move|c|Box::pin(async move {
-                    sqlx::query("SELECT b.id,b.standard,b.identity,octet_length(b.identity::text) AS bytes,count(*) AS assessment,count(*) FILTER(WHERE m.selected) AS selected,count(*) FILTER(WHERE m.selected AND m.compliance='disabled') AS disabled,count(*) FILTER(WHERE m.selected AND m.compliance='compliant') AS compliant,count(*) FILTER(WHERE m.selected AND m.compliance='non_compliant') AS non_compliant,count(*) FILTER(WHERE m.selected AND m.compliance='unknown') AS unknown FROM mdm_assets.software_buckets b JOIN mdm_assets.software_members m ON(m.tenant_id,m.run,m.bucket)=(b.tenant_id,b.run,b.id) WHERE b.tenant_id=$1::uuid AND b.run=$2 AND b.id COLLATE \"C\">$3 COLLATE \"C\" GROUP BY b.id,b.standard,b.identity HAVING bool_or(m.selected) ORDER BY b.id COLLATE \"C\" LIMIT $4")
+                    sqlx::query("SELECT b.id,b.standard,b.identity,octet_length(b.identity::text) AS bytes,count(*) AS assessment,count(*) FILTER(WHERE m.selected) AS selected,count(*) FILTER(WHERE m.selected AND m.compliance='disabled') AS disabled,count(*) FILTER(WHERE m.selected AND m.compliance='compliant') AS compliant,count(*) FILTER(WHERE m.selected AND m.compliance='non_compliant') AS non_compliant,count(*) FILTER(WHERE m.selected AND m.compliance='unknown') AS unknown FROM mdm_assets.software_buckets b JOIN mdm_assets.software_members m ON(m.tenant_id,m.run,m.bucket)=(b.tenant_id,b.run,b.id) WHERE b.tenant_id=$1::uuid AND b.run=$2 AND ($3::text IS NULL OR b.id COLLATE \"C\">$3 COLLATE \"C\") GROUP BY b.id,b.standard,b.identity HAVING bool_or(m.selected) ORDER BY b.id COLLATE \"C\" LIMIT $4")
                         .bind(tenant).bind(id).bind(after).bind((limit+1) as i64).fetch_all(c).await
                 })).await?;
                 let mut more = rows.len() > limit;
@@ -253,8 +252,11 @@ impl AssetService {
                 if !job.query.dimensions.contains(dimension) {
                     return Err(Error::Malformed.into());
                 }
-                let (limit, after, binding) =
-                    self.software_page(scope, &(id, bucket, dimension, &coordinates), page)?;
+                let (limit, after, binding) = self.software_page::<String>(
+                    scope,
+                    &(id, bucket, dimension, &coordinates),
+                    page,
+                )?;
                 let dimension = stored(serde_json::to_value(dimension))?
                     .as_str()
                     .ok_or(Error::Malformed)?
@@ -262,7 +264,7 @@ impl AssetService {
                 let tenant = self.tenant.to_string();
                 let bucket = bucket.clone();
                 let rows=tx.with_connection(move|c|Box::pin(async move {
-                    sqlx::query("SELECT v.value,count(DISTINCT e.object) AS devices FROM mdm_assets.software_evidence e CROSS JOIN LATERAL jsonb_array_elements_text(e.dimensions->$3) v(value) WHERE e.tenant_id=$1::uuid AND e.run=$2 AND e.bucket=$4 AND e.selected AND e.confirmed AND v.value COLLATE \"C\">$5 COLLATE \"C\" GROUP BY v.value ORDER BY v.value COLLATE \"C\" LIMIT $6")
+                    sqlx::query("SELECT v.value,count(DISTINCT (e.object_kind,e.object_id)) AS devices FROM mdm_assets.software_evidence e CROSS JOIN LATERAL jsonb_array_elements_text(e.dimensions->$3) v(value) WHERE e.tenant_id=$1::uuid AND e.run=$2 AND e.bucket=$4 AND e.selected AND e.confirmed AND ($5::text IS NULL OR v.value COLLATE \"C\">$5 COLLATE \"C\") GROUP BY v.value ORDER BY v.value COLLATE \"C\" LIMIT $6")
                         .bind(tenant).bind(id).bind(dimension).bind(bucket).bind(after).bind((limit+1) as i64).fetch_all(c).await
                 })).await?;
                 let more = rows.len() > limit;
@@ -289,19 +291,25 @@ impl AssetService {
                 })
             }
             Command::Devices { bucket, page, .. } => {
-                let (limit, after, binding) =
-                    self.software_page(scope, &(id, bucket, "devices", &coordinates), page)?;
+                let (limit, after, binding) = self.software_page::<ObjectRef>(
+                    scope,
+                    &(id, bucket, "devices", &coordinates),
+                    page,
+                )?;
                 let tenant = self.tenant.to_string();
                 let bucket = bucket.clone();
                 let rows=tx.with_connection(move|c|Box::pin(async move {
-                    sqlx::query("SELECT m.object,m.compliance,o.document->'object' AS identity,o.document->'groups' AS groups FROM mdm_assets.software_members m JOIN mdm_assets.software_objects o ON(o.tenant_id,o.run,o.object)=(m.tenant_id,m.run,m.object) WHERE m.tenant_id=$1::uuid AND m.run=$2 AND m.bucket=$3 AND m.selected AND m.object COLLATE \"C\">$4 COLLATE \"C\" ORDER BY m.object COLLATE \"C\" LIMIT $5")
-                        .bind(tenant).bind(id).bind(bucket).bind(after).bind((limit+1) as i64).fetch_all(c).await
+                    sqlx::query("SELECT m.object_kind,m.object_id,m.compliance,o.document->'object' AS identity,o.document->'groups' AS groups FROM mdm_assets.software_members m JOIN mdm_assets.software_objects o ON(o.tenant_id,o.run,o.object_kind,o.object_id)=(m.tenant_id,m.run,m.object_kind,m.object_id) WHERE m.tenant_id=$1::uuid AND m.run=$2 AND m.bucket=$3 AND m.selected AND ($4::smallint IS NULL OR (m.object_kind,m.object_id)>($4,$5::uuid)) ORDER BY m.object_kind,m.object_id LIMIT $6")
+                        .bind(tenant).bind(id).bind(bucket).bind(after.map(ObjectRef::kind)).bind(after.map(ObjectRef::uuid)).bind((limit+1) as i64).fetch_all(c).await
                 })).await?;
                 let more = rows.len() > limit;
                 let mut last = None;
                 let mut items = Vec::new();
                 for r in rows.into_iter().take(limit) {
-                    last = Some(r.try_get::<String, _>("object")?);
+                    last = Some(stored(ObjectRef::from_parts(
+                        r.try_get("object_kind")?,
+                        r.try_get("object_id")?,
+                    ))?);
                     items.push(Device {
                         object: stored(serde_json::from_value(r.try_get("identity")?))?,
                         compliance: stored(serde_json::from_value(serde_json::json!(
@@ -315,7 +323,7 @@ impl AssetService {
                     coordinates,
                     items,
                     next_cursor: self
-                        .software_next(&binding, if more { last.as_deref() } else { None })?,
+                        .software_next(&binding, if more { last.as_ref() } else { None })?,
                 })
             }
             Command::Evidence {
@@ -324,17 +332,17 @@ impl AssetService {
                 page,
                 ..
             } => {
-                let (limit, after, binding) = self.software_page(
+                let (limit, after, binding) = self.software_page::<String>(
                     scope,
                     &(id, bucket, object, "evidence", &coordinates),
                     page,
                 )?;
                 let tenant = self.tenant.to_string();
-                let key = object.clone();
+                let key = *object;
                 let selected_bucket = bucket.clone();
                 let object_document:Option<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move {
-                    sqlx::query_scalar("SELECT o.document FROM mdm_assets.software_objects o JOIN mdm_assets.software_members m ON(m.tenant_id,m.run,m.object)=(o.tenant_id,o.run,o.object) WHERE o.tenant_id=$1::uuid AND o.run=$2 AND o.object=$3 AND m.bucket=$4 AND m.selected")
-                        .bind(tenant).bind(id).bind(key).bind(selected_bucket).fetch_optional(c).await
+                    sqlx::query_scalar("SELECT o.document FROM mdm_assets.software_objects o JOIN mdm_assets.software_members m ON(m.tenant_id,m.run,m.object_kind,m.object_id)=(o.tenant_id,o.run,o.object_kind,o.object_id) WHERE o.tenant_id=$1::uuid AND o.run=$2 AND (o.object_kind,o.object_id)=($3,$4) AND m.bucket=$5 AND m.selected")
+                        .bind(tenant).bind(id).bind(key.kind()).bind(key.uuid()).bind(selected_bucket).fetch_optional(c).await
                 })).await?;
                 let object_result: ObjectResult = stored(serde_json::from_value(
                     object_document.ok_or(Error::NotFound)?,
@@ -342,10 +350,10 @@ impl AssetService {
                 let mut bytes = stored(serde_json::to_vec(&object_result.quality))?.len();
                 let tenant = self.tenant.to_string();
                 let wanted_bucket = bucket.clone();
-                let wanted_object = object.clone();
+                let wanted_object = *object;
                 let metadata=tx.with_connection(move|c|Box::pin(async move {
-                    sqlx::query("SELECT id,octet_length(document::text) bytes FROM mdm_assets.software_evidence WHERE tenant_id=$1::uuid AND run=$2 AND bucket=$3 AND object=$4 AND selected AND id COLLATE \"C\">$5 COLLATE \"C\" ORDER BY id COLLATE \"C\" LIMIT $6")
-                        .bind(tenant).bind(id).bind(wanted_bucket).bind(wanted_object).bind(after).bind((limit+1) as i64).fetch_all(c).await
+                    sqlx::query("SELECT id,octet_length(document::text) bytes FROM mdm_assets.software_evidence WHERE tenant_id=$1::uuid AND run=$2 AND bucket=$3 AND (object_kind,object_id)=($4,$5) AND selected AND ($6::text IS NULL OR id COLLATE \"C\">$6 COLLATE \"C\") ORDER BY id COLLATE \"C\" LIMIT $7")
+                        .bind(tenant).bind(id).bind(wanted_bucket).bind(wanted_object.kind()).bind(wanted_object.uuid()).bind(after).bind((limit+1) as i64).fetch_all(c).await
                 })).await?;
                 let mut more = metadata.len() > limit;
                 let mut ids = Vec::new();
@@ -371,9 +379,9 @@ impl AssetService {
                 )?;
                 let tenant = self.tenant.to_string();
                 let bucket = bucket.clone();
-                let object = object.clone();
+                let object = *object;
                 let rows:Vec<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move {
-                    sqlx::query_scalar("SELECT document FROM mdm_assets.software_evidence WHERE tenant_id=$1::uuid AND run=$2 AND id=ANY($3) AND bucket=$4 AND object=$5 ORDER BY id COLLATE \"C\"").bind(tenant).bind(id).bind(ids).bind(bucket).bind(object).fetch_all(c).await
+                    sqlx::query_scalar("SELECT document FROM mdm_assets.software_evidence WHERE tenant_id=$1::uuid AND run=$2 AND id=ANY($3) AND bucket=$4 AND (object_kind,object_id)=($5,$6) ORDER BY id COLLATE \"C\"").bind(tenant).bind(id).bind(ids).bind(bucket).bind(object.kind()).bind(object.uuid()).fetch_all(c).await
                 })).await?;
                 let items = rows
                     .into_iter()

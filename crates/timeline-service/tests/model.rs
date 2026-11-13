@@ -246,13 +246,14 @@ fn push_observations_retain_the_producer_device_without_an_operation_locator() {
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.identify_service("service:windows-push");
-    audit.target_device("device-a");
+    let device = rss_mdm_agent_wire::DeviceId::new_v4();
+    audit.target_device(&device);
     let event = Fact::observation(&audit, "wake:lease", 200, "success", None)
         .unwrap()
         .event(rss_contract::Timepoint::try_from(5i64).unwrap())
         .unwrap();
     let view = project(&event).unwrap();
-    assert_eq!(view.device_id.as_deref(), Some("device-a"));
+    assert_eq!(view.device_id, Some(device));
     assert!(view.operation_id.is_none());
     audit.finalize(None);
 }

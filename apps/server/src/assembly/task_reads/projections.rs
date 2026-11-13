@@ -10,10 +10,7 @@ pub(super) fn software_preview(v: software::Preview) -> http::Preview {
             .items
             .into_iter()
             .map(|v| http::PreviewTarget {
-                object: match v.object {
-                    scope::ObjectRef::Endpoint(id) => channels::ObjectRef::Endpoint(id),
-                    scope::ObjectRef::Association(id) => channels::ObjectRef::Association(id),
-                },
+                object: v.object,
                 channel: v.channel,
                 availability: match v.availability {
                     scope::Availability::Ready => channels::Availability::Ready,

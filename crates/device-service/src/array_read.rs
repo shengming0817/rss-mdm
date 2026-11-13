@@ -10,9 +10,9 @@ use std::time::Duration;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ArrayCursor {
-    reference: ViewRef,
+    reference: ObjectRef,
     field: FieldKey,
-    endpoint: String,
+    endpoint: rss_mdm_agent_wire::DeviceId,
     evidence: Evidence,
     version: Option<String>,
     offset: usize,
@@ -41,9 +41,9 @@ impl Associations {
             .encode(
                 &binding(proof, grant)?,
                 &ArrayCursor {
-                    reference: group.reference.clone(),
+                    reference: group.reference,
                     field,
-                    endpoint: source.endpoint.clone(),
+                    endpoint: source.endpoint,
                     evidence: source.fact.evidence.clone(),
                     version: match &source.fact.state {
                         ArrayState::Known(value) => Some(value.version.clone()),
@@ -62,7 +62,7 @@ impl Associations {
     pub async fn list_items(
         &self,
         proof: &AuthorizedPrincipal,
-        reference: &ViewRef,
+        reference: &ObjectRef,
         field: FieldKey,
         token: &str,
         limit: usize,
@@ -145,8 +145,8 @@ async fn validate(
 ) -> Result<()> {
     grant.require(proof, Permission::InventoryRead, Some(&cursor.endpoint))?;
     match (&cursor.reference, &cursor.association) {
-        (ViewRef::Endpoint(id), None) if id == &cursor.endpoint => {}
-        (ViewRef::Association(id), Some((expected, version, members))) if id == expected => {
+        (ObjectRef::Endpoint(id), None) if id == &cursor.endpoint => {}
+        (ObjectRef::Association(id), Some((expected, version, members))) if id == expected => {
             let current = read::load(c, proof.tenant_id(), *id).await.map_err(|e| {
                 if matches!(e, Error::NotFound) {
                     Error::CursorInvalidated
@@ -200,11 +200,11 @@ async fn validate(
         return Err(Error::CursorInvalidated);
     }
     if cursor.evidence.source != Source::Manual {
-        if cursor.evidence.device_id.as_deref() != Some(cursor.endpoint.as_str()) {
+        if cursor.evidence.device_id.as_ref() != Some(&cursor.endpoint) {
             return Err(Error::CursorInvalidated);
         }
         let live:bool=sqlx::query_scalar("SELECT EXISTS (SELECT FROM mdm_access.devices AS r INNER JOIN mdm_access.report_sources AS s ON (s.tenant_id, s.device) = (r.tenant_id, r.id) WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2 AND r.state = 'active' AND s.source = $3 AND CAST(s.epoch AS text) = $4 AND s.enabled AND EXISTS (SELECT FROM mdm_access.credentials AS k WHERE (k.tenant_id, k.device) = (r.tenant_id, r.id) AND k.state = 'active'))")
-            .bind(proof.tenant_id()).bind(&cursor.endpoint).bind(cursor.evidence.source.as_str()).bind(&cursor.evidence.epoch).fetch_one(c).await?;
+            .bind(proof.tenant_id()).bind(cursor.endpoint.into_uuid()).bind(cursor.evidence.source.as_str()).bind(&cursor.evidence.epoch).fetch_one(c).await?;
         if !live {
             return Err(Error::CursorInvalidated);
         }

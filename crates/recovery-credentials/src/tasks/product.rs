@@ -69,7 +69,7 @@ pub(crate) fn material(
         return Err(Error::Forbidden);
     }
     Ok(Binding {
-        device: task.device.clone(),
+        device: task.device,
 
         subject,
     })
@@ -81,7 +81,8 @@ mod tests {
     #[test]
     fn rss_material_identity_is_the_frozen_da_anchor() {
         let transport = crate::tasks::Target {
-            device: "agent".into(),
+            device: rss_mdm_agent_wire::DeviceId::parse("eade504c-4515-50ed-a3a7-ef0823e7a753")
+                .unwrap(),
         };
         let subject = crate::Subject::RssLogin {
             binding: Uuid::new_v4(),
@@ -89,7 +90,8 @@ mod tests {
             sid: "S-1-5-21-1-2-3-1001".into(),
         };
         let anchor = Binding {
-            device: "da".into(),
+            device: rss_mdm_agent_wire::DeviceId::parse("2393c3f3-4e8c-5c75-b7cf-f4978eb921df")
+                .unwrap(),
 
             subject: subject.clone(),
         };

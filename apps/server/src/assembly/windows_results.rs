@@ -24,7 +24,11 @@ impl Store for WindowsResults {
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        checks: Vec<(usize, String, rss_mdm_windows_mdm::native::Request)>,
+        checks: Vec<(
+            usize,
+            rss_mdm_agent_wire::DeviceId,
+            rss_mdm_windows_mdm::native::Request,
+        )>,
     ) -> Pending<'a, BTreeMap<usize, rss_mdm_device_service::control::device_control::Applicability>>
     {
         Box::pin(async move {
@@ -85,7 +89,7 @@ impl Store for WindowsResults {
                 .into_iter()
                 .map(|r| rss_mdm_windows_channel::results::Read {
                     id: r.id,
-                    device: r.device.clone(),
+                    device: r.device,
 
                     request: r.request,
                     values: r.values,

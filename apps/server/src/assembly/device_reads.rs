@@ -12,7 +12,7 @@ impl DeviceReads for Devices {
     fn detail<'a>(
         &'a self,
         request: &'a rss_mdm_authorization_service::context::RequestAuth,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> rss_mdm_management_http::execution::task_reads::Pending<'a, DeviceDetail> {
         let proof = request.proof.as_ref();
         Box::pin(async move {
@@ -114,7 +114,7 @@ impl Devices {
         c: &mut sqlx::PgConnection,
         proof: &AuthorizedPrincipal,
         current: &rss_mdm_authorization_service::Snapshot,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         mdm: bool,
     ) -> Result<Vec<Capability>, Error> {
         use rss_mdm_registration_service::device::endpoints;
@@ -129,7 +129,7 @@ impl Devices {
         .await?;
         let binding = if let Some(registration) = &agent {
             super::agent_facts::AgentFacts
-                .binding(c, tenant, registration.device.clone())
+                .binding(c, tenant, registration.device)
                 .await?
         } else {
             None
@@ -192,7 +192,7 @@ fn agent_prerequisite(registered: bool, reported: Option<bool>) -> Support {
 fn capability(
     current: &rss_mdm_authorization_service::Snapshot,
     proof: &AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     spec: (&str, Required, &str, bool),
     prerequisite: Support,
 ) -> Result<Capability, Error> {
@@ -230,7 +230,7 @@ impl Devices {
         c: &mut sqlx::PgConnection,
         proof: &AuthorizedPrincipal,
         grant: &rss_mdm_authorization_service::Snapshot,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         registration: Option<&rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
     ) -> Result<Vec<Capability>, Error> {
         use rss_mdm_device_service::control::device_control::{self, Applicability, Check, Kind};
@@ -242,7 +242,7 @@ impl Devices {
                 .map_err(super::task_reads::history::execution_fault)?;
             if let Some(source) = source {
                 let checks = kinds.map(|action| Check {
-                    device: registration.device.clone(),
+                    device: registration.device,
 
                     source,
                     action,

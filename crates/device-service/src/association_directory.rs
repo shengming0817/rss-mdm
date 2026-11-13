@@ -33,14 +33,14 @@ impl Associations {
                 let mut sql=sqlx::QueryBuilder::new("WITH selected AS MATERIALIZED (SELECT a.* FROM mdm_devices.associations a WHERE a.tenant_id=");
                 sql.push_bind(p.tenant_id().to_owned()).push("::uuid");
                 if let Some(ids)=allowed {
-                    sql.push(" AND NOT EXISTS(SELECT FROM mdm_devices.members m WHERE m.tenant_id=a.tenant_id AND m.association_id=a.id AND NOT(m.device=ANY(").push_bind(ids.into_iter().collect::<Vec<_>>()).push(")))");
+                    sql.push(" AND NOT EXISTS(SELECT FROM mdm_devices.members m WHERE m.tenant_id=a.tenant_id AND m.association_id=a.id AND NOT(m.device=ANY(").push_bind(ids.into_iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).push(")))");
                 }
                 rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),&*BINDINGS).map_err(|_|Error::Malformed)?;
                 sql.push(") SELECT jsonb_build_object('world',mdm_devices.read_world(ARRAY(SELECT id FROM selected),ARRAY(SELECT DISTINCT m.device FROM mdm_devices.members m JOIN selected s ON s.id=m.association_id WHERE m.tenant_id=$1::uuid),ARRAY[]::text[]),'ids',ARRAY(SELECT a.id FROM selected a");
                 rss_mdm_query_postgres::order(&mut sql,q,&*BINDINGS).map_err(|_|Error::Malformed)?;
                 sql.push("))");
                 let raw:serde_json::Value=sql.build_query_scalar().fetch_one(c).await?;
-                let ids=raw["world"]["endpoints"].as_array().ok_or(Error::Storage)?.iter().map(|v|v["id"].as_str().map(str::to_owned).ok_or(Error::Storage)).collect::<Result<Vec<_>>>()?;
+                let ids=raw["world"]["endpoints"].as_array().ok_or(Error::Storage)?.iter().map(|v|serde_json::from_value::<rss_mdm_agent_wire::DeviceId>(v["id"].clone()).map_err(|_|Error::Storage)).collect::<Result<Vec<_>>>()?;
                 let (world,_,_,_)=crate::snapshot::decode_world(&raw["world"],s.tenant,&ids)?;
                 let mut by_id=world.associations.iter().map(|a| { let a=world.effective(a.clone());(a.id,AssociationRow{id:a.id,version:a.version,confirmed_at:a.confirmed_at,association:a}) }).collect::<std::collections::BTreeMap<_,_>>();
                 let selected: Vec<Uuid> = serde_json::from_value(raw["ids"].clone()).map_err(|_|Error::Storage)?;
@@ -87,13 +87,10 @@ pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
         rss_mdm_query_postgres::Bindings::new(
             &SCHEMA,
             &[
-                rss_mdm_query_postgres::Source::required_column("id", "a.id::text COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::required_column("id", "a.id"),
                 rss_mdm_query_postgres::Source::column("version", "a.version"),
                 rss_mdm_query_postgres::Source::column("confirmedAt", "a.confirmed_at"),
-                rss_mdm_query_postgres::Source::column(
-                    "association.id",
-                    "a.id::text COLLATE \"C\"",
-                ),
+                rss_mdm_query_postgres::Source::column("association.id", "a.id"),
                 rss_mdm_query_postgres::Source::column("association.version", "a.version"),
                 rss_mdm_query_postgres::Source::column(
                     "association.evidence",

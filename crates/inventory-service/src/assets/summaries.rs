@@ -12,7 +12,7 @@ impl planning::SnapshotReader {
         &self,
         c: &mut sqlx::PgConnection,
         cut: &AssetCut,
-        ids: &[String],
+        ids: &[rss_mdm_agent_wire::DeviceId],
         catalog: &Catalog,
 
         scope: &CollectionScope,

@@ -14,7 +14,7 @@ impl crate::application::Application {
         &self,
         tx: &mut PgTransaction<'_>,
         policy: Uuid,
-        after: Option<String>,
+        after: Option<rss_mdm_agent_wire::ObjectRef>,
     ) -> Result<PreparedAssignment> {
         let profile = self.profile();
 
@@ -55,7 +55,7 @@ impl crate::application::Application {
                 Box::pin(async move {
                     rss_mdm_scope_postgres::admission_on(profile, c, tenant, scope).await?;
                     Ok(source
-                        .assignment_objects_on(c, tenant, scope, channel, after.as_deref(), 64)
+                        .assignment_objects_on(c, tenant, scope, channel, after, 64)
                         .await)
                 })
             })
@@ -104,7 +104,7 @@ impl crate::application::Application {
         let mut devices = Vec::new();
         let mut keys = Vec::new();
         for mut assignment in assignments {
-            keys.push(assignment.object.key());
+            keys.push(assignment.object);
 
             if !p.state.is_enabled() {
                 assignment.availability = Availability::Unavailable;
@@ -113,7 +113,7 @@ impl crate::application::Application {
             let input = checked_input(serde_json::to_value(&assignment))?;
             let policy = p.id;
             let version = p.version;
-            let key = assignment.object.key();
+            let key = assignment.object;
             let channel = channel.as_str();
             let reason = assignment.reason.clone();
             let available = assignment.availability == Availability::Ready;
@@ -128,7 +128,10 @@ impl crate::application::Application {
                 rss_mdm_scope_service::channels::ScopeAdmission::Eligible { entry } => entry,
                 _ => 0,
             };
-            let fact_key = format!("assignment:{task}:{policy}:{version}:{key}:{channel}");
+            let fact_key = format!(
+                "assignment:{task}:{policy}:{version}:{}:{channel}",
+                checked_input(serde_json::to_string(&key))?
+            );
             let changed = rss_mdm_policy_postgres::assignments::upsert_in(
                 profile,
                 tx,
@@ -175,18 +178,13 @@ impl crate::application::Application {
         let scope = p.definition.scope;
         let previous =
             rss_mdm_policy_postgres::assignments::objects_in(profile, tx, policy, version).await?;
-        let targets = previous
-            .iter()
-            .map(|(_, object)| object.clone())
-            .collect::<Vec<_>>();
         let retained =
             rss_mdm_scope_postgres::ScopeBinding::new(profile, self.runtime.clone(), self.tenant)
-                .target_members_in(tx, scope, targets)
+                .target_members_in(tx, scope, previous.clone())
                 .await?;
         let missing = previous
             .into_iter()
-            .filter(|(_, object)| !retained.contains(object))
-            .map(|(key, _)| key)
+            .filter(|object| !retained.contains(object))
             .collect();
         let removed = rss_mdm_policy_postgres::assignments::withdraw_in(
             profile, tx, policy, version, missing,
@@ -202,7 +200,10 @@ impl crate::application::Application {
                 .map_err(|_| Error::Malformed)?;
             self.assignment_fact_in(
                 tx,
-                &format!("assignment:{task}:{policy}:{version}:{object}:removed"),
+                &format!(
+                    "assignment:{task}:{policy}:{version}:{}:removed",
+                    checked_input(serde_json::to_string(&object))?
+                ),
                 &p,
                 target.as_ref(),
                 false,
@@ -269,9 +270,7 @@ impl crate::application::Application {
         } else {
             ActivityDecision::Unavailable
         });
-        activity.target = target.map(|t| ActivityTarget {
-            device: t.device.clone(),
-        });
+        activity.target = target.map(|t| ActivityTarget { device: t.device });
         if let Some(t) = target {
             audit.target_device(&t.device);
         }

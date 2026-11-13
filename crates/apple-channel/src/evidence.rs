@@ -103,7 +103,12 @@ fn decode_observations(
                     let plain = crate::protection::open(
                         key,
                         tenant,
-                        r.try_get("device").map_err(db)?,
+                        &r.try_get::<uuid::Uuid, _>("device")
+                            .and_then(|id| {
+                                rss_mdm_agent_wire::DeviceId::try_from(id)
+                                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+                            })
+                            .map_err(db)?,
                         r.try_get("id").map_err(db)?,
                         crate::protection::Part::Response,
                         &sealed,

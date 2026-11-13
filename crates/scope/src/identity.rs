@@ -1,98 +1,74 @@
 use crate::ScopeError;
 use rss_request_context::TenantId;
-use std::{cmp::Ordering, fmt};
+use std::cmp::Ordering;
 
-#[derive(Clone, Eq, PartialEq)]
-struct Key {
+/// Tenant-scoped group source identity. Construction is not authentication evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GroupId {
     tenant: TenantId,
-    value: String,
+    value: uuid::Uuid,
 }
-impl Key {
-    fn new(tenant: TenantId, value: impl Into<String>) -> Result<Self, ScopeError> {
-        let value = value.into();
-        if value.is_empty()
-            || value.len() > 128
-            || !value
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-        {
+impl GroupId {
+    /// Bind a nonzero group UUID to its tenant.
+    pub fn new(tenant: TenantId, value: uuid::Uuid) -> Result<Self, ScopeError> {
+        if value.is_nil() {
             return Err(ScopeError::InvalidKey);
         }
         Ok(Self { tenant, value })
     }
-}
-impl Ord for Key {
-    fn cmp(&self, other: &Self) -> Ordering {
-        (self.tenant.octets(), &self.value).cmp(&(other.tenant.octets(), &other.value))
+    /// Owning tenant.
+    pub fn tenant(&self) -> TenantId {
+        self.tenant
+    }
+    /// Exact group UUID.
+    pub fn value(&self) -> uuid::Uuid {
+        self.value
     }
 }
-impl PartialOrd for Key {
+impl Ord for GroupId {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.tenant.octets(), self.value).cmp(&(other.tenant.octets(), other.value))
+    }
+}
+impl PartialOrd for GroupId {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
-impl fmt::Debug for Key {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Key")
-            .field("tenant", &self.tenant.to_string())
-            .field("value", &self.value)
-            .finish()
-    }
-}
 
-macro_rules! identities {
-    ($($name:ident),+ $(,)?) => { $(
-        /// Tenant-scoped identity. Construction is not authentication evidence.
-        #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-        pub struct $name(Key);
-        impl $name {
-            /// Validate 1–128 ASCII letters, digits, dots, underscores or hyphens.
-            /// Invalid text returns [`ScopeError::InvalidKey`]; no authority is verified.
-            pub fn new(tenant: TenantId, value: impl Into<String>) -> Result<Self, ScopeError> { Key::new(tenant, value).map(Self) }
-            /// Return the tenant bound to this identity.
-            pub fn tenant(&self) -> TenantId { self.0.tenant }
-            /// Borrow the exact validated identifier, without normalization.
-            pub fn value(&self) -> &str { &self.0.value }
-        }
-    )+ };
+/// A tenant-scoped calculation object. Kind and UUID are both part of its identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScopedObjectId {
+    tenant: TenantId,
+    object: rss_mdm_agent_wire::ObjectRef,
 }
-identities!(GroupId);
-
-/// The original product device identity: 1–256 UTF-8 bytes, without controls.
-/// Tenant and value are preserved exactly; construction does not prove authority.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct DeviceId(Key);
-impl DeviceId {
-    /// Validate the product identity without normalization or surrogate keys.
-    pub fn new(tenant: TenantId, value: impl Into<String>) -> Result<Self, ScopeError> {
-        let value = value.into();
-        if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
+impl ScopedObjectId {
+    /// Bind a valid object to its tenant; this does not establish authorization.
+    pub fn new(
+        tenant: TenantId,
+        object: rss_mdm_agent_wire::ObjectRef,
+    ) -> Result<Self, ScopeError> {
+        if object.uuid().is_nil() {
             return Err(ScopeError::InvalidKey);
         }
-        Ok(Self(Key { tenant, value }))
+        Ok(Self { tenant, object })
     }
     /// Owning tenant.
     pub fn tenant(&self) -> TenantId {
-        self.0.tenant
+        self.tenant
     }
-    /// Exact device identifier.
-    pub fn value(&self) -> &str {
-        &self.0.value
+    /// Exact object kind and UUID.
+    pub fn object(&self) -> rss_mdm_agent_wire::ObjectRef {
+        self.object
     }
 }
-
-#[cfg(test)]
-mod device_identity_tests {
-    use super::*;
-    #[test]
-    fn device_identity_preserves_product_keys_without_aliases() {
-        let tenant = TenantId::parse("11111111-1111-1111-1111-111111111111").unwrap();
-        for value in ["设备/原始 标识".to_owned(), "x".repeat(256)] {
-            assert_eq!(DeviceId::new(tenant, &value).unwrap().value(), value);
-        }
-        for value in [String::new(), "x".repeat(257), "device\n".into()] {
-            assert!(DeviceId::new(tenant, value).is_err());
-        }
-        assert!(GroupId::new(tenant, "设备").is_err());
+impl Ord for ScopedObjectId {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.tenant.octets(), self.object).cmp(&(other.tenant.octets(), other.object))
+    }
+}
+impl PartialOrd for ScopedObjectId {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }

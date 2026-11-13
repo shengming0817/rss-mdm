@@ -71,7 +71,7 @@ impl FrozenScript {
             projection,
             wire_version: wire::WIRE_VERSION,
             tenant_id: tenant,
-            device_id: target.device.clone(),
+            device_id: target.device,
             platform: match self.input.platform {
                 Platform::Windows => wire::TaskPlatform::Windows,
                 Platform::Macos => wire::TaskPlatform::Macos,

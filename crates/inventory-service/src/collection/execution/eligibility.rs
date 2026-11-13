@@ -137,13 +137,12 @@ pub async fn assessment_on(
         return Ok(Assessment::Unsupported);
     }
     let targets =
-        agent_facts::agent_targets_on(c, tenant, store.clone(), vec![target.device.clone()])
-            .await?;
+        agent_facts::agent_targets_on(c, tenant, store.clone(), vec![target.device]).await?;
     let Some(agent) = targets.into_iter().find(|a| a.device == target.device) else {
         return Ok(Assessment::Unknown);
     };
     let tenant = tenant.to_string();
-    let device = target.device.clone();
+    let device = target.device;
     let Some(announcement) = store.announcement(c, tenant, device).await? else {
         return Ok(Assessment::Unknown);
     };

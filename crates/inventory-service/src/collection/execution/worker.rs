@@ -341,14 +341,14 @@ async fn prepare_in(
         .and_then(|s| Uuid::parse_str(s).ok())
     {
         let tenant = tx.tenant_id().to_string();
-        Some(tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(String,bool)>("SELECT device,channel='agent' FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await})).await?)
+        Some(tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(Uuid,bool)>("SELECT device,channel='agent' FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await.and_then(|(id, agent)| Ok((crate::database::device_id(id)?, agent)))})).await?)
     } else if let Some(work) = super::scheduled::Work::parse(entity) {
         super::scheduled::device_in(&service.transactions.policy_reader, tx, &work)
             .await?
             .map(|device| (device, false))
     } else if let Some(device) = checkin(entity) {
         let tenant = tx.tenant_id().to_string();
-        tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT id AS device FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2").bind(tenant).bind(&device).fetch_optional(c).await})).await?.map(|device| (device, false))
+        tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Uuid>("SELECT id AS device FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2").bind(tenant).bind(device.into_uuid()).fetch_optional(c).await.and_then(|id| id.map(crate::database::device_id).transpose())})).await?.map(|device| (device, false))
     } else {
         None
     };
@@ -405,9 +405,9 @@ async fn advance_in(
         return super::scheduled::delay_in(service, tx, &work).await;
     }
     if let Some(device) = checkin(entity) {
-        super::checkins::step(service, tx, device.clone(), Uuid::new_v4()).await?;
+        super::checkins::step(service, tx, device, Uuid::new_v4()).await?;
         let tenant = tx.tenant_id().to_string();
-        let active:bool=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_inventory.collection_native_checkins WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND (active_event IS NOT NULL OR pending_event IS NOT NULL))").bind(tenant).bind(&device).fetch_one(c).await})).await?;
+        let active:bool=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_inventory.collection_native_checkins WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND (active_event IS NOT NULL OR pending_event IS NOT NULL))").bind(tenant).bind(device.into_uuid()).fetch_one(c).await})).await?;
         return Ok(active.then_some(Duration::from_millis(20)));
     }
     if let Some(id) = entity
@@ -456,7 +456,7 @@ async fn pending_in(
     if let Some(device) = checkin(entity) {
         return Ok(tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_inventory.collection_native_checkins WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND (active_event IS NOT NULL OR pending_event IS NOT NULL))")
-                .bind(tenant).bind(&device).fetch_one(c).await
+                .bind(tenant).bind(device.into_uuid()).fetch_one(c).await
         })).await?);
     }
     Err(Error::Unavailable(crate::Failure::PlanningStorage).into())
@@ -488,10 +488,8 @@ impl rss_reconcile::Timer for Timer {
     }
 }
 
-fn checkin(entity: &str) -> Option<String> {
-    let device = entity.strip_prefix("checkin:")?;
-    (!device.is_empty() && device.len() <= 256 && !device.chars().any(char::is_control))
-        .then(|| device.to_owned())
+fn checkin(entity: &str) -> Option<rss_mdm_agent_wire::DeviceId> {
+    entity.strip_prefix("checkin:")?.parse().ok()
 }
 
 impl Worker {

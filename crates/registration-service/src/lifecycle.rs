@@ -9,7 +9,7 @@ pub mod resources;
 pub async fn lock_recovery_in(
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<(), Error> {
     let key = serde_json::to_string(&(tenant, device)).map_err(|_| Error::Malformed)?;
     sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2790))")
@@ -24,7 +24,7 @@ pub async fn lock_recovery_in(
 pub async fn try_lock_recovery_in(
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<bool, Error> {
     let key = serde_json::to_string(&(tenant, device)).map_err(|_| Error::Malformed)?;
     sqlx::query_scalar("SELECT pg_try_advisory_xact_lock_shared(hashtextextended($1,2790))")
@@ -42,7 +42,7 @@ pub trait Retirement: Send + Sync {
         tx: &'a mut sqlx::PgConnection,
         facts: &'a mut Vec<rss_mdm_audit_integration::Fact>,
         tenant: &'a str,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         state: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
 }
@@ -51,7 +51,7 @@ pub async fn retire(
     tx: &mut sqlx::PgConnection,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     state: &str,
     participant: &dyn Retirement,
 ) -> Result<(), Error> {
@@ -70,7 +70,7 @@ pub async fn lock_device_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<(), Error> {
     lock_devices_in(profile, c, tenant, &[device.to_owned()]).await
 }
@@ -79,7 +79,7 @@ pub async fn lock_devices_in(
     _profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    devices: &[String],
+    devices: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<(), Error> {
     let keys = device_lock_keys(tenant, devices)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(key,2790)) FROM unnest($1::text[]) WITH ORDINALITY locks(key,n) ORDER BY n").bind(keys).execute(c).await.map_err(crate::database::db)?;
@@ -93,7 +93,7 @@ pub async fn try_lock_devices_in(
     _profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    devices: &[String],
+    devices: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<bool, Error> {
     let keys = device_lock_keys(tenant, devices)?;
     let batch = keys.len() > 1;
@@ -132,7 +132,10 @@ pub async fn try_lock_devices_in(
     }
     Ok(true)
 }
-fn device_lock_keys(tenant: &str, devices: &[String]) -> Result<Vec<String>, Error> {
+fn device_lock_keys(
+    tenant: &str,
+    devices: &[rss_mdm_agent_wire::DeviceId],
+) -> Result<Vec<String>, Error> {
     if devices.len() > 1000 {
         return Err(Error::Malformed);
     }
@@ -151,7 +154,7 @@ pub async fn require_work_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<(), Error> {
     if !work_allowed_in(profile, c, tenant, device).await? {
         return Err(Error::Forbidden);
@@ -163,7 +166,7 @@ pub async fn work_allowed_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<bool, Error> {
     lock_device_in(profile, c, tenant, device).await?;
     work_allowed_on(profile, c, tenant, device).await
@@ -175,12 +178,12 @@ pub async fn work_allowed_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<bool, Error> {
     let exit: Option<uuid::Uuid> =
         sqlx::query_scalar(crate::storage_profile::sql(profile).lifecycle_work_allowed_on_1)
             .bind(tenant)
-            .bind(device)
+            .bind(device.into_uuid())
             .fetch_optional(c)
             .await
             .map_err(crate::database::db)?
@@ -194,7 +197,7 @@ pub async fn begin_retirement_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     operation: uuid::Uuid,
 ) -> Result<(), Error> {
     if operation.is_nil() {
@@ -203,7 +206,7 @@ pub async fn begin_retirement_in(
     lock_device_in(profile, c, tenant, device).await?;
     let changed = sqlx::query(crate::storage_profile::sql(profile).lifecycle_begin_retirement_in_1)
         .bind(tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(operation)
         .execute(c)
         .await

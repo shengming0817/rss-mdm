@@ -21,7 +21,7 @@ static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sy
     || {
         use rss_mdm_query_postgres::{Bindings, Source};
         Bindings::new(&SCHEMA, &[
-        Source::column("id", "id::text COLLATE \"C\""),
+        Source::column("id", "id"),
         Source::column("revision", "revision"),
         Source::column("name", "(document->>'name') COLLATE \"C\""),
         Source::column("deleted", "document IS NULL"),

@@ -57,14 +57,14 @@ impl Queries {
         proof: &AuthorizedPrincipal,
         grant: &authorization::Snapshot,
         now: i64,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         redacted: bool,
     ) -> crate::control::Result<records::CommandDetail> {
         grant.require(proof, Permission::OperationRead, Some(device))?;
         let service = self;
         let op = storage::load_on(c, service.tenant, &service.protection, id).await?;
-        if op.device != device {
+        if op.device != *device {
             return Err(Error::Forbidden.into());
         }
 
@@ -121,7 +121,7 @@ impl Queries {
         &self,
         snapshot: &crate::control::authorization::Snapshot,
         proof: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         op: &storage::Operation,
     ) -> Result<bool> {
         let mut native_values = true;

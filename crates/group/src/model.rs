@@ -1,4 +1,4 @@
-use crate::{Budget, Error, LimitKind, Result};
+use crate::{Budget, Error, Result};
 use rss_contract::Timepoint;
 use rss_request_context::TenantId;
 use std::{
@@ -6,34 +6,32 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
-/// Complete business key. Device identity mapping belongs to the caller.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Tenant-scoped endpoint or association used directly by the membership algebra.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ObjectKey {
     tenant: TenantId,
-    id: String,
+    object: rss_mdm_agent_wire::ObjectRef,
 }
 impl ObjectKey {
-    /// Bind a tenant to a nonblank identifier without control characters.
-    /// Invalid text returns [`Error::InvalidIdentity`]; more than
-    /// [`crate::limits::STRING_BYTES`] UTF-8 bytes returns [`Error::LimitExceeded`].
-    /// Preserves the exact string and does not authenticate a device.
-    pub fn new(tenant: TenantId, id: impl Into<String>) -> Result<Self> {
-        let id = id.into();
-        Budget::new(LimitKind::BatchBytes).identity(&id)?;
-        Ok(Self { tenant, id })
+    /// Bind a nonzero object identity to its tenant without granting authority.
+    pub fn new(tenant: TenantId, object: rss_mdm_agent_wire::ObjectRef) -> Result<Self> {
+        if object.uuid().is_nil() {
+            return Err(Error::InvalidIdentity);
+        }
+        Ok(Self { tenant, object })
     }
-    /// Return the tenant component of the key.
+    /// Owning tenant.
     pub fn tenant(&self) -> TenantId {
         self.tenant
     }
-    /// Borrow the exact caller-supplied object identifier.
-    pub fn id(&self) -> &str {
-        &self.id
+    /// Exact object kind and UUID.
+    pub fn id(&self) -> rss_mdm_agent_wire::ObjectRef {
+        self.object
     }
 }
 impl Ord for ObjectKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        (self.tenant.octets(), &self.id).cmp(&(other.tenant.octets(), &other.id))
+        (self.tenant.octets(), self.object).cmp(&(other.tenant.octets(), other.object))
     }
 }
 impl PartialOrd for ObjectKey {

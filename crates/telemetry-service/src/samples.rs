@@ -54,7 +54,7 @@ pub(crate) fn prepare(
     definitions: &[rss_mdm_inventory::FieldDefinition],
     input: &TelemetryUpload,
     stream: Stream,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     received_at: i64,
 ) -> Result<Option<Batch>, Error> {
     input.validate().map_err(|_| Error::Invalid)?;
@@ -204,7 +204,12 @@ pub(crate) fn prepare(
                 let sample_id = uuid::Uuid::new_v5(&observation.id, &name);
                 samples.push(Sample::new(SampleInput {
                     stream: stream.clone(),
-                    series: Series::new(definition.clone(), id(device)?, resource, dimensions)?,
+                    series: Series::new(
+                        definition.clone(),
+                        id(device.to_string())?,
+                        resource,
+                        dimensions,
+                    )?,
                     id: id(sample_id.to_string())?,
                     sequence: observation.sequence,
                     observed_at,

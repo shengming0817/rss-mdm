@@ -122,7 +122,7 @@ GRANT UPDATE(value_version,last_known_version) ON mdm.manual_assignments TO mdm_
 COMMIT;
 
 
-GRANT UPDATE(started,completed,failure,cursor) ON mdm_assets.asset_query_runs TO mdm_inventory_runtime;
+GRANT UPDATE(started,completed,failure,cursor_kind,cursor) ON mdm_assets.asset_query_runs TO mdm_inventory_runtime;
 
 
 GRANT USAGE ON SCHEMA mdm,mdm_assets TO mdm_scope_runtime,mdm_policy_runtime,mdm_resource_runtime,mdm_software_runtime,mdm_telemetry_runtime;

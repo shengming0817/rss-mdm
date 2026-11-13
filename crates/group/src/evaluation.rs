@@ -171,7 +171,7 @@ impl Rule {
             if object.key.tenant() != s.tenant {
                 return Err(Error::TenantMismatch);
             }
-            budget.text(object.key.id())?;
+            budget.object()?;
             if object.memberships.keys().cloned().collect::<BTreeSet<_>>() != self.groups() {
                 return Err(Error::IncompleteSnapshot);
             }
@@ -269,7 +269,7 @@ impl Rule {
                 crate::Quantifier::All => Decision::Match,
             };
             objects.push(ObjectEvaluation {
-                key: object.key.clone(),
+                key: object.key,
                 decision,
                 contexts,
             });
@@ -434,9 +434,15 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let objects = ["a", "b"].map(|id| {
+        let objects = [1, 2].map(|id| {
             ObjectSnapshot::single(
-                ObjectKey::new(tenant, id).unwrap(),
+                ObjectKey::new(
+                    tenant,
+                    rss_mdm_agent_wire::ObjectRef::Endpoint(
+                        rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(id)).unwrap(),
+                    ),
+                )
+                .unwrap(),
                 fields
                     .iter()
                     .map(|field| {

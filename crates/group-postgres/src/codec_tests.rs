@@ -36,7 +36,13 @@ fn inputs() -> (Rule, FixturePage, Timepoint) {
         dictionary_version: "d1".into(),
         coverage: BTreeSet::from(["model".into()]),
         objects: vec![ObjectSnapshot::single(
-            ObjectKey::new(t, "device").unwrap(),
+            ObjectKey::new(
+                t,
+                rss_mdm_agent_wire::ObjectRef::Endpoint(
+                    rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
+                ),
+            )
+            .unwrap(),
             BTreeMap::from([(
                 "model".into(),
                 Fact {

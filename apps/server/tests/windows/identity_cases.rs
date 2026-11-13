@@ -26,7 +26,7 @@ fn request(linked: bool, user: bool) -> Result<Configuration> {
 #[derive(serde::Serialize)]
 struct Identity<'a> {
     operation: Uuid,
-    device: &'a str,
+    device: &'a rss_mdm_agent_wire::DeviceId,
 }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,7 +65,7 @@ async fn seed_group(
     let mut tx = command::seed_transaction(c).await?;
     sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'enabled',$4,$5,$6)").bind(c.tenant.to_string()).bind(policy).bind(version).bind(serde_json::to_value(definition)?).bind(serde_json::to_value(actor)?).bind(now).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,resource,resource_version,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'configuration','native-identity','v1',$4,$5)").bind(c.tenant.to_string()).bind(version).bind(policy).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).execute(&mut *tx).await?;
-    let command_device:Uuid=sqlx::query_scalar("INSERT INTO mdm_access.command_authorities(tenant_id,device,command_device,generation,epoch) VALUES($1::uuid,$2,$3,1,1) ON CONFLICT(tenant_id,device) DO UPDATE SET device=excluded.device RETURNING command_device").bind(c.tenant.to_string()).bind(&n.device).bind(Uuid::new_v4()).fetch_one(&mut *tx).await?;
+    let command_device:Uuid=sqlx::query_scalar("INSERT INTO mdm_access.command_authorities(tenant_id,device,command_device,generation,epoch) VALUES($1::uuid,$2,$3,1,1) ON CONFLICT(tenant_id,device) DO UPDATE SET device=excluded.device RETURNING command_device").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(Uuid::new_v4()).fetch_one(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_device_command.authorities(tenant_id,device_id,generation,authority_epoch) VALUES($1::uuid,$2,1,1) ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).bind(command_device).execute(&mut *tx).await?;
     for &id in ids {
         let input = native.request(id, version.to_string(), now + 1800, false)?;
@@ -96,10 +96,10 @@ async fn seed_group(
         )
         .bind(c.tenant.to_string())
         .bind(id)
-        .bind(&n.device)
+        .bind(n.device.into_uuid())
         .execute(&mut *tx)
         .await?;
-        sqlx::query("INSERT INTO mdm_planning.configuration_operations(tenant_id,id,device,request,input_context,fingerprint,generation,epoch,authority,dispatch_fingerprint,gateway_accepted,policy_version) VALUES($1::uuid,$2,$3,$4,$5,$6,1,1,$7,$6,true,$8)").bind(c.tenant.to_string()).bind(id).bind(&n.device).bind(sealed).bind(serde_json::to_value(metadata)?).bind(digest).bind(authority).bind(version).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_planning.configuration_operations(tenant_id,id,device,request,input_context,fingerprint,generation,epoch,authority,dispatch_fingerprint,gateway_accepted,policy_version) VALUES($1::uuid,$2,$3,$4,$5,$6,1,1,$7,$6,true,$8)").bind(c.tenant.to_string()).bind(id).bind(n.device.into_uuid()).bind(sealed).bind(serde_json::to_value(metadata)?).bind(digest).bind(authority).bind(version).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     Ok(())
@@ -165,7 +165,7 @@ async fn verify_routes(
             candidates.iter().map(|op| op.id).collect::<Vec<_>>(),
             (first..first + 64).map(Uuid::from_u128).collect::<Vec<_>>()
         );
-        sqlx::query("INSERT INTO mdm_windows.capabilities(tenant_id,device,protocol_epoch,os_version,edition,session,observed_at) VALUES($1::uuid,$2,$3,'10.0.22631.0',48,17,1)").bind(c.tenant.to_string()).bind(&n.device).bind(peer.epoch).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_windows.capabilities(tenant_id,device,protocol_epoch,os_version,edition,session,observed_at) VALUES($1::uuid,$2,$3,'10.0.22631.0',48,17,1)").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(peer.epoch).execute(&mut *tx).await?;
     }
     let evidence = device::ChannelMount::new(Mdm, c.tenant, MdmWindows, Purpose::Primary)
         .credential(Sha256::digest(&n.certificate).into())?;
@@ -186,7 +186,7 @@ pub(super) async fn routed(
     child: &identity::Native,
     old: &identity::Native,
 ) -> Result<()> {
-    let rows:Vec<(Uuid,Uuid)>=sqlx::query_as("SELECT operation,protocol_epoch FROM mdm_windows.attempts WHERE tenant_id=$1::uuid AND device=$2 ORDER BY operation,ordinal").bind(c.tenant.to_string()).bind(&n.device).fetch_all(&c.operator).await?;
+    let rows:Vec<(Uuid,Uuid)>=sqlx::query_as("SELECT operation,protocol_epoch FROM mdm_windows.attempts WHERE tenant_id=$1::uuid AND device=$2 ORDER BY operation,ordinal").bind(c.tenant.to_string()).bind(n.device.into_uuid()).fetch_all(&c.operator).await?;
     assert_eq!(
         rows,
         vec![
@@ -285,7 +285,7 @@ async fn history(
     .derive();
     let wire = key.seal_bytes(&s::encode_request(&wire, &CodecLimits::default())?.0, &aad)?;
     sqlx::query("INSERT INTO mdm_windows.attempts(tenant_id,id,operation,ordinal,credential,session,message,phase,request,platform,declared_versions,device,protocol_epoch) VALUES($1::uuid,$2,$3,1,$4,17,1,'observe',$5,$6,'{}',$7,$8)")
-        .bind(c.tenant.to_string()).bind(attempt).bind(Uuid::from_u128(1)).bind(old.credential).bind(wire).bind(serde_json::to_value(platform)?).bind(&old.device).bind(old.epoch).execute(&mut *tx).await?;
+        .bind(c.tenant.to_string()).bind(attempt).bind(Uuid::from_u128(1)).bind(old.credential).bind(wire).bind(serde_json::to_value(platform)?).bind(old.device.into_uuid()).bind(old.epoch).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_windows.attempt_items(tenant_id,attempt,command,item_ordinal,kind,uri,status,receipt_accepted,value,result_accepted) VALUES($1::uuid,$2,$3,0,'get',$4,200,true,$5,true)")
         .bind(c.tenant.to_string()).bind(attempt).bind(command).bind(uri).bind(sealed).execute(&mut *tx).await?;
     Ok(())

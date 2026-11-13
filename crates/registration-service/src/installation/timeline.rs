@@ -12,7 +12,7 @@ pub async fn association_in(
     tenant: &str,
     actor: &str,
     identity: Identity,
-) -> Result<Option<(String, Option<Uuid>)>, sqlx::Error> {
+) -> Result<Option<(rss_mdm_agent_wire::DeviceId, Option<Uuid>)>, sqlx::Error> {
     let (statement, id) = match identity {
         Identity::Operation(id) => (
             "SELECT device,NULL::uuid FROM mdm_registration_tasks.operations WHERE tenant_id=$1::uuid AND id=$2",
@@ -25,9 +25,32 @@ pub async fn association_in(
     };
     let query = sqlx::query_as(statement).bind(tenant).bind(id);
     if matches!(identity, Identity::ChangeRequest(_)) {
-        query.bind(actor).fetch_optional(c).await
+        query.bind(actor).fetch_optional(c).await.and_then(
+            |row: Option<(uuid::Uuid, Option<uuid::Uuid>)>| {
+                row.map(|(id, operation)| {
+                    Ok((
+                        rss_mdm_agent_wire::DeviceId::try_from(id)
+                            .map_err(|e| sqlx::Error::Decode(Box::new(e)))?,
+                        operation,
+                    ))
+                })
+                .transpose()
+            },
+        )
     } else {
-        query.fetch_optional(c).await
+        query
+            .fetch_optional(c)
+            .await
+            .and_then(|row: Option<(uuid::Uuid, Option<uuid::Uuid>)>| {
+                row.map(|(id, operation)| {
+                    Ok((
+                        rss_mdm_agent_wire::DeviceId::try_from(id)
+                            .map_err(|e| sqlx::Error::Decode(Box::new(e)))?,
+                        operation,
+                    ))
+                })
+                .transpose()
+            })
     }
 }
 
@@ -39,9 +62,7 @@ pub(crate) fn native_activity(
     use rss_mdm_audit_integration::activity::*;
     let kind = ActivityKind::Execution;
     let mut activity = Activity::new(kind, phase);
-    activity.target = Some(ActivityTarget {
-        device: op.device.clone(),
-    });
+    activity.target = Some(ActivityTarget { device: op.device });
     activity.links.operation = Some(op.id);
     let installation = op.authority.installation();
     activity.links.policy = Some(installation.policy);

@@ -185,10 +185,17 @@ async fn list(
     BusinessError,
 > {
     let (q, extra) = q.parse()?;
+    let device = extra
+        .get("device")
+        .map(|value| {
+            rss_mdm_agent_wire::DeviceId::parse(value)
+                .map_err(|_| BusinessError::from(rss_mdm_device_access_postgres::Error::Malformed))
+        })
+        .transpose()?;
     Ok(CollectionResponse(Json(
         service(&s)?
             .service
-            .configurations(&p, extra.get("device").map(String::as_str), &q)
+            .configurations(&p, device.as_ref(), &q)
             .await?,
     )))
 }
@@ -223,7 +230,7 @@ async fn versions(
 async fn latest(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
 ) -> Result<Json<Option<reports::View>>, BusinessError> {
     Ok(Json(
         service(&s)?
@@ -235,7 +242,7 @@ async fn latest(
 async fn history(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
     q: OwnedQuery<Window<Reports>>,
 ) -> Result<CollectionResponse<Json<reports::Page>>, BusinessError> {
     let (q, extra) = q.parse()?;
@@ -263,7 +270,7 @@ async fn history(
 async fn diagnostics(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
 ) -> Result<Json<config::Diagnostics>, BusinessError> {
     let b = service(&s)?;
     Ok(Json(

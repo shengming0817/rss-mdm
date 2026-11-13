@@ -43,7 +43,7 @@ pub(super) fn urls(
         O::DeviceAccess => q.device.as_ref().map(|device| {
             format!(
                 "/api/v1/devices/{}/device-access/operations/{id}",
-                segment(device)
+                segment(&device.to_string())
             )
         }),
         _ => None,

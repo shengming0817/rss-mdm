@@ -38,7 +38,7 @@ impl Transactions {
     pub async fn reconcile_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         audit: &RequestAudit,
     ) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
@@ -62,11 +62,14 @@ fn db(_: sqlx::Error) -> Error {
 pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
     rss_reconcile::Scope::new(tenant, "mdm.policy").expect("configuration scope")
 }
-fn target(tenant: TenantId, device: &str) -> rss_reconcile::Target {
+fn target(tenant: TenantId, device: &rss_mdm_agent_wire::DeviceId) -> rss_reconcile::Target {
     use sha2::{Digest, Sha256};
     rss_reconcile::Target::new(
         recovery_scope(tenant),
-        format!("configuration:{:x}", Sha256::digest(device.as_bytes())),
+        format!(
+            "configuration:{:x}",
+            Sha256::digest(device.to_string().as_bytes())
+        ),
     )
     .expect("configuration target")
 }
@@ -118,3 +121,14 @@ pub mod preview;
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 mod admission;
 pub use admission::verify_authority;
+
+pub(crate) fn device_id(
+    id: uuid::Uuid,
+) -> std::result::Result<rss_mdm_agent_wire::DeviceId, sqlx::Error> {
+    rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+}
+pub(crate) fn device_ids(
+    ids: Vec<uuid::Uuid>,
+) -> std::result::Result<Vec<rss_mdm_agent_wire::DeviceId>, sqlx::Error> {
+    ids.into_iter().map(device_id).collect()
+}

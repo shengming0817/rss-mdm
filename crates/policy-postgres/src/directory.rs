@@ -19,7 +19,7 @@ pub enum Error {
 }
 /// Trusted current Policy storage roots; checked against the service model.
 pub static SOURCES: &[rss_mdm_query_postgres::Source] = &[
-    Source::column("id", "id::text COLLATE \"C\""),
+    Source::column("id", "id"),
     Source::column(
         "toolName",
         "('policy_' || replace(id::text,'-','')) COLLATE \"C\"",
@@ -28,10 +28,10 @@ pub static SOURCES: &[rss_mdm_query_postgres::Source] = &[
     Source::column("customEvent", "(definition->>'customEvent') COLLATE \"C\""),
     Source::column("revision", "revision"),
     Source::column("version", "version_number"),
-    Source::column("versionId", "current_version::text COLLATE \"C\""),
+    Source::column("versionId", "current_version"),
     Source::column("state", "state COLLATE \"C\""),
     Source::column("action", "(definition->'action'->>'kind') COLLATE \"C\""),
-    Source::column("scope", "(definition->>'scope') COLLATE \"C\""),
+    Source::column("scope", "(definition->>'scope')::uuid"),
     Source::column(
         "resource",
         "(definition->'action'->'resource'->>'id') COLLATE \"C\"",
@@ -67,7 +67,7 @@ pub async fn policies_in(
 /// Device and optional batch/registration coordinates already authorized by the caller.
 pub struct EventTarget<'a> {
     /// Visible device identity.
-    pub device: &'a str,
+    pub device: &'a rss_mdm_agent_wire::DeviceId,
     /// Optional accepted batch identity.
     pub batch: Option<Uuid>,
 }
@@ -92,7 +92,7 @@ pub async fn events_in(
     sql.push(prefix);
     sql.push_bind(tx.tenant_id().to_string())
         .push("::uuid AND b.device=")
-        .push_bind(device.to_owned());
+        .push_bind(device.into_uuid());
     if let Some(batch) = batch {
         sql.push(" AND b.id=").push_bind(batch);
     }
@@ -109,7 +109,7 @@ pub async fn batch_exists_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
 ) -> Result<bool, PgError> {
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
@@ -117,7 +117,7 @@ pub async fn batch_exists_in(
             sqlx::query_scalar(crate::storage_profile::sql(profile).directory_batch_exists_in_1)
                 .bind(tenant)
                 .bind(id)
-                .bind(device)
+                .bind(device.into_uuid())
                 .fetch_one(c)
                 .await
         })

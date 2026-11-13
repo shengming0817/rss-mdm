@@ -10,7 +10,7 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='mdm_group' AND c.relkind NOT IN('r','i'))
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
- WHERE n.nspname='mdm_group' AND p.oid NOT IN('mdm_group.input_candidate_groups(uuid[],text[])'::regprocedure,'mdm_group.group_current(uuid)'::regprocedure,'mdm_group.lock_reference_target(uuid)'::regprocedure,'mdm_group.scope_dependencies(uuid)'::regprocedure,'mdm_group.lock_scope_dependencies(uuid[])'::regprocedure,'mdm_group.scope_source(uuid)'::regprocedure))
+ WHERE n.nspname='mdm_group' AND p.oid NOT IN('mdm_group.input_candidate_groups(uuid[],uuid[])'::regprocedure,'mdm_group.group_current(uuid)'::regprocedure,'mdm_group.lock_reference_target(uuid)'::regprocedure,'mdm_group.scope_dependencies(uuid)'::regprocedure,'mdm_group.lock_scope_dependencies(uuid[])'::regprocedure,'mdm_group.scope_source(uuid)'::regprocedure))
  AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication
  OR oid IN (SELECT relowner FROM tables) OR has_schema_privilege(oid,'mdm_group','CREATE'))
  AND has_schema_privilege(current_user,'mdm_group','USAGE')
@@ -36,9 +36,9 @@ SELECT
  ('mdm_group.rules',ARRAY['tenant_id','group_id','version']::text[]),
  ('mdm_group.operations',ARRAY['tenant_id','id']::text[]),
  ('mdm_group.member_runs',ARRAY['tenant_id','id']::text[]),
- ('mdm_group.member_rows',ARRAY['tenant_id','run_id','object_id']::text[]),
- ('mdm_group.member_pages',ARRAY['tenant_id','run_id','first_id']::text[]),
- ('mdm_group.member_changes',ARRAY['tenant_id','run_id','object_id']::text[])
+ ('mdm_group.member_rows',ARRAY['tenant_id','run_id','object_kind','object_id']::text[]),
+ ('mdm_group.member_pages',ARRAY['tenant_id','run_id','first_kind','first_id']::text[]),
+ ('mdm_group.member_changes',ARRAY['tenant_id','run_id','object_kind','object_id']::text[])
  ) required(relation,columns) WHERE NOT EXISTS(
  SELECT 1 FROM pg_index i WHERE i.indrelid=to_regclass(required.relation)
  AND i.indisunique AND i.indisvalid AND i.indisready AND i.indislive AND i.indimmediate

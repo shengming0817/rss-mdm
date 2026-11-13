@@ -69,7 +69,7 @@ impl NativeDelivery for Delivery {
                 rss_mdm_apple_channel::collection_admission::eligible_on(
                     c,
                     tenant,
-                    target.device.clone(),
+                    target.device,
                     template,
                 )
                 .await
@@ -138,7 +138,7 @@ impl TargetAdmission for Source {
         tenant: TenantId,
         scope: Uuid,
         channel: rss_mdm_inventory::Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, Admission> {
         Box::pin(async move {
             Ok(admission(
@@ -155,7 +155,7 @@ impl TargetAdmission for Source {
         tenant: TenantId,
         scope: Uuid,
         channel: rss_mdm_inventory::Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, Vec<rss_mdm_inventory_service::objects::DeviceObject>> {
         Box::pin(async move {
             self.0
@@ -169,7 +169,7 @@ impl TargetAdmission for Source {
         c: &'a mut PgConnection,
         tenant: TenantId,
         channel: rss_mdm_inventory::Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         evidence: &'a [rss_mdm_inventory_service::objects::DeviceObject],
     ) -> Pending<'a, bool> {
         Box::pin(async move {

@@ -22,7 +22,7 @@ pub async fn lock_channel(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     channel: Channel,
 ) -> Result<(), Error> {
     lock_channels(profile, tx, tenant, &[(device.to_owned(), channel)]).await
@@ -31,11 +31,11 @@ pub async fn lock_channels(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    targets: &[(String, Channel)],
+    targets: &[(rss_mdm_agent_wire::DeviceId, Channel)],
 ) -> Result<(), Error> {
     let devices = targets
         .iter()
-        .map(|(device, _)| device.clone())
+        .map(|(device, _)| *device)
         .collect::<Vec<_>>();
     crate::lifecycle::lock_devices_in(profile, c, tenant, &devices).await?;
     let keys = targets
@@ -69,7 +69,7 @@ pub async fn record_communication_in(
     let updated =
         sqlx::query(crate::storage_profile::sql(profile).device_store_record_communication_in_1)
             .bind(principal.tenant().to_string())
-            .bind(principal.device())
+            .bind(principal.device().into_uuid())
             .bind(principal.require_channel()?.as_str())
             .execute(c)
             .await
@@ -84,13 +84,13 @@ impl DeviceService {
     pub async fn revoke_inner(
         &self,
         admin: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         key: Uuid,
         audit: &RequestAudit,
     ) -> Result<RevocationReceipt, Error> {
         let profile = self.profile();
 
-        if key.is_nil() || Id::new(device).is_err() {
+        if key.is_nil() {
             return Err(Error::Malformed);
         }
         if admin.tenant_id() != self.tenant {
@@ -189,10 +189,13 @@ impl DeviceService {
             .await
             .map_err(db)?
             .ok_or(Error::Unauthorized)?;
-        let device: String = row.try_get("id").map_err(db)?;
+        let device: rss_mdm_agent_wire::DeviceId = row
+            .try_get::<Uuid, _>("id")
+            .and_then(crate::database::device_id)
+            .map_err(db)?;
         let row = sqlx::query(crate::storage_profile::sql(profile).device_store_authorize_report_2)
             .bind(&tenant)
-            .bind(&device)
+            .bind(device.into_uuid())
             .bind(credential.channel.as_str())
             .fetch_optional(&mut *tx)
             .await
@@ -201,7 +204,7 @@ impl DeviceService {
         let child =
             sqlx::query(crate::storage_profile::sql(profile).device_store_authorize_report_3)
                 .bind(&tenant)
-                .bind(&device)
+                .bind(device.into_uuid())
                 .bind(credential.channel.as_str())
                 .bind(locator(credential))
                 .bind(source.as_str())
@@ -212,7 +215,10 @@ impl DeviceService {
         let principal = DevicePrincipal {
             profile,
             tenant: credential.tenant,
-            device: row.try_get("device").map_err(db)?,
+            device: row
+                .try_get::<uuid::Uuid, _>("device")
+                .and_then(crate::database::device_id)
+                .map_err(db)?,
             kind: RegistrationKind::from_channel(channel(&row)?),
             installation: installation_in(profile, &mut tx).await?,
             purpose: Purpose::Primary,
@@ -239,7 +245,7 @@ impl DeviceService {
     pub async fn current_scope(
         &self,
         proof: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         coordinates: Coordinates,
     ) -> Result<Scope, Error> {
         let profile = self.profile();
@@ -255,7 +261,7 @@ impl DeviceService {
         let mut tx = self.access.begin(proof.tenant_id()).await?;
         let row = sqlx::query(crate::storage_profile::sql(profile).device_store_current_scope_1)
             .bind(proof.tenant_id())
-            .bind(device)
+            .bind(device.into_uuid())
             .bind(coordinates.source.channel().as_str())
             .bind(coordinates.source.as_str())
             .fetch_optional(&mut *tx)
@@ -294,33 +300,33 @@ pub async fn retire_state_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     state: &str,
     events: Option<&dyn crate::EventSink>,
 ) -> Result<(), Error> {
     let previous = sqlx::query(crate::storage_profile::sql(profile).device_store_retire_state_in_1)
         .bind(tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .fetch_optional(&mut *tx)
         .await
         .map_err(db)?;
     sqlx::query(crate::storage_profile::sql(profile).device_store_retire_state_in_2)
         .bind(tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(state)
         .execute(&mut *tx)
         .await
         .map_err(db)?;
     sqlx::query(crate::storage_profile::sql(profile).device_store_retire_state_in_3)
         .bind(tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(state)
         .execute(&mut *tx)
         .await
         .map_err(db)?;
     sqlx::query(crate::storage_profile::sql(profile).device_store_retire_state_in_4)
         .bind(tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .execute(&mut *tx)
         .await
         .map_err(db)?;
@@ -355,7 +361,7 @@ pub async fn bind_in(
     admin: &AuthorizedPrincipal,
     credential: &VerifiedChannelCredential,
     command: &BindRegistration,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
     ids: [Uuid; 2],
 ) -> Result<RegistrationReceipt, Error> {
     if profile != admin.profile() {
@@ -387,7 +393,7 @@ pub(crate) async fn bind_authorized_in(
     tenant: &str,
     credential: &VerifiedChannelCredential,
     command: &BindRegistration,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
     ids: [Uuid; 2],
 ) -> Result<RegistrationReceipt, Error> {
     if profile != credential.profile {
@@ -418,7 +424,7 @@ pub(crate) async fn bind_authorized_in(
         sqlx::query_scalar(crate::storage_profile::sql(profile).device_store_bind_authorized_in_2)
             .bind(tenant)
             .bind(command.request_id.to_string())
-            .bind(&device)
+            .bind(device.into_uuid())
             .fetch_optional(&mut *tx)
             .await
             .map_err(db)?
@@ -450,7 +456,7 @@ pub(crate) async fn bind_authorized_in(
     };
     sqlx::query(crate::storage_profile::sql(profile).device_store_bind_authorized_in_7)
         .bind(tenant)
-        .bind(&receipt.device)
+        .bind(receipt.device.into_uuid())
         .bind(receipt.channel.as_str())
         .bind(command.request_id.to_string())
         .bind(receipt.epoch)
@@ -460,7 +466,7 @@ pub(crate) async fn bind_authorized_in(
     sqlx::query(crate::storage_profile::sql(profile).device_store_bind_authorized_in_8)
         .bind(tenant)
         .bind(receipt.credential.to_string())
-        .bind(&receipt.device)
+        .bind(receipt.device.into_uuid())
         .bind(receipt.channel.as_str())
         .bind(locator(credential))
         .bind(command.request_id)
@@ -469,7 +475,7 @@ pub(crate) async fn bind_authorized_in(
         .map_err(unique_or_db)?;
     sqlx::query(crate::storage_profile::sql(profile).device_store_bind_authorized_in_9)
         .bind(tenant)
-        .bind(&receipt.device)
+        .bind(receipt.device.into_uuid())
         .bind(command.source.as_str())
         .bind(receipt.epoch.to_string())
         .execute(&mut *tx)
@@ -493,7 +499,7 @@ pub async fn replace_mdm_credential_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     predecessor: Uuid,
     locator: &str,
 ) -> Result<(), Error> {
@@ -501,7 +507,7 @@ pub async fn replace_mdm_credential_in(
         crate::storage_profile::sql(profile).device_store_replace_mdm_credential_in_1,
     )
     .bind(tenant)
-    .bind(device)
+    .bind(device.into_uuid())
     .bind(predecessor)
     .fetch_optional(&mut *tx)
     .await
@@ -514,7 +520,7 @@ pub async fn replace_mdm_credential_in(
         .map_err(|_| Error::Storage)?;
     sqlx::query(crate::storage_profile::sql(profile).device_store_replace_mdm_credential_in_2)
         .bind(tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(predecessor)
         .execute(&mut *tx)
         .await
@@ -522,7 +528,7 @@ pub async fn replace_mdm_credential_in(
     sqlx::query(crate::storage_profile::sql(profile).device_store_replace_mdm_credential_in_3)
         .bind(tenant)
         .bind(Uuid::new_v4().to_string())
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(locator)
         .bind(predecessor)
         .execute(&mut *tx)
@@ -557,18 +563,23 @@ pub async fn revalidate_source(
     super::management::revalidate(profile, tx, principal).await?;
     let live = sqlx::query(crate::storage_profile::sql(profile).device_store_revalidate_source_1)
         .bind(&tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(principal.require_channel()?.as_str())
         .fetch_optional(&mut *tx)
         .await
         .map_err(db)?
         .ok_or(Error::Unauthorized)?;
-    if live.try_get::<String, _>("device").map_err(db)? != principal.device() {
+    if live
+        .try_get::<uuid::Uuid, _>("device")
+        .and_then(crate::database::device_id)
+        .map_err(db)?
+        != *principal.device()
+    {
         return Err(Error::Unauthorized);
     }
     sqlx::query(crate::storage_profile::sql(profile).device_store_revalidate_source_2)
         .bind(&tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(principal.credential().to_string())
         .fetch_optional(&mut *tx)
         .await
@@ -578,7 +589,7 @@ pub async fn revalidate_source(
     // Revalidation only observes the epoch; sequence allocation takes its own row write lock.
     let row = sqlx::query(crate::storage_profile::sql(profile).device_store_revalidate_source_3)
         .bind(&tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(source.as_str())
         .fetch_optional(&mut *tx)
         .await
@@ -598,7 +609,7 @@ pub async fn revalidate_source(
 struct RevokeInputs<'a> {
     retirement: &'a dyn crate::Retirement,
     admin: &'a AuthorizedPrincipal,
-    device: &'a str,
+    device: &'a rss_mdm_agent_wire::DeviceId,
     key: Uuid,
     audit: &'a RequestAudit,
     operation: &'a Operation<'a>,
@@ -631,7 +642,7 @@ async fn revoke_on(
     }
     let row = sqlx::query(crate::storage_profile::sql(profile).device_store_revoke_on_1)
         .bind(admin.tenant_id())
-        .bind(device)
+        .bind(device.into_uuid())
         .fetch_optional(&mut *tx)
         .await
         .map_err(db)?
@@ -640,7 +651,7 @@ async fn revoke_on(
     lock_channel(profile, tx, admin.tenant_id(), device, channel).await?;
     let row = sqlx::query(crate::storage_profile::sql(profile).device_store_revoke_on_2)
         .bind(admin.tenant_id())
-        .bind(device)
+        .bind(device.into_uuid())
         .fetch_one(&mut *tx)
         .await
         .map_err(db)?;
@@ -680,12 +691,12 @@ pub async fn active_source_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     source: rss_mdm_inventory::ReportSource,
 ) -> Result<bool, Error> {
     sqlx::query_scalar(crate::storage_profile::sql(profile).device_store_active_source_in_1)
         .bind(tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(source.as_str())
         .fetch_one(c)
         .await
@@ -693,7 +704,7 @@ pub async fn active_source_in(
 }
 
 pub struct CollectionSource {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub epoch: Uuid,
     pub sequence: i64,
 }
@@ -702,7 +713,7 @@ pub async fn allocate_collection_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     source: rss_mdm_inventory::ReportSource,
 ) -> Result<CollectionSource, Error> {
     lock_channel(profile, c, tenant, device, source.channel()).await?;
@@ -711,7 +722,7 @@ pub async fn allocate_collection_in(
     let row =
         sqlx::query(crate::storage_profile::sql(profile).device_store_allocate_collection_in_1)
             .bind(tenant)
-            .bind(device)
+            .bind(device.into_uuid())
             .bind(source.as_str())
             .fetch_optional(&mut *c)
             .await
@@ -721,7 +732,7 @@ pub async fn allocate_collection_in(
         crate::storage_profile::sql(profile).device_store_allocate_collection_in_2,
     )
     .bind(tenant)
-    .bind(device)
+    .bind(device.into_uuid())
     .bind(source.as_str())
     .fetch_one(c)
     .await
@@ -736,13 +747,13 @@ pub async fn source_current_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     source: rss_mdm_inventory::ReportSource,
     epoch: Uuid,
 ) -> Result<bool, Error> {
     sqlx::query_scalar(crate::storage_profile::sql(profile).device_store_source_current_in_1)
         .bind(tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(source.as_str())
         .bind(epoch)
         .fetch_one(c)
@@ -759,7 +770,7 @@ pub async fn allocate_report_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     source: rss_mdm_inventory::ReportSource,
     epoch: &str,
     count: i64,
@@ -770,7 +781,7 @@ pub async fn allocate_report_in(
     }
     sqlx::query_as(crate::storage_profile::sql(profile).device_store_allocate_report_in_1)
         .bind(tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(source.as_str())
         .bind(epoch)
         .bind(count)
@@ -782,7 +793,7 @@ pub async fn allocate_task_report_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     source: rss_mdm_inventory::Source,
 ) -> Result<(String, i64), sqlx::Error> {
     if !matches!(
@@ -797,7 +808,7 @@ pub async fn allocate_task_report_in(
     }
     sqlx::query_as(crate::storage_profile::sql(profile).device_store_allocate_task_report_in_1)
         .bind(tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(source.as_str())
         .fetch_one(c)
         .await
@@ -821,7 +832,7 @@ pub async fn allocate_commands_in(
         crate::storage_profile::sql(profile).device_store_allocate_commands_in_1,
     )
     .bind(p.tenant().to_string())
-    .bind(p.device())
+    .bind(p.device().into_uuid())
     .bind(p.protocol_request())
     .bind(count)
     .fetch_one(c)
@@ -838,7 +849,7 @@ pub async fn activate_renewed_mdm_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     predecessor: Uuid,
     credential: &super::VerifiedChannelCredential,
 ) -> Result<(), Error> {
@@ -857,7 +868,7 @@ pub async fn activate_renewed_mdm_in(
         crate::storage_profile::sql(profile).device_store_activate_renewed_mdm_in_1,
     )
     .bind(tenant)
-    .bind(device)
+    .bind(device.into_uuid())
     .bind(predecessor)
     .bind(credential.purpose.as_str())
     .fetch_one(&mut *c)
@@ -942,7 +953,7 @@ pub async fn bind_native_in(
             request_id: d.id,
             source: d.source,
         },
-        d.device.clone(),
+        d.device,
         ids,
     )
     .await
@@ -975,7 +986,7 @@ pub async fn revalidate_collection_source(
         crate::storage_profile::sql(profile).device_store_revalidate_collection_source_1,
     )
     .bind(principal.tenant().to_string())
-    .bind(principal.device())
+    .bind(principal.device().into_uuid())
     .bind(source.as_str())
     .fetch_optional(c)
     .await
@@ -995,21 +1006,23 @@ pub async fn live_collection_streams_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
-    device: &str,
-) -> Result<Vec<(String, String, Uuid)>, Error> {
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<Vec<(rss_mdm_agent_wire::DeviceId, String, Uuid)>, Error> {
     lock_channel(profile, c, &tenant.to_string(), device, Channel::Agent).await?;
-    let rows = sqlx::query_as(
+    let rows = sqlx::query_as::<_, (Uuid, String, Uuid)>(
         crate::storage_profile::sql(profile).device_store_live_collection_streams_on_1,
     )
     .bind(tenant.to_string())
-    .bind(device)
+    .bind(device.into_uuid())
     .fetch_all(c)
     .await
     .map_err(db)?;
     if rows.len() > 64 {
         return Err(Error::Storage);
     }
-    Ok(rows)
+    rows.into_iter()
+        .map(|(id, source, epoch)| Ok((crate::database::device_id(id).map_err(db)?, source, epoch)))
+        .collect()
 }
 
 /// A closed old source must never be reactivated merely because a credential expired.
@@ -1018,7 +1031,7 @@ pub async fn collection_stream_retired_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     source: rss_mdm_inventory::Source,
     epoch: Uuid,
 ) -> Result<bool, Error> {
@@ -1027,7 +1040,7 @@ pub async fn collection_stream_retired_on(
         crate::storage_profile::sql(profile).device_store_collection_stream_retired_on_1,
     )
     .bind(tenant.to_string())
-    .bind(device)
+    .bind(device.into_uuid())
     .bind(source.as_str())
     .bind(epoch)
     .fetch_one(c)
@@ -1041,12 +1054,12 @@ pub async fn report_epoch_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     source: rss_mdm_inventory::ReportSource,
 ) -> Result<Option<Uuid>, Error> {
     sqlx::query_scalar(crate::storage_profile::sql(profile).device_store_report_epoch_in_1)
         .bind(tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(source.as_str())
         .fetch_optional(c)
         .await
@@ -1058,7 +1071,7 @@ pub async fn lock_registration(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     kind: RegistrationKind,
 ) -> Result<(), Error> {
     crate::lifecycle::lock_device_in(profile, c, tenant, device).await?;

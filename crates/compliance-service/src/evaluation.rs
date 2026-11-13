@@ -130,7 +130,7 @@ impl Compliance {
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         input: &Input,
-        cursor: Option<String>,
+        cursor: Option<rss_mdm_agent_wire::DeviceId>,
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<()> {
         let tenant = self.tenant();
@@ -157,7 +157,7 @@ impl Compliance {
                 .asset_page_in(
                     tx,
                     &input.asset_cut,
-                    cursor.clone(),
+                    cursor,
                     limit,
                     &rss_mdm_inventory_service::assets::ReadScope::all(),
                 )
@@ -214,7 +214,12 @@ impl Compliance {
         let version = input.asset_cut.input_version();
         let after = cursor
             .as_ref()
-            .map(|s| stored(rss_mdm_group::ObjectKey::new(self.tenant(), s.clone())))
+            .map(|s| {
+                stored(rss_mdm_group::ObjectKey::new(
+                    self.tenant(),
+                    rss_mdm_agent_wire::ObjectRef::Endpoint(*s),
+                ))
+            })
             .transpose()?;
         let evaluated = stored(rule.evaluate_page(
             &rss_mdm_group::PageInput {
@@ -246,7 +251,7 @@ impl Compliance {
                     .unwrap_or_default(),
             )?;
             let t = self.tenant();
-            let name = device.scalars.device.clone();
+            let name = device.scalars.device;
             tx.with_connection(move |c| {
                 Box::pin(async move { pg::result(c, t, task, &name, &document).await })
             })
@@ -292,9 +297,9 @@ impl Compliance {
         tx: &mut PgTransaction<'_>,
         input: &Input,
         devices: &[rss_mdm_inventory_service::assets::DeviceSummary],
-    ) -> Result<BTreeMap<String, Vec<SourceReference>>> {
+    ) -> Result<BTreeMap<rss_mdm_agent_wire::DeviceId, Vec<SourceReference>>> {
         let t = self.tenant();
-        let ids: Vec<_> = devices.iter().map(|d| d.scalars.device.clone()).collect();
+        let ids: Vec<_> = devices.iter().map(|d| d.scalars.device).collect();
         let at = input.asset_cut.clone();
         let sources = tx
             .with_connection(move |c| {
@@ -310,14 +315,21 @@ impl Compliance {
                 })
             })
             .await?;
-        let mut platforms: BTreeMap<String, Vec<SourceReference>> = BTreeMap::new();
+        let mut platforms: BTreeMap<rss_mdm_agent_wire::DeviceId, Vec<SourceReference>> =
+            BTreeMap::new();
         for row in sources {
             platforms
-                .entry(row.try_get("device")?)
+                .entry(row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+                    rss_mdm_agent_wire::DeviceId::try_from(id)
+                        .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+                })?)
                 .or_default()
                 .push(SourceReference {
                     source: row.try_get("source")?,
-                    device_id: row.try_get("device")?,
+                    device_id: row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+                        rss_mdm_agent_wire::DeviceId::try_from(id)
+                            .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+                    })?,
                     epoch: row.try_get("epoch")?,
                 });
         }
@@ -328,7 +340,10 @@ impl Compliance {
 fn assessment(
     input: &Input,
     device: &rss_mdm_inventory_service::assets::DeviceView,
-    contexts: &BTreeMap<(String, String), rss_mdm_inventory_service::assets::DeviceSummary>,
+    contexts: &BTreeMap<
+        (rss_mdm_agent_wire::DeviceId, String),
+        rss_mdm_inventory_service::assets::DeviceSummary,
+    >,
     e: rss_mdm_group::ObjectEvaluation,
     groups: Vec<GroupEvidence>,
     sources: Vec<SourceReference>,
@@ -363,7 +378,7 @@ fn assessment(
         .iter()
         .flat_map(|(context, value)| value.provenance.keys().map(move |field| (context, field)))
         .filter_map(|(context, field)| {
-            let summary = contexts.get(&(device.device.clone(), context.clone()))?;
+            let summary = contexts.get(&(device.device, context.clone()))?;
             let evidence = summary
                 .scalars
                 .fields
@@ -395,7 +410,7 @@ fn assessment(
                     .map(|e| FactReference {
                         source: e.source.as_str().into(),
                         dataset: e.dataset.clone(),
-                        device_id: e.device_id.clone(),
+                        device_id: e.device_id,
                         epoch: e.epoch.clone(),
                         snapshot_id: e.snapshot_id.clone(),
                         observed_at: e.observed_at,
@@ -431,13 +446,13 @@ impl Compliance {
         tx: &mut PgTransaction<'_>,
         input: &Input,
         devices: &[rss_mdm_inventory_service::assets::DeviceSummary],
-        cursor: Option<String>,
-    ) -> Result<BTreeMap<String, Vec<GroupEvidence>>> {
-        let mut targets: BTreeMap<String, Vec<GroupEvidence>> = devices
+        cursor: Option<rss_mdm_agent_wire::DeviceId>,
+    ) -> Result<BTreeMap<rss_mdm_agent_wire::DeviceId, Vec<GroupEvidence>>> {
+        let mut targets: BTreeMap<rss_mdm_agent_wire::DeviceId, Vec<GroupEvidence>> = devices
             .iter()
             .map(|d| {
                 (
-                    d.scalars.device.clone(),
+                    d.scalars.device,
                     input
                         .groups
                         .iter()
@@ -455,8 +470,8 @@ impl Compliance {
                 self.group_target_page(
                     tx,
                     set,
-                    cursor.clone(),
-                    devices.last().map(|d| d.scalars.device.as_str()),
+                    cursor,
+                    devices.last().map(|d| &d.scalars.device),
                     index,
                     &mut targets,
                 )
@@ -469,10 +484,10 @@ impl Compliance {
         &self,
         tx: &mut PgTransaction<'_>,
         set: Uuid,
-        mut after: Option<String>,
-        last_device: Option<&str>,
+        mut after: Option<rss_mdm_agent_wire::DeviceId>,
+        last_device: Option<&rss_mdm_agent_wire::DeviceId>,
         index: usize,
-        targets: &mut BTreeMap<String, Vec<GroupEvidence>>,
+        targets: &mut BTreeMap<rss_mdm_agent_wire::DeviceId, Vec<GroupEvidence>>,
     ) -> Result<()> {
         loop {
             let records = checked(
@@ -480,21 +495,21 @@ impl Compliance {
                     .build_decisions_in(
                         tx,
                         stored(rss_mdm_group::OperationId::parse(&set.to_string()))?,
-                        after.clone(),
+                        after.map(rss_mdm_agent_wire::ObjectRef::Endpoint),
                         1,
                         rss_mdm_group::limits::BATCH_BYTES,
                     )
                     .await?,
             )?;
             let records = records.items;
-            let Some(last) = records.last().map(|r| r.device.clone()) else {
+            let Some(last) = records.last().map(|r| endpoint(r.object)).transpose()? else {
                 return Ok(());
             };
             if after.as_ref().is_some_and(|a| a >= &last) {
                 return Err(Error::Unavailable(Failure::ComplianceStorage).into());
             }
-            merge_targets(targets, index, records);
-            if last_device.is_none_or(|d| last.as_str() >= d) {
+            merge_targets(targets, index, records)?;
+            if last_device.is_none_or(|d| last >= *d) {
                 return Ok(());
             }
             after = Some(last);
@@ -502,12 +517,12 @@ impl Compliance {
     }
 }
 fn merge_targets(
-    targets: &mut BTreeMap<String, Vec<GroupEvidence>>,
+    targets: &mut BTreeMap<rss_mdm_agent_wire::DeviceId, Vec<GroupEvidence>>,
     index: usize,
     records: Vec<group::DecisionRecord>,
-) {
+) -> Result<()> {
     for record in records {
-        if let Some(target) = targets.get_mut(&record.device) {
+        if let Some(target) = targets.get_mut(&endpoint(record.object)?) {
             target[index].decision = match record.decision {
                 group::DecisionValue::Match => Decision::Match,
                 group::DecisionValue::NoMatch => Decision::NoMatch,
@@ -515,6 +530,7 @@ fn merge_targets(
             };
         }
     }
+    Ok(())
 }
 
 impl Compliance {
@@ -544,3 +560,12 @@ impl Compliance {
 #[cfg(test)]
 #[path = "../tests/evaluation.rs"]
 mod tests;
+
+fn endpoint(object: rss_mdm_agent_wire::ObjectRef) -> Result<rss_mdm_agent_wire::DeviceId> {
+    match object {
+        rss_mdm_agent_wire::ObjectRef::Endpoint(id) => Ok(id),
+        rss_mdm_agent_wire::ObjectRef::Association(_) => {
+            Err(Error::Unavailable(Failure::ComplianceStorage).into())
+        }
+    }
+}

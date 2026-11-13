@@ -158,8 +158,8 @@
           "description": "One exact endpoint device identity.",
           "properties": {
             "device": {
-              "description": "Registration-owner allocated endpoint identity.",
-              "type": "string"
+              "$ref": "#/$defs/DeviceId",
+              "description": "Registration-owner allocated endpoint identity."
             },
             "kind": {
               "const": "device",
@@ -253,6 +253,16 @@
           "type": "string"
         }
       ]
+    },
+    "DeviceId": {
+      "format": "uuid",
+      "maxLength": 36,
+      "minLength": 36,
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
     },
     "LoginConfiguration": {
       "additionalProperties": false,

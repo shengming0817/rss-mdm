@@ -51,7 +51,7 @@ use std::collections::BTreeMap;
 pub(crate) fn decide(
     operation: &Operation,
     lifecycle: bool,
-    registration: Option<String>,
+    registration: Option<rss_mdm_agent_wire::DeviceId>,
     source: bool,
 ) -> Result<Authorization> {
     let reason = if !lifecycle {
@@ -60,7 +60,7 @@ pub(crate) fn decide(
         && !operation.authority.control_matches(&operation.request)?
     {
         Some(BlockReason::InputMismatch)
-    } else if registration != Some(operation.device.clone()) {
+    } else if registration != Some(operation.device) {
         Some(BlockReason::DeviceInactive)
     } else if !source {
         Some(BlockReason::SourceInvalid)
@@ -78,7 +78,7 @@ pub(crate) fn reauthorization(
     operation: &Operation,
     status: dc::Status,
     now: i64,
-    registration: Option<String>,
+    registration: Option<rss_mdm_agent_wire::DeviceId>,
     supported: bool,
     permitted: bool,
 ) -> Result<Reauthorization> {
@@ -96,7 +96,7 @@ pub(crate) fn reauthorization(
         Some(R::AlreadyReceived)
     } else if now >= operation.request.deadline {
         Some(R::Expired)
-    } else if registration != Some(operation.device.clone()) {
+    } else if registration != Some(operation.device) {
         Some(R::DeviceInactive)
     } else if !supported {
         Some(R::Unsupported)
@@ -141,7 +141,7 @@ pub(crate) async fn batch(
     let tenant = queries.tenant.to_string();
     let targets = operations
         .values()
-        .map(|o| (o.id, o.device.clone()))
+        .map(|o| (o.id, o.device))
         .collect::<Vec<_>>();
     let t = tenant.clone();
     let lifecycle = crate::lifecycle::execution_permissions_in(c, &t, &targets)
@@ -155,7 +155,7 @@ pub(crate) async fn batch(
         let devices = operations
             .values()
             .filter_map(|o| match o.request.task.purpose() {
-                Ok(p) if p == purpose => Some(Ok(o.device.clone())),
+                Ok(p) if p == purpose => Some(Ok(o.device)),
                 Ok(_) => None,
                 Err(e) => Some(Err(crate::control::transaction::Fault::from(e))),
             })
@@ -177,7 +177,7 @@ pub(crate) async fn batch(
             .await
         }?;
         for device in rows {
-            registrations.insert((device.clone(), purpose.as_str()), Some(device));
+            registrations.insert((device, purpose.as_str()), Some(device));
         }
     }
     let mut permissions = BTreeMap::new();
@@ -188,7 +188,7 @@ pub(crate) async fn batch(
             match grant.require(
                 proof,
                 *permission,
-                permission.device().then_some(operation.device.as_str()),
+                permission.device().then_some(&operation.device),
             ) {
                 Ok(()) => {}
                 Err(authorization::error::AuthorizationError::Forbidden) => permitted = false,
@@ -197,10 +197,7 @@ pub(crate) async fn batch(
         }
         permissions.insert(operation.id, permitted);
         let registration = registrations
-            .get(&(
-                operation.device.clone(),
-                operation.request.task.purpose()?.as_str(),
-            ))
+            .get(&(operation.device, operation.request.task.purpose()?.as_str()))
             .cloned()
             .flatten();
         let status = *statuses
@@ -215,7 +212,7 @@ pub(crate) async fn batch(
             controls.push((
                 operation.id,
                 device_control::Check {
-                    device: operation.device.to_string(),
+                    device: operation.device,
 
                     source: operation.request.task.source(),
                     action,
@@ -247,10 +244,7 @@ pub(crate) async fn batch(
     let mut requests = Vec::new();
     for operation in operations.values() {
         let registration = registrations
-            .get(&(
-                operation.device.clone(),
-                operation.request.task.purpose()?.as_str(),
-            ))
+            .get(&(operation.device, operation.request.task.purpose()?.as_str()))
             .cloned()
             .flatten();
         let decision = decide(
@@ -285,10 +279,7 @@ pub(crate) async fn batch(
     let mut results = BTreeMap::new();
     for operation in operations.values() {
         let registration = registrations
-            .get(&(
-                operation.device.clone(),
-                operation.request.task.purpose()?.as_str(),
-            ))
+            .get(&(operation.device, operation.request.task.purpose()?.as_str()))
             .cloned()
             .flatten();
         let authorization = decisions.remove(&operation.id).ok_or(Error::Conflict)?;

@@ -51,7 +51,7 @@ async fn targets(
         .map(|c| (c, false))
         .collect::<Vec<_>>();
     let previous:Option<Vec<u8>>=sqlx::query_scalar("SELECT body FROM mdm_pki.installations WHERE tenant_id = CAST($1 AS uuid) AND purpose = 'windows' AND device = $2")
-        .bind(p.tenant().to_string()).bind(p.device()).fetch_optional(&mut *c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).fetch_optional(&mut *c).await.map_err(db)?;
     if let Some(bytes) = previous {
         let public: rss_mdm_agent_wire::pki::Trust =
             serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
@@ -116,7 +116,7 @@ pub(crate) async fn send(
     let tenant = p.tenant().to_string();
     let session = i64::from(response.header.session_id);
     let done:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_pki.installations WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND purpose = 'windows' AND revision = $3 AND digest = $4)")
-        .bind(&tenant).bind(p.device()).bind(trust.revision as i64).bind(&digest).fetch_one(&mut *c).await.map_err(db)?;
+        .bind(&tenant).bind(p.device().into_uuid()).bind(trust.revision as i64).bind(&digest).fetch_one(&mut *c).await.map_err(db)?;
     if done {
         return Ok(false);
     }
@@ -125,7 +125,7 @@ pub(crate) async fn send(
         return Err(Error::Conflict);
     }
     let confirmed:Vec<String>=sqlx::query_scalar("SELECT DISTINCT authority FROM mdm_windows.trust_deliveries WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND revision = $3 AND digest = $4 AND confirmed AND trust_deliveries.protocol_epoch = $5")
-        .bind(&tenant).bind(p.device()).bind(trust.revision as i64).bind(&digest).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
+        .bind(&tenant).bind(p.device().into_uuid()).bind(trust.revision as i64).bind(&digest).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
     let Some(authority) = authorities
         .into_iter()
         .find(|(a, _)| !confirmed.contains(&rss_mdm_device_trust::digest(&a.certificate)))
@@ -134,7 +134,7 @@ pub(crate) async fn send(
     };
     let authority_digest = rss_mdm_device_trust::digest(&authority.0.certificate);
     if sqlx::query_scalar::<_,bool>("SELECT EXISTS (SELECT 1 FROM mdm_windows.trust_deliveries WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND session = $3 AND revision = $4 AND authority = $5) AND trust_deliveries.protocol_epoch = $6)")
-        .bind(&tenant).bind(p.device()).bind(session).bind(trust.revision as i64).bind(&authority_digest).bind(p.epoch()).fetch_one(&mut *c).await.map_err(db)? {return Ok(true);}
+        .bind(&tenant).bind(p.device().into_uuid()).bind(session).bind(trust.revision as i64).bind(&authority_digest).bind(p.epoch()).fetch_one(&mut *c).await.map_err(db)? {return Ok(true);}
     // One authority per message fits negotiated device budgets; progress survives message/session changes.
     let authorities = [authority];
     let count = 1;
@@ -232,7 +232,7 @@ pub(crate) async fn send(
         )
         .map_err(|_| unavailable())?;
     sqlx::query("INSERT INTO mdm_windows.trust_deliveries (tenant_id, id, device, credential, revision, digest, session, message, first_command, request, results, authority, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
-        .bind(&tenant).bind(id).bind(p.device()).bind(p.credential()).bind(trust.revision as i64).bind(&digest).bind(session)
+        .bind(&tenant).bind(id).bind(p.device().into_uuid()).bind(p.credential()).bind(trust.revision as i64).bind(&digest).bind(session)
         .bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(sealed).bind(results).bind(&authority_digest).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
     let a = audit.fact_copy("windows_pki_install");
     a.identify_device(p.device());
@@ -258,7 +258,7 @@ pub(crate) async fn receive(
 ) -> Result<s::Message, Error> {
     let (raw, expected) = message;
     let rows=sqlx::query("SELECT * FROM mdm_windows.trust_deliveries WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND credential = $3 AND session = $4 AND trust_deliveries.protocol_epoch = $5 ORDER BY first_command FOR UPDATE")
-        .bind(p.tenant().to_string()).bind(p.device()).bind(p.credential()).bind(i64::from(raw.header.session_id)).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(p.credential()).bind(i64::from(raw.header.session_id)).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
     let mut consumed = std::collections::BTreeSet::new();
     for row in rows {
         let id: Uuid = row.try_get("id").map_err(db)?;
@@ -393,7 +393,7 @@ pub(crate) async fn receive(
             && row.try_get::<String, _>("digest").map_err(db)? == trust.installation_digest()
         {
             let installed:Vec<String>=sqlx::query_scalar("SELECT DISTINCT authority FROM mdm_windows.trust_deliveries WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND revision = $3 AND digest = $4 AND confirmed AND trust_deliveries.protocol_epoch = $5")
-                .bind(p.tenant().to_string()).bind(p.device()).bind(trust.revision as i64).bind(trust.installation_digest()).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
+                .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(trust.revision as i64).bind(trust.installation_digest()).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
             let complete = targets(c, w, p).await?.iter().all(|(cert, _)| {
                 installed.contains(&rss_mdm_device_trust::digest(&cert.certificate))
             });

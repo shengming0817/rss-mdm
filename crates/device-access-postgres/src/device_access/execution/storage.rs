@@ -45,7 +45,10 @@ async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, lock: bool) -> Result<Run>
         id,
         policy_version: row.try_get("policy_version")?,
         target: Target {
-            device: row.try_get("device")?,
+            device: row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+                rss_mdm_agent_wire::DeviceId::try_from(id)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+            })?,
         },
         origin: stored(serde_json::from_value(row.try_get("origin")?))?,
         available_at: row.try_get("available_at")?,
@@ -82,7 +85,7 @@ pub async fn save_run(
 pub async fn agent_profile_in(
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<(rss_mdm_policy::Platform, rss_mdm_policy::Architecture)>> {
     Ok(
         agent_facts::agent_binding_in(tx, service.agent_store.clone(), device)
@@ -116,13 +119,16 @@ pub async fn owned_ids_on(
 pub async fn active_count_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     now: i64,
 ) -> std::result::Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT count(*) FROM rss_da.access_runs WHERE tenant_id=$1::uuid AND device=$2 AND state->>'execution' IN('not_started','running','unknown','waiting_reboot') AND (deadline>$3 OR state->>'startedAt' IS NOT NULL) AND state->>'cancellation'<>'confirmed'").bind(tenant.to_string()).bind(device).bind(now).fetch_one(c).await
+    sqlx::query_scalar("SELECT count(*) FROM rss_da.access_runs WHERE tenant_id=$1::uuid AND device=$2 AND state->>'execution' IN('not_started','running','unknown','waiting_reboot') AND (deadline>$3 OR state->>'startedAt' IS NOT NULL) AND state->>'cancellation'<>'confirmed'").bind(tenant.to_string()).bind(device.into_uuid()).bind(now).fetch_one(c).await
 }
 
-pub async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
+pub async fn lock_device(
+    tx: &mut PgTransaction<'_>,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<()> {
     crate::device_access::execution::agent::lock_device(tx, device).await
 }
 
@@ -130,7 +136,7 @@ pub async fn association_on(
     c: &mut sqlx::PgConnection,
     tenant: &str,
     id: Uuid,
-) -> std::result::Result<Option<(String, Option<Uuid>)>, sqlx::Error> {
+) -> std::result::Result<Option<(rss_mdm_agent_wire::DeviceId, Option<Uuid>)>, sqlx::Error> {
     sqlx::query_as(
         "SELECT device,NULL::uuid FROM rss_da.access_runs WHERE tenant_id=$1::uuid AND id=$2",
     )
@@ -138,4 +144,14 @@ pub async fn association_on(
     .bind(id)
     .fetch_optional(c)
     .await
+    .and_then(|row: Option<(uuid::Uuid, Option<uuid::Uuid>)>| {
+        row.map(|(id, operation)| {
+            Ok((
+                rss_mdm_agent_wire::DeviceId::try_from(id)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))?,
+                operation,
+            ))
+        })
+        .transpose()
+    })
 }

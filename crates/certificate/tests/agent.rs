@@ -2,56 +2,27 @@ use super::*;
 #[test]
 fn identity_is_canonical_tenant_scoped_and_not_a_csr_claim() {
     let tenant = Uuid::new_v4();
+    let device = rss_mdm_agent_wire::DeviceId::new_v4();
+    let purpose = rss_mdm_agent_wire::pki::Purpose::Agent;
+    let encoded = identity(purpose, Uuid::nil(), tenant, &device).unwrap();
     assert_ne!(
-        identity(
-            rss_mdm_agent_wire::pki::Purpose::Agent,
-            Uuid::nil(),
-            tenant,
-            "device"
-        )
-        .unwrap(),
-        identity(
-            rss_mdm_agent_wire::pki::Purpose::Agent,
-            Uuid::nil(),
-            Uuid::new_v4(),
-            "device"
-        )
-        .unwrap()
+        encoded,
+        identity(purpose, Uuid::nil(), Uuid::new_v4(), &device).unwrap()
     );
+    let suffix = encoded
+        .strip_prefix(&format!("urn:rss-mdm:agent:v1:{tenant}:"))
+        .unwrap();
+    assert_eq!(
+        URL_SAFE_NO_PAD.decode(suffix).unwrap(),
+        device.to_string().as_bytes()
+    );
+    assert!(identity(purpose, Uuid::nil(), Uuid::nil(), &device).is_err());
     assert!(
         identity(
-            rss_mdm_agent_wire::pki::Purpose::Agent,
+            rss_mdm_agent_wire::pki::Purpose::DaDevice,
             Uuid::nil(),
             tenant,
-            "设备:one"
-        )
-        .unwrap()
-        .starts_with(&format!("urn:rss-mdm:agent:v1:{tenant}:"))
-    );
-    assert!(
-        identity(
-            rss_mdm_agent_wire::pki::Purpose::Agent,
-            Uuid::nil(),
-            Uuid::nil(),
-            "device"
-        )
-        .is_err()
-    );
-    assert!(
-        identity(
-            rss_mdm_agent_wire::pki::Purpose::Agent,
-            Uuid::nil(),
-            tenant,
-            ""
-        )
-        .is_err()
-    );
-    assert!(
-        identity(
-            rss_mdm_agent_wire::pki::Purpose::Agent,
-            Uuid::nil(),
-            tenant,
-            "device\n"
+            &device
         )
         .is_err()
     );

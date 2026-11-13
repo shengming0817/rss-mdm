@@ -31,10 +31,13 @@ impl Diagnosis {
         }
     }
 }
-pub async fn pending(tx: &mut PgTransaction<'_>, device: &str) -> Result<bool> {
+pub async fn pending(
+    tx: &mut PgTransaction<'_>,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
-    Ok(tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT coalesce((SELECT input_revision>observed_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2),false)").bind(tenant).bind(device).fetch_one(c).await})).await?)
+    Ok(tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT coalesce((SELECT input_revision>observed_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2),false)").bind(tenant).bind(device.into_uuid()).fetch_one(c).await})).await?)
 }
 pub(crate) struct Desired<'a> {
     policy: &'a Policy,
@@ -46,7 +49,7 @@ pub(crate) struct Desired<'a> {
 }
 fn desired<'a>(
     service: &Transactions,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     policy: &'a Policy,
     frozen: &'a Frozen,
     ready: bool,
@@ -124,7 +127,7 @@ fn requires_sent_guard(task: &Task, status: dc::Status) -> bool {
 async fn desired_in(
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<(Claims, Claims)> {
     let mut desired = Vec::new();
     let mut waiting = Vec::new();
@@ -183,11 +186,11 @@ type Claims = Vec<(Policy, Frozen)>;
 async fn prior_claims(
     reader: &rss_mdm_policy_postgres::PolicyReader,
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Claims> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
-    let versions=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Uuid>("SELECT DISTINCT version FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2 ORDER BY version").bind(tenant).bind(device).fetch_all(c).await})).await?;
+    let versions=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Uuid>("SELECT DISTINCT version FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2 ORDER BY version").bind(tenant).bind(device.into_uuid()).fetch_all(c).await})).await?;
     let mut claims = Vec::new();
     for version in versions {
         let (mut policy, frozen) = policies::version_in(reader, tx, version).await?;
@@ -198,20 +201,20 @@ async fn prior_claims(
 }
 async fn object_rows(
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     objects: &[Object],
 ) -> Result<Vec<(Option<Uuid>, Option<Vec<u8>>)>> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let objects = objects.to_vec();
     Ok(tx.with_connection(move|c|Box::pin(async move {let mut rows=Vec::new();for o in objects {
-        let row=sqlx::query_as::<_,(Option<Uuid>,Option<Vec<u8>>)>("SELECT operation,digest FROM mdm_planning.configuration_objects WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND platform=$4 AND object_kind=$5 AND object_key=$6 FOR UPDATE").bind(&tenant).bind(&device).bind(o.user).bind(o.platform).bind(o.kind).bind(o.key).fetch_optional(&mut *c).await?;
+        let row=sqlx::query_as::<_,(Option<Uuid>,Option<Vec<u8>>)>("SELECT operation,digest FROM mdm_planning.configuration_objects WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND platform=$4 AND object_kind=$5 AND object_key=$6 FOR UPDATE").bind(&tenant).bind(device.into_uuid()).bind(o.user).bind(o.platform).bind(o.kind).bind(o.key).fetch_optional(&mut *c).await?;
         rows.push(row.unwrap_or((None,None)));
     }Ok(rows)})).await?)
 }
 async fn object_state(
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     objects: &[Object],
 ) -> Result<Option<Uuid>> {
     let rows = object_rows(tx, device, objects).await?;
@@ -223,7 +226,7 @@ async fn object_state(
 async fn cancel_objects(
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     objects: &[Object],
 ) -> Result<()> {
     let ids = object_rows(tx, device, objects)
@@ -249,7 +252,7 @@ async fn cancel_objects(
 }
 async fn save_objects(
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     objects: &[Object],
     operation: Option<Uuid>,
     digests: Option<&BTreeMap<Object, Vec<u8>>>,
@@ -271,13 +274,13 @@ async fn save_objects(
     let diagnosis = diagnosis.map(Diagnosis::as_str);
     tx.with_connection(move|c|Box::pin(async move {for o in objects {
         let digest = digests.as_ref().and_then(|values| values.get(&o));
-        sqlx::query("INSERT INTO mdm_planning.configuration_objects(tenant_id,device,user_key,platform,object_kind,object_key,operation,digest,diagnosis) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,device,user_key,platform,object_kind,object_key) DO UPDATE SET operation=CASE WHEN $10 THEN configuration_objects.operation ELSE excluded.operation END,digest=CASE WHEN $10 THEN configuration_objects.digest ELSE excluded.digest END,diagnosis=excluded.diagnosis").bind(&tenant).bind(&device).bind(o.user).bind(o.platform).bind(o.kind).bind(o.key).bind(operation).bind(digest).bind(diagnosis).bind(preserve).execute(&mut *c).await?;
+        sqlx::query("INSERT INTO mdm_planning.configuration_objects(tenant_id,device,user_key,platform,object_kind,object_key,operation,digest,diagnosis) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,device,user_key,platform,object_kind,object_key) DO UPDATE SET operation=CASE WHEN $10 THEN configuration_objects.operation ELSE excluded.operation END,digest=CASE WHEN $10 THEN configuration_objects.digest ELSE excluded.digest END,diagnosis=excluded.diagnosis").bind(&tenant).bind(device.into_uuid()).bind(o.user).bind(o.platform).bind(o.kind).bind(o.key).bind(operation).bind(digest).bind(diagnosis).bind(preserve).execute(&mut *c).await?;
     }Ok(())})).await?;
     Ok(())
 }
 async fn replace_claims(
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     objects: &[Object],
     policies: &[&Policy],
     operation: Option<Uuid>,
@@ -291,28 +294,32 @@ async fn replace_claims(
         .collect::<Vec<_>>();
     tx.with_connection(move|c|Box::pin(async move {for o in objects {
         let ids=policies.iter().map(|p|p.0).collect::<Vec<_>>();
-        sqlx::query("DELETE FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND platform=$4 AND object_kind=$5 AND object_key=$6 AND NOT(policy=ANY($7))").bind(&tenant).bind(&device).bind(&o.user).bind(&o.platform).bind(&o.kind).bind(&o.key).bind(ids).execute(&mut *c).await?;
-        for &(policy,version) in &policies {sqlx::query("INSERT INTO mdm_planning.configuration_claims(tenant_id,device,user_key,platform,object_kind,object_key,policy,version,operation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,policy,device,user_key,platform,object_kind,object_key) DO UPDATE SET version=excluded.version,operation=excluded.operation").bind(&tenant).bind(&device).bind(&o.user).bind(&o.platform).bind(&o.kind).bind(&o.key).bind(policy).bind(version).bind(operation).execute(&mut *c).await?;}
+        sqlx::query("DELETE FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND platform=$4 AND object_kind=$5 AND object_key=$6 AND NOT(policy=ANY($7))").bind(&tenant).bind(device.into_uuid()).bind(&o.user).bind(&o.platform).bind(&o.kind).bind(&o.key).bind(ids).execute(&mut *c).await?;
+        for &(policy,version) in &policies {sqlx::query("INSERT INTO mdm_planning.configuration_claims(tenant_id,device,user_key,platform,object_kind,object_key,policy,version,operation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,policy,device,user_key,platform,object_kind,object_key) DO UPDATE SET version=excluded.version,operation=excluded.operation").bind(&tenant).bind(device.into_uuid()).bind(&o.user).bind(&o.platform).bind(&o.kind).bind(&o.key).bind(policy).bind(version).bind(operation).execute(&mut *c).await?;}
     }Ok(())})).await?;
     Ok(())
 }
-async fn withdraw_claims(tx: &mut PgTransaction<'_>, device: &str, policy: &Policy) -> Result<()> {
+async fn withdraw_claims(
+    tx: &mut PgTransaction<'_>,
+    device: &rss_mdm_agent_wire::DeviceId,
+    policy: &Policy,
+) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let id = policy.id;
     let version = policy.version;
     tx.with_connection(move |c| Box::pin(async move {
         sqlx::query("DELETE FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2 AND policy=$3 AND version=$4")
-            .bind(&tenant).bind(&device).bind(id).bind(version).execute(&mut *c).await?;
+            .bind(&tenant).bind(device.into_uuid()).bind(id).bind(version).execute(&mut *c).await?;
         sqlx::query("UPDATE mdm_planning.configuration_objects o SET digest=NULL,diagnosis='unassigned' WHERE o.tenant_id=$1::uuid AND o.device=$2 AND o.operation IS NULL AND NOT EXISTS(SELECT 1 FROM mdm_planning.configuration_claims k WHERE (k.tenant_id,k.device,k.user_key,k.platform,k.object_kind,k.object_key)=(o.tenant_id,o.device,o.user_key,o.platform,o.object_kind,o.object_key))")
-            .bind(&tenant).bind(&device).execute(&mut *c).await?;
+            .bind(&tenant).bind(device.into_uuid()).execute(&mut *c).await?;
         Ok(())
     })).await?;
     Ok(())
 }
 async fn desired_claims(
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     objects: &[Object],
     inputs: &[Desired<'_>],
     owners: &BTreeMap<Object, Vec<usize>>,
@@ -329,11 +336,14 @@ async fn desired_claims(
 }
 
 type ClaimLinks = BTreeSet<(Uuid, Uuid, Option<Uuid>)>;
-async fn claim_links(tx: &mut PgTransaction<'_>, device: &str) -> Result<ClaimLinks> {
+async fn claim_links(
+    tx: &mut PgTransaction<'_>,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<ClaimLinks> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let links:Vec<(Uuid,Uuid,Option<Uuid>)>=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_as("SELECT DISTINCT policy,version,operation FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(device).fetch_all(c).await
+        sqlx::query_as("SELECT DISTINCT policy,version,operation FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(device.into_uuid()).fetch_all(c).await
     })).await?;
     Ok(links.into_iter().collect())
 }
@@ -341,7 +351,7 @@ impl Transactions {
     pub(crate) async fn reconcile_configuration_target_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         audit: &RequestAudit,
         selected: Option<(Uuid, rss_mdm_audit_integration::activity::ActivityOrigin)>,
     ) -> Result<()> {
@@ -356,11 +366,11 @@ impl Transactions {
         let t = tx.tenant_id().to_string();
         let d = device.to_owned();
         let retirement:Option<Uuid>=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar("SELECT retirement FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(d).fetch_optional(c).await.map(Option::flatten)
+            sqlx::query_scalar("SELECT retirement FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(d.into_uuid()).fetch_optional(c).await.map(Option::flatten)
         })).await?;
         let tenant = tx.tenant_id().to_string();
         let name = device.to_owned();
-        let revision=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,i64>("SELECT input_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(tenant).bind(name).fetch_one(c).await})).await?;
+        let revision=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,i64>("SELECT input_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(tenant).bind(name.into_uuid()).fetch_one(c).await})).await?;
         let (wanted, waiting) = if retirement.is_some() {
             (Vec::new(), Vec::new())
         } else {
@@ -716,7 +726,7 @@ impl Transactions {
         }
         let tenant = tx.tenant_id().to_string();
         let device = device.to_owned();
-        tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_planning.configuration_devices SET observed_revision=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(device).bind(revision).execute(c).await?;Ok(())})).await?;
+        tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_planning.configuration_devices SET observed_revision=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(device.into_uuid()).bind(revision).execute(c).await?;Ok(())})).await?;
         Ok(())
     }
     // A native publication withdrawal settles logical ownership, while its OS effect
@@ -746,7 +756,7 @@ impl Transactions {
     pub(crate) async fn publication_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         desired: &Desired<'_>,
     ) -> Result<Option<Uuid>> {
         let removal = desired
@@ -794,7 +804,7 @@ impl Transactions {
         let old = storage::load(tx, &self.protection, id).await?;
         let current =
             storage::current_registration(tx, &old.device, old.request.task.purpose()?).await?;
-        let foreign = current != old.device.clone();
+        let foreign = current != old.device;
         let previous = super::protection::fingerprint(
             &self.protection,
             self.tenant,
@@ -855,7 +865,7 @@ impl Transactions {
     pub(crate) async fn queue_policy_configuration(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         desired: (
             &Desired<'_>,
             rss_mdm_audit_integration::activity::ActivityOrigin,
@@ -889,7 +899,7 @@ impl Transactions {
         let d = device.to_owned();
         let retirement:Option<(Uuid,Uuid,serde_json::Value)>=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query_as("SELECT o.id,o.version,o.origin FROM mdm_access.devices d JOIN mdm_devices.retirements o ON(o.tenant_id,o.id)=(d.tenant_id,d.retirement) WHERE d.tenant_id=$1::uuid AND d.id=$2")
-                .bind(t).bind(d).fetch_optional(c).await
+                .bind(t).bind(d.into_uuid()).fetch_optional(c).await
         })).await?;
         let authority = if let Some((retirement, version, origin)) = retirement {
             if !remove {
@@ -918,7 +928,7 @@ impl Transactions {
                 tenant: tenant.to_string(),
                 retirement,
                 version,
-                device: device.into(),
+                device: *device,
 
                 execution,
                 required: input.task.permissions()?,
@@ -932,7 +942,7 @@ impl Transactions {
                 tenant: tx.tenant_id().to_string(),
                 policy: policy.id,
                 version: policy.version,
-                device: device.into(),
+                device: *device,
                 remove,
             }
         };
@@ -983,7 +993,7 @@ impl Transactions {
     pub(crate) async fn record_claim_links(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         before: &ClaimLinks,
         audit: &RequestAudit,
     ) -> Result<()> {
@@ -1024,9 +1034,7 @@ impl Transactions {
                     )
                     .await
                     {
-                        Ok(_) => Some(ActivityTarget {
-                            device: device.into(),
-                        }),
+                        Ok(_) => Some(ActivityTarget { device: *device }),
                         Err(Fault::Request(Error::Conflict)) => None,
                         Err(error) => return Err(error),
                     }

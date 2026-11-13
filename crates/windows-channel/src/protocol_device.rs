@@ -6,10 +6,10 @@ pub(crate) async fn on(
     c: &mut sqlx::PgConnection,
     tenant: &str,
     request: Uuid,
-    fallback: &str,
+    fallback: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<String, Error> {
     Ok(sqlx::query_scalar::<_,Option<String>>("SELECT protocol_device FROM mdm_access.enrollment_intents WHERE tenant_id=$1::uuid AND request_id=$2")
-        .bind(tenant).bind(request).fetch_optional(c).await.map_err(db)?.flatten().unwrap_or_else(||fallback.to_owned()))
+        .bind(tenant).bind(request).fetch_optional(c).await.map_err(db)?.flatten().unwrap_or_else(||fallback.to_string()))
 }
 pub(crate) async fn read(store: &crate::Store, p: &DevicePrincipal) -> Result<String, Error> {
     let tenant = p.tenant().to_string();

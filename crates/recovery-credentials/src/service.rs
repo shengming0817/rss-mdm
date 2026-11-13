@@ -45,7 +45,7 @@ impl Credentials {
     pub async fn list(
         &self,
         request: &rss_mdm_authorization_service::context::RequestAuth,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         query: &rss_mdm_query::directory::Query,
         codec: &rss_mdm_query::cursor::CursorCodec,
     ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<crate::Material>>, Error>
@@ -106,7 +106,7 @@ impl Credentials {
     pub async fn disclose(
         &self,
         principal: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         version: i64,
         audit: &RequestAudit,
@@ -121,7 +121,7 @@ impl Credentials {
     async fn disclose_inner(
         &self,
         principal: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         version: i64,
         access: Option<&DisclosureRequest>,
@@ -214,7 +214,7 @@ impl Credentials {
                                         .map_err(|_| Error::Integrity)?;
                                     principal.check_live()?;
                                     if let Some(input)=access && !*replay {
-                                        sqlx::query(crate::storage_profile::sql(profile).service_disclose_inner_1).bind(principal.tenant_id()).bind(principal.principal_id()).bind(input.operation_id).bind(*device).bind(*id).bind(*version).execute(c).await?;
+                                        sqlx::query(crate::storage_profile::sql(profile).service_disclose_inner_1).bind(principal.tenant_id()).bind(principal.principal_id()).bind(input.operation_id).bind(device.into_uuid()).bind(*id).bind(*version).execute(c).await?;
                                     }
                                     Ok::<_, Error>(Disclosure {
                                         material,
@@ -238,7 +238,7 @@ impl Credentials {
     pub async fn revoke(
         &self,
         principal: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         version: i64,
         audit: &RequestAudit,
@@ -279,7 +279,7 @@ impl Credentials {
                                         crate::storage_profile::sql(profile).service_revoke_1,
                                     )
                                     .bind(principal.tenant_id())
-                                    .bind(*device)
+                                    .bind(device.into_uuid())
                                     .bind(*id)
                                     .bind(*version)
                                     .fetch_optional(&mut *c)
@@ -354,7 +354,7 @@ pub(crate) async fn authorize(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     permission: Permission,
 ) -> Result<(), Error> {
     if p.profile() != profile {
@@ -383,7 +383,7 @@ async fn read_locked(
     custody: crate::Custody<'_>,
     c: &mut PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     id: Uuid,
     version: i64,
 ) -> Result<(Material, Option<String>, Option<Vec<u8>>), Error> {
@@ -394,7 +394,7 @@ async fn read_locked(
     let statement = crate::storage_profile::sql(profile).service_read_locked_1;
     let row = sqlx::query(statement)
         .bind(tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(id)
         .bind(version)
         .fetch_optional(&mut *c)
@@ -410,7 +410,7 @@ async fn read_locked(
     .await?;
     let row = sqlx::query(crate::storage_profile::sql(profile).service_read_locked_2)
         .bind(tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(id)
         .bind(version)
         .fetch_optional(c)
@@ -465,7 +465,7 @@ impl DisclosureRequest {
     pub fn context(
         &self,
         p: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         version: i64,
     ) -> Result<rss_identity_core::step_up::StepUpContext, Error> {
@@ -497,7 +497,7 @@ async fn disclosure_receipt(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     id: Uuid,
     version: i64,
     operation: Uuid,
@@ -509,7 +509,9 @@ async fn disclosure_receipt(
         .fetch_optional(c)
         .await?;
     if let Some(row) = row {
-        if row.try_get::<String, _>("device")? != device
+        if row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+            rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+        })? != *device
             || row.try_get::<Uuid, _>("entry")? != id
             || row.try_get::<i64, _>("version")? != version
         {
@@ -524,7 +526,7 @@ impl Credentials {
     async fn disclosure_committed(
         &self,
         p: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         version: i64,
         operation: Uuid,
@@ -543,7 +545,7 @@ impl Credentials {
     pub async fn disclose_device_access(
         &self,
         p: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         version: i64,
         input: &DisclosureRequest,

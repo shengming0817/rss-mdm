@@ -40,7 +40,7 @@ async fn now(c: &mut PgConnection) -> Result<i64, Error> {
 pub(super) async fn authorize(
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     permission: Permission,
 ) -> Result<(), Error> {
     p.check_live()?;
@@ -120,7 +120,7 @@ impl Service {
             })
             .transpose()?;
         let rows: Vec<serde_json::Value> = sqlx::query_scalar("SELECT document FROM rss_da.bindings WHERE tenant_id = $1 AND device = $2 AND instance = $3 AND principal = $4 ORDER BY id LIMIT 129")
-            .bind(tenant_uuid(device.tenant())?).bind(endpoint.device()).bind(who.instance).bind(who.principal)
+            .bind(tenant_uuid(device.tenant())?).bind(endpoint.device().into_uuid()).bind(who.instance).bind(who.principal)
             .fetch_all(&mut *tx).await.map_err(db)?;
         if rows.len() > 128 {
             return Err(Error::Capacity);
@@ -212,7 +212,7 @@ impl Service {
     pub async fn device_access_operation(
         &self,
         actor: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
     ) -> Result<Binding, Error> {
         self.read_with_session(actor,(actor,device,id),|ctx,c|Box::pin(async move{
@@ -222,7 +222,7 @@ impl Service {
             .bind(actor.tenant_id()).bind(actor.principal_id()).bind(actor.instance_id()).bind(id).fetch_optional(&mut *c).await.map_err(db)?;
         let value:Binding=serde_json::from_str(&result.ok_or(Error::NotFound)?).map_err(|_|Error::NotFound)?;
         value.validate()?;
-        if value.device!=device || value.tenant.to_string()!=actor.tenant_id(){return Err(Error::NotFound);}
+        if value.device!=*device || value.tenant.to_string()!=actor.tenant_id(){return Err(Error::NotFound);}
         // A subject offboarding receipt represents all frozen targets, not only its initiating device.
         let offboarding:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rss_da.lifecycles WHERE tenant_id=$1::uuid AND operation=$2)").bind(actor.tenant_id()).bind(id).fetch_one(&mut *c).await.map_err(db)?;
         if offboarding {super::lifecycle::load_on(c,actor,device,id,false).await?;}
@@ -269,7 +269,7 @@ impl Service {
             sqlx::query("DELETE FROM rss_da.ceremonies WHERE tenant_id=$1 AND expires_at<to_timestamp($2::bigint::double precision) AND consumed IS NULL")
                 .bind(tenant_uuid(device.tenant())?).bind(time).execute(&mut *c).await.map_err(db)?;
             let count: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_da.ceremonies WHERE tenant_id=$1 AND device=$2")
-                .bind(tenant_uuid(device.tenant())?).bind(device.device()).fetch_one(&mut *c).await.map_err(db)?;
+                .bind(tenant_uuid(device.tenant())?).bind(device.device().into_uuid()).fetch_one(&mut *c).await.map_err(db)?;
             if count >= 128 { return Err(Error::Capacity); }
             use base64::Engine;
             let mut bytes = [0u8;32];
@@ -277,7 +277,7 @@ impl Service {
             let nonce = rss_mdm_agent_wire::runtime::Secret::parse(&base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)).map_err(|_| Error::Corrupt)?;
             let expires_at = time.checked_add(120).ok_or(Error::Capacity)?;
             sqlx::query("INSERT INTO rss_da.ceremonies (tenant_id, id, device, instance, principal, nonce_digest, session, policy, policy_version, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, to_timestamp(CAST(CAST($10 AS bigint) AS double precision)))")
-                .bind(tenant_uuid(device.tenant())?).bind(input.operation_id).bind(device.device())
+                .bind(tenant_uuid(device.tenant())?).bind(input.operation_id).bind(device.device().into_uuid())
                 .bind(who.instance).bind(who.principal).bind(nonce_digest(&nonce).as_slice()).bind(serde_json::to_value(&local).map_err(|_| Error::Malformed)?)
                 .bind(selection.policy).bind(selection.version).bind(expires_at).execute(c).await.map_err(|e| if e.as_database_error().is_some_and(|e| e.is_unique_violation()) { Error::Conflict } else { db(e) })?;
             Ok(AuditedChange {replay: false, value: AccessChallenge { id: input.operation_id, nonce, expires_at, local_session: local }})
@@ -321,7 +321,7 @@ impl Service {
             if let Some(old)=crate::operations::replay( c,&op).await? {
                 let saved:Binding=serde_json::from_str(&old).map_err(|_|Error::Corrupt)?;
                 saved.validate()?;
-                if saved.device!=device.device() || saved.person!=*who {return Err(Error::Forbidden);}
+                if saved.device != *device.device() || saved.person!=*who {return Err(Error::Forbidden);}
                 return Ok(AuditedChange{value:saved, replay:true});
             }
             super::lifecycle::require_subject_on(c,tenant_uuid(device.tenant())?,who).await?;
@@ -335,15 +335,15 @@ impl Service {
             let expected:Vec<u8>=row.try_get("nonce_digest").map_err(db)?;
             if !bool::from(expected.as_slice().ct_eq(&nonce_digest(&input.nonce)))
                 || row.try_get::<Uuid,_>("instance").map_err(db)?!=who.instance || row.try_get::<Uuid,_>("principal").map_err(db)?!=who.principal
-                || row.try_get::<String,_>("device").map_err(db)?!=device.device()
-                || row.try_get::<String,_>("device").map_err(db)?!=device.device()
+                || row.try_get::<uuid::Uuid, _>("device").and_then(|id| rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))).map_err(db)?!=*device.device()
+                || row.try_get::<uuid::Uuid, _>("device").and_then(|id| rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))).map_err(db)?!=*device.device()
                 || row.try_get::<serde_json::Value,_>("session").map_err(db)?!=serde_json::to_value(&local).map_err(|_|Error::Malformed)? { return Err(Error::Forbidden); }
             if row.try_get::<i64,_>("expires_unix").map_err(db)?<=time || row.try_get::<Option<Uuid>,_>("consumed").map_err(db)?.is_some() { return Err(Error::Conflict); }
             let policy:Uuid=row.try_get("policy").map_err(db)?;
             let selected=admission.policy(c,tenant_uuid(device.tenant())?,device.device(),policy).await?;
             if selected.version!=row.try_get::<Uuid,_>("policy_version").map_err(db)? || !selected.configuration.self_enrollment || !selected.configuration.enabled || !selected.configuration.admits(&local.account) { return Err(Error::Forbidden); }
             if !storage::first_in(c,tenant_uuid(device.tenant())?,device.device(),who,&local.account).await? {return Err(Error::Conflict);}
-            let binding=Binding{deployment_application:None,operation_id:input.operation_id,account_disposition:rss_mdm_agent_wire::runtime::AccessAccountDisposition::Keep,id:Uuid::new_v4(),tenant:tenant_uuid(device.tenant())?,device:device.device().into(),person:who.clone(),origin:Origin::SelfEnrollment,generation:1,factor_generation:1,revision:1,state:State::Pending,intent:AccountIntent::Existing{account:local.account.clone()},account:Some(local.account),policy:selected.policy,policy_version:selected.version,configuration:selected.configuration,received_revision:None,applied_revision:None,effect:None,applied_windows:None,created_by_rss:false};
+            let binding=Binding{deployment_application:None,operation_id:input.operation_id,account_disposition:rss_mdm_agent_wire::runtime::AccessAccountDisposition::Keep,id:Uuid::new_v4(),tenant:tenant_uuid(device.tenant())?,device:*device.device(),person:who.clone(),origin:Origin::SelfEnrollment,generation:1,factor_generation:1,revision:1,state:State::Pending,intent:AccountIntent::Existing{account:local.account.clone()},account:Some(local.account),policy:selected.policy,policy_version:selected.version,configuration:selected.configuration,received_revision:None,applied_revision:None,effect:None,applied_windows:None,created_by_rss:false};
             storage::insert_in(c,&binding).await?;
             super::lifecycle::emit_on(c,&binding,None,input.operation_id,"accepted").await?;
             sqlx::query("UPDATE rss_da.ceremonies SET consumed=$3 WHERE tenant_id=$1 AND id=$2").bind(binding.tenant).bind(input.challenge).bind(binding.id).execute(&mut *c).await.map_err(db)?;
@@ -359,7 +359,7 @@ impl Service {
     pub async fn change_device_access(
         &self,
         actor: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         input: &Change,
         proof: Option<&rss_mdm_agent_wire::runtime::Secret>,
@@ -432,7 +432,7 @@ impl Service {
                     };
                     if old.as_ref().map_or(0, |b| b.revision) != input.expected_revision
                         || old.as_ref().is_some_and(|b| {
-                            b.device != *device
+                            b.device != **device
 
 
                         })
@@ -467,7 +467,7 @@ impl Service {
                             if intent.platform() == TaskPlatform::Macos {
                                 // A System PSSO profile has one Policy owner for every user on the device.
                                 let conflict: bool = sqlx::query_scalar("SELECT EXISTS (SELECT FROM rss_da.bindings WHERE tenant_id = $1 AND device = $2 AND id <> $3 AND state <> 'revoked' AND COALESCE(account ->> 'platform', document #>> '{intent,platform}') = 'macos' AND document ->> 'policy' <> $4)")
-                                    .bind(tenant).bind(*device).bind(*id).bind(policy.to_string())
+                                    .bind(tenant).bind(device.into_uuid()).bind(*id).bind(policy.to_string())
                                     .fetch_one(&mut *c).await.map_err(db)?;
                                 if conflict { return Err(Error::Conflict); }
                             }
@@ -503,7 +503,7 @@ impl Service {
                                 account_disposition: rss_mdm_agent_wire::runtime::AccessAccountDisposition::Keep,
                                 id: *id,
                                 tenant,
-                                device: (*device).into(),
+                                device: **device,
 
 
                                 person: person.clone(),
@@ -609,7 +609,7 @@ impl Service {
     async fn access_replay(
         &self,
         actor: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         operation: Uuid,
         hash: &str,
     ) -> Result<Option<Binding>, Error> {
@@ -625,7 +625,7 @@ impl Service {
                             serde_json::from_str(&value).map_err(|_| Error::Corrupt)?;
                         binding.validate()?;
                         if binding.tenant.to_string() != actor.tenant_id()
-                            || binding.device != device
+                            || binding.device != *device
                         {
                             return Err(Error::Forbidden);
                         }

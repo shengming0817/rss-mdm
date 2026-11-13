@@ -2,7 +2,7 @@
 BEGIN;
 CREATE TABLE mdm_access.command_authorities (
     tenant_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , command_device uuid NOT NULL
   , generation bigint NOT NULL
   , epoch bigint NOT NULL

@@ -24,11 +24,11 @@ pub(crate) async fn emit_on(
         version: 1,
         occurred_at: events::now_on(c).await.map_err(|_| Error::Storage)?,
         tenant_id: binding.tenant,
-        device_id: binding.device.clone(),
+        device_id: binding.device,
         data: EventData::DeviceAccess {
             operation_id: binding.operation_id,
             binding_id: binding.id,
-            device_id: binding.device.to_string(),
+            device_id: binding.device,
 
             instance_id: binding.person.instance,
             principal_id: binding.person.principal,
@@ -97,16 +97,16 @@ pub(super) async fn lock_offboarding_on(
     id: Uuid,
 ) -> Result<(), Error> {
     let current = super::storage::get_in(c, tenant, id).await?;
-    let devices:Vec<String>=sqlx::query_scalar("SELECT DISTINCT device FROM rss_da.bindings WHERE tenant_id=$1 AND instance=$2 AND principal=$3 AND state<>'revoked' ORDER BY device LIMIT 1025")
-        .bind(tenant).bind(current.person.instance).bind(current.person.principal).fetch_all(&mut *c).await.map_err(crate::database::db)?;
+    let devices: Vec<rss_mdm_agent_wire::DeviceId>=sqlx::query_scalar("SELECT DISTINCT device FROM rss_da.bindings WHERE tenant_id=$1 AND instance=$2 AND principal=$3 AND state<>'revoked' ORDER BY device LIMIT 1025")
+        .bind(tenant).bind(current.person.instance).bind(current.person.principal).fetch_all(&mut *c).await.and_then(crate::database::device_ids).map_err(crate::database::db)?;
     if devices.len() > 1024 {
         return Err(Error::Capacity);
     }
     let mut locked = devices.clone();
-    locked.push(current.device.clone());
+    locked.push(current.device);
     crate::delivery::lock_da_targets(c, &tenant.to_string(), &locked, None).await?;
-    let after:Vec<String>=sqlx::query_scalar("SELECT DISTINCT device FROM rss_da.bindings WHERE tenant_id=$1 AND instance=$2 AND principal=$3 AND state<>'revoked' ORDER BY device LIMIT 1025")
-        .bind(tenant).bind(current.person.instance).bind(current.person.principal).fetch_all(c).await.map_err(crate::database::db)?;
+    let after:Vec<rss_mdm_agent_wire::DeviceId>=sqlx::query_scalar("SELECT DISTINCT device FROM rss_da.bindings WHERE tenant_id=$1 AND instance=$2 AND principal=$3 AND state<>'revoked' ORDER BY device LIMIT 1025")
+        .bind(tenant).bind(current.person.instance).bind(current.person.principal).fetch_all(c).await.and_then(crate::database::device_ids).map_err(crate::database::db)?;
     if devices != after {
         return Err(Error::ReadConflict);
     }
@@ -213,7 +213,7 @@ pub(super) async fn accept_offboarding_on(
         attempts: Default::default(),
     };
     sqlx::query("INSERT INTO rss_da.lifecycles(tenant_id,operation,actor,instance,device,document) VALUES($1,$2,$3,$4,$5,$6)")
-        .bind(current.tenant).bind(current.operation_id).bind(actor.principal_id()).bind(actor.instance_id()).bind(&current.device)
+        .bind(current.tenant).bind(current.operation_id).bind(actor.principal_id()).bind(actor.instance_id()).bind(current.device.into_uuid())
         .bind(serde_json::to_value(operation).map_err(|_|Error::Corrupt)?)
         .execute(c).await.map_err(crate::database::db)?;
     Ok(())
@@ -245,7 +245,7 @@ impl crate::service::Service {
     pub async fn offboarding(
         &self,
         actor: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         operation: Uuid,
     ) -> Result<Offboarding, Error> {
         if actor.tenant_id() != self.tenant.to_string() {
@@ -261,7 +261,7 @@ impl crate::service::Service {
     pub async fn claim_offboarding(
         &self,
         actor: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         operation: Uuid,
         component: ExternalComponent,
         audit: &rss_mdm_audit_integration::RequestAudit,
@@ -286,7 +286,7 @@ impl crate::service::Service {
     pub async fn settle_offboarding(
         &self,
         actor: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         operation: Uuid,
         component: ExternalComponent,
         attempt: Uuid,
@@ -311,7 +311,7 @@ impl crate::service::Service {
     pub async fn observe_offboarding(
         &self,
         actor: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         operation: Uuid,
         component: ExternalComponent,
         attempt: Option<Uuid>,
@@ -332,7 +332,7 @@ impl crate::service::Service {
     async fn transition_offboarding(
         &self,
         actor: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         operation: Uuid,
         component: ExternalComponent,
         transition: Transition,
@@ -479,7 +479,7 @@ pub(super) async fn require_settled_on(
 pub(super) async fn load_on(
     c: &mut PgConnection,
     actor: &AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     operation: Uuid,
     locked: bool,
 ) -> Result<Offboarding, Error> {
@@ -492,7 +492,7 @@ pub(super) async fn load_on(
         .bind(actor.tenant_id())
         .bind(operation)
         .bind(actor.instance_id())
-        .bind(device)
+        .bind(device.into_uuid())
         .fetch_optional(&mut *c)
         .await
         .map_err(crate::database::db)?
@@ -558,7 +558,7 @@ pub(super) async fn load_on(
 #[serde(rename_all = "camelCase")]
 pub struct TargetProgress {
     pub binding_id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub revision: i64,
     pub phase: ExternalPhase,
 }
@@ -581,7 +581,7 @@ impl crate::service::Service {
     pub async fn offboarding_progress(
         &self,
         actor: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         operation: Uuid,
     ) -> Result<Progress, Error> {
         use sqlx::Row;
@@ -649,7 +649,7 @@ impl crate::service::Service {
             .iter()
             .map(|b| TargetProgress {
                 binding_id: b.id,
-                device: b.device.clone(),
+                device: b.device,
 
                 revision: b.revision,
                 phase: phases.get(&b.id).copied().unwrap_or(ExternalPhase::Unknown),

@@ -14,11 +14,11 @@ pub struct NativeContact {
 pub async fn native_contact_on(
     c: &mut PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> std::result::Result<NativeContact, crate::Error> {
     let (active, bindings, last) = sqlx::query_as::<_, (i64, i64, Option<i64>)>(
-        "SELECT count(*) FILTER (WHERE r.state = 'active'), count(*), CAST(floor(EXTRACT(EPOCH FROM max(COALESCE(r.last_communication_received_at, r.first_authenticated_at, g.created_at)))) AS bigint) FROM mdm_access.certificate_grants AS g INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.certificate_grant_id) = (g.tenant_id, g.id) WHERE g.tenant_id = CAST($1 AS uuid) AND g.source = 'native' AND g.native_authority ->> 'device' = $2 AND r.channel = 'agent' AND r.purpose = 'primary'",
-    ).bind(tenant).bind(device)
+        "SELECT count(*) FILTER (WHERE r.state = 'active'), count(*), CAST(floor(EXTRACT(EPOCH FROM max(COALESCE(r.last_communication_received_at, r.first_authenticated_at, g.created_at)))) AS bigint) FROM mdm_access.certificate_grants AS g INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.certificate_grant_id) = (g.tenant_id, g.id) WHERE g.tenant_id = CAST($1 AS uuid) AND g.source = 'native' AND (g.native_authority ->> 'device')::uuid = $2 AND r.channel = 'agent' AND r.purpose = 'primary'",
+    ).bind(tenant).bind(device.into_uuid())
         .fetch_one(c).await.map_err(crate::database::db)?;
     Ok(NativeContact {
         active,
@@ -31,10 +31,10 @@ pub async fn native_contact_on(
 pub async fn cleanup_pending_on(
     c: &mut PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> std::result::Result<bool, crate::Error> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND source->>'device'=$2 AND active AND NOT cleanup_complete)")
-        .bind(tenant).bind(device)
+    sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND (source->>'device')::uuid=$2 AND active AND NOT cleanup_complete)")
+        .bind(tenant).bind(device.into_uuid())
         .fetch_one(c).await.map_err(crate::database::db)
 }
 
@@ -61,7 +61,7 @@ pub struct BootstrapObservation {
 
 #[derive(Deserialize)]
 pub struct AgentRegistration {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub state: crate::enrollment::read::RegistrationState,
 }
 
@@ -168,13 +168,13 @@ impl Service {
         c: &mut sqlx::PgConnection,
         proof: &AuthorizedPrincipal,
         grant: &Snapshot,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
     ) -> Result<Detail> {
         grant.require(proof, Permission::OperationRead, Some(device))?;
         let s = &self.transactions;
         let op = storage::load_on(c, s.tenant, &s.protection, id).await?;
-        if op.device != device {
+        if op.device != *device {
             return Err(Error::Forbidden.into());
         }
         let status: String =

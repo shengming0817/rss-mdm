@@ -398,7 +398,12 @@ pub(crate) async fn notify(
                                         .is_some();
                                     audit.identify_service("service:scep-notify");
                                     audit.target_device(
-                                        &row.try_get::<String, _>("device").map_err(db)?,
+                                        &row.try_get::<uuid::Uuid, _>("device")
+                                            .and_then(|id| {
+                                                rss_mdm_agent_wire::DeviceId::try_from(id)
+                                                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+                                            })
+                                            .map_err(db)?,
                                     );
                                     persist_leaf(c, &tenant, leaf).await?;
                                     Ok::<_, Error>(replayed)
@@ -441,7 +446,7 @@ pub async fn attempt(
     apple: &Apple,
     leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
 ) -> Result<PgRow, Error> {
-    let row=sqlx::query("SELECT state, configuration, spki, fingerprint, authorization_version, transaction_id, csr_digest, CAST(device AS text) FROM mdm_apple.scep_attempts WHERE tenant_id = CAST($1 AS uuid) AND id = CAST($2 AS uuid) AND enrollment = CAST($3 AS uuid) AND issuer = $4 FOR UPDATE")
+    let row=sqlx::query("SELECT state, configuration, spki, fingerprint, authorization_version, transaction_id, csr_digest, device FROM mdm_apple.scep_attempts WHERE tenant_id = CAST($1 AS uuid) AND id = CAST($2 AS uuid) AND enrollment = CAST($3 AS uuid) AND issuer = $4 FOR UPDATE")
         .bind(tenant).bind(leaf.attempt().to_string()).bind(leaf.enrollment().to_string()).bind(leaf.issuer().as_slice()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     if !matches!(
         row.try_get::<String, _>("state").map_err(db)?.as_str(),
@@ -464,13 +469,14 @@ pub async fn persist_leaf(
 ) -> Result<(), Error> {
     sqlx::query("UPDATE mdm_apple.scep_attempts SET fingerprint=$3,serial=$4,certificate=$5,not_before=$6,not_after=$7 WHERE tenant_id=$1::uuid AND id=$2::uuid")
         .bind(tenant).bind(leaf.attempt().to_string()).bind(leaf.fingerprint().as_slice()).bind(leaf.serial()).bind(leaf.certificate()).bind(leaf.not_before()).bind(leaf.not_after()).execute(&mut *tx).await.map_err(db)?;
-    let device: Option<String> = sqlx::query_scalar(
+    let device: Option<rss_mdm_agent_wire::DeviceId> = sqlx::query_scalar::<_, Option<Uuid>>(
         "SELECT device FROM mdm_apple.scep_attempts WHERE tenant_id = CAST($1 AS uuid) AND id = $2",
     )
     .bind(tenant)
     .bind(leaf.attempt())
     .fetch_one(&mut *tx)
     .await
+    .and_then(|id| id.map(crate::database::device_id).transpose())
     .map_err(db)?;
     let issuer = leaf
         .issuer()
@@ -482,7 +488,7 @@ pub async fn persist_leaf(
         tx,
         tenant,
         "apple",
-        device.as_deref(),
+        device.as_ref(),
         &issuer,
         leaf.certificate(),
     )
@@ -582,8 +588,8 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
         .bind_native_in(tx, proof, &credential, [Uuid::new_v4(), Uuid::new_v4()])
         .await?;
     persist_leaf(tx, &tenant, leaf).await?;
-    sqlx::query("UPDATE mdm_apple.scep_attempts SET state = 'bound', device = CAST($3 AS text) WHERE tenant_id = CAST($1 AS uuid) AND id = CAST($2 AS uuid)")
-        .bind(&tenant).bind(leaf.attempt().to_string()).bind(receipt.device.to_string()).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.scep_attempts SET state = 'bound', device = $3 WHERE tenant_id = CAST($1 AS uuid) AND id = CAST($2 AS uuid)")
+        .bind(&tenant).bind(leaf.attempt().to_string()).bind(receipt.device.into_uuid()).execute(&mut *tx).await.map_err(db)?;
     let issuer = leaf
         .issuer()
         .iter()
@@ -600,8 +606,8 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
     )
     .await
     .map_err(|_| Error::Unavailable(Failure::Database))?;
-    sqlx::query("INSERT INTO mdm_apple.devices (tenant_id, device, udid, state, access_rights) SELECT CAST($1 AS uuid), CAST($2 AS text), $3, 'pending_token', access_rights FROM mdm_apple.scep_attempts WHERE tenant_id = CAST($1 AS uuid) AND id = $4")
-        .bind(&tenant).bind(receipt.device.to_string()).bind(udid).bind(leaf.attempt()).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_apple.devices (tenant_id, device, udid, state, access_rights) SELECT CAST($1 AS uuid), $2, $3, 'pending_token', access_rights FROM mdm_apple.scep_attempts WHERE tenant_id = CAST($1 AS uuid) AND id = $4")
+        .bind(&tenant).bind(receipt.device.into_uuid()).bind(udid).bind(leaf.attempt()).execute(&mut *tx).await.map_err(db)?;
     crate::notify(tx, "apple").await.map_err(db)?;
     proof.mark_bound_in(tx).await?;
     proof.bind_audit(audit)?;
@@ -625,7 +631,7 @@ pub async fn progress_in(
 ) -> Result<ProgressEvidence, Error> {
     let attempt = if let Some(device) = &context.registration {
         let issued: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_apple.scep_attempts AS s INNER JOIN mdm_access.credentials AS k ON k.tenant_id = s.tenant_id AND k.device = s.device AND k.locator = encode(s.fingerprint, 'hex') WHERE s.tenant_id = CAST($1 AS uuid) AND s.enrollment = $2 AND s.device = $3 AND s.state = 'bound' AND s.certificate IS NOT NULL AND k.channel = 'mdm' AND k.state = 'active')")
-            .bind(&context.tenant).bind(context.enrollment).bind(&device.device)
+            .bind(&context.tenant).bind(context.enrollment).bind(device.device.into_uuid())
             .fetch_one(&mut *c).await.map_err(db)?;
         (issued, issued)
     } else {
@@ -639,7 +645,7 @@ pub async fn progress_in(
             "SELECT state FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2",
         )
         .bind(&context.tenant)
-        .bind(&device.device)
+        .bind(device.device.into_uuid())
         .fetch_optional(c)
         .await
         .map_err(db)?

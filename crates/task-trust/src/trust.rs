@@ -336,7 +336,7 @@ pub(crate) async fn acknowledge(
     input: &Acknowledgement,
 ) -> Result<(), Error> {
     input.validate().map_err(|_| Error::Malformed)?;
-    if input.device_id != p.device() {
+    if input.device_id != *p.device() {
         return Err(Error::Forbidden);
     }
     rss_mdm_registration_service::device::require_use_in(c, p, usage).await?;
@@ -354,7 +354,7 @@ pub(crate) async fn acknowledge(
     sqlx::query(crate::storage_profile::sql(profile, usage).trust_acknowledge_3)
         .bind(p.tenant().to_string())
         .bind(input.operation)
-        .bind(p.device())
+        .bind(p.device().into_uuid())
         .bind(input.revision as i64)
         .bind(&input.digest)
         .execute(&mut *c)
@@ -364,7 +364,7 @@ pub(crate) async fn acknowledge(
         sqlx::query_scalar(crate::storage_profile::sql(profile, usage).trust_acknowledge_4)
             .bind(p.tenant().to_string())
             .bind(input.operation)
-            .bind(p.device())
+            .bind(p.device().into_uuid())
             .bind(input.revision as i64)
             .bind(&input.digest)
             .fetch_one(c)
@@ -414,7 +414,7 @@ async fn require_installed_key(
     let installed: bool =
         sqlx::query_scalar(crate::storage_profile::sql(profile, usage).trust_require_issue_1)
             .bind(p.tenant().to_string())
-            .bind(p.device())
+            .bind(p.device().into_uuid())
             .bind(key_id)
             .bind(verification)
             .fetch_one(c)
@@ -618,7 +618,10 @@ pub(crate) async fn retire(
         }
         let consumers =
             rss_mdm_registration_service::device::consumers_in(profile, c, tenant, usage).await?;
-        let ids = consumers;
+        let ids = consumers
+            .into_iter()
+            .map(|id| id.into_uuid())
+            .collect::<Vec<_>>();
         let missing: bool =
             sqlx::query_scalar(crate::storage_profile::sql(profile, usage).trust_retire_1)
                 .bind(tenant.to_string())

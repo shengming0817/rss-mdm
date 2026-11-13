@@ -125,12 +125,13 @@ pub async fn recover_one(
     use sqlx::Row;
     service.transactions.validate_in(tx)?;
     let tenant = tx.tenant_id().to_string();
-    let (device,channel): (String,String)=tx.with_connection(move|c|Box::pin(async move {
+    let (device,channel): (Uuid,String)=tx.with_connection(move|c|Box::pin(async move {
         sqlx::query_as("SELECT device,channel FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await
     })).await?;
+    let device = crate::database::device_id(device)?;
     if channel == "agent" {
         let tenant = tx.tenant_id().to_string();
-        let device = device.clone();
+
         tx.with_connection(move |c| {
             Box::pin(async move {
                 Ok(
@@ -193,11 +194,11 @@ pub async fn recover_one(
                     tenant_id: crate::transaction::stored(Uuid::parse_str(
                         &tx.tenant_id().to_string(),
                     ))?,
-                    device_id: run.target.device.clone(),
+                    device_id: run.target.device,
                     data: EventData::Policy {
                         run_id: run.id,
                         policy_version: run.policy_version,
-                        device_id: run.target.device.to_string(),
+                        device_id: run.target.device,
 
                         status: status.into(),
                     },

@@ -93,8 +93,8 @@ pub(super) async fn bound_account(
 
 /// Recovery locates the prior enrollment, but re-authorizes the same person against current configuration.
 pub(super) async fn recovery(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<PgRow, Error> {
-    let device:String=sqlx::query_scalar("SELECT g.device FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND q.authority_kind='apple_account'")
-        .bind(tenant).bind(id).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    let device: rss_mdm_agent_wire::DeviceId=sqlx::query_scalar("SELECT g.device FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND q.authority_kind='apple_account'")
+        .bind(tenant).bind(id).fetch_optional(&mut *c).await.and_then(|id|id.map(crate::database::device_id).transpose()).map_err(db)?.ok_or(Error::Unauthorized)?;
     crate::device::store::lock_channel(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,

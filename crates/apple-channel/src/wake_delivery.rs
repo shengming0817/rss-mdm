@@ -61,13 +61,12 @@ impl Delivery {
                         .await
                         .map_err(storage)??;
                     s.business
-                        .prepare_wake(tx, rows.iter().map(|r| r.device.clone()).collect(), audit)
+                        .prepare_wake(tx, rows.iter().map(|r| r.device).collect(), audit)
                         .await?;
                     let mut prepared = Vec::new();
                     for row in rows {
                         let needed = matches!(&row.disposition, PushDisposition::Ready { .. })
-                            && s.wake_pending(tx, row.device.clone(), &row.user_key)
-                                .await?;
+                            && s.wake_pending(tx, row.device, &row.user_key).await?;
                         prepared.push((row, needed));
                     }
                     for (row, needed) in prepared {
@@ -105,7 +104,7 @@ impl Delivery {
                             continue;
                         }
                         let id = Uuid::new_v4();
-                        let value = device.clone();
+                        let value = device;
                         tx.with_connection(move |c| {
                             Box::pin(async move {
                                 Ok(facts
@@ -132,7 +131,7 @@ impl Delivery {
                             .await?;
                         return Ok(Some(Wake {
                             id,
-                            device: device.to_string(),
+                            device: device.to_owned(),
                             revision: row.revision,
                             user_key: row.user_key,
                             token,
@@ -154,11 +153,11 @@ impl Delivery {
     async fn wake_pending(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
 
         user: &str,
     ) -> Result<bool, Error> {
-        let value = device.clone();
+        let value = device;
         if user.is_empty() {
             let facts = self.facts.clone();
             let business = self.business.clone();
@@ -179,10 +178,7 @@ impl Delivery {
         }
         let mut after = Uuid::nil();
         loop {
-            let page = self
-                .business
-                .wake_commands(tx, device.clone(), after)
-                .await?;
+            let page = self.business.wake_commands(tx, device, after).await?;
             for (id, target) in page.commands {
                 if target == user {
                     return Ok(true);

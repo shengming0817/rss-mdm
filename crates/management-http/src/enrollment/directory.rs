@@ -117,7 +117,7 @@ async fn detail(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
 ) -> Result<Json<DeviceDetail>, Error> {
     audit.set_action(
         "management_read",
@@ -145,7 +145,7 @@ pub trait DeviceReads: Send + Sync {
     fn detail<'a>(
         &'a self,
         proof: &'a rss_mdm_authorization_service::context::RequestAuth,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> crate::execution::task_reads::Pending<'a, DeviceDetail>;
 }
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]

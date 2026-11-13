@@ -4,7 +4,7 @@ use uuid::Uuid;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Target {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
 }
 pub struct AgentRun {
     pub id: Uuid,

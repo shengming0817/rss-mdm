@@ -130,7 +130,7 @@ impl<C, F> Input<C, F> {
 pub struct FactReference {
     pub source: String,
     pub dataset: Option<String>,
-    pub device_id: Option<String>,
+    pub device_id: Option<rss_mdm_agent_wire::DeviceId>,
     pub epoch: Option<String>,
     pub snapshot_id: String,
     pub observed_at: i64,
@@ -141,7 +141,7 @@ pub struct FactReference {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceReference {
     pub source: String,
-    pub device_id: String,
+    pub device_id: rss_mdm_agent_wire::DeviceId,
     pub epoch: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]

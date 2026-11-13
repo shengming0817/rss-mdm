@@ -25,7 +25,7 @@ fn valid<T, E>(value: Result<T, E>) -> Result<T, CommandAuthorityError> {
 pub async fn resolve_in(
     store: &rss_device_command_postgres::PgStore<()>,
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<CommandAuthority, CommandAuthorityError> {
     let tenant = tx.tenant_id();
     let name = device.to_owned();
@@ -44,7 +44,7 @@ pub async fn resolve_in(
     let name = device.to_owned();
     let active: bool = tx.with_connection(move |c| Box::pin(async move {
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2 AND channel='mdm' AND state='active')")
-            .bind(tenant.to_string()).bind(name).fetch_one(c).await
+            .bind(tenant.to_string()).bind(name.into_uuid()).fetch_one(c).await
     })).await?;
     if !active {
         return Err(CommandAuthorityError::Conflict);
@@ -52,7 +52,7 @@ pub async fn resolve_in(
     let name = device.to_owned();
     let row = tx.with_connection(move |c| Box::pin(async move {
         sqlx::query("SELECT command_device::text,generation,epoch FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE")
-            .bind(tenant.to_string()).bind(name).fetch_optional(c).await
+            .bind(tenant.to_string()).bind(name.into_uuid()).fetch_optional(c).await
     })).await?;
     if let Some(row) = row {
         return Ok(CommandAuthority {
@@ -77,7 +77,7 @@ pub async fn resolve_in(
     let name = device.to_owned();
     tx.with_connection(move |c| Box::pin(async move {
         sqlx::query("INSERT INTO mdm_access.command_authorities(tenant_id,device,command_device,generation,epoch) VALUES($1::uuid,$2,$3,1,1)")
-            .bind(tenant.to_string()).bind(name).bind(command_device).execute(c).await?;
+            .bind(tenant.to_string()).bind(name.into_uuid()).bind(command_device).execute(c).await?;
         Ok(())
     })).await?;
     store.initialize(tx, scope, coordinate).await?;
@@ -87,5 +87,5 @@ pub async fn resolve_in(
 #[derive(Clone)]
 pub struct CommandBinding {
     pub operation: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
 }

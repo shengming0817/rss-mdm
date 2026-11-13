@@ -60,3 +60,8 @@ pub(crate) fn db(e: sqlx::Error) -> Error {
         Error::Unavailable(Failure::Database)
     }
 }
+
+/// Product registration identities are independent of Apple protocol identifiers.
+pub(crate) fn device_id(id: uuid::Uuid) -> Result<rss_mdm_agent_wire::DeviceId, sqlx::Error> {
+    rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+}

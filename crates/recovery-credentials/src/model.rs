@@ -186,14 +186,11 @@ impl Subject {
 #[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Binding {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub subject: Subject,
 }
 impl Binding {
     pub fn validate(&self) -> Result<(), Error> {
-        if self.device.is_empty() || self.device.len() > 256 {
-            return Err(Error::Malformed);
-        }
         self.subject.validate()
     }
 }

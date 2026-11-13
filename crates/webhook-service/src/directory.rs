@@ -15,7 +15,7 @@ static SUBSCRIPTION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindin
         Bindings::new(
             &SUBSCRIPTIONS,
             &[
-                Source::column("id", "(row->>'id') COLLATE \"C\""),
+                Source::column("id", "(row->>'id')::uuid"),
                 Source::column("revision", "(row->>'revision')::bigint"),
                 Source::column("targetVersion", "(row->>'targetVersion')::bigint"),
                 Source::column("enabled", "(row->>'enabled')::boolean"),
@@ -62,7 +62,7 @@ pub async fn deliveries(
     t: Uuid,
     q: &Query,
     after: Option<&Position>,
-    allowed: &[(EventType, Option<Vec<String>>)],
+    allowed: &[(EventType, Option<Vec<rss_mdm_agent_wire::DeviceId>>)],
     only: Option<Uuid>,
 ) -> Result<Vec<Value>, Error> {
     q.require_schema(&DELIVERIES).map_err(query_error)?;
@@ -82,8 +82,8 @@ pub async fn deliveries(
                 .to_owned(),
         );
         if let Some(devices) = devices {
-            sql.push(" AND e.document->>'deviceId'=ANY(")
-                .push_bind(devices.clone())
+            sql.push(" AND (e.document->>'deviceId')::uuid=ANY(")
+                .push_bind(devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>())
                 .push(")");
         }
         sql.push(")");

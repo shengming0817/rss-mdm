@@ -79,7 +79,7 @@ impl Peer {
 }
 struct State {
     peers: BTreeMap<IpAddr, Peer>,
-    devices: BTreeMap<(uuid::Uuid, String), Peer>,
+    devices: BTreeMap<(uuid::Uuid, rss_mdm_agent_wire::DeviceId), Peer>,
     requests: Bucket,
 }
 pub(crate) struct Admission {

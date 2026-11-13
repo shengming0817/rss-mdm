@@ -47,7 +47,7 @@ impl EnrollmentPolicy {
         &self,
         service: &Transactions,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> Result<Option<i64>> {
         let profile = service.profile();
@@ -131,7 +131,7 @@ impl EnrollmentPolicy {
             }
             let source = service.source.clone();
             let tenant = tx.tenant_id();
-            let device = run.target.device.clone();
+            let device = run.target.device;
             let evidence = run.source_objects.clone();
             if !tx
                 .with_connection(move |c| {
@@ -175,7 +175,7 @@ impl EnrollmentPolicy {
         let profile = service.profile();
 
         let (platform, architecture) =
-            agent_facts::profile_in(profile, service, tx, run.target.device.clone())
+            agent_facts::profile_in(profile, service, tx, run.target.device)
                 .await?
                 .ok_or(Error::Forbidden)?;
         let entry = self
@@ -195,7 +195,7 @@ impl EnrollmentPolicy {
             wire::EnrollmentTaskSpec {
                 wire_version: wire::WIRE_VERSION,
                 tenant_id: checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
-                device_id: run.target.device.clone(),
+                device_id: run.target.device,
                 platform: match platform {
                     rss_mdm_policy::Platform::Windows => wire::TaskPlatform::Windows,
                     rss_mdm_policy::Platform::Macos => wire::TaskPlatform::Macos,
@@ -229,7 +229,7 @@ pub async fn admission_in(
     tx: &mut PgTransaction<'_>,
     scope: Uuid,
     channel: Channel,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<scope::ScopeAdmission> {
     let source = source.clone();
     let tenant = tx.tenant_id();

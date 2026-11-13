@@ -70,7 +70,7 @@ pub async fn preview(
         let authority=authorization.query_binding(proof)?;let scope=input.definition.scope;let definition=json!([input.definition,input.scope_result]);let limit=query.limit();
         let coordinate=s.source.query_coordinate_on(c,s.tenant,scope).await?;
         let binding=rss_mdm_query::cursor::fingerprint(&(rss_mdm_policy::pages::PREVIEW_SCHEMA.id,proof.tenant_id(),proof.instance_id(),proof.principal_id(),authority,scope,definition,coordinate)).map_err(|_|Error::Malformed)?;
-        let after: Option<String>=query.cursor().as_ref().map(|v|codec.decode(&rss_contract::PageCursor::parse(v).map_err(|_|Error::Malformed)?,&binding).map_err(|_|Error::Conflict)).transpose()?;
+        let after: Option<rss_mdm_agent_wire::ObjectRef>=query.cursor().as_ref().map(|v|codec.decode(&rss_contract::PageCursor::parse(v).map_err(|_|Error::Malformed)?,&binding).map_err(|_|Error::Conflict)).transpose()?;
         let prepared = &prepared.inputs;
         let software = if let PreviewInputs::Software(action) = prepared {
             let Action::Software { rollout, .. } = &input.definition.action else { return Err(Error::Malformed.into()); };
@@ -78,12 +78,12 @@ pub async fn preview(
         } else { None };
         let onboarding = if let PreviewInputs::Onboarding(frozen) = prepared { Some(frozen) } else { None };
         authorization.require_all_devices(proof,Permission::InventoryRead)?;
-        let source=s.source.clone();let tenant=s.tenant;let scope=input.definition.scope;let after=after.clone();let channel=crate::deployment::sources::candidates::action_channel(&input.definition.action)?;
-        let mut objects=source.assignment_objects_on(c,tenant,scope,channel,after.as_deref(),limit).await?;
+        let source=s.source.clone();let tenant=s.tenant;let scope=input.definition.scope;let channel=crate::deployment::sources::candidates::action_channel(&input.definition.action)?;
+        let mut objects=source.assignment_objects_on(c,tenant,scope,channel,after,limit).await?;
         let source=s.source.clone();let tenant=s.tenant;
         let result=source.preview_scope_on(c,tenant,scope,channel,None).await?.result;
         if input.scope_result.is_some_and(|v|v!=result){return Err(Error::Conflict.into());}
-        let more=objects.len()>limit;objects.truncate(limit);let next=if more{objects.last().map(|o|o.object.key())}else{None};let mut items=Vec::new();
+        let more=objects.len()>limit;objects.truncate(limit);let next=if more{objects.last().map(|o|o.object)}else{None};let mut items=Vec::new();
         for mut object in objects {
             let task_admission=if let Some(target)=&object.target {
                 let device=&target.device;

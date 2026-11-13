@@ -37,7 +37,7 @@ pub trait AccountAuthority: Send + Sync {
 pub struct Coordinates {
     pub tenant: String,
     pub id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub actor: String,
     pub instance: String,
     pub version: i64,
@@ -242,7 +242,11 @@ impl Admission {
             || row.try_get::<String, _>("actor").map_err(db)? != d.actor
             || row.try_get::<String, _>("instance").map_err(db)? != d.instance
             || uuid(&row, "issuance_operation")? != d.operation
-            || row.try_get::<String, _>("device").map_err(db)? != d.device
+            || row
+                .try_get::<uuid::Uuid, _>("device")
+                .and_then(crate::database::device_id)
+                .map_err(db)?
+                != d.device
             || row.try_get::<String, _>("source").map_err(db)? != d.source.as_str()
         {
             return Err(Error::Unauthorized);
@@ -323,7 +327,10 @@ pub async fn account(
     let data = Coordinates {
         tenant,
         id,
-        device: row.try_get("device").map_err(db)?,
+        device: row
+            .try_get::<uuid::Uuid, _>("device")
+            .and_then(crate::database::device_id)
+            .map_err(db)?,
         actor: row.try_get("actor").map_err(db)?,
         instance: row.try_get("instance").map_err(db)?,
         version: row.try_get("account_version").map_err(db)?,
@@ -362,27 +369,27 @@ pub async fn account(
 pub fn challenge_digest(tenant: &str, id: Uuid, challenge: &str) -> String {
     digest(&("apple.account.scep/v1", tenant, id, challenge))
 }
-/// Acquire lifecycle serialization before the Apple owner takes flow/configuration locks.
+/// Serialize account issuance before the Apple owner takes flow/configuration locks.
 pub async fn lock_account_issuance(
     c: &mut PgConnection,
     proof: &AuthorizedPrincipal,
     id: Uuid,
 ) -> Result<(), Error> {
     proof.check_live()?;
-    let device = format!(
-        "self:{}:{}:{}",
+    let key = serde_json::to_string(&(
+        "apple.account.issuance",
+        proof.tenant_id(),
         proof.instance_id(),
         proof.principal_id(),
-        id
-    );
-    crate::device::store::lock_channel(
-        rss_mdm_install_support::StorageProfile::Mdm,
-        c,
-        proof.tenant_id(),
-        &device,
-        rss_mdm_inventory::Channel::Mdm,
-    )
-    .await
+        id,
+    ))
+    .map_err(|_| Error::Malformed)?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2348))")
+        .bind(key)
+        .execute(c)
+        .await
+        .map_err(db)?;
+    Ok(())
 }
 /// The product organization authority and Identity jointly authorize account issuance.
 #[allow(
@@ -450,7 +457,10 @@ pub async fn issue_in(
             return Err(Error::Unauthorized);
         }
         state = row.try_get::<String, _>("state").map_err(db)?;
-        device = row.try_get::<String, _>("device").map_err(db)?;
+        device = row
+            .try_get::<uuid::Uuid, _>("device")
+            .and_then(crate::database::device_id)
+            .map_err(db)?;
         if state == "cancelled" {
             return Err(Error::Unauthorized);
         }
@@ -477,14 +487,14 @@ pub async fn issue_in(
             crate::quotas::Channel::MacosMdm,
         )
         .await?;
-        device = Uuid::new_v4().to_string();
+        device = rss_mdm_agent_wire::DeviceId::new_v4();
         state = "pending".into();
         proof.new_self_enrollment()?.check()?;
         let grant = Uuid::new_v4();
         sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) SELECT $1::uuid,$2,$3,$4,$5,'enrollment','consumed',now,now+interval '300 seconds' FROM (SELECT clock_timestamp() AS now) t")
-            .bind(proof.tenant_id()).bind(grant).bind(proof.principal_id()).bind(proof.instance_id()).bind(&device).execute(&mut *c).await.map_err(db)?;
+            .bind(proof.tenant_id()).bind(grant).bind(proof.principal_id()).bind(proof.instance_id()).bind(device.into_uuid()).execute(&mut *c).await.map_err(db)?;
         sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,grant_id,state,source,device,issuance_operation,expires_at,self_service,account_version,account_reference,account_challenge) VALUES($1::uuid,$2,'apple_account',$3,'pending','mdm.apple',$7,$4,clock_timestamp()+interval '300 seconds',true,1,$5,$6)")
-            .bind(proof.tenant_id()).bind(id).bind(grant).bind(operation).bind(serde_json::to_value(&reference).map_err(|_|Error::Corrupt)?).bind(&hash).bind(&device).execute(&mut *c).await.map_err(db)?;
+            .bind(proof.tenant_id()).bind(id).bind(grant).bind(operation).bind(serde_json::to_value(&reference).map_err(|_|Error::Corrupt)?).bind(&hash).bind(device.into_uuid()).execute(&mut *c).await.map_err(db)?;
         crate::device::registration_user::initialize_on(
             rss_mdm_install_support::StorageProfile::Mdm,
             c,
@@ -540,7 +550,7 @@ pub async fn issue_organization_in(
         crate::quotas::Channel::MacosMdm,
     )
     .await?;
-    let device = Uuid::new_v4().to_string();
+    let device = rss_mdm_agent_wire::DeviceId::new_v4();
     crate::device::store::lock_channel(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
@@ -554,9 +564,9 @@ pub async fn issue_organization_in(
         .await?;
     let grant = Uuid::new_v4();
     sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) SELECT $1::uuid,$2,'service:apple-ade','service',$3,'enrollment','consumed',now,now+interval '300 seconds' FROM (SELECT clock_timestamp() AS now) t")
-        .bind(tenant).bind(grant).bind(&device).execute(&mut *c).await.map_err(db)?;
+        .bind(tenant).bind(grant).bind(device.into_uuid()).execute(&mut *c).await.map_err(db)?;
     sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,grant_id,state,source,device,issuance_operation,expires_at,self_service,organization_version,organization_challenge) VALUES($1::uuid,$2,'apple_ade',$3,'pending','mdm.apple',$5,$2,clock_timestamp()+interval '300 seconds',false,1,$4)")
-        .bind(tenant).bind(id).bind(grant).bind(organization_challenge(tenant,id,challenge)).bind(&device).execute(c).await.map_err(db)?;
+        .bind(tenant).bind(id).bind(grant).bind(organization_challenge(tenant,id,challenge)).bind(device.into_uuid()).execute(c).await.map_err(db)?;
     Ok(Admission {
         data: Coordinates {
             tenant: tenant.into(),
@@ -605,7 +615,10 @@ pub async fn organization(
     let data = Coordinates {
         tenant: tenant.into(),
         id,
-        device: row.try_get("device").map_err(db)?,
+        device: row
+            .try_get::<uuid::Uuid, _>("device")
+            .and_then(crate::database::device_id)
+            .map_err(db)?,
         actor: row.try_get("actor").map_err(db)?,
         instance: row.try_get("instance").map_err(db)?,
         version: row.try_get("organization_version").map_err(db)?,
@@ -650,7 +663,9 @@ pub async fn entra_in(
         {
             return Err(Error::Conflict);
         }
-        row.try_get::<String, _>("device").map_err(db)?
+        row.try_get::<uuid::Uuid, _>("device")
+            .and_then(crate::database::device_id)
+            .map_err(db)?
     } else {
         crate::admission::require_new_in(
             rss_mdm_install_support::StorageProfile::Mdm,
@@ -659,12 +674,12 @@ pub async fn entra_in(
             crate::quotas::Channel::WindowsMdm,
         )
         .await?;
-        let device = Uuid::new_v4().to_string();
+        let device = rss_mdm_agent_wire::DeviceId::new_v4();
         let grant = Uuid::new_v4();
         sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) SELECT $1::uuid,$2,$3,$4,$5,'enrollment','consumed',now,now+interval '300 seconds' FROM (SELECT clock_timestamp() AS now) t")
-            .bind(&tenant).bind(grant).bind(&actor).bind(&instance).bind(&device).execute(&mut *c).await.map_err(db)?;
+            .bind(&tenant).bind(grant).bind(&actor).bind(&instance).bind(device.into_uuid()).execute(&mut *c).await.map_err(db)?;
         sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,grant_id,state,source,device,issuance_operation,expires_at,self_service,organization_version,windows_profile) VALUES($1::uuid,$2,'windows_entra',$3,'pending','mdm.windows',$4,$2,clock_timestamp()+interval '300 seconds',false,$5,$6)")
-            .bind(&tenant).bind(id).bind(grant).bind(&device).bind(policy_version).bind(profile.as_str()).execute(&mut *c).await.map_err(db)?;
+            .bind(&tenant).bind(id).bind(grant).bind(device.into_uuid()).bind(policy_version).bind(profile.as_str()).execute(&mut *c).await.map_err(db)?;
         crate::device::registration_user::initialize_on(
             rss_mdm_install_support::StorageProfile::Mdm,
             c,
@@ -736,10 +751,13 @@ pub async fn agent_policy(
     if row.try_get::<String, _>("authority_kind").map_err(db)? != "agent_policy" {
         return Err(Error::Unauthorized);
     }
-    let device: String = row.try_get("device").map_err(db)?;
+    let device: rss_mdm_agent_wire::DeviceId = row
+        .try_get::<uuid::Uuid, _>("device")
+        .and_then(crate::database::device_id)
+        .map_err(db)?;
     if let Some(secret) = secret {
         let password = super::Password::new(secret.to_owned())?;
-        if password.digest(tenant, &device)?
+        if password.digest(tenant, device.into_uuid())?
             != row.try_get::<String, _>("password_digest").map_err(db)?
         {
             return Err(Error::Unauthorized);

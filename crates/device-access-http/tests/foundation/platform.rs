@@ -86,7 +86,7 @@ async fn post(
 async fn register(
     peer: &reqwest::Client,
     base: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     kind: wire::Kind,
     binding: Option<&pg::device_access::Binding>,
     key: &Key,
@@ -315,8 +315,8 @@ pub async fn verify(
     let (actor, secret) = Box::pin(business::login(c, principal))
         .await
         .context("platform proof cookie login")?;
-    let old: Value = sqlx::query_scalar("SELECT definition FROM rss_da.policies WHERE tenant_id=$1::uuid AND definition#>>'{target,device}'=$2")
-        .bind(c.tenant.to_string()).bind(&registration.device).fetch_one(&c.operator).await?;
+    let old: Value = sqlx::query_scalar("SELECT definition FROM rss_da.policies WHERE tenant_id=$1::uuid AND (definition#>>'{target,device}')::uuid=$2")
+        .bind(c.tenant.to_string()).bind(registration.device.into_uuid()).fetch_one(&c.operator).await?;
     let mut publication: rss_mdm_policy_postgres::device_access::Publication =
         serde_json::from_value(old)?;
     let expected_revision = publication.revision;
@@ -424,7 +424,7 @@ pub async fn verify(
     let mut observation = Observation {
         tenant: Uuid::parse_str(&c.tenant.to_string())?,
         installation: registration.service_id,
-        device: registration.device.clone(),
+        device: registration.device,
 
         authority: business::authority_id(),
         sequence: 10,

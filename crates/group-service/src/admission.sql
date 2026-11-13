@@ -2,7 +2,7 @@ WITH expected(name,updates,deletable,keys) AS (VALUES
  ('group_fields',ARRAY[]::text[],true,ARRAY['tenant_id','group_id','field']),
  ('group_operations',ARRAY[]::text[],false,ARRAY['tenant_id','actor','id']),
  ('group_selections',ARRAY[]::text[],false,ARRAY['tenant_id','group_id','rule_version']),
- ('group_tasks',ARRAY['completed','cursor','replacement_task','failure'],false,ARRAY['tenant_id','id']),
+ ('group_tasks',ARRAY['completed','cursor','definition_progress','replacement_task','failure'],false,ARRAY['tenant_id','id']),
  ('group_evaluations',ARRAY['binding'],true,ARRAY['tenant_id','task']),
  ('group_evaluation_arrays',ARRAY['state'],true,ARRAY['tenant_id','task','version']),
  ('group_dispatch',ARRAY['input_failed','from_cut','to_cut','event_after','page_through','cursor','relation_revision','relation_cursor','relation_pending_revision'],false,ARRAY['tenant_id'])

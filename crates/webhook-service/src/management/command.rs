@@ -15,7 +15,7 @@ pub enum Command {
     Test {
         subscription: Uuid,
         operation: Uuid,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
     },
     Deliveries(crate::directory::DeliveryInput),
     Delivery(Uuid),

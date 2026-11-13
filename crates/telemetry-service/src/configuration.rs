@@ -160,7 +160,7 @@ async fn configuration_on(
         service.agent_facts.as_ref(),
         c,
         service.tenant,
-        principal.device().to_string(),
+        *principal.device(),
         &frozen,
     )
     .await?;
@@ -218,7 +218,7 @@ async fn configuration_on(
     Ok(TelemetryConfiguration {
         resource_digest: frozen.resource_digest,
         tenant_id: Uuid::parse_str(&principal.tenant().to_string()).map_err(|_| Error::Storage)?,
-        device_id: principal.device().into(),
+        device_id: *principal.device(),
 
         source_epoch: epoch,
         issued_at: now,
@@ -382,8 +382,7 @@ async fn directory_on(
             Err(error) => return Err(error),
         }
         let Some(supported) =
-            crate::configurations::supported_on(service, c, principal.device().to_string(), frozen)
-                .await?
+            crate::configurations::supported_on(service, c, *principal.device(), frozen).await?
         else {
             continue;
         };

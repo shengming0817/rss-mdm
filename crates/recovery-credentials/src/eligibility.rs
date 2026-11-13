@@ -74,7 +74,7 @@ impl<'a> Custody<'a> {
 /// A host adapter constructs this at the same borrowed transaction boundary.
 pub struct Unbound {
     pub tenant: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub binding: Uuid,
     pub generation: i64,
 }

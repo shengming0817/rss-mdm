@@ -70,7 +70,7 @@ impl Timeline {
                 )
                 .await
                 .map_err(registration_error)?;
-                let context:Option<serde_json::Value>=sqlx::query_scalar("SELECT execution_context FROM mdm_agent.bindings WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(self.tenant.to_string()).bind(p.device()).fetch_optional(&mut *c).await?;
+                let context:Option<serde_json::Value>=sqlx::query_scalar("SELECT execution_context FROM mdm_agent.bindings WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(self.tenant.to_string()).bind(p.device().into_uuid()).fetch_optional(&mut *c).await?;
                 let os = context
                     .as_ref()
                     .and_then(|v| v.get("interactiveUser"))
@@ -116,7 +116,7 @@ impl Timeline {
                         personal
                     ]),
                     Some(Member {
-                        device: p.device().into(),
+                        device: *p.device(),
                     }),
                 )
             }
@@ -127,9 +127,7 @@ impl Timeline {
                 let members = object
                     .members
                     .iter()
-                    .map(|m| Member {
-                        device: m.device.clone(),
-                    })
+                    .map(|m| Member { device: m.device })
                     .collect::<Vec<_>>();
                 if let Some(anchor) = &anchor
                     && !members.contains(anchor)
@@ -149,9 +147,7 @@ impl Timeline {
                 let members = if let Some(anchor) = anchor {
                     vec![anchor]
                 } else {
-                    vec![Member {
-                        device: device.clone(),
-                    }]
+                    vec![Member { device }]
                 };
                 (members, serde_json::Value::Null)
             }
@@ -171,7 +167,7 @@ impl Timeline {
                     .is_ok()
             });
         }
-        members.sort_by(|a, b| a.device.cmp(&b.device));
+        members.sort_by_key(|a| a.device);
         members.dedup();
         let binding = rss_mdm_query::cursor::fingerprint(&(
             self.tenant.to_string(),

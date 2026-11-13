@@ -2,8 +2,9 @@
 use std::{future::Future, pin::Pin};
 use uuid::Uuid;
 
+use rss_mdm_agent_wire::ObjectRef;
 pub use rss_mdm_inventory::Channel;
-pub use rss_mdm_inventory_service::objects::{DeviceObject, ObjectRef};
+pub use rss_mdm_inventory_service::objects::DeviceObject;
 
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, SourceError>> + Send + 'a>>;
 
@@ -22,7 +23,7 @@ pub struct ScopeResult {
 }
 pub struct RolloutPage {
     pub targets: Vec<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
-    pub after: Option<String>,
+    pub after: Option<rss_mdm_agent_wire::DeviceId>,
     pub has_more: bool,
     pub scanned: u64,
 }
@@ -30,7 +31,7 @@ pub struct RolloutPage {
 #[derive(Clone, Debug)]
 pub struct ScopePreview {
     pub result: Uuid,
-    pub devices: Vec<String>,
+    pub devices: Vec<rss_mdm_agent_wire::DeviceId>,
 }
 #[derive(Debug, thiserror::Error)]
 pub enum SourceError {
@@ -73,7 +74,7 @@ pub enum Availability {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceAssignment {
-    pub cursor: String,
+    pub cursor: rss_mdm_agent_wire::ObjectRef,
     pub object: DeviceObject,
     pub admission: ScopeAdmission,
     pub scope_result: Uuid,

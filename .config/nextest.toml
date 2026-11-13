@@ -6,3 +6,9 @@ slow-timeout = { period = "180s", terminate-after = 1 }
 
 [profile.t2.junit]
 path = "foundation.xml"
+
+# This proof samples database-wide pg_stat counters; concurrent tests contaminate its idle baseline.
+# ref: nextest site/src/docs/configuration/threads-required.md
+[[profile.t2.overrides]]
+filter = 'test(=assembly::owner_boundaries_t2::asset_inputs::actual_workers_recover_events_and_preserve_entry_without_idle_input_polling)'
+threads-required = "num-test-threads"

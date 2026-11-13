@@ -160,12 +160,20 @@ impl Groups {
                 })).await?;
                 if !catalog_changed {
                     let tenant = self.tenant.to_string();
-                    let changed:Vec<String>=tx.with_connection(move|c|Box::pin(async move {
-                        sqlx::query_scalar("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT DISTINCT (a.identity->>'device') COLLATE \"C\" AS device FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM asset_cut_2),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM asset_cut_3),false) AND (a.kind IN('device','source','credential') OR EXISTS(SELECT FROM mdm_assets.group_fields f WHERE f.tenant_id=a.tenant_id AND f.group_id=$4 AND f.field=ANY(a.fields))) ORDER BY device LIMIT 1001")
+                    let changed:Vec<Uuid>=tx.with_connection(move|c|Box::pin(async move {
+                        sqlx::query_scalar("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT DISTINCT (a.identity->>'device')::uuid AS device FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM asset_cut_2),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM asset_cut_3),false) AND (a.kind IN('device','source','credential') OR EXISTS(SELECT FROM mdm_assets.group_fields f WHERE f.tenant_id=a.tenant_id AND f.group_id=$4 AND f.field=ANY(a.fields))) ORDER BY device LIMIT 1001")
                             .bind(tenant).bind(before).bind(after).bind(id).fetch_all(c).await
                     })).await?;
                     if changed.len() <= 1000 {
-                        changed_objects = Some(changed);
+                        changed_objects = Some(
+                            changed
+                                .into_iter()
+                                .map(|id| {
+                                    stored(rss_mdm_agent_wire::DeviceId::try_from(id))
+                                        .map(rss_mdm_agent_wire::ObjectRef::Endpoint)
+                                })
+                                .collect::<Result<Vec<_>>>()?,
+                        );
                     }
                 }
             }
@@ -289,8 +297,18 @@ impl Groups {
         )?;
         if let Some(selector) = current.system_selector {
             let tenant = self.tenant.to_string();
-            let after = build.cursor.clone();
-            let selected = build.request.changed_objects.clone();
+            let after = build.cursor.map(crate::input::endpoint).transpose()?;
+            let selected = build
+                .request
+                .changed_objects
+                .clone()
+                .map(|objects| {
+                    objects
+                        .into_iter()
+                        .map(crate::input::endpoint)
+                        .collect::<Result<Vec<_>>>()
+                })
+                .transpose()?;
             let rows = tx
                 .with_connection_context(&mut (asset_cut,), move |(asset_cut,), c| {
                     Box::pin(async move {
@@ -337,7 +355,7 @@ impl Groups {
                         g::DecisionValue::NoMatch
                     };
                     g::DecisionRecord {
-                        device: row.device.clone(),
+                        object: rss_mdm_agent_wire::ObjectRef::Endpoint(row.device),
                         origin: g::DecisionOrigin::System,
                         decision: if matches!(
                             decision,
@@ -359,7 +377,7 @@ impl Groups {
             if !decisions.is_empty() {
                 group_checked(
                     self.groups
-                        .append_system_page_in(tx, operation, build.cursor.as_deref(), &decisions)
+                        .append_system_page_in(tx, operation, build.cursor.as_ref(), &decisions)
                         .await?,
                 )?;
             }
@@ -389,7 +407,7 @@ impl Groups {
             let after = build
                 .cursor
                 .as_ref()
-                .map(|s| stored(rss_mdm_group::ObjectKey::new(self.tenant, s)))
+                .map(|s| stored(rss_mdm_group::ObjectKey::new(self.tenant, *s)))
                 .transpose()?;
             let mut limit = if snapshot.is_some() { 250 } else { 1000 };
             loop {
@@ -402,7 +420,7 @@ impl Groups {
                             snapshot: snapshot.as_ref(),
                             condition: &condition,
                             rule: &rule,
-                            after: build.cursor.clone(),
+                            after: build.cursor,
                             limit,
                             selected: build.request.changed_objects.clone(),
                             progress,
@@ -495,7 +513,7 @@ impl Groups {
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         job: &TaskInput,
-        cursor: Option<String>,
+        cursor: Option<Uuid>,
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<()> {
         let TaskInput::Calculation {
@@ -682,28 +700,24 @@ impl Groups {
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         group: Uuid,
-        after: Option<String>,
+        after: Option<Uuid>,
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<()> {
         let tenant = self.tenant.to_string();
-        let rows:Vec<String>=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT key FROM (SELECT 'group:'||g.id::text AS key FROM mdm_group.groups g JOIN mdm_group.rules s ON(s.tenant_id,s.group_id,s.version)=(g.tenant_id,g.id,g.rule_version) WHERE g.tenant_id=$1::uuid AND NOT g.deleted AND s.group_ids @> ARRAY[$2::uuid]) refs WHERE ($3::text IS NULL OR key>$3 COLLATE \"C\") ORDER BY key COLLATE \"C\" LIMIT 65")
-                .bind(tenant).bind(group.to_string()).bind(after).fetch_all(c).await
+        let rows: Vec<Uuid> = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT g.id FROM mdm_group.groups g JOIN mdm_group.rules s ON(s.tenant_id,s.group_id,s.version)=(g.tenant_id,g.id,g.rule_version) WHERE g.tenant_id=$1::uuid AND NOT g.deleted AND s.group_ids @> ARRAY[$2::uuid] AND ($3::uuid IS NULL OR g.id>$3) ORDER BY g.id LIMIT 65")
+                .bind(tenant).bind(group).bind(after).fetch_all(c).await
         })).await?;
-        for key in rows.iter().take(64) {
-            let (kind, id) = key.split_once(':').ok_or(Error::Conflict)?;
-            let id = stored(Uuid::parse_str(id))?;
-            if kind == "group" {
-                let gid = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
-                self.dispatch_group_in(tx, gid, candidate).await?;
-            }
+        for id in rows.iter().take(64) {
+            let gid = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
+            self.dispatch_group_in(tx, gid, candidate).await?;
         }
         if rows.len() <= 64 {
             self.ensure_group_followup_in(tx, task, candidate).await?;
             return self.finish_task_in(tx, task, None).await;
         }
         let tenant = self.tenant.to_string();
-        let cursor = rows[63].clone();
+        let cursor = rows[63];
         tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("UPDATE mdm_assets.group_tasks SET cursor=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid")
                 .bind(tenant).bind(task.to_string()).bind(cursor).execute(c).await?;Ok(())

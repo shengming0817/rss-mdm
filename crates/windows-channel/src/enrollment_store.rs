@@ -4,7 +4,7 @@ pub async fn intent(
     tenant: &str,
     request: String,
 ) -> Result<Option<sqlx::postgres::PgRow>, sqlx::Error> {
-    sqlx::query("SELECT i.signing_attempt, q.windows_profile AS enrollment_type, i.protocol_device, i.csr, i.profile, i.issuer, i.configuration, CAST(i.device AS text), CAST(i.credential AS text), CAST(i.epoch AS text), i.secrets FROM mdm_access.enrollment_intents AS i INNER JOIN mdm_access.requests AS q ON (q.tenant_id, q.id) = (i.tenant_id, i.request_id) WHERE i.tenant_id = CAST($1 AS uuid) AND i.request_id = CAST($2 AS uuid) FOR UPDATE OF i")
+    sqlx::query("SELECT i.signing_attempt, q.windows_profile AS enrollment_type, i.protocol_device, i.csr, i.profile, i.issuer, i.configuration, i.device, CAST(i.credential AS text), CAST(i.epoch AS text), i.secrets FROM mdm_access.enrollment_intents AS i INNER JOIN mdm_access.requests AS q ON (q.tenant_id, q.id) = (i.tenant_id, i.request_id) WHERE i.tenant_id = CAST($1 AS uuid) AND i.request_id = CAST($2 AS uuid) FOR UPDATE OF i")
             .bind(tenant).bind(request).fetch_optional(c).await
 }
 pub struct NewIntent<'a> {
@@ -15,7 +15,7 @@ pub struct NewIntent<'a> {
     pub profile: &'a [u8],
     pub issuer: &'a [u8],
     pub configuration: &'a str,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub credential: String,
     pub epoch: String,
     pub secrets: &'a [u8],
@@ -38,8 +38,8 @@ pub async fn insert_intent(
         epoch,
         secrets,
     } = intent;
-    sqlx::query("INSERT INTO mdm_access.enrollment_intents (tenant_id, request_id, csr, profile, issuer, configuration, device, credential, epoch, secrets, protocol_device, signing_attempt) VALUES (CAST($1 AS uuid), CAST($2 AS uuid), $3, $4, $5, $6, CAST($7 AS text), CAST($8 AS uuid), CAST($9 AS uuid), $10, $11, $12)")
-            .bind(tenant).bind(request).bind(csr).bind(profile).bind(issuer).bind(configuration).bind(device).bind(credential).bind(epoch).bind(secrets).bind(protocol_device).bind(signing_attempt)
+    sqlx::query("INSERT INTO mdm_access.enrollment_intents (tenant_id, request_id, csr, profile, issuer, configuration, device, credential, epoch, secrets, protocol_device, signing_attempt) VALUES (CAST($1 AS uuid), CAST($2 AS uuid), $3, $4, $5, $6, $7, CAST($8 AS uuid), CAST($9 AS uuid), $10, $11, $12)")
+            .bind(tenant).bind(request).bind(csr).bind(profile).bind(issuer).bind(configuration).bind(device.into_uuid()).bind(credential).bind(epoch).bind(secrets).bind(protocol_device).bind(signing_attempt)
             .execute(c).await
 }
 pub async fn certificate(
@@ -72,14 +72,14 @@ pub async fn insert_certificate(
 pub(crate) async fn native_request(
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     protocol_request: Option<uuid::Uuid>,
 ) -> Result<uuid::Uuid, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT coalesce($3,request_id) FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2",
     )
     .bind(tenant)
-    .bind(device)
+    .bind(device.into_uuid())
     .bind(protocol_request)
     .fetch_one(c)
     .await
@@ -112,8 +112,8 @@ pub async fn active_windows_enrollment(
     tenant: &str,
     id: Uuid,
 ) -> Result<String, Error> {
-    let registration: String = sqlx::query_scalar("SELECT d.id FROM mdm_access.devices d JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(d.tenant_id,d.request_id) WHERE d.tenant_id=$1::uuid AND q.id=$2 AND q.state='bound' AND d.state='active' AND d.channel='mdm' AND d.purpose='primary' AND EXISTS(SELECT 1 FROM mdm_access.credentials k WHERE k.tenant_id=d.tenant_id AND k.device=d.id AND k.purpose='primary' AND k.state='active')")
-        .bind(tenant).bind(id).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Conflict)?;
+    let registration: rss_mdm_agent_wire::DeviceId = sqlx::query_scalar("SELECT d.id FROM mdm_access.devices d JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(d.tenant_id,d.request_id) WHERE d.tenant_id=$1::uuid AND q.id=$2 AND q.state='bound' AND d.state='active' AND d.channel='mdm' AND d.purpose='primary' AND EXISTS(SELECT 1 FROM mdm_access.credentials k WHERE k.tenant_id=d.tenant_id AND k.device=d.id AND k.purpose='primary' AND k.state='active')")
+        .bind(tenant).bind(id).fetch_optional(&mut *tx).await.and_then(|id| id.map(crate::database::device_id).transpose()).map_err(db)?.ok_or(Error::Conflict)?;
     if !crate::device::store::active_source_in(
         rss_mdm_install_support::StorageProfile::Mdm,
         tx,

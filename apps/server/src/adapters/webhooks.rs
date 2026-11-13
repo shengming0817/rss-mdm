@@ -11,7 +11,7 @@ impl webhooks::management::Sources for Sources {
         c: &'a mut sqlx::PgConnection,
         tenant: TenantId,
         groups: &'a [Uuid],
-        endpoint: &'a str,
+        endpoint: &'a rss_mdm_agent_wire::DeviceId,
     ) -> futures::future::BoxFuture<'a, Result<bool, webhooks::Error>> {
         Box::pin(async move {
             if tenant.to_string() != self.tenant.to_string() {
@@ -30,7 +30,7 @@ impl webhooks::management::Sources for Sources {
         &'a self,
         c: &'a mut sqlx::PgConnection,
         source: &'a events::CompliancePublication,
-        after: Option<String>,
+        after: Option<rss_mdm_agent_wire::DeviceId>,
     ) -> futures::future::BoxFuture<
         'a,
         Result<rss_mdm_webhook_service::fanout::ChangePage, rss_mdm_webhook_service::Error>,
@@ -54,7 +54,7 @@ impl webhooks::management::Sources for Sources {
             let more = rows.len() > rss_mdm_webhook_service::PAGE as usize;
             rows.truncate(rss_mdm_webhook_service::PAGE as usize);
             let next = if more {
-                rows.last().map(|(device, _)| device.clone())
+                rows.last().map(|(device, _)| *device)
             } else {
                 None
             };

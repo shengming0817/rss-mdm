@@ -98,7 +98,7 @@ impl Groups {
         sources: &[rss_mdm_group::GroupSource],
         objects: &mut [rss_mdm_group::ObjectSnapshot],
     ) -> Result<()> {
-        let keys: Vec<_> = objects.iter().map(|o| o.key.id().to_string()).collect();
+        let keys: Vec<_> = objects.iter().map(|o| o.key.id()).collect();
         for source in sources {
             let decisions = if let Some(run) = source.coordinates.member_set {
                 group_checked(
@@ -111,7 +111,7 @@ impl Groups {
                 std::collections::BTreeMap::new()
             };
             for object in objects.iter_mut() {
-                let outcome = decisions.get(object.key.id()).copied().unwrap_or(
+                let outcome = decisions.get(&object.key.id()).copied().unwrap_or(
                     if source.coordinates.member_set.is_none() {
                         rss_mdm_group::Outcome::NoMatch
                     } else {

@@ -495,7 +495,7 @@ impl Departure for WindowsBusiness {
         &'a self,
         c: &'a mut PgConnection,
         tenant: &'a str,
-        registration: String,
+        registration: rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
             rss_mdm_device_service::control::unmanage::native_departure_in(
@@ -513,8 +513,8 @@ impl WakeDemand for WindowsBusiness {
     fn candidates<'a>(
         &'a self,
         c: &'a mut PgConnection,
-        after: &'a str,
-    ) -> Pending<'a, Vec<String>> {
+        after: Option<rss_mdm_agent_wire::DeviceId>,
+    ) -> Pending<'a, Vec<rss_mdm_agent_wire::DeviceId>> {
         Box::pin(async move {
             let mut candidates = self
                 .0
@@ -551,7 +551,11 @@ impl WakeDemand for WindowsBusiness {
             Ok(candidates)
         })
     }
-    fn pending<'a>(&'a self, c: &'a mut PgConnection, device: &'a str) -> Pending<'a, bool> {
+    fn pending<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        device: &'a rss_mdm_agent_wire::DeviceId,
+    ) -> Pending<'a, bool> {
         Box::pin(async move {
             let execution = self
                 .0

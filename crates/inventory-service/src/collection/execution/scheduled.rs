@@ -52,7 +52,7 @@ impl<'a> VerifiedNativeCollectionVersion<'a> {
         }
         let work = Work {
             version: self.version,
-            device: target.device.clone(),
+            device: target.device,
         };
         if let Some(device) = device_in(self.reader, tx, &work).await?
             && device != target.device
@@ -65,7 +65,7 @@ impl<'a> VerifiedNativeCollectionVersion<'a> {
             self,
             &Work {
                 version: self.version,
-                device: target.device.clone(),
+                device: target.device,
             },
         )
         .await
@@ -75,16 +75,16 @@ impl<'a> VerifiedNativeCollectionVersion<'a> {
 #[derive(Clone)]
 pub(crate) struct Work {
     pub version: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
 }
 impl Work {
     pub(crate) fn parse(entity: &str) -> Option<Self> {
         let mut fields = entity.strip_prefix("scheduled:")?.split(':');
         let value = Self {
             version: fields.next()?.parse().ok()?,
-            device: fields.next()?.to_owned(),
+            device: fields.next()?.parse().ok()?,
         };
-        (fields.next().is_none() && !value.device.is_empty()).then_some(value)
+        fields.next().is_none().then_some(value)
     }
     fn entity(&self) -> String {
         format!("scheduled:{}:{}", self.version, self.device)
@@ -118,21 +118,19 @@ pub(crate) async fn device_in(
     reader: &rss_mdm_policy_postgres::PolicyReader,
     tx: &mut PgTransaction<'_>,
     work: &Work,
-) -> Result<Option<String>> {
+) -> Result<Option<rss_mdm_agent_wire::DeviceId>> {
     if VerifiedNativeCollectionVersion::verify_in(reader, tx, work.version)
         .await?
         .is_none()
     {
         return Ok(None);
     }
-    if work.device.is_empty() {
-        return Err((crate::Error::Unavailable(crate::Failure::PlanningStorage)).into());
-    }
+
     let tenant = tx.tenant_id().to_string();
-    let device = work.device.clone();
+    let device = work.device;
     Ok(tx.with_connection(move |c| Box::pin(async move {
         sqlx::query_scalar("SELECT id AS device FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active' AND purpose = 'primary' AND channel = 'mdm'")
-            .bind(tenant).bind(device).fetch_optional(c).await
+            .bind(tenant).bind(device.into_uuid()).fetch_optional(c).await.and_then(|id| id.map(crate::database::device_id).transpose())
     })).await?)
 }
 
@@ -193,7 +191,7 @@ pub(crate) async fn delay_in(
                 _ => match native
                     .input
                     .schedule
-                    .next_after(now, target.device.as_bytes())?
+                    .next_after(now, target.device.to_string().as_bytes())?
                 {
                     Some(next) => next.available_at.saturating_sub(now).max(1),
                     None => return Ok(None),

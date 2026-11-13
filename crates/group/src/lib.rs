@@ -184,6 +184,9 @@ impl Budget {
         }
         self.byte_kind.add(&mut self.bytes, s.len())
     }
+    pub(crate) fn object(&mut self) -> Result<()> {
+        self.byte_kind.add(&mut self.bytes, 18) // fixed kind (2 bytes) plus UUID (16 bytes)
+    }
     pub(crate) fn text(&mut self, s: &str) -> Result<()> {
         LimitKind::StringBytes.check(s.len())?;
         self.byte_kind.add(&mut self.bytes, s.len())

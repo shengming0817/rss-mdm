@@ -66,7 +66,7 @@ pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send +
 pub struct Binding {
     pub profile: rss_mdm_install_support::StorageProfile,
     pub tenant: rss_request_context::TenantId,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub epoch: Uuid,
     pub operation: Uuid,
 }

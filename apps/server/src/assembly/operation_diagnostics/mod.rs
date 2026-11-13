@@ -175,7 +175,7 @@ impl Diagnostics {
         let execution = if da_owner && l.owner == O::DeviceAccess {
             self.da_execution(
                 p,
-                l.query.device.as_deref().ok_or(Error::Malformed)?,
+                l.query.device.as_ref().ok_or(Error::Malformed)?,
                 l.operation,
             )
             .await?
@@ -318,7 +318,7 @@ impl Diagnostics {
         let query = rss_mdm_timeline_service::Query {
             operation_id: Some(l.operation),
             owner: Some(l.owner),
-            device: l.query.device.clone(),
+            device: l.query.device,
             actor: operation.actor.clone(),
             target_id: l.query.target.clone(),
 
@@ -409,7 +409,7 @@ impl Diagnostics {
                     rss_mdm_registration_service::agent::queries::registration_recovery_operation(
                         &s.access.registration(),
                         request,
-                        q.device.as_deref().ok_or(Error::Malformed)?,
+                        q.device.as_ref().ok_or(Error::Malformed)?,
                         id,
                         &identity,
                     )
@@ -438,7 +438,7 @@ impl Diagnostics {
             O::Filevault => rss_mdm_recovery_credentials::filevault_operation_receipt(
                 &s.audit_store,
                 p,
-                q.device.as_deref().ok_or(Error::Malformed)?,
+                q.device.as_ref().ok_or(Error::Malformed)?,
                 id,
             )
             .await
@@ -450,18 +450,18 @@ impl Diagnostics {
                 .map_err(Into::into),
             O::PolicyEventMember => s
                 .events
-                .member_receipt(p, q.device.as_deref().ok_or(Error::Malformed)?, id)
+                .member_receipt(p, q.device.as_ref().ok_or(Error::Malformed)?, id)
                 .await
                 .map_err(Into::into),
             O::ComplianceTask => s.compliance.task_receipt(p, id).await.map_err(Into::into),
             O::PolicyEvent => s
                 .events
-                .operation_receipt(p, q.device.as_deref().ok_or(Error::Malformed)?, id)
+                .operation_receipt(p, q.device.as_ref().ok_or(Error::Malformed)?, id)
                 .await
                 .map_err(Into::into),
             O::Collection => s
                 .assets
-                .collection_receipt(p, q.device.as_deref().ok_or(Error::Malformed)?, id)
+                .collection_receipt(p, q.device.as_ref().ok_or(Error::Malformed)?, id)
                 .await
                 .map_err(Into::into),
             O::Policy => {
@@ -842,7 +842,7 @@ fn locator(
             None
         },
         target: l.query.target.clone(),
-        device: l.query.device.clone(),
+        device: l.query.device,
     })
 }
 

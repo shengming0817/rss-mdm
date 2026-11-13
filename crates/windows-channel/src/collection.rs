@@ -9,13 +9,13 @@ pub async fn terminate_session(
     tx: &mut sqlx::PgConnection,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     tenant: &str,
-    registration: &str,
+    registration: &rss_mdm_agent_wire::DeviceId,
     protocol_epoch: Uuid,
     session: &str,
     reason: &str,
 ) -> Result<(), Error> {
-    let ids: Vec<String> = sqlx::query_scalar("SELECT CAST(id AS text) FROM mdm_windows.collections WHERE (tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND session_id = $3) AND collections.protocol_epoch = $4 ORDER BY first_command, id")
-        .bind(tenant).bind(registration).bind(session).bind(protocol_epoch).fetch_all(&mut *tx).await.map_err(db)?;
+    let ids: Vec<String> = sqlx::query_scalar("SELECT CAST(id AS text) FROM mdm_windows.collections WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND session_id = $3) AND collections.protocol_epoch = $4 ORDER BY first_command, id")
+        .bind(tenant).bind(registration.into_uuid()).bind(session).bind(protocol_epoch).fetch_all(&mut *tx).await.map_err(db)?;
     for id in ids {
         // An expired historical binding cannot terminate a run now owned by a newer session.
         let newer: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_windows.collections AS old INNER JOIN mdm_windows.collections AS next ON (next.tenant_id, next.id) = (old.tenant_id, old.id) WHERE (old.tenant_id = CAST($1 AS uuid) AND old.id = CAST($2 AS uuid) AND old.session_id = $3 AND next.first_command > old.first_command) AND old.protocol_epoch = $4)")

@@ -43,7 +43,7 @@ wire_enum!(Temporality, Cumulative, Delta);
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct HistoryRequest {
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
     field: String,
     resource: String,
     start_micros: DecimalI64,

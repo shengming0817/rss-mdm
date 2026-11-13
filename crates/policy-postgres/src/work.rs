@@ -77,7 +77,7 @@ pub struct Record {
     /// Closed product failure code, when terminal.
     pub failure: Option<String>,
     /// Last committed page boundary.
-    pub cursor: Option<String>,
+    pub cursor: Option<rss_mdm_agent_wire::ObjectRef>,
     /// Whether its RSS wake was committed.
     pub started: bool,
 }
@@ -105,7 +105,17 @@ pub async fn read_in(
                 .map_err(|_| crate::storage(profile).fault("work.decode"))?,
             completed: r.try_get("completed")?,
             failure: r.try_get("failure")?,
-            cursor: r.try_get("cursor")?,
+            cursor: match (
+                r.try_get::<Option<i16>, _>("cursor_kind")?,
+                r.try_get::<Option<Uuid>, _>("cursor_id")?,
+            ) {
+                (None, None) => None,
+                (Some(kind), Some(id)) => Some(
+                    rss_mdm_agent_wire::ObjectRef::from_parts(kind, id)
+                        .map_err(|_| crate::storage(profile).fault("work.cursor"))?,
+                ),
+                _ => return Err(crate::storage(profile).fault("work.cursor")),
+            },
             started: r.try_get("started")?,
         })
     })
@@ -116,7 +126,7 @@ pub async fn cursor_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
-    cursor: Option<String>,
+    cursor: Option<rss_mdm_agent_wire::ObjectRef>,
 ) -> Result<(), PgError> {
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
@@ -124,7 +134,8 @@ pub async fn cursor_in(
             sqlx::query(crate::storage_profile::sql(profile).work_cursor_in_1)
                 .bind(tenant)
                 .bind(id)
-                .bind(cursor)
+                .bind(cursor.map(|o| o.kind()))
+                .bind(cursor.map(|o| o.uuid()))
                 .execute(c)
                 .await?;
             Ok(())

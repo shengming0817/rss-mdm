@@ -21,7 +21,7 @@ pub trait TargetAdmission: Send + Sync {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, Admission>;
     fn evidence_on<'a>(
         &'a self,
@@ -29,14 +29,14 @@ pub trait TargetAdmission: Send + Sync {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, Vec<DeviceObject>>;
     fn evidence_valid_on<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
         channel: Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         evidence: &'a [DeviceObject],
     ) -> Pending<'a, bool>;
 }
@@ -64,7 +64,7 @@ pub trait DeviceCapacity: Send + Sync {
     fn available_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> Pending<'a, bool>;
 }

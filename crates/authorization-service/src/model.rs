@@ -195,7 +195,7 @@ impl Permission {
 pub enum Scope {
     Tenant,
     AllDevices,
-    Device { id: String },
+    Device { id: rss_mdm_agent_wire::DeviceId },
 }
 #[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -208,12 +208,13 @@ impl Grant {
         if self.operation.device() == matches!(self.scope, Scope::Tenant) {
             return Err(AuthorizationError::Malformed);
         }
-        if let Scope::Device { id } = &self.scope {
-            rss_observation::Id::new(id).map_err(|_| AuthorizationError::Malformed)?;
-        }
         Ok(())
     }
-    pub fn covers(&self, operation: Permission, device: Option<&str>) -> bool {
+    pub fn covers(
+        &self,
+        operation: Permission,
+        device: Option<&rss_mdm_agent_wire::DeviceId>,
+    ) -> bool {
         self.operation == operation
             && match (&self.scope, device) {
                 (Scope::Tenant, None) | (Scope::AllDevices, Some(_)) => true,

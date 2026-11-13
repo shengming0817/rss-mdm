@@ -15,7 +15,8 @@ fn coordinate() -> Coordinates {
         tenant: Uuid::new_v4(),
         material: Uuid::new_v4(),
         binding: Binding {
-            device: "device-one".into(),
+            device: rss_mdm_agent_wire::DeviceId::parse("d5eede77-104f-590b-ab26-f98d232f1e09")
+                .unwrap(),
 
             subject: Subject::RecoveryLock,
         },
@@ -54,7 +55,7 @@ fn stored_material_survives_restart_and_rotation_but_not_coordinate_substitution
     v.material = Uuid::new_v4();
     mutations.push(v);
     let mut v = c.clone();
-    v.binding.device = "other".into();
+    v.binding.device = rss_mdm_agent_wire::DeviceId::new_v4();
     mutations.push(v);
     let mut v = c.clone();
     v.version += 1;

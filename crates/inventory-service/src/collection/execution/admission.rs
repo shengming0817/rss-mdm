@@ -156,7 +156,8 @@ pub(crate) fn candidate(
                 (at, format!("device:{}", target.device))
             }
             (Trigger::Once { .. } | Trigger::Interval { .. } | Trigger::Weekly { .. }, _) => {
-                let Some(due) = schedule.collection_due(started, now, target.device.as_bytes())?
+                let Some(due) =
+                    schedule.collection_due(started, now, target.device.to_string().as_bytes())?
                 else {
                     return Ok(None);
                 };
@@ -176,7 +177,7 @@ pub(crate) fn candidate(
             &event,
         )
     };
-    let Some(slot) = schedule.occurrence(coordinate, target.device.as_bytes())? else {
+    let Some(slot) = schedule.occurrence(coordinate, target.device.to_string().as_bytes())? else {
         return Ok(None);
     };
     let available = slot.available_at.max(now);
@@ -201,23 +202,23 @@ pub(crate) async fn explicit_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     version: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     now: i64,
     allowed: bool,
 ) -> Result<Option<(Uuid, i64, i64)>> {
     Ok(sqlx::query_as("SELECT t.id,t.created_at,t.deadline FROM mdm_policy.triggers t WHERE t.tenant_id=$1::uuid AND t.version=$2 AND t.deadline>$4 AND $5 AND NOT EXISTS(SELECT 1 FROM mdm_inventory.collection_tasks r WHERE r.tenant_id=t.tenant_id AND r.policy_version=t.version AND r.device=$3 AND r.occurrence='explicit:'||t.id::text) ORDER BY t.created_at,t.id LIMIT 1")
-        .bind(tenant.to_string()).bind(version).bind(device).bind(now).bind(allowed).fetch_optional(c).await?)
+        .bind(tenant.to_string()).bind(version).bind(device.into_uuid()).bind(now).bind(allowed).fetch_optional(c).await?)
 }
 /// Exact production deduplication identity; absence is never inferred from version history.
 pub(crate) async fn occurrence_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     version: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     occurrence: &str,
 ) -> Result<Option<Uuid>> {
     Ok(sqlx::query_scalar("SELECT id FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND policy_version=$2 AND device=$3 AND occurrence=$4")
-        .bind(tenant.to_string()).bind(version).bind(device).bind(occurrence).fetch_optional(c).await?)
+        .bind(tenant.to_string()).bind(version).bind(device.into_uuid()).bind(occurrence).fetch_optional(c).await?)
 }
 pub struct RunInput<'a> {
     pub origin: ActivityOrigin,
@@ -252,7 +253,7 @@ pub async fn queue_run_in(
     }
     let source = service.source.clone();
     let tenant = tx.tenant_id();
-    let device = input.target.device.clone();
+    let device = input.target.device;
     let scope = policy.policy.definition.scope;
     let channel = policy.frozen.channel();
     let evidence = tx
@@ -298,7 +299,7 @@ pub async fn queue_run_in(
     let now = input.now;
     tx.with_connection(move |c| Box::pin(async move {
         sqlx::query("INSERT INTO mdm_inventory.collection_tasks (tenant_id, id, policy_version, channel, device, occurrence, available_at, deadline, agent_state, dispatch_fingerprint, created_at, source_objects, origin, native_delivery, triggered_at) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)")
-            .bind(tenant).bind(id).bind(version).bind(channel).bind(target.device).bind(input.occurrence).bind(input.available).bind(input.deadline)
+            .bind(tenant).bind(id).bind(version).bind(channel).bind(target.device.into_uuid()).bind(input.occurrence).bind(input.available).bind(input.deadline)
             .bind(state).bind(fingerprint).bind(now).bind(evidence).bind(origin).bind(delivery).bind(input.triggered_at).execute(c).await?;
         Ok(())
     })).await?;

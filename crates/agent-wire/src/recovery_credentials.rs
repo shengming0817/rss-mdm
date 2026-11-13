@@ -205,7 +205,7 @@ pub struct CredentialTaskSpec {
     /// Authenticated tenant.
     pub tenant_id: Uuid,
     /// Exact device.
-    pub device_id: String,
+    pub device_id: crate::DeviceId,
     /// Native platform, Windows for this capability.
     pub platform: TaskPlatform,
     /// Native processor architecture.
@@ -277,9 +277,6 @@ impl CredentialTaskSpec {
             || [self.tenant_id, self.task_id, self.attempt_id]
                 .iter()
                 .any(Uuid::is_nil)
-            || self.device_id.is_empty()
-            || self.device_id.len() > 1024
-            || self.device_id.chars().any(char::is_control)
             || self.expires_at < 0
             || self.deadline < self.expires_at
             || self.expected.len() > 512

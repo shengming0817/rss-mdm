@@ -15,7 +15,7 @@ use std::{
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {
     pub id: uuid::Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub field: String,
     pub resource: String,
     pub start_micros: i64,
@@ -76,7 +76,7 @@ impl Target {
     ) -> Result<Selection, Error> {
         if self.stream.scope().tenant() != tenant
             || self.stream.scope().namespace().as_str() != "mdm.telemetry"
-            || self.series.subject().as_str() != input.device
+            || self.series.subject().as_str() != input.device.to_string()
             || self.series.resource().as_str() != input.resource
             || self.series.definition().spec().key.as_str() != input.field
         {
@@ -96,14 +96,17 @@ pub struct StreamTarget {
     pub epoch: uuid::Uuid,
 }
 impl StreamTarget {
-    fn stream(&self, tenant: rss_request_context::TenantId, device: &str) -> Result<Stream, Error> {
+    fn stream(
+        &self,
+        tenant: rss_request_context::TenantId,
+        device: &rss_mdm_agent_wire::DeviceId,
+    ) -> Result<Stream, Error> {
         if !matches!(
             self.source,
             rss_mdm_inventory::Source::AgentNative
                 | rss_mdm_inventory::Source::AgentScript
                 | rss_mdm_inventory::Source::AgentOsquery
-        ) || device.is_empty()
-            || self.epoch.is_nil()
+        ) || self.epoch.is_nil()
         {
             return Err(Error::Invalid);
         }
@@ -132,7 +135,7 @@ fn operation(
     }
     let selection = Selection::Resource {
         scope: Scope::new(tenant, Id::new("mdm.telemetry")?),
-        subject: Id::new(&input.device)?,
+        subject: Id::new(input.device.to_string())?,
         resource: Id::new(&input.resource)?,
         keys: [Id::new(&input.field)?].into(),
     };
@@ -184,7 +187,7 @@ fn operation(
         },
         Action::Recompute { spec } => {
             if spec.stream().scope() != selection.scope()
-                || spec.series().subject().as_str() != input.device
+                || spec.series().subject().as_str() != input.device.to_string()
                 || spec.series().resource().as_str() != input.resource
                 || spec.series().definition().spec().key.as_str() != input.field
             {
@@ -259,7 +262,7 @@ async fn authorize(
         | Action::Reclaim { target }
         | Action::ExpireReceipts { target, .. } => {
             let fields:Vec<String>=sqlx::query_scalar("SELECT DISTINCT unnest(fields) FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = $3 AND epoch = $4 LIMIT 1025")
-                .bind(tenant.to_string()).bind(&input.device).bind(target.source.as_str()).bind(target.epoch).fetch_all(&mut *c).await?;
+                .bind(tenant.to_string()).bind(input.device.into_uuid()).bind(target.source.as_str()).bind(target.epoch).fetch_all(&mut *c).await?;
             if fields.is_empty() || !fields.contains(&input.field) || fields.len() > 1024 {
                 return Err(Error::Denied);
             }
@@ -297,7 +300,7 @@ async fn authorize(
                     return Err(Error::Denied);
                 }
                 let pending:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = $3 AND epoch = $4 AND delivery <> 'published')")
-                    .bind(tenant.to_string()).bind(&input.device).bind(target.source.as_str()).bind(target.epoch).fetch_one(c).await?;
+                    .bind(tenant.to_string()).bind(input.device.into_uuid()).bind(target.source.as_str()).bind(target.epoch).fetch_one(c).await?;
                 if pending {
                     return Err(Error::Conflict);
                 }
@@ -359,7 +362,7 @@ async fn authorize(
             .await
             .map_err(|_| Error::Storage)?;
             let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND device=$2 AND $3=ANY(fields) AND delivery<>'published')")
-                .bind(tenant.to_string()).bind(&input.device).bind(&input.field)
+                .bind(tenant.to_string()).bind(input.device.into_uuid()).bind(&input.field)
                 .fetch_one(&mut *c).await?;
             if pending {
                 return Err(Error::Conflict);

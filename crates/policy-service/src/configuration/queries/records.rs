@@ -129,7 +129,7 @@ pub struct Evidence {
     pub dispatch_failure: Option<super::super::model::DispatchFailure>,
 }
 pub struct Declaration {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub redacted: bool,
     pub observation: NativeObservation,
 }

@@ -55,14 +55,14 @@ WITH catalog AS (
 )
 SELECT DISTINCT p.tenant_id,r.id AS device
 FROM mdm.inventory_presence p
-JOIN mdm_access.devices r ON r.tenant_id=p.tenant_id AND r.id=p.scope::jsonb->>'registration' AND r.state='active'
+JOIN mdm_access.devices r ON r.tenant_id=p.tenant_id AND r.id=(p.scope::jsonb->>'registration')::uuid AND r.state='active'
 JOIN mdm_access.report_sources s ON s.tenant_id=r.tenant_id AND s.device=r.id AND s.enabled
  AND s.source=p.scope::jsonb->>'source' AND s.epoch::text=p.scope::jsonb->>'epoch'
 JOIN datasets d ON d.source=s.source AND d.dataset=p.scope::jsonb->>'dataset'
 WHERE p.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
  AND p.journal='mdm.observation.v1' AND p.generation='inventory-projection-v1'
  AND p.scope::jsonb->>'tenant'=p.tenant_id::text
- AND p.scope::jsonb->>'object'=CASE WHEN d.dataset='inventory' THEN r.id ELSE r.id||':'||d.dataset END
+ AND p.scope::jsonb->>'object'=CASE WHEN d.dataset='inventory' THEN r.id::text ELSE r.id::text||':'||d.dataset END
  AND r.channel=CASE WHEN s.source IN('mdm.windows','mdm.apple') THEN 'mdm' WHEN s.source IN('agent.builtin','agent.script','agent.osquery','agent.native') THEN 'agent' END
  AND EXISTS(SELECT FROM mdm_access.credentials k WHERE k.tenant_id=r.tenant_id AND k.device=r.id AND k.state='active')
 UNION

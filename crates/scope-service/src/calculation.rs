@@ -209,7 +209,7 @@ impl Scopes {
                         }
                         Reference::Device(device) => {
                             let tenant = self.tenant.to_string();
-                            let device = device.clone();
+                            let device = *device;
                             let cut = run.asset_cut.to_json();
                             successor |= tx
                                 .with_connection(move |c| {
@@ -219,7 +219,7 @@ impl Scopes {
                                                 .calculation_advance_in_1,
                                         )
                                         .bind(tenant)
-                                        .bind(device)
+                                        .bind(device.into_uuid())
                                         .bind(cut)
                                         .fetch_one(c)
                                         .await
@@ -242,7 +242,7 @@ impl Scopes {
     async fn device_authority_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         cut: &rss_mdm_inventory::AssetCut,
     ) -> transaction::Result<u64> {
         let profile = self.profile();
@@ -275,7 +275,11 @@ impl Scopes {
         let mut records = match &source.reference {
             Reference::Device(device) => {
                 if run.source_cursor.is_none() {
-                    vec![(device.clone(), false, true)]
+                    vec![(
+                        rss_mdm_agent_wire::ObjectRef::Endpoint(*device),
+                        false,
+                        true,
+                    )]
                 } else {
                     vec![]
                 }
@@ -292,7 +296,7 @@ impl Scopes {
                             .build_decisions_in(
                                 tx,
                                 set,
-                                run.source_cursor.clone(),
+                                run.source_cursor,
                                 1000,
                                 rss_mdm_group::limits::BATCH_BYTES,
                             )
@@ -302,7 +306,7 @@ impl Scopes {
                     .into_iter()
                     .map(|d| {
                         (
-                            d.device,
+                            d.object,
                             d.decision == rss_mdm_group_postgres::DecisionValue::Unknown,
                             d.decision != rss_mdm_group_postgres::DecisionValue::NoMatch,
                         )
@@ -313,19 +317,19 @@ impl Scopes {
         };
         // Group can stop a nonempty page at its byte budget. Only an empty page proves completion.
         let more = !records.is_empty();
-        let cursor = records.last().map(|r| r.0.clone());
+        let cursor = records.last().map(|r| r.0);
         let mut members = Vec::new();
         for (key, unknown, included) in records.drain(..) {
             if !included {
                 continue;
             }
-            let object = group_checked(rss_mdm_inventory_service::objects::ObjectRef::from_key(
+            let object = group_checked(rss_mdm_inventory_service::objects::checked_context(
                 source.coordinates.asset_context,
                 &key,
             ))?;
             let reader = self.objects.clone();
             let tenant = self.tenant;
-            let object_key = object.key();
+            let object_key = object;
             let input = if let Some(snapshot) = &source.snapshot {
                 let snapshot = snapshot.id;
                 tx.with_connection(move |c| {
@@ -345,8 +349,7 @@ impl Scopes {
                 .ok_or(Error::Unavailable(Failure::Capacity))?
                 .0
             } else {
-                let rss_mdm_inventory_service::objects::ObjectRef::Endpoint(endpoint) = object
-                else {
+                let rss_mdm_agent_wire::ObjectRef::Endpoint(endpoint) = object else {
                     return Err(Error::Conflict.into());
                 };
                 let cut = run.asset_cut.clone();

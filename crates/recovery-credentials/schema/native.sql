@@ -2,7 +2,7 @@ BEGIN;
 CREATE TABLE mdm_recovery.native_actions (
     tenant_id uuid NOT NULL
   , operation uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , action text NOT NULL CHECK (action IN ('configure_filevault', 'collect_filevault', 'rotate_filevault', 'set_recovery_lock', 'clear_recovery_lock', 'verify_recovery_lock', 'lock_pin'))
   , inputs_purged boolean NOT NULL DEFAULT FALSE
   , reconciles uuid
@@ -35,7 +35,7 @@ REVOKE ALL ON FUNCTION mdm_recovery_tasks.native_status(uuid) FROM PUBLIC;
 
 -- The registration owner participates on its original audit connection. Narrow
 -- product functions preserve the shared command component's exclusive runtime ACL.
-CREATE FUNCTION mdm_recovery_tasks.retirement_commands(p_device text, p_after text) RETURNS SETOF rss_device_command.commands
+CREATE FUNCTION mdm_recovery_tasks.retirement_commands(p_device uuid, p_after text) RETURNS SETOF rss_device_command.commands
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
  SELECT a.device_id FROM (
@@ -54,9 +54,9 @@ CREATE FUNCTION mdm_recovery_tasks.retirement_commands(p_device text, p_after te
   AND d.command_id COLLATE "C" > p_after ORDER BY d.command_id COLLATE "C" LIMIT 64;
 $$;
 
-REVOKE ALL ON FUNCTION mdm_recovery_tasks.retirement_commands(text,text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION mdm_recovery_tasks.retirement_commands(uuid,text) FROM PUBLIC;
 
-CREATE FUNCTION mdm_recovery_tasks.save_retired_command(p_device text, p_run uuid, p_previous bigint, p_terminal bigint) RETURNS boolean
+CREATE FUNCTION mdm_recovery_tasks.save_retired_command(p_device uuid, p_run uuid, p_previous bigint, p_terminal bigint) RETURNS boolean
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
  SELECT a.device_id FROM mdm_recovery_tasks.operations o
@@ -74,10 +74,10 @@ CREATE FUNCTION mdm_recovery_tasks.save_retired_command(p_device text, p_run uui
   AND d.version=p_previous AND d.terminal_at IS NULL),false);
 $$;
 
-REVOKE ALL ON FUNCTION mdm_recovery_tasks.save_retired_command(text,uuid,bigint,bigint) FROM PUBLIC;
+REVOKE ALL ON FUNCTION mdm_recovery_tasks.save_retired_command(uuid,uuid,bigint,bigint) FROM PUBLIC;
 
 CREATE TABLE mdm_recovery_tasks.device_recovery (
- tenant_id uuid NOT NULL,device text NOT NULL,authority_epoch bigint NOT NULL CHECK(authority_epoch>0),recovery_after text,
+ tenant_id uuid NOT NULL,device uuid NOT NULL,authority_epoch bigint NOT NULL CHECK(authority_epoch>0),recovery_after text,
  PRIMARY KEY(tenant_id,device)
 );
 
@@ -94,7 +94,7 @@ GRANT UPDATE(authority_epoch,recovery_after) ON mdm_recovery_tasks.device_recove
 CREATE TABLE mdm_recovery_tasks.operations (
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , request bytea NOT NULL
   , input_context jsonb NOT NULL CHECK (jsonb_typeof(input_context) = 'object'
                                     AND octet_length(CAST(input_context AS text)) <= 4096)
@@ -109,8 +109,7 @@ CREATE TABLE mdm_recovery_tasks.operations (
                                OR (jsonb_typeof(dispatch_failure) = 'object'
                                AND octet_length(CAST(dispatch_failure AS text)) <= 8192))
   , gateway_accepted boolean DEFAULT FALSE NOT NULL
-  , CONSTRAINT operation_authority_source CHECK (authority ->> 'device' = device
-                                             AND authority ->> 'registration' = CAST(device AS text)
+  , CONSTRAINT operation_authority_source CHECK ((authority ->> 'device')::uuid = device
                                              AND authority ->> 'operation' = CAST(id AS text))
   , CONSTRAINT operations_authority_check CHECK (octet_length(CAST(authority AS text)) <= 1048576)
   , CONSTRAINT operations_dispatch_fingerprint_check CHECK (octet_length(dispatch_fingerprint) = 32)
@@ -154,13 +153,13 @@ CREATE POLICY tenant ON mdm_recovery_tasks.requests USING ((tenant_id = (NULLIF(
 -- A recovery identity hashes explicit UTF-8, independent of client_encoding.
 -- PostgreSQL marks textsend STABLE because its wire bytes depend on that setting;
 -- convert_to with this fixed destination is deterministic for the stored text.
-CREATE FUNCTION mdm_recovery_tasks.recovery_key(p_device text) RETURNS text
+CREATE FUNCTION mdm_recovery_tasks.recovery_key(p_device uuid) RETURNS text
  LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE SET search_path TO 'pg_catalog'
- AS $$ SELECT encode(sha256(convert_to(p_device,'UTF8')),'hex'); $$;
+ AS $$ SELECT encode(sha256(convert_to(p_device::text,'UTF8')),'hex'); $$;
 
-REVOKE ALL ON FUNCTION mdm_recovery_tasks.recovery_key(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION mdm_recovery_tasks.recovery_key(uuid) FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION mdm_recovery_tasks.recovery_key(text) TO mdm_access,mdm_policy_runtime,mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm_recovery_tasks.recovery_key(uuid) TO mdm_access,mdm_policy_runtime,mdm_command_runtime;
 
 CREATE INDEX command_device_recovery ON mdm_recovery_tasks.device_recovery(tenant_id,mdm_recovery_tasks.recovery_key(device));
 COMMIT;

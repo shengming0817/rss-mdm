@@ -4,7 +4,7 @@ pub async fn agent_binding_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     store: std::sync::Arc<dyn Store>,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
 ) -> crate::enrollment::tasks::transaction::Result<Option<Binding>> {
     let tenant = tx.tenant_id();
     tx.with_connection(move |c| {
@@ -17,7 +17,7 @@ pub async fn agent_binding_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     store: std::sync::Arc<dyn Store>,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
 ) -> crate::enrollment::tasks::transaction::Result<Option<Binding>> {
     if store.storage_profile() != profile {
         return Err(crate::Error::Forbidden.into());
@@ -26,14 +26,14 @@ pub async fn agent_binding_on(
 }
 
 pub struct RegisteredAgent {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub binding: Binding,
 }
 pub async fn agent_targets_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     store: std::sync::Arc<dyn Store>,
-    devices: Vec<String>,
+    devices: Vec<rss_mdm_agent_wire::DeviceId>,
 ) -> crate::enrollment::tasks::transaction::Result<Vec<RegisteredAgent>> {
     let tenant = tx.tenant_id();
     tx.with_connection(move |c| {
@@ -46,7 +46,7 @@ pub async fn agent_targets_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     store: std::sync::Arc<dyn Store>,
-    devices: Vec<String>,
+    devices: Vec<rss_mdm_agent_wire::DeviceId>,
 ) -> crate::enrollment::tasks::transaction::Result<Vec<RegisteredAgent>> {
     let devices = crate::device::read::active_channel_in(
         profile,
@@ -74,7 +74,7 @@ pub async fn profile_in(
     profile: rss_mdm_install_support::StorageProfile,
     service: &super::Transactions,
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
 ) -> super::Result<Option<(rss_mdm_policy::Platform, rss_mdm_policy::Architecture)>> {
     let Some(binding) = agent_binding_in(profile, tx, service.agent_store.clone(), device).await?
     else {

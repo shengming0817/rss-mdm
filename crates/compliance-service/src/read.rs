@@ -45,7 +45,11 @@ impl Compliance {
             diagnostic: detail,
         })
     }
-    async fn device(&self, tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
+    async fn device(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        device: &rss_mdm_agent_wire::DeviceId,
+    ) -> Result<()> {
         let t = self.tenant().to_string();
         let d = device.to_owned();
         if !tx
@@ -69,7 +73,7 @@ impl Compliance {
     pub(crate) async fn current(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<CurrentView> {
         self.device(tx, device).await?;
         let t = self.tenant();
@@ -91,7 +95,7 @@ impl Compliance {
         let ids = tasks.clone();
         let rows=tx.with_connection(move|c|Box::pin(async move{
           sqlx::query("SELECT task,document::text FROM mdm_compliance.results WHERE tenant_id=$1::uuid AND task=ANY($2::uuid[]) AND device=$3")
-          .bind(t.to_string()).bind(ids).bind(name).fetch_all(c).await
+          .bind(t.to_string()).bind(ids).bind(name.into_uuid()).fetch_all(c).await
         })).await?;
         let mut documents = std::collections::BTreeMap::<Uuid, String>::new();
         for row in rows {
@@ -146,7 +150,7 @@ impl Compliance {
             });
         }
         Ok(CurrentView {
-            device: device.into(),
+            device: *device,
             status: rss_mdm_compliance::aggregate(statuses),
             reason: if items.is_empty() {
                 Some(EmptyReason::NoRules)
@@ -159,7 +163,7 @@ impl Compliance {
     pub(crate) async fn history(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         subject: &str,
         query: &HistoryQuery,
     ) -> Result<History> {

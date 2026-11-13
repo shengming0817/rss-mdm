@@ -47,7 +47,7 @@ pub struct Binding {
     pub account_disposition: rss_mdm_agent_wire::runtime::AccessAccountDisposition,
     pub id: Uuid,
     pub tenant: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub person: Person,
     pub origin: Origin,
     pub generation: i64,
@@ -109,8 +109,6 @@ impl Binding {
             || self.tenant.is_nil()
             || self.policy.is_nil()
             || self.policy_version.is_nil()
-            || self.device.is_empty()
-            || self.device.len() > 256
             || self.generation < 1
             || self.factor_generation < 1
             || self.revision < 1
@@ -174,7 +172,7 @@ impl Binding {
 pub trait Admission: Send + Sync {
     fn broker_release_query(&self) -> &'static str {
         crate::broker_release_query!(
-            "SELECT NULL::uuid AS tenant_id,NULL::uuid AS installation,NULL::text AS device,NULL::uuid AS registration,NULL::bigint AS generation,NULL::text AS platform,NULL::jsonb AS capabilities,NULL::jsonb AS execution_context WHERE false"
+            "SELECT NULL::uuid AS tenant_id,NULL::uuid AS installation,NULL::uuid AS device,NULL::uuid AS registration,NULL::bigint AS generation,NULL::text AS platform,NULL::jsonb AS capabilities,NULL::jsonb AS execution_context WHERE false"
         )
     }
 
@@ -182,7 +180,7 @@ pub trait Admission: Send + Sync {
         &'a self,
         c: &'a mut sqlx::PgConnection,
         tenant: Uuid,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         after: Option<Uuid>,
         limit: u16,
     ) -> crate::Pending<
@@ -197,7 +195,7 @@ pub trait Admission: Send + Sync {
         &'a self,
         c: &'a mut sqlx::PgConnection,
         tenant: Uuid,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         policy: Uuid,
     ) -> crate::Pending<'a, PolicySelection>;
     fn binding_session<'a>(
@@ -252,7 +250,7 @@ impl Change {
     pub fn step_up_context(
         &self,
         actor: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         binding: Uuid,
         idp_fingerprints: &std::collections::BTreeMap<Uuid, String>,
     ) -> Result<rss_identity_core::step_up::StepUpContext, Error> {

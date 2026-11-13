@@ -18,7 +18,7 @@ CREATE TABLE mdm_devices.associations (
 CREATE TABLE mdm_devices.members (
     tenant_id uuid NOT NULL
   , association_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , channel text NOT NULL CHECK (channel IN ('mdm', 'agent'))
   , released boolean NOT NULL DEFAULT FALSE
   , PRIMARY KEY (tenant_id, association_id, channel)
@@ -53,7 +53,7 @@ GRANT UPDATE (released)
   TO mdm_access;
 CREATE TABLE mdm_devices.checkpoints (
  tenant_id uuid PRIMARY KEY REFERENCES public.mdm_tenants(tenant_id), from_cut jsonb,to_cut jsonb,
- event_after bigint NOT NULL DEFAULT 0 CHECK(event_after>=0),page_through bigint CHECK(page_through>event_after),cursor text COLLATE "C",rebuild_after text COLLATE "C",rebuilding boolean NOT NULL DEFAULT true,object_revision bigint NOT NULL DEFAULT 0 CHECK(object_revision>=0),current_cut uuid,
+ event_after bigint NOT NULL DEFAULT 0 CHECK(event_after>=0),page_through bigint CHECK(page_through>event_after),cursor uuid,rebuild_after uuid,rebuilding boolean NOT NULL DEFAULT true,object_revision bigint NOT NULL DEFAULT 0 CHECK(object_revision>=0),current_cut uuid,
  relation_revision bigint NOT NULL DEFAULT 0 CHECK(relation_revision>=0)
 );
 ALTER TABLE mdm_devices.checkpoints ENABLE ROW LEVEL SECURITY;
@@ -77,20 +77,20 @@ CREATE TABLE mdm_devices.retirements (
  origin jsonb NOT NULL CHECK(origin IN ('"system"','"policy"','"human"','"ai"')),
  tenant_id uuid NOT NULL REFERENCES public.mdm_tenants(tenant_id),
  id uuid NOT NULL, policy uuid NOT NULL, version uuid NOT NULL,
- object text NOT NULL, occurrence text NOT NULL,
+ object_kind smallint NOT NULL CHECK(object_kind IN(0,1)), object_id uuid NOT NULL CHECK(object_id <> '00000000-0000-0000-0000-000000000000'::uuid), occurrence text NOT NULL,
  target jsonb NOT NULL, authority jsonb NOT NULL,
  delivery_seconds integer NOT NULL CHECK(delivery_seconds BETWEEN 60 AND 604800),
  created_at bigint NOT NULL, forced_at bigint, forced_by jsonb,
  cleanup_after uuid,
- PRIMARY KEY(tenant_id,id), UNIQUE(tenant_id,version,object,occurrence),
- CHECK(length(object) BETWEEN 1 AND 1024), CHECK(length(occurrence) BETWEEN 1 AND 256),
+ PRIMARY KEY(tenant_id,id), UNIQUE(tenant_id,version,object_kind,object_id,occurrence),
+ CHECK(length(occurrence) BETWEEN 1 AND 256),
  CHECK(octet_length(target::text)<=1048576), CHECK(octet_length(authority::text)<=65536),
  CHECK((forced_at IS NULL)=(forced_by IS NULL))
 );
 CREATE TABLE mdm_devices.retirement_channels (
     tenant_id uuid NOT NULL
   , operation uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , channel text NOT NULL CHECK (channel IN ('mdm', 'agent'))
   , stage text NOT NULL CHECK (stage IN ('cleanup', 'unenroll', 'revoke', 'complete'))
   , effect text NOT NULL CHECK (effect IN ('pending', 'confirmed', 'unknown', 'blocked'))
@@ -118,7 +118,7 @@ CREATE INDEX pending_retirement_channels ON mdm_devices.retirement_channels(tena
 CREATE TABLE mdm_devices.retirement_work (
     tenant_id uuid NOT NULL
   , operation uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , execution uuid NOT NULL
   , PRIMARY KEY (tenant_id, execution)
   , FOREIGN KEY (tenant_id, operation, device) REFERENCES mdm_devices.retirement_channels (tenant_id, operation, device)
@@ -130,7 +130,7 @@ REVOKE ALL ON mdm_devices.retirement_work FROM PUBLIC;
 GRANT SELECT ON mdm_devices.retirement_work TO mdm_access,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime;
 GRANT INSERT ON mdm_devices.retirement_work TO mdm_command_runtime;
 CREATE TABLE mdm_devices.asset_states (
- tenant_id uuid NOT NULL,device text NOT NULL,state text NOT NULL CHECK(state IN('active','archived','deleted')),
+ tenant_id uuid NOT NULL,device uuid NOT NULL,state text NOT NULL CHECK(state IN('active','archived','deleted')),
  PRIMARY KEY(tenant_id,device),FOREIGN KEY(tenant_id,device) REFERENCES mdm_access.devices(tenant_id,id)
 );
 ALTER TABLE mdm_devices.asset_states ENABLE ROW LEVEL SECURITY;
@@ -154,7 +154,7 @@ COMMIT;
 
 -- A source-sharing grant depends on this exact confirmed association, not peer liveness.
 -- This lets one transport retire without destroying the surviving transport's custody.
-CREATE FUNCTION mdm_devices.association_grant_current(p_id uuid,p_version bigint,p_device text)
+CREATE FUNCTION mdm_devices.association_grant_current(p_id uuid,p_version bigint,p_device uuid)
 RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  SELECT EXISTS(SELECT FROM mdm_devices.associations a JOIN mdm_devices.members m
   ON(m.tenant_id,m.association_id)=(a.tenant_id,a.id)
@@ -162,5 +162,5 @@ RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog 
    AND a.id=p_id AND a.version=p_version AND a.state='confirmed' AND NOT m.released
    AND m.device=p_device)
 $$;
-REVOKE ALL ON FUNCTION mdm_devices.association_grant_current(uuid,bigint,text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_devices.association_grant_current(uuid,bigint,text) TO mdm_access,mdm_command_runtime,mdm_identity_runtime;
+REVOKE ALL ON FUNCTION mdm_devices.association_grant_current(uuid,bigint,uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_devices.association_grant_current(uuid,bigint,uuid) TO mdm_access,mdm_command_runtime,mdm_identity_runtime;

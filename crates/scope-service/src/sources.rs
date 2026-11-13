@@ -27,12 +27,12 @@ pub struct ResultPage<'a> {
     pub scope: uuid::Uuid,
     pub run: uuid::Uuid,
     pub channel: rss_mdm_inventory::Channel,
-    pub after: Option<&'a str>,
+    pub after: Option<&'a rss_mdm_agent_wire::DeviceId>,
     pub limit: usize,
 }
 pub struct ResultDevices {
     pub result: uuid::Uuid,
-    pub devices: Vec<String>,
+    pub devices: Vec<rss_mdm_agent_wire::DeviceId>,
     pub current: bool,
 }
 pub struct ResultMember<'a> {
@@ -40,7 +40,7 @@ pub struct ResultMember<'a> {
     pub scope: uuid::Uuid,
     pub run: uuid::Uuid,
     pub channel: rss_mdm_inventory::Channel,
-    pub device: &'a str,
+    pub device: &'a rss_mdm_agent_wire::DeviceId,
     pub objects: &'a dyn rss_mdm_inventory_service::objects::ObjectReader,
 }
 pub struct ResultDetail {

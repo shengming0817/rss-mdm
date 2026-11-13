@@ -47,7 +47,7 @@ pub(crate) async fn principal(
     Ok(())
 }
 pub(crate) fn belongs(run: &db::Run, p: &DevicePrincipal) -> Result<()> {
-    if run.target.device != p.device() {
+    if run.target.device != *p.device() {
         return Err(Error::Unauthorized.into());
     }
     Ok(())
@@ -87,7 +87,7 @@ impl Service {
         let binding = agent_facts::agent_binding_in(
             tx,
             service.transactions.agent_store.clone(),
-            p.device().to_string(),
+            *p.device(),
         )
         .await?
         .ok_or(Error::Forbidden)?;
@@ -135,13 +135,10 @@ impl Service {
         let service = self;
         let now = storage::now(tx).await?;
         let event_key = format!("agent:{}:offer:{}", p.device(), input.operation_id());
-        let binding = agent_facts::agent_binding_in(
-            tx,
-            self.transactions.agent_store.clone(),
-            p.device().to_string(),
-        )
-        .await?
-        .ok_or(Error::Forbidden)?;
+        let binding =
+            agent_facts::agent_binding_in(tx, self.transactions.agent_store.clone(), *p.device())
+                .await?
+                .ok_or(Error::Forbidden)?;
         let mut offer = None;
         let mut offer_activity = None;
         let mut run = db::load_run(tx, id).await?;
@@ -482,7 +479,7 @@ impl Service {
     pub async fn agent_cancellations_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         after: Option<Uuid>,
     ) -> Result<Vec<wire::TaskCancellation>> {
         self.transactions.runtime.validate_transaction(tx)?;
@@ -491,7 +488,10 @@ impl Service {
 }
 use rss_mdm_audit_integration::RequestAudit;
 
-pub(crate) async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
+pub(crate) async fn lock_device(
+    tx: &mut PgTransaction<'_>,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     tx.with_connection(move |c| {

@@ -13,7 +13,7 @@ impl GroupSources {
         &self,
         tx: &mut PgTransaction<'_>,
         id: OperationId,
-        objects: &[String],
+        objects: &[rss_mdm_agent_wire::ObjectRef],
         max_bytes: usize,
     ) -> InTransaction<SourceDecisions> {
         crate::store::input!(self.check_transaction(tx)?);
@@ -25,23 +25,28 @@ impl GroupSources {
             return Ok(Err(Rejection::IncompleteSnapshot));
         }
         if build.request.patch.is_some() {
-            let bytes: usize = objects.iter().map(|s| s.len() + 1024).sum();
+            let bytes = objects.len() * (18 + 1024);
             if bytes > max_bytes {
                 return Ok(Err(Rejection::PageBudgetExceeded));
             }
             let tenant = tx.tenant_id().to_string();
             let group = build.request.group.to_string();
             let base = build.request.base_calculation;
-            let wanted = objects.to_vec();
-            let matched:Vec<String>=tx.with_connection(move|c|Box::pin(async move {
-                sqlx::query_scalar("SELECT object_id FROM (SELECT DISTINCT ON(m.object_id) m.object_id,m.added FROM mdm_group.member_changes m JOIN mdm_group.member_runs r ON(r.tenant_id,r.id)=(m.tenant_id,m.run_id) WHERE m.tenant_id=$1::uuid AND m.group_id=$2::uuid AND m.object_id=ANY($3) AND ((r.phase='published' AND r.base_calculation<=$4) OR r.id=$5::uuid) ORDER BY m.object_id,m.revision DESC) latest WHERE added")
-                    .bind(tenant).bind(group).bind(wanted).bind(base).bind(id.to_string()).fetch_all(c).await
+            let wanted_kinds = objects.iter().map(|o| o.kind()).collect::<Vec<_>>();
+            let wanted_ids = objects.iter().map(|o| o.uuid()).collect::<Vec<_>>();
+            let rows=tx.with_connection(move|c|Box::pin(async move {
+                sqlx::query("SELECT object_kind,object_id FROM (SELECT DISTINCT ON(m.object_kind,m.object_id) m.object_kind,m.object_id,m.added FROM mdm_group.member_changes m JOIN mdm_group.member_runs r ON(r.tenant_id,r.id)=(m.tenant_id,m.run_id) WHERE m.tenant_id=$1::uuid AND m.group_id=$2::uuid AND EXISTS(SELECT FROM unnest($3::smallint[],$4::uuid[]) s(kind,id) WHERE (m.object_kind,m.object_id)=(s.kind,s.id)) AND ((r.phase='published' AND r.base_calculation<=$5) OR r.id=$6::uuid) ORDER BY m.object_kind,m.object_id,m.revision DESC) latest WHERE added")
+                    .bind(tenant).bind(group).bind(wanted_kinds).bind(wanted_ids).bind(base).bind(id.to_string()).fetch_all(c).await
             })).await?;
+            let matched = rows
+                .iter()
+                .map(crate::storage::object)
+                .collect::<Result<Vec<_>, _>>()?;
             let outcomes = objects
                 .iter()
                 .map(|o| {
                     (
-                        o.clone(),
+                        *o,
                         if matched.contains(o) {
                             rss_mdm_group::Outcome::Match
                         } else {
@@ -73,11 +78,11 @@ impl GroupSources {
         .await?;
         let mut result = std::collections::BTreeMap::new();
         for row in rows.0 {
-            let object: String = row.try_get("object_id")?;
+            let object = crate::storage::object(&row)?;
             let evidence: Vec<u8> = row.try_get("evidence")?;
             crate::storage::document(&evidence, row.try_get("evidence_digest")?)?;
             let record: DecisionRecord = data(serde_json::from_slice(&evidence))?;
-            if record.device != object {
+            if record.object != object {
                 return Err(stored_shape());
             }
             let outcome = match record.decision {

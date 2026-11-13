@@ -271,7 +271,7 @@ async fn connection_operation(
 async fn connection_observation(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
 ) -> Result<Json<Option<rss_mdm_registration_service::agent::connections::Observation>>, HttpFailure>
 {
     Ok(Json(
@@ -329,7 +329,7 @@ async fn recovery(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
-    Path(id): Path<String>,
+    Path(id): Path<rss_mdm_agent_wire::DeviceId>,
     input: Body<wire::GrantRequest>,
 ) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
     Ok(Json(
@@ -591,7 +591,7 @@ impl rss_mdm_http_contract::query::DirectoryOwner for RecoveryOperationsQuery {
 async fn request_directory(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Directory<RequestsQuery>,
     >,
@@ -632,7 +632,7 @@ async fn request_details(
 async fn registration_recovery_operation(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-    Path((id, operation)): Path<(String, Uuid)>,
+    Path((id, operation)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
     identity: Result<
         Query<rss_mdm_registration_service::agent::queries::ReceiptIdentity>,
         axum::extract::rejection::QueryRejection,

@@ -18,12 +18,12 @@ pub(crate) async fn send(
     let trust = apple.device_trust().public().map_err(|_| Error::Conflict)?;
     let digest = trust.installation_digest();
     let done:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_pki.installations WHERE tenant_id = CAST($1 AS uuid) AND purpose = 'apple' AND device = $2 AND revision = $3 AND digest = $4)")
-        .bind(&tenant).bind(p.device()).bind(trust.revision as i64).bind(&digest).fetch_one(&mut *c).await.map_err(db)?;
+        .bind(&tenant).bind(p.device().into_uuid()).bind(trust.revision as i64).bind(&digest).fetch_one(&mut *c).await.map_err(db)?;
     if done {
         return Ok((vec![], vec![]));
     }
     let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'")
-        .bind(&tenant).bind(p.device()).fetch_one(&mut *c).await.map_err(db)?;
+        .bind(&tenant).bind(p.device().into_uuid()).fetch_one(&mut *c).await.map_err(db)?;
     if rights & 3 != 3 {
         return Err(Error::Forbidden);
     }
@@ -35,7 +35,7 @@ pub(crate) async fn send(
         .await
         .map_err(db)?;
     let delivery=sqlx::query("SELECT id, body, profile FROM mdm_apple.trust_deliveries WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND revision = $3 AND digest = $4")
-        .bind(&tenant).bind(p.device()).bind(trust.revision as i64).bind(&digest).fetch_optional(&mut *c).await.map_err(db)?;
+        .bind(&tenant).bind(p.device().into_uuid()).bind(trust.revision as i64).bind(&digest).fetch_optional(&mut *c).await.map_err(db)?;
     let (delivery, profile, frozen) = if let Some(row) = delivery {
         let frozen: Trust = serde_json::from_slice(&row.try_get::<Vec<u8>, _>("body").map_err(db)?)
             .map_err(|_| unavailable())?;
@@ -48,7 +48,7 @@ pub(crate) async fn send(
         let id = Uuid::new_v4();
         let profile = Uuid::new_v4();
         sqlx::query("INSERT INTO mdm_apple.trust_deliveries (tenant_id, id, device, revision, digest, body, profile) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7)")
-            .bind(&tenant).bind(id).bind(p.device()).bind(trust.revision as i64).bind(&digest).bind(serde_json::to_vec(&trust).map_err(|_|unavailable())?).bind(profile).execute(&mut *c).await.map_err(db)?;
+            .bind(&tenant).bind(id).bind(p.device().into_uuid()).bind(trust.revision as i64).bind(&digest).bind(serde_json::to_vec(&trust).map_err(|_|unavailable())?).bind(profile).execute(&mut *c).await.map_err(db)?;
         (id, profile, trust.clone())
     };
     if frozen.installation_digest() != digest {
@@ -130,7 +130,7 @@ pub(crate) async fn send(
             &bytes,
         )?;
         sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, trust, phase, ordinal, request, state, deadline) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, 'pending', clock_timestamp() + CAST('15 minutes' AS interval))")
-            .bind(&tenant).bind(id).bind(p.device()).bind(delivery).bind(phase).bind(ordinal).bind(sealed).execute(&mut *c).await.map_err(db)?;
+            .bind(&tenant).bind(id).bind(p.device().into_uuid()).bind(delivery).bind(phase).bind(ordinal).bind(sealed).execute(&mut *c).await.map_err(db)?;
         let a = audit.fact_copy("apple_pki_install");
         a.identify_device(p.device());
         a.target_device(p.device());
@@ -159,7 +159,7 @@ pub(crate) async fn receive(
 ) -> Result<Option<AppleReception>, Error> {
     let (bytes, audit) = input;
     let row=sqlx::query("SELECT a.phase, a.deadline > clock_timestamp() AS live, d.body, d.profile FROM mdm_apple.attempts AS a INNER JOIN mdm_apple.trust_deliveries AS d ON (d.tenant_id, d.id) = (a.tenant_id, a.trust) WHERE a.tenant_id = CAST($1 AS uuid) AND a.id = $2 AND a.device = $3")
-        .bind(p.tenant().to_string()).bind(id).bind(p.device()).fetch_optional(&mut *c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(id).bind(p.device().into_uuid()).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
         return Ok(None);
     };

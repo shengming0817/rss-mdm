@@ -72,7 +72,7 @@ fn check_sources(rows: i64, limit: i64, stage: &'static str) -> Result<(), Error
 fn selection(
     profile: rss_mdm_install_support::StorageProfile,
     tenant: &str,
-    allowed: Option<std::collections::BTreeSet<String>>,
+    allowed: Option<std::collections::BTreeSet<rss_mdm_agent_wire::DeviceId>>,
     q: &Query,
     after: Option<&rss_mdm_query::directory::Position>,
     explain: bool,
@@ -83,7 +83,12 @@ fn selection(
         .push(" AND d.tenant_id=$1::uuid");
     if let Some(allowed) = allowed {
         sql.push(" AND d.id=ANY(")
-            .push_bind(allowed.into_iter().collect::<Vec<_>>())
+            .push_bind(
+                allowed
+                    .into_iter()
+                    .map(|id| id.into_uuid())
+                    .collect::<Vec<_>>(),
+            )
             .push(")");
     }
     filter(&mut sql, q)?;
@@ -105,11 +110,14 @@ impl DeviceService {
     where
         F: for<'c> FnOnce(
                 &'c mut PgConnection,
-                &'c [String],
+                &'c [rss_mdm_agent_wire::DeviceId],
             ) -> std::pin::Pin<
                 Box<
                     dyn std::future::Future<
-                            Output = Result<std::collections::BTreeSet<String>, Error>,
+                            Output = Result<
+                                std::collections::BTreeSet<rss_mdm_agent_wire::DeviceId>,
+                                Error,
+                            >,
                         > + Send
                         + 'c,
                 >,
@@ -140,7 +148,7 @@ impl DeviceService {
             .map_err(error)?;
         let after = q.after(codec, &binding).map_err(error)?;
         let mut sql = selection(profile, &self.tenant, allowed, q, after.as_ref(), false)?;
-        let candidates: Vec<(Option<String>, i64, Option<Value>)> =
+        let candidates: Vec<(Option<Uuid>, i64, Option<Value>)> =
             sql.build_query_as().fetch_all(&mut *tx).await.map_err(db)?;
         check_sources(
             candidates.first().ok_or(Error::Corrupt)?.1,
@@ -155,14 +163,21 @@ impl DeviceService {
         rows.truncate(q.limit());
         let ids = rows
             .iter()
-            .map(|row| row["id"].as_str().map(str::to_owned).ok_or(Error::Corrupt))
+            .map(|row| {
+                serde_json::from_value::<rss_mdm_agent_wire::DeviceId>(row["id"].clone())
+                    .map_err(|_| Error::Corrupt)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         {
             // Seek values are complete even when fields omits this output.
             let present = presence(&mut tx, &ids).await?;
             for row in &mut rows {
-                row["inventoryAvailable"] =
-                    json!(present.contains(row["id"].as_str().ok_or(Error::Corrupt)?));
+                row["inventoryAvailable"] = json!(
+                    present.contains(
+                        &serde_json::from_value::<rss_mdm_agent_wire::DeviceId>(row["id"].clone())
+                            .map_err(|_| Error::Corrupt)?
+                    )
+                );
             }
         }
         let next_cursor = if more {
@@ -215,7 +230,12 @@ impl DeviceService {
             .map_err(rss_mdm_authorization_service::Error::from)?
         {
             sql.push(" AND d.id=ANY(")
-                .push_bind(allowed.into_iter().collect::<Vec<_>>())
+                .push_bind(
+                    allowed
+                        .into_iter()
+                        .map(|id| id.into_uuid())
+                        .collect::<Vec<_>>(),
+                )
                 .push(")");
         }
         filter(&mut sql, q)?;
@@ -235,7 +255,7 @@ impl DeviceService {
     pub async fn directory_device(
         &self,
         request: &rss_mdm_authorization_service::context::RequestAuth,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<Item, Error> {
         let p = request.proof.as_ref();
         let profile = self.profile();
@@ -258,11 +278,10 @@ impl DeviceService {
     pub async fn directory_device_on(
         &self,
         c: &mut PgConnection,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<Item, Error> {
         let profile = self.profile();
 
-        Id::new(device).map_err(|_| Error::Malformed)?;
         let value = page_on(profile, c, &self.tenant, &[device.to_owned()]).await?;
         value["items"]
             .as_array()
@@ -277,14 +296,14 @@ pub async fn page_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
-    devices: &[String],
+    devices: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<Value, Error> {
     if devices.len() > 1000 {
         return Err(Error::Malformed);
     }
     let rows = sqlx::query(crate::storage_profile::sql(profile).device_directory_page_on_1)
         .bind(tenant)
-        .bind(devices)
+        .bind(devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>())
         .fetch_all(c)
         .await
         .map_err(db)?;
@@ -308,8 +327,7 @@ pub struct DeviceStatistics {
 #[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Item {
-    #[schemars(extend("x-rss-maxUtf8Bytes" = 256))]
-    pub id: String,
+    pub id: rss_mdm_agent_wire::DeviceId,
     /// First successful primary-registration acceptance; missing historical evidence stays unknown.
     pub registered_at: Option<i64>,
     pub status: Status,
@@ -352,7 +370,7 @@ mod response_tests {
     use super::*;
     #[test]
     fn bound_enrollment_uses_its_actual_state_owner() {
-        let value = serde_json::json!({"id":"device","status":"active","channel":"mdm","source":"mdm.apple","platform":"macos","registeredAt":null,"lastCommunicationReceivedAt":null,"enrollment":{"enrollmentId":uuid::Uuid::new_v4(),"status":"bound","expiresAt":1}});
+        let value = serde_json::json!({"id":"00000000-0000-0000-0000-000000000001","status":"active","channel":"mdm","source":"mdm.apple","platform":"macos","registeredAt":null,"lastCommunicationReceivedAt":null,"enrollment":{"enrollmentId":uuid::Uuid::new_v4(),"status":"bound","expiresAt":1}});
         let item: Item = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(item).unwrap(), value);
         let mut unknown = value;
@@ -391,7 +409,7 @@ fn filter(sql: &mut sqlx::QueryBuilder<sqlx::Postgres>, q: &Query) -> Result<(),
     let hardware = q.mentions("serialNumber") || q.mentions("hardwareUuid");
     if hardware {
         // The empty witness keeps a non-hardware OR branch valid for devices with no hardware history.
-        sql.push(" AND EXISTS(SELECT 1 FROM (SELECT serial_number,hardware_uuid FROM mdm.device_hardware_evidence WHERE tenant_id=d.tenant_id AND device=d.id AND scope::jsonb->>'object'=CASE WHEN scope::jsonb->>'dataset'='inventory' THEN d.id ELSE d.id||':'||(scope::jsonb->>'dataset') END AND EXISTS(SELECT FROM mdm_access.devices retained WHERE retained.tenant_id=d.tenant_id AND retained.id=d.id) UNION ALL SELECT NULL::text,NULL::text) h WHERE true");
+        sql.push(" AND EXISTS(SELECT 1 FROM (SELECT serial_number,hardware_uuid FROM mdm.device_hardware_evidence WHERE tenant_id=d.tenant_id AND device=d.id AND scope::jsonb->>'object'=CASE WHEN scope::jsonb->>'dataset'='inventory' THEN d.id::text ELSE d.id::text||':'||(scope::jsonb->>'dataset') END AND EXISTS(SELECT FROM mdm_access.devices retained WHERE retained.tenant_id=d.tenant_id AND retained.id=d.id) UNION ALL SELECT NULL::text,NULL::text) h WHERE true");
     }
     rss_mdm_query_postgres::filter(sql, q, &*BINDINGS).map_err(error)?;
     if hardware {
@@ -402,14 +420,14 @@ fn filter(sql: &mut sqlx::QueryBuilder<sqlx::Postgres>, q: &Query) -> Result<(),
 
 pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
     std::sync::LazyLock::new(|| {
-        rss_mdm_query_postgres::Bindings::new(&SCHEMA, &[rss_mdm_query_postgres::Source::required_column("id", "d.id COLLATE \"C\""),
+        rss_mdm_query_postgres::Bindings::new(&SCHEMA, &[rss_mdm_query_postgres::Source::required_column("id", "d.id"),
 rss_mdm_query_postgres::Source::column("status", "d.status COLLATE \"C\""),
 rss_mdm_query_postgres::Source::column("channel", "d.channel COLLATE \"C\""),
 rss_mdm_query_postgres::Source::column("source", "d.source COLLATE \"C\""),
 rss_mdm_query_postgres::Source::column("platform", "d.platform COLLATE \"C\""),
 rss_mdm_query_postgres::Source::column("registeredAt", "d.registered_at"),
 rss_mdm_query_postgres::Source::column("lastCommunicationReceivedAt", "floor(extract(epoch FROM d.last_communication_received_at))::bigint"),
-rss_mdm_query_postgres::Source::column("enrollment.enrollmentId", "d.enrollment_id::text COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("enrollment.enrollmentId", "d.enrollment_id"),
 rss_mdm_query_postgres::Source::column("enrollment.status", "(CASE WHEN d.enrollment_state='pending' AND d.expires_at<=statement_timestamp() THEN 'expired' ELSE d.enrollment_state END) COLLATE \"C\""),
 rss_mdm_query_postgres::Source::column("enrollment.expiresAt", "floor(extract(epoch FROM d.expires_at))::bigint"),
 rss_mdm_query_postgres::Source::column("inventoryAvailable", "EXISTS(SELECT FROM mdm_assets.device_inventory_presence i WHERE i.tenant_id=d.tenant_id AND i.device=d.id)"),

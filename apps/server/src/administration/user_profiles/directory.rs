@@ -46,10 +46,7 @@ pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
         rss_mdm_query_postgres::Bindings::new(
             &DIRECTORY,
             &[
-                rss_mdm_query_postgres::Source::required_column(
-                    "fieldId",
-                    "field_id::text COLLATE \"C\"",
-                ),
+                rss_mdm_query_postgres::Source::required_column("fieldId", "field_id"),
                 rss_mdm_query_postgres::Source::column("revision", "revision"),
                 rss_mdm_query_postgres::Source::column(
                     "collectedAfterMicros",

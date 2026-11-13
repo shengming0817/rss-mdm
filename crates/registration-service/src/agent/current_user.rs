@@ -19,7 +19,7 @@ pub async fn binding_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Binding, Error> {
     bindings_on(profile, c, tenant, &[device.to_owned()])
         .await?
@@ -31,14 +31,14 @@ pub async fn bindings_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
-    devices: &[String],
-) -> Result<std::collections::BTreeMap<String, Binding>, Error> {
+    devices: &[rss_mdm_agent_wire::DeviceId],
+) -> Result<std::collections::BTreeMap<rss_mdm_agent_wire::DeviceId, Binding>, Error> {
     if devices.len() > 1000 {
         return Err(Error::Malformed);
     }
     let rows = sqlx::query(crate::storage_profile::sql(profile).agent_current_user_bindings_on_1)
         .bind(tenant)
-        .bind(devices)
+        .bind(devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>())
         .fetch_all(&mut *c)
         .await
         .map_err(db)?;
@@ -46,7 +46,7 @@ pub async fn bindings_on(
         .iter()
         .map(|id| {
             (
-                id.clone(),
+                *id,
                 Binding {
                     revision: 0,
                     reference: None,
@@ -82,7 +82,9 @@ pub async fn bindings_on(
         let fingerprint: Option<Vec<u8>> = row.try_get("fingerprint").map_err(db)?;
         let registration_valid = fingerprint.as_ref().is_some_and(|f| valid.contains(f));
         result.insert(
-            row.try_get("device").map_err(db)?,
+            row.try_get::<uuid::Uuid, _>("device")
+                .and_then(crate::database::device_id)
+                .map_err(db)?,
             Binding {
                 revision: row
                     .try_get::<i64, _>("revision")
@@ -253,7 +255,7 @@ impl Service {
                     if let Some(old) = old {
                         if old.try_get::<String, _>("digest").map_err(db)? != *digest
                             || old.try_get::<String, _>("instance").map_err(db)?
-                                != device.device()
+                                != device.device().to_string()
                         {
                             return Err(Error::Conflict);
                         }
@@ -289,7 +291,7 @@ impl Service {
                             .agent_current_user_change_current_user_2,
                     )
                     .bind(device.tenant().to_string())
-                    .bind(device.device())
+                    .bind(device.device().into_uuid())
                     .bind(revision as i64)
                     .bind(
                         reference
@@ -331,11 +333,11 @@ impl Service {
                     )
                     .bind(device.tenant().to_string())
                     .bind(actor)
-                    .bind(device.device().to_string())
+                    .bind(device.device().into_uuid())
                     .bind(input.operation_id)
                     .bind(&*digest)
                     .bind(serde_json::to_string(&value).map_err(|_| Error::Corrupt)?)
-                    .bind(device.device())
+                    .bind(device.device().into_uuid())
                     .execute(&mut *c)
                     .await
                     .map_err(db)?;

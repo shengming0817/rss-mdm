@@ -85,7 +85,7 @@ pub(super) async fn admit(
             };
             let admission=rss_mdm_registration_service::enrollment::native::entra_in(c,proof,policy.clone(),accepted.unwrap_or(proposed),settings.revision,profile).await?;
             let d=admission.coordinates();
-            a.target(&d.device);
+            a.target_device(&d.device);
             if let Some(opaque)=opaque {
                 let changed=sqlx::query("UPDATE mdm_windows.entra_consents SET request_id=$3,request_digest=$4 WHERE tenant_id=$1::uuid AND digest=$2 AND revision=$5 AND expires_at>clock_timestamp() AND (request_id IS NULL OR (request_id=$3 AND request_digest=$4))")
                     .bind(&d.tenant).bind(hash(opaque)).bind(d.id).bind(digest.as_str()).bind(settings.revision).execute(&mut *c).await.map_err(db)?.rows_affected();

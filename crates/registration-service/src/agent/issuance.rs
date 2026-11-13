@@ -89,7 +89,12 @@ impl Service {
                     configurations::lock_for_grant(profile, c, &tenant, input.grant_id).await?;
                     let grant = grant_row(profile, c, &tenant, input.grant_id).await?;
                     check_secret(&tenant, &grant, &input.secret)?;
-                    a.target(&grant.try_get::<String, _>("device").map_err(db)?);
+                    a.target_device(
+                        &grant
+                            .try_get::<uuid::Uuid, _>("device")
+                            .and_then(crate::database::device_id)
+                            .map_err(db)?,
+                    );
                     if let Some(row) =
                         sqlx::query(crate::storage_profile::sql(profile).agent_issuance_issue_1)
                             .bind(&tenant)
@@ -160,7 +165,10 @@ impl Service {
                     if grant.try_get::<String, _>("state").map_err(db)? != "available" {
                         return Err(Error::Conflict);
                     }
-                    let device: String = grant.try_get("device").map_err(db)?;
+                    let device: rss_mdm_agent_wire::DeviceId = grant
+                        .try_get::<uuid::Uuid, _>("device")
+                        .and_then(crate::database::device_id)
+                        .map_err(db)?;
                     a.target_device(&device);
                     let start = now(c).await?;
                     let end = service.issuer.end(start)?;
@@ -360,11 +368,19 @@ impl Service {
                         .require(
                             p,
                             rss_mdm_authorization_service::Permission::Credentials,
-                            Some(&g.try_get::<String, _>("device").map_err(db)?),
+                            Some(
+                                &g.try_get::<uuid::Uuid, _>("device")
+                                    .and_then(crate::database::device_id)
+                                    .map_err(db)?,
+                            ),
                         )
                         .map_err(|_| Error::Forbidden)?;
                     }
-                    a.target_device(&g.try_get::<String, _>("device").map_err(db)?);
+                    a.target_device(
+                        &g.try_get::<uuid::Uuid, _>("device")
+                            .and_then(crate::database::device_id)
+                            .map_err(db)?,
+                    );
                     let old = sqlx::query(
                         crate::storage_profile::sql(profile).agent_issuance_save_certificate_1,
                     )
@@ -415,7 +431,11 @@ impl Service {
                         c,
                         &tenant,
                         rss_mdm_pki_service::registry::purpose(service.issuer.purpose()),
-                        Some(&g.try_get::<String, _>("device").map_err(db)?),
+                        Some(
+                            &g.try_get::<uuid::Uuid, _>("device")
+                                .and_then(crate::database::device_id)
+                                .map_err(db)?,
+                        ),
                         &hex(certificate.metadata.issuer),
                         certificate.chain.first().ok_or(Error::Corrupt)?,
                     )
@@ -516,7 +536,11 @@ impl Service {
         let expected: [u8; 32] = bytes.try_into().map_err(|_| Error::Corrupt)?;
         let grant = i.try_get::<Uuid, _>("grant_id").map_err(db)?;
         let g = grant_row(profile, &mut tx, &tenant, grant).await?;
-        p.credentials(&g.try_get::<String, _>("device").map_err(db)?)?;
+        p.credentials(
+            &g.try_get::<uuid::Uuid, _>("device")
+                .and_then(crate::database::device_id)
+                .map_err(db)?,
+        )?;
         let verified = VerifiedDeviceCsr::verify(
             &i.try_get::<Vec<u8>, _>("csr").map_err(db)?,
             self.issuer.purpose(),

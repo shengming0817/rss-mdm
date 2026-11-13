@@ -56,9 +56,10 @@ impl AuthorityReader {
             .map_err(crate::deployment::database::db)?;
         let row=sqlx::query("SELECT o.device, o.request, o.input_context, o.authority, mdm_software_deployment.installation_status(o.id) AS status FROM mdm_software_deployment.operations AS o WHERE o.tenant_id = CAST($1 AS uuid) AND o.id = $2").bind(&tenant).bind(installation).fetch_optional(&mut *c).await.map_err(crate::deployment::database::db)?.ok_or(Error::Forbidden)?;
         if row
-            .try_get::<String, _>("device")
+            .try_get::<Uuid, _>("device")
+            .and_then(crate::deployment::database::device_id)
             .map_err(crate::deployment::database::db)?
-            != p.device()
+            != *p.device()
         {
             return Err(Error::Forbidden);
         }
@@ -278,7 +279,7 @@ impl rss_mdm_registration_service::installation::Installations for AuthorityRead
                 if now>=request.deadline || !matches!(row.try_get::<String,_>("status").map_err(database::db)?.as_str(),"queued"|"published"|"received"|"applied") || !authority.valid(self.source.as_ref(),self.lifecycle.as_ref(),c,&self.protection,&[authorization::Permission::SoftwareDeploy],now).await? {return Err(Error::Forbidden);}
                 let authority::Authority::AgentInstall{package,download_origin,origin,device,policy,version,..}=authority else{return Err(Error::Forbidden)};
                 rss_mdm_registration_service::lifecycle::require_work_in(rss_mdm_install_support::StorageProfile::Mdm, c,&tenant.to_string(),&device).await?;
-                let active:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active')").bind(tenant.to_string()).bind(&device).fetch_one(c).await.map_err(database::db)?;
+                let active:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active')").bind(tenant.to_string()).bind(device.into_uuid()).fetch_one(c).await.map_err(database::db)?;
                 if !active {return Err(Error::Forbidden);}
                 Ok(rss_mdm_registration_service::installation::Installation{id,policy,version,device,platform:package.target.parts().0,source:request.task.source(),release:package.release.release_id,deadline:request.deadline,input_version:request.input_version,download_origin,origin})
             }.await;

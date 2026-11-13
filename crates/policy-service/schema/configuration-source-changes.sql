@@ -4,7 +4,7 @@ CREATE TABLE mdm_planning.configuration_source_dispatch (
  from_cut jsonb, to_cut jsonb,
  event_after bigint NOT NULL DEFAULT 0 CHECK(event_after>=0),
  page_through bigint CHECK(page_through>event_after),
- cursor text COLLATE "C",
+ cursor uuid,
  relation_consumed bigint NOT NULL DEFAULT 0 CHECK(relation_consumed>=0),
  relation_watermark bigint NOT NULL DEFAULT 0 CHECK(relation_watermark>=relation_consumed),
  relation_cursor bigint CHECK(relation_cursor>=relation_consumed),

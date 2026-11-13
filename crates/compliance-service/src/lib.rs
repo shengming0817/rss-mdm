@@ -413,7 +413,7 @@ fn authorize(
         Command::Put { .. } | Command::Delete { .. } => (Permission::ComplianceWrite, None),
         Command::Recompute { .. } => (Permission::ComplianceRecompute, None),
         Command::Current { device } | Command::History { device, .. } => {
-            (Permission::ComplianceRead, Some(device.as_str()))
+            (Permission::ComplianceRead, Some(device))
         }
         _ => (Permission::ComplianceRuleRead, None),
     };

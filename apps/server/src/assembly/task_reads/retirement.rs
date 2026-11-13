@@ -12,7 +12,7 @@ async fn objects_on(
     s: &Reads,
     c: &mut PgConnection,
     scope: Uuid,
-    after: Option<&str>,
+    after: Option<rss_mdm_agent_wire::ObjectRef>,
     limit: usize,
 ) -> Result<Vec<DeviceAssignment>> {
     s.source
@@ -33,7 +33,7 @@ pub async fn assignments_on(
     s: &Reads,
     c: &mut PgConnection,
     p: &Policy,
-    after: Option<&str>,
+    after: Option<rss_mdm_agent_wire::ObjectRef>,
     limit: usize,
     codec: &rss_mdm_query::cursor::CursorCodec,
     binding: &str,
@@ -41,11 +41,16 @@ pub async fn assignments_on(
     let objects = objects_on(s, c, p.definition.scope, after, limit).await?;
     let mut rows = objects
         .iter()
-        .map(|o| (o.cursor.clone(), item(o, p.state.is_enabled())))
+        .map(|o| (o.cursor, item(o, p.state.is_enabled())))
         .collect::<Vec<_>>();
-    let retained =
-        rss_mdm_device_service::lifecycle::retained_targets_on(c, s.tenant, p.id, after, limit)
-            .await?;
+    let retained = rss_mdm_device_service::lifecycle::retained_targets_on(
+        c,
+        s.tenant,
+        p.id,
+        after.as_ref(),
+        limit,
+    )
+    .await?;
     for target in retained {
         let object: rss_mdm_scope_service::channels::DeviceObject =
             serde_json::from_value(target).map_err(|_| Error::Malformed)?;
@@ -53,24 +58,20 @@ pub async fn assignments_on(
             .iter()
             .any(|(_, v)| v["object"] == json!(object.object))
         {
-            rows.push((object.object.key(), json!({"object":object.object,"channel":null,"target":null,"availability":"unavailable","reason":"source_removed","qualification":{"state":"excluded"},"sources":[object],"scopeResult":null,"taskAdmission":null,"execution":{"kind":"operations","operationIds":[]}})));
+            rows.push((object.object, json!({"object":object.object,"channel":null,"target":null,"availability":"unavailable","reason":"source_removed","qualification":{"state":"excluded"},"sources":[object],"scopeResult":null,"taskAdmission":null,"execution":{"kind":"operations","operationIds":[]}})));
         }
     }
-    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows.sort_by_key(|a| a.0);
     let more = rows.len() > limit;
     rows.truncate(limit);
-    let next = if more {
-        rows.last().map(|r| r.0.clone())
-    } else {
-        None
-    };
+    let next = if more { rows.last().map(|r| r.0) } else { None };
     let mut items = Vec::new();
     for (_, mut value) in rows {
         let tenant = s.tenant;
         let policy = p.id;
-        let object: rss_mdm_scope_service::channels::ObjectRef =
+        let object: rss_mdm_agent_wire::ObjectRef =
             serde_json::from_value(value["object"].clone()).map_err(|_| Error::Malformed)?;
-        let key = object.key();
+        let key = object;
         let ids = rss_mdm_device_service::lifecycle::policy_operations_in(c, tenant, policy, &key)
             .await
             .map_err(Error::from)?;
@@ -87,7 +88,7 @@ pub async fn preview_on(
     s: &Reads,
     c: &mut PgConnection,
     input: &rss_mdm_policy::pages::Preview,
-    after: Option<&str>,
+    after: Option<rss_mdm_agent_wire::ObjectRef>,
     limit: usize,
     codec: &rss_mdm_query::cursor::CursorCodec,
     binding: &str,
@@ -104,7 +105,7 @@ pub async fn preview_on(
     let more = objects.len() > limit;
     objects.truncate(limit);
     let next = if more {
-        objects.last().map(|o| o.cursor.clone())
+        objects.last().map(|o| o.cursor)
     } else {
         None
     };

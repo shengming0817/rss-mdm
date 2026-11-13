@@ -22,10 +22,10 @@ WITH catalog AS (
   AND EXISTS(SELECT FROM mdm_access.credentials k WHERE (k.tenant_id,k.device)=(r.tenant_id,r.id) AND k.state='active' AND k.purpose='primary')
   AND i.field_scope::jsonb='{"kind":"device"}'::jsonb
   AND i.scope::jsonb->>'tenant'=i.tenant_id::text
-  AND i.scope::jsonb->>'registration'=i.registration
+  AND (i.scope::jsonb->>'registration')::uuid=i.registration
   AND i.scope::jsonb->>'source'=i.source AND i.scope::jsonb->>'epoch'=i.epoch
   AND i.scope::jsonb->>'dataset'=d.dataset
-  AND i.scope::jsonb->>'object'=CASE WHEN d.dataset='inventory' THEN i.registration ELSE i.registration||':'||d.dataset END
+  AND i.scope::jsonb->>'object'=CASE WHEN d.dataset='inventory' THEN i.registration::text ELSE i.registration::text||':'||d.dataset END
   AND EXISTS(SELECT FROM jsonb_array_elements(d.definition->'fields') f WHERE f->'definition'->>'key'=i.field AND f->'scope'='{"kind":"device"}'::jsonb)
 )
 SELECT * FROM facts

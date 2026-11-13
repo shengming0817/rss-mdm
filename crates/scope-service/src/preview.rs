@@ -1,10 +1,10 @@
 //! Request-local samples of a complete Scope draft; never a saved result or an execution plan.
 //! ref: sqlx sqlx-core/src/transaction.rs@v0.8.6
 use crate::*;
+use rss_mdm_agent_wire::ObjectRef;
 use rss_mdm_audit_integration::{AuditIntent, budget::AuditBudget};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_inventory::{AssetCut, Channel};
-use rss_mdm_inventory_service::objects::ObjectRef;
 use rss_mdm_scope::Reference;
 use std::time::Duration;
 

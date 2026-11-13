@@ -39,7 +39,7 @@ pub async fn advance_in(
     }
     let target = crate::collection::native::Target {
         tenant: tx.tenant_id(),
-        device: run.target.device.clone(),
+        device: run.target.device,
     };
     let definition = action.collection.clone();
     let template = action.definition.clone();
@@ -78,7 +78,7 @@ pub async fn eligible_on(
     id: Uuid,
 ) -> Result<bool> {
     let row=sqlx::query("SELECT v.frozen, t.native_delivery, t.started_at, t.source_objects FROM mdm_inventory.collection_tasks AS t INNER JOIN mdm_policy.versions AS v ON (v.tenant_id, v.id) = (t.tenant_id, t.policy_version) INNER JOIN mdm_policy.policies AS p ON (p.tenant_id, p.id) = (v.tenant_id, v.policy) WHERE t.tenant_id = CAST($1 AS uuid) AND t.id = $2 AND t.device = $3 AND t.device = $4 AND t.channel = 'mdm' AND t.deadline > floor(EXTRACT(EPOCH FROM clock_timestamp())) AND p.state = 'enabled' AND t.native_delivery <> 'cancelled'")
-        .bind(tenant.to_string()).bind(id).bind(&target.device).bind(target.device.clone()).fetch_optional(&mut *c).await?;
+        .bind(tenant.to_string()).bind(id).bind(target.device.into_uuid()).bind(target.device.into_uuid()).fetch_optional(&mut *c).await?;
     let Some(row) = row else {
         return Ok(false);
     };
@@ -148,7 +148,7 @@ impl super::CollectionService {
             c,
             p.tenant(),
             &Target {
-                device: p.device().into(),
+                device: *p.device(),
             },
             id,
         )
@@ -171,7 +171,7 @@ impl super::CollectionService {
         self.transactions.validate_in(tx)?;
         for &id in ids {
             let run = super::storage::native_run(tx, id).await?;
-            if run.target.device != p.device() {
+            if run.target.device != *p.device() {
                 return Err(Error::Unauthorized.into());
             }
             super::recovery::recover_one(self, tx, id).await?;

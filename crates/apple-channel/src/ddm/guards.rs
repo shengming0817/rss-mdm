@@ -7,7 +7,7 @@ async fn guarded(
     user: &str,
 ) -> Result<Vec<(Uuid, bool, Publication)>, Error> {
     let rows=sqlx::query("SELECT operation, snapshot, retired_at IS NOT NULL AS withdrawn FROM mdm_apple.declarations WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND legacy_released_at IS NULL ORDER BY operation")
-        .bind(p.tenant().to_string()).bind(p.device()).bind(user).fetch_all(c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(user).fetch_all(c).await.map_err(db)?;
     let mut values = Vec::new();
     for row in rows {
         let id = row.try_get("operation").map_err(db)?;
@@ -90,7 +90,7 @@ pub(crate) async fn release_profiles(
             for profile in &publication.legacy {
                 let root = profile.objects.first().ok_or(Error::Malformed)?;
                 sqlx::query("UPDATE mdm_apple.profiles SET retired_at = COALESCE(retired_at, CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint)) WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND identifier = $4 AND profile = $5")
-                    .bind(p.tenant().to_string()).bind(p.device()).bind(user).bind(&root.identifier).bind(root.uuid).execute(&mut *c).await.map_err(db)?;
+                    .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(user).bind(&root.identifier).bind(root.uuid).execute(&mut *c).await.map_err(db)?;
             }
             sqlx::query("UPDATE mdm_apple.declarations SET legacy_released_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND operation=$2 AND retired_at IS NOT NULL AND legacy_released_at IS NULL")
                 .bind(p.tenant().to_string()).bind(id).execute(&mut *c).await.map_err(db)?;

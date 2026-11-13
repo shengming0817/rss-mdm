@@ -43,10 +43,14 @@ async fn accept(
     Ok(id)
 }
 async fn resources(h: &Harness, id: Uuid) -> Result<rss_reconcile::ResourceSet> {
-    let devices: Vec<String> = sqlx::query_scalar("SELECT device FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2 ORDER BY device")
+    let devices: Vec<Uuid> = sqlx::query_scalar("SELECT device FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2 ORDER BY device")
         .bind(h.c.tenant.to_string()).bind(id).fetch_all(&h.c.operator).await?;
     Ok(rss_mdm_registration_service::lifecycle::resources::devices(
-        h.c.tenant, &devices,
+        h.c.tenant,
+        &devices
+            .into_iter()
+            .map(rss_mdm_agent_wire::DeviceId::try_from)
+            .collect::<std::result::Result<Vec<_>, _>>()?,
     )?)
 }
 fn step(h: &Harness, id: Uuid) -> futures::future::LocalBoxFuture<'_, Result<()>> {
@@ -115,7 +119,7 @@ async fn state(h: &Harness, id: Uuid) -> Result<(String, String, Option<Uuid>)> 
 // retained PKI mapping so retirement must enqueue physical revocation, not an empty set.
 async fn certificate(h: &Harness) -> Result<()> {
     let (leaf, metadata): (Vec<u8>, Value) = sqlx::query_as("SELECT decode(i.certificate_chain ->> 0, 'base64'), i.metadata FROM mdm_access.certificate_issuances AS i INNER JOIN mdm_access.credentials AS k ON (k.tenant_id, k.id) = (i.tenant_id, i.credential) WHERE k.tenant_id = CAST($1 AS uuid) AND k.device = $2")
-        .bind(h.c.tenant.to_string()).bind(h.p.device()).fetch_one(&h.c.operator).await?;
+        .bind(h.c.tenant.to_string()).bind(h.p.device().into_uuid()).fetch_one(&h.c.operator).await?;
     let issuer: Vec<u8> = serde_json::from_value(metadata["issuer"].clone())?;
     let serial: Vec<u8> = serde_json::from_value(metadata["serial"].clone())?;
     let root = crate::native_identity_t2_support::der(
@@ -134,7 +138,7 @@ async fn certificate(h: &Harness) -> Result<()> {
     sqlx::query("INSERT INTO mdm_pki.certificates (tenant_id, purpose, fingerprint, issuer, serial, device, not_after, certificate, verification_version, verification_trust) VALUES (CAST($1 AS uuid), 'agent', sha256($2), $3, $4, $5, $6, $2, 1, sha256($2))")
         .bind(h.c.tenant.to_string()).bind(leaf)
         .bind(issuer)
-        .bind(rss_mdm_device_trust::serial(&serial)).bind(h.p.device())
+        .bind(rss_mdm_device_trust::serial(&serial)).bind(h.p.device().into_uuid())
         .bind(metadata["not_after"].as_i64().unwrap()).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
@@ -290,10 +294,10 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     step(&h, retirement).await?;
     assert_eq!(state(&h, retirement).await?.0, "complete");
     let revoked: (String, bool, bool, i64) = sqlx::query_as("SELECT r.state, NOT EXISTS (SELECT FROM mdm_access.credentials AS k WHERE k.tenant_id = r.tenant_id AND k.device = r.id AND k.state = 'active'), NOT EXISTS (SELECT FROM mdm_access.report_sources AS s WHERE s.tenant_id = r.tenant_id AND s.device = r.id AND s.enabled), (SELECT count(*) FROM mdm_pki.revocations AS v INNER JOIN mdm_pki.certificates AS k USING (tenant_id, purpose, issuer, serial) WHERE k.tenant_id = r.tenant_id AND k.device = r.id AND v.state = 'pending') FROM mdm_access.devices AS r WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2")
-        .bind(h.c.tenant.to_string()).bind(h.p.device()).fetch_one(&h.c.operator).await?;
+        .bind(h.c.tenant.to_string()).bind(h.p.device().into_uuid()).fetch_one(&h.c.operator).await?;
     assert_eq!(revoked, ("revoked".into(), true, true, 1));
     late.accept(&h.c, true).await?;
-    let retained:i64=sqlx::query_scalar("SELECT count(*) FROM mdm.device_hardware_evidence WHERE tenant_id=$1::uuid AND device=$2 AND serial_number IN('RETIREMENT-SERIAL','RETIREMENT-SECOND','RETIREMENT-LATE')").bind(h.c.tenant.to_string()).bind(h.p.device()).fetch_one(&h.c.operator).await?;
+    let retained:i64=sqlx::query_scalar("SELECT count(*) FROM mdm.device_hardware_evidence WHERE tenant_id=$1::uuid AND device=$2 AND serial_number IN('RETIREMENT-SERIAL','RETIREMENT-SECOND','RETIREMENT-LATE')").bind(h.c.tenant.to_string()).bind(h.p.device().into_uuid()).fetch_one(&h.c.operator).await?;
     assert_eq!(retained, 3);
     let before: serde_json::Value = sqlx::query_scalar(
         "SELECT state FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND id=$2",
@@ -350,7 +354,7 @@ async fn cancellation_audit(
         h.c.database
             .timeline(h.c.audit.clone(), h.c.tenant, &[7; 32])?;
     let query = Query {
-        device: Some(h.p.device().into()),
+        device: Some(*h.p.device()),
         action: Some("credential_revoke".into()),
         limit: Some(200),
         ..Default::default()
@@ -385,7 +389,7 @@ async fn cancellation_audit(
         let item = facts[0];
         assert_eq!(
             (
-                item.fact.device_id.as_deref(),
+                item.fact.device_id.as_ref(),
                 item.fact.target.kind.as_str(),
                 item.fact.target.id.as_str(),
                 item.fact.audit_outcome.as_str(),
@@ -394,23 +398,19 @@ async fn cancellation_audit(
             (
                 Some(h.p.device()),
                 "device",
-                h.p.device(),
+                h.p.device().to_string().as_str(),
                 "succeeded",
                 true
             )
         );
         let locator = item.operation.as_ref().expect("cancelled task locator");
         assert_eq!(
-            (
-                locator.owner,
-                locator.operation_id,
-                locator.device.as_deref()
-            ),
+            (locator.owner, locator.operation_id, locator.device.as_ref()),
             (owner, id, Some(h.p.device()))
         );
     }
     let other = Query {
-        device: Some(Uuid::new_v4().to_string()),
+        device: Some(rss_mdm_agent_wire::DeviceId::new_v4()),
         ..query
     };
     assert!(
@@ -483,7 +483,7 @@ pub(super) async fn native(
     let report = Uuid::new_v4();
     let at = now();
     let mut tx = command::seed_transaction(&h.c).await?;
-    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = 'mdm.windows'").bind(h.c.tenant.to_string()).bind(target.device.clone()).fetch_one(&mut *tx).await?;
+    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = 'mdm.windows'").bind(h.c.tenant.to_string()).bind(target.device.into_uuid()).fetch_one(&mut *tx).await?;
     let scope = rss_mdm_registration_service::device::scope_dataset(
         rss_mdm_install_support::StorageProfile::Mdm,
         h.c.tenant,
@@ -494,8 +494,8 @@ pub(super) async fn native(
     )?;
     rss_mdm_inventory_postgres::register_collection_in(&mut tx, h.c.tenant, progress.definition())
         .await?;
-    sqlx::query("INSERT INTO mdm_access.collection_runs (tenant_id, id, device, source, epoch, scope, sequence, started_at, attempts, evidence, result, reason, sealed_at, deadline) VALUES (CAST($1 AS uuid), $2, $3, 'mdm.windows', $4, $5, 0, $6, $7, $8, $9, $10, $11, to_timestamp($6 + 300))").bind(h.c.tenant.to_string()).bind(report).bind(target.device.clone()).bind(epoch).bind(scope.encode()?).bind(at).bind(serde_json::to_string(&progress)?).bind(json!({"nativeTemplate":template})).bind(if reason.is_some() {"failed"} else {"pending"}).bind(reason).bind(reason.map(|_|at)).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_inventory.collection_tasks (tenant_id, id, policy_version, channel, origin, source_objects, device, occurrence, created_at, available_at, deadline, native_delivery, collection_run, started_at, dispatch_fingerprint, gateway_accepted) VALUES (CAST($1 AS uuid), $2, $3, 'mdm', '\"policy\"', $4, $5, $6, $7, $7, $7 + 300, 'sent', $8, $7, $9, TRUE)").bind(h.c.tenant.to_string()).bind(task).bind(version).bind(json!([object])).bind(&target.device).bind(task.to_string()).bind(at).bind(report).bind(vec![0u8;32]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.collection_runs (tenant_id, id, device, source, epoch, scope, sequence, started_at, attempts, evidence, result, reason, sealed_at, deadline) VALUES (CAST($1 AS uuid), $2, $3, 'mdm.windows', $4, $5, 0, $6, $7, $8, $9, $10, $11, to_timestamp($6 + 300))").bind(h.c.tenant.to_string()).bind(report).bind(target.device.into_uuid()).bind(epoch).bind(scope.encode()?).bind(at).bind(serde_json::to_string(&progress)?).bind(json!({"nativeTemplate":template})).bind(if reason.is_some() {"failed"} else {"pending"}).bind(reason).bind(reason.map(|_|at)).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_inventory.collection_tasks (tenant_id, id, policy_version, channel, origin, source_objects, device, occurrence, created_at, available_at, deadline, native_delivery, collection_run, started_at, dispatch_fingerprint, gateway_accepted) VALUES (CAST($1 AS uuid), $2, $3, 'mdm', '\"policy\"', $4, $5, $6, $7, $7, $7 + 300, 'sent', $8, $7, $9, TRUE)").bind(h.c.tenant.to_string()).bind(task).bind(version).bind(json!([object])).bind(target.device.into_uuid()).bind(task.to_string()).bind(at).bind(report).bind(vec![0u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok((policy, task, object))
 }
@@ -544,7 +544,7 @@ async fn credential_run(h: &Harness, state: &rss_mdm_task_state::RunState) -> Re
     let id = Uuid::new_v4();
     let mut tx = command::seed_transaction(&h.c).await?;
     sqlx::query("INSERT INTO mdm_recovery_tasks.runs(tenant_id,id,policy_version,origin,source_objects,device,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint,gateway_accepted) VALUES($1::uuid,$2,$3,'\"policy\"',$4,$5,$6,$7,$7,$8,$9,$10,true)")
-        .bind(h.c.tenant.to_string()).bind(id).bind(version).bind(json!([h.object])).bind(h.p.device()).bind(id.to_string()).bind(now()).bind(now()+300).bind(serde_json::to_value(state)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
+        .bind(h.c.tenant.to_string()).bind(id).bind(version).bind(json!([h.object])).bind(h.p.device().into_uuid()).bind(id.to_string()).bind(now()).bind(now()+300).bind(serde_json::to_value(state)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(id)
 }
@@ -558,9 +558,9 @@ async fn cleanup_history_is_bounded_and_resumes() -> Result<()> {
     let blocked = Uuid::from_u128(65);
     let mut tx = command::seed_transaction(&h.c).await?;
     sqlx::query("UPDATE rss_device_command.commands AS d SET status = 'cancelled', version = d.version + 1, terminal_at = d.queued_at + 1 FROM mdm_devices.control_operations AS o WHERE (o.tenant_id, CAST(o.id AS text)) = (d.tenant_id, d.command_id) AND o.tenant_id = CAST($1 AS uuid) AND o.device = $2")
-        .bind(h.c.tenant.to_string()).bind(native.device.clone()).execute(&mut *tx).await?;
+        .bind(h.c.tenant.to_string()).bind(native.device.into_uuid()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_windows.attempts (tenant_id, id, operation, device, ordinal, credential, session, message, phase, request, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, 1, $5, 1, 1, 'execute', $6, $7)")
-        .bind(h.c.tenant.to_string()).bind(Uuid::new_v4()).bind(blocked).bind(native.device.clone()).bind(native.credential).bind(vec![0u8;68]).bind(native.epoch).execute(&mut *tx).await?;
+        .bind(h.c.tenant.to_string()).bind(Uuid::new_v4()).bind(blocked).bind(native.device.into_uuid()).bind(native.credential).bind(vec![0u8;68]).bind(native.epoch).execute(&mut *tx).await?;
     tx.commit().await?;
     let retirement = accept(&h, &h.object).await?;
     step(&h, retirement).await?;
@@ -607,7 +607,7 @@ pub(super) async fn native_controls(
     let proof = h.c.authenticate(&account).await?;
     let mut tx = command::seed_transaction(&h.c).await?;
     sqlx::query("INSERT INTO mdm_windows.capabilities (tenant_id, device, protocol_epoch, os_version, edition, session, observed_at) VALUES (CAST($1 AS uuid), $2, $3, '10.0.22631.0', 4, 1, CAST(EXTRACT(EPOCH FROM clock_timestamp()) AS bigint))")
-        .bind(h.c.tenant.to_string()).bind(native.device.clone()).bind(native.epoch).execute(&mut *tx).await?;
+        .bind(h.c.tenant.to_string()).bind(native.device.into_uuid()).bind(native.epoch).execute(&mut *tx).await?;
     tx.commit().await?;
     for n in 1..=count {
         h.a.service

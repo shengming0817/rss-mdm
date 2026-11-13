@@ -1,10 +1,10 @@
 -- Only authorization/fencing kernels; bodies come directly from their owner's installation SQL.
 WITH expected(signature,language,result,definer,returns_set,volatility,names,config,body,roles) AS (VALUES
  ('mdm_devices.object_current(jsonb,text)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_input','p_channel']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['mdm_access','mdm_command_runtime','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_telemetry_runtime','mdm_identity_runtime','mdm_owner']::text[]),
- ('mdm_devices.association_grant_current(uuid,bigint,text)', 'sql', 'boolean', true, false, 's', ARRAY['p_id','p_version','p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['mdm_access','mdm_command_runtime','mdm_identity_runtime','mdm_owner']::text[]),
+ ('mdm_devices.association_grant_current(uuid,bigint,uuid)', 'sql', 'boolean', true, false, 's', ARRAY['p_id','p_version','p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['mdm_access','mdm_command_runtime','mdm_identity_runtime','mdm_owner']::text[]),
  ('mdm_devices.advance_relation_revision()', 'plpgsql', 'trigger', true, false, 'v', ARRAY[]::text[], ARRAY['search_path=pg_catalog']::text[], $3::text, ARRAY['mdm_owner']::text[]),
  ('mdm_devices.guard_object_evidence()', 'plpgsql', 'trigger', false, false, 'v', ARRAY[]::text[], ARRAY['search_path=pg_catalog']::text[], $4::text, ARRAY['mdm_owner']::text[]),
- ('mdm_devices.read_world(uuid[],text[],text[])', 'sql', 'jsonb', true, false, 's', ARRAY['p_associations','p_devices','p_fields']::text[], ARRAY['search_path=pg_catalog']::text[], $5::text, ARRAY['mdm_access','mdm_identity_runtime','mdm_owner']::text[])
+ ('mdm_devices.read_world(uuid[],uuid[],text[])', 'sql', 'jsonb', true, false, 's', ARRAY['p_associations','p_devices','p_fields']::text[], ARRAY['search_path=pg_catalog']::text[], $5::text, ARRAY['mdm_access','mdm_identity_runtime','mdm_owner']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)

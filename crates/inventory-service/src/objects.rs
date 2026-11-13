@@ -1,4 +1,5 @@
 //! Immutable association input. Inventory consumes explicit endpoint provenance only.
+use rss_mdm_agent_wire::ObjectRef;
 use rss_mdm_group::AssetContext;
 use rss_mdm_group_postgres::Rejection;
 
@@ -8,6 +9,15 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 use std::{future::Future, pin::Pin};
 use uuid::Uuid;
+/// Check the immutable asset universe without reinterpreting an object's identity.
+pub fn checked_context(context: AssetContext, object: &ObjectRef) -> Result<ObjectRef, Rejection> {
+    if object.uuid().is_nil()
+        || (context == AssetContext::Endpoint && !matches!(object, ObjectRef::Endpoint(_)))
+    {
+        return Err(Rejection::InvalidStoredDocument);
+    }
+    Ok(*object)
+}
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, sqlx::Error>> + Send + 'a>>;
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -46,21 +56,21 @@ pub trait ObjectReader: Send + Sync {
         tenant: TenantId,
         from: Uuid,
         to: Uuid,
-    ) -> Pending<'a, Vec<String>>;
+    ) -> Pending<'a, Vec<ObjectRef>>;
     /// Conservative side-effect boundary, independent of targeting or read authorization.
     /// Unreleased links remain barriers while their identity is awaiting verification.
     fn effect_devices<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        device: &'a str,
-    ) -> Pending<'a, Vec<String>>;
+        device: &'a rss_mdm_agent_wire::DeviceId,
+    ) -> Pending<'a, Vec<rss_mdm_agent_wire::DeviceId>>;
 
     fn memberships<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, MembershipObjects>;
 
     /// Frozen objects containing this original endpoint/channel, never current heads.
@@ -71,7 +81,7 @@ pub trait ObjectReader: Send + Sync {
         c: &'a mut PgConnection,
         tenant: TenantId,
         snapshot: Uuid,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         channel: rss_mdm_inventory::Channel,
         max_bytes: usize,
     ) -> Pending<'a, Option<(Vec<DeviceObject>, usize)>>;
@@ -99,7 +109,7 @@ pub trait ObjectReader: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, DeviceObject>;
     /// Original endpoint membership as of the calculation's committed asset cut.
     fn endpoint_at<'a>(
@@ -107,7 +117,7 @@ pub trait ObjectReader: Send + Sync {
         c: &'a mut PgConnection,
         tenant: TenantId,
         cut: &'a rss_mdm_inventory::AssetCut,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, DeviceObject>;
     fn validate<'a>(
         &'a self,
@@ -127,55 +137,10 @@ pub trait ObjectReader: Send + Sync {
         c: &'a mut PgConnection,
         tenant: TenantId,
         snapshot: Uuid,
-        after: Option<String>,
+        after: Option<ObjectRef>,
         limit: usize,
-        selected: Option<Vec<String>>,
+        selected: Option<Vec<ObjectRef>>,
     ) -> Pending<'a, Vec<DeviceObject>>;
-}
-
-/// A directory object, never an executable registration identity.
-#[derive(
-    schemars::JsonSchema, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
-)]
-#[serde(
-    tag = "kind",
-    content = "id",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
-pub enum ObjectRef {
-    /// One original endpoint.
-    Endpoint(String),
-    /// One product association whose members must be resolved by its owner.
-    Association(Uuid),
-}
-impl ObjectRef {
-    /// Decode the adapter's opaque key under its fixed asset universe.
-    pub fn from_key(context: AssetContext, key: &str) -> Result<Self, Rejection> {
-        match context {
-            AssetContext::Endpoint => Ok(Self::Endpoint(key.into())),
-            AssetContext::AssociatedDevice => {
-                if let Some(id) = key.strip_prefix("endpoint:") {
-                    return Ok(Self::Endpoint(id.into()));
-                }
-                let id = key
-                    .strip_prefix("association:")
-                    .ok_or(Rejection::InvalidStoredDocument)?;
-                let id = Uuid::parse_str(id).map_err(|_| Rejection::InvalidStoredDocument)?;
-                if id.is_nil() {
-                    return Err(Rejection::InvalidStoredDocument);
-                }
-                Ok(Self::Association(id))
-            }
-        }
-    }
-    /// Stable unified-universe key, kept separate from endpoint identity.
-    pub fn key(&self) -> String {
-        match self {
-            Self::Endpoint(id) => format!("endpoint:{id}"),
-            Self::Association(id) => format!("association:{id}"),
-        }
-    }
 }
 
 impl ObjectSnapshot {
@@ -222,7 +187,7 @@ impl ObjectChangeKind {
 pub struct ObjectChange {
     pub kind: ObjectChangeKind,
     pub position: i64,
-    pub object: String,
-    pub old_devices: Vec<String>,
-    pub new_devices: Vec<String>,
+    pub object: rss_mdm_agent_wire::ObjectRef,
+    pub old_devices: Vec<rss_mdm_agent_wire::DeviceId>,
+    pub new_devices: Vec<rss_mdm_agent_wire::DeviceId>,
 }

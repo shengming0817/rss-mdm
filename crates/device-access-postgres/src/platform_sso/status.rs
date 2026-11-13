@@ -40,7 +40,7 @@ pub async fn read(
     let resolved = crate::delivery::resolve_on(&mut tx, p).await?;
     store::fence(&mut tx, &tenant).await?;
     let object = rss_mdm_registration_service::device::endpoints::DaRegistration {
-        device: resolved.device().into(),
+        device: *resolved.device(),
     };
     if user.as_ref().is_some_and(|u| u.object != object) {
         return Err(Error::Unauthorized);
@@ -58,7 +58,7 @@ pub async fn read(
     let application_observed = qualified;
     let profile_observed = qualified;
     let device_id:Option<Uuid>=sqlx::query_scalar("SELECT id FROM rss_da.psso_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND kind = 'device'")
-        .bind(&tenant).bind(&object.device).fetch_optional(&mut *tx).await.map_err(db)?;
+        .bind(&tenant).bind(object.device.into_uuid()).fetch_optional(&mut *tx).await.map_err(db)?;
     let device = match device_id {
         Some(id) => Some(store::source(&mut tx, &tenant, id).await?),
         None => None,

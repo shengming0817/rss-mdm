@@ -20,27 +20,31 @@ async fn observed_on(
     facts: &dyn crate::deployment::inventory::Inventory,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
-) -> std::result::Result<Option<(SoftwareTarget, rss_mdm_inventory::channel::Current, String)>, Error>
-{
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> std::result::Result<
+    Option<(
+        SoftwareTarget,
+        rss_mdm_inventory::channel::Current,
+        rss_mdm_agent_wire::DeviceId,
+    )>,
+    Error,
+> {
     use crate::deployment::database::db;
     use rss_mdm_inventory::ReportSource;
-    let rows=sqlx::query_as::<_,(String,String)>("SELECT r.id, s.source FROM mdm_access.devices AS r INNER JOIN mdm_access.report_sources AS s ON (s.tenant_id, s.device) = (r.tenant_id, r.id) WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2 AND r.channel = 'mdm' AND r.state = 'active' AND s.enabled AND s.source IN ('mdm.windows', 'mdm.apple')")
-        .bind(tenant).bind(device).fetch_all(&mut *c).await.map_err(db)?;
+    let rows=sqlx::query_as::<_,(Uuid,String)>("SELECT r.id, s.source FROM mdm_access.devices AS r INNER JOIN mdm_access.report_sources AS s ON (s.tenant_id, s.device) = (r.tenant_id, r.id) WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2 AND r.channel = 'mdm' AND r.state = 'active' AND s.enabled AND s.source IN ('mdm.windows', 'mdm.apple')")
+        .bind(tenant).bind(device.into_uuid()).fetch_all(&mut *c).await.map_err(db)?;
     if rows.len() != 1 {
         return Ok(None);
     }
-    let (registration, source) = &rows[0];
+    let (id, source) = &rows[0];
+    let registration = &crate::deployment::database::device_id(*id).map_err(db)?;
     let (source, platform) = match source.as_str() {
         "mdm.windows" => (ReportSource::MdmWindows, Platform::Windows),
         "mdm.apple" => (ReportSource::MdmApple, Platform::Macos),
         _ => return Ok(None),
     };
     let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
-    let fact = match facts
-        .detail_on(c, tenant_id, registration.clone(), source)
-        .await?
-    {
+    let fact = match facts.detail_on(c, tenant_id, *registration, source).await? {
         rss_mdm_inventory::channel::Observation::Ready(fact) => fact,
         rss_mdm_inventory::channel::Observation::ProjectionPending { .. }
         | rss_mdm_inventory::channel::Observation::Unavailable => return Ok(None),
@@ -56,11 +60,11 @@ async fn observed_on(
         Some("aarch64") => Architecture::Aarch64,
         _ => return Ok(None),
     };
-    if source==ReportSource::MdmApple && !sqlx::query_scalar::<_,bool>("SELECT access_rights & 4352 = 4352 FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'").bind(tenant).bind(registration).fetch_optional(&mut *c).await.map_err(db)?.unwrap_or(false){return Ok(None);}
+    if source==ReportSource::MdmApple && !sqlx::query_scalar::<_,bool>("SELECT access_rights & 4352 = 4352 FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'").bind(tenant).bind(registration.into_uuid()).fetch_optional(&mut *c).await.map_err(db)?.unwrap_or(false){return Ok(None);}
     Ok(Some((
         SoftwareTarget::new(platform, architecture),
         fact,
-        registration.clone(),
+        *registration,
     )))
 }
 
@@ -69,7 +73,7 @@ pub async fn absent_on(
     facts: &dyn crate::deployment::inventory::Inventory,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<(SoftwareTarget, rss_mdm_inventory::channel::AgentEvidence)>, Error> {
     Ok(observed_on(facts, c, tenant, device)
         .await?
@@ -87,7 +91,7 @@ pub async fn dispatch_ready_on(
     c: &mut sqlx::PgConnection,
     tenant: &str,
     version: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     operation: Uuid,
 ) -> std::result::Result<bool, Error> {
     use crate::deployment::database::db;
@@ -245,9 +249,9 @@ fn detection_catalog(
 /// Input acknowledgements are local to agent installation reconciliation.
 pub(crate) async fn inputs_pending(
     tx: &mut crate::deployment::PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> crate::deployment::Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
-    Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_software_deployment.agent_install_inputs WHERE tenant_id=$1::uuid AND device=$2 AND input_revision>observed_revision)").bind(tenant).bind(device).fetch_one(c).await})).await?)
+    Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_software_deployment.agent_install_inputs WHERE tenant_id=$1::uuid AND device=$2 AND input_revision>observed_revision)").bind(tenant).bind(device.into_uuid()).fetch_one(c).await})).await?)
 }

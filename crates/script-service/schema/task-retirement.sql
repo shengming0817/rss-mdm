@@ -1,7 +1,7 @@
 -- Registration retirement participates on the initiating audit connection.
 BEGIN;
 SET LOCAL check_function_bodies = false;
-CREATE FUNCTION mdm_script.save_retired_run(p_device text,p_run uuid,p_previous jsonb,p_state jsonb) RETURNS boolean
+CREATE FUNCTION mdm_script.save_retired_run(p_device uuid,p_run uuid,p_previous jsonb,p_state jsonb) RETURNS boolean
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
  WITH changed AS (
@@ -15,6 +15,6 @@ CREATE FUNCTION mdm_script.save_retired_run(p_device text,p_run uuid,p_previous 
  RETURNING a.id
  ) SELECT EXISTS(SELECT 1 FROM changed);
 $$;
-REVOKE ALL ON FUNCTION mdm_script.save_retired_run(text,uuid,jsonb,jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_script.save_retired_run(text,uuid,jsonb,jsonb) TO mdm_access,mdm_command_runtime;
+REVOKE ALL ON FUNCTION mdm_script.save_retired_run(uuid,uuid,jsonb,jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_script.save_retired_run(uuid,uuid,jsonb,jsonb) TO mdm_access,mdm_command_runtime;
 COMMIT;

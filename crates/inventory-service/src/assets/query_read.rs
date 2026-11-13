@@ -6,8 +6,13 @@ use sqlx::Row;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Position {
-    Items { device: String },
-    Facet { facet: Facet, label: String },
+    Items {
+        device: rss_mdm_agent_wire::DeviceId,
+    },
+    Facet {
+        facet: Facet,
+        label: String,
+    },
 }
 struct QueryState {
     summary: Summary,
@@ -119,8 +124,8 @@ impl AssetService {
         };
         let tenant = self.tenant.to_string();
         let metadata=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT device,octet_length(document) AS bytes FROM mdm_assets.asset_query_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND ($3::text IS NULL OR (sort_key,device)>(SELECT sort_key,device FROM mdm_assets.asset_query_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND device=$3 COLLATE \"C\")) ORDER BY sort_key,device LIMIT $4")
-                .bind(tenant).bind(task.to_string()).bind(after_device).bind((limit + 1) as i64).fetch_all(c).await
+            sqlx::query("SELECT device,octet_length(document) AS bytes FROM mdm_assets.asset_query_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND ($3::uuid IS NULL OR (sort_key,device)>(SELECT sort_key,device FROM mdm_assets.asset_query_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND device=$3)) ORDER BY sort_key,device LIMIT $4")
+                .bind(tenant).bind(task.to_string()).bind(after_device.map(|id|id.into_uuid())).bind((limit + 1) as i64).fetch_all(c).await
         })).await?;
         let mut more = metadata.len() > limit;
         let mut ids = Vec::new();
@@ -135,10 +140,12 @@ impl AssetService {
                 more = true;
                 break;
             }
-            let device: String = row.try_get("device")?;
-            next = Some(Position::Items {
-                device: device.clone(),
-            });
+            let device: rss_mdm_agent_wire::DeviceId =
+                row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+                    rss_mdm_agent_wire::DeviceId::try_from(id)
+                        .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+                })?;
+            next = Some(Position::Items { device });
             ids.push(device);
             bytes += size;
         }
@@ -147,8 +154,8 @@ impl AssetService {
         }
         let tenant = self.tenant.to_string();
         let rows=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT r.device,r.document,r.digest FROM unnest($3::text[]) WITH ORDINALITY p(device,n) JOIN mdm_assets.asset_query_results r ON r.device=p.device WHERE r.tenant_id=$1::uuid AND r.run=$2::uuid ORDER BY p.n")
-                .bind(tenant).bind(task.to_string()).bind(ids).fetch_all(c).await
+            sqlx::query("SELECT r.device,r.document,r.digest FROM unnest($3::uuid[]) WITH ORDINALITY p(device,n) JOIN mdm_assets.asset_query_results r ON r.device=p.device WHERE r.tenant_id=$1::uuid AND r.run=$2::uuid ORDER BY p.n")
+                .bind(tenant).bind(task.to_string()).bind(ids.iter().map(|id|id.into_uuid()).collect::<Vec<_>>()).fetch_all(c).await
         })).await?;
         rss_mdm_query_postgres::observe_rows("assets.results", &rows)?;
         let mut items = Vec::new();
@@ -158,7 +165,12 @@ impl AssetService {
                 return Err(Error::Unavailable(Failure::AssetsStorage).into());
             }
             let item: DeviceView = stored(serde_json::from_slice(&raw))?;
-            if item.device != row.try_get::<String, _>("device")? {
+            if item.device
+                != row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+                    rss_mdm_agent_wire::DeviceId::try_from(id)
+                        .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+                })?
+            {
                 return Err(Error::Unavailable(Failure::AssetsStorage).into());
             }
             items.push(item);

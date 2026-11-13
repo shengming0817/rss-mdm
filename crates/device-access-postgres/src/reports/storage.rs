@@ -12,7 +12,7 @@ pub(super) async fn replay(
     document: &serde_json::Value,
 ) -> Result<Option<Receipt>, Error> {
     let rows=sqlx::query("SELECT sequence, operation, document, receipt FROM rss_da.report_history WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND kind = $3 AND (sequence = $4 OR (CAST($5 AS uuid) IS NOT NULL AND operation = $5))")
-        .bind(p.tenant().to_string()).bind(p.device()).bind(kind.name()).bind(sequence).bind(operation).fetch_all(c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(kind.name()).bind(sequence).bind(operation).fetch_all(c).await.map_err(db)?;
     if rows.is_empty() {
         return Ok(None);
     }
@@ -52,7 +52,7 @@ pub(super) async fn receive(
     }
     let now = crate::platform_sso::store::now(c).await?;
     let previous:Option<String>=sqlx::query_scalar("SELECT integrity FROM rss_da.report_heads WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND kind = $3")
-        .bind(p.tenant().to_string()).bind(p.device()).bind(kind.name()).fetch_optional(&mut *c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(kind.name()).fetch_optional(&mut *c).await.map_err(db)?;
     let state = previous
         .map(|v| State::decode(&v).map_err(|_| Error::Corrupt))
         .transpose()?
@@ -92,12 +92,12 @@ pub(super) async fn receive(
     };
     let receipt = serde_json::to_value(&value).map_err(|_| Error::Corrupt)?;
     sqlx::query("INSERT INTO rss_da.report_history (tenant_id, device, kind, sequence, operation, received_at, document, receipt) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8)")
-        .bind(p.tenant().to_string()).bind(p.device()).bind(kind.name()).bind(sequence).bind(operation).bind(now).bind(document).bind(&receipt).execute(&mut *c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(kind.name()).bind(sequence).bind(operation).bind(now).bind(document).bind(&receipt).execute(&mut *c).await.map_err(db)?;
     sqlx::query("INSERT INTO rss_da.report_heads (tenant_id, device, kind, integrity, document, receipt) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6) ON CONFLICT (tenant_id, device, kind) DO UPDATE SET integrity = excluded.integrity, document = excluded.document, receipt = excluded.receipt")
-        .bind(p.tenant().to_string()).bind(p.device()).bind(kind.name()).bind(decision.state().encode().map_err(|_|Error::Corrupt)?).bind(document).bind(receipt).execute(&mut *c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(kind.name()).bind(decision.state().encode().map_err(|_|Error::Corrupt)?).bind(document).bind(receipt).execute(&mut *c).await.map_err(db)?;
     sqlx::query("DELETE FROM rss_da.report_history WHERE ctid IN (SELECT ctid FROM rss_da.report_history WHERE tenant_id=$1::uuid AND received_at<=$2 ORDER BY received_at LIMIT 1000)").bind(p.tenant().to_string()).bind(now-i64::from(service.report_limits.history_seconds)).execute(&mut *c).await.map_err(db)?;
     sqlx::query("DELETE FROM rss_da.report_history WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND kind = $3 AND (received_at <= $4 OR sequence IN (SELECT sequence FROM rss_da.report_history WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND kind = $3 ORDER BY sequence DESC OFFSET $5))")
-        .bind(p.tenant().to_string()).bind(p.device()).bind(kind.name()).bind(now-i64::from(service.report_limits.history_seconds)).bind(i64::from(service.report_limits.history_count)).execute(&mut *c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(kind.name()).bind(now-i64::from(service.report_limits.history_seconds)).bind(i64::from(service.report_limits.history_count)).execute(&mut *c).await.map_err(db)?;
     Ok(Change {
         value,
         replay: false,

@@ -133,7 +133,7 @@ pub struct Evidence {
     /// Collector dataset identity; absent only for management assignments.
     pub dataset: Option<String>,
     /// Original enrolled device; absent for Manual.
-    pub device_id: Option<String>,
+    pub device_id: Option<rss_mdm_agent_wire::DeviceId>,
 
     /// Source epoch; absent for Manual.
     pub epoch: Option<String>,
@@ -207,7 +207,7 @@ pub fn resolve(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EndpointSourceFact {
     /// Owning endpoint identifier.
-    pub endpoint: String,
+    pub endpoint: rss_mdm_agent_wire::DeviceId,
     /// Unmodified fact and provenance.
     pub fact: SourceFact,
 }
@@ -227,11 +227,6 @@ pub fn resolve_device(
     definition: &FieldDefinition,
     mut sources: Vec<EndpointSourceFact>,
 ) -> Result<ResolvedDeviceField> {
-    if sources.iter().any(|s| {
-        s.endpoint.is_empty() || s.endpoint.len() > 256 || s.endpoint.chars().any(char::is_control)
-    }) {
-        return Err(Invalid::Evidence);
-    }
     sources.sort_by(|a, b| {
         (
             &a.endpoint,
@@ -385,7 +380,7 @@ pub(crate) fn validate_evidence(definition: &FieldDefinition, e: &Evidence) -> R
                 || e.actor.as_ref().is_none_or(|s| !bounded(s))
         } else {
             e.dataset.as_ref().is_none_or(|s| !bounded(s))
-                || e.device_id.as_ref().is_none_or(|s| !bounded(s))
+                || e.device_id.is_none()
                 || e.epoch.as_ref().is_none_or(|s| !bounded(s))
                 || e.actor.is_some()
         }

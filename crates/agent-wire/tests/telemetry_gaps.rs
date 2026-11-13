@@ -3,7 +3,7 @@ use serde_json::json;
 fn report() -> TelemetryGapReport {
     TelemetryGapReport {
         report_id: uuid::Uuid::new_v4(),
-        device_id: uuid::Uuid::new_v4().to_string(),
+        device_id: rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::new_v4()).unwrap(),
 
         created_at: 1000000,
         gaps: vec![TelemetryGap {
@@ -23,7 +23,7 @@ fn gap_report_has_bounded_closed_diagnostic_semantics() {
         serde_json::from_value::<TelemetryGapReport>(value.clone()).unwrap(),
         good
     );
-    for change in 0..9 {
+    for change in 0..8 {
         let mut bad = good.clone();
         match change {
             0 => bad.gaps.clear(),
@@ -33,7 +33,6 @@ fn gap_report_has_bounded_closed_diagnostic_semantics() {
             4 => bad.gaps[0].first = -1,
             5 => bad.gaps[0].last = 0,
             6 => bad.created_at = i64::MAX,
-            7 => bad.device_id.clear(),
             _ => bad.report_id = uuid::Uuid::nil(),
         }
         assert!(bad.validate().is_err());

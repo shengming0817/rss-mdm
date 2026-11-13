@@ -64,10 +64,10 @@ fn group_checked<T>(r: std::result::Result<T, rss_mdm_group_postgres::Rejection>
         _ => Error::Conflict.into(),
     })
 }
-async fn require_device(tx: &mut PgTransaction<'_>, id: &str) -> Result<()> {
-    if id.is_empty() || id.len() > 255 {
-        return Err(Error::Malformed.into());
-    }
+async fn require_device(
+    tx: &mut PgTransaction<'_>,
+    id: &rss_mdm_agent_wire::DeviceId,
+) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let id = id.to_owned();
     if !tx
