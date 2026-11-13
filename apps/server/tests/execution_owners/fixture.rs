@@ -39,6 +39,7 @@ impl Fixture {
             );
             let registration = assembly::registration::assemble(
                 config,
+                &resources.background,
                 storage.runtime.clone(),
                 storage.tenant,
                 storage.audit.clone(),
@@ -53,6 +54,7 @@ impl Fixture {
             .await?;
             let software = assembly::software::assemble(
                 config,
+                &resources.background,
                 storage.runtime.clone(),
                 storage.tenant,
                 storage.audit.clone(),
@@ -76,6 +78,7 @@ impl Fixture {
             .await?;
 
             let configuration = assembly::policy::configuration(
+                &resources.background,
                 storage.runtime.clone(),
                 storage.audit.clone(),
                 storage.tenant,
@@ -100,7 +103,6 @@ impl Fixture {
                 None,
                 storage.reconcile.clone(),
                 storage.worker_budget.clone(),
-                config.background.device_concurrency,
                 config.device_access.is_some(),
             ))
             .await?;
@@ -112,8 +114,7 @@ impl Fixture {
             )
             .await?;
             let (collections, collection_work) =
-                assembly::collection::assemble(config, storage, source.clone(), protection.clone())
-                    .await?;
+                assembly::collection::assemble(storage, source.clone(), protection.clone()).await?;
             let self_service = Arc::new(assembly::self_service::Requests::new(
                 storage.runtime.clone(),
                 storage.tenant,

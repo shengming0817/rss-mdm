@@ -6,6 +6,8 @@ use tokio_util::sync::CancellationToken;
 fn policy() -> Result<rss_reconcile::Policy> {
     Ok(rss_reconcile::Policy::try_from(
         rss_reconcile::PolicyConfig {
+            claim_batch_size: 64,
+            scan_budget: 64,
             concurrency: 1,
             lease_ttl: Duration::from_secs(30),
             attempt_timeout: Duration::from_secs(6),
@@ -20,13 +22,13 @@ fn policy() -> Result<rss_reconcile::Policy> {
 pub(super) async fn wake(h: &Harness, collection: bool, policy: Uuid) -> Result<()> {
     let messaging = rss_reconcile_postgres::PgMessagingStore::new(
         h.a.resources.storage.runtime.clone(),
-        h.c.tenant,
+        h.c.audit.binding(),
         script::transaction::deadline(),
     )
     .await?;
     script::transaction::inspect(
         &h.a.resources.storage.runtime,
-        h.c.tenant,
+        h.c.audit.binding(),
         (messaging, collection, policy),
         |ctx, tx| {
             Box::pin(async move {
@@ -159,9 +161,17 @@ async fn resume(
     let mut launch = stack.startup()?.commit();
     let notify = Arc::new(tokio::sync::Notify::new());
     let registration = if collection {
-        h.a.collection_work.clone().registration(notify)
+        h.a.collection_work.clone().registration(
+            h.a.resources.background.tasks,
+            h.a.resources.background.tasks_drain,
+            notify,
+        )
     } else {
-        h.a.script_work.clone().registration(notify)
+        h.a.script_work.clone().registration(
+            h.a.resources.background.tasks,
+            h.a.resources.background.tasks_drain,
+            notify,
+        )
     };
     let status = launch.stage_deferred_task_with_token(registration.critical());
     launch.finish();
@@ -181,7 +191,7 @@ async fn resume(
             .await?;
     assert!(
         store
-            .claim_due(scope, 64, Duration::from_secs(30), &control)
+            .claim_due(scope, 64, 64, Duration::from_secs(30), &control)
             .await?
             .claims
             .is_empty()
@@ -270,7 +280,7 @@ async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result
     script::transaction::run(
         &h.audit,
         &h.a.resources.storage.runtime,
-        h.c.tenant,
+        h.c.audit.binding(),
         &request(&h.c),
         &h.audit,
         |audit, tx| {
@@ -303,7 +313,7 @@ async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result
     let failed: std::result::Result<(), _> = script::transaction::run(
         &h.audit,
         &h.a.resources.storage.runtime,
-        h.c.tenant,
+        h.c.audit.binding(),
         &request(&h.c),
         &h.a.collections,
         |collections, tx| {
@@ -348,14 +358,13 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
         h.a.scripts.clone(),
         store,
         Arc::new(tokio::sync::Semaphore::new(1)),
-        1,
     )?;
     let held = pool.acquire().await?;
     let scope = script::wake::scope(h.c.tenant);
     assert!(
         worker
             .recovery_store()
-            .claim_due(&scope, 1, Duration::from_secs(30), &control)
+            .claim_due(&scope, 1, 64, Duration::from_secs(30), &control)
             .await
             .is_err()
     );
@@ -366,6 +375,7 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
         .claim_due(
             &collection::wake::scope(h.c.tenant),
             1,
+            64,
             Duration::from_secs(30),
             &control,
         )
@@ -376,7 +386,7 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
     assert!(
         worker
             .recovery_store()
-            .claim_due(&scope, 1, Duration::from_secs(30), &control)
+            .claim_due(&scope, 1, 64, Duration::from_secs(30), &control)
             .await?
             .claims
             .is_empty()

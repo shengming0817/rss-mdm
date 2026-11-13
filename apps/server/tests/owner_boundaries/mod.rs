@@ -21,14 +21,14 @@ impl Owners {
         let groups = Arc::new(
             rss_mdm_group_postgres::GroupStore::new(
                 storage.runtime.clone(),
-                c.tenant,
+                c.audit.binding(),
                 group::transaction::deadline(),
             )
             .await?,
         );
         let messaging = rss_reconcile_postgres::PgMessagingStore::new(
             storage.runtime.clone(),
-            c.tenant,
+            c.audit.binding(),
             group::transaction::deadline(),
         )
         .await?;
@@ -109,6 +109,7 @@ impl Owners {
         let mut batch = schedule
             .claim_due(
                 target.scope(),
+                64,
                 64,
                 std::time::Duration::from_secs(30),
                 &control,
@@ -394,7 +395,7 @@ async fn fact_readers_reject_cross_runtime_and_tenant_and_keep_the_frozen_cut() 
     let refs = rss_mdm_resource_postgres::FieldReferences::bind(other.runtime.clone(), c.tenant);
     group::transaction::inspect(
         &owners.storage.runtime,
-        c.tenant,
+        c.audit.binding(),
         (reader, wrong, foreign, refs, before, at),
         |ctx, tx| {
             Box::pin(async move {

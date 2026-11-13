@@ -33,7 +33,7 @@ pub async fn bindings_on(
     tenant: &str,
     devices: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<std::collections::BTreeMap<rss_mdm_agent_wire::DeviceId, Binding>, Error> {
-    if devices.len() > 1000 {
+    if devices.len() > 1024 {
         return Err(Error::Malformed);
     }
     let rows = sqlx::query(crate::storage_profile::sql(profile).agent_current_user_bindings_on_1)

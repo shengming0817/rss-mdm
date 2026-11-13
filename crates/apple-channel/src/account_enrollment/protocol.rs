@@ -78,6 +78,7 @@ pub(super) fn challenge(app: &HttpState, flow: Uuid) -> Result<Response, Error> 
         .into_response())
 }
 pub(super) async fn enroll(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<HttpState>>,
     Path(organization): Path<Uuid>,
     headers: HeaderMap,
@@ -97,7 +98,15 @@ pub(super) async fn enroll(
         request.payload,
     ));
     if let Some(token) = bearer(&headers)? {
-        return profile(&app, organization, token, &digest, &audit).await;
+        return profile(
+            &app,
+            organization,
+            token,
+            &digest,
+            &audit,
+            control.deadline(),
+        )
+        .await;
     }
     audit.identify_service("service:apple-account-bootstrap");
     let flow = Uuid::new_v4();
@@ -155,6 +164,7 @@ async fn profile(
     token: &str,
     digest: &str,
     audit: &RequestAudit,
+    cutoff: rss_request_context::Deadline,
 ) -> Result<Response, Error> {
     let tenant = app.identity.tenant().to_string();
     let mut read = app.access.begin(&tenant).await?;
@@ -173,6 +183,10 @@ async fn profile(
         id,
         app.account_authority.clone(),
         None,
+        rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+            cutoff,
+            &rss_mdm_audit_integration::budget::RuntimeTimer,
+        ),
     )
     .await?;
     admission.bind_audit(audit)?;

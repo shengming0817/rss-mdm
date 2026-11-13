@@ -43,6 +43,7 @@ impl Fixture {
         runtime.password_file = directory.path().join("password");
         let config: crate::telemetry::Config = serde_json::from_value(serde_json::json!({
             "backend":{"kind":"postgres","database":runtime},"connections":2,"cursor_key_file":directory.path().join("cursor"),
+            "maintenance":{"rows":4096,"buckets":64,"step_seconds":6},
             "ingress":{"requestBytes":1048576,"pendingBatches":64,"batchesPerMinute":120,"bytesPerMinute":8388608},
             "limits":{"max_points":128,"max_series":64,"max_bytes":1048576,"replay_micros":86400000000u64,"cursor_micros":60000000}
         }))?;
@@ -124,6 +125,7 @@ impl Fixture {
                 None,
             )?),
             self.config.ingress.clone(),
+            self.config.maintenance,
             rss_mdm_telemetry_service::StorageBudget {
                 points: self.config.limits.max_points,
                 series: self.config.limits.max_series,

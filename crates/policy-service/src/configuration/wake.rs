@@ -7,7 +7,7 @@ impl Transactions {
         devices: &[rss_mdm_agent_wire::DeviceId],
     ) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if devices.len() > 1000 {
+        if devices.len() > 1024 {
             return Err(Error::Malformed.into());
         }
         let devices = devices

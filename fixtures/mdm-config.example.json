@@ -2,7 +2,71 @@
   "background": {
     "device_concurrency": 4,
     "database_connection_budget": 128,
-    "database_host_instances": 1
+    "database_host_instances": 1,
+    "scheduling": {
+      "device": {
+        "claim_batch_size": 64,
+        "scan_budget": 64,
+        "lease_ms": 30000,
+        "attempt_ms": 8000,
+        "scan_interval_ms": 20,
+        "idle_scan_ms": 60000,
+        "initial_backoff_ms": 1000,
+        "max_backoff_ms": 30000,
+        "max_attempts": 1000,
+        "drain_ms": 30000
+      },
+      "commands": {
+        "claim_batch_size": 64,
+        "scan_budget": 64,
+        "lease_ms": 30000,
+        "attempt_ms": 6000,
+        "scan_interval_ms": 20,
+        "idle_scan_ms": 60000,
+        "initial_backoff_ms": 5000,
+        "max_backoff_ms": 60000,
+        "max_attempts": 1000,
+        "drain_ms": 20000
+      },
+      "tasks": {
+        "claim_batch_size": 64,
+        "scan_budget": 64,
+        "lease_ms": 30000,
+        "attempt_ms": 6000,
+        "scan_interval_ms": 20,
+        "idle_scan_ms": 5000,
+        "initial_backoff_ms": 5000,
+        "max_backoff_ms": 60000,
+        "max_attempts": 1000,
+        "drain_ms": 20000
+      },
+      "planning": {
+        "claim_batch_size": 64,
+        "scan_budget": 64,
+        "lease_ms": 30000,
+        "attempt_ms": 6000,
+        "scan_interval_ms": 20,
+        "idle_scan_ms": 5000,
+        "initial_backoff_ms": 1000,
+        "max_backoff_ms": 30000,
+        "max_attempts": 1000,
+        "drain_ms": 20000
+      },
+      "policy": {
+        "claim_batch_size": 64,
+        "scan_budget": 64,
+        "lease_ms": 30000,
+        "attempt_ms": 6000,
+        "scan_interval_ms": 20,
+        "idle_scan_ms": 60000,
+        "initial_backoff_ms": 1000,
+        "max_backoff_ms": 30000,
+        "max_attempts": 1000,
+        "drain_ms": 20000
+      }
+    },
+    "command_recovery_batch_size": 64,
+    "command_supersede_batch_size": 64
   },
   "agent_pki": {
     "mode": "disabled"
@@ -20,7 +84,57 @@
       "password_file": "/run/mdm/identity-runtime-password",
       "ca_file": "/run/mdm/database-ca.pem"
     },
-    "oidc": null
+    "oidc": null,
+    "runtime": {
+      "password": {
+        "concurrency": 4,
+        "reserved_memory_bytes": 134217728
+      },
+      "authentication": {
+        "source": {
+          "limit": 30,
+          "seconds": 300
+        },
+        "scope": {
+          "limit": 5,
+          "seconds": 900
+        },
+        "password": {
+          "limit": 5,
+          "seconds": 600
+        },
+        "record_capacity": 10000,
+        "cleanup_batch": 128,
+        "claim_seconds": 60
+      },
+      "profile": {
+        "bytes": 65536,
+        "members": 1024,
+        "depth": 8,
+        "array": 1024,
+        "max_age_seconds": 86400,
+        "receipt_capacity": 4096,
+        "source_page_size": 64
+      },
+      "provider_capacity": 100,
+      "request_seconds": 10,
+      "startup_seconds": 10,
+      "maintenance_seconds": 10,
+      "kdf_drain_seconds": 5,
+      "rp_generation": 1,
+      "transport": {
+        "request_seconds": 5,
+        "connect_seconds": 3,
+        "max_response_bytes": 1048576,
+        "max_jwks_keys": 128
+      },
+      "jwks": {
+        "ttl_seconds": 60,
+        "max_tenants": 128,
+        "refresh_cooldown_seconds": 1,
+        "max_token_bytes": 32768
+      }
+    }
   },
   "access_database": {
     "host": "postgres.example.test",
@@ -261,5 +375,42 @@
     "user": "mdm_asset_ingress_consumer",
     "password_file": "/run/secrets/mdm_asset_ingress_consumer_password",
     "ca_file": "/run/mdm/database-ca.pem"
+  },
+  "http": {
+    "connections": 128,
+    "prepare_seconds": 8,
+    "first_request_seconds": 10,
+    "connection_drain_seconds": 10,
+    "header_seconds": 10,
+    "max_headers": 64,
+    "buffer_bytes": 32768,
+    "request_seconds": 8,
+    "total_drain_seconds": 60,
+    "admission_drain_seconds": 35,
+    "da_listener": {
+      "connections": 16,
+      "prepare_seconds": 5,
+      "first_request_seconds": 3,
+      "drain_seconds": 12,
+      "header_seconds": 3,
+      "max_headers": 64,
+      "buffer_bytes": 32768
+    }
+  },
+  "audit_query": {
+    "max_rows": 1024,
+    "max_bytes": 8388608,
+    "recovery_rows": 64,
+    "recovery_bytes": 4194304,
+    "recovery_seconds": 10
+  },
+  "inventory_runtime": {
+    "startup_seconds": 5,
+    "pass_seconds": 5,
+    "drain_seconds": 5,
+    "delivery_batch": 32,
+    "projection_batch": 64,
+    "projection_events": 64,
+    "delivery_bytes": 67108864
   }
 }

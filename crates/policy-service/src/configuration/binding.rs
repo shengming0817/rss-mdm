@@ -2,6 +2,8 @@ use super::*;
 use rss_transactional_messaging_postgres::{PgError, PgOutboxStore};
 use std::time::Duration;
 pub struct Dependencies {
+    pub supersede_batch: rss_device_command::BatchLimit,
+    pub recovery_batch: rss_device_command::BatchLimit,
     pub runtime: Arc<PgRuntime>,
     pub tenant: TenantId,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -14,6 +16,8 @@ pub struct Dependencies {
 impl Transactions {
     pub async fn bind(dependencies: Dependencies) -> std::result::Result<Self, Error> {
         let Dependencies {
+            supersede_batch,
+            recovery_batch,
             runtime,
             tenant,
             audit_store,
@@ -33,7 +37,7 @@ impl Transactions {
         let access = channels.clone();
         let fingerprint_id = protection.fingerprint_id().to_owned();
         let (outbox, store) = runtime
-            .local_tx(tenant, deadline(), move |tx| {
+            .local_tx(audit_store.binding(), deadline(), move |tx| {
                 Box::pin(async move {
                     audit.bind_in(tx).await.map_err(PgError::from)?;
                     rss_mdm_native_protection::binding::bind_in(
@@ -93,6 +97,7 @@ impl Transactions {
                         outbox.clone(),
                         rss_device_command_postgres::CommandClock::Postgres,
                         &roles,
+                        supersede_batch,
                     )
                     .await?;
                     Ok((outbox, store))
@@ -107,11 +112,15 @@ impl Transactions {
                 |_| Err(Error::CommitUnknown),
                 |_| Err(Error::Unavailable(Failure::PolicyAdmission)),
             )?;
-        let reconcile_messaging =
-            rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, deadline())
-                .await
-                .map_err(|_| Error::Unavailable(Failure::PolicyAdmission))?;
+        let reconcile_messaging = rss_reconcile_postgres::PgMessagingStore::new(
+            runtime.clone(),
+            audit_store.binding(),
+            deadline(),
+        )
+        .await
+        .map_err(|_| Error::Unavailable(Failure::PolicyAdmission))?;
         Ok(Self {
+            recovery_batch,
             outbox,
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
                 rss_mdm_install_support::StorageProfile::Mdm,

@@ -55,7 +55,7 @@ impl Maintenance {
         let tenant = Uuid::parse_str(&self.tenant.to_string()).map_err(|_| Error::Malformed)?;
         transaction::inspect(
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             self.protection.clone(),
             |protection, tx| {
                 Box::pin(async move {
@@ -109,7 +109,7 @@ impl Maintenance {
         let result = transaction::run(
             &self.audit_store,
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             &audit,
             (self, &audit),
             |ctx, tx| {

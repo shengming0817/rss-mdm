@@ -161,7 +161,7 @@ async fn prepare<C: ManagementContentPort>(
 ) -> Result<Prepared, Error> {
     let version = transaction::inspect(
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         (app, p, i),
         |ctx, tx| {
             Box::pin(async move {
@@ -368,7 +368,7 @@ pub async fn publish<C: ManagementContentPort>(
     let hash = digest(&(p.principal_id(), p.instance_id(), i))?;
     let replay = transaction::inspect(
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         (app, p, i, &hash),
         |ctx, tx| {
             Box::pin(async move {
@@ -386,7 +386,7 @@ pub async fn publish<C: ManagementContentPort>(
         let resource = i.package_id.to_string();
         let version = transaction::inspect(
             &app.runtime,
-            app.tenant,
+            app.audit.binding(),
             (app, p, &resource),
             |ctx, tx| {
                 Box::pin(async move {
@@ -433,7 +433,7 @@ pub async fn publish<C: ManagementContentPort>(
     transaction::run(
         &app.audit,
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         a,
         (app, p, i, a, hash, prepared),
         |ctx, tx| {
@@ -626,9 +626,9 @@ async fn current_on(
 }
 pub async fn list(
     runtime: &Arc<PgRuntime>,
-    tenant: rss_request_context::TenantId,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
 ) -> Result<Vec<w::Package>, Error> {
-    transaction::inspect(runtime,tenant,tenant,|tenant,tx|{
+    transaction::inspect(runtime,binding,binding.tenant(),|tenant,tx|{
   let tenant=*tenant;
   Box::pin(async move {Ok(tx.with_connection(move|c|Box::pin(async move{
    let ids:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND state='published' ORDER BY id").bind(tenant.to_string()).fetch_all(&mut *c).await?;
@@ -650,7 +650,7 @@ async fn inspect_package<C: ManagementContentPort>(
 ) -> Result<(w::Package, Binding), Error> {
     transaction::inspect(
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         (app.tenant, id),
         |ctx, tx| {
             let (tenant, id) = *ctx;
@@ -712,7 +712,7 @@ pub async fn withdraw<C: ManagementContentPort>(
         id,
         operation,
     ))?;
-    transaction::run(&app.audit,&app.runtime,app.tenant,a,(app,p,id,operation,a,hash),|ctx,tx|Box::pin(async move{
+    transaction::run(&app.audit,&app.runtime,app.audit.binding(),a,(app,p,id,operation,a,hash),|ctx,tx|Box::pin(async move{
   let (app,p,id,operation,a,hash)=ctx;
   transaction::current(tx,p).await?.require(p,Permission::SoftwareWithdraw,None)?;
   app.catalog.reader().lock_in(tx).await?;

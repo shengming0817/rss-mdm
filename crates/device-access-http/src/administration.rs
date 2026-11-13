@@ -98,17 +98,14 @@ async fn step_up(
         .map_err(|_| Error::Malformed)?
         .0
         .step_up_context(&auth.proof)?;
-    let actor = s.identity.ceremony_actor(&headers).await?;
+    let actor = s
+        .identity
+        .ceremony_actor(&headers, auth.remaining()?)
+        .await?;
     let result = s
         .identity
         .webauthn
-        .begin_authentication(
-            actor,
-            context,
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                std::time::Duration::from_secs(10),
-            ),
-        )
+        .begin_authentication(actor, s.identity.rp_generation, context, auth.remaining()?)
         .await
         .map_err(crate::identity::failure)?;
     Ok(Json(crate::identity_contract::TimedChallenge(result)))
@@ -123,17 +120,14 @@ async fn configuration_step_up(
         .map_err(|_| Error::Malformed)?
         .0
         .step_up_context(&auth.proof)?;
-    let actor = s.identity.ceremony_actor(&headers).await?;
+    let actor = s
+        .identity
+        .ceremony_actor(&headers, auth.remaining()?)
+        .await?;
     let result = s
         .identity
         .webauthn
-        .begin_authentication(
-            actor,
-            context,
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                std::time::Duration::from_secs(10),
-            ),
-        )
+        .begin_authentication(actor, s.identity.rp_generation, context, auth.remaining()?)
         .await
         .map_err(crate::identity::failure)?;
     Ok(Json(crate::identity_contract::TimedChallenge(result)))

@@ -8,6 +8,7 @@ use crate::{
 };
 use rss_mdm_group::{GroupId, GroupSource, OperationId, SourceCoordinates};
 use rss_request_context::TenantId;
+use rss_transactional_messaging::fence::ExecutionBinding;
 use rss_transactional_messaging::policy::OperationDeadline;
 use rss_transactional_messaging_postgres::{PgError, PgRuntime, PgTransaction};
 use sqlx::Row;
@@ -20,18 +21,21 @@ pub struct GroupSources {
     tenant: TenantId,
 }
 impl GroupSources {
-    pub(crate) fn bound(runtime: Arc<PgRuntime>, tenant: TenantId) -> Self {
-        Self { runtime, tenant }
+    pub(crate) fn bound(runtime: Arc<PgRuntime>, binding: ExecutionBinding) -> Self {
+        Self {
+            runtime,
+            tenant: binding.tenant(),
+        }
     }
     /// Admit only the source-reader profile, without Group mutation or Outbox privileges.
     pub async fn bind(
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
+        binding: ExecutionBinding,
         deadline: OperationDeadline,
     ) -> Result<Self, Error> {
         crate::model::settle(
             runtime
-                .local_tx(tenant, deadline, |tx| {
+                .local_tx(binding, deadline, |tx| {
                     Box::pin(async move {
                         crate::admission::verify_sources(tx).await?;
                         Ok(Ok(()))
@@ -40,7 +44,7 @@ impl GroupSources {
                 .await,
             None,
         )?;
-        Ok(Self::bound(runtime, tenant))
+        Ok(Self::bound(runtime, binding))
     }
     pub(crate) fn check_transaction(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
         self.runtime.validate_transaction(tx)?;

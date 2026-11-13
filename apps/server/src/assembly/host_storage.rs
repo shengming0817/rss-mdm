@@ -94,6 +94,8 @@ use rss_transactional_messaging_postgres::{PgError, PgOutboxStore, PgRuntime};
 use std::{sync::Arc, time::Duration};
 /// Shared physical command resources; no business service is retained here.
 pub(crate) struct Storage {
+    pub command_recovery_batch: rss_device_command::BatchLimit,
+    pub command_supersede_batch: rss_device_command::BatchLimit,
     pub runtime: Arc<PgRuntime>,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub tenant: TenantId,
@@ -104,6 +106,7 @@ pub(crate) struct Storage {
 impl Storage {
     pub(crate) async fn open(
         config: &crate::config::Config,
+        background: &crate::background::Compiled,
         audit: Arc<rss_mdm_audit_integration::AuditStore>,
         protection: &rss_mdm_native_protection::Protector,
         mut acquire: impl FnMut(Box<rss_runtime::DynManagedResource<'static>>),
@@ -114,11 +117,10 @@ impl Storage {
             &config.command_database,
             &config.storage_binding.target,
             &config.storage_binding.lineage,
-            &[(tenant, config.storage_binding.epoch)],
         )?;
         let runtime = Arc::new(
             PgRuntime::connect(
-                pg.with_pool_limits(0, config.background.command_connections()),
+                pg.with_pool_limits(0, background.command_connections),
                 crate::lifecycle::RuntimeTimer,
                 binding,
             )
@@ -131,12 +133,16 @@ impl Storage {
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let audit = Arc::new(
             audit
-                .on_runtime(runtime.clone(), tenant, &budget.control())
+                .on_runtime(
+                    runtime.clone(),
+                    config.storage_binding.execution(tenant)?,
+                    &budget.control(),
+                )
                 .await?,
         );
-        bind_native_key(&runtime, tenant, protection.fingerprint_id()).await?;
+        bind_native_key(&runtime, audit.binding(), protection.fingerprint_id()).await?;
         runtime
-            .local_tx(tenant, deadline(), move |tx| {
+            .local_tx(audit.binding(), deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(|c| {
                         Box::pin(async move {
@@ -205,13 +211,15 @@ impl Storage {
             .await
             .map_err(|_| bad())?;
         Ok(Self {
+            command_recovery_batch: background.command_recovery_batch,
+            command_supersede_batch: background.command_supersede_batch,
             runtime,
             audit,
             tenant,
             reconcile,
             read_pool,
             worker_budget: Arc::new(tokio::sync::Semaphore::new(
-                config.background.device_concurrency,
+                background.commands.concurrency(),
             )),
         })
     }
@@ -234,6 +242,7 @@ pub async fn bind_command_in(
     runtime: Arc<PgRuntime>,
     tx: &mut PgTransaction<'_>,
     clock: rss_device_command_postgres::CommandClock,
+    supersede_batch: rss_device_command::BatchLimit,
     domain: rss_transactional_messaging::message::MessagingDomain,
 ) -> std::result::Result<
     (
@@ -256,18 +265,24 @@ pub async fn bind_command_in(
         "mdm_policy_runtime",
     ])
     .map_err(|_| PgError::from(sqlx::Error::Protocol("command caller declaration".into())))?;
-    let store =
-        rss_device_command_postgres::PgStore::new(tx, outbox.clone(), clock, &callers).await?;
+    let store = rss_device_command_postgres::PgStore::new(
+        tx,
+        outbox.clone(),
+        clock,
+        &callers,
+        supersede_batch,
+    )
+    .await?;
     Ok((outbox, store))
 }
 
 pub async fn bind_native_key(
     runtime: &PgRuntime,
-    tenant: TenantId,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     key_id: &str,
 ) -> std::result::Result<(), Error> {
     let result = runtime
-        .local_tx_with_context(tenant, deadline(), key_id, |key_id, tx| {
+        .local_tx_with_context(execution, deadline(), key_id, |key_id, tx| {
             Box::pin(async move {
                 rss_mdm_native_protection::binding::bind_in(
                     rss_mdm_install_support::StorageProfile::Mdm,

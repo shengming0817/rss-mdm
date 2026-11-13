@@ -46,7 +46,7 @@ impl Transactions {
         }
         runtime
             .local_tx(
-                tenant,
+                audit_store.binding(),
                 crate::enrollment::tasks::transaction::deadline(),
                 |tx| {
                     Box::pin(async move {
@@ -70,7 +70,7 @@ impl Transactions {
             )?;
         let reconcile_messaging = rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            tenant,
+            audit_store.binding(),
             crate::enrollment::tasks::transaction::deadline(),
         )
         .await

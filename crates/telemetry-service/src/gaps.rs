@@ -105,7 +105,7 @@ impl Service {
         let principal = principal.clone();
         let input = input.clone();
         self.runtime
-            .local_tx(self.tenant, crate::deadline(), move |tx| {
+            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
@@ -144,7 +144,7 @@ impl Service {
     ) -> Result<TelemetryGapReceipt, Error> {
         let service = self.clone();
         let principal = principal.clone();
-        self.runtime.local_tx(self.tenant,crate::deadline(),move|tx|Box::pin(async move {
+        self.runtime.local_tx(self.audit_store.binding(),crate::deadline(),move|tx|Box::pin(async move {
             tx.with_connection(move|c|Box::pin(async move {
                 Ok(async {
                     authenticate_on(&service,c,&principal).await?;
@@ -160,7 +160,7 @@ impl Service {
     /// DELETE owns row locking; a locking SELECT would require an UPDATE grant.
     pub(crate) async fn prune_gaps(self: &Arc<Self>) -> Result<(), Error> {
         let tenant = self.tenant;
-        self.runtime.local_tx(tenant,crate::deadline(),move|tx|Box::pin(async move {
+        self.runtime.local_tx(self.audit_store.binding(),crate::deadline(),move|tx|Box::pin(async move {
             tx.with_connection(move|c|Box::pin(async move {
                 sqlx::query("WITH expired AS (SELECT tenant_id,id FROM mdm_telemetry.gap_reports WHERE tenant_id=$1::uuid AND expires_at<=floor(extract(epoch FROM clock_timestamp())*1000000)::bigint ORDER BY expires_at,id LIMIT 256) DELETE FROM mdm_telemetry.gap_reports g USING expired e WHERE g.tenant_id=e.tenant_id AND g.id=e.id")
                     .bind(tenant.to_string()).execute(c).await?;

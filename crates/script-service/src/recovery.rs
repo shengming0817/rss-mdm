@@ -92,7 +92,7 @@ impl ScriptService {
         );
         audit.target(&id.to_string());
         audit.identify_service("script-dispatch");
-        let result=crate::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
+        let result=crate::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.audit_store.binding(),&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
             let (service,id,fingerprint,audit)=ctx;
             crate::transaction::prepare_audit_in(&service.transactions.audit_store,tx,audit,&[]).await?;
             let run=storage::read_run(tx,*id).await?;

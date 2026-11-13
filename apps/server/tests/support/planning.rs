@@ -29,7 +29,6 @@ pub async fn owner(c: &Context, role: &str) -> Result<crate::owner_storage::Owne
         &c.inputs.database("shared", role),
         &c.inputs.installation.target,
         &c.inputs.installation.lineage,
-        &[(c.tenant, 1)],
         4,
     )
     .await?;
@@ -37,7 +36,7 @@ pub async fn owner(c: &Context, role: &str) -> Result<crate::owner_storage::Owne
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
     let audit = Arc::new(
         c.audit
-            .on_runtime(runtime.clone(), c.tenant, &budget.control())
+            .on_runtime(runtime.clone(), c.audit.binding(), &budget.control())
             .await?,
     );
     Ok(crate::owner_storage::OwnerRuntime { runtime, audit })

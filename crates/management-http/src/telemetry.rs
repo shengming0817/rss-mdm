@@ -179,7 +179,12 @@ async fn maintenance(
     audit.target_device(&input.device);
     let service = app.as_ref().as_ref().ok_or(Error::Unsupported)?;
     service
-        .maintenance(&auth.proof, &input, &audit)
+        .maintenance(
+            &auth.proof,
+            &input,
+            &audit,
+            rss_request_context::Deadline::at(auth.deadline),
+        )
         .await
         .map(Json)
         .map_err(error)

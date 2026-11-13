@@ -14,20 +14,19 @@ pub struct DeviceWork {
     runtime: Arc<PgRuntime>,
     schedule: PgStore,
     messaging: PgMessagingStore,
-    concurrency: usize,
 }
 impl DeviceWork {
     pub async fn new(
         owner: Arc<Associations>,
         runtime: Arc<PgRuntime>,
         schedule: PgStore,
-        concurrency: usize,
         deadline: OperationDeadline,
     ) -> Result<Self, PgError> {
-        let messaging = PgMessagingStore::new(runtime.clone(), owner.tenant, deadline).await?;
+        let messaging =
+            PgMessagingStore::new(runtime.clone(), owner.audit.binding(), deadline).await?;
         // Audit bind verifies runtime provenance before the runner is exposed.
         runtime
-            .local_tx_with_context(owner.tenant, deadline, &owner, |owner, tx| {
+            .local_tx_with_context(owner.audit.binding(), deadline, &owner, |owner, tx| {
                 Box::pin(async move { owner.audit.bind_in(tx).await.map_err(PgError::from) })
             })
             .await
@@ -52,7 +51,6 @@ impl DeviceWork {
             runtime,
             schedule,
             messaging,
-            concurrency,
         };
         worker.initialize_resource_bindings(deadline).await?;
         Ok(worker)
@@ -63,7 +61,7 @@ impl DeviceWork {
     ) -> Result<(), PgError> {
         let mut after = String::new();
         loop {
-            let page = self.runtime.local_tx_with_context(self.owner.tenant, deadline, (self, after),
+            let page = self.runtime.local_tx_with_context(self.owner.audit.binding(), deadline, (self, after),
                 |(owner, after), tx| Box::pin(async move {
                     let tenant = owner.owner.tenant.to_string();
                     let after = after.clone();
@@ -109,7 +107,7 @@ impl DeviceWork {
         let names = previous.keys().cloned().collect::<Vec<_>>();
         let tenant = self.owner.tenant.to_string();
         let recovered: Vec<String> = self.runtime.local_tx(
-            self.owner.tenant, OperationDeadline::from_remaining(control.remaining()),
+            self.owner.audit.binding(), OperationDeadline::from_remaining(control.remaining()),
             move |tx| Box::pin(async move {
                 tx.with_connection(move |c| Box::pin(async move {
                     sqlx::query_scalar("SELECT entity FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.devices' AND entity=ANY($2) AND result='converged'")
@@ -282,17 +280,17 @@ impl DeviceWork {
     }
     pub fn registration(
         self: Arc<Self>,
+        policy: rss_reconcile::Policy,
+        drain: std::time::Duration,
         notify: Arc<tokio::sync::Notify>,
     ) -> rss_runtime::ManagedTaskRegistration {
-        let (task, status) =
-            rss_runtime::ManagedTask::prepare("device-associations", Duration::from_secs(30));
+        let (task, status) = rss_runtime::ManagedTask::prepare("device-associations", drain);
         let _ = self.owner.worker_status.set(status);
         task.into_registration(move |stop|async move {
             #[allow(clippy::disallowed_methods,reason="monotonic runner clock")]
             let timer=DeviceTimer(tokio::time::Instant::now());
             let force=tokio_util::sync::CancellationToken::new();
             let control=Control::new(&timer,Duration::MAX,&force);
-            let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {concurrency:self.concurrency,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(8),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(60),initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000}).map_err(rss_runtime::ShutdownError::new)?;
             rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&self.scope(),policy,&control,&stop,&notify,|event|{
                 let (key,kind)=match &event {
                     rss_reconcile::Observation::Deferred{..}=>return,
@@ -334,7 +332,7 @@ impl Reconciler<PgClaim> for DeviceWork {
         let pending = self
             .runtime
             .local_tx(
-                tenant,
+                self.owner.audit.binding(),
                 OperationDeadline::from_remaining(control.remaining()),
                 move |tx| {
                     Box::pin(async move {
@@ -390,7 +388,7 @@ impl Reconciler<PgClaim> for DeviceWork {
         };
         self.runtime
             .local_tx_with_context(
-                self.owner.tenant,
+                self.owner.audit.binding(),
                 OperationDeadline::from_remaining(control.remaining()),
                 (self, claim, cut.as_ref()),
                 |(owner, claim, cut), tx| {
@@ -479,6 +477,7 @@ impl DurableStore for DeviceWork {
         &self,
         scope: &Scope,
         limit: usize,
+        scan_budget: u32,
         lease: Duration,
         c: &Control<'_, T>,
     ) -> Result<ClaimBatch<PgClaim>, Error> {
@@ -486,7 +485,10 @@ impl DurableStore for DeviceWork {
             return Err(Error::new(ErrorKind::Invariant));
         }
         self.refresh_failures(c).await?;
-        let result = self.schedule.claim_due(scope, limit, lease, c).await;
+        let result = self
+            .schedule
+            .claim_due(scope, limit, scan_budget, lease, c)
+            .await;
         if result.is_ok() {
             self.owner
                 .worker_observed

@@ -296,7 +296,7 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
                     Arc::new(
                         rss_mdm_authorization_service::session::SessionAuthority::new(
                             s.identity.authority.clone(),
-                            s.identity.tenant,
+                            s.identity.binding,
                         ),
                     ),
                     s.identity.authority.clone(),

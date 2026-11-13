@@ -10,14 +10,14 @@ use serde_json::Value;
 use uuid::Uuid;
 
 pub static RULES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<RuleRow>("authorization_rules", &["id"], 100, 1000, &[rss_mdm_query::directory::Exclusion { path: "value.grants", reason: "Each grant combines an operation with its own scope; use the authorization rule owner to evaluate grants" }]).expect("Public directory model")
+    Schema::derived::<RuleRow>("authorization_rules", &["id"], 100, 1024, &[rss_mdm_query::directory::Exclusion { path: "value.grants", reason: "Each grant combines an operation with its own scope; use the authorization rule owner to evaluate grants" }]).expect("Public directory model")
 });
 pub static GROUPS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<GroupRow>("user_groups", &["id"], 100, 1000, &[])
+    Schema::derived::<GroupRow>("user_groups", &["id"], 100, 1024, &[])
         .expect("User group model is fully described")
 });
 pub static MEMBERS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<crate::User>("user_group_members", &["principalId"], 100, 1000, &[])
+    Schema::derived::<crate::User>("user_group_members", &["principalId"], 100, 1024, &[])
         .expect("User group member model is fully described")
 });
 pub static KEYS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
@@ -25,7 +25,7 @@ pub static KEYS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
         "api_keys",
         &["id"],
         100,
-        1000,
+        1024,
         &[rss_mdm_query::directory::Exclusion {
             path: "metadata.grants",
             reason: "Grant object arrays require operation and scope to match the same grant",

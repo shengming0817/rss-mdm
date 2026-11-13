@@ -82,7 +82,7 @@ pub async fn manual_scalars_at_in(
 ) -> Result<Vec<crate::Assignment>> {
     ensure!(
         cut.tenant().to_string() == tenant.to_string()
-            && devices.len() <= 1000
+            && devices.len() <= 1024
             && fields.len() <= 1024,
         "invalid manual history page"
     );

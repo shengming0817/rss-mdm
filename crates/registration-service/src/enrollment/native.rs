@@ -300,6 +300,7 @@ pub async fn account(
     id: Uuid,
     authority: Arc<dyn AccountAuthority>,
     challenge: Option<&str>,
+    deadline: rss_transactional_messaging::policy::OperationDeadline,
 ) -> Result<Admission, Error> {
     let tenant = sessions.tenant().to_string();
     let mut tx = store.begin(&tenant).await?;
@@ -339,14 +340,7 @@ pub async fn account(
         source: ReportSource::MdmApple,
     };
     tx.rollback().await.map_err(db)?;
-    let proof = sessions
-        .recheck(
-            &reference,
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                std::time::Duration::from_secs(10),
-            ),
-        )
-        .await?;
+    let proof = sessions.recheck(&reference, deadline).await?;
     if proof.account().tenant.to_string() != data.tenant
         || proof.account().principal.as_uuid().to_string() != data.actor
         || proof.instance().to_string() != data.instance
@@ -714,6 +708,7 @@ impl Admission {
     pub async fn recheck_entra(
         self,
         authority: &rss_mdm_authorization_service::entra::EntraAuthority,
+        deadline: rss_transactional_messaging::policy::OperationDeadline,
     ) -> Result<Self, Error> {
         let Self { data, basis } = self;
         match basis {
@@ -723,7 +718,10 @@ impl Admission {
             } => Ok(Self {
                 data,
                 basis: Basis::Entra {
-                    proof: rss_mdm_authorization_service::entra::recheck(authority, proof).await?,
+                    proof: rss_mdm_authorization_service::entra::recheck(
+                        authority, proof, deadline,
+                    )
+                    .await?,
                     authority: policy,
                 },
             }),

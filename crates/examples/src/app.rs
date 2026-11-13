@@ -189,13 +189,14 @@ impl App {
     async fn project_inner(&self, cancel: &CancellationToken) -> Result<serde_json::Value> {
         let source = self.source()?;
         let scope = self.projection_scope();
-        let capture = Control::new(&self.clock, self.clock.cutoff(BUDGET), cancel);
-        let through = capture.run(source.high_water(source.scope())).await?;
+        let cutoff = self.clock.cutoff(BUDGET);
+        let capture = Control::new(&self.clock, cutoff, cancel);
+        let through = source.high_water(source.scope(), &capture).await?;
         let window = crate::window::Window {
             source: source.clone(),
             through,
         };
-        let control = Control::new(&self.clock, self.clock.cutoff(BUDGET), cancel);
+        let control = Control::new(&self.clock, cutoff, cancel);
         self.projection
             .initialize(
                 &scope,
@@ -214,7 +215,7 @@ impl App {
             .projection(claim, Inventory::new(source.clone()))?;
         let (mut applied, mut duplicates, mut filtered) = (0_u64, 0_u64, 0_u64);
         loop {
-            let control = Control::new(&self.clock, self.clock.cutoff(BUDGET), cancel);
+            let control = Control::new(&self.clock, cutoff, cancel);
             let report = rss_projection::run(
                 &window,
                 &execution,

@@ -52,7 +52,7 @@ impl Transactions {
             return Err(Error::Forbidden);
         }
         runtime
-            .local_tx(tenant, transaction::deadline(), |tx| {
+            .local_tx(audit_store.binding(), transaction::deadline(), |tx| {
                 Box::pin(async move {
                     tx.with_connection(|c| {
                         Box::pin(async move {
@@ -82,7 +82,7 @@ impl Transactions {
             )?;
         let reconcile_messaging = rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            tenant,
+            audit_store.binding(),
             transaction::deadline(),
         )
         .await

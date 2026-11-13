@@ -157,7 +157,7 @@ impl Service {
         let rejected = failure.clone();
         let settled = self
             .runtime
-            .local_tx(self.tenant, crate::deadline(), move |tx| {
+            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
                 Box::pin(async move {
                     service
                         .audit_store
@@ -463,7 +463,7 @@ async fn aggregate_on(
     input: &HistoryRequest,
     request: &AggregateRequest,
 ) -> Result<Aggregate, Error> {
-    if request.definition_version.get() > i64::MAX as u64 || request.dimensions.len() > 64 {
+    if request.definition_version.get() > i64::MAX as u64 || request.dimensions.len() > 1024 {
         return Err(Error::Invalid);
     }
     let raw:Option<String>=sqlx::query_scalar("SELECT definition::text FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field=$2 AND version=$3 AND definition IS NOT NULL")

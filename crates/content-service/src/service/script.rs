@@ -16,7 +16,7 @@ async fn selected(
 ) -> Result<([u8; 32], r::Artifact), Error> {
     transaction::inspect(
         &app.runtime,
-        app.tenant,
+        app.audit_store.binding(),
         None,
         (proof, id, version, input),
         |ctx, tx| {
@@ -79,7 +79,14 @@ pub async fn download(
         let secret = secret.duplicate().map_err(|_| Error::Forbidden)?;
         let fresh = app
             .sessions
-            .authenticate(&app.authorization, secret)
+            .authenticate(
+                &app.authorization,
+                secret,
+                rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                    verified.deadline,
+                    &rss_mdm_audit_integration::budget::RuntimeTimer,
+                ),
+            )
             .await?;
         if fresh.actor() != proof.actor()
             || fresh.credential_binding() != proof.credential_binding()

@@ -197,7 +197,7 @@ impl AssetService {
     {
         crate::transaction::inspect(
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             (self, p),
             |(s, p), tx| {
                 Box::pin(async move {

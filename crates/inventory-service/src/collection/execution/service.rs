@@ -30,7 +30,7 @@ impl Transactions {
     ) -> Result<Self, Error> {
         let reconcile_messaging = rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            tenant,
+            audit_store.binding(),
             crate::transaction::deadline(),
         )
         .await

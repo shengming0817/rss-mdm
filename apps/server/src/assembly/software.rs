@@ -14,6 +14,7 @@ pub(crate) struct Assembly {
 #[expect(clippy::too_many_arguments, reason = "explicit host capabilities")]
 pub(crate) async fn assemble(
     config: &crate::config::Config,
+    background: &crate::background::Compiled,
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -57,6 +58,7 @@ pub(crate) async fn assemble(
         },
     ));
     let materials = Arc::new(owner::Materials {
+        supersede_batch: background.command_supersede_batch,
         registration,
         capacity: Arc::new(super::capacity::Capacity),
         inputs: input_materials,
@@ -88,7 +90,7 @@ pub(crate) async fn assemble(
                 tenant,
             ),
             runtime: runtime.clone(),
-            tenant,
+            binding: audit.binding(),
             inputs,
             signed,
             content_available: config.content.is_some(),
@@ -116,7 +118,7 @@ pub(crate) async fn assemble(
         outbox,
         reconcile,
         budget,
-        config.background.device_concurrency,
+        background.command_recovery_batch,
     ));
 
     Ok(Assembly {
@@ -186,46 +188,50 @@ pub(crate) async fn catalog(
 > {
     owner
         .runtime
-        .local_tx(tenant, crate::identity::deadline(), move |tx| {
-            Box::pin(async move {
-                tx.with_connection(move |c| {
-                    Box::pin(async move {
-                        if !sqlx::query_scalar::<_, bool>(
-                            rss_mdm_software_service::catalog::ADMISSION_SQL,
-                        )
-                        .fetch_one(&mut *c)
-                        .await?
-                        {
-                            return Err(sqlx::Error::Protocol(
-                                "owner storage admission rejected".into(),
-                            ));
-                        }
-                        if !sqlx::query_scalar::<_, bool>(
-                            rss_mdm_software_service::agent_packages::ADMISSION_SQL,
-                        )
-                        .fetch_one(&mut *c)
-                        .await?
-                        {
-                            return Err(sqlx::Error::Protocol(
-                                "Agent package storage admission rejected".into(),
-                            ));
-                        }
-                        if !sqlx::query_scalar::<_, bool>(
-                            rss_mdm_software_service::source_snapshots::ADMISSION_SQL,
-                        )
-                        .fetch_one(&mut *c)
-                        .await?
-                        {
-                            return Err(sqlx::Error::Protocol(
-                                "Software source snapshot admission rejected".into(),
-                            ));
-                        }
-                        Ok(())
+        .local_tx(
+            owner.audit.binding(),
+            crate::identity::deadline(),
+            move |tx| {
+                Box::pin(async move {
+                    tx.with_connection(move |c| {
+                        Box::pin(async move {
+                            if !sqlx::query_scalar::<_, bool>(
+                                rss_mdm_software_service::catalog::ADMISSION_SQL,
+                            )
+                            .fetch_one(&mut *c)
+                            .await?
+                            {
+                                return Err(sqlx::Error::Protocol(
+                                    "owner storage admission rejected".into(),
+                                ));
+                            }
+                            if !sqlx::query_scalar::<_, bool>(
+                                rss_mdm_software_service::agent_packages::ADMISSION_SQL,
+                            )
+                            .fetch_one(&mut *c)
+                            .await?
+                            {
+                                return Err(sqlx::Error::Protocol(
+                                    "Agent package storage admission rejected".into(),
+                                ));
+                            }
+                            if !sqlx::query_scalar::<_, bool>(
+                                rss_mdm_software_service::source_snapshots::ADMISSION_SQL,
+                            )
+                            .fetch_one(&mut *c)
+                            .await?
+                            {
+                                return Err(sqlx::Error::Protocol(
+                                    "Software source snapshot admission rejected".into(),
+                                ));
+                            }
+                            Ok(())
+                        })
                     })
+                    .await
                 })
-                .await
-            })
-        })
+            },
+        )
         .await
         .fold(
             Ok,
@@ -238,7 +244,7 @@ pub(crate) async fn catalog(
     let resources = Arc::new(
         rss_mdm_resource_postgres::ResourceStore::new(
             owner.runtime.clone(),
-            tenant,
+            owner.audit.binding(),
             rss_mdm_resource_service::transaction::deadline(),
         )
         .await

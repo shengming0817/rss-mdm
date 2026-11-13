@@ -68,7 +68,6 @@ pub async fn maintain(input: Input) -> Result<Receipt> {
             &config.access_database,
             &config.storage_binding.target,
             &config.storage_binding.lineage,
-            &[(tenant, config.storage_binding.epoch)],
             crate::background::IDENTITY_CONNECTIONS,
         )
         .await
@@ -85,7 +84,7 @@ pub async fn maintain(input: Input) -> Result<Receipt> {
                 audit_pool.clone(),
                 config.audit.integrity().map_err(|_| Error::Input)?,
                 runtime.clone(),
-                tenant,
+                config.storage_binding.execution(tenant).map_err(|_| Error::Input)?,
                 &budget.control(),
             )
             .await

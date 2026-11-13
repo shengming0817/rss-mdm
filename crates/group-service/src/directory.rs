@@ -58,7 +58,7 @@ impl Groups {
         proof.require_all_devices(Permission::InventoryRead)?;
         crate::transaction::inspect(
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             (self, proof, q, audit),
             |ctx, tx| {
                 Box::pin(async move {
@@ -165,7 +165,7 @@ impl Groups {
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
         p.manage(Permission::GroupRead)?;
-        crate::transaction::inspect(&self.runtime,self.tenant,(self,p),|(_,p),tx|Box::pin(async move {
+        crate::transaction::inspect(&self.runtime,self.audit_store.binding(),(self,p),|(_,p),tx|Box::pin(async move {
             let grant=crate::transaction::query_authority(tx,p).await?;
             grant.require(p,Permission::GroupRead,None)?;
             grant.require_all_devices(p,Permission::InventoryRead)?;
@@ -189,7 +189,7 @@ impl Groups {
 
 use rss_mdm_query::directory::Schema;
 pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<Row>("groups", &["id"], 64, 1000, &[])
+    Schema::derived::<Row>("groups", &["id"], 64, 1024, &[])
         .and_then(|s| s.no_range("ruleVersion"))
         .expect("Group public model is fully described")
 });

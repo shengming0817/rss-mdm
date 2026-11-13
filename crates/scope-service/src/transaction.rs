@@ -1,6 +1,6 @@
 //! Scope request settlement over the initiating RSS transaction.
 use crate::{Error, Failure};
-use rss_request_context::TenantId;
+use rss_transactional_messaging::fence::ExecutionBinding;
 use rss_transactional_messaging_postgres::{PgError, PgRuntime, PgTransaction};
 use std::{sync::Mutex, time::Duration};
 #[derive(Debug, thiserror::Error)]
@@ -87,7 +87,7 @@ pub fn settle<T>(
 pub async fn run<C: Send, R: Send, F>(
     audit_store: &rss_mdm_audit_integration::AuditStore,
     runtime: &PgRuntime,
-    tenant: TenantId,
+    binding: ExecutionBinding,
     audit: &RequestAudit,
     context: C,
     operation: F,
@@ -103,7 +103,7 @@ where
     let failure = Mutex::new(None);
     let attempt = runtime
         .local_tx_with_context(
-            tenant,
+            binding,
             deadline(),
             (audit_store, context, Some(operation), audit, &failure),
             |state, tx| {
@@ -156,7 +156,7 @@ use serde_json::Value;
 /// It deliberately does not advance the outer request's single mutation settlement state.
 pub async fn inspect<C: Send, R: Send, F>(
     runtime: &PgRuntime,
-    tenant: TenantId,
+    binding: ExecutionBinding,
     context: C,
     operation: F,
 ) -> std::result::Result<R, Error>
@@ -168,12 +168,12 @@ where
             Box<dyn std::future::Future<Output = Result<R>> + Send + 'c>,
         > + Send,
 {
-    inspect_budget(runtime, tenant, deadline(), context, operation).await
+    inspect_budget(runtime, binding, deadline(), context, operation).await
 }
 
 pub(crate) async fn inspect_budget<C: Send, R: Send, F>(
     runtime: &PgRuntime,
-    tenant: TenantId,
+    binding: ExecutionBinding,
     cutoff: rss_transactional_messaging::policy::OperationDeadline,
     context: C,
     operation: F,
@@ -189,7 +189,7 @@ where
     let failure = Mutex::new(None);
     let attempt = runtime
         .local_tx_with_context(
-            tenant,
+            binding,
             cutoff,
             (context, Some(operation), &failure),
             |state, tx| {

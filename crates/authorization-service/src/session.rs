@@ -10,14 +10,20 @@ use rss_request_context::TenantId;
 #[derive(Clone)]
 pub struct SessionAuthority {
     authority: Authority,
-    tenant: TenantId,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
 }
 impl SessionAuthority {
-    pub fn new(authority: Authority, tenant: TenantId) -> Self {
-        Self { authority, tenant }
+    pub fn new(
+        authority: Authority,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Self {
+        Self { authority, binding }
+    }
+    pub fn binding(&self) -> rss_transactional_messaging::fence::ExecutionBinding {
+        self.binding
     }
     pub fn tenant(&self) -> TenantId {
-        self.tenant
+        self.binding.tenant()
     }
     /// Recheck the trusted operation's locator without retaining credentials or renewing idle.
     pub async fn recheck(
@@ -26,7 +32,7 @@ impl SessionAuthority {
         deadline: rss_transactional_messaging::policy::OperationDeadline,
     ) -> Result<RevalidatedSession, Error> {
         self.authority
-            .recheck_session_reference(self.tenant, reference, deadline)
+            .recheck_session_reference(self.binding, reference, deadline)
             .await
             .map_err(authority_error)
     }
@@ -34,26 +40,24 @@ impl SessionAuthority {
         &self,
         store: &Store,
         credential: RequestCredential,
+        deadline: rss_transactional_messaging::policy::OperationDeadline,
     ) -> Result<AuthorizedPrincipal, Error> {
-        let deadline = rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-            std::time::Duration::from_secs(10),
-        );
         let principal = match credential {
             RequestCredential::Cookie(secret) => Principal::new(
                 self.authority
-                    .inspect_session(self.tenant, secret, deadline)
+                    .inspect_session(self.binding, secret, deadline)
                     .await
                     .map_err(authority_error)?,
             )?,
             RequestCredential::Bearer(secret) => Principal::new(
                 self.authority
-                    .inspect_bearer(self.tenant, secret, deadline)
+                    .inspect_bearer(self.binding, secret, deadline)
                     .await
                     .map_err(authority_error)?,
             )?,
             RequestCredential::ApiKey(secret) => {
                 store
-                    .authenticate_key(&self.tenant.to_string(), &secret)
+                    .authenticate_key(&self.binding.tenant().to_string(), &secret)
                     .await?
             }
         };

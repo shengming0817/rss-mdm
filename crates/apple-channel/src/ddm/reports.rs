@@ -272,7 +272,7 @@ pub(crate) async fn observations(
     ids: Vec<Uuid>,
     native_values: bool,
 ) -> Result<std::collections::BTreeMap<Uuid, native::evidence::DeclarationEvidence>, Error> {
-    if ids.len() > 1000 {
+    if ids.len() > 1024 {
         return Err(Error::Malformed);
     }
     if ids.is_empty() {

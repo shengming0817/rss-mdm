@@ -123,7 +123,7 @@ fn timeline_error(e: rss_mdm_timeline_service::Error) -> Error {
         E::NotFound => Error::NotFound,
         E::Conflict => Error::QueryCursorInvalidated,
         E::Integrity => Error::Unavailable(Failure::AuditIntegrity),
-        E::Storage | E::Deadline => Error::Unavailable(Failure::Timeline),
+        E::Storage | E::Deadline | E::BudgetExceeded => Error::Unavailable(Failure::Timeline),
     }
 }
 fn audit_read(a: &RequestAudit) {

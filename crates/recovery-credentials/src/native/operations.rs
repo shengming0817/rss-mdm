@@ -104,7 +104,7 @@ impl Service {
         transaction::run(
             &self.transactions.audit_store,
             &self.transactions.runtime,
-            self.transactions.tenant,
+            self.transactions.audit_store.binding(),
             audit,
             (self, proof, device, input, audit, protection),
             |ctx, tx| {

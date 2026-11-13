@@ -12,6 +12,18 @@ pub struct AuditBudget {
     cancel: CancellationToken,
 }
 impl AuditBudget {
+    pub const fn deadline(&self) -> Deadline {
+        self.deadline
+    }
+    /// Adopt the caller's absolute cutoff without allocating another duration window.
+    pub fn until(deadline: Deadline) -> Self {
+        Self {
+            timer: RuntimeTimer,
+            deadline,
+            operation: deadline,
+            cancel: CancellationToken::new(),
+        }
+    }
     /// Call sites supply bounded product constants, never an untrusted duration.
     pub fn new(timeout: Duration) -> Self {
         Self::with_cancellation(timeout, CancellationToken::new())
@@ -143,5 +155,14 @@ impl rss_request_context::Clock for RuntimeTimer {
 impl rss_request_context::ExecutionTimer for RuntimeTimer {
     async fn sleep_until(&self, deadline: Deadline) {
         tokio::task::unconstrained(tokio::time::sleep_until(deadline.instant().into())).await;
+    }
+}
+
+impl rss_request_context::CancellationObserver for AuditBudget {
+    fn is_cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+    fn cancelled(&self) -> rss_request_context::CancellationFuture<'_> {
+        Box::pin(self.cancel.cancelled())
     }
 }

@@ -25,11 +25,19 @@ pub(super) async fn verify_restored(
     };
     use rss_identity_core::{
         InstanceId,
-        account::{LoginKey, Password, PasswordKdf},
+        account::{LoginKey, Password},
     };
     use rss_mdm_authorization_service::{Subject, User, initialization};
     let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Input)?;
     let instance = InstanceId::parse(&config.identity.instance_id).map_err(|_| Error::Input)?;
+    let compiled = config
+        .identity
+        .runtime
+        .compile(
+            instance,
+            config.audit.integrity().map_err(|_| Error::Input)?,
+        )
+        .map_err(|_| Error::Input)?;
     let login = LoginKey::parse(&account.login).map_err(|_| Error::Input)?;
     let password = Password::new(
         crate::config::secret(&account.password_file)
@@ -42,16 +50,28 @@ pub(super) async fn verify_restored(
         tenant_id: tenant.into(),
         principal_id: account.principal_id.to_string(),
     };
+    let cutoff = rss_request_context::Deadline::from_timeout(
+        &crate::lifecycle::RuntimeTimer,
+        compiled.maintenance,
+    )
+    .map_err(|_| Error::Input)?;
     let runtime = crate::identity::open_runtime(
         &config.identity.database,
         &config.storage_binding.target,
         &config.storage_binding.lineage,
-        &[(tenant_id, epoch)],
         crate::background::IDENTITY_CONNECTIONS,
     )
     .await
     .map_err(|_| Error::Storage)?;
-    let kdf = Arc::new(PasswordKdf::new());
+    let kdf = compiled.kdf.clone();
+    let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
+        config
+            .storage_binding
+            .identity()
+            .map_err(|_| Error::Input)?,
+        tenant_id,
+        rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| Error::Input)?,
+    );
     let result = async {
         let policy = Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(
@@ -63,20 +83,24 @@ pub(super) async fn verify_restored(
         let authority = rss_identity_postgres::Authority::connect_runtime(
             runtime.clone(),
             kdf.clone(),
-            crate::identity::authority_config(
-                instance,
-                vec![tenant_id],
-                config.audit.integrity().map_err(|_| Error::Input)?,
-            )
-            .map_err(|_| Error::Input)?,
+            compiled.authority,
+            binding,
             policy,
-            crate::identity::deadline(),
+            rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                cutoff,
+                &crate::lifecycle::RuntimeTimer,
+            ),
         )
         .await
         .map_err(|_| Error::Storage)?;
-        let verified = initialization::verify_local(&authority, user, login, password)
-            .await
-            .map_err(|_| Error::Conflict)?;
+        let verified =
+            initialization::verify_local(&authority, binding, user, login, password, cutoff)
+                .await
+                .map_err(|error| match error {
+                    rss_mdm_authorization_service::Error::Unauthorized
+                    | rss_mdm_authorization_service::Error::Forbidden => Error::Conflict,
+                    _ => Error::Storage,
+                })?;
         let mut c =
             sqlx::PgConnection::connect_with(&config.access_options().map_err(|_| Error::Input)?)
                 .await
@@ -115,8 +139,11 @@ pub(super) async fn verify_restored(
     }
     .await;
     kdf.close();
-    kdf.wait_closed().await;
-    runtime.close().await;
+    tokio::time::timeout(compiled.drain, async {
+        tokio::join!(kdf.wait_closed(), runtime.close());
+    })
+    .await
+    .map_err(|_| Error::Storage)?;
     result
 }
 

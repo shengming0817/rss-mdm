@@ -256,6 +256,7 @@ pub fn ingress_error(code: wire::ErrorCode) -> Response {
 }
 
 async fn report(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -264,23 +265,25 @@ async fn report(
 ) -> Result<WithStatus<202, Json<wire::ReportAck>>, AgentError> {
     json_content_type(&headers)?;
     let body = body.map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    bounded(report_inner(
+    report_inner(
+        &control,
         &app,
         &audit,
         &headers,
         peer.as_ref().map(|p| &p.0),
         body,
-    ))
+    )
     .await
 }
 async fn report_inner(
+    control: &rss_axum::RequestControl,
     app: &HttpState,
     audit: &RequestAudit,
     headers: &HeaderMap,
     peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,
     body: contract::Buffered<ReportDecoder>,
 ) -> Result<WithStatus<202, Json<wire::ReportAck>>, AgentError> {
-    let input = body.decode(headers, wire::MAX_REQUEST_BYTES)?.value;
+    let input = body.decode(headers, wire::MAX_REPORT_BYTES)?.value;
     let principal = authenticate(&app.enrollment, headers, peer).await?;
     let scope = device::scope(
         principal.profile(),
@@ -306,7 +309,7 @@ async fn report_inner(
     )
     .map_err(Error::from)?;
     let batch = report_batch(&input)?;
-    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::until(control.deadline());
     let attempt = app.audit_store.write(principal.tenant(),
             &budget.source_control(),
         (&app.audit_store, &principal, &scope, &input, &batch, audit),
@@ -330,19 +333,21 @@ async fn report_inner(
 async fn status(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
+    Extension(control): Extension<rss_axum::RequestControl>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     Path(id): Path<String>,
 ) -> Result<Json<wire::ReportStatus>, AgentError> {
     let id =
         Uuid::parse_str(&id).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    bounded(status_inner(
+    status_inner(
         &app,
         &audit,
         &headers,
         peer.as_ref().map(|p| &p.0),
         id,
-    ))
+        &control,
+    )
     .await
 }
 async fn status_inner(
@@ -351,6 +356,7 @@ async fn status_inner(
     headers: &HeaderMap,
     peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,
     id: Uuid,
+    control: &rss_axum::RequestControl,
 ) -> Result<Json<wire::ReportStatus>, AgentError> {
     if id.is_nil() {
         return Err(Error::Malformed.into());
@@ -389,7 +395,12 @@ async fn status_inner(
     tx.commit().await.map_err(db)?;
     let delivery = app
         .inventory
-        .inspect_report(report.scope(), report.batch())
+        .inspect_report(
+            report.scope(),
+            report.batch(),
+            control.deadline(),
+            rss_request_context::Cancellation::observe(control),
+        )
         .await?;
     let (observation, projection) = projection_status(delivery)?;
     Ok(Json(wire::ReportStatus {

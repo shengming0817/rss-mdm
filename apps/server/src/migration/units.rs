@@ -75,7 +75,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             include_str!("../../schema/installation.sql"),
         ),
         (
-            "identity-authority-v17",
+            "identity-authority-v18",
             rss_identity_postgres::MIGRATION_SQL,
         ),
         (

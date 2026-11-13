@@ -56,7 +56,7 @@ pub async fn read_source<C: ManagementContentPort>(
     audit.target(&id);
     transaction::inspect(
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         (&app, &auth, &id, &revision),
         |ctx, tx| {
             Box::pin(async move {
@@ -103,7 +103,7 @@ pub async fn write_source<C: ManagementContentPort>(
     transaction::run(
         &app.audit,
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         audit,
         (&app, &auth, &id, &revision, &op, &audit),
         |ctx, tx| {
@@ -136,7 +136,7 @@ pub async fn read_version<C: ManagementContentPort>(
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, &id);
     transaction::inspect(
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         (&app, &auth, &id, &version),
         |ctx, tx| {
             Box::pin(async move {
@@ -194,7 +194,7 @@ pub async fn write_version<C: ManagementContentPort>(
     let verified = if matches!(op.input, VersionChange::Enable) {
         let resource = transaction::inspect(
             &app.runtime,
-            app.tenant,
+            app.audit.binding(),
             (&app, &auth, &id, &version, &op, &audit),
             |ctx, tx| {
                 Box::pin(async move {
@@ -236,7 +236,7 @@ pub async fn write_version<C: ManagementContentPort>(
     transaction::run(
         &app.audit,
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         audit,
         (&app, &auth, &id, &version, &op, audit, verified.as_deref()),
         |ctx, tx| {
@@ -295,7 +295,7 @@ pub async fn download<C: ManagementContentPort>(
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, &id);
     let frozen = transaction::inspect(
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         (&app, &auth, &id, &version, &selection),
         |ctx, tx| {
             Box::pin(async move {
@@ -342,7 +342,7 @@ pub async fn download<C: ManagementContentPort>(
         .await?;
     transaction::inspect(
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         (&app, &auth, &frozen),
         |ctx, tx| {
             Box::pin(async move {
@@ -386,7 +386,7 @@ pub async fn import<C: ManagementContentPort>(
     audit.require_final_request();
     let source = transaction::inspect(
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         (app, auth, audit, &op),
         |ctx, tx| {
             Box::pin(async move {
@@ -465,7 +465,7 @@ pub async fn import<C: ManagementContentPort>(
     let result = transaction::run(
         &app.audit,
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         audit,
         (app, auth, audit, &op, prepared.as_ref(), &retained),
         |ctx, tx| {

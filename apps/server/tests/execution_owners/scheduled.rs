@@ -16,7 +16,7 @@ async fn probe(h: &Harness, version: Uuid) -> Result<(bool, bool)> {
         .storage
         .runtime
         .local_tx_with_context(
-            h.c.tenant,
+            h.c.audit.binding(),
             script::transaction::deadline(),
             reader,
             move |reader, tx| {
@@ -50,7 +50,7 @@ async fn wake(
     );
     let messaging = rss_reconcile_postgres::PgMessagingStore::new(
         h.a.resources.storage.runtime.clone(),
-        h.c.tenant,
+        h.c.audit.binding(),
         script::transaction::deadline(),
     )
     .await?;
@@ -58,7 +58,7 @@ async fn wake(
         .storage
         .runtime
         .local_tx_with_context(
-            h.c.tenant,
+            h.c.audit.binding(),
             script::transaction::deadline(),
             (reader, messaging, target),
             move |(reader, messaging, target), tx| {

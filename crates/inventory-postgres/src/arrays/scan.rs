@@ -108,7 +108,7 @@ pub async fn advance_scan(
         m == state.metadata && state.next <= m.count && !state.verified,
         "array scan binding"
     );
-    let definition: Vec<u8> = sqlx::query_scalar("SELECT definition FROM mdm.array_versions WHERE tenant_id=$1::uuid AND version=$2 AND octet_length(definition)<=65536")
+    let definition: Vec<u8> = sqlx::query_scalar("SELECT definition FROM mdm.array_versions WHERE tenant_id=$1::uuid AND version=$2 AND octet_length(definition)<=1048576")
         .bind(tenant.to_string()).bind(&m.version).fetch_one(&mut *c).await?;
     ensure!(
         Sha256::digest(&definition)

@@ -54,7 +54,7 @@ async fn original_attempt_reservation_and_report_are_atomic_and_independent_of_p
     script::transaction::run(
         &h.audit,
         &h.a.resources.storage.runtime,
-        tenant,
+        h.audit.binding(),
         &request(&h.c),
         definition.clone(),
         move |definition, tx| {
@@ -107,7 +107,7 @@ async fn original_attempt_reservation_and_report_are_atomic_and_independent_of_p
             script::transaction::run(
                 &h.audit,
                 &h.a.resources.storage.runtime,
-                tenant,
+                h.audit.binding(),
                 &audit,
                 progress,
                 move |progress, tx| {
@@ -297,3 +297,6 @@ async fn periodic_assignment_uses_actual_start_and_exact_current_version() -> an
     h.close().await?;
     result
 }
+
+#[path = "capacity.rs"]
+mod capacity;

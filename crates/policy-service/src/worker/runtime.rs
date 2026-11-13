@@ -20,7 +20,6 @@ pub struct PolicyWork {
 }
 pub struct Automation {
     pub work: Arc<PolicyWork>,
-    concurrency: usize,
 }
 impl std::ops::Deref for Automation {
     type Target = PolicyWork;
@@ -60,7 +59,7 @@ impl PolicyWork {
                     rss_reconcile::Scope::new(service.tenant, domain).expect("Policy domain");
                 let mut after = String::new();
                 loop {
-                    let page = crate::transaction::inspect(&service.runtime, service.tenant,
+                    let page = crate::transaction::inspect(&service.runtime, service.audit_store.binding(),
                     (service, scope.clone(), after), |(service, scope, after), tx| Box::pin(async move {
                         let tenant = tx.tenant_id().to_string();
                         let domain = scope.reconciler().to_owned();
@@ -172,27 +171,22 @@ impl PolicyWork {
 }
 
 impl Automation {
-    pub fn new(work: Arc<PolicyWork>, concurrency: usize) -> Arc<Self> {
-        Arc::new(Self { work, concurrency })
+    pub fn new(work: Arc<PolicyWork>) -> Arc<Self> {
+        Arc::new(Self { work })
     }
     pub fn registration(
         self: Arc<Self>,
+        event_policy: rss_reconcile::Policy,
+        policy: rss_reconcile::Policy,
+        drain: std::time::Duration,
         signals: Arc<crate::worker_wake::Signals>,
     ) -> rss_runtime::ManagedTaskRegistration {
-        let (task, status) =
-            rss_runtime::ManagedTask::prepare("mdm-policy-work", Duration::from_secs(20));
+        let (task, status) = rss_runtime::ManagedTask::prepare("mdm-policy-work", drain);
         let _ = self.service.automation_task.set(status);
         task.into_registration(move |cancel|async move {
             let cancel = cancel.child_token();
             let force=tokio_util::sync::CancellationToken::new();
             let timer=Timer::new();let control=rss_reconcile::Control::new(&timer,Duration::MAX,&force);
-            let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
-                concurrency:self.concurrency,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:crate::worker_wake::RECOVERY,
-                initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
-            }).map_err(rss_runtime::ShutdownError::new)?;
-            let event_policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
-                concurrency:EVENT_CONCURRENCY,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:crate::worker_wake::RECOVERY,initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
-            }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=rss_reconcile::Scope::new(self.service.tenant,jobs::domain(self.profile())).expect("constant domain");
             let configuration_inputs = self.service.configuration.iter().map(|_| "configuration-relay");
             for entity in ["schedules"].into_iter().chain(configuration_inputs) {
@@ -292,7 +286,7 @@ impl PolicyWork {
                 .work_owner(claim.target().entity())?
                 .0
                 .local_tx_with_context(
-                    self.service.tenant,
+                    self.service.audit_store.binding(),
                     deadline(),
                     (
                         self.application(claim.target().entity())?,
@@ -366,7 +360,7 @@ impl PolicyWork {
                 .work_owner(claim.target().entity())?
                 .0
                 .local_tx_with_context(
-                    self.service.tenant,
+                    self.service.audit_store.binding(),
                     rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                         control.remaining(),
                     ),
@@ -509,7 +503,7 @@ impl PolicyWork {
             self.work_owner(claim.target().entity())?
                 .0
                 .local_tx_with_context(
-                    self.service.tenant,
+                    self.service.audit_store.binding(),
                     rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                         control.remaining(),
                     ),
@@ -625,7 +619,7 @@ impl PolicyWork {
             .service
             .runtime
             .local_tx_with_context(
-                self.service.tenant,
+                self.service.audit_store.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -658,7 +652,7 @@ impl PolicyWork {
         self.service
             .runtime
             .local_tx_with_context(
-                self.service.tenant,
+                self.service.audit_store.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),

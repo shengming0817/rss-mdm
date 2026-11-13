@@ -478,20 +478,22 @@ async fn discover(
 }
 
 async fn policy(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
     Extension(audit): Extension<RequestAudit>,
     bytes: Bytes,
 ) -> Response {
-    enrollment(app, headers, audit, bytes, false).await
+    enrollment(app, headers, audit, bytes, false, control.deadline()).await
 }
 async fn issue(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
     Extension(audit): Extension<RequestAudit>,
     bytes: Bytes,
 ) -> Response {
-    enrollment(app, headers, audit, bytes, true).await
+    enrollment(app, headers, audit, bytes, true, control.deadline()).await
 }
 async fn enrollment(
     app: Arc<HttpState>,
@@ -499,6 +501,7 @@ async fn enrollment(
     audit: RequestAudit,
     bytes: Bytes,
     issuing: bool,
+    cutoff: rss_request_context::Deadline,
 ) -> Response {
     let (op, path) = if issuing {
         (Operation::Issue, "/EnrollmentServer/Enrollment.svc")
@@ -540,7 +543,8 @@ async fn enrollment(
             if security.signature {
                 return Err(Error::Unsupported);
             }
-            return entra::enrollment(&app, &message, &audit, issuing, &token.bytes.0).await;
+            return entra::enrollment(&app, &message, &audit, issuing, &token.bytes.0, cutoff)
+                .await;
         }
         let token = security.username.as_ref().ok_or(Error::Unauthorized)?;
         let id = app
@@ -571,7 +575,14 @@ async fn enrollment(
             .map_err(|_| Error::Unavailable(Failure::Capacity))?;
         let proof = app
             .identity
-            .authenticate(&app.access.authorization, credential)
+            .authenticate(
+                &app.access.authorization,
+                credential,
+                rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                    cutoff,
+                    &rss_mdm_audit_integration::budget::RuntimeTimer,
+                ),
+            )
             .await?;
         if proof.principal_id() != auth.actor || proof.instance_id() != auth.instance {
             return Err(Error::Unauthorized);
@@ -672,6 +683,10 @@ async fn enrollment(
             .authenticate(
                 &app.access.authorization,
                 app.credentials.get(auth.credential_ref)?,
+                rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                    cutoff,
+                    &rss_mdm_audit_integration::budget::RuntimeTimer,
+                ),
             )
             .await?;
         auth.authorize(&proof)?;

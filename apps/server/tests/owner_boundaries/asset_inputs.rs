@@ -13,7 +13,7 @@ async fn cut(c: &Context) -> Result<rss_mdm_inventory::AssetCut> {
     Ok(rss_mdm_inventory_service::assets::cut::capture(&c.audit, c.tenant, &budget).await?)
 }
 async fn consumer(c: &Context) -> Result<Arc<PgRuntime>> {
-    use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
+    use rss_transactional_messaging::fence::StorageIdentity;
     use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa};
     let db = c.inputs.database("shared", "mdm_asset_ingress_consumer");
     let pg = PgConfig::new(
@@ -29,10 +29,7 @@ async fn consumer(c: &Context) -> Result<Arc<PgRuntime>> {
         PgRuntime::connect_consumer(
             pg,
             crate::lifecycle::RuntimeTimer,
-            ExecutionBinding::new(
-                StorageIdentity::new(c.inputs.installation.target, c.inputs.installation.lineage)?,
-                vec![(c.tenant, Epoch::new(1)?)],
-            )?,
+            StorageIdentity::new(c.inputs.installation.target, c.inputs.installation.lineage)?,
         )
         .await?,
     ))
@@ -115,14 +112,14 @@ async fn canonical_fact_and_atomic_multi_owner_wake() -> Result<()> {
     let receiver = asset_inputs::Receiver {
         messaging: rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            c.tenant,
+            c.audit.binding(),
             OperationDeadline::from_remaining(Duration::from_secs(6)),
         )
         .await?,
     };
     runtime
         .local_tx_with_context(
-            c.tenant,
+            c.audit.binding(),
             OperationDeadline::from_remaining(Duration::from_secs(6)),
             (&receiver, &message),
             |(r, m), tx| {
@@ -150,7 +147,7 @@ async fn canonical_fact_and_atomic_multi_owner_wake() -> Result<()> {
     sqlx::query("SELECT 1 FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.scopes' AND entity='inputs' FOR UPDATE").bind(c.tenant.to_string()).fetch_one(&mut *lock).await?;
     let attempt = runtime
         .local_tx_with_context(
-            c.tenant,
+            c.audit.binding(),
             OperationDeadline::from_remaining(Duration::from_secs(1)),
             (&receiver, &message),
             |(r, m), tx| {
@@ -226,7 +223,7 @@ async fn late_commits_and_bounded_pages_do_not_use_sequence_as_commit_order() ->
     );
     group::transaction::inspect(
         &owners.storage.runtime,
-        c.tenant,
+        c.audit.binding(),
         (&reader, &before, &middle, &after),
         |ctx, tx| {
             Box::pin(async move {
@@ -274,7 +271,7 @@ async fn late_commits_and_bounded_pages_do_not_use_sequence_as_commit_order() ->
     let upper = cut(&c).await?;
     group::transaction::inspect(
         &owners.storage.runtime,
-        c.tenant,
+        c.audit.binding(),
         (&reader, &after, &upper),
         |ctx, tx| {
             Box::pin(async move {
@@ -332,6 +329,7 @@ impl Workers {
                 "127.0.0.1:0".parse()?,
                 Uuid::new_v4(),
             )?)?;
+        let background = config.background.compile(&config)?;
         let protection = crate::device_material_support::protection(c)?;
         let listener = worker_wake::Listener::new(config.access_options()?, c.tenant);
         let signals = listener.signals.clone();
@@ -346,10 +344,10 @@ impl Workers {
                 consumer: asset_inputs::CONSUMER,
                 name: "asset-input-test",
             },
-            |_, tenant, messaging| {
+            |_, binding, messaging| {
                 (
                     asset_inputs::Receiver { messaging },
-                    asset_inputs::Validator { tenant },
+                    asset_inputs::Validator { binding },
                 )
             },
         )
@@ -365,15 +363,15 @@ impl Workers {
                 consumer: rss_mdm_scope_service::group_changes::CONSUMER,
                 name: "group-input-test",
             },
-            |runtime, tenant, messaging| {
+            |runtime, binding, messaging| {
                 (
                     rss_mdm_scope_service::group_changes::Receiver::new(
                         StorageProfile::Mdm,
                         runtime,
-                        tenant,
+                        binding.tenant(),
                         messaging,
                     ),
-                    rss_mdm_scope_service::group_changes::Validator { tenant },
+                    rss_mdm_scope_service::group_changes::Validator { binding },
                 )
             },
         )
@@ -387,6 +385,7 @@ impl Workers {
         let policy_work = if let Some(fixture) = policy {
             let owner = planning::owner(c, "mdm_policy_runtime").await?;
             let app = crate::assembly::policy::application(
+                &background,
                 &owner,
                 c.tenant,
                 &[7; 32],
@@ -406,7 +405,7 @@ impl Workers {
             let work =
                 rss_mdm_policy_service::worker::PolicyWork::new(app, events, schedule.clone());
             policy_owner = Some(owner);
-            Some(rss_mdm_policy_service::worker::Automation::new(work, 2))
+            Some(rss_mdm_policy_service::worker::Automation::new(work))
         } else {
             None
         };
@@ -419,7 +418,6 @@ impl Workers {
                 )?),
                 c.runtime.clone(),
                 schedule.clone(),
-                2,
                 OperationDeadline::from_remaining(Duration::from_secs(6)),
             )
             .await?,
@@ -440,7 +438,11 @@ impl Workers {
         launch.stage_deferred_task_with_token(listener.registration().critical());
         launch.stage_deferred_task_with_token(
             devices
-                .registration(signals.handle(worker_wake::Work::Devices))
+                .registration(
+                    background.device,
+                    background.device_drain,
+                    signals.handle(worker_wake::Work::Devices),
+                )
                 .critical(),
         );
         launch.stage_deferred_task_with_token(
@@ -458,7 +460,11 @@ impl Workers {
                 owners.groups.clone(),
                 schedule.clone(),
             ))
-            .registration(signals.handle(worker_wake::Work::Groups))
+            .registration(
+                background.group,
+                background.planning_drain,
+                signals.handle(worker_wake::Work::Groups),
+            )
             .critical(),
         );
         launch.stage_deferred_task_with_token(
@@ -466,14 +472,22 @@ impl Workers {
                 owners.compliance.clone(),
                 schedule.clone(),
             ))
-            .registration(signals.handle(worker_wake::Work::Compliance))
+            .registration(
+                background.compliance,
+                background.planning_drain,
+                signals.handle(worker_wake::Work::Compliance),
+            )
             .critical(),
         );
         launch.stage_deferred_task_with_token(
             Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
                 scopes, schedule,
             ))
-            .registration(signals.handle(worker_wake::Work::Scopes))
+            .registration(
+                background.scope,
+                background.planning_drain,
+                signals.handle(worker_wake::Work::Scopes),
+            )
             .critical(),
         );
         if let Some(fixture) = policy {
@@ -481,12 +495,16 @@ impl Workers {
                 fixture
                     .service
                     .clone()
-                    .registration(Arc::new(
-                        rss_mdm_device_service::control::worker_wake::Signals::from_handles([
-                            signals.handle(worker_wake::Work::CommandRelay),
-                            signals.handle(worker_wake::Work::CommandRecovery),
-                        ]),
-                    ))
+                    .registration(
+                        background.commands,
+                        background.commands_drain,
+                        Arc::new(
+                            rss_mdm_device_service::control::worker_wake::Signals::from_handles([
+                                signals.handle(worker_wake::Work::CommandRelay),
+                                signals.handle(worker_wake::Work::CommandRecovery),
+                            ]),
+                        ),
+                    )
                     .critical(),
             );
             launch.stage_deferred_task_with_token(
@@ -494,7 +512,7 @@ impl Workers {
                     .software
                     .service
                     .clone()
-                    .registration(Arc::new(
+                    .registration(background.commands, background.commands_drain, Arc::new(
                         rss_mdm_software_service::deployment::worker_wake::Signals::from_handles([
                             signals.handle(worker_wake::Work::CommandRelay),
                             signals.handle(worker_wake::Work::SoftwareRecovery),
@@ -504,7 +522,15 @@ impl Workers {
             );
         }
         if let Some(work) = policy_work {
-            launch.stage_deferred_task_with_token(work.registration(signals.policy()).critical());
+            launch.stage_deferred_task_with_token(
+                work.registration(
+                    background.policy_events,
+                    background.policy,
+                    background.policy_drain,
+                    signals.policy(),
+                )
+                .critical(),
+            );
         }
         launch.finish();
         Ok(Self {
@@ -866,7 +892,7 @@ async fn coalesced_static_edit_and_scope_request_are_not_acknowledged_by_old_tas
         )
         .await?;
     let mut batch = schedule
-        .claim_due(target.scope(), 64, Duration::from_secs(30), &control)
+        .claim_due(target.scope(), 64, 64, Duration::from_secs(30), &control)
         .await?;
     let position = batch
         .claims
@@ -918,7 +944,7 @@ async fn coalesced_static_edit_and_scope_request_are_not_acknowledged_by_old_tas
     scopes
         .runtime
         .local_tx_with_context(
-            c.tenant,
+            c.audit.binding(),
             OperationDeadline::from_remaining(Duration::from_secs(6)),
             &binding,
             |binding, tx| {
@@ -1263,7 +1289,7 @@ async fn input_health_is_durable_across_instances() -> Result<()> {
                 )
                 .await?;
             let mut claims = schedule
-                .claim_due(target.scope(), 1, Duration::from_secs(30), &control)
+                .claim_due(target.scope(), 1, 64, Duration::from_secs(30), &control)
                 .await?;
             let claim = claims.claims.pop().context("input claim")?;
             $worker
@@ -1332,6 +1358,7 @@ async fn input_health_is_durable_across_instances() -> Result<()> {
             .claim_due(
                 &rss_mdm_device_service::control::recovery_scope(c.tenant),
                 1,
+                64,
                 Duration::from_secs(30),
                 &fresh_control
             )
@@ -1347,6 +1374,7 @@ async fn input_health_is_durable_across_instances() -> Result<()> {
             .claim_due(
                 &rss_mdm_software_service::deployment::recovery_scope(c.tenant),
                 1,
+                64,
                 Duration::from_secs(30),
                 &fresh_control
             )
@@ -1396,7 +1424,7 @@ async fn association_health_recovers_after_another_instance_converges() -> Resul
             )
             .await?;
         let claim = schedule
-            .claim_due(&scope, 1, Duration::from_secs(30), &control)
+            .claim_due(&scope, 1, 64, Duration::from_secs(30), &control)
             .await?
             .claims
             .pop()
@@ -1414,7 +1442,6 @@ async fn association_health_recovers_after_another_instance_converges() -> Resul
         a.clone(),
         c.runtime.clone(),
         schedule.clone(),
-        1,
         OperationDeadline::from_remaining(Duration::from_secs(6)),
     )
     .await?;
@@ -1427,7 +1454,6 @@ async fn association_health_recovers_after_another_instance_converges() -> Resul
         b,
         c.runtime.clone(),
         schedule.clone(),
-        1,
         OperationDeadline::from_remaining(Duration::from_secs(6)),
     )
     .await?;
@@ -1441,7 +1467,7 @@ async fn association_health_recovers_after_another_instance_converges() -> Resul
             )
             .await?;
         let claim = worker_b
-            .claim_due(&scope, 1, Duration::from_secs(30), &control)
+            .claim_due(&scope, 1, 64, Duration::from_secs(30), &control)
             .await?
             .claims
             .pop()
@@ -1449,7 +1475,7 @@ async fn association_health_recovers_after_another_instance_converges() -> Resul
         assert_eq!(claim.target(), target);
         assert!(
             worker_a
-                .claim_due(&scope, 1, Duration::from_secs(30), &control)
+                .claim_due(&scope, 1, 64, Duration::from_secs(30), &control)
                 .await?
                 .claims
                 .is_empty()
@@ -1477,7 +1503,7 @@ async fn association_health_recovers_after_another_instance_converges() -> Resul
             .await?;
         assert!(
             worker_a
-                .claim_due(&scope, 1, Duration::from_secs(30), &control)
+                .claim_due(&scope, 1, 64, Duration::from_secs(30), &control)
                 .await?
                 .claims
                 .is_empty()
@@ -1520,7 +1546,6 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
         )?),
         c.runtime.clone(),
         schedule.clone(),
-        2,
         OperationDeadline::from_remaining(Duration::from_secs(6)),
     )
     .await?;
@@ -1528,7 +1553,7 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
     let receiver = asset_inputs::Receiver {
         messaging: rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            c.tenant,
+            c.audit.binding(),
             OperationDeadline::from_remaining(Duration::from_secs(6)),
         )
         .await?,
@@ -1536,7 +1561,7 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
     let (event, _) = message(&c).await?;
     runtime
         .local_tx_with_context(
-            c.tenant,
+            c.audit.binding(),
             OperationDeadline::from_remaining(Duration::from_secs(6)),
             (&receiver, &event),
             |(r, e), tx| {
@@ -1562,7 +1587,7 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
     let mut published = false;
     for pass in 0..10 {
         let batch = worker
-            .claim_due(&scope, 64, Duration::from_secs(30), &control)
+            .claim_due(&scope, 64, 64, Duration::from_secs(30), &control)
             .await?;
         for claim in batch.claims {
             if claim.target().entity() != "inputs" {
@@ -1648,7 +1673,7 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
     let before:Vec<(String,i64)>=sqlx::query_as("SELECT reconciler,wake_version FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND entity IN('inputs','configuration-inputs') ORDER BY reconciler").bind(c.tenant.to_string()).fetch_all(&c.operator).await?;
     runtime
         .local_tx_with_context(
-            c.tenant,
+            c.audit.binding(),
             OperationDeadline::from_remaining(Duration::from_secs(6)),
             (&receiver, &event),
             |(r, e), tx| {

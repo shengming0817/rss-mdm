@@ -18,7 +18,7 @@ async fn session(
         anyhow::bail!("cookie session required for delivery authorization")
     };
     Ok(c.authority
-        .inspect_session(c.tenant, secret, deadline())
+        .inspect_session(c.audit.binding(), secret, deadline())
         .await?)
 }
 
@@ -28,17 +28,16 @@ async fn proof(
     context: rss_identity_core::step_up::StepUpContext,
 ) -> Result<Secret> {
     let origin = url::Url::parse("https://localhost")?;
-    let webauthn = rss_identity_postgres::WebauthnAuthority::connect(
+    let webauthn = rss_identity_postgres::WebauthnAuthority::new(
         c.authority.clone(),
         "localhost".into(),
         origin.clone(),
-        deadline(),
-    )
-    .await?;
+    )?;
     let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
     let registration = webauthn
         .begin_registration(
             session(c, account).await?,
+            rss_identity_postgres::RpGeneration::new(1)?,
             "DA Agent delivery proof".into(),
             false,
             rss_identity_postgres::RegistrationAuthorization::First,
@@ -49,18 +48,25 @@ async fn proof(
     webauthn
         .finish_registration(
             session(c, account).await?,
+            rss_identity_postgres::RpGeneration::new(1)?,
             registration.id,
             response,
             deadline(),
         )
         .await?;
     let challenge = webauthn
-        .begin_authentication(session(c, account).await?, context, deadline())
+        .begin_authentication(
+            session(c, account).await?,
+            rss_identity_postgres::RpGeneration::new(1)?,
+            context,
+            deadline(),
+        )
         .await?;
     let response = authenticator.do_authentication(origin, challenge.options)?;
     let grant = webauthn
         .finish_authentication(
             session(c, account).await?,
+            rss_identity_postgres::RpGeneration::new(1)?,
             challenge.id,
             response,
             deadline(),
@@ -98,7 +104,6 @@ pub(super) async fn authorize(
         &c.inputs.database("shared", "da_access"),
         &c.inputs.installation.target,
         &c.inputs.installation.lineage,
-        &[(c.tenant, 1)],
         2,
     )
     .await?;
@@ -106,7 +111,6 @@ pub(super) async fn authorize(
         &c.inputs.database("shared", "mdm_identity_runtime"),
         &c.inputs.installation.target,
         &c.inputs.installation.lineage,
-        &[(c.tenant, 1)],
         2,
     )
     .await?;
@@ -114,12 +118,16 @@ pub(super) async fn authorize(
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
     let business_audit = Arc::new(
         c.audit
-            .on_runtime(runtime.clone(), c.tenant, &budget.control())
+            .on_runtime(runtime.clone(), c.audit.binding(), &budget.control())
             .await?,
     );
     let proof_audit = Arc::new(
         c.audit
-            .on_runtime(identity_runtime.clone(), c.tenant, &budget.control())
+            .on_runtime(
+                identity_runtime.clone(),
+                c.audit.binding(),
+                &budget.control(),
+            )
             .await?,
     );
     let service = pg::Service::new(pg::Assembly {
@@ -138,9 +146,15 @@ pub(super) async fn authorize(
     let authorization_store = c.access().for_product(StorageProfile::Da);
     let actor: AuthorizedPrincipal = rss_mdm_authorization_service::session::SessionAuthority::new(
         c.authority.clone(),
-        c.tenant,
+        c.audit.binding(),
     )
-    .authenticate(&authorization_store, account.credential()?)
+    .authenticate(
+        &authorization_store,
+        account.credential()?,
+        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+            std::time::Duration::from_secs(8),
+        ),
+    )
     .await?;
     assert_eq!(actor.profile(), StorageProfile::Da);
     assert_eq!(actor.authority_profile(), StorageProfile::Mdm);

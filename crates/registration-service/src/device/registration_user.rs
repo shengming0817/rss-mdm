@@ -211,7 +211,7 @@ pub async fn page_on(
     tenant: &str,
     devices: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<std::collections::BTreeMap<rss_mdm_agent_wire::DeviceId, RegistrationUser>, Error> {
-    if devices.len() > 1000 {
+    if devices.len() > 1024 {
         return Err(Error::Malformed);
     }
     let rows = sqlx::query(crate::storage_profile::sql(profile).device_registration_user_page_on_1)

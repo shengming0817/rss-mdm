@@ -1,6 +1,5 @@
 //! Host-owned shared cursor material, injected into business services.
 use crate::{Error, Failure};
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::PgRuntime;
 pub(crate) const ACCESS_CONTRACT: &str = r#"{"tables":[],"functions":[],"external_relations":["public.mdm_cursor_keys"],"verified_schemas":[]}"#;
 
@@ -19,13 +18,13 @@ pub(crate) async fn verify(connection: &mut sqlx::PgConnection) -> Result<(), Er
 // committed winner, including when the original initialization commit was unknown.
 pub(crate) async fn load(
     runtime: &PgRuntime,
-    tenant: TenantId,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
 ) -> std::result::Result<Vec<u8>, Error> {
     let mut candidate = vec![0; 32];
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut candidate)
         .map_err(|_| Error::Unavailable(Failure::CursorAdmission))?;
     for _ in 0..3 {
-        let result=runtime.local_tx_with_context(tenant,rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(6)),&candidate,|candidate,tx| Box::pin(async move {
+        let result=runtime.local_tx_with_context(execution,rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(6)),&candidate,|candidate,tx| Box::pin(async move {
             let tenant=tx.tenant_id().to_string();
             let candidate=candidate.to_vec();
             tx.with_connection(move |c| Box::pin(async move {

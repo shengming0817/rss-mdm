@@ -74,7 +74,7 @@ async fn execute() -> Result<()> {
         "public-configuration" => {
             let c: config::Config = config::load(path)?;
 
-            c.validate()?;
+            c.compile()?;
 
             println!(
                 "{}",

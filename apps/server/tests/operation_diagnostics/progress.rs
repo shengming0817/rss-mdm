@@ -90,7 +90,7 @@ pub(super) async fn seed(
             restore_until_micros: 10,
         },
     };
-    sqlx::query("INSERT INTO mdm_telemetry.maintenance(tenant_id,id,binding,request,result) VALUES($1::uuid,$2,$3,$4,NULL)").bind(c.tenant.to_string()).bind(id).bind(Sha256::digest(serde_json::to_vec(&maintenance)?).to_vec()).bind(serde_json::to_value(maintenance)?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_telemetry.maintenance(tenant_id,id,binding,request,result) VALUES($1::uuid,$2,$3,$4,NULL)").bind(c.tenant.to_string()).bind(id).bind(Sha256::digest(serde_json::to_vec(&maintenance)?).to_vec()).bind(json!({"input":maintenance,"rows":4096,"buckets":64})).execute(&mut *tx).await?;
     // The request-channel report and its current collection definition have separate lifetimes.
     let epoch: Uuid = sqlx::query_scalar(
         "SELECT epoch FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2",

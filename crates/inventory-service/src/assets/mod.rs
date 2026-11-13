@@ -62,6 +62,10 @@ impl AssetService {
         command: &Command,
         at: Timepoint,
         cut: Option<&AssetCut>,
+        read_control: (
+            rss_request_context::Deadline,
+            rss_request_context::Cancellation<'_>,
+        ),
     ) -> Result<AssetEnvelope> {
         let response = match command {
             Command::Software { command, access } => {
@@ -147,8 +151,16 @@ impl AssetService {
                 cursor,
                 limit,
             } => {
-                self.collection_items(tx, device, *run, *field, scope, (cursor.as_deref(), *limit))
-                    .await?
+                self.collection_items(
+                    tx,
+                    device,
+                    *run,
+                    *field,
+                    scope,
+                    (cursor.as_deref(), *limit),
+                    read_control,
+                )
+                .await?
             }
             Command::ListItems {
                 device,
@@ -168,7 +180,10 @@ impl AssetService {
                 .await?
             }
             Command::CollectionRun { device, run, scope } => Response::CollectionRun {
-                run: Box::new(self.collection_run(tx, device, *run, scope).await?),
+                run: Box::new(
+                    self.collection_run(tx, device, *run, scope, read_control)
+                        .await?,
+                ),
             },
             Command::FieldWrite { field, change } => self.field_write(tx, *field, change).await?,
             Command::Detail { device, scope } => {
@@ -335,18 +350,25 @@ impl AssetService {
         audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<AssetEnvelope, Error> {
-        self.execute_with_initialization(command, audit, authorize, None, None)
+        self.execute_with_initialization(command, audit, authorize, None, None, None)
             .await
     }
     pub async fn execute_authorized(
         &self,
         command: &Command,
         audit: &RequestAudit,
-        proof: &crate::authorization::context::AuthorizedPrincipal,
+        request: &crate::authorization::context::RequestAuth,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<AssetEnvelope, Error> {
-        self.execute_with_initialization(command, audit, authorize, None, Some(proof))
-            .await
+        self.execute_with_initialization(
+            command,
+            audit,
+            authorize,
+            None,
+            Some(request.proof.as_ref()),
+            Some(request),
+        )
+        .await
     }
     /// Baseline fields and retention use the ordinary asset mutation and receipt owner.
     pub async fn execute_initialization(
@@ -365,6 +387,7 @@ impl AssetService {
             },
             Some(proof),
             Some(proof),
+            None,
         )
         .await
     }
@@ -375,10 +398,21 @@ impl AssetService {
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
         initialization: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
         principal: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
+        request: Option<&rss_mdm_authorization_service::context::RequestAuth>,
     ) -> std::result::Result<AssetEnvelope, Error> {
         authorize()?;
-        let budget =
-            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
+        let budget = match request {
+            Some(request) => rss_mdm_audit_integration::budget::AuditBudget::until(
+                rss_request_context::Deadline::at(request.deadline),
+            ),
+            None => rss_mdm_audit_integration::budget::AuditBudget::new(
+                std::time::Duration::from_secs(6),
+            ),
+        };
+        let cancellation = rss_request_context::Cancellation::observe(request.map_or(
+            &budget as &dyn rss_request_context::CancellationObserver,
+            |request| request.cancellation.as_ref(),
+        ));
         let cut = if matches!(
             command,
             Command::Software { command, .. } if matches!(command.as_ref(), software::Command::Search { .. })
@@ -397,7 +431,7 @@ impl AssetService {
         crate::transaction::run_budget(
             &self.audit_store,
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             audit,
             &(
                 self,
@@ -407,10 +441,20 @@ impl AssetService {
                 initialization,
                 principal,
                 cut.as_ref(),
+                (budget.deadline(), cancellation),
             ),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (service, command, audit, authorize, initialization, principal, cut) = *ctx;
+                    let (
+                        service,
+                        command,
+                        audit,
+                        authorize,
+                        initialization,
+                        principal,
+                        cut,
+                        read_control,
+                    ) = *ctx;
                     if let Some(proof) = initialization {
                         let target = match command {
                             Command::FieldWrite { field, .. } => field.as_str(),
@@ -426,7 +470,15 @@ impl AssetService {
                         .await?;
                     }
                     service
-                        .execute_in(tx, command, audit, authorize, *principal, *cut)
+                        .execute_in(
+                            tx,
+                            command,
+                            audit,
+                            *read_control,
+                            authorize,
+                            *principal,
+                            *cut,
+                        )
                         .await
                 })
             },
@@ -437,11 +489,19 @@ impl AssetService {
         )
         .await
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "borrowed transaction, audit, authorization, snapshot and read cancellation retain their existing owners"
+    )]
     async fn execute_in(
         &self,
         tx: &mut PgTransaction<'_>,
         command: &Command,
         audit: &RequestAudit,
+        read_control: (
+            rss_request_context::Deadline,
+            rss_request_context::Cancellation<'_>,
+        ),
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
         principal: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
         cut: Option<&AssetCut>,
@@ -513,7 +573,13 @@ impl AssetService {
             .unix_seconds()
             .ok_or(Error::Unavailable(Failure::Clock))?;
         let value = self
-            .dispatch(tx, command, checked_input(Timepoint::try_from(at))?, cut)
+            .dispatch(
+                tx,
+                command,
+                checked_input(Timepoint::try_from(at))?,
+                cut,
+                read_control,
+            )
             .await?;
         if let Some(id) = operation {
             crate::assets::receipts::receipt(tx, audit, id, &fingerprint, &value).await?;
@@ -618,7 +684,7 @@ impl AssetService {
         &self,
         budget: std::time::Duration,
     ) -> std::result::Result<[u64; 5], Error> {
-        self.runtime.local_tx(self.tenant,rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),|tx|Box::pin(async move{
+        self.runtime.local_tx(self.audit_store.binding(),rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),|tx|Box::pin(async move{
             let t=tx.tenant_id().to_string();
             tx.with_connection(move|c|Box::pin(async move{
                 let row:(i64,i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM (SELECT 1 FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND NOT completed AND NOT started LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND NOT completed AND started LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND completed AND failure IS NULL LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND failure IS NOT NULL AND failure<>'superseded' LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND failure='superseded' LIMIT 1001) p)").bind(t).fetch_one(c).await?;
@@ -639,7 +705,7 @@ impl AssetService {
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
         use rss_mdm_authorization_service::Permission;
-        crate::transaction::inspect(&self.runtime,self.tenant,(self,p),|(service,p),tx|Box::pin(async move{
+        crate::transaction::inspect(&self.runtime,self.audit_store.binding(),(self,p),|(service,p),tx|Box::pin(async move{
             let grant=crate::transaction::query_authority(tx,p).await?;
             let tenant=p.tenant_id().to_owned();let actor=p.principal_id().to_owned();let instance=p.instance_id().to_owned();
             let raw:Option<Value>=tx.with_connection(move|c|Box::pin(async move{

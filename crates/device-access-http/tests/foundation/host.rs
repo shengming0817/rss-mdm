@@ -46,7 +46,11 @@ pub async fn verify(
             "private_key_file":m.directory.join("server.key")
         })
     };
+    let example: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../deployment/da-config.example.json"
+    ))?;
     let value = serde_json::json!({
+        "identity_policy":example["identity_policy"],
         "installation":{"instance":c.inputs.installation.instance_id,"tenant":c.tenant.to_string(),
           "management_tenant":management,"target":c.inputs.installation.target,"lineage":c.inputs.installation.lineage,"epoch":1},
         "database":c.inputs.database("da_access"),"identity_database":c.inputs.database("da_identity_runtime"),
@@ -208,7 +212,10 @@ async fn vault_user_http(c: &Context, client: &reqwest::Client, origin: &str) ->
     let id = Uuid::new_v4();
     let login = format!("vault-http-{id}");
     let password = "vault-http-test-only-password";
-    let kdf = rss_identity_core::account::PasswordKdf::new();
+    let kdf = rss_identity_core::account::PasswordKdf::new(
+        std::num::NonZeroUsize::new(4).unwrap(),
+        std::num::NonZeroU64::new(128 * 1024 * 1024).unwrap(),
+    )?;
     let hash = kdf
         .hash(rss_identity_core::account::Password::new(password.into())?)
         .await?;

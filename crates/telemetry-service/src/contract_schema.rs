@@ -62,7 +62,7 @@ fn metric() -> Value {
             Metric::Bool => (),
             Metric::State { .. } => fields.push((
                 "members",
-                json!({"type":"array","items":id(),"uniqueItems":true,"minItems":1,"maxItems":256}),
+                json!({"type":"array","items":id(),"uniqueItems":true,"minItems":1,"maxItems":1024}),
             )),
         }
         object(&fields)
@@ -70,13 +70,13 @@ fn metric() -> Value {
     json!({"oneOf":[make(Metric::Gauge{number:NumberKind::I64}),make(Metric::Counter{number:NumberKind::I64,temporality:Temporality::Cumulative}),make(Metric::Bool),make(Metric::State{members:Default::default()})]})
 }
 pub(crate) fn series(_: &mut SchemaGenerator) -> Schema {
-    let ids = json!({"type":"array","items":id(),"uniqueItems":true,"maxItems":64});
+    let ids = json!({"type":"array","items":id(),"uniqueItems":true,"maxItems":1024});
     let dimensions = object(&[
         ("allowed", ids.clone()),
         ("required", ids),
         (
             "maxCount",
-            json!({"type":"integer","minimum":0,"maximum":64}),
+            json!({"type":"integer","minimum":0,"maximum":1024}),
         ),
         (
             "maxValueBytes",
@@ -96,7 +96,7 @@ pub(crate) fn series(_: &mut SchemaGenerator) -> Schema {
         ("dimensions", dimensions),
     ]);
     object(&[("definition",definition),("subject",id()),("resource",id()),
-        ("dimensions",json!({"type":"object","propertyNames":id(),"additionalProperties":id(),"maxProperties":64}))]).try_into().expect("schema")
+        ("dimensions",json!({"type":"object","propertyNames":id(),"additionalProperties":id(),"maxProperties":1024}))]).try_into().expect("schema")
 }
 pub(crate) fn summary(generator: &mut SchemaGenerator) -> Schema {
     let mut schema = object(&[

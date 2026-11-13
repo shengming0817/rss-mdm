@@ -10,6 +10,29 @@ use std::{
     num::NonZeroU32,
     sync::{Arc, Mutex},
 };
+/// Per-invocation work limits; the admitted row/bucket values are frozen with each intent.
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Policy {
+    pub rows: NonZeroU32,
+    pub buckets: NonZeroU32,
+    pub step_seconds: u64,
+}
+impl Policy {
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.step_seconds == 0 || self.step_seconds > i64::MAX as u64 / 1000 {
+            return Err(Error::Invalid);
+        }
+        Ok(())
+    }
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Stored {
+    input: Request,
+    rows: NonZeroU32,
+    buckets: NonZeroU32,
+}
 /// Exact device/resource lifecycle request; an id permanently binds its complete action.
 #[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -129,6 +152,8 @@ impl Authority for MaintainAuthority<'_> {
 fn operation(
     tenant: rss_request_context::TenantId,
     input: &Request,
+    rows: NonZeroU32,
+    buckets: NonZeroU32,
 ) -> Result<MaintenanceRequest, Error> {
     if input.id.is_nil() {
         return Err(Error::Invalid);
@@ -202,10 +227,7 @@ fn operation(
     Ok(MaintenanceRequest::new(
         Id::new(input.id.to_string())?,
         action,
-        MaintenanceBudget {
-            rows: NonZeroU32::new(4096).expect("bounded rows"),
-            buckets: NonZeroU32::new(64).expect("bounded buckets"),
-        },
+        MaintenanceBudget { rows, buckets },
     )?)
 }
 async fn authorize(
@@ -435,12 +457,24 @@ impl Service {
         proof: &Arc<AuthorizedPrincipal>,
         input: &Request,
         audit: &RequestAudit,
+        caller: Deadline,
     ) -> Result<Progress, Error> {
-        let request = operation(self.tenant, input)?;
+        let cutoff = caller.capped(
+            &crate::backend::SystemClock,
+            std::time::Duration::from_secs(self.maintenance_policy.step_seconds),
+        );
+        operation(
+            self.tenant,
+            input,
+            self.maintenance_policy.rows,
+            self.maintenance_policy.buckets,
+        )?;
         let binding = {
             use sha2::Digest;
             sha2::Sha256::digest(serde_json::to_vec(input)?).to_vec()
         };
+        let rows = self.maintenance_policy.rows;
+        let buckets = self.maintenance_policy.buckets;
         let service = self.clone();
         let actor = proof.clone();
         let intent = input.clone();
@@ -462,14 +496,14 @@ impl Service {
         let settlement_audit = audit.clone();
         let rejection = Arc::new(Mutex::new(None));
         let rejected = rejection.clone();
-        self.runtime.local_tx(self.tenant,crate::deadline(),move|tx|Box::pin(async move {
+        self.runtime.local_tx(self.audit_store.binding(),rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff, &crate::backend::SystemClock),move|tx|Box::pin(async move {
             service.audit_store.prepare_in(tx, &audit, &[]).await.map_err(crate::storage_error)?;
             let tenant=service.tenant;
             let replayed = tx.with_connection(move|c|Box::pin(async move {
                 let result=async {
                     authorize(c,tenant,&actor,&intent).await?;
                     let inserted=sqlx::query("INSERT INTO mdm_telemetry.maintenance(tenant_id,id,binding,request) VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING")
-                        .bind(tenant.to_string()).bind(intent.id).bind(binding.as_slice()).bind(serde_json::to_value(&intent)?).execute(&mut *c).await?.rows_affected();
+                        .bind(tenant.to_string()).bind(intent.id).bind(binding.as_slice()).bind(serde_json::to_value(Stored { input: intent.clone(), rows, buckets })?).execute(&mut *c).await?.rows_affected();
                     let stored:Vec<u8>=sqlx::query_scalar("SELECT binding FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
                         .bind(tenant.to_string()).bind(intent.id).fetch_one(c).await?;
                     if stored.as_slice()!=binding.as_slice() {return Err(Error::Conflict);}
@@ -487,21 +521,28 @@ impl Service {
         let rejection = Arc::new(Mutex::new(None));
         let rejected = rejection.clone();
         self.runtime
-            .local_tx(self.tenant, crate::deadline(), move |tx| {
-                Box::pin(async move {
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            step_on(&service, c, &proof, &input, &request)
-                                .await
-                                .map_err(|e| {
-                                    *rejected.lock().expect("maintenance step") = Some(e);
-                                    sqlx::Error::Protocol("maintenance step unconfirmed".into())
-                                })
+            .local_tx(
+                self.audit_store.binding(),
+                rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                    cutoff,
+                    &crate::backend::SystemClock,
+                ),
+                move |tx| {
+                    Box::pin(async move {
+                        tx.with_connection(move |c| {
+                            Box::pin(async move {
+                                step_on(&service, c, &proof, &input, cutoff)
+                                    .await
+                                    .map_err(|e| {
+                                        *rejected.lock().expect("maintenance step") = Some(e);
+                                        sqlx::Error::Protocol("maintenance step unconfirmed".into())
+                                    })
+                            })
                         })
+                        .await
                     })
-                    .await
-                })
-            })
+                },
+            )
             .await
             .fold(
                 Ok,
@@ -523,11 +564,16 @@ async fn step_on(
     c: &mut sqlx::PgConnection,
     proof: &AuthorizedPrincipal,
     input: &Request,
-    request: &MaintenanceRequest,
+    deadline: Deadline,
 ) -> Result<Progress, Error> {
     authorize(c, service.tenant, proof, input).await?;
-    let previous:Option<Json>=sqlx::query_scalar("SELECT result FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+    let (stored, previous): (Json, Option<Json>) = sqlx::query_as("SELECT request,result FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
         .bind(service.tenant.to_string()).bind(input.id).fetch_one(&mut *c).await?;
+    let stored: Stored = serde_json::from_value(stored)?;
+    if serde_json::to_value(&stored.input)? != serde_json::to_value(input)? {
+        return Err(Error::Conflict);
+    }
+    let request = operation(service.tenant, &stored.input, stored.rows, stored.buckets)?;
     if previous.as_ref().is_some_and(|v| v["state"] == "complete") {
         return serde_json::from_value(previous.expect("confirmed result"))
             .map_err(|_| Error::Storage);
@@ -535,12 +581,7 @@ async fn step_on(
     let binding = request.binding()?;
     // The backend resumes its durable current step by original identity, including after token expiry.
     let authorized =
-        Authorized::<MaintenanceRequest>::verify(&MaintainAuthority(request), request.clone())?;
-    let deadline = Deadline::from_timeout(
-        &crate::backend::SystemClock,
-        std::time::Duration::from_secs(6),
-    )
-    .map_err(|_| Error::Invalid)?;
+        Authorized::<MaintenanceRequest>::verify(&MaintainAuthority(&request), request.clone())?;
     let result = match service
         .backend
         .maintain(&authorized, None, deadline)
@@ -610,7 +651,8 @@ pub async fn operation_receipt_on(
     let row=sqlx::query("SELECT request,binding,result FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2")
         .bind(p.tenant_id()).bind(id).fetch_optional(c).await?;
     let Some(row) = row else { return Ok(None) };
-    let input: Request = serde_json::from_value(row.try_get("request")?)?;
+    let stored: Stored = serde_json::from_value(row.try_get("request")?)?;
+    let input = stored.input;
     if input.id != id
         || sha2::Sha256::digest(serde_json::to_vec(&input)?).as_slice()
             != row.try_get::<Vec<u8>, _>("binding")?

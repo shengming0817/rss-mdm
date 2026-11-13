@@ -63,7 +63,7 @@ pub async fn software_with_export(
     let owner = planning::owner(c, "mdm_resource_runtime").await?;
     let store = rss_mdm_resource_postgres::ResourceStore::new(
         owner.runtime.clone(),
-        c.tenant,
+        c.audit.binding(),
         crate::authority_t2_support::deadline(),
     )
     .await?;
@@ -230,7 +230,7 @@ pub(super) async fn decision(
         c.audit
             .on_runtime(
                 a.resources.storage.runtime.clone(),
-                c.tenant,
+                c.audit.binding(),
                 &rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(6))
                     .control(),
             )
@@ -246,7 +246,7 @@ pub(super) async fn decision(
     let result = owner::transaction::run(
         &audit,
         &a.resources.storage.runtime,
-        c.tenant,
+        c.audit.binding(),
         &request,
         (
             a.software.transactions.clone(),
@@ -308,7 +308,7 @@ pub(super) async fn verified(
     let prepare = a.software.materials.inputs.software.clone();
     let steps = owner::transaction::inspect(
         &a.resources.storage.runtime,
-        c.tenant,
+        c.audit.binding(),
         (
             prepare,
             resource.resource().as_str(),

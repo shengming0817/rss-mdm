@@ -65,28 +65,33 @@ fn error(e: rss_mdm_timeline_service::Error) -> AgentError {
         E::Conflict => ErrorCode::ActivityCursorInvalidated,
         E::NotFound => ErrorCode::ActivityNotFound,
         E::Forbidden => ErrorCode::PermissionDenied,
-        E::Storage | E::Integrity | E::Deadline => ErrorCode::ServiceUnavailable,
+        E::Storage | E::Integrity | E::Deadline | E::BudgetExceeded => {
+            ErrorCode::ServiceUnavailable
+        }
     })
 }
 async fn history(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     raw: OwnedQuery<ActivityQuery>,
 ) -> Result<CollectionResponse<Json<ManagementActivityPage>>, AgentError> {
-    page(s, audit, peer, headers, raw, false).await
+    page(control, s, audit, peer, headers, raw, false).await
 }
 async fn changes(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     raw: OwnedQuery<ActivityQuery>,
 ) -> Result<CollectionResponse<Json<ManagementActivityPage>>, AgentError> {
-    page(s, audit, peer, headers, raw, true).await
+    page(control, s, audit, peer, headers, raw, true).await
 }
 async fn page(
+    control: rss_axum::RequestControl,
     s: Arc<Services>,
     audit: RequestAudit,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -101,7 +106,7 @@ async fn page(
         let query = raw.parse().map_err(error)?;
         let proof = if query.view.as_deref() == Some("personal") {
             Some(
-                crate::tasks::employee(&s.tasks, &headers, &audit)
+                crate::tasks::employee(&s.tasks, &headers, &audit, &control)
                     .await?
                     .ok_or(AgentError::Wire(ErrorCode::PermissionDenied))?,
             )
@@ -124,6 +129,7 @@ async fn page(
     .await
 }
 async fn detail(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -138,7 +144,7 @@ async fn detail(
         audit.set_action("management_activity_read", AuditIntent::Routine);
         let proof = if personal {
             Some(
-                crate::tasks::employee(&s.tasks, &headers, &audit)
+                crate::tasks::employee(&s.tasks, &headers, &audit, &control)
                     .await?
                     .ok_or(AgentError::Wire(ErrorCode::PermissionDenied))?,
             )

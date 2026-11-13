@@ -317,6 +317,7 @@ pub(crate) async fn employee(
     app: &TaskState,
     headers: &HeaderMap,
     audit: &RequestAudit,
+    control: &rss_axum::RequestControl,
 ) -> Result<Option<rss_mdm_authorization_service::context::AuthorizedPrincipal>, crate::AgentError>
 {
     let credentials = headers
@@ -341,6 +342,10 @@ pub(crate) async fn employee(
         .authenticate(
             &app.authorization,
             rss_mdm_authorization_service::credential::RequestCredential::Cookie(secret),
+            rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                control.deadline(),
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
+            ),
         )
         .await
         .map_err(Error::from)?;
@@ -348,6 +353,7 @@ pub(crate) async fn employee(
     Ok(Some(proof))
 }
 async fn resolve(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -356,7 +362,7 @@ async fn resolve(
 ) -> Result<Json<wire::SelfServiceDirectoryItem>, crate::AgentError> {
     crate::bounded(async {
         let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
-        let proof = employee(&app, &headers, &audit).await?;
+        let proof = employee(&app, &headers, &audit, &control).await?;
         app.self_service
             .resolve(&p, proof.as_ref(), &body(input)?, &audit)
             .await
@@ -374,6 +380,7 @@ async fn directory<
         + Sync
         + 'static,
 >(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -382,7 +389,7 @@ async fn directory<
 ) -> Result<Json<wire::SelfServiceDirectoryResponse>, crate::AgentError> {
     crate::bounded(async {
         let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
-        let proof = employee(&app, &headers, &audit).await?;
+        let proof = employee(&app, &headers, &audit, &control).await?;
         app.self_service
             .directory(
                 &p,
@@ -397,6 +404,7 @@ async fn directory<
     .await
 }
 async fn invoke(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -406,7 +414,7 @@ async fn invoke(
     crate::bounded(async {
         let input = body(input)?;
         let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
-        let proof = employee(&app, &headers, &audit).await?;
+        let proof = employee(&app, &headers, &audit, &control).await?;
         let response = app
             .self_service
             .invoke(&p, proof.as_ref(), &input, &audit)
@@ -417,6 +425,7 @@ async fn invoke(
     .await
 }
 async fn invocation_status(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -425,7 +434,7 @@ async fn invocation_status(
 ) -> Result<Json<wire::SelfServiceStatus>, crate::AgentError> {
     crate::bounded(async {
         let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
-        let proof = employee(&app, &headers, &audit).await?;
+        let proof = employee(&app, &headers, &audit, &control).await?;
         app.self_service
             .status(&p, proof.as_ref(), id, &audit)
             .await
@@ -536,6 +545,7 @@ async fn current_user(
     .await
 }
 async fn login_user(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -548,7 +558,7 @@ async fn login_user(
         let p =
             authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
         current_user_stage(&audit, "employee_authentication");
-        let user = employee(&app, &headers, &audit)
+        let user = employee(&app, &headers, &audit, &control)
             .await?
             .ok_or(Error::Unauthorized)?;
         Ok((p, user))

@@ -105,7 +105,7 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
         if name == "profile-active" || name == "profile-deprecated" {
             let store = rss_mdm_resource_postgres::ResourceStore::new(
                 resource_owner.runtime.clone(),
-                c.tenant,
+                c.audit.binding(),
                 crate::authority_t2_support::deadline(),
             )
             .await?;
@@ -166,7 +166,10 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
     }
     sqlx::query("INSERT INTO mdm_assets.saved_queries(tenant_id,instance,owner,id,revision,document) VALUES($1::uuid,$2,$3,$4,1,NULL)").bind(c.tenant.to_string()).bind(instance).bind(foreign[0]).bind(Uuid::new_v4()).execute(&mut *tx).await?;
     tx.commit().await?;
-    let clock = rt::Clock::new(crate::clock::monotonic());
+    let clock = rt::Clock::new(
+        crate::clock::monotonic(),
+        crate::authority_t2_support::inventory_policy()?,
+    );
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_projection::Control::new(&clock, clock.cutoff(), &cancel);
     let observation = rt::ObservationResource::open(
@@ -192,7 +195,7 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
     let owner = planning::owner(&c, "mdm_inventory_runtime").await?;
     let messaging = rss_reconcile_postgres::PgMessagingStore::new(
         owner.runtime.clone(),
-        c.tenant,
+        c.audit.binding(),
         rss_mdm_inventory_service::transaction::deadline(),
     )
     .await?;
@@ -208,7 +211,7 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
             objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
             groups: rss_mdm_group_postgres::GroupStore::new(
                 owner.runtime.clone(),
-                c.tenant,
+                c.audit.binding(),
                 rss_mdm_inventory_service::transaction::deadline(),
             )
             .await?
@@ -284,7 +287,12 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
     };
     assert!(matches!(
         assets
-            .execute_authorized(&change, &c.request(&reader)?, &reader, &|| Ok(()))
+            .execute_authorized(
+                &change,
+                &c.request(&reader)?,
+                &c.read_auth(reader.clone()),
+                &|| Ok(())
+            )
             .await,
         Err(rss_mdm_inventory_service::Error::Referenced)
     ));

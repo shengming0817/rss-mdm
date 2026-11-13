@@ -22,6 +22,7 @@ pub trait Client: Send + Sync {
         assertion: &'a str,
         expires: i64,
         subject: &'a str,
+        deadline: rss_request_context::Deadline,
     ) -> Pending<'a, ExchangeToken>;
 }
 pub struct ExchangeToken {
@@ -621,6 +622,7 @@ impl Service {
         continuation: Option<&Secret>,
         platform: serde_json::Value,
         admission: &dyn Admission,
+        deadline: rss_transactional_messaging::policy::OperationDeadline,
     ) -> Result<(Context, Option<Vec<u8>>), Error> {
         use sqlx::{Arguments, Row};
         let mut arguments = sqlx::postgres::PgArguments::default();
@@ -642,13 +644,9 @@ impl Service {
             .map_err(|_| Error::Malformed)?;
         let query = admission.broker_release_query();
         let rows = authority
-            .with_session_references_read(
-                self.tenant,
-                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                    std::time::Duration::from_secs(5),
-                ),
-                move |mut read| Box::pin(async move { read.query(query, arguments, 1).await }),
-            )
+            .with_session_references_read(self.audit.binding(), deadline, move |mut read| {
+                Box::pin(async move { read.query(query, arguments, 1).await })
+            })
             .await
             .map_err(|e| match e {
                 rss_identity_postgres::AuthorityError::Rejected => Error::Unauthorized,
@@ -676,6 +674,7 @@ impl Service {
         continuation: &Secret,
         platform: serde_json::Value,
         admission: &dyn Admission,
+        deadline: rss_transactional_messaging::policy::OperationDeadline,
     ) -> Result<Consumed, Error> {
         let (context, sealed) = self
             .broker_authorized_snapshot(
@@ -686,6 +685,7 @@ impl Service {
                 Some(continuation),
                 platform,
                 admission,
+                deadline,
             )
             .await?;
         let plain = self
@@ -712,9 +712,12 @@ impl Service {
         id: Uuid,
         platform: serde_json::Value,
         admission: &dyn Admission,
+        deadline: rss_transactional_messaging::policy::OperationDeadline,
     ) -> Result<Uuid, Error> {
         let (context, _) = self
-            .broker_authorized_snapshot(authority, client, id, None, None, platform, admission)
+            .broker_authorized_snapshot(
+                authority, client, id, None, None, platform, admission, deadline,
+            )
             .await?;
         Ok(context.binding.person.principal)
     }

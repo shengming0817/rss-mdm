@@ -279,6 +279,7 @@ pub struct RequestAuth {
     pub proof: Arc<AuthorizedPrincipal>,
     pub sessions: crate::session::SessionAuthority,
     pub deadline: std::time::Instant,
+    pub cancellation: Arc<dyn rss_request_context::CancellationObserver>,
 }
 impl RequestAuth {
     pub fn remaining(

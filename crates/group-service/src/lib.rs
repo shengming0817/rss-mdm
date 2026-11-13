@@ -196,21 +196,26 @@ impl Groups {
         };
         let valid = service
             .runtime
-            .local_tx_with_context(tenant, deadline(), &service, |s, tx| {
-                Box::pin(async move {
-                    if s.groups.graph_revision_in(tx).await?.is_err() {
-                        return Ok(false);
-                    }
-                    tx.with_connection(|c| {
-                        Box::pin(async move {
-                            sqlx::query_scalar::<_, bool>(include_str!("admission.sql"))
-                                .fetch_one(c)
-                                .await
+            .local_tx_with_context(
+                service.audit_store.binding(),
+                deadline(),
+                &service,
+                |s, tx| {
+                    Box::pin(async move {
+                        if s.groups.graph_revision_in(tx).await?.is_err() {
+                            return Ok(false);
+                        }
+                        tx.with_connection(|c| {
+                            Box::pin(async move {
+                                sqlx::query_scalar::<_, bool>(include_str!("admission.sql"))
+                                    .fetch_one(c)
+                                    .await
+                            })
                         })
+                        .await
                     })
-                    .await
-                })
-            })
+                },
+            )
             .await
             .fold(
                 Ok,

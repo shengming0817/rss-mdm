@@ -176,7 +176,7 @@ impl SoftwareService {
         );
         crate::deployment::transaction::inspect(
             &self.transactions.runtime,
-            self.transactions.tenant,
+            self.transactions.audit_store.binding(),
             (self, id, token),
             |ctx, tx| {
                 Box::pin(async move {

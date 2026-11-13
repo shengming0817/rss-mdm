@@ -13,6 +13,7 @@ mod projection;
 mod store;
 pub(crate) const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 pub(crate) struct Backend {
+    pub source_page_size: u16,
     pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub identity: rss_identity_postgres::Authority,
     pub tenant: rss_request_context::TenantId,
@@ -36,9 +37,12 @@ fn identity_error(e: rss_identity_postgres::AuthorityError) -> Error {
         _ => Error::Unavailable(Failure::IdentityStorage),
     }
 }
-fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
-    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-        std::time::Duration::from_secs(8),
+fn deadline(
+    cutoff: rss_request_context::Deadline,
+) -> rss_transactional_messaging::policy::OperationDeadline {
+    rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+        cutoff,
+        &crate::lifecycle::RuntimeTimer,
     )
 }
 impl Backend {
@@ -60,12 +64,13 @@ impl Backend {
         p: &AuthorizedPrincipal,
         audit: &RequestAudit,
         query: &rss_mdm_query::directory::Query,
+        cutoff: rss_request_context::Deadline,
     ) -> Result<Definitions, Error> {
         self.authorize(p, audit)?;
         p.require(Permission::UserAttributeDefinitionsRead, None)?;
         let sources = self
             .identity
-            .profile_sources(p.session()?, deadline())
+            .profile_sources(p.session()?, deadline(cutoff))
             .await
             .map_err(identity_error)?;
         let page = directory::list(self, p, audit, query).await?;
@@ -145,6 +150,7 @@ impl Backend {
         audit: &RequestAudit,
         target: Option<Uuid>,
         query: ProfileQuery,
+        cutoff: rss_request_context::Deadline,
     ) -> Result<Profile, Error> {
         self.authorize(p, audit)?;
         let session = p.session()?; // API keys never acquire a natural-person profile context.
@@ -171,7 +177,7 @@ impl Backend {
         match query.view {
             View::Current => views.push(
                 self.identity
-                    .current_profile(session, deadline())
+                    .current_profile(session, deadline(cutoff))
                     .await
                     .map_err(identity_error)?,
             ),
@@ -180,13 +186,19 @@ impl Backend {
                 loop {
                     let page = self
                         .identity
-                        .latest_profile_sources(session, account, cursor, deadline())
+                        .latest_profile_sources(
+                            session,
+                            account,
+                            cursor,
+                            self.source_page_size,
+                            deadline(cutoff),
+                        )
                         .await
                         .map_err(identity_error)?;
                     for source in page.sources {
                         views.push(
                             self.identity
-                                .latest_profile(session, account, source, deadline())
+                                .latest_profile(session, account, source, deadline(cutoff))
                                 .await
                                 .map_err(identity_error)?,
                         );

@@ -62,7 +62,6 @@ pub(crate) async fn open(
         &d.database,
         &config.storage_binding.target,
         &config.storage_binding.lineage,
-        &[(identity.tenant, config.storage_binding.epoch)],
         4,
     )
     .await?;
@@ -75,7 +74,7 @@ pub(crate) async fn open(
             pool.clone(),
             config.audit.integrity()?,
             runtime,
-            identity.tenant,
+            identity.binding,
             &budget.control(),
         )
         .await?,
@@ -201,7 +200,11 @@ pub(crate) async fn open(
     };
     let proof_audit = Arc::new(
         audit
-            .on_runtime(identity.runtime.clone(), identity.tenant, &budget.control())
+            .on_runtime(
+                identity.runtime.clone(),
+                identity.binding,
+                &budget.control(),
+            )
             .await?,
     );
     let business = rss_mdm_device_access_runtime::Runtime::assemble(
@@ -289,6 +292,7 @@ pub(crate) fn browser(
     let state = runtime.map(|(s, _)| s);
     let psso = state.map(|s| {
         Arc::new(http::platform_sso::HttpState {
+            binding: s.identity.binding,
             context: s
                 .da
                 .as_ref()
@@ -376,6 +380,7 @@ pub(crate) fn browser(
 
 pub(crate) async fn listener(
     config: &crate::config::Config,
+    http: crate::config::http::Compiled,
     identity: &crate::identity::Identity,
     assembly: &Assembly,
 ) -> Result<Option<rss_runtime::ManagedTaskRegistration>, Error> {
@@ -403,11 +408,13 @@ pub(crate) async fn listener(
         .map_err(|_| invalid())?;
     let key = PrivateKeyDer::from_pem_file(&input.private_key_file).map_err(|_| invalid())?;
     let services = Arc::new(rss_mdm_device_access_http::Services {
+        request_budget: identity.request_budget,
         business: Some(Arc::new(rss_mdm_device_access_http::Business {
             evidence: assembly.runtime.admission.evidence.clone(),
             service: assembly.runtime.business.clone(),
             admission: assembly.runtime.admission.clone(),
             platform: Arc::new(rss_mdm_device_access_http::platform_sso::HttpState {
+                binding: identity.binding,
                 context: assembly.runtime.platform.clone(),
                 authority: identity.authority.clone(),
                 origin: config.product_origin.clone(),
@@ -423,30 +430,23 @@ pub(crate) async fn listener(
         sessions: Arc::new(
             rss_mdm_authorization_service::session::SessionAuthority::new(
                 identity.authority.clone(),
-                identity.tenant,
+                identity.binding,
             ),
         ),
         audit: assembly.audit.clone(),
         host,
-        requests: Arc::new(tokio::sync::Semaphore::new(16)),
+        requests: Arc::new(tokio::sync::Semaphore::new(http.da_requests)),
     });
     let tcp = tokio::net::TcpListener::bind(input.listen)
         .await
         .map_err(|_| Error::Unavailable(Failure::Runtime))?;
-    let policy = rss_axum::Http1ServePolicy::new(
-        rss_axum::ServePolicy::new(
-            16,
-            Duration::from_secs(5),
-            Duration::from_secs(3),
-            Duration::from_secs(12),
-        )
-        .map_err(|_| invalid())?,
-        Duration::from_secs(3),
-        64,
-        32768,
+    rss_mdm_device_access_http::tls::registration(
+        tcp,
+        certificates,
+        key,
+        services,
+        http.da_listener,
     )
-    .map_err(|_| invalid())?;
-    rss_mdm_device_access_http::tls::registration(tcp, certificates, key, services, policy)
-        .map(Some)
-        .map_err(|_| invalid())
+    .map(Some)
+    .map_err(|_| invalid())
 }

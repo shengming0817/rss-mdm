@@ -7,7 +7,7 @@ CREATE TABLE mdm.array_versions (
  item_count bigint NOT NULL CHECK(item_count BETWEEN 0 AND 200000),
  canonical_bytes bigint NOT NULL CHECK(canonical_bytes >= 27),
  digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'),
- definition bytea NOT NULL CHECK(octet_length(definition) BETWEEN 1 AND 65536 AND definition_digest=encode(sha256(definition),'hex')),
+ definition bytea NOT NULL CHECK(octet_length(definition) BETWEEN 1 AND 1048576 AND definition_digest=encode(sha256(definition),'hex')),
  PRIMARY KEY(tenant_id,version)
 );
 CREATE TABLE mdm.array_items (

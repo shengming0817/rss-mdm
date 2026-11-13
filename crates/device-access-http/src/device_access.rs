@@ -401,11 +401,12 @@ async fn step_up(
         .identity
         .webauthn
         .begin_authentication(
-            s.identity.ceremony_actor(&headers).await?,
+            s.identity
+                .ceremony_actor(&headers, auth.remaining()?)
+                .await?,
+            s.identity.rp_generation,
             context,
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                std::time::Duration::from_secs(10),
-            ),
+            auth.remaining()?,
         )
         .await
         .map_err(crate::identity::failure)?;
@@ -471,14 +472,13 @@ async fn offboarding_identity(
     }
     let principal = rss_identity_core::PrincipalId::parse(&original.person.principal.to_string())
         .map_err(|_| Error::Malformed)?;
-    let deadline = || {
-        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-            std::time::Duration::from_secs(10),
-        )
-    };
+    let deadline = || auth.remaining();
     match input {
         IdentityDisposition::Reconcile {} => {
-            let actor = s.identity.ceremony_actor(&headers).await?;
+            let actor = s
+                .identity
+                .ceremony_actor(&headers, auth.remaining()?)
+                .await?;
             let account = s
                 .identity
                 .authority
@@ -488,7 +488,7 @@ async fn offboarding_identity(
                         tenant: s.identity.tenant,
                         principal,
                     },
-                    deadline(),
+                    deadline()?,
                 )
                 .await
                 .map_err(crate::identity::failure)?;
@@ -517,7 +517,10 @@ async fn offboarding_identity(
             if matches!(original.identity, P::Executing | P::Unknown) {
                 return Err(Error::Conflict);
             }
-            let actor = s.identity.ceremony_actor(&headers).await?;
+            let actor = s
+                .identity
+                .ceremony_actor(&headers, auth.remaining()?)
+                .await?;
             let Some(attempt) = s
                 .registration
                 .claim_offboarding(&auth.proof, &device, id, C::Identity, &audit)
@@ -534,7 +537,7 @@ async fn offboarding_identity(
             let outcome = s
                 .identity
                 .authority
-                .set_account_membership(actor, target, false, deadline())
+                .set_account_membership(actor, target, false, deadline()?)
                 .await;
             let phase = match outcome {
                 Ok(_) => P::Confirmed,
@@ -623,17 +626,14 @@ async fn enterprise_step_up(
     let input = body.map_err(Error::from)?.0;
     let target = enterprise_target(&s, &input)?;
     let context = input.context(&auth.proof, target.as_deref())?;
-    let actor = s.identity.ceremony_actor(&headers).await?;
+    let actor = s
+        .identity
+        .ceremony_actor(&headers, auth.remaining()?)
+        .await?;
     let started = s
         .identity
         .webauthn
-        .begin_authentication(
-            actor,
-            context,
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                std::time::Duration::from_secs(10),
-            ),
-        )
+        .begin_authentication(actor, s.identity.rp_generation, context, auth.remaining()?)
         .await
         .map_err(crate::identity::failure)?;
     Ok(Json(crate::identity_contract::Challenge {
@@ -827,17 +827,14 @@ async fn material_step_up(
         proof: None,
     };
     let context = input.context(&auth.proof, &device, id, version)?;
-    let actor = s.identity.ceremony_actor(&headers).await?;
+    let actor = s
+        .identity
+        .ceremony_actor(&headers, auth.remaining()?)
+        .await?;
     let started = s
         .identity
         .webauthn
-        .begin_authentication(
-            actor,
-            context,
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                std::time::Duration::from_secs(10),
-            ),
-        )
+        .begin_authentication(actor, s.identity.rp_generation, context, auth.remaining()?)
         .await
         .map_err(crate::identity::failure)?;
     Ok(Json(crate::identity_contract::Challenge {

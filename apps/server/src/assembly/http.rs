@@ -56,7 +56,7 @@ pub(crate) fn from_state(
         identity: Arc::new(
             rss_mdm_authorization_service::session::SessionAuthority::new(
                 state.identity.authority.clone(),
-                state.identity.tenant,
+                state.identity.binding,
             ),
         ),
         requests: state.requests.clone(),
@@ -106,7 +106,7 @@ pub(crate) fn from_state(
         identity: Arc::new(
             rss_mdm_authorization_service::session::SessionAuthority::new(
                 state.identity.authority.clone(),
-                state.identity.tenant,
+                state.identity.binding,
             ),
         ),
         requests: state.requests.clone(),
@@ -122,6 +122,7 @@ pub(crate) fn from_state(
     });
     let admission = Arc::new(tokio::sync::Semaphore::new(32));
     let management_boundary = rss_mdm_management_http::boundary::Envelope {
+        request_budget: state.request_budget,
         profile: rss_mdm_install_support::StorageProfile::Mdm,
         admission: admission.clone(),
         host: host.clone(),
@@ -131,6 +132,7 @@ pub(crate) fn from_state(
         tenant: state.identity.tenant.to_string(),
     };
     let apple_boundary = rss_mdm_apple_channel::boundary::Envelope {
+        request_budget: state.identity.request_budget,
         admission: admission.clone(),
         host: host.clone(),
         clock: monotonic.clone(),
@@ -139,6 +141,7 @@ pub(crate) fn from_state(
         tenant: state.identity.tenant.to_string(),
     };
     let windows_browser_boundary = rss_mdm_windows_channel::boundary::Envelope {
+        request_budget: state.identity.request_budget,
         admission: admission.clone(),
         host: host.clone(),
         clock: monotonic.clone(),
@@ -147,6 +150,7 @@ pub(crate) fn from_state(
         tenant: state.identity.tenant.to_string(),
     };
     let agent_boundary = rss_mdm_agent_channel::boundary::Envelope {
+        request_budget: state.request_budget,
         profile: rss_mdm_install_support::StorageProfile::Mdm,
         admission,
         host: host.clone(),
@@ -163,12 +167,14 @@ pub(crate) fn from_state(
         management_boundary.clone(),
     );
     let directory = crate::administration::settings::Directory {
+        binding: state.identity.binding,
         tenant: state.identity.tenant,
         management_tenant: state.identity.management_tenant,
         identity: state.identity.authority.clone(),
         federation: state.identity.federation.clone(),
         tenant_administration: state.identity.tenant_administration.clone(),
         user_profiles: Arc::new(crate::administration::user_profiles::Backend {
+            source_page_size: state.identity.profile_source_page_size,
             cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
                 ring::hmac::HMAC_SHA256,
                 &state.cursor_key,
@@ -274,11 +280,27 @@ pub(crate) fn from_state(
         crate::administration::settings::http::platform_routes(Some(&settings)),
         rss_mdm_management_http::operation_diagnostics::routes().with_state(Arc::new(
             rss_mdm_management_http::operation_diagnostics::Services {
-                timeline: Arc::new(state.timeline.for_tenant(state.identity.management_tenant)),
+                timeline: Arc::new(
+                    state
+                        .timeline
+                        .for_source(
+                            rss_mdm_install_support::StorageProfile::Mdm,
+                            state.management_audit.clone(),
+                        )
+                        .for_tenant(state.identity.management_tenant),
+                ),
                 reads: Arc::new(super::operation_diagnostics::Installation {
                     tenants: state.identity.tenant_administration.clone(),
-                    audit: state.audit_store.clone(),
-                    timeline: Arc::new(state.timeline.for_tenant(state.identity.management_tenant)),
+                    audit: state.management_audit.clone(),
+                    timeline: Arc::new(
+                        state
+                            .timeline
+                            .for_source(
+                                rss_mdm_install_support::StorageProfile::Mdm,
+                                state.management_audit.clone(),
+                            )
+                            .for_tenant(state.identity.management_tenant),
+                    ),
                     tenant: state.identity.management_tenant,
                 }),
             },
@@ -286,6 +308,7 @@ pub(crate) fn from_state(
         state.identity_management.clone(),
         rss_mdm_management_http::boundary::Envelope {
             tenant: state.identity.management_tenant.to_string(),
+            audit_store: state.management_audit.clone(),
             ..management_boundary.clone()
         },
         rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
@@ -462,6 +485,7 @@ pub(crate) fn from_state(
         state.windows.as_deref(),
         windows_state.clone(),
         monotonic.clone(),
+        state.identity.request_budget,
     ) {
         listeners.push((crate::native::ChannelKind::WindowsEnrollment, enrollment));
         listeners.extend(
@@ -474,6 +498,7 @@ pub(crate) fn from_state(
         state.apple.as_deref(),
         apple_state.clone(),
         monotonic.clone(),
+        state.identity.request_budget,
     ) {
         listeners.push((crate::native::ChannelKind::AppleManagement, apple));
     }
@@ -487,7 +512,7 @@ pub(crate) fn from_state(
             identity: Arc::new(
                 rss_mdm_authorization_service::session::SessionAuthority::new(
                     state.identity.authority.clone(),
-                    state.identity.tenant,
+                    state.identity.binding,
                 ),
             ),
             authorization: state.access.authorization_store(),
@@ -883,6 +908,7 @@ fn da_agent_routes(
     let da = state.da.as_ref();
     let psso = da.map(|da| {
         Arc::new(rss_mdm_device_access_http::platform_sso::HttpState {
+            binding: state.identity.binding,
             context: da.runtime.platform.clone(),
             authority: state.identity.authority.clone(),
             origin: format!("https://{host}"),
@@ -896,7 +922,7 @@ fn da_agent_routes(
                 identity: Arc::new(
                     rss_mdm_authorization_service::session::SessionAuthority::new(
                         state.identity.authority.clone(),
-                        state.identity.tenant,
+                        state.identity.binding,
                     ),
                 ),
                 authorization: da.authorization.clone(),
@@ -913,6 +939,7 @@ fn da_agent_routes(
         rss_mdm_agent_channel::boundary::wrap(
             router,
             rss_mdm_agent_channel::boundary::Envelope {
+                request_budget: state.request_budget,
                 profile: rss_mdm_install_support::StorageProfile::Da,
                 admission: Arc::new(tokio::sync::Semaphore::new(64)),
                 host: String::new(),

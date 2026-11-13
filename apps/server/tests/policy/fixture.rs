@@ -31,6 +31,7 @@ impl Fixture {
             );
             let registration = assembly::registration::assemble(
                 config,
+                &resources.background,
                 storage.runtime.clone(),
                 storage.tenant,
                 storage.audit.clone(),
@@ -45,6 +46,7 @@ impl Fixture {
             .await?;
             let software = assembly::software::assemble(
                 config,
+                &resources.background,
                 storage.runtime.clone(),
                 storage.tenant,
                 storage.audit.clone(),
@@ -73,6 +75,7 @@ impl Fixture {
                 instance: config.identity.instance_id.clone(),
             });
             let configuration = assembly::policy::configuration(
+                &resources.background,
                 storage.runtime.clone(),
                 storage.audit.clone(),
                 storage.tenant,

@@ -125,9 +125,11 @@ pub(crate) fn routers(
     windows: Option<&Windows>,
     app: Arc<rss_mdm_windows_channel::HttpState>,
     clock: Arc<dyn rss_observation::Clock>,
+    request_budget: rss_axum::RequestBudget,
 ) -> Option<(ChannelRouter, Vec<ChannelRouter>)> {
     let windows = windows?;
     let boundary = |origin: &str| Envelope {
+        request_budget,
         admission: Arc::new(tokio::sync::Semaphore::new(32)),
         host: origin.trim_start_matches("https://").into(),
         clock: clock.clone(),

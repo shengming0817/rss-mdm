@@ -14,7 +14,13 @@ async fn directory(
     let items = catalog(&auth.proof, platform).map_err(Error::from)?;
     let expected = items.iter().map(|i| i.id).collect::<Vec<_>>();
     let entries = source
-        .project(auth.proof.clone(), audit, continuation.secret(), items)
+        .project(
+            auth.proof.clone(),
+            audit,
+            continuation.secret(),
+            items,
+            rss_request_context::Deadline::at(auth.deadline),
+        )
         .await
         .map_err(Error::from)?;
     if entries.iter().map(|e| e.item.id).collect::<Vec<_>>() != expected {

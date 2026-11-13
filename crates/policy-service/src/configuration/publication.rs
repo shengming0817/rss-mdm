@@ -5,7 +5,7 @@ use rss_mdm_policy::{Architecture, ExactResourceBinding, Exit, Platform};
 use rss_mdm_resource as resource;
 pub struct Publications {
     pub runtime: Arc<PgRuntime>,
-    pub tenant: TenantId,
+    pub execution: rss_transactional_messaging::fence::ExecutionBinding,
     pub content: Option<Arc<rss_mdm_content_service::Store>>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
 }
@@ -48,7 +48,7 @@ impl Publications {
         binding: &ExactResourceBinding,
     ) -> std::result::Result<rss_mdm_content_service::Verified, Error> {
         let artifact =
-            crate::transaction::inspect(&self.runtime, self.tenant, binding, |binding, tx| {
+            crate::transaction::inspect(&self.runtime, self.execution, binding, |binding, tx| {
                 Box::pin(async move {
                     let version = active_in(tx, binding).await?;
                     let resource::Declaration::Configuration { artifact } =
@@ -78,7 +78,7 @@ impl Publications {
         snapshot: &Snapshot,
     ) -> Result<serde_json::Value> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
+        if tx.tenant_id() != self.execution.tenant() {
             return Err(Error::Forbidden.into());
         }
         let rss_mdm_policy::Action::Configuration {
@@ -94,7 +94,7 @@ impl Publications {
         let frozen = frozen::Frozen::Configuration {
             native: Protected::seal(
                 &self.protection,
-                self.tenant,
+                self.execution.tenant(),
                 Owner::Policy {
                     policy: policy.id,
                     version: policy.version,
@@ -117,7 +117,7 @@ impl Publications {
         snapshot: &Snapshot,
     ) -> Result<(Configuration, resource::Version)> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
+        if tx.tenant_id() != self.execution.tenant() {
             return Err(Error::Forbidden.into());
         }
         let version = active_in(tx, binding).await?;

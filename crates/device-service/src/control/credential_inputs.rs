@@ -20,18 +20,21 @@ pub struct Copies {
 impl Copies {
     pub async fn bind(
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        supersede_batch: rss_device_command::BatchLimit,
         protection: Arc<rss_mdm_native_protection::Protector>,
         channel: Arc<dyn ChannelCopies>,
     ) -> std::result::Result<Self, Error> {
+        let tenant = execution.tenant();
         let caller = runtime.clone();
         let (_, store) = runtime
-            .local_tx(tenant, deadline(), move |tx| {
+            .local_tx(execution, deadline(), move |tx| {
                 Box::pin(async move {
                     storage::bind_command_in(
                         caller,
                         tx,
                         rss_device_command_postgres::CommandClock::Postgres,
+                        supersede_batch,
                     )
                     .await
                 })

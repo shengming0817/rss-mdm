@@ -50,6 +50,7 @@ pub struct TelemetryDimension {
     /// Literal property names relative to each selected item, not executable expressions.
     pub path: Vec<String>,
     /// Closed admitted vocabulary, including numeric dimensions rendered canonically.
+    #[schemars(extend("minItems" = 1, "maxItems" = 1024))]
     pub values: BTreeSet<String>,
 }
 /// Product retention policy identity; duration is owned by its immutable policy version.
@@ -72,6 +73,7 @@ pub struct TimeSeriesBinding {
     /// Counter start in UTC microseconds, extracted per item for structured counters.
     pub interval_start_path: Option<Vec<String>>,
     /// Closed dimensions. Device/resource/source identities are not arbitrary dimensions.
+    #[schemars(extend("maxProperties" = 1024))]
     pub dimensions: BTreeMap<String, TelemetryDimension>,
     /// Explicit operations permitted for this field.
     pub aggregations: BTreeSet<TelemetryAggregation>,
@@ -103,7 +105,7 @@ impl TimeSeriesBinding {
                         TelemetryKind::CumulativeCounter | TelemetryKind::DeltaCounter
                     )
             })
-            || self.dimensions.len() > 64
+            || self.dimensions.len() > 1024
             || self.aggregations.is_empty()
             || !name(&self.retention.key)
             || self.retention.revision == 0
@@ -119,7 +121,7 @@ impl TimeSeriesBinding {
                 || dimension.path.is_empty()
                 || !path(&dimension.path)
                 || dimension.values.is_empty()
-                || dimension.values.len() > 256
+                || dimension.values.len() > 1024
             {
                 return Err(WireError::InvalidValue);
             }
@@ -130,7 +132,9 @@ impl TimeSeriesBinding {
                 if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
                     return Err(WireError::InvalidValue);
                 }
-                vocabulary_bytes += value.len();
+                vocabulary_bytes = vocabulary_bytes
+                    .checked_add(value.len())
+                    .ok_or(WireError::InvalidValue)?;
             }
         }
         if combinations > 4096 || vocabulary_bytes > 32768 {

@@ -7,6 +7,7 @@ mod service;
 pub use model::OPERATION_DIAGNOSTICS;
 pub use model::{
     AUDIT, Coverage, DEVICE_TIMELINE, DiagnosticFact, DiagnosticPage, Error, FactView, Page, Query,
+    QueryBudget,
 };
 pub use projection::project;
 pub use service::Timeline;

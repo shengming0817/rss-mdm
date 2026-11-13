@@ -179,7 +179,13 @@ impl FirstUse {
         };
         let entries = self
             .directory
-            .project(auth.proof.clone(), audit.clone(), continuation, items)
+            .project(
+                auth.proof.clone(),
+                audit.clone(),
+                continuation,
+                items,
+                rss_request_context::Deadline::at(auth.deadline),
+            )
             .await;
         drop(action);
         projected_step(id, ids, entries)

@@ -21,6 +21,7 @@ use std::{
 pub struct Config {
     pub backend: Storage,
     pub ingress: rss_mdm_telemetry_service::Limits,
+    pub maintenance: rss_mdm_telemetry_service::maintenance::Policy,
     pub limits: Limits,
     pub cursor_key_file: PathBuf,
     pub connections: NonZeroU32,
@@ -101,6 +102,7 @@ async fn pool(database: &Database, max: NonZeroU32) -> Result<sqlx::PgPool, Erro
 impl Config {
     pub(crate) fn validate(&self, tenant: TenantId) -> Result<(), Error> {
         self.ingress.validate().map_err(|_| invalid())?;
+        self.maintenance.validate().map_err(|_| invalid())?;
         self.profile(tenant)?;
         if self.connections.get() > 64
             || self.limits.max_points.get() > 4096
@@ -169,9 +171,13 @@ impl Config {
                 tokio::time::timeout(Duration::from_secs(6), self.configuration_binding())
                     .await
                     .map_err(|_| unavailable())??;
-            rss_mdm_telemetry_service::admit_configuration(&runtime, tenant, binding)
-                .await
-                .map_err(|_| invalid())
+            rss_mdm_telemetry_service::admit_configuration(
+                &runtime,
+                dependencies.audit_store.binding(),
+                binding,
+            )
+            .await
+            .map_err(|_| invalid())
         }
         .await;
         if let Err(error) = admitted {
@@ -187,6 +193,7 @@ impl Config {
             backend,
             signing,
             self.ingress.clone(),
+            self.maintenance,
             rss_mdm_telemetry_service::StorageBudget {
                 points: self.limits.max_points,
                 series: self.limits.max_series,

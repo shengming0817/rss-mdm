@@ -143,7 +143,7 @@ async fn host(
         c.audit
             .on_runtime(
                 a.resources.storage.runtime.clone(),
-                c.tenant,
+                c.audit.binding(),
                 &rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5))
                     .control(),
             )
@@ -195,13 +195,14 @@ async fn host(
         identity: Arc::new(
             rss_mdm_authorization_service::session::SessionAuthority::new(
                 c.authority.clone(),
-                c.tenant,
+                c.audit.binding(),
             ),
         ),
         requests: requests.clone(),
         windows: Some(w.clone()),
     });
     let boundary = || rss_mdm_windows_channel::boundary::Envelope {
+        request_budget: rss_axum::RequestBudget::new(std::time::Duration::from_secs(8)).unwrap(),
         admission: Arc::new(tokio::sync::Semaphore::new(16)),
         host: "localhost".into(),
         clock: monotonic.clone(),

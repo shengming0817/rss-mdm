@@ -68,7 +68,7 @@ impl Associations {
         limit: usize,
         personnel: &personnel::Reader<'_>,
     ) -> Result<crate::view_response::ListItems> {
-        if !(1..=1000).contains(&limit) {
+        if !(1..=1024).contains(&limit) {
             return Err(Error::Malformed);
         }
         if proof.tenant_id() != self.tenant.to_string() {

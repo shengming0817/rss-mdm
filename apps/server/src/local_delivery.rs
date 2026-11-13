@@ -3,7 +3,7 @@ use crate::{Error, Failure};
 use futures::StreamExt;
 use rss_transactional_messaging::transaction::IngressValidator;
 use rss_transactional_messaging::{
-    fence::{Epoch, ExecutionBinding, StorageIdentity},
+    fence::ExecutionBinding,
     inbox::ConsumerGroup,
     message::MessagingDomain,
     policy::{DeliveryBudget, LeaseRenewalPolicy, OperationDeadline},
@@ -43,6 +43,7 @@ pub(crate) struct Delivery<H, V> {
     name: &'static str,
     health: Arc<Health>,
     runtime: Arc<PgRuntime>,
+    binding: ExecutionBinding,
     projection: PgLocalProjection<H, rss_mdm_native_protection::Protector>,
     validator: V,
 }
@@ -64,7 +65,7 @@ where
         lane: Lane<'a>,
         bind: impl FnOnce(
             Arc<PgRuntime>,
-            rss_request_context::TenantId,
+            rss_transactional_messaging::fence::ExecutionBinding,
             rss_reconcile_postgres::PgMessagingStore,
         ) -> (H, V)
         + Send
@@ -89,32 +90,21 @@ where
                 .map_err(|_| Error::Malformed)?,
             )
             .with_pool_limits(0, 2);
-            let binding = ExecutionBinding::new(
-                StorageIdentity::new(
-                    config.storage_binding.target,
-                    config.storage_binding.lineage,
-                )
-                .map_err(|_| Error::Malformed)?,
-                vec![(
-                    tenant,
-                    Epoch::new(config.storage_binding.epoch).map_err(|_| Error::Malformed)?,
-                )],
-            )
-            .map_err(|_| Error::Malformed)?;
+            let binding = config.storage_binding.execution(tenant)?;
             let runtime = Arc::new(
-                PgRuntime::connect_consumer(pg, crate::lifecycle::RuntimeTimer, binding)
+                PgRuntime::connect_consumer(pg, crate::lifecycle::RuntimeTimer, binding.storage())
                     .await
                     .map_err(|_| unavailable())?,
             );
             let result = async {
                 let messaging = rss_reconcile_postgres::PgMessagingStore::new(
                     runtime.clone(),
-                    tenant,
+                    binding,
                     deadline(),
                 )
                 .await
                 .map_err(|_| unavailable())?;
-                let (effect, validator) = bind(runtime.clone(), tenant, messaging);
+                let (effect, validator) = bind(runtime.clone(), binding, messaging);
                 let capture = PgRecoveryCapture::new(runtime.clone(), protection, deadline())
                     .await
                     .map_err(|_| unavailable())?;
@@ -140,6 +130,7 @@ where
                     name: lane.name,
                     health,
                     runtime: runtime.clone(),
+                    binding,
                     projection,
                     validator,
                 }))
@@ -158,7 +149,7 @@ where
     ) -> Result<usize, PollFailure> {
         if self
             .projection
-            .has_dead_letters(deadline())
+            .has_dead_letters(self.binding, deadline())
             .await
             .map_err(|_| PollFailure::Unavailable)?
         {
@@ -170,6 +161,7 @@ where
         let batch = self
             .projection
             .project_batch(
+                self.binding,
                 &self.validator,
                 NonZeroUsize::new(1).expect("one"),
                 OperationDeadline::from_remaining(Duration::from_secs(1)),
@@ -233,7 +225,7 @@ where
                         eprintln!("{}",serde_json::json!({"event":"local_delivery_unavailable","worker":self.name}));
                     }
                 }
-                let delay = match self.projection.next_wakeup(deadline()).await {
+                let delay = match self.projection.next_wakeup(self.binding, deadline()).await {
                     Ok(wakeup) if wakeup.due_now() => Duration::from_millis(100),
                     Ok(wakeup) => wakeup.next_deadline().map_or(Duration::from_secs(60), |at| {
                         at.instant().saturating_duration_since(rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer))

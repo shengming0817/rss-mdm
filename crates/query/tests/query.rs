@@ -159,8 +159,8 @@ fn windows_use_thousand_row_budget_and_reject_foreign_schemas() {
     assert_eq!(query.limit(), 1000);
     assert!(query.require_schema(&FIRST).is_ok());
     assert!(query.require_schema(&SECOND).is_err());
-    assert_eq!(FIRST.parse("limit=1000").unwrap().0.limit(), 1000);
-    for raw in ["limit=0", "limit=1001", "afterAt=0", "afterId=123"] {
+    assert_eq!(FIRST.parse("limit=1024").unwrap().0.limit(), 1024);
+    for raw in ["limit=0", "limit=1025", "afterAt=0", "afterId=123"] {
         assert!(FIRST.parse(raw).is_err(), "{raw}");
     }
 }

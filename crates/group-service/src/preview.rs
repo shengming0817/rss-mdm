@@ -70,7 +70,7 @@ impl Groups {
         let candidate = assets::cut::capture(&self.audit_store, self.tenant, &budget).await?;
         let result = inspect_budget(
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                 budget.control().total_remaining(),
             ),

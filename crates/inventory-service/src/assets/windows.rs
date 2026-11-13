@@ -7,7 +7,7 @@ pub const MAX_PAGE_BODY_BYTES: usize = 384 * 1024;
 pub static RESULTS: Schema = Schema {
     id: "asset_results",
     default_limit: 1000,
-    max_limit: 1000,
+    max_limit: 1024,
     order: "frozen sort key, device",
     purpose: rss_mdm_query::window::Purpose::Snapshot,
     reason: "Rows belong to one authorized asset query and its frozen sort/cut",

@@ -206,7 +206,7 @@ impl PublicationService {
     ) -> Result<rel::PublicationOutcome> {
         settle(
             self.runtime
-                .local_tx_with_context(self.tenant(), budget(cutoff), (self, t), |(s, t), tx| {
+                .local_tx_with_context(self.binding, budget(cutoff), (self, t), |(s, t), tx| {
                     Box::pin(async move {
                         s.audit_store
                             .bind_in(tx)
@@ -288,7 +288,7 @@ impl PublicationService {
     async fn load_call(&self, table: Table, key: &str, cutoff: Deadline) -> Result<Call> {
         let call = settle(
             self.runtime
-                .local_tx_with_context(self.tenant(), budget(cutoff), key, move |key, tx| {
+                .local_tx_with_context(self.binding, budget(cutoff), key, move |key, tx| {
                     Box::pin(
                         async move { Ok(db::call(tx, table, key).await?.ok_or(Error::Conflict)) },
                     )
@@ -311,7 +311,7 @@ impl PublicationService {
         settle(
             self.runtime
                 .local_tx_with_context(
-                    self.tenant(),
+                    self.binding,
                     budget(cutoff),
                     (self, t),
                     move |(s, t), tx| {
@@ -418,7 +418,7 @@ impl PublicationService {
         settle(
             self.runtime
                 .local_tx_with_context(
-                    self.tenant(),
+                    self.binding,
                     budget(cutoff),
                     (self, t),
                     move |(s, t), tx| {
@@ -594,7 +594,7 @@ impl PublicationService {
         settle(
             self.runtime
                 .local_tx_with_context(
-                    self.tenant(),
+                    self.binding,
                     budget(cutoff),
                     (self, t),
                     move |(s, t), tx| {
@@ -717,7 +717,7 @@ impl PublicationService {
         let (publish, replayed) = settle(
             self.runtime
                 .local_tx_with_context(
-                    self.tenant(),
+                    self.binding,
                     budget(cutoff),
                     (self, id, &r, access),
                     |(s, id, r, access), tx| {
@@ -818,7 +818,7 @@ impl PublicationService {
         settle(
             self.runtime
                 .local_tx_with_context(
-                    self.tenant(),
+                    self.binding,
                     budget(cutoff),
                     (self, &key),
                     |(s, key), tx| {
@@ -868,7 +868,7 @@ impl PublicationService {
         settle(
             self.runtime
                 .local_tx_with_context(
-                    self.tenant(),
+                    self.binding,
                     budget(cutoff),
                     (self, t),
                     move |(s, t), tx| {
@@ -1079,7 +1079,7 @@ impl PublicationService {
     async fn close_for_intent(&self, t: &Target, cutoff: Deadline) -> Result<()> {
         settle(
             self.runtime
-                .local_tx_with_context(self.tenant(), budget(cutoff), (self, t), |(s, t), tx| {
+                .local_tx_with_context(self.binding, budget(cutoff), (self, t), |(s, t), tx| {
                     Box::pin(async move {
                         s.audit_store
                             .bind_in(tx)
@@ -1155,51 +1155,46 @@ impl PublicationService {
     async fn complete_unpublished(&self, key: &str, cutoff: Deadline) -> Result<()> {
         settle(
             self.runtime
-                .local_tx_with_context(
-                    self.tenant(),
-                    budget(cutoff),
-                    (self, key),
-                    |(s, key), tx| {
-                        Box::pin(async move {
-                            s.audit_store
-                                .bind_in(tx)
+                .local_tx_with_context(self.binding, budget(cutoff), (self, key), |(s, key), tx| {
+                    Box::pin(async move {
+                        s.audit_store
+                            .bind_in(tx)
+                            .await
+                            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                        input!(
+                            s.catalog
+                                .reader()
+                                .lock_in(tx)
                                 .await
-                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            input!(
-                                s.catalog
-                                    .reader()
-                                    .lock_in(tx)
-                                    .await
-                                    .map_err(|_| Error::Content)
-                            );
-                            let call = db::call(tx, Table::Withdraw, key)
-                                .await?
-                                .ok_or_else(db::fault)?;
-                            if call.complete {
-                                return Ok(Ok(()));
-                            }
+                                .map_err(|_| Error::Content)
+                        );
+                        let call = db::call(tx, Table::Withdraw, key)
+                            .await?
+                            .ok_or_else(db::fault)?;
+                        if call.complete {
+                            return Ok(Ok(()));
+                        }
 
-                            db::complete_noop(tx, key).await?;
-                            let fact = db::fact(
-                                tx.tenant_id(),
-                                &s.actors.backend,
-                                &call.target.record,
-                                "software_withdraw",
-                                db::target_fact(
-                                    &call.target,
-                                    Table::Withdraw,
-                                    "complete_unpublished",
-                                    "applied",
-                                ),
-                            )?;
-                            s.audit_store
-                                .append_in(tx, &fact)
-                                .await
-                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            Ok(Ok(()))
-                        })
-                    },
-                )
+                        db::complete_noop(tx, key).await?;
+                        let fact = db::fact(
+                            tx.tenant_id(),
+                            &s.actors.backend,
+                            &call.target.record,
+                            "software_withdraw",
+                            db::target_fact(
+                                &call.target,
+                                Table::Withdraw,
+                                "complete_unpublished",
+                                "applied",
+                            ),
+                        )?;
+                        s.audit_store
+                            .append_in(tx, &fact)
+                            .await
+                            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                        Ok(Ok(()))
+                    })
+                })
                 .await,
         )
     }
@@ -1301,7 +1296,7 @@ impl PublicationService {
     ) -> Result<bool> {
         let (slot, current) = settle(
             self.runtime
-                .local_tx_with_context(self.tenant(), budget(cutoff), t, |t, tx| {
+                .local_tx_with_context(self.binding, budget(cutoff), t, |t, tx| {
                     Box::pin(async move {
                         Ok(Ok((
                             db::slot(tx, &t.binding, &t.slot).await?,
@@ -1314,55 +1309,50 @@ impl PublicationService {
         if current.as_deref() != Some(&t.publication) {
             settle(
                 self.runtime
-                    .local_tx_with_context(
-                        self.tenant(),
-                        budget(cutoff),
-                        (self, t),
-                        |(s, t), tx| {
-                            Box::pin(async move {
-                                s.audit_store
-                                    .bind_in(tx)
-                                    .await
-                                    .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                                input!(
-                                    s.catalog
-                                        .reader()
-                                        .lock_in(tx)
-                                        .await
-                                        .map_err(|_| Error::Content)
-                                );
-
-                                db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
-                                    .await?;
-                                if db::projection(tx, t).await?.as_deref() == Some(&t.publication) {
-                                    return Ok(Err(Error::Conflict));
-                                }
-                                let call = db::call(tx, Table::Withdraw, &t.withdrawal_key())
-                                    .await?
-                                    .ok_or_else(db::fault)?;
-                                db::complete_noop(tx, &t.withdrawal_key()).await?;
-                                let fact = db::fact(
-                                    tx.tenant_id(),
-                                    &s.actors.backend,
-                                    &t.record,
-                                    "software_withdraw",
-                                    db::target_fact(
-                                        t,
-                                        Table::Withdraw,
-                                        "prepare_withdrawal",
-                                        "applied",
-                                    ),
-                                )?;
-                                (if call.complete {
-                                    Ok(())
-                                } else {
-                                    s.audit_store.append_in(tx, &fact).await
-                                })
+                    .local_tx_with_context(self.binding, budget(cutoff), (self, t), |(s, t), tx| {
+                        Box::pin(async move {
+                            s.audit_store
+                                .bind_in(tx)
+                                .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                                Ok(Ok(()))
+                            input!(
+                                s.catalog
+                                    .reader()
+                                    .lock_in(tx)
+                                    .await
+                                    .map_err(|_| Error::Content)
+                            );
+
+                            db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
+                                .await?;
+                            if db::projection(tx, t).await?.as_deref() == Some(&t.publication) {
+                                return Ok(Err(Error::Conflict));
+                            }
+                            let call = db::call(tx, Table::Withdraw, &t.withdrawal_key())
+                                .await?
+                                .ok_or_else(db::fault)?;
+                            db::complete_noop(tx, &t.withdrawal_key()).await?;
+                            let fact = db::fact(
+                                tx.tenant_id(),
+                                &s.actors.backend,
+                                &t.record,
+                                "software_withdraw",
+                                db::target_fact(
+                                    t,
+                                    Table::Withdraw,
+                                    "prepare_withdrawal",
+                                    "applied",
+                                ),
+                            )?;
+                            (if call.complete {
+                                Ok(())
+                            } else {
+                                s.audit_store.append_in(tx, &fact).await
                             })
-                        },
-                    )
+                            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                            Ok(Ok(()))
+                        })
+                    })
                     .await,
             )?;
             return Ok(false);
@@ -1390,7 +1380,7 @@ impl PublicationService {
         settle(
             self.runtime
                 .local_tx_with_context(
-                    self.tenant(),
+                    self.binding,
                     budget(cutoff),
                     (self, &prepared),
                     |(s, t), tx| {
@@ -1428,7 +1418,7 @@ impl PublicationService {
     async fn finish_withdrawal(&self, t: &Target, cutoff: Deadline) -> Result<()> {
         settle(
             self.runtime
-                .local_tx_with_context(self.tenant(), budget(cutoff), (self, t), |(s, t), tx| {
+                .local_tx_with_context(self.binding, budget(cutoff), (self, t), |(s, t), tx| {
                     Box::pin(async move {
                         s.audit_store
                             .bind_in(tx)

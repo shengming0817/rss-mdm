@@ -7,7 +7,7 @@ fn content_budget_reserves_all_three_physical_pools() {
     let base = (1..256)
         .find(|budget| {
             config.background.database_connection_budget = *budget;
-            config.background.validate(&config).is_ok()
+            config.background.compile(&config).is_ok()
         })
         .unwrap();
     config.content = Some(rss_mdm_content_service::Config {
@@ -24,30 +24,30 @@ fn content_budget_reserves_all_three_physical_pools() {
         max_expansion_ratio: 1,
     });
     config.background.database_connection_budget = base + crate::background::CONTENT_CONNECTIONS;
-    assert!(config.background.validate(&config).is_err());
+    assert!(config.background.compile(&config).is_err());
     config.background.database_connection_budget += rss_mdm_content_service::ADMISSION_CONNECTIONS;
-    assert!(config.background.validate(&config).is_err());
+    assert!(config.background.compile(&config).is_err());
     config.background.database_connection_budget += 2;
-    assert!(config.background.validate(&config).is_ok());
+    assert!(config.background.compile(&config).is_ok());
 }
 
 #[test]
 fn background_budget_includes_each_tenant_host_and_rejects_overflow() {
     let mut config: Config =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
-    assert!(config.background.validate(&config).is_ok());
+    assert!(config.background.compile(&config).is_ok());
     config.background.database_host_instances = 2;
-    assert!(config.background.validate(&config).is_err());
+    assert!(config.background.compile(&config).is_err());
     config.background.database_connection_budget = 256;
-    assert!(config.background.validate(&config).is_ok());
+    assert!(config.background.compile(&config).is_ok());
     config.background.database_host_instances = u32::MAX;
-    assert!(config.background.validate(&config).is_err());
+    assert!(config.background.compile(&config).is_err());
     config.background.database_host_instances = 0;
-    assert!(config.background.validate(&config).is_err());
+    assert!(config.background.compile(&config).is_err());
     config.background.database_host_instances = 1;
-    for concurrency in [0, 65] {
+    for concurrency in [0, usize::MAX] {
         config.background.device_concurrency = concurrency;
-        assert!(config.background.validate(&config).is_err());
+        assert!(config.background.compile(&config).is_err());
     }
 }
 
@@ -198,7 +198,6 @@ fn startup_configuration_diagnostics_identify_safe_fields() {
 fn native_protocols_are_explicit_closed_and_do_not_require_windows() {
     let mut config: serde_json::Value =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
-    let windows = config["native_protocols"]["windows"].clone();
     config["native_protocols"] = serde_json::json!({});
     let decoded: Config = serde_json::from_value(config.clone()).unwrap();
     assert!(decoded.native_protocols.windows.is_none() && decoded.native_protocols.apple.is_none());
@@ -212,18 +211,6 @@ fn native_protocols_are_explicit_closed_and_do_not_require_windows() {
     }
     config.as_object_mut().unwrap().remove("native_protocols");
     assert!(serde_json::from_value::<Config>(config.clone()).is_err());
-    for (key, value) in [
-        ("identity_management", serde_json::json!([])),
-        ("tenant_administration", serde_json::json!({})),
-    ] {
-        let mut invalid: serde_json::Value =
-            serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))
-                .unwrap();
-        invalid[key] = value;
-        assert!(serde_json::from_value::<Config>(invalid).is_err());
-    }
-    config["windows"] = windows;
-    assert!(serde_json::from_value::<Config>(config).is_err());
 }
 #[test]
 fn ca_inputs_reject_symlinks_directories_and_oversize() {
@@ -324,4 +311,29 @@ fn optional_signing_is_admitted_by_consumers_not_core_configuration() {
         }
     }
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn configured_worker_capacity_and_pool_arithmetic_are_checked_together() {
+    let mut config: Config =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+    config.background.device_concurrency = 128;
+    config.background.database_connection_budget = 4096;
+    config.background.scheduling.device.claim_batch_size = 1024;
+    config.background.scheduling.device.scan_budget = 4096;
+    let compiled = config.background.compile(&config).unwrap();
+    assert_eq!(compiled.device.concurrency(), 128);
+    assert_eq!(compiled.device.claim_batch_size(), 1024);
+    assert_eq!(compiled.device.scan_budget(), 4096);
+    assert_eq!(compiled.access_connections, 136);
+    config.background.device_concurrency = u32::MAX as usize;
+    assert!(config.background.compile(&config).is_err());
+    config.background.device_concurrency = 128;
+    for claim in [0, 1025] {
+        config.background.scheduling.device.claim_batch_size = claim;
+        assert!(config.background.compile(&config).is_err());
+    }
+    config.background.scheduling.device.claim_batch_size = 1024;
+    config.background.scheduling.device.attempt_ms = 0;
+    assert!(config.background.compile(&config).is_err());
 }

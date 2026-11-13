@@ -10,6 +10,7 @@ use sqlx::Row;
 use std::sync::Arc;
 
 pub async fn checkin(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<HttpState>>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
@@ -48,7 +49,14 @@ pub async fn checkin(
     }
     let credential = app.mount.credential(leaf.fingerprint())?;
     if matches!(input, CheckIn::Authenticate { .. })
-        && authenticate(&app, &leaf, udid.ok_or(Error::Malformed)?, &audit).await?
+        && authenticate(
+            &app,
+            &leaf,
+            udid.ok_or(Error::Malformed)?,
+            &audit,
+            control.deadline(),
+        )
+        .await?
     {
         return Ok(StatusCode::OK.into_response());
     }
@@ -57,7 +65,14 @@ pub async fn checkin(
     audit.identify_device(principal.device());
     audit.target_device(principal.device());
     let user_access = if protocol::user(&dictionary)?.is_some() {
-        match crate::account_enrollment::authorize_user(&app, leaf.enrollment(), &headers).await {
+        match crate::account_enrollment::authorize_user(
+            &app,
+            leaf.enrollment(),
+            &headers,
+            control.deadline(),
+        )
+        .await
+        {
             Ok(access) => access,
             Err(Error::Unauthorized) => {
                 return crate::account_enrollment::reauthentication(
@@ -371,6 +386,7 @@ async fn checkin_on(
 }
 
 pub async fn manage(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<HttpState>>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
@@ -397,7 +413,14 @@ pub async fn manage(
     audit.identify_device(principal.device());
     audit.target_device(principal.device());
     let user_access = if message.user.is_some() {
-        match crate::account_enrollment::authorize_user(&app, leaf.enrollment(), &headers).await {
+        match crate::account_enrollment::authorize_user(
+            &app,
+            leaf.enrollment(),
+            &headers,
+            control.deadline(),
+        )
+        .await
+        {
             Ok(access) => access,
             Err(Error::Unauthorized) => {
                 return crate::account_enrollment::reauthentication(
@@ -463,6 +486,7 @@ async fn authenticate(
     leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
     udid: &str,
     audit: &RequestAudit,
+    cutoff: rss_request_context::Deadline,
 ) -> Result<bool, Error> {
     let tenant = app.identity.tenant().to_string();
     let mut tx = app.access.begin(&tenant).await?;
@@ -470,7 +494,7 @@ async fn authenticate(
     let consumed = row.try_get::<String, _>("state").map_err(db)? == "consumed";
     tx.rollback().await.map_err(db)?;
     if consumed {
-        enrollment::bind(app, leaf, udid, audit).await?;
+        enrollment::bind(app, leaf, udid, audit, cutoff).await?;
     }
     Ok(consumed)
 }

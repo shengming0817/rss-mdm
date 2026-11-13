@@ -10,7 +10,7 @@ pub(crate) async fn many(
     key: &rss_mdm_native_protection::Protector,
     requests: &[(Authority, Vec<Permission>)],
 ) -> std::result::Result<Vec<bool>, Error> {
-    if requests.len() > 1000 {
+    if requests.len() > 1024 {
         return Err(Error::Malformed);
     }
     let mut results = vec![false; requests.len()];

@@ -51,7 +51,7 @@ async fn delivery(
         c.audit
             .on_runtime(
                 a.resources.storage.runtime.clone(),
-                c.tenant,
+                c.audit.binding(),
                 &rss_mdm_audit_integration::budget::AuditBudget::new(
                     std::time::Duration::from_secs(5),
                 )
@@ -236,7 +236,7 @@ impl Harness {
         Ok(script::transaction::run(
             &self.audit,
             &self.a.resources.storage.runtime,
-            self.c.tenant,
+            self.c.audit.binding(),
             &request(&self.c),
             (transactions, target),
             move |ctx, tx| {

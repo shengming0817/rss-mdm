@@ -2,6 +2,7 @@ use super::*;
 use rss_transactional_messaging::policy::OperationDeadline;
 use webhooks::transport::{AuthorizationFailure, AuthorizedTarget, Publication, TargetAuthorizer};
 struct Authorizer {
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     runtime: Arc<PgRuntime>,
     host: Arc<authority::Host>,
 }
@@ -20,7 +21,7 @@ impl TargetAuthorizer for Authorizer {
         let fingerprint = p.fingerprint().as_bytes().to_vec();
         let host = self.host.clone();
         self.runtime
-            .local_tx(p.tenant(), deadline, move |tx| {
+            .local_tx(self.binding, deadline, move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
@@ -93,9 +94,11 @@ impl Service {
         token: tokio_util::sync::CancellationToken,
     ) -> Result<(), rss_transactional_messaging::error::MessagingError> {
         webhooks::worker::run(
+            self.audit.binding(),
             self.runtime.clone(),
             self.host.clone(),
             Authorizer {
+                binding: self.audit.binding(),
                 runtime: self.runtime.clone(),
                 host: self.host.clone(),
             },

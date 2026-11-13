@@ -29,7 +29,7 @@ impl Compliance {
         );
         crate::transaction::inspect(
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             (self, p, q, audit),
             |ctx, tx| {
                 Box::pin(async move {

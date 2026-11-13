@@ -62,7 +62,7 @@ impl Policies {
     ) -> std::result::Result<wire::ScopeRead, Error> {
         inspect(
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             (self, proof, owner),
             |(s, p, owner), tx| {
                 Box::pin(async move {
@@ -93,7 +93,7 @@ impl Policies {
     ) -> std::result::Result<preview::Response, Error> {
         let editing = inspect(
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             (self, proof, owner, input),
             |(s, p, owner, input), tx| {
                 Box::pin(async move {
@@ -133,7 +133,7 @@ impl Policies {
             .await?;
         inspect(
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             (self, proof, input),
             |(s, p, input), tx| {
                 Box::pin(async move {
@@ -185,7 +185,7 @@ impl Policies {
         );
         let value = inspect(
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             (self, proof, owner),
             |(s, p, owner), tx| {
                 Box::pin(async move {
@@ -227,7 +227,7 @@ impl Policies {
         run(
             &self.audit_store,
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             audit,
             (self, proof, audit, owner, input),
             |(s, p, a, owner, input), tx| {
@@ -269,7 +269,7 @@ impl Policies {
     ) -> std::result::Result<rss_mdm_policy::pages::Preview, Error> {
         inspect(
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             (self, proof, input),
             |(s, p, input), tx| {
                 Box::pin(async move {

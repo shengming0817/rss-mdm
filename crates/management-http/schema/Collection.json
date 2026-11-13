@@ -9,7 +9,7 @@
       },
       "limit": {
         "default": 1000,
-        "maximum": 1000,
+        "maximum": 1024,
         "minimum": 1,
         "type": "integer"
       }
@@ -451,6 +451,8 @@
             "items": {
               "type": "string"
             },
+            "maxItems": 1024,
+            "minItems": 1,
             "type": "array",
             "uniqueItems": true
           }
@@ -503,6 +505,7 @@
               "$ref": "#/$defs/TelemetryDimension2"
             },
             "description": "Closed dimensions. Device/resource/source identities are not arbitrary dimensions.",
+            "maxProperties": 1024,
             "type": "object"
           },
           "intervalStartPath": {
@@ -615,7 +618,7 @@
                   "minLength": 1,
                   "type": "string"
                 },
-                "maxItems": 128,
+                "maxItems": 1024,
                 "minItems": 1,
                 "type": "array",
                 "uniqueItems": true
@@ -1190,6 +1193,8 @@
             "items": {
               "type": "string"
             },
+            "maxItems": 1024,
+            "minItems": 1,
             "type": "array",
             "uniqueItems": true
           }
@@ -1242,6 +1247,7 @@
               "$ref": "#/$defs/TelemetryDimension"
             },
             "description": "Closed dimensions. Device/resource/source identities are not arbitrary dimensions.",
+            "maxProperties": 1024,
             "type": "object"
           },
           "intervalStartPath": {
@@ -1353,7 +1359,7 @@
                   "minLength": 1,
                   "type": "string"
                 },
-                "maxItems": 128,
+                "maxItems": 1024,
                 "minItems": 1,
                 "type": "array",
                 "uniqueItems": true

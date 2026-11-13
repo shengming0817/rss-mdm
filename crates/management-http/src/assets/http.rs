@@ -314,7 +314,7 @@ async fn run(
     authorize(auth, &command)?;
     let envelope = app
         .assets
-        .execute_authorized(&command, audit, &auth.proof, &|| authorize(auth, &command))
+        .execute_authorized(&command, audit, auth, &|| authorize(auth, &command))
         .await?;
     Ok(HttpResponse::new(envelope))
 }

@@ -34,7 +34,7 @@ impl AssetService {
         id: Uuid,
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
-        crate::transaction::inspect(&self.runtime,self.tenant,(self,p,device),|ctx,tx|Box::pin(async move{
+        crate::transaction::inspect(&self.runtime,self.audit_store.binding(),(self,p,device),|ctx,tx|Box::pin(async move{
             let(s,p,device)=*ctx;
             query_authority(tx,p).await?.require(p,rss_mdm_authorization_service::Permission::InventoryRead,Some(device))?;
             let tenant=s.tenant.to_string();let device_key=device.into_uuid();
@@ -55,6 +55,10 @@ impl AssetService {
         device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         scope: &ReadScope,
+        read_control: (
+            rss_request_context::Deadline,
+            rss_request_context::Cancellation<'_>,
+        ),
     ) -> Result<RunView> {
         if scope
             .devices
@@ -115,7 +119,9 @@ impl AssetService {
             {
                 return Err(Error::Unavailable(Failure::CollectionQuery).into());
             }
-            self.inventory.inspect_report(&coordinate, &batch).await?
+            self.inventory
+                .inspect_report(&coordinate, &batch, read_control.0, read_control.1)
+                .await?
         } else {
             crate::inventory_runtime::DeliveryStatus {
                 receipt: None,
@@ -164,6 +170,10 @@ impl AssetService {
 }
 
 impl AssetService {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "collection identity, authorized read scope, pagination and caller budget remain independent"
+    )]
     pub(super) async fn collection_items(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -172,12 +182,18 @@ impl AssetService {
         field: FieldKey,
         scope: &ReadScope,
         page: (Option<&str>, usize),
+        read_control: (
+            rss_request_context::Deadline,
+            rss_request_context::Cancellation<'_>,
+        ),
     ) -> Result<Response> {
         let (cursor, limit) = page;
-        if !(1..=1000).contains(&limit) {
+        if !(1..=1024).contains(&limit) {
             return Err(Error::Malformed.into());
         }
-        let run = self.collection_run(tx, device, id, scope).await?;
+        let run = self
+            .collection_run(tx, device, id, scope, read_control)
+            .await?;
         if run.finished_at.is_none() {
             return Err(Error::Conflict.into());
         }

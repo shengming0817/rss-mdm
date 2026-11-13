@@ -30,7 +30,7 @@ pub async fn read_on(
     catalog: &Catalog,
     scope: &CollectionScope,
 ) -> Result<Vec<DeviceSummary>> {
-    if cut.tenant() != Uuid::from_bytes(tenant.octets()) || ids.len() > 1000 {
+    if cut.tenant() != Uuid::from_bytes(tenant.octets()) || ids.len() > 1024 {
         return Err(Error::Forbidden.into());
     }
     let keys = catalog
@@ -58,7 +58,7 @@ pub fn decode(
     scope: &CollectionScope,
     raw: Value,
 ) -> Result<Vec<DeviceSummary>> {
-    if raw["ok"] != true || ids.len() > 1000 {
+    if raw["ok"] != true || ids.len() > 1024 {
         return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
     }
     let sources: Vec<SourceRow> = stored(serde_json::from_value(raw["sources"].clone()))?;

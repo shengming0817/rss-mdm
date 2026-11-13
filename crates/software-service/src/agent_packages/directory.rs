@@ -3,7 +3,7 @@ use super::*;
 use rss_mdm_query::directory::{Query, Schema};
 use serde_json::{Value, json};
 pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<Row>("agent_packages", &["releaseId"], 64, 1000, &[])
+    Schema::derived::<Row>("agent_packages", &["releaseId"], 64, 1024, &[])
         .expect("Public directory model")
 });
 fn validate(row: &Value, tenant: TenantId) -> Result<(), Error> {
@@ -25,7 +25,7 @@ async fn rows<C: ManagementContentPort>(
         "agent_package_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    transaction::inspect(&app.runtime,app.tenant,(app,p,audit,q),|ctx,tx|Box::pin(async move{
+    transaction::inspect(&app.runtime,app.audit.binding(),(app,p,audit,q),|ctx,tx|Box::pin(async move{
   let(app,p,_audit,q)=ctx;let current=transaction::current(tx,p).await?;current.require(p,Permission::AgentEnrollmentRead,None)?;
   let binding=q.binding(&(p.tenant_id(),p.instance_id(),current.query_binding(p)?)).map_err(management::query_error)?;let after=q.after(&app.cursor,&binding).map_err(management::query_error)?;
   let mut sql=sqlx::QueryBuilder::new("SELECT document || jsonb_build_object('_package',document,'_id',id,'state',state,'platform',platform,'architecture',architecture) FROM mdm_agent_packages.releases WHERE tenant_id=");sql.push_bind(tx.tenant_id().to_string()).push("::uuid");

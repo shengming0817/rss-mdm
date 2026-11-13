@@ -5,6 +5,7 @@ pub(crate) async fn enrollment(
     a: &RequestAudit,
     issuing: bool,
     token: &[u8],
+    cutoff: rss_request_context::Deadline,
 ) -> Result<axum::response::Response, Error> {
     use rss_mdm_windows_mdm::{Secret, soap};
     if token.is_empty() || token.len() > 32768 {
@@ -26,7 +27,7 @@ pub(crate) async fn enrollment(
         .map_err(|_| Error::Unavailable(crate::Failure::Capacity))?;
     if !issuing {
         let entra = owner(app)?;
-        let subject = entra.verify(token).await?;
+        let subject = entra.verify(token, cutoff).await?;
         let mut tx = app.access.begin_read(&entra.tenant.to_string()).await?;
         let settings = settings_in(&mut tx, &entra.tenant.to_string(), false).await?;
         settings
@@ -75,7 +76,16 @@ pub(crate) async fn enrollment(
         ),
         _ => return Err(Error::Malformed),
     };
-    let admission = admit(app, token, context("EnrollmentData"), &csr.0, profile, a).await?;
+    let admission = admit(
+        app,
+        token,
+        context("EnrollmentData"),
+        &csr.0,
+        profile,
+        a,
+        cutoff,
+    )
+    .await?;
     let d = admission.coordinates();
     let intent = crate::issuance::issue_intent(
         &app.audit_store,
@@ -91,7 +101,9 @@ pub(crate) async fn enrollment(
     let provisioning =
         crate::issuance::provision_request(app.windows()?, &intent, &certificate, d.id, &d.tenant)?;
     // Identity recheck runs before the final MDM transaction and never under its locks.
-    let admission = admission.recheck_entra(&owner(app)?.authority).await?;
+    let admission = admission
+        .recheck_entra(&owner(app)?.authority, remaining(cutoff))
+        .await?;
     crate::issuance::complete(
         &app.audit_store,
         app.windows()?,

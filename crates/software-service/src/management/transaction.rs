@@ -2,7 +2,7 @@
 //! ref: sqlx v0.9.0 sqlx-core/src/transaction.rs
 use super::{Error, Failure};
 use rss_mdm_audit_integration::{AuditStore, RequestAudit};
-use rss_request_context::TenantId;
+use rss_transactional_messaging::fence::ExecutionBinding;
 use rss_transactional_messaging_postgres::{PgError, PgRuntime, PgTransaction};
 use std::{future::Future, pin::Pin, sync::Mutex};
 #[derive(Debug, thiserror::Error)]
@@ -71,7 +71,7 @@ fn rejected(fault: Fault, failure: &Mutex<Option<Error>>, owner: TransactionOwne
 type TxFuture<'a, R> = Pin<Box<dyn Future<Output = Result<R>> + Send + 'a>>;
 async fn execute<C: Send, R: Send, F>(
     runtime: &PgRuntime,
-    tenant: TenantId,
+    binding: ExecutionBinding,
     audit: Option<(&AuditStore, &RequestAudit)>,
     context: C,
     operation: F,
@@ -86,7 +86,7 @@ where
     );
     let attempt = runtime
         .local_tx_with_context(
-            tenant,
+            binding,
             deadline,
             (context, Some(operation), &failure, audit),
             |state, tx| {
@@ -145,7 +145,7 @@ where
 pub(crate) async fn run<C: Send, R: Send, F>(
     store: &AuditStore,
     runtime: &PgRuntime,
-    tenant: TenantId,
+    binding: ExecutionBinding,
     audit: &RequestAudit,
     context: C,
     work: F,
@@ -154,11 +154,11 @@ pub(crate) async fn run<C: Send, R: Send, F>(
 where
     F: for<'a> FnOnce(&'a mut C, &'a mut PgTransaction<'_>) -> TxFuture<'a, R> + Send,
 {
-    execute(runtime, tenant, Some((store, audit)), context, work, owner).await
+    execute(runtime, binding, Some((store, audit)), context, work, owner).await
 }
 pub(crate) async fn inspect<C: Send, R: Send, F>(
     runtime: &PgRuntime,
-    tenant: TenantId,
+    binding: ExecutionBinding,
     context: C,
     work: F,
     owner: TransactionOwner,
@@ -166,7 +166,7 @@ pub(crate) async fn inspect<C: Send, R: Send, F>(
 where
     F: for<'a> FnOnce(&'a mut C, &'a mut PgTransaction<'_>) -> TxFuture<'a, R> + Send,
 {
-    execute(runtime, tenant, None, context, work, owner).await
+    execute(runtime, binding, None, context, work, owner).await
 }
 pub(crate) async fn current(
     tx: &mut PgTransaction<'_>,
@@ -175,7 +175,7 @@ pub(crate) async fn current(
     if proof.tenant_id() != tx.tenant_id().to_string() {
         return Err(crate::management::Error::Forbidden.into());
     }
-    let tenant = proof.tenant_id().to_owned();
+    let binding = proof.tenant_id().to_owned();
     let instance = proof.instance_id().to_owned();
     let snapshot = tx
         .with_connection(move |c| {
@@ -183,7 +183,7 @@ pub(crate) async fn current(
                 rss_mdm_authorization_service::lock_on(
                     rss_mdm_install_support::StorageProfile::Mdm,
                     c,
-                    &tenant,
+                    &binding,
                     &instance,
                 )
                 .await
@@ -191,7 +191,7 @@ pub(crate) async fn current(
                 Ok(rss_mdm_authorization_service::snapshot_on(
                     rss_mdm_install_support::StorageProfile::Mdm,
                     c,
-                    &tenant,
+                    &binding,
                     &instance,
                 )
                 .await)

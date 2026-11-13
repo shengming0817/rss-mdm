@@ -46,7 +46,7 @@ impl SnapshotReader {
         let profile = self.profile;
 
         self.check_in(tx, cut)?;
-        if devices.len() > 1000 {
+        if devices.len() > 1024 {
             return Err(Error::Unavailable(Failure::AssetsStorage).into());
         }
         let tenant = self.tenant.to_string();
@@ -71,7 +71,7 @@ impl SnapshotReader {
         let profile = self.profile;
 
         self.check_in(tx, cut)?;
-        if !(1..=1000).contains(&limit) {
+        if !(1..=1024).contains(&limit) {
             return Err(Error::Unavailable(Failure::AssetsStorage).into());
         }
         let tenant = self.tenant.to_string();
@@ -423,7 +423,7 @@ impl SnapshotReader {
         if let Some(from) = from {
             self.check_in(tx, from)?;
         }
-        if after < 0 || !(1..=1000).contains(&limit) || through.is_some_and(|v| v < after) {
+        if after < 0 || !(1..=1024).contains(&limit) || through.is_some_and(|v| v < after) {
             return Err(Error::Malformed.into());
         }
         let tenant = self.tenant.to_string();

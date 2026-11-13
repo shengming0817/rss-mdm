@@ -26,9 +26,17 @@ async fn read_catalog(
     cut: Option<&rss_mdm_inventory::AssetCut>,
 ) -> Result<Catalog> {
     crate::reader::assert_tenant(c, tenant).await?;
-    let rows=sqlx::query("SELECT field,definition::text AS definition FROM (SELECT DISTINCT ON(field) field,definition FROM mdm.field_versions WHERE tenant_id=$1::uuid AND ($2::jsonb IS NULL OR mdm.asset_visible($2,revision)) ORDER BY field,version DESC) latest WHERE definition IS NOT NULL ORDER BY field LIMIT 1025")
-        .bind(tenant.to_string()).bind(cut.map(rss_mdm_inventory::AssetCut::to_json)).fetch_all(c).await?;
-    ensure!(rows.len() <= 1024, "field catalog capacity");
+    let capacity = i64::try_from(rss_mdm_inventory::catalog_capacity())
+        .map_err(|_| anyhow::anyhow!("catalog capacity"))?;
+    let rows=sqlx::query("WITH candidates AS MATERIALIZED (SELECT field,definition FROM (SELECT DISTINCT ON(field) field,definition FROM mdm.field_versions WHERE tenant_id=$1::uuid AND ($2::jsonb IS NULL OR mdm.asset_visible($2,revision)) ORDER BY field,version DESC) latest WHERE definition IS NOT NULL ORDER BY field LIMIT $3), budget AS (SELECT count(*) <= $4 AND coalesce(sum(octet_length(definition::text)),0) <= $5 AS fits FROM candidates) SELECT field,CASE WHEN budget.fits THEN definition::text END AS definition,budget.fits FROM candidates CROSS JOIN budget ORDER BY field")
+        .bind(tenant.to_string()).bind(cut.map(rss_mdm_inventory::AssetCut::to_json))
+        .bind(capacity.checked_add(1).ok_or_else(|| anyhow::anyhow!("catalog capacity"))?).bind(capacity)
+        .bind(rss_mdm_inventory::MAX_CATALOG_BYTES as i64).fetch_all(c).await?;
+    ensure!(
+        rows.iter()
+            .all(|row| row.try_get::<bool, _>("fits").unwrap_or(false)),
+        "field catalog capacity"
+    );
     let fields = rows
         .into_iter()
         .map(|row| {
@@ -129,7 +137,7 @@ pub async fn publish_field_in(
         );
     }
     ensure!(
-        old.is_some() || catalog.fields().count() < 1024,
+        old.is_some() || catalog.fields().count() < rss_mdm_inventory::catalog_capacity(),
         "field catalog capacity"
     );
     let mut candidates: Vec<_> = catalog
@@ -140,7 +148,17 @@ pub async fn publish_field_in(
     candidates.push(field.clone());
     Catalog::new(candidates)?;
     let body = serde_json::to_string(field)?;
-    ensure!(body.len() <= 65536, "field definition capacity");
+    ensure!(
+        sqlx::query_scalar::<_, bool>("SELECT octet_length($1::jsonb::text) <= $2")
+            .bind(&body)
+            .bind(rss_mdm_inventory::MAX_FIELD_DEFINITION_BYTES as i64)
+            .fetch_one(&mut *c)
+            .await?,
+        "field definition capacity"
+    );
+    ensure!(sqlx::query_scalar::<_, bool>("SELECT coalesce(sum(octet_length(definition::text)),0) + octet_length($3::jsonb::text) <= $4 FROM (SELECT DISTINCT ON(field) field,definition FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field<>$2 ORDER BY field,version DESC) latest WHERE definition IS NOT NULL")
+        .bind(tenant.to_string()).bind(field.key.as_str()).bind(&body)
+        .bind(rss_mdm_inventory::MAX_CATALOG_BYTES as i64).fetch_one(&mut *c).await?, "field catalog byte capacity");
     sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,$4::jsonb)")
         .bind(tenant.to_string())
         .bind(field.key.as_str())
@@ -190,7 +208,14 @@ pub async fn register_collection_in(
     let fingerprint = definition.fingerprint()?;
     let coverage = serde_json::to_string(&definition.coverage()?)?;
     let body = serde_json::to_string(definition)?;
-    ensure!(body.len() <= 1048576, "collection contract capacity");
+    ensure!(
+        sqlx::query_scalar::<_, bool>("SELECT octet_length($1::jsonb::text) <= $2")
+            .bind(&body)
+            .bind(rss_mdm_inventory::MAX_COLLECTION_DEFINITION_BYTES as i64)
+            .fetch_one(&mut *c)
+            .await?,
+        "collection contract capacity"
+    );
     let existing:Option<String>=sqlx::query_scalar("SELECT fingerprint FROM mdm.collection_definitions WHERE tenant_id=$1::uuid AND dataset=$2 AND source=$3 AND version=$4")
         .bind(tenant.to_string()).bind(definition.dataset()).bind(definition.source().as_str()).bind(definition.version()).fetch_optional(&mut *c).await?;
     if let Some(old) = existing {

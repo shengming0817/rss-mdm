@@ -21,6 +21,7 @@ pub mod storage;
 pub use definition::{Configuration, Object, Owner, Protected};
 pub use model::{Create, NativeTarget, Task};
 pub struct Transactions {
+    pub(crate) recovery_batch: rss_device_command::BatchLimit,
     pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) changes: Arc<dyn crate::inputs::ExecutionChanges>,
     pub(crate) outbox: Arc<rss_transactional_messaging_postgres::PgOutboxStore<()>>,

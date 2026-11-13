@@ -105,19 +105,20 @@ impl Service {
     /// Register the durable input scan while resources are admitted, before exposing a runner.
     pub fn registration(
         self: Arc<Self>,
+        policy: rss_reconcile::Policy,
+        drain: std::time::Duration,
         signals: Arc<crate::installation::worker_wake::Signals>,
     ) -> rss_runtime::ManagedTaskRegistration {
-        let (task, status) = rss_runtime::ManagedTask::prepare(
-            "mdm-registration-installation-recovery",
-            Duration::from_secs(20),
-        );
+        let (task, status) =
+            rss_runtime::ManagedTask::prepare("mdm-registration-installation-recovery", drain);
         self.readiness.bind(status);
-        task.into_registration(
-            move |cancel| async move { self.run_worker(&cancel, &signals).await },
-        )
+        task.into_registration(move |cancel| async move {
+            self.run_worker(policy, &cancel, &signals).await
+        })
     }
     pub async fn run_worker(
         &self,
+        policy: rss_reconcile::Policy,
         cancel: &tokio_util::sync::CancellationToken,
         signals: &crate::installation::worker_wake::Signals,
     ) -> std::result::Result<(), rss_runtime::ShutdownError> {
@@ -126,17 +127,6 @@ impl Service {
         let force = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::MAX, &force);
         let scope = recovery_scope(self.transactions.tenant);
-        let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
-            concurrency: self.worker_concurrency,
-            lease_ttl: Duration::from_secs(30),
-            attempt_timeout: Duration::from_secs(6),
-            scan_interval: Duration::from_millis(20),
-            idle_scan_interval: Duration::from_secs(5),
-            initial_backoff: Duration::from_secs(5),
-            max_backoff: Duration::from_secs(60),
-            max_attempts: 1000,
-        })
-        .map_err(rss_runtime::ShutdownError::new)?;
         let recovery = async {
             self.run_recovery(
                 &scope,
@@ -197,7 +187,11 @@ impl Service {
     pub async fn relay_once(&self) -> std::result::Result<usize, Error> {
         let claims = self
             .outbox
-            .claim_partition_heads(std::num::NonZeroUsize::MIN, deadline())
+            .claim_partition_heads(
+                self.transactions.audit_store.binding(),
+                std::num::NonZeroUsize::MIN,
+                deadline(),
+            )
             .await
             .map_err(|e| {
                 let e = provider(e.into());
@@ -269,7 +263,7 @@ impl Service {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.identify_service("command-dispatch");
-        let result=crate::installation::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
+        let result=crate::installation::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.audit_store.binding(),&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
             let (service,id,fingerprint,audit) = ctx;
             crate::installation::transaction::prepare_audit_in(&service.transactions.audit_store,tx,audit,&[]).await?;
             let operation_id=*id;
@@ -398,7 +392,9 @@ pub(crate) async fn apply_prepared(
                 .try_get::<Option<String>, _>("recovery_after")?
                 .map(|s| stored(dc::CommandId::parse(&s)))
                 .transpose()?;
-            let candidates = command_candidates_in(tx, scope, &name, after.as_ref()).await?;
+            let candidates =
+                command_candidates_in(tx, scope, &name, after.as_ref(), service.recovery_batch)
+                    .await?;
             let mut commands = Vec::with_capacity(candidates.operations.len());
             for (id, _) in &candidates.operations {
                 let id = stored(dc::CommandId::parse(&id.to_string()))?;
@@ -528,7 +524,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
                 "management_read",
                 rss_mdm_audit_integration::AuditIntent::Routine,
             );
-            let active=crate::installation::transaction::inspect(&self.transactions.runtime,self.transactions.tenant,(self,claim.target().entity()),|ctx,tx|Box::pin(async move {
+            let active=crate::installation::transaction::inspect(&self.transactions.runtime,self.transactions.audit_store.binding(),(self,claim.target().entity()),|ctx,tx|Box::pin(async move {
             let (service,entity) = *ctx;
             let Some(device)=device(tx,entity).await? else{return Ok(false)};
             let tenant=service.transactions.tenant.to_string();
@@ -581,7 +577,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
                     .transactions
                     .runtime
                     .local_tx_with_context(
-                        self.transactions.tenant,
+                        self.transactions.audit_store.binding(),
                         rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                             control.remaining(),
                         ),
@@ -705,7 +701,10 @@ async fn command_candidates_in(
     scope: dc::Scope,
     device: &rss_mdm_agent_wire::DeviceId,
     after: Option<&dc::CommandId>,
+    limit: rss_device_command::BatchLimit,
 ) -> Result<CommandCandidates> {
+    let rows_limit = i64::from(limit.get()) + 1;
+    let limit = usize::from(limit.get());
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let after = after.map(|id| id.as_str().to_owned());
@@ -717,18 +716,18 @@ async fn command_candidates_in(
            FROM mdm_registration_tasks.operations o LEFT JOIN rss_device_command.commands c ON(c.tenant_id,c.command_id)=(o.tenant_id,o.id::text)
            WHERE o.tenant_id=$1::uuid AND o.device=$2 AND ($3::text IS NULL OR o.id::text COLLATE "C">$3 COLLATE "C")
              AND (c.terminal_at IS NULL OR c.version<>o.observed_command_version OR c.device_id IS DISTINCT FROM $4 OR c.outbox_domain IS DISTINCT FROM $5)
-           ORDER BY o.id::text COLLATE "C" LIMIT 65)
+           ORDER BY o.id::text COLLATE "C" LIMIT $6)
           UNION ALL
           (SELECT c.command_id,NULL::uuid,NULL::bigint FROM rss_device_command.commands c
            LEFT JOIN mdm_registration_tasks.operations o ON(o.tenant_id,o.id::text,o.device)=(c.tenant_id,c.command_id,$2)
            WHERE c.tenant_id=$1::uuid AND c.device_id=$4 AND c.outbox_domain=$5 AND o.id IS NULL
              AND ($3::text IS NULL OR c.command_id COLLATE "C">$3 COLLATE "C")
-           ORDER BY c.command_id COLLATE "C" LIMIT 65)
-        ) SELECT command_id,operation,observed FROM candidates ORDER BY command_id COLLATE "C" LIMIT 65"#)
-        .bind(tenant).bind(device.into_uuid()).bind(after).bind(command_device).bind(domain).fetch_all(c).await
+           ORDER BY c.command_id COLLATE "C" LIMIT $6)
+        ) SELECT command_id,operation,observed FROM candidates ORDER BY command_id COLLATE "C" LIMIT $6"#)
+        .bind(tenant).bind(device.into_uuid()).bind(after).bind(command_device).bind(domain).bind(rows_limit).fetch_all(c).await
     })).await?;
-    let more = rows.len() > 64;
-    rows.truncate(64);
+    let more = rows.len() > limit;
+    rows.truncate(limit);
     let after = if more {
         rows.last().map(|r| r.0.clone())
     } else {
@@ -761,7 +760,7 @@ impl Service {
             let mut after = String::new();
             loop {
                 let page = crate::installation::transaction::inspect(
-                &transactions.runtime, tenant, (transactions, scope.clone(), after.clone()),
+                &transactions.runtime, transactions.audit_store.binding(), (transactions, scope.clone(), after.clone()),
                 move |(transactions, scope, after), tx| Box::pin(async move {
                     let t = tx.tenant_id().to_string();
                     let domain = scope.reconciler().to_owned();

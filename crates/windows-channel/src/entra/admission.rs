@@ -39,9 +39,10 @@ pub(super) async fn admit(
     csr: &[u8],
     profile: WindowsProfile,
     a: &RequestAudit,
+    cutoff: rss_request_context::Deadline,
 ) -> Result<Admission, Error> {
     let entra = owner(app)?;
-    let subject = entra.verify(token).await?;
+    let subject = entra.verify(token, cutoff).await?;
     let claims = subject.claims().map_err(|_| Error::Unauthorized)?;
     let device = claims.device.ok_or(Error::Unauthorized)?;
     let user = claims.user;
@@ -52,7 +53,7 @@ pub(super) async fn admit(
     consent(&mut tx, entra, &subject, &settings, opaque).await?;
     tx.rollback().await.map_err(db)?;
     // No MDM locks held while Identity may create/revalidate the canonical account.
-    let proof = identity::resolve(&entra.authority, subject).await?;
+    let proof = identity::resolve(&entra.authority, subject, remaining(cutoff)).await?;
     rss_mdm_authorization_service::context::bind_native_audit(&proof, a)?;
     let proposed = Uuid::new_v4();
     let digest = crate::enrollment::digest(&(

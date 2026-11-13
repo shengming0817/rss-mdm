@@ -1,6 +1,7 @@
 //! Startup-only resource arithmetic. RSS owns task admission, claims and execution.
 use crate::{ConfigIssue, Error, config::Config};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 pub(crate) const IDENTITY_CONNECTIONS: u32 = 10;
 pub(crate) const AUXILIARY_CONNECTIONS: u32 = 10;
@@ -13,42 +14,218 @@ pub(crate) const CONTENT_CONNECTIONS: u32 = 4;
 #[serde(deny_unknown_fields)]
 pub struct BackgroundConfig {
     pub device_concurrency: usize,
+    pub scheduling: SchedulingConfig,
+    pub command_recovery_batch_size: u16,
+    pub command_supersede_batch_size: u16,
     pub database_connection_budget: u32,
     /// Maximum tenant host processes sharing this deployment's database allocation.
     pub database_host_instances: u32,
 }
-impl BackgroundConfig {
-    /// Device tasks share the access source runtime with foreground and fixed workers.
-    pub(crate) fn access_connections(&self) -> u32 {
-        self.device_concurrency as u32 + 8
-    }
-    /// Execution shares its runtime with Command workers, relay and foreground requests.
-    pub(crate) fn command_connections(&self) -> u32 {
-        self.device_concurrency as u32 + 8
-    }
-    pub(crate) fn inventory_connections(&self) -> u32 {
-        (rss_mdm_group_service::runtime::CONCURRENCY
-            + rss_mdm_inventory_service::assets::runtime::CONCURRENCY
-            + rss_mdm_compliance_service::runtime::CONCURRENCY) as u32
-            + 2
-    }
-    pub(crate) fn scope_connections(&self) -> u32 {
-        rss_mdm_scope_service::runtime::CONCURRENCY as u32 + 2
-    }
-    pub(crate) fn policy_connections(&self) -> u32 {
-        self.device_concurrency as u32
-            + rss_mdm_policy_service::worker::EVENT_CONCURRENCY as u32
-            + 2
-    }
-    pub(crate) fn telemetry_control_connections(&self) -> u32 {
-        rss_mdm_telemetry_service::CONTROL_WORKERS + 2
-    }
-
-    pub(crate) fn validate(&self, config: &Config) -> Result<(), Error> {
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerPolicy {
+    pub claim_batch_size: usize,
+    pub scan_budget: u32,
+    pub lease_ms: u64,
+    pub drain_ms: u64,
+    pub attempt_ms: u64,
+    pub scan_interval_ms: u64,
+    pub idle_scan_ms: u64,
+    pub initial_backoff_ms: u64,
+    pub max_backoff_ms: u64,
+    pub max_attempts: u32,
+}
+impl WorkerPolicy {
+    fn compile(&self, concurrency: usize) -> Result<rss_reconcile::Policy, Error> {
         let bad = || Error::Configuration(ConfigIssue::Budget);
-        if !(1..=64).contains(&self.device_concurrency) || self.database_host_instances == 0 {
+        for ms in [
+            self.drain_ms,
+            self.lease_ms,
+            self.attempt_ms,
+            self.scan_interval_ms,
+            self.idle_scan_ms,
+            self.initial_backoff_ms,
+            self.max_backoff_ms,
+        ] {
+            if ms == 0
+                || i64::try_from(ms).is_err()
+                || rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
+                    .checked_add(Duration::from_millis(ms))
+                    .is_none()
+            {
+                return Err(bad());
+            }
+        }
+        if self.drain_ms < self.attempt_ms {
             return Err(bad());
         }
+        i32::try_from(self.scan_budget).map_err(|_| bad())?;
+        rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
+            concurrency,
+            claim_batch_size: self.claim_batch_size,
+            scan_budget: self.scan_budget,
+            lease_ttl: Duration::from_millis(self.lease_ms),
+            attempt_timeout: Duration::from_millis(self.attempt_ms),
+            scan_interval: Duration::from_millis(self.scan_interval_ms),
+            idle_scan_interval: Duration::from_millis(self.idle_scan_ms),
+            initial_backoff: Duration::from_millis(self.initial_backoff_ms),
+            max_backoff: Duration::from_millis(self.max_backoff_ms),
+            max_attempts: self.max_attempts,
+        })
+        .map_err(|_| bad())
+    }
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchedulingConfig {
+    pub device: WorkerPolicy,
+    pub commands: WorkerPolicy,
+    pub tasks: WorkerPolicy,
+    pub planning: WorkerPolicy,
+    pub policy: WorkerPolicy,
+}
+impl SchedulingConfig {
+    pub(crate) fn installation() -> Self {
+        let planning = WorkerPolicy {
+            claim_batch_size: 64,
+            scan_budget: 64,
+            lease_ms: 30000,
+            drain_ms: 20000,
+            attempt_ms: 6000,
+            scan_interval_ms: 20,
+            idle_scan_ms: 5000,
+            initial_backoff_ms: 1000,
+            max_backoff_ms: 30000,
+            max_attempts: 1000,
+        };
+        let tasks = WorkerPolicy {
+            initial_backoff_ms: 5000,
+            max_backoff_ms: 60000,
+            ..planning.clone()
+        };
+        Self {
+            device: WorkerPolicy {
+                drain_ms: 30000,
+                attempt_ms: 8000,
+                idle_scan_ms: 60000,
+                ..planning.clone()
+            },
+            commands: WorkerPolicy {
+                idle_scan_ms: 60000,
+                ..tasks.clone()
+            },
+            tasks,
+            policy: WorkerPolicy {
+                idle_scan_ms: 60000,
+                ..planning.clone()
+            },
+            planning,
+        }
+    }
+}
+#[derive(Clone, Copy)]
+pub(crate) struct Compiled {
+    pub device_drain: Duration,
+    pub commands_drain: Duration,
+    pub tasks_drain: Duration,
+    pub planning_drain: Duration,
+    pub policy_drain: Duration,
+    pub command_recovery_batch: rss_device_command::BatchLimit,
+    pub command_supersede_batch: rss_device_command::BatchLimit,
+    pub access_connections: u32,
+    pub command_connections: u32,
+    pub inventory_connections: u32,
+    pub scope_connections: u32,
+    pub policy_connections: u32,
+    pub telemetry_control_connections: u32,
+    pub device: rss_reconcile::Policy,
+    pub commands: rss_reconcile::Policy,
+    pub tasks: rss_reconcile::Policy,
+    pub inventory: rss_reconcile::Policy,
+    pub group: rss_reconcile::Policy,
+    pub scope: rss_reconcile::Policy,
+    pub compliance: rss_reconcile::Policy,
+    pub policy: rss_reconcile::Policy,
+    pub policy_events: rss_reconcile::Policy,
+}
+impl BackgroundConfig {
+    pub(crate) fn compile(&self, config: &Config) -> Result<Compiled, Error> {
+        let bad = || Error::Configuration(ConfigIssue::Budget);
+        if self.device_concurrency == 0
+            || self.device_concurrency > tokio::sync::Semaphore::MAX_PERMITS
+            || self.database_host_instances == 0
+        {
+            return Err(bad());
+        }
+        let device = self.scheduling.device.compile(self.device_concurrency)?;
+        let commands = self.scheduling.commands.compile(self.device_concurrency)?;
+        let tasks = self.scheduling.tasks.compile(self.device_concurrency)?;
+        let inventory = self
+            .scheduling
+            .planning
+            .compile(rss_mdm_inventory_service::assets::runtime::CONCURRENCY)?;
+        let group = self
+            .scheduling
+            .planning
+            .compile(rss_mdm_group_service::runtime::CONCURRENCY)?;
+        let scope = self
+            .scheduling
+            .planning
+            .compile(rss_mdm_scope_service::runtime::CONCURRENCY)?;
+        let compliance = self
+            .scheduling
+            .planning
+            .compile(rss_mdm_compliance_service::runtime::CONCURRENCY)?;
+        let policy = self.scheduling.policy.compile(self.device_concurrency)?;
+        let policy_events = self
+            .scheduling
+            .policy
+            .compile(rss_mdm_policy_service::worker::EVENT_CONCURRENCY)?;
+        let sum = |values: &[usize], extra: u32| -> Result<u32, Error> {
+            values
+                .iter()
+                .try_fold(extra, |n, value| n.checked_add(u32::try_from(*value).ok()?))
+                .ok_or_else(bad)
+        };
+        let compiled = Compiled {
+            device_drain: Duration::from_millis(self.scheduling.device.drain_ms),
+            commands_drain: Duration::from_millis(self.scheduling.commands.drain_ms),
+            tasks_drain: Duration::from_millis(self.scheduling.tasks.drain_ms),
+            planning_drain: Duration::from_millis(self.scheduling.planning.drain_ms),
+            policy_drain: Duration::from_millis(self.scheduling.policy.drain_ms),
+            command_recovery_batch: rss_device_command::BatchLimit::new(
+                self.command_recovery_batch_size,
+            )
+            .map_err(|_| bad())?,
+            command_supersede_batch: rss_device_command::BatchLimit::new(
+                self.command_supersede_batch_size,
+            )
+            .map_err(|_| bad())?,
+            access_connections: sum(&[device.concurrency()], 8)?,
+            command_connections: sum(&[commands.concurrency()], 8)?,
+            inventory_connections: sum(
+                &[
+                    group.concurrency(),
+                    inventory.concurrency(),
+                    compliance.concurrency(),
+                ],
+                2,
+            )?,
+            scope_connections: sum(&[scope.concurrency()], 2)?,
+            policy_connections: sum(&[policy.concurrency(), policy_events.concurrency()], 2)?,
+            telemetry_control_connections: rss_mdm_telemetry_service::CONTROL_WORKERS
+                .checked_add(2)
+                .ok_or_else(bad)?,
+            device,
+            commands,
+            tasks,
+            inventory,
+            group,
+            scope,
+            compliance,
+            policy,
+            policy_events,
+        };
         // One entry per physical pool. Audit and domain adapters borrow these pools.
         let mut pools = vec![
             ("access", 4),
@@ -57,13 +234,13 @@ impl BackgroundConfig {
             ("observation", 4),
             ("projection", 4),
             ("identity", IDENTITY_CONNECTIONS),
-            ("access-source", self.access_connections()),
-            ("inventory-owner", self.inventory_connections()),
-            ("scope-owner", self.scope_connections()),
-            ("policy-owner", self.policy_connections()),
+            ("access-source", compiled.access_connections),
+            ("inventory-owner", compiled.inventory_connections),
+            ("scope-owner", compiled.scope_connections),
+            ("policy-owner", compiled.policy_connections),
             ("resource-owner", 2),
             ("software-owner", 2),
-            ("command", self.command_connections()),
+            ("command", compiled.command_connections),
             ("execution-scheduler", SCHEDULER_CONNECTIONS),
             ("business-scheduler", SCHEDULER_CONNECTIONS),
             ("notifications", 1),
@@ -92,13 +269,15 @@ impl BackgroundConfig {
                 ("tenant-registry-source", IDENTITY_CONNECTIONS),
                 (
                     "tenant-provisioning",
-                    PROVISIONING_SLOTS * PROVISIONING_CONNECTIONS,
+                    PROVISIONING_SLOTS
+                        .checked_mul(PROVISIONING_CONNECTIONS)
+                        .ok_or_else(bad)?,
                 ),
             ]);
         }
         if let Some(telemetry) = &config.telemetry {
             pools.push(("telemetry", telemetry.connections.get()));
-            pools.push(("telemetry-control", self.telemetry_control_connections()));
+            pools.push(("telemetry-control", compiled.telemetry_control_connections));
             if matches!(
                 telemetry.backend,
                 crate::telemetry::Storage::TimescaleDedicated { .. }
@@ -114,6 +293,6 @@ impl BackgroundConfig {
         if total > self.database_connection_budget {
             return Err(bad());
         }
-        Ok(())
+        Ok(compiled)
     }
 }

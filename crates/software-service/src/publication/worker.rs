@@ -32,7 +32,7 @@ impl PublicationService {
             return Err(Error::Input);
         }
         let after = after.to_owned();
-        settle(self.runtime.local_tx_with_context(self.tenant(),budget(cutoff),(self,after),|(s,after),tx|Box::pin(async move {
+        settle(self.runtime.local_tx_with_context(self.binding,budget(cutoff),(self,after),|(s,after),tx|Box::pin(async move {
             let tenant=tx.tenant_id().to_string();let after=after.clone();
             let keys:Vec<String>=tx.with_connection(move|c|Box::pin(async move {
                 sqlx::query_scalar("SELECT id FROM (SELECT t.id FROM mdm_software_composition.targets t WHERE t.tenant_id=$1::uuid AND left(t.id,2)='p:' AND NOT EXISTS(SELECT 1 FROM mdm_software_composition.projections p WHERE p.tenant_id=t.tenant_id AND encode(p.publication,'hex')=substring(t.id,3,64)) UNION ALL SELECT id FROM mdm_software_composition.withdrawals WHERE tenant_id=$1::uuid AND NOT complete) pending WHERE id COLLATE \"C\">$2 ORDER BY id COLLATE \"C\" LIMIT $3").bind(tenant).bind(after).bind(limit as i64).fetch_all(c).await

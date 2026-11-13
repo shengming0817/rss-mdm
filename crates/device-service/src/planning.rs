@@ -92,7 +92,7 @@ impl ObjectReader for PlanningObjects {
         limit: usize,
     ) -> Pending<'a, Vec<ObjectChange>> {
         Box::pin(async move {
-            if !(1..=1000).contains(&limit) || after < 0 || through < after {
+            if !(1..=1024).contains(&limit) || after < 0 || through < after {
                 return Err(storage("change window"));
             }
             let rows:Vec<ChangeRow>=sqlx::query_as("SELECT revision,object_kind,object_id,old_devices,new_devices,kind FROM mdm_devices.object_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 ORDER BY revision LIMIT $4")

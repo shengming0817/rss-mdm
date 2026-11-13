@@ -123,7 +123,7 @@ impl Compliance {
         crate::transaction::run_budget(
             &self.audit_store,
             &self.runtime,
-            self.tenant(),
+            self.audit_store.binding(),
             audit,
             (self, command, audit, proof, candidate.as_ref()),
             |ctx, tx| {
@@ -443,7 +443,7 @@ impl Compliance {
         &self,
         budget: std::time::Duration,
     ) -> std::result::Result<[u64; 5], Error> {
-        self.runtime.local_tx(self.tenant,rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),|tx|Box::pin(async move{
+        self.runtime.local_tx(self.audit_store.binding(),rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),|tx|Box::pin(async move{
             let t=tx.tenant_id().to_string();
             tx.with_connection(move|c|Box::pin(async move{
                 let row:(i64,i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM (SELECT 1 FROM mdm_compliance.runs WHERE tenant_id=$1::uuid AND NOT completed AND NOT started LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_compliance.runs WHERE tenant_id=$1::uuid AND NOT completed AND started LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_compliance.runs WHERE tenant_id=$1::uuid AND completed AND failure IS NULL LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_compliance.runs WHERE tenant_id=$1::uuid AND failure IS NOT NULL AND failure<>'superseded' LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_compliance.runs WHERE tenant_id=$1::uuid AND failure='superseded' LIMIT 1001) p)").bind(t).fetch_one(c).await?;

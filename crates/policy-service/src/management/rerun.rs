@@ -22,7 +22,7 @@ impl Policies {
         );
 
         proof.manage(Permission::PolicyWrite)?;
-        run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,op,audit),|ctx,tx|Box::pin(async move {
+        run(&self.audit_store,&self.runtime,self.audit_store.binding(),audit,(self,proof,op,audit),|ctx,tx|Box::pin(async move {
             let (s,proof,op,audit)=*ctx;
             let snapshot=crate::action_admission::current(tx,proof).await?;
             snapshot.require(proof,Permission::PolicyWrite,None)?;

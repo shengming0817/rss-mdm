@@ -28,7 +28,50 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 pub mod diagnostics;
-const BUDGET: Duration = Duration::from_secs(5);
+/// Resource bounds for this owner, compiled by the host before opening pools.
+#[derive(Clone, Copy)]
+pub struct Policy {
+    startup: Duration,
+    pass: Duration,
+    drain: Duration,
+    delivery: BatchLimit,
+    delivery_bytes: i64,
+    run: RunLimit,
+}
+impl Policy {
+    pub fn new(
+        startup: Duration,
+        pass: Duration,
+        drain: Duration,
+        delivery: u32,
+        delivery_bytes: u64,
+        batch: u32,
+        events: u64,
+    ) -> Result<Self, Error> {
+        if [startup, pass, drain]
+            .iter()
+            .any(|v| v.is_zero() || v.as_millis() > i64::MAX as u128)
+        {
+            return Err(Error::Malformed);
+        }
+        let delivery_bytes = i64::try_from(delivery_bytes).map_err(|_| Error::Malformed)?;
+        if delivery_bytes == 0 {
+            return Err(Error::Malformed);
+        }
+        Ok(Self {
+            startup,
+            pass,
+            drain,
+            delivery_bytes,
+            delivery: BatchLimit::new(delivery).map_err(|_| Error::Malformed)?,
+            run: RunLimit::new(
+                BatchLimit::new(batch).map_err(|_| Error::Malformed)?,
+                events,
+            )
+            .map_err(|_| Error::Malformed)?,
+        })
+    }
+}
 
 #[derive(
     schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize,
@@ -57,19 +100,21 @@ pub struct DeliveryStatus {
 pub struct Clock {
     now: Arc<dyn rss_observation::Clock>,
     origin: Instant,
+    policy: Policy,
 }
 impl Clock {
-    pub fn new(now: Arc<dyn rss_observation::Clock>) -> Self {
+    pub fn new(now: Arc<dyn rss_observation::Clock>, policy: Policy) -> Self {
         Self {
+            policy,
             origin: now.now(),
             now,
         }
     }
     fn deadline(&self) -> Deadline {
-        Deadline::at(self.now.now() + BUDGET)
+        Deadline::at(self.now.now() + self.policy.pass)
     }
     pub fn cutoff(&self) -> Duration {
-        rss_projection::Timer::now(self) + BUDGET
+        rss_projection::Timer::now(self) + self.policy.pass
     }
 }
 impl rss_observation::Clock for Clock {
@@ -109,14 +154,15 @@ pub struct ObservationResource {
 }
 impl ObservationResource {
     pub async fn open(options: PgConnectOptions, clock: Clock) -> Result<Self, Error> {
-        let pool = pool(options).await?;
-        match Observation::new(pool.clone(), clock.clone(), clock.deadline()).await {
+        let deadline = Deadline::at(clock.now.now() + clock.policy.startup);
+        let pool = pool(options, clock.policy.startup).await?;
+        match Observation::new(pool.clone(), clock.clone(), deadline).await {
             Ok(store) => Ok(Self {
                 store: Arc::new(store),
                 clock,
             }),
             Err(_) => {
-                close_pool(&pool).await?;
+                close_pool(&pool, clock.policy.drain).await?;
                 Err(unavailable())
             }
         }
@@ -127,11 +173,11 @@ impl ManagedResource for ObservationResource {
         "inventory-observation"
     }
     fn shutdown_timeout(&self) -> Duration {
-        BUDGET
+        self.clock.policy.drain
     }
     async fn shutdown(&self) -> Result<(), ShutdownError> {
         self.store
-            .close(self.clock.deadline())
+            .close(Deadline::at(self.clock.now.now() + self.clock.policy.drain))
             .await
             .map_err(|_| shutdown_error())
     }
@@ -148,7 +194,7 @@ impl ProjectionResource {
     ) -> Result<Self, Error> {
         let pool = control
             .run(async {
-                pool(options)
+                pool(options, clock.policy.startup)
                     .await
                     .map_err(|_| rss_projection::Error::new(rss_projection::ErrorKind::Unavailable))
             })
@@ -173,7 +219,7 @@ impl ProjectionResource {
                 clock,
             }),
             Err(_) => {
-                close_pool(&pool).await?;
+                close_pool(&pool, clock.policy.drain).await?;
                 Err(unavailable())
             }
         }
@@ -184,11 +230,15 @@ impl ManagedResource for ProjectionResource {
         "inventory-projection"
     }
     fn shutdown_timeout(&self) -> Duration {
-        BUDGET
+        self.clock.policy.drain
     }
     async fn shutdown(&self) -> Result<(), ShutdownError> {
         let token = CancellationToken::new();
-        let control = Control::new(&self.clock, self.clock.cutoff(), &token);
+        let control = Control::new(
+            &self.clock,
+            rss_projection::Timer::now(&self.clock) + self.clock.policy.drain,
+            &token,
+        );
         if self.store.close(&control).await == CloseOutcome::Drained {
             Ok(())
         } else {
@@ -196,20 +246,20 @@ impl ManagedResource for ProjectionResource {
         }
     }
 }
-async fn pool(options: PgConnectOptions) -> Result<PgPool, Error> {
+async fn pool(options: PgConnectOptions, timeout: Duration) -> Result<PgPool, Error> {
     tokio::time::timeout(
-        BUDGET,
+        timeout,
         PgPoolOptions::new()
             .max_connections(4)
-            .acquire_timeout(BUDGET)
+            .acquire_timeout(timeout)
             .connect_with(options),
     )
     .await
     .map_err(|_| unavailable())?
     .map_err(|_| unavailable())
 }
-async fn close_pool(pool: &PgPool) -> Result<(), Error> {
-    tokio::time::timeout(BUDGET, pool.close())
+async fn close_pool(pool: &PgPool, timeout: Duration) -> Result<(), Error> {
+    tokio::time::timeout(timeout, pool.close())
         .await
         .map_err(|_| unavailable())
 }
@@ -312,7 +362,7 @@ impl InventoryRuntime {
         self: Arc<Self>,
         notify: Arc<tokio::sync::Notify>,
     ) -> ManagedTaskRegistration {
-        let (task, status) = ManagedTask::prepare("mdm-inventory", Duration::from_secs(10));
+        let (task, status) = ManagedTask::prepare("mdm-inventory", self.clock.policy.drain);
         self.readiness
             .task
             .set(status)
@@ -484,7 +534,11 @@ impl InventoryRuntime {
             let reports = match expired {
                 Ok(expired) => tokio::time::timeout_at(
                     deadline.instant().into(),
-                    self.delivery.pending_reports(&self.tenant.to_string()),
+                    self.delivery.pending_reports(
+                        &self.tenant.to_string(),
+                        self.clock.policy.delivery,
+                        self.clock.policy.delivery_bytes,
+                    ),
                 )
                 .await
                 .map(|result| result.map(|reports| (expired, reports))),
@@ -510,14 +564,15 @@ impl InventoryRuntime {
             if token.is_cancelled() {
                 return Ok(());
             }
-            let control = Control::new(&self.clock, self.clock.cutoff(), token);
-            let run = rss_projection::run(
-                source.as_ref(),
-                &execution,
-                &control,
-                RunLimit::new(BatchLimit::new(64).expect("bounded batch"), 64)
-                    .expect("bounded pass"),
+            let control = Control::new(
+                &self.clock,
+                deadline
+                    .instant()
+                    .saturating_duration_since(self.clock.origin),
+                token,
             );
+            let run =
+                rss_projection::run(source.as_ref(), &execution, &control, self.clock.policy.run);
             {
                 let mut latest = self
                     .latest_projection
@@ -575,7 +630,12 @@ impl InventoryRuntime {
         }
     }
     /// Called only after product permission and current scope resolution. Inspect authoritative RSS facts.
-    pub async fn inspect(&self, run: &Run) -> Result<DeliveryStatus, Error> {
+    pub async fn inspect(
+        &self,
+        run: &Run,
+        deadline: Deadline,
+        cancellation: rss_request_context::Cancellation<'_>,
+    ) -> Result<DeliveryStatus, Error> {
         if run.scope.tenant() != self.tenant {
             return Err(Error::Forbidden);
         }
@@ -585,64 +645,79 @@ impl InventoryRuntime {
                 projection: ProjectionStatus::NotApplicable,
             });
         };
-        self.inspect_report(&run.scope, batch).await
+        self.inspect_report(&run.scope, batch, deadline, cancellation)
+            .await
     }
 
     pub async fn inspect_report(
         &self,
         scope: &Scope,
         batch: &rss_observation::Batch,
+        deadline: Deadline,
+        cancellation: rss_request_context::Cancellation<'_>,
     ) -> Result<DeliveryStatus, Error> {
         if scope.tenant() != self.tenant {
             return Err(Error::Forbidden);
         }
-        let grant =
-            ReadGrant::verify(&ReadAuthority(scope), scope.clone()).map_err(|_| unavailable())?;
-        let receipt = self
-            .observation
-            .lookup(&grant, batch.id(), self.clock.deadline())
-            .await
-            .map_err(|_| unavailable())?;
-        let event = batch
-            .fingerprint(scope)
-            .map_err(|_| unavailable())?
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
         let token = CancellationToken::new();
-        let control = Control::new(&self.clock, self.clock.cutoff(), &token);
-        let query = rss_projection::ReceiptQuery::new(
-            rss_mdm_inventory_postgres::projection_scope(self.tenant),
-            rss_mdm_inventory_postgres::definition(),
-            event,
-        )
-        .map_err(|_| unavailable())?;
-        let projected = self
-            .projection
-            .receipt_status(&query, &control)
-            .await
-            .map_err(|_| unavailable())?
-            .is_settled();
-        let applicable = receipt
-            .as_ref()
-            .is_some_and(|r| r.decision().outcome().is_applicable());
-        let received = receipt.is_some();
-        Ok(DeliveryStatus {
-            receipt: receipt.map(|r| ReceiptStatus {
-                batch_id: r.batch().id().as_str().to_owned(),
-                received_at: r.received_at(),
-                decision: r.decision().clone(),
-            }),
-            projection: if projected {
-                ProjectionStatus::Projected
-            } else if applicable {
-                ProjectionStatus::Pending
-            } else if !received && matches!(batch.body(), rss_observation::Body::Snapshot(_)) {
-                ProjectionStatus::PendingReceipt
-            } else {
-                ProjectionStatus::NotApplicable
-            },
-        })
+        let work = async {
+            let grant = ReadGrant::verify(&ReadAuthority(scope), scope.clone())
+                .map_err(|_| unavailable())?;
+            let receipt = self
+                .observation
+                .lookup(&grant, batch.id(), deadline)
+                .await
+                .map_err(|_| unavailable())?;
+            let event = batch
+                .fingerprint(scope)
+                .map_err(|_| unavailable())?
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
+            let control = Control::new(
+                &self.clock,
+                deadline
+                    .instant()
+                    .saturating_duration_since(self.clock.origin),
+                &token,
+            );
+            let query = rss_projection::ReceiptQuery::new(
+                rss_mdm_inventory_postgres::projection_scope(self.tenant),
+                rss_mdm_inventory_postgres::definition(),
+                event,
+            )
+            .map_err(|_| unavailable())?;
+            let projected = self
+                .projection
+                .receipt_status(&query, &control)
+                .await
+                .map_err(|_| unavailable())?
+                .is_settled();
+            let applicable = receipt
+                .as_ref()
+                .is_some_and(|r| r.decision().outcome().is_applicable());
+            let received = receipt.is_some();
+            Ok(DeliveryStatus {
+                receipt: receipt.map(|r| ReceiptStatus {
+                    batch_id: r.batch().id().as_str().to_owned(),
+                    received_at: r.received_at(),
+                    decision: r.decision().clone(),
+                }),
+                projection: if projected {
+                    ProjectionStatus::Projected
+                } else if applicable {
+                    ProjectionStatus::Pending
+                } else if !received && matches!(batch.body(), rss_observation::Body::Snapshot(_)) {
+                    ProjectionStatus::PendingReceipt
+                } else {
+                    ProjectionStatus::NotApplicable
+                },
+            })
+        };
+        tokio::select! { biased;
+            () = cancellation.cancelled() => { token.cancel(); Err(unavailable()) },
+            result = work => result,
+        }
     }
 }
 

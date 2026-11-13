@@ -35,7 +35,7 @@ impl Service {
         let rejected = rejection.clone();
         let (frozen, profile_digest) = self
             .runtime
-            .local_tx(self.tenant, crate::deadline(), move |tx| {
+            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
                 Box::pin(async move {
                     let input = prepared_input;
                     let proof = prepared_actor;

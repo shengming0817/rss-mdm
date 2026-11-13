@@ -15,7 +15,7 @@ impl Service {
         let service = self.clone();
         let principal = principal.clone();
         self.runtime
-            .local_tx(self.tenant, crate::deadline(), move |tx| {
+            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move { Ok(directory_on(&service, c, &principal).await) })
@@ -44,7 +44,7 @@ impl Service {
         let service = self.clone();
         let principal = principal.clone();
         self.runtime
-            .local_tx(self.tenant, crate::deadline(), move |tx| {
+            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
@@ -110,7 +110,7 @@ impl Service {
         let service = self.clone();
         let principal = principal.clone();
         self.runtime
-            .local_tx(self.tenant, crate::deadline(), move |tx| {
+            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {

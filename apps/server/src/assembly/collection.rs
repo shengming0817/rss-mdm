@@ -3,7 +3,6 @@ use super::host_storage::Storage;
 use crate::Error;
 use std::sync::Arc;
 pub(crate) async fn assemble(
-    config: &crate::config::Config,
     storage: &Storage,
     source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     protection: Arc<rss_mdm_native_protection::Protector>,
@@ -39,7 +38,6 @@ pub(crate) async fn assemble(
             collections.clone(),
             storage.reconcile.clone(),
             storage.worker_budget.clone(),
-            config.background.device_concurrency,
         )?,
     );
     Ok((collections, collection_work))

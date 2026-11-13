@@ -123,6 +123,8 @@ async fn heads(
             .map(|(t, _)| t.to_string())
             .collect::<Vec<_>>(),
         &db.options()?,
+        &config.identity_policy.audit_budget()?,
+        config.identity_policy.audit_limit()?,
     )
     .await
     .map_err(storage)

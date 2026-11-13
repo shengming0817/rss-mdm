@@ -395,7 +395,7 @@ impl PublicationDirectory {
     ) -> std::result::Result<(Value, bool), Error> {
         proof.manage(permission)?;
         crate::management::transaction::run(
-            &self.audit_store, &self.runtime, self.tenant, audit,
+            &self.audit_store, &self.runtime, self.audit_store.binding(), audit,
             (self, source, id, request, audit, proof),
             |ctx, tx| Box::pin(async move {
                 let (s, source, id, request, audit, proof) = *ctx;
@@ -436,7 +436,7 @@ impl PublicationDirectory {
 impl PublicationDirectory {
     async fn coordinate(&self, id: &str) -> Result<(String, String, String), Error> {
         let key = rel::PublicationKey::new(self.tenant, id).map_err(|_| Error::Malformed)?;
-        crate::management::transaction::inspect(&self.runtime,self.tenant,key,|key,tx|Box::pin(async move {
+        crate::management::transaction::inspect(&self.runtime,self.audit_store.binding(),key,|key,tx|Box::pin(async move {
             let tenant=tx.tenant_id().to_string();let key=key.value().to_owned();
             let row=tx.with_connection(move|c|Box::pin(async move {
                 sqlx::query_as::<_,(String,String,String)>("SELECT convert_from(document,'UTF8')::jsonb->>'target',resource,version FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND record=$2")
@@ -456,7 +456,7 @@ impl PublicationDirectory {
         id: uuid::Uuid,
     ) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
         p.manage(Permission::ReleaseRead)?;
-        crate::management::transaction::inspect(&self.runtime,self.tenant,(self,p),|(_,p),tx|Box::pin(async move{
+        crate::management::transaction::inspect(&self.runtime,self.audit_store.binding(),(self,p),|(_,p),tx|Box::pin(async move{
             crate::management::transaction::current(tx,p).await?.require(p,Permission::ReleaseRead,None)?;
             let tenant=p.tenant_id().to_owned();let actor=p.principal_id().to_owned();let instance=p.instance_id().to_owned();
             let raw:Option<Value>=tx.with_connection(move|c|Box::pin(async move{

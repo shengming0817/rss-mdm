@@ -5,11 +5,11 @@ use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_mdm_query::directory::{Query, Schema};
 use serde_json::Value;
 pub static TENANTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<Tenant>("tenants", &["tenantId"], 100, 1000, &[])
+    Schema::derived::<Tenant>("tenants", &["tenantId"], 100, 1024, &[])
         .expect("Public directory model")
 });
 pub static PROVISIONINGS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<Receipt>("provisionings", &["operationId"], 100, 1000, &[])
+    Schema::derived::<Receipt>("provisionings", &["operationId"], 100, 1024, &[])
         .expect("Public directory model")
 });
 fn error(e: rss_mdm_query::Error) -> Reason {

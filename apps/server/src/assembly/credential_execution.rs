@@ -15,6 +15,7 @@ pub(crate) struct Assembly {
 #[expect(clippy::too_many_arguments, reason = "explicit shared host resources")]
 pub(crate) async fn assemble(
     config: &crate::config::Config,
+    background: &crate::background::Compiled,
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -30,6 +31,7 @@ pub(crate) async fn assemble(
         },
     ));
     let native_materials = Arc::new(native::Materials {
+        supersede_batch: background.command_supersede_batch,
         credentials: credentials.clone(),
         protection: protection.clone(),
         apple_profiles: apple.clone(),
@@ -79,14 +81,8 @@ pub(crate) async fn assemble(
             .map_err(super::owner_errors::credential)?,
         ));
         worker.push(Arc::new(
-            tasks::worker::Worker::new(
-                profile,
-                service.clone(),
-                reconcile.clone(),
-                budget.clone(),
-                config.background.device_concurrency,
-            )
-            .map_err(super::owner_errors::credential)?,
+            tasks::worker::Worker::new(profile, service.clone(), reconcile.clone(), budget.clone())
+                .map_err(super::owner_errors::credential)?,
         ));
         tasks.push(service);
     }
@@ -114,7 +110,7 @@ pub(crate) async fn assemble(
         outbox,
         reconcile,
         budget.clone(),
-        config.background.device_concurrency,
+        background.command_recovery_batch,
     ));
     let channel = Arc::new(rss_mdm_apple_channel::flow_store::Store {
         protection: protection.clone(),
@@ -122,14 +118,21 @@ pub(crate) async fn assemble(
     let copies = Arc::new(Copies {
         control: rss_mdm_device_service::control::credential_inputs::Copies::bind(
             runtime.clone(),
-            tenant,
+            audit.binding(),
+            background.command_supersede_batch,
             protection.clone(),
             Arc::new(super::device_materials::Channel(channel.clone())),
         )
         .await?,
-        recovery: native::inputs::Copies::bind(runtime.clone(), tenant, protection, channel)
-            .await
-            .map_err(super::owner_errors::credential_native)?,
+        recovery: native::inputs::Copies::bind(
+            runtime.clone(),
+            audit.binding(),
+            background.command_supersede_batch,
+            protection,
+            channel,
+        )
+        .await
+        .map_err(super::owner_errors::credential_native)?,
     });
     let maintenance = Arc::new(rss_mdm_recovery_credentials::maintenance::Maintenance::new(
         rss_mdm_install_support::StorageProfile::Mdm,

@@ -3,7 +3,7 @@ use crate::{
     fanout::{Eligibility, Fanout},
     transport,
 };
-use rss_request_context::{Deadline, ExecutionTimer, TenantId};
+use rss_request_context::{Deadline, ExecutionTimer};
 use rss_transactional_messaging::{
     error::MessagingError,
     message::MessageEnvelope,
@@ -19,6 +19,7 @@ use rss_transactional_messaging_runtime::relay::{RelayConfig, RelayWorker};
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use uuid::Uuid;
 struct Observed<P, T> {
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     inner: P,
     runtime: Arc<PgRuntime>,
     timer: Arc<T>,
@@ -44,8 +45,11 @@ impl<P: Publisher<Vec<u8>>, T: ExecutionTimer> Publisher<Vec<u8>> for Observed<P
             return failure();
         };
         let tenant = message.metadata().tenant_id();
+        if tenant != self.binding.tenant() {
+            return failure();
+        }
         if within(self.timer.as_ref(), cutoff, |d| {
-            record(&self.runtime, tenant, id, None, d)
+            record(&self.runtime, self.binding, id, None, d)
         })
         .await
         .ok()
@@ -81,7 +85,7 @@ impl<P: Publisher<Vec<u8>>, T: ExecutionTimer> Publisher<Vec<u8>> for Observed<P
         };
         // Observation failure cannot discard HTTP receipt evidence or replace the RSS settlement.
         let _observation = within(self.timer.as_ref(), cutoff, |d| {
-            record(&self.runtime, tenant, id, Some(observation), d)
+            record(&self.runtime, self.binding, id, Some(observation), d)
         })
         .await;
         result
@@ -89,13 +93,13 @@ impl<P: Publisher<Vec<u8>>, T: ExecutionTimer> Publisher<Vec<u8>> for Observed<P
 }
 async fn record(
     runtime: &PgRuntime,
-    tenant: TenantId,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     id: Uuid,
     outcome: Option<(&'static str, Option<&'static str>, Option<&'static str>)>,
     deadline: OperationDeadline,
 ) -> Result<(), PgError> {
-    runtime.local_tx(tenant,deadline,move|tx|Box::pin(async move {
-        let t=tenant.to_string();
+    runtime.local_tx(binding,deadline,move|tx|Box::pin(async move {
+        let t=binding.tenant().to_string();
         tx.with_connection(move|c|Box::pin(async move {
             let rows=if let Some((outcome,stage,reason))=outcome {sqlx::query("UPDATE mdm_webhook.deliveries SET last_outcome=$3,last_stage=$4,last_reason=$5 WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(id).bind(outcome).bind(stage).bind(reason).execute(c).await?.rows_affected()}
             else{sqlx::query("UPDATE mdm_webhook.deliveries SET attempts=attempts+1,last_outcome='unknown',last_stage=NULL,last_reason=NULL WHERE tenant_id=$1::uuid AND id=$2 AND attempts<9223372036854775807").bind(t).bind(id).execute(c).await?.rows_affected()};
@@ -103,7 +107,12 @@ async fn record(
         })).await
     })).await.fold(Ok,Err,Err,Err,Err,Err)
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "fenced execution and independently owned transport, time, diagnostics and cancellation ports are explicit"
+)]
 pub async fn run<H, A, T, W, E>(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     runtime: Arc<PgRuntime>,
     host: Arc<H>,
     authorizer: A,
@@ -148,10 +157,12 @@ where
         .map_err(|e| rss_transactional_messaging::error::MessagingError::new(e.kind(), e))?,
     );
     let fanout = Arc::new(Fanout {
+        binding,
         runtime: runtime.clone(),
         host,
     });
     let publisher = Arc::new(Observed {
+        binding,
         inner: transport::WebhookPublisher::new(
             authorizer,
             Timer(timer.clone()),
@@ -163,7 +174,10 @@ where
     });
     let source = RelayWorker::new(source, fanout, timer.clone(), emitter.clone(), config);
     let delivery = RelayWorker::new(delivery, publisher, timer, emitter, config);
-    tokio::try_join!(source.run(token.clone()), delivery.run(token))?;
+    tokio::try_join!(
+        source.run(binding, token.clone()),
+        delivery.run(binding, token)
+    )?;
     Ok(())
 }
 struct Timer<T>(Arc<T>);

@@ -137,11 +137,16 @@ pub struct Service {
     backend: backend::Backend,
     signing: Arc<rss_mdm_task_trust::Signing>,
     limits: Limits,
+    maintenance_policy: maintenance::Policy,
     storage_budget: StorageBudget,
     running: std::sync::atomic::AtomicBool,
 }
 impl Service {
     /// Bind only already-admitted dependencies; never install or repair schemas here.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "admitted dependencies and independent ingestion, maintenance and storage budgets are assembled explicitly"
+    )]
     pub fn new(
         tenant: TenantId,
         runtime: Arc<PgRuntime>,
@@ -149,9 +154,11 @@ impl Service {
         backend: backend::Backend,
         signing: Arc<rss_mdm_task_trust::Signing>,
         limits: Limits,
+        maintenance_policy: maintenance::Policy,
         storage_budget: StorageBudget,
     ) -> Result<Self, Error> {
         limits.validate()?;
+        maintenance_policy.validate()?;
         if !dependencies.policies.is_bound_to(&runtime, tenant) {
             return Err(Error::Denied);
         }
@@ -167,6 +174,7 @@ impl Service {
             backend,
             signing,
             limits,
+            maintenance_policy,
             storage_budget,
             running: std::sync::atomic::AtomicBool::new(false),
         })
@@ -189,7 +197,7 @@ impl Service {
         let principal = principal.clone();
         let input = input.clone();
         self.runtime
-            .local_tx(self.tenant, deadline(), move |tx| {
+            .local_tx(self.audit_store.binding(), deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
@@ -228,7 +236,7 @@ impl Service {
         let service = self.clone();
         let principal = principal.clone();
         self.runtime
-            .local_tx(self.tenant, deadline(), move |tx| {
+            .local_tx(self.audit_store.binding(), deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
@@ -285,7 +293,7 @@ impl Service {
         let principal = principal.clone();
         let service = self.clone();
         self.runtime
-            .local_tx(self.tenant, deadline(), move |tx| {
+            .local_tx(self.audit_store.binding(), deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
@@ -314,10 +322,11 @@ impl Service {
 /// A mismatch never rewrites the original binding or redirects existing accepted work.
 pub async fn admit_configuration(
     runtime: &Arc<PgRuntime>,
-    tenant: TenantId,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     binding: [u8; 32],
 ) -> Result<(), Error> {
-    runtime.local_tx(tenant,deadline(),move|tx|Box::pin(async move {
+    let tenant = execution.tenant();
+    runtime.local_tx(execution,deadline(),move|tx|Box::pin(async move {
         tx.with_connection(move|c|Box::pin(async move {
             rss_mdm_inventory_service::verify_authority(rss_mdm_install_support::StorageProfile::Mdm, c).await?;
             rss_mdm_inventory_postgres::verify_asset_history(c).await?;

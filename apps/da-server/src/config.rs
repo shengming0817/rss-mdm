@@ -1,5 +1,8 @@
 //! Process-local composition inputs. Private material is always read from protected files.
+mod http;
+mod identity;
 use crate::{Error, Result};
+pub use identity::IdentityPolicy;
 
 use rss_mdm_install_support::files::{read, secret};
 
@@ -53,6 +56,26 @@ pub struct Installation {
     pub epoch: i64,
 }
 impl Installation {
+    pub fn execution(
+        &self,
+        tenant: rss_request_context::TenantId,
+    ) -> Result<rss_transactional_messaging::fence::ExecutionBinding> {
+        use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
+        self.validate()?;
+        let epoch = if tenant.to_string() == self.tenant.to_string() {
+            self.epoch
+        } else if tenant.to_string() == self.management_tenant.to_string() {
+            rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH
+        } else {
+            return Err(Error::Configuration);
+        };
+        Ok(ExecutionBinding::new(
+            StorageIdentity::new(self.target, self.lineage).map_err(|_| Error::Configuration)?,
+            tenant,
+            Epoch::new(epoch).map_err(|_| Error::Configuration)?,
+        ))
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.instance.is_nil()
             || self.tenant.is_nil()
@@ -184,6 +207,8 @@ pub struct Registration {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub identity_policy: IdentityPolicy,
+    pub http: http::Http,
     pub installation: Installation,
     pub database: Database,
     pub identity_database: Database,
@@ -200,7 +225,19 @@ pub struct Config {
     #[serde(default)]
     pub reports: rss_mdm_device_access_postgres::reports::Limits,
 }
+pub struct Compiled {
+    pub identity: identity::Compiled,
+    pub http: http::Compiled,
+}
 impl Config {
+    pub fn compile(&self) -> Result<Compiled> {
+        self.validate()?;
+        let identity = self
+            .identity_policy
+            .compile(&self.installation, self.audit.integrity()?)?;
+        let http = self.http.compile(&identity)?;
+        Ok(Compiled { identity, http })
+    }
     pub fn validate(&self) -> Result<()> {
         self.installation.validate()?;
 
@@ -269,6 +306,7 @@ impl Oidc {
         authority: rss_identity_postgres::Authority,
         origin: &str,
         instance: rss_identity_core::InstanceId,
+        policy: rss_identity_oidc::TransportPolicy,
     ) -> Result<rss_identity_postgres::Federation> {
         let key = |p: &Path| -> Result<[u8; 32]> {
             read(p, 32, true)
@@ -284,7 +322,7 @@ impl Oidc {
             .map(|(id, p)| Ok((id.clone(), key(p)?)))
             .collect::<Result<Vec<_>>>()?;
 
-        let transport = rss_identity_oidc::HttpOidc::new(Vec::new(), Vec::new())
+        let transport = rss_identity_oidc::HttpOidc::new(Vec::new(), Vec::new(), policy)
             .map_err(|_| Error::Configuration)?;
 
         rss_identity_postgres::Federation::new(
@@ -292,7 +330,7 @@ impl Oidc {
                 .map_err(|_| Error::Configuration)?,
             authority,
             Arc::new(transport),
-            rss_identity_core::federation::StateSigner::new(
+            rss_identity_postgres::StateSigner::new(
                 key(&self.state_key_file)?,
                 &instance.to_string(),
             )

@@ -211,18 +211,22 @@ impl crate::deployment::SoftwareService {
     ) -> std::result::Result<IngressHealth, crate::deployment::Error> {
         self.transactions
             .runtime
-            .local_tx(self.transactions.tenant, health_deadline(cutoff), |tx| {
-                Box::pin(async move {
-                    health_in(tx)
-                        .await
-                        .map(|(event_after, window_open, suspended)| IngressHealth {
-                            event_after,
-                            window_open,
-                            suspended,
-                        })
-                        .map_err(input_fault)
-                })
-            })
+            .local_tx(
+                self.transactions.audit_store.binding(),
+                health_deadline(cutoff),
+                |tx| {
+                    Box::pin(async move {
+                        health_in(tx)
+                            .await
+                            .map(|(event_after, window_open, suspended)| IngressHealth {
+                                event_after,
+                                window_open,
+                                suspended,
+                            })
+                            .map_err(input_fault)
+                    })
+                },
+            )
             .await
             .fold(
                 Ok,
@@ -245,7 +249,7 @@ impl crate::deployment::SoftwareService {
         &self,
         cutoff: std::time::Instant,
     ) -> std::result::Result<u64, crate::deployment::Error> {
-        self.transactions.runtime.local_tx(self.transactions.tenant, health_deadline(cutoff), |tx| Box::pin(async move {
+        self.transactions.runtime.local_tx(self.transactions.audit_store.binding(), health_deadline(cutoff), |tx| Box::pin(async move {
             let tenant=tx.tenant_id().to_string();
             tx.with_connection(move |c| Box::pin(async move {
                 sqlx::query_scalar::<_, i64>("WITH input_cut AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context((SELECT from_cut FROM mdm_software_deployment.device_source_dispatch WHERE tenant_id=$1::uuid))) SELECT count(*) FROM (SELECT 1 FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM input_cut),false) LIMIT 1001) q").bind(tenant).fetch_one(c).await
@@ -279,7 +283,7 @@ impl crate::deployment::SoftwareService {
         self.transactions
             .runtime
             .local_tx_with_context(
-                self.transactions.tenant,
+                self.transactions.audit_store.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -346,7 +350,7 @@ impl crate::deployment::SoftwareService {
         self.transactions
             .runtime
             .local_tx_with_context(
-                self.transactions.tenant,
+                self.transactions.audit_store.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),

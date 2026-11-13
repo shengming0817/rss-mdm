@@ -193,7 +193,7 @@ impl AssetService {
         candidate: &AssetCut,
     ) -> Result<Response> {
         let (token, limit) = page;
-        if !(1..=1000).contains(&limit)
+        if !(1..=1024).contains(&limit)
             || scope
                 .devices
                 .as_ref()

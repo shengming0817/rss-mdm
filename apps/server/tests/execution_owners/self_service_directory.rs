@@ -91,6 +91,7 @@ async fn authenticated_self_service_filters_typed_fields_and_business_search() -
         authorization: h.c.access(),
     });
     let envelope = agent::boundary::Envelope {
+        request_budget: rss_axum::RequestBudget::new(std::time::Duration::from_secs(8)).unwrap(),
         profile: rss_mdm_install_support::StorageProfile::Mdm,
         admission: Arc::new(tokio::sync::Semaphore::new(8)),
         requests: Arc::new(tokio::sync::Semaphore::new(8)),

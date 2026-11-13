@@ -26,7 +26,7 @@ pub async fn wake_native_batch_in(
     tx: &mut PgTransaction<'_>,
     devices: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<()> {
-    if devices.len() > 1000 {
+    if devices.len() > 1024 {
         return Err(Error::Malformed.into());
     }
     let devices = devices

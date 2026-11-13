@@ -44,6 +44,7 @@ impl ServiceRequest {
     }
 }
 pub struct PublicationService {
+    pub(super) binding: rss_transactional_messaging::fence::ExecutionBinding,
     pub(super) runtime: Arc<PgRuntime>,
     pub(super) audit_store: Arc<dyn crate::AuditPort>,
     pub(super) resources: ResourceStore,
@@ -60,12 +61,13 @@ impl PublicationService {
 
     pub async fn connect(
         host: crate::Host,
-        tenant: TenantId,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         logical_source: String,
         config: SourceConfig,
         actors: ServiceIdentity,
         cutoff: Deadline,
     ) -> Result<Self> {
+        let tenant = binding.tenant();
         let crate::Host {
             runtime,
             audit: audit_store,
@@ -79,8 +81,8 @@ impl PublicationService {
         )
         .await
         .map_err(|cause| Error::Source.context("service::connect", cause))??;
-        let resources = ResourceStore::new(runtime.clone(), tenant, budget(cutoff)).await?;
-        let releases = ReleaseStore::new(runtime.clone(), tenant, budget(cutoff)).await?;
+        let resources = ResourceStore::new(runtime.clone(), binding, budget(cutoff)).await?;
+        let releases = ReleaseStore::new(runtime.clone(), binding, budget(cutoff)).await?;
         let head = if let Driver::Brew { repo, .. } = &sources.binding.driver {
             tokio::time::timeout_at(cutoff.instant().into(), repo.head())
                 .await
@@ -93,7 +95,7 @@ impl PublicationService {
         settle(
             runtime
                 .local_tx_with_context(
-                    tenant,
+                    binding,
                     budget(cutoff),
                     (&audit_store, &sources, &head, &actors.backend),
                     |(audit, s, h, a), tx| {
@@ -110,6 +112,7 @@ impl PublicationService {
                 .await,
         )?;
         Ok(Self {
+            binding,
             catalog: crate::catalog::Catalog::new(runtime.clone(), tenant, audit_store.clone()),
             runtime,
             audit_store,
@@ -171,7 +174,7 @@ impl PublicationService {
             return settle(
                 self.runtime
                     .local_tx_with_context(
-                        self.tenant(),
+                        self.binding,
                         budget(cutoff),
                         (self, i, &c, access),
                         |(s, i, c, access), tx| {
@@ -231,7 +234,7 @@ impl PublicationService {
         let lifecycle = settle(
             self.runtime
                 .local_tx_with_context(
-                    self.tenant(),
+                    self.binding,
                     budget(cutoff),
                     (self, &version, access),
                     |(s, v, access), tx| {
@@ -284,7 +287,7 @@ impl PublicationService {
         let result = settle(
             self.runtime
                 .local_tx_with_context(
-                    self.tenant(),
+                    self.binding,
                     budget(cutoff),
                     (
                         self, i, &c, &subject, &version, &pins, &target, access, &rejection,
@@ -533,7 +536,7 @@ impl PublicationService {
         let result = settle(
             self.runtime
                 .local_tx_with_context(
-                    self.tenant(),
+                    self.binding,
                     budget(cutoff),
                     (self, c, subject, r, &target, access, &rejection),
                     |(s, c, subject, r, target, access, rejection), tx| {
@@ -674,7 +677,7 @@ impl PublicationService {
         let state = settle(
             self.runtime
                 .local_tx_with_context(
-                    self.tenant(),
+                    self.binding,
                     budget(cutoff),
                     (&binding.identity, &slot),
                     |(b, s), tx| Box::pin(async move { Ok(Ok(db::slot(tx, b, s).await?)) }),
@@ -769,7 +772,7 @@ impl PublicationService {
         let result = settle(
             self.runtime
                 .local_tx_with_context(
-                    self.tenant(),
+                    self.binding,
                     budget(cutoff),
                     (self, id, &original, access),
                     move |(s, id, r, access), tx| {
@@ -815,7 +818,7 @@ impl PublicationService {
         }
         let (c, subject, version) = settle(
             self.runtime
-                .local_tx_with_context(self.tenant(), budget(cutoff), (self, id), |(s, id), tx| {
+                .local_tx_with_context(self.binding, budget(cutoff), (self, id), |(s, id), tx| {
                     Box::pin(async move {
                         s.audit_store
                             .bind_in(tx)
@@ -941,7 +944,7 @@ impl PublicationService {
         settle(
             self.runtime
                 .local_tx_with_context(
-                    self.tenant(),
+                    self.binding,
                     budget(cutoff),
                     (self, c, subject, r, access),
                     move |(s, c, subject, r, access), tx| {

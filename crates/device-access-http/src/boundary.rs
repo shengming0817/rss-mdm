@@ -29,9 +29,20 @@ impl FromRequestParts<Arc<Services>> for Administrator {
             .ok_or(Error::Unauthorized)?;
         let secret = rss_identity_core::session::BearerSecret::parse(raw.to_owned())
             .map_err(|_| Error::Unauthorized)?;
+        let control = parts
+            .extensions
+            .get::<rss_axum::RequestControl>()
+            .ok_or(Error::Unavailable)?;
         let p = s
             .sessions
-            .authenticate(&s.authorization, RequestCredential::Bearer(secret))
+            .authenticate(
+                &s.authorization,
+                RequestCredential::Bearer(secret),
+                rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                    control.deadline(),
+                    &rss_mdm_audit_integration::budget::RuntimeTimer,
+                ),
+            )
             .await?;
         let audit = parts
             .extensions

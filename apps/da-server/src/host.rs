@@ -4,9 +4,9 @@ use crate::{
     config::{Config, Database, Installation, Listener},
 };
 
-use rss_identity_core::{InstanceId, account::PasswordKdf, session::SessionPolicy};
+use rss_identity_core::{InstanceId, account::PasswordKdf};
 
-use rss_identity_postgres::{Authority, AuthorityConfig};
+use rss_identity_postgres::Authority;
 
 use rss_mdm_device_access_http as http;
 
@@ -21,10 +21,7 @@ use rss_runtime::{
     DynManagedResource, LifecycleScope, ManagedResource, ScopeExit, TotalDrainBudget,
 };
 
-use rss_transactional_messaging::{
-    fence::{Epoch, ExecutionBinding, StorageIdentity},
-    policy::OperationDeadline,
-};
+use rss_transactional_messaging::{fence::StorageIdentity, policy::OperationDeadline};
 
 use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa, PgRuntime};
 
@@ -89,14 +86,14 @@ impl ManagedResource for RuntimeResource {
         Ok(())
     }
 }
-pub struct Kdf(pub Arc<PasswordKdf>);
+pub struct Kdf(pub Arc<PasswordKdf>, pub Duration);
 
 impl ManagedResource for Kdf {
     fn name(&self) -> &str {
         "da-password-kdf"
     }
     fn shutdown_timeout(&self) -> Duration {
-        Duration::from_secs(5)
+        self.1
     }
     async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
         self.0.close();
@@ -106,14 +103,14 @@ impl ManagedResource for Kdf {
         Ok(())
     }
 }
-struct Requests([Arc<tokio::sync::Semaphore>; 2]);
+struct Requests([Arc<tokio::sync::Semaphore>; 2], Duration);
 
 impl ManagedResource for Requests {
     fn name(&self) -> &str {
         "da-request-completion"
     }
     fn shutdown_timeout(&self) -> Duration {
-        Duration::from_secs(15)
+        self.1
     }
     async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
         for s in &self.0 {
@@ -126,14 +123,7 @@ impl ManagedResource for Requests {
     }
 }
 pub async fn runtime(db: &Database, i: &Installation) -> Result<Arc<PgRuntime>> {
-    let binding = ExecutionBinding::new(
-        StorageIdentity::new(i.target, i.lineage).map_err(|_| Error::Configuration)?,
-        i.tenants()?
-            .into_iter()
-            .map(|(t, e)| Ok((t, Epoch::new(e).map_err(|_| Error::Configuration)?)))
-            .collect::<Result<Vec<_>>>()?,
-    )
-    .map_err(|_| Error::Configuration)?;
+    let binding = StorageIdentity::new(i.target, i.lineage).map_err(|_| Error::Configuration)?;
 
     let pg = PgConfig::new(
         &db.host,
@@ -159,35 +149,60 @@ pub async fn runtime(db: &Database, i: &Installation) -> Result<Arc<PgRuntime>> 
         .map(Arc::new)
         .map_err(|_| Error::Storage)
 }
-pub fn authority_config(
-    i: &Installation,
-    integrity: rss_audit_postgres::Integrity,
-) -> Result<AuthorityConfig> {
-    AuthorityConfig::new(
-        InstanceId::parse(&i.instance.to_string()).map_err(|_| Error::Configuration)?,
-        i.tenants()?.into_iter().map(|(t, _)| t).collect(),
-        SessionPolicy::new(900, 14400).map_err(|_| Error::Configuration)?,
-        integrity,
-    )
-    .map_err(|_| Error::Identity)
-}
 pub struct Assembly {
     pub browser: axum::Router,
     pub protocol: Arc<http::Services>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
 }
+
+#[derive(Clone)]
+struct IdentityExecution {
+    installation: Installation,
+    rp: rss_identity_postgres::RpGeneration,
+}
+async fn identity_execution(
+    axum::extract::State(scope): axum::extract::State<IdentityExecution>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::{
+        extract::{FromRequestParts, Path},
+        response::IntoResponse,
+    };
+    let (mut parts, body) = request.into_parts();
+    parts.extensions.insert(scope.rp);
+    if let Some(control) = parts.extensions.get::<rss_axum::RequestControl>() {
+        let deadline = control.deadline();
+        parts.extensions.insert(deadline);
+    }
+    if let Ok(Path(parameters)) =
+        Path::<BTreeMap<String, String>>::from_request_parts(&mut parts, &()).await
+        && let Some(raw) = parameters.get("tenant")
+    {
+        let Ok(tenant) = rss_request_context::TenantId::parse(raw) else {
+            return axum::http::StatusCode::BAD_REQUEST.into_response();
+        };
+        let Ok(binding) = scope.installation.execution(tenant) else {
+            return axum::http::StatusCode::FORBIDDEN.into_response();
+        };
+        parts.extensions.insert(binding);
+    }
+    next.run(axum::extract::Request::from_parts(parts, body))
+        .await
+}
 pub async fn assemble(
     config: &Config,
+    compiled: &crate::config::Compiled,
+    cutoff: rss_request_context::Deadline,
     mut acquire: impl FnMut(Box<DynManagedResource<'static>>),
 ) -> Result<Assembly> {
-    config.validate()?;
-
     let instance = InstanceId::parse(&config.installation.instance.to_string())
         .map_err(|_| Error::Configuration)?;
 
     let tenant = rss_request_context::TenantId::parse(&config.installation.tenant.to_string())
         .map_err(|_| Error::Configuration)?;
 
+    let binding = config.installation.execution(tenant)?;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(4)
         .acquire_timeout(Duration::from_secs(2))
@@ -222,9 +237,12 @@ pub async fn assemble(
         identity_runtime.clone(),
     )));
 
-    let kdf = Arc::new(PasswordKdf::new());
+    let kdf = compiled.identity.kdf.clone();
 
-    acquire(DynManagedResource::new_box(Kdf(kdf.clone())));
+    acquire(DynManagedResource::new_box(Kdf(
+        kdf.clone(),
+        compiled.identity.drain,
+    )));
 
     let mut c = pool.acquire().await.map_err(|_| Error::Storage)?;
 
@@ -266,7 +284,7 @@ pub async fn assemble(
             pool.clone(),
             config.audit.integrity()?,
             transactions,
-            tenant,
+            binding,
             &audit_budget.control(),
         )
         .await
@@ -275,7 +293,7 @@ pub async fn assemble(
 
     let proof_audit = Arc::new(
         audit
-            .on_runtime(identity_runtime.clone(), tenant, &audit_budget.control())
+            .on_runtime(identity_runtime.clone(), binding, &audit_budget.control())
             .await
             .map_err(|_| Error::AdmissionAt("Identity Audit"))?,
     );
@@ -289,7 +307,7 @@ pub async fn assemble(
 
     let mut administrators = BTreeMap::new();
 
-    let mut options = authority_config(&config.installation, config.audit.integrity()?)?;
+    let mut options = compiled.identity.authority.clone();
 
     if let Some(enterprise) = &config.enterprise {
         if enterprise.clients.is_empty()
@@ -299,8 +317,8 @@ pub async fn assemble(
             return Err(Error::Configuration);
         }
         for c in &enterprise.clients {
-            let client =
-                da::enterprise::Backend::load(c, tenant).map_err(|_| Error::Configuration)?;
+            let client = da::enterprise::Backend::load(c, tenant, compiled.identity.transport)
+                .map_err(|_| Error::Configuration)?;
 
             if clients
                 .insert(c.target.id.clone(), Arc::new(client))
@@ -359,7 +377,7 @@ pub async fn assemble(
     let enterprise = Arc::new(
         rss_mdm_device_access_postgres::enterprise::platform::Verifier::new(
             &config.browser.origin,
-            tenant,
+            binding,
             identity_runtime.clone(),
             Some(platform.clone()),
             clients
@@ -379,25 +397,29 @@ pub async fn assemble(
         .map_err(|_| Error::Configuration)?,
     );
 
-    let authority = Authority::connect_runtime(identity_runtime, kdf, options, policy, deadline())
-        .await
-        .map_err(|_| Error::Identity)?;
-
-    let http_config =
-        rss_identity_http_axum::HttpConfig::new(&config.browser.origin, Duration::from_secs(10))
-            .map_err(|_| Error::Configuration)?;
-
-    let origin = url::Url::parse(&config.browser.origin).map_err(|_| Error::Configuration)?;
-
-    let webauthn = rss_identity_postgres::WebauthnAuthority::connect(
-        authority.clone(),
-        origin.host_str().ok_or(Error::Configuration)?.to_owned(),
-        origin,
-        deadline(),
+    let authority = Authority::connect_runtime(
+        identity_runtime,
+        kdf,
+        options,
+        binding,
+        policy,
+        OperationDeadline::from_cutoff(cutoff, &Timer),
     )
     .await
     .map_err(|_| Error::Identity)?;
 
+    let http_config =
+        rss_identity_http_axum::HttpConfig::new(&config.browser.origin, compiled.identity.request)
+            .map_err(|_| Error::Configuration)?;
+
+    let origin = url::Url::parse(&config.browser.origin).map_err(|_| Error::Configuration)?;
+
+    let webauthn = rss_identity_postgres::WebauthnAuthority::new(
+        authority.clone(),
+        origin.host_str().ok_or(Error::Configuration)?.to_owned(),
+        origin,
+    )
+    .map_err(|_| Error::Identity)?;
     let identity = Arc::new(http::identity::Identity {
         enterprise_clients: clients,
         enterprise_administrators: administrators,
@@ -405,6 +427,8 @@ pub async fn assemble(
         webauthn: webauthn.clone(),
         http: http_config.clone(),
         tenant,
+        binding,
+        rp_generation: compiled.identity.rp,
     });
 
     let authorization = Arc::new(rss_mdm_authorization_service::Store::from_pool(
@@ -587,6 +611,7 @@ pub async fn assemble(
         });
 
     let platform_http = Arc::new(http::platform_sso::HttpState {
+        binding,
         context: runtime.platform.clone(),
         authority: authority.clone(),
         origin: config.browser.origin.clone(),
@@ -600,7 +625,10 @@ pub async fn assemble(
         identity: identity.clone(),
     });
 
+    let request_budget = rss_axum::RequestBudget::new(compiled.identity.request)
+        .map_err(|_| Error::Configuration)?;
     let state = Arc::new(http::browser::Services {
+        request_budget,
         vault: Arc::new(rss_mdm_vault_sync::Service::new(
             tenant,
             config.installation.instance,
@@ -638,7 +666,12 @@ pub async fn assemble(
     if let Some(oidc) = &config.oidc {
         identity_routes = identity_routes.merge(
             rss_identity_http_axum::federated_router(
-                oidc.federation(authority.clone(), &config.browser.origin, instance)?,
+                oidc.federation(
+                    authority.clone(),
+                    &config.browser.origin,
+                    instance,
+                    compiled.identity.transport,
+                )?,
                 http_config,
             )
             .map_err(|_| Error::Identity)?,
@@ -646,13 +679,22 @@ pub async fn assemble(
     }
     let browser = http::browser::router(Some(&state))
         .into_checked_axum(rss_mdm_http_contract::module::Listener::Browser)
-        .merge(identity_routes);
+        .merge(
+            identity_routes.route_layer(axum::middleware::from_fn_with_state(
+                IdentityExecution {
+                    installation: config.installation.clone(),
+                    rp: compiled.identity.rp,
+                },
+                identity_execution,
+            )),
+        );
 
     let browser_requests = state.requests.clone();
 
     let browser = http::browser::envelope(browser, state);
 
     let protocol = Arc::new(http::Services {
+        request_budget,
         business: Some(Arc::new(http::Business {
             evidence,
             service: runtime.business,
@@ -663,17 +705,17 @@ pub async fn assemble(
         configurations: runtime.configurations.ok_or(Error::Admission)?,
         authorization,
         sessions: Arc::new(
-            rss_mdm_authorization_service::session::SessionAuthority::new(authority, tenant),
+            rss_mdm_authorization_service::session::SessionAuthority::new(authority, binding),
         ),
         audit,
         host: r.listener.host()?,
         requests: Arc::new(tokio::sync::Semaphore::new(16)),
     });
 
-    acquire(DynManagedResource::new_box(Requests([
-        browser_requests,
-        protocol.requests.clone(),
-    ])));
+    acquire(DynManagedResource::new_box(Requests(
+        [browser_requests, protocol.requests.clone()],
+        compiled.http.requests,
+    )));
 
     Ok(Assembly {
         browser,
@@ -712,41 +754,27 @@ pub(crate) fn validate_tls(config: &Config) -> Result<()> {
     }
     Ok(())
 }
-fn http_policy() -> Result<rss_axum::Http1ServePolicy> {
-    rss_axum::Http1ServePolicy::new(
-        rss_axum::ServePolicy::new(
-            32,
-            Duration::from_secs(5),
-            Duration::from_secs(3),
-            Duration::from_secs(15),
-        )
-        .map_err(|_| Error::Configuration)?,
-        Duration::from_secs(3),
-        64,
-        32768,
-    )
-    .map_err(|_| Error::Configuration)
-}
 pub async fn serve(
     config: Config,
     stop: impl std::future::Future<Output = std::io::Result<()>>,
 ) -> Result<()> {
-    config.validate()?;
+    let compiled = config.compile()?;
 
     let mut scope = LifecycleScope::<(), Error, std::io::Error>::try_new(
-        TotalDrainBudget::new(Duration::from_secs(45)).map_err(|_| Error::Lifecycle)?,
+        TotalDrainBudget::new(compiled.http.total).map_err(|_| Error::Lifecycle)?,
         Arc::new(Timer),
     )
     .map_err(|_| Error::Lifecycle)?;
 
     let outcome=scope.drive(|mut startup| {Box::pin(async move {
-  let app=tokio::time::timeout(Duration::from_secs(60),assemble(&config,|r|startup.stage_resource(r))).await.map_err(|_|Error::Lifecycle)??;
+  let cutoff=rss_request_context::Deadline::from_timeout(&Timer,compiled.identity.startup).map_err(|_|Error::Configuration)?;
+  let app=tokio::time::timeout_at(cutoff.instant().into(),assemble(&config,&compiled,cutoff,|r|startup.stage_resource(r))).await.map_err(|_|Error::Lifecycle)??;
 
   let (chain,key)=certificates(&config.browser)?;
 
   let tcp=tokio::net::TcpListener::bind(config.browser.listen).await.map_err(|_|Error::Lifecycle)?;
 
-  let listener=http::tls::browser(tcp,chain,key,app.browser,http_policy()?).map_err(|_|Error::Lifecycle)?;
+  let listener=http::tls::browser(tcp,chain,key,app.browser,compiled.http.listener).map_err(|_|Error::Lifecycle)?;
 
   startup.stage_task_with_token(listener.critical());
 
@@ -754,7 +782,7 @@ pub async fn serve(
 
   let tcp=tokio::net::TcpListener::bind(config.registration.listener.listen).await.map_err(|_|Error::Lifecycle)?;
 
-  startup.stage_task_with_token(http::tls::registration(tcp,chain,key,app.protocol,http_policy()?).map_err(|_|Error::Lifecycle)?.critical());
+  startup.stage_task_with_token(http::tls::registration(tcp,chain,key,app.protocol,compiled.http.listener).map_err(|_|Error::Lifecycle)?.critical());
 
   let (task,_)=rss_runtime::ManagedTask::prepare("da-pki-maintenance",Duration::from_secs(10));
 

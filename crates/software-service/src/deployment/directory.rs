@@ -12,7 +12,7 @@ pub async fn run_summaries_on(
     if ids.is_empty() {
         return Ok(Default::default());
     }
-    if ids.len() > 1000 {
+    if ids.len() > 1024 {
         return Err(Error::Malformed.into());
     }
     let count = ids.len();
@@ -31,7 +31,7 @@ pub async fn run_summaries_on(
         "execution.runs",
         count as u64,
         bytes as u64,
-        1000,
+        1024,
         16 * 1024 * 1024,
     ) {
         return Err(Error::Unavailable(Failure::Capacity).into());

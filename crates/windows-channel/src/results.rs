@@ -51,7 +51,7 @@ impl Results {
         if reads.is_empty() {
             return Ok(BTreeMap::new());
         }
-        if reads.len() > 1000 {
+        if reads.len() > 1024 {
             return Err(Error::Malformed);
         }
         let inputs = reads
@@ -363,7 +363,7 @@ async fn read_evidence_rows_on(
     select: &'static str,
     ids: Vec<Uuid>,
 ) -> Result<std::collections::BTreeMap<Uuid, Vec<sqlx::postgres::PgRow>>> {
-    if ids.len() > 1000 {
+    if ids.len() > 1024 {
         return Err(Error::Malformed);
     }
     let tenant = tenant.to_string();
@@ -405,7 +405,7 @@ impl Results {
         tenant: rss_request_context::TenantId,
         ids: Vec<Uuid>,
     ) -> std::result::Result<std::collections::BTreeSet<Uuid>, Error> {
-        if ids.len() > 1000 {
+        if ids.len() > 1024 {
             return Err(Error::Malformed);
         }
         let ids:Vec<Uuid>=sqlx::query_scalar("SELECT DISTINCT operation FROM mdm_windows.attempts WHERE tenant_id=$1::uuid AND operation=ANY($2) AND phase='execute'").bind(tenant.to_string()).bind(ids).fetch_all(c).await.map_err(crate::database::db)?;
@@ -424,7 +424,7 @@ impl Results {
             rss_mdm_windows_mdm::native::Request,
         )>,
     ) -> Result<BTreeMap<usize, std::result::Result<(), rss_mdm_windows_mdm::native::Error>>> {
-        if checks.len() > 1000 {
+        if checks.len() > 1024 {
             return Err(Error::Malformed);
         }
         let registrations = checks.iter().map(|v| v.1.into_uuid()).collect::<Vec<_>>();

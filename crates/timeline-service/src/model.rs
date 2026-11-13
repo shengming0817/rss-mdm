@@ -14,8 +14,27 @@ pub enum Error {
     Integrity,
     #[error("timeline operation deadline")]
     Deadline,
+    #[error("selected audit page exceeds the host query budget")]
+    BudgetExceeded,
     #[error("timeline authorization rejected")]
     Forbidden,
+}
+/// Host-selected independent row and encoded-document budgets for one complete page.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryBudget {
+    pub(crate) rows: usize,
+    pub(crate) bytes: i64,
+}
+impl QueryBudget {
+    pub fn new(rows: usize, bytes: u64) -> Result<Self, Error> {
+        if !(1..=1024).contains(&rows) || bytes == 0 {
+            return Err(Error::Malformed);
+        }
+        Ok(Self {
+            rows,
+            bytes: i64::try_from(bytes).map_err(|_| Error::Malformed)?,
+        })
+    }
 }
 impl From<sqlx::Error> for Error {
     fn from(error: sqlx::Error) -> Self {
@@ -58,7 +77,7 @@ pub struct Query {
 pub static AUDIT: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
     id: "audit",
     default_limit: 50,
-    max_limit: 200,
+    max_limit: 1024,
     order: "recordedAt DESC, position DESC",
     purpose: rss_mdm_query::window::Purpose::History,
     reason: "Immutable history coordinates define navigation; mutable business directories use model-derived RSQL",
@@ -79,7 +98,7 @@ pub static AUDIT: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema 
 pub static DEVICE_TIMELINE: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
     id: "device_timeline",
     default_limit: 50,
-    max_limit: 200,
+    max_limit: 1024,
     order: "recordedAt DESC, position DESC",
     purpose: rss_mdm_query::window::Purpose::History,
     reason: "Immutable history coordinates define navigation; mutable business directories use model-derived RSQL",
@@ -129,7 +148,7 @@ impl Query {
     }
 
     pub fn validate(&self) -> Result<(), Error> {
-        if !(1..=200).contains(&self.limit.unwrap_or(50))
+        if !(1..=1024).contains(&self.limit.unwrap_or(50))
             || self.operation_id.is_some_and(|v| v.is_nil())
             || self.request_id.is_some_and(|v| v.is_nil())
             || self.from.is_some_and(|v| v < 0)

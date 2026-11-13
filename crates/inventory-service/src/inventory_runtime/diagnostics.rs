@@ -76,10 +76,16 @@ impl InventoryRuntime {
             scope.source().clone(),
         )
         .map_err(|_| ProbeFailure::Authority)?;
-        let head = tokio::time::timeout_at(cutoff.into(), source.high_water(scope.source()))
-            .await
-            .map_err(|_| ProbeFailure::Deadline)?
-            .map_err(|_| ProbeFailure::Storage)?;
+        let control = rss_projection::Control::new(
+            &self.clock,
+            cutoff.saturating_duration_since(self.clock.origin),
+            &cancel,
+        );
+        let head =
+            tokio::time::timeout_at(cutoff.into(), source.high_water(scope.source(), &control))
+                .await
+                .map_err(|_| ProbeFailure::Deadline)?
+                .map_err(|_| ProbeFailure::Storage)?;
         Ok((head.map(|position| position.get()), self.clock.now.now()))
     }
 }

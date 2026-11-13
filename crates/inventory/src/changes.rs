@@ -125,7 +125,7 @@ impl AssetChanged {
                 .field_scope
                 .as_ref()
                 .is_some_and(|v| !text(v, 32768))
-            || self.fields.len() > 128
+            || self.fields.len() > crate::MAX_COLLECTION_FIELDS
             || self
                 .fields
                 .iter()

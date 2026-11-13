@@ -46,6 +46,7 @@ async fn authorized(
     id: Uuid,
     secret: Option<&str>,
     audit: &RequestAudit,
+    cutoff: rss_request_context::Deadline,
 ) -> Result<(Coordinates, Admission), Error> {
     let tenant = app.identity.tenant().to_string();
     let mut tx = app.access.begin(&tenant).await?;
@@ -84,6 +85,10 @@ async fn authorized(
             id,
             app.account_authority.clone(),
             secret,
+            rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                cutoff,
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
+            ),
         )
         .await?
     } else {
@@ -105,6 +110,10 @@ async fn authorized(
             .authenticate(
                 &app.access.authorization,
                 app.credentials.get(auth.credential_ref)?,
+                rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                    cutoff,
+                    &rss_mdm_audit_integration::budget::RuntimeTimer,
+                ),
             )
             .await?;
         Admission::password(tenant, auth, identity)?
@@ -117,6 +126,7 @@ async fn authorized(
     Ok((proof.coordinates().clone(), proof))
 }
 pub(crate) async fn download(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<HttpState>>,
     Path(id): Path<Uuid>,
     Extension(audit): Extension<RequestAudit>,
@@ -124,7 +134,14 @@ pub(crate) async fn download(
 ) -> Result<EnrollmentProfile, Error> {
     let input = input.map_err(|_| Error::Malformed)?.0;
     let apple = app.apple()?;
-    let (auth, proof) = authorized(&app, id, Some(input.password.expose()), &audit).await?;
+    let (auth, proof) = authorized(
+        &app,
+        id,
+        Some(input.password.expose()),
+        &audit,
+        control.deadline(),
+    )
+    .await?;
     if proof.is_account() || proof.is_organization() {
         return Err(Error::Unauthorized);
     }
@@ -203,6 +220,7 @@ pub(crate) async fn prepared(
     Ok((id, false, scep_url, scep_provisioner))
 }
 pub(crate) async fn challenge(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     WebhookInput { headers, bytes }: WebhookInput,
@@ -251,7 +269,14 @@ pub(crate) async fn challenge(
             },
         }));
     }
-    let (auth, proof) = authorized(&app, csr.enrollment(), Some(challenge), &audit).await?;
+    let (auth, proof) = authorized(
+        &app,
+        csr.enrollment(),
+        Some(challenge),
+        &audit,
+        control.deadline(),
+    )
+    .await?;
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let outcome = app.audit_store.write(app.identity.tenant(),
@@ -502,8 +527,9 @@ pub async fn bind(
     leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
     udid: &str,
     audit: &RequestAudit,
+    cutoff: rss_request_context::Deadline,
 ) -> Result<(), Error> {
-    let (auth, proof) = authorized(app, leaf.enrollment(), None, audit).await?;
+    let (auth, proof) = authorized(app, leaf.enrollment(), None, audit, cutoff).await?;
     let budget = app.devices.retirement_budget();
     let attempt = app
         .audit_store

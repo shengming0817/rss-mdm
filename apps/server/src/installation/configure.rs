@@ -174,6 +174,11 @@ fn oidc(journal: &Journal, runtime: &mut Value, settings: &Oidc) -> Result<()> {
         .validate_deployment(
             tenant,
             runtime["product_origin"].as_str().ok_or(Error::Corrupt)?,
+            &serde_json::from_value::<crate::identity::policy::RuntimePolicy>(
+                runtime["identity"]["runtime"].clone(),
+            )
+            .map_err(|_| Error::Corrupt)?
+            .transport,
         )
         .map_err(|_| Error::Input)?;
     runtime["identity"]["oidc"] = next;
@@ -717,7 +722,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().canonicalize().unwrap().join("operation");
         let tenant = Uuid::new_v4();
-        let mut runtime = json!({"product_origin":"https://mdm.example.test","identity":{"tenant_id":tenant,"oidc":null}});
+        let mut runtime = json!({"product_origin":"https://mdm.example.test","identity":{"tenant_id":tenant,"oidc":null,"runtime":crate::identity::policy::RuntimePolicy::installation()}});
         let mut settings = Oidc {
             group_facts_max_age_seconds: 300,
             return_targets: BTreeMap::new(),
@@ -754,7 +759,7 @@ mod tests {
             assert_eq!(runtime["identity"]["oidc"][field], original[field]);
         }
         // A restart after key generation but before candidate persistence uses the original bytes.
-        let mut replay = json!({"product_origin":"https://mdm.example.test","identity":{"tenant_id":tenant,"oidc":null}});
+        let mut replay = json!({"product_origin":"https://mdm.example.test","identity":{"tenant_id":tenant,"oidc":null,"runtime":crate::identity::policy::RuntimePolicy::installation()}});
         oidc(&journal, &mut replay, &settings).unwrap();
         assert_eq!(runtime, replay);
     }

@@ -241,11 +241,11 @@ fn source_version_cannot_change_contents_with_a_different_resolution_time() {
 #[test]
 fn source_and_role_budgets_are_bounded() {
     let mut i = input();
-    i.targets = (0..1000).map(|n| source(&format!("g{n}"), true)).collect();
-    assert_eq!(resolve_object(&i).unwrap().unwrap().targets.len(), 1000);
+    i.targets = (0..1024).map(|n| source(&format!("g{n}"), true)).collect();
+    assert_eq!(resolve_object(&i).unwrap().unwrap().targets.len(), 1024);
     i.targets.push(source("overflow", false));
     assert_eq!(resolve_object(&i), Err(ScopeError::SourceLimit));
-    i.targets = vec![source("same", true); 3001];
+    i.targets = vec![source("same", true); 3073];
     assert_eq!(resolve_object(&i), Err(ScopeError::SourceLimit));
 }
 

@@ -42,7 +42,7 @@ pub fn resolve_object(input: &ObjectInput) -> Result<Option<MemberExplanation>, 
         .len()
         .saturating_add(limits.len())
         .saturating_add(input.exclusions.len())
-        > 3000
+        > 3072
     {
         return Err(ScopeError::SourceLimit);
     }
@@ -73,7 +73,7 @@ pub fn resolve_object(input: &ObjectInput) -> Result<Option<MemberExplanation>, 
             return Err(ScopeError::ConflictingSource(source.clone()));
         }
     }
-    if seen.len() > 1000 {
+    if seen.len() > 1024 {
         return Err(ScopeError::SourceLimit);
     }
     let matching = |sources: &[SourceMembership]| {

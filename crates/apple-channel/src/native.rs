@@ -38,7 +38,7 @@ pub(crate) async fn control_applicability(
 ) -> Result<std::collections::BTreeMap<usize, Result<(), rss_mdm_apple_mdm::native::Error>>, Error>
 {
     use std::collections::BTreeMap;
-    if requests.len() > 1000 {
+    if requests.len() > 1024 {
         return Err(Error::Malformed);
     }
     let registrations = requests.iter().map(|r| r.device).collect::<Vec<_>>();

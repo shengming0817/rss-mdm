@@ -54,7 +54,7 @@ impl CollectionDefinition {
             || version.len() > 128
             || source == Source::Manual
             || fields.is_empty()
-            || fields.len() > 128
+            || fields.len() > crate::MAX_COLLECTION_FIELDS
         {
             return Err(Invalid::Value);
         }

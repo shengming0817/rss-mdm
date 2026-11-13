@@ -27,11 +27,12 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         &self,
         scope: &rss_reconcile::Scope,
         limit: usize,
+        scan_budget: u32,
         lease: std::time::Duration,
         control: &rss_reconcile::Control<'_, T>,
     ) -> Result<rss_reconcile::ClaimBatch<Self::Claim>, rss_reconcile::Error> {
         rss_mdm_recovery_observation::ObservedStore::new(&self.0.reconcile, &self.0.readiness)
-            .claim_due(scope, limit, lease, control)
+            .claim_due(scope, limit, scan_budget, lease, control)
             .await
     }
     async fn renew<T: rss_reconcile::Timer>(
@@ -60,7 +61,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         let scheduled = if matches!(completion, Completion::Reobserve(_)) {
             let pending = crate::installation::transaction::inspect(
                 &self.0.transactions.runtime,
-                self.0.transactions.tenant,
+                self.0.transactions.audit_store.binding(),
                 claim.target().entity(),
                 |entity, tx| {
                     Box::pin(

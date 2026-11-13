@@ -59,7 +59,7 @@ impl Service {
                 .checked_duration_since(crate::backend::SystemClock.now())
                 .ok_or(Error::Storage)?,
         );
-        let counts=self.runtime.local_tx(tenant,budget,move|tx|Box::pin(async move {
+        let counts=self.runtime.local_tx(self.audit_store.binding(),budget,move|tx|Box::pin(async move {
             tx.with_connection(move|c|Box::pin(async move {
                 let mut counts=[0u64;4];
                 for (index,state) in ["pending","unknown","blocked"].into_iter().enumerate() {

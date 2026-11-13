@@ -169,6 +169,7 @@ async fn list(
                 &query.parse().map_err(|_| Error::Malformed)?,
                 &rss_mdm_device_service::personnel::Reader::new(
                     &identity,
+                    a.sessions.binding(),
                     a.deadline,
                     &rss_mdm_audit_integration::budget::RuntimeTimer,
                     platform.as_ref(),
@@ -203,6 +204,7 @@ async fn statistics(
             &query,
             &rss_mdm_device_service::personnel::Reader::new(
                 &identity,
+                a.sessions.binding(),
                 a.deadline,
                 &rss_mdm_audit_integration::budget::RuntimeTimer,
                 platform.as_ref(),
@@ -236,6 +238,7 @@ async fn detail(
             &reference,
             &rss_mdm_device_service::personnel::Reader::new(
                 &identity,
+                a.sessions.binding(),
                 a.deadline,
                 &rss_mdm_audit_integration::budget::RuntimeTimer,
                 platform.as_ref(),
@@ -274,6 +277,7 @@ async fn items(
                 q.limit(),
                 &rss_mdm_device_service::personnel::Reader::new(
                     &identity,
+                    a.sessions.binding(),
                     a.deadline,
                     &rss_mdm_audit_integration::budget::RuntimeTimer,
                     None,

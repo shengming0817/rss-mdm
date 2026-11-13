@@ -8,6 +8,7 @@ use rss_contract::Timepoint;
 use rss_mdm_group::Rule;
 use rss_mdm_group::{AssetContext, GroupId, OperationId};
 use rss_request_context::TenantId;
+use rss_transactional_messaging::fence::ExecutionBinding;
 use rss_transactional_messaging::{
     outbox::{AppendOutcome, OutboxWriter},
     policy::OperationDeadline,
@@ -33,6 +34,7 @@ pub(crate) use input;
 pub struct GroupStore {
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) tenant: TenantId,
+    binding: ExecutionBinding,
     writer: PgOutboxWriter,
     pub(crate) sources: crate::GroupSources,
 }
@@ -55,12 +57,13 @@ impl GroupStore {
     /// The host must keep this same runtime for every borrowed transaction passed to the store.
     pub async fn new(
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
+        binding: ExecutionBinding,
         deadline: OperationDeadline,
     ) -> Result<Self, Error> {
+        let tenant = binding.tenant();
         settle(
             runtime
-                .local_tx(tenant, deadline, |tx| {
+                .local_tx(binding, deadline, |tx| {
                     Box::pin(async move {
                         admission::verify(tx).await?;
                         Ok(Ok(()))
@@ -71,9 +74,10 @@ impl GroupStore {
         )?;
         Ok(Self {
             writer: PgOutboxWriter::new(runtime.clone(), event::domain()),
-            sources: crate::GroupSources::bound(runtime.clone(), tenant),
+            sources: crate::GroupSources::bound(runtime.clone(), binding),
             runtime,
             tenant,
+            binding,
         })
     }
     /// Borrow the read capabilities of this already admitted Group owner.
@@ -101,7 +105,7 @@ impl GroupStore {
     ) -> Result<Option<Group>, Error> {
         settle(
             self.runtime
-                .local_tx(self.tenant, deadline, move |tx| {
+                .local_tx(self.binding, deadline, move |tx| {
                     Box::pin(async move { Ok(Ok(db::group(tx, id, false).await?)) })
                 })
                 .await,
@@ -132,7 +136,7 @@ impl GroupStore {
         let version = version.to_owned();
         settle(
             self.runtime
-                .local_tx(self.tenant, deadline, move |tx| {
+                .local_tx(self.binding, deadline, move |tx| {
                     Box::pin(async move { Ok(Ok(db::find_rule(tx, id, version).await?)) })
                 })
                 .await,
@@ -184,7 +188,7 @@ impl GroupStore {
         }
         settle(
             self.runtime
-                .local_tx_with_context(self.tenant, deadline, (self, command), move |ctx, tx| {
+                .local_tx_with_context(self.binding, deadline, (self, command), move |ctx, tx| {
                     Box::pin(async move {
                         tx.prepare_outbox_partitions(&[ctx
                             .0

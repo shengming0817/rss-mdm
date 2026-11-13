@@ -156,7 +156,7 @@ impl Groups {
                 rule: rule(self.tenant, op.operation_id, &criteria.criteria, &catalog)?,
             },
             GroupChange::Members { add, remove } => {
-                if add.len() + remove.len() > 1000 {
+                if add.len() + remove.len() > 1024 {
                     return Err(Error::Malformed.into());
                 }
                 let endpoints = |objects: &[rss_mdm_agent_wire::ObjectRef]| -> Result<Vec<rss_mdm_agent_wire::DeviceId>> {

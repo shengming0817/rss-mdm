@@ -17,23 +17,27 @@ impl Services {
         clock: Arc<dyn crate::clock::Clock>,
     ) -> Result<Self, Error> {
         runtime
-            .local_tx(tenant, crate::identity::deadline(), move |tx| {
-                Box::pin(async move {
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            rss_mdm_inventory_service::admit_storage_in(
-                                rss_mdm_install_support::StorageProfile::Mdm,
-                                c,
-                                tenant,
-                            )
-                            .await?;
-                            rss_mdm_compliance_service::admit_storage_in(c, tenant).await?;
-                            Ok(())
+            .local_tx(
+                audit_store.binding(),
+                crate::identity::deadline(),
+                move |tx| {
+                    Box::pin(async move {
+                        tx.with_connection(move |c| {
+                            Box::pin(async move {
+                                rss_mdm_inventory_service::admit_storage_in(
+                                    rss_mdm_install_support::StorageProfile::Mdm,
+                                    c,
+                                    tenant,
+                                )
+                                .await?;
+                                rss_mdm_compliance_service::admit_storage_in(c, tenant).await?;
+                                Ok(())
+                            })
                         })
+                        .await
                     })
-                    .await
-                })
-            })
+                },
+            )
             .await
             .fold(
                 Ok,
@@ -45,7 +49,7 @@ impl Services {
             )?;
         let messaging = rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            tenant,
+            audit_store.binding(),
             rss_mdm_inventory_service::transaction::deadline(),
         )
         .await
@@ -53,7 +57,7 @@ impl Services {
         let groups = Arc::new(
             rss_mdm_group_postgres::GroupStore::new(
                 runtime.clone(),
-                tenant,
+                audit_store.binding(),
                 rss_mdm_inventory_service::transaction::deadline(),
             )
             .await

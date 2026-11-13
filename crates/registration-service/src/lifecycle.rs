@@ -136,7 +136,7 @@ fn device_lock_keys(
     tenant: &str,
     devices: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<Vec<String>, Error> {
-    if devices.len() > 1000 {
+    if devices.len() > 1024 {
         return Err(Error::Malformed);
     }
     let keys = devices

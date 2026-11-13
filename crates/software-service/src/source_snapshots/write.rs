@@ -43,7 +43,7 @@ pub async fn replace<C: ManagementContentPort>(
     transaction::run(
         &app.audit,
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         audit,
         (
             app,

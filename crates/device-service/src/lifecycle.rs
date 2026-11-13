@@ -550,7 +550,7 @@ pub async fn retained_targets_on(
     after: Option<&ObjectRef>,
     limit: usize,
 ) -> Result<Vec<serde_json::Value>> {
-    if !(1..=1000).contains(&limit) {
+    if !(1..=1024).contains(&limit) {
         return Err(Error::Malformed);
     }
     Ok(sqlx::query_scalar("SELECT DISTINCT ON(o.object_kind,o.object_id) o.target FROM mdm_devices.retirements o JOIN mdm_devices.retirement_policies p ON(p.tenant_id,p.operation)=(o.tenant_id,o.id) WHERE o.tenant_id=$1::uuid AND p.policy=$2 AND ($3::smallint IS NULL OR (o.object_kind,o.object_id)>($3,$4::uuid)) ORDER BY o.object_kind,o.object_id,o.created_at DESC LIMIT $5")

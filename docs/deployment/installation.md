@@ -306,7 +306,7 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 | 方法与路径（前缀 `/api/v1/tenant-administration`） | 请求 / 结果 |
 |---|---|
 | POST `/provisionings` | `name`、`administratorLogin`、`administratorPassword`；返回完整开通操作 |
-| GET `/provisionings` | 开通操作分页列表；`after` 为上一页游标，`limit` 为 1–1000（默认 100）；返回 `items` 和 `nextAfter` |
+| GET `/provisionings` | 开通操作分页列表；`after` 为上一页游标，`limit` 为 1–1024（默认 100）；返回 `items` 和 `nextAfter` |
 | GET `/provisionings/{operationId}` | 查询原开通操作与当前恢复阶段 |
 | GET `/tenants` | 未删除租户列表，包含保留管理租户 |
 | GET `/tenants/{tenantId}` | 当前元数据 |
@@ -350,6 +350,14 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 配置与秘密为 owner 独占的普通 0600 文件，末级路径不得为符号链接；CA 为可读 PEM。maintenance 密码与恢复文件仅挂入 一次性维护容器，不挂入运行服务。恢复后验证新登录并按受控秘密管理流程处置临时密码文件。
 
 ## 运行配置与网络
+
+运行配置必须显式包含 `identity.runtime`、`background.scheduling`、`http`、`inventory_runtime` 与 `audit_query`，完整形状见 [MDM 配置示例](../../fixtures/mdm-config.example.json)。安装生成器写入当前保守值；恢复时保留原安装 target、lineage、tenant epoch 和 `rp_generation`，新安装 RP generation 为 1。Identity 公共数据库 schema 使用 owner 的版本 18，自有 HTTP、Agent 和安装格式仍为 V1。
+
+`background.scheduling` 分别配置 device、commands、tasks、planning、policy 的领取量、扫描量、lease、执行、重试及排空预算。设备并发默认 4，领取／扫描默认 64；领取支持至 1024，扫描独立配置。`command_recovery_batch_size` 和 `command_supersede_batch_size` 分别控制恢复遍历与替代命令的处理批次，默认 64。并发对应的物理池预算与 `database_host_instances` 在启动前统一 checked 校验。
+
+Identity 默认 KDF 并发 4、预留内存 128 MiB，请求 10 秒、认证 claim 60 秒、KDF 排空 5 秒。claim 必须覆盖当前配置允许的请求与维护密码操作总时长；密码计算在请求取消后仍由原 KDF 排空。OIDC 请求／连接默认 5／3 秒；JWKS TTL 60 秒、128 租户、刷新间隔 1 秒，租户容量可配置至 1024。独立 DA 使用 [DA 配置示例](../../deployment/da-config.example.json) 中必填的 `identity_policy` 和 `http`：启动总预算默认 60 秒，请求／连接排空 15 秒，宿主总排空 45 秒，维护总排空 30 秒。请求与 KDF 排空必须放入对应父预算；增大请求时需同步请求和连接排空。
+
+`audit_query` 默认允许 1024 行、8 MiB 的完整查询页；超出行或文档字节预算明确失败。Ledger 恢复使用 `recovery_rows`、`recovery_bytes`、`recovery_seconds` 的一次总预算，默认 64 条／4 MiB／10 秒。`inventory_runtime` 分别约束启动、每轮交付／投影、排空和读取批次／字节；Telemetry 的 `maintenance` 单独约束每次维护的 rows、buckets 和 step_seconds，首次接纳的行／桶预算随操作持久化。
 
 运行配置从交付的 mdm-config.example.json 填写：实例、租户、产品域名、数据库地址、独立秘密、Windows 公开设备 trust、协议密钥和独立 TLS 输入。各数据库角色连接同一 MDM 数据库。OIDC 可不配置，本地认证无需参考应用或企业 IdP；企业接入使用产品自己的 `/api/v1/identity/oidc/callback`。账户坐标及旧、新主体不自动对应的边界见认证指南。
 

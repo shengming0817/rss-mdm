@@ -6,19 +6,19 @@ use rss_mdm_query::directory::Schema;
 use serde_json::{Value, json};
 use uuid::Uuid;
 pub static ORGANIZATIONS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<Organization>("apple_organizations", &["id"], 100, 1000, &[])
+    Schema::derived::<Organization>("apple_organizations", &["id"], 100, 1024, &[])
         .expect("Public directory model")
 });
 pub static ACCOUNTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<Account>("apple_accounts", &["account"], 100, 1000, &[])
+    Schema::derived::<Account>("apple_accounts", &["account"], 100, 1024, &[])
         .expect("Public directory model")
 });
 pub static DEVICES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<Device>("ade_devices", &["serial"], 100, 1000, &[])
+    Schema::derived::<Device>("ade_devices", &["serial"], 100, 1024, &[])
         .expect("Public directory model")
 });
 pub(crate) static PROFILES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<Profile>("ade_profiles", &["id"], 100, 1000, &[])
+    Schema::derived::<Profile>("ade_profiles", &["id"], 100, 1024, &[])
         .expect("ADE profile model is fully described")
 });
 static PROFILE_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =

@@ -61,11 +61,11 @@ fn snapshot(_: &mut SchemaGenerator) -> Schema {
             ("sourceRevision", text.clone()),
             (
                 "nodes",
-                json!({"type":"array","minItems":1,"maxItems":256,"items":node}),
+                json!({"type":"array","minItems":1,"maxItems":1024,"items":node}),
             ),
             (
                 "memberships",
-                json!({"type":"array","maxItems":16,"items":text}),
+                json!({"type":"array","maxItems":1024,"items":text}),
             ),
         ],
         &["version", "sourceRevision", "nodes", "memberships"],

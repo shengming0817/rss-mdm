@@ -43,6 +43,9 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             rss_mdm_authorization_service::credential::RequestCredential::Bearer(
                 rss_identity_core::session::BearerSecret::parse(token.clone())?,
             ),
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                std::time::Duration::from_secs(10),
+            ),
         )
         .await?;
     let audit = || {
@@ -602,7 +605,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     );
     assert!(
         c.authority
-            .inspect_session(c.tenant, platform_session, platform::deadline())
+            .inspect_session(c.sessions.binding(), platform_session, platform::deadline())
             .await
             .is_err(),
         "registration revocation invalidates the existing platform session"

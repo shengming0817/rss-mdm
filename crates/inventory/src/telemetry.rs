@@ -128,7 +128,7 @@ impl FieldDefinition {
             unit: id(self.unit.as_deref().unwrap_or("1"))?,
             metric: metric(selected(root, &binding.value_path)?, binding.kind)?,
             dimensions: DimensionRules {
-                max_count: keys.len() as u16,
+                max_count: u16::try_from(keys.len()).map_err(|_| crate::Invalid::Value)?,
                 allowed: keys.clone(),
                 required: keys,
                 max_value_bytes: 256,

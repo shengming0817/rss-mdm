@@ -34,6 +34,8 @@ pub(crate) mod software;
 pub(crate) mod task_trust;
 pub(crate) mod webhooks;
 pub(crate) struct Assembly {
+    pub(crate) management_audit: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub(crate) request_budget: rss_axum::RequestBudget,
     pub(crate) da: Option<Arc<device_access::Assembly>>,
     pub(crate) script_work: Arc<rss_mdm_script_service::worker::Worker>,
     pub(crate) collection_work:
@@ -102,6 +104,7 @@ pub(crate) struct Assembly {
 }
 
 pub(crate) struct AssemblyDependencies {
+    pub(crate) management_audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) da: Option<Arc<device_access::Assembly>>,
     pub(crate) script_work: Arc<rss_mdm_script_service::worker::Worker>,
     pub(crate) collection_work:
@@ -166,10 +169,17 @@ pub(crate) async fn from_compiled(
     dependencies: AssemblyDependencies,
 ) -> Result<crate::native::Routers, Error> {
     let crate::config::Compiled {
+        identity: identity_policy,
+        inventory_runtime: _,
         config,
+        background: _,
+        http,
+        audit_query: _,
         identity_management,
     } = compiled;
+    let identity_runtime_policy = config.identity.runtime.clone();
     let AssemblyDependencies {
+        management_audit,
         da,
         script_work,
         collection_work,
@@ -224,7 +234,7 @@ pub(crate) async fn from_compiled(
             publications: Arc::new(
                 rss_mdm_policy_service::configuration::publication::Publications {
                     runtime: policy_application.runtime.clone(),
-                    tenant: policy_application.tenant,
+                    execution: policy_application.audit_store.binding(),
                     content: content_writer.clone(),
                     protection: protection.clone(),
                 },
@@ -276,10 +286,14 @@ pub(crate) async fn from_compiled(
                         .entra
                         .clone()
                         .map(|binding| {
-                            let verifier =
-                                rss_identity_oidc::entra::HttpEntra::new().map_err(|_| {
-                                    Error::Configuration(ConfigIssue::IdentityConfiguration)
-                                })?;
+                            let verifier = rss_identity_oidc::entra::HttpEntra::new(
+                                identity_policy.transport,
+                                identity_runtime_policy.jwks.max_token_bytes,
+                                identity_policy.jwks,
+                            )
+                            .map_err(|_| {
+                                Error::Configuration(ConfigIssue::IdentityConfiguration)
+                            })?;
                             let provider = rss_identity_core::federation::ProviderId::parse(
                                 &binding.provider_id.to_string(),
                             )
@@ -296,7 +310,7 @@ pub(crate) async fn from_compiled(
                             .map_err(crate::identity::failure)?;
                             rss_mdm_windows_channel::entra::Entra::new(
                                 authority,
-                                identity.tenant,
+                                identity.binding,
                                 binding,
                             )
                             .map(Arc::new)
@@ -464,19 +478,7 @@ pub(crate) async fn from_compiled(
             .map_err(Error::from)
         })
         .transpose()?;
-    let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
-        rss_transactional_messaging::fence::StorageIdentity::new(
-            config.storage_binding.target,
-            config.storage_binding.lineage,
-        )
-        .map_err(|_| Error::Malformed)?,
-        vec![(
-            identity.tenant,
-            rss_transactional_messaging::fence::Epoch::new(config.storage_binding.epoch)
-                .map_err(|_| Error::Malformed)?,
-        )],
-    )
-    .map_err(|_| Error::Malformed)?;
+    let binding = config.storage_binding.execution(identity.tenant)?;
     let webhooks = crate::assembly::webhooks::open(
         config.webhooks,
         protocol_runtime.clone(),
@@ -498,7 +500,7 @@ pub(crate) async fn from_compiled(
         audit_store
             .on_runtime(
                 protocol_runtime.clone(),
-                identity.tenant,
+                identity.binding,
                 &rss_mdm_audit_integration::budget::AuditBudget::new(
                     std::time::Duration::from_secs(6),
                 )
@@ -567,6 +569,8 @@ pub(crate) async fn from_compiled(
         execution: execution.clone(),
     });
     let state = Arc::new(Assembly {
+        management_audit,
+        request_budget: http.request,
         da,
         script_work,
         collection_work,

@@ -299,7 +299,6 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use std::time::Duration;
 fn programmatic_allowed(path: &str, authorization: bool, management: bool) -> bool {
     !management
         && authorization
@@ -405,6 +404,9 @@ async fn authenticate_inner(
     management: bool,
 ) -> Response {
     let (mut parts, body) = request.into_parts();
+    let Some(control) = parts.extensions.get::<rss_axum::RequestControl>().cloned() else {
+        return Error::Unavailable(Failure::RequestDeadline).into_response();
+    };
     let path = parts
         .extensions
         .get::<axum::extract::OriginalUri>()
@@ -422,6 +424,9 @@ async fn authenticate_inner(
             return Error::Unavailable(Failure::Capacity).into_response();
         }
     };
+    let Some(clock) = parts.extensions.get::<Arc<dyn rss_observation::Clock>>() else {
+        return Error::Unavailable(Failure::Runtime).into_response();
+    };
     match app
         .identity
         .authenticate_request(
@@ -433,6 +438,12 @@ async fn authenticate_inner(
                 .get::<rss_identity_http_axum::ClientAddress>()
                 .map(|address| address.0),
             programmatic_allowed(&path, authorization, management),
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                control
+                    .deadline()
+                    .instant()
+                    .saturating_duration_since(clock.now()),
+            ),
         )
         .await
     {
@@ -447,10 +458,7 @@ async fn authenticate_inner(
                 return Error::from(error).into_response();
             }
             // Authentication has settled. Authorization I/O and the handler share the host budget.
-            let Some(clock) = parts.extensions.get::<Arc<dyn rss_observation::Clock>>() else {
-                return Error::Unavailable(Failure::Runtime).into_response();
-            };
-            let deadline = clock.now() + Duration::from_secs(8);
+            let deadline = control.deadline().instant();
             let content_owned = parts
                 .extensions
                 .get::<axum::extract::MatchedPath>()
@@ -484,10 +492,11 @@ async fn authenticate_inner(
             parts.extensions.insert(RequestAuth {
                 sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
                     app.identity.authority.clone(),
-                    app.identity.tenant,
+                    app.identity.binding,
                 ),
                 proof: Arc::new(proof),
                 deadline,
+                cancellation: Arc::new(control),
             });
             let request = Request::from_parts(parts, body);
             if content_owned {

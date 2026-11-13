@@ -26,7 +26,6 @@ fn json(value: &impl serde::Serialize) -> Result<Value> {
 }
 pub(crate) struct Requests {
     pub runtime: Arc<PgRuntime>,
-    pub tenant: TenantId,
     pub audit: Arc<AuditStore>,
     pub instance: String,
     pub policy_reader: rss_mdm_policy_postgres::PolicyReader,
@@ -47,7 +46,6 @@ impl Requests {
                 tenant,
             ),
             runtime,
-            tenant,
             audit,
             instance,
             cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
@@ -73,7 +71,7 @@ impl Requests {
         let attempt = self
             .runtime
             .local_tx_with_context(
-                self.tenant,
+                self.audit.binding(),
                 rss_mdm_script_service::transaction::deadline(),
                 (context, Some(operation), &failure, audit, &self.audit),
                 |(context, operation, failure, audit, store), tx| {

@@ -94,7 +94,7 @@ pub async fn history(
     limit: usize,
 ) -> Result<Vec<HistoryRow>> {
     tenant(c, t).await?;
-    if !(1..=1000).contains(&limit) {
+    if !(1..=1024).contains(&limit) {
         return Err(corrupt());
     }
     sqlx::query("SELECT r.task,r.evaluated_at,r.document::text,j.failure FROM mdm_compliance.results r JOIN mdm_compliance.runs j ON (j.tenant_id,j.id)=(r.tenant_id,r.task) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND j.completed AND ($3::bigint IS NULL OR r.evaluated_at>=$3) AND ($4::bigint IS NULL OR r.evaluated_at<=$4) AND ($5::bigint IS NULL OR (r.evaluated_at,r.task)<($5,$6::uuid)) ORDER BY r.evaluated_at DESC,r.task DESC LIMIT $7")

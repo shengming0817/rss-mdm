@@ -66,7 +66,7 @@ impl ComplianceWork {
         self.compliance
             .runtime
             .local_tx_with_context(
-                self.compliance.tenant,
+                self.compliance.audit_store.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -150,7 +150,7 @@ impl Reconciler<PgClaim> for ComplianceWork {
             .compliance
             .runtime
             .local_tx_with_context(
-                self.compliance.tenant,
+                self.compliance.audit_store.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -195,7 +195,7 @@ impl Reconciler<PgClaim> for ComplianceWork {
             .compliance
             .runtime
             .local_tx_with_context(
-                self.compliance.tenant,
+                self.compliance.audit_store.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -306,11 +306,15 @@ impl DurableStore for ComplianceWork {
         &self,
         scope: &Scope,
         limit: usize,
+        scan_budget: u32,
         lease: Duration,
         control: &Control<'_, T>,
     ) -> std::result::Result<ClaimBatch<PgClaim>, ReconcileError> {
         self.check(scope)?;
-        let result = self.schedule.claim_due(scope, limit, lease, control).await;
+        let result = self
+            .schedule
+            .claim_due(scope, limit, scan_budget, lease, control)
+            .await;
 
         self.compliance
             .worker_health
@@ -398,20 +402,17 @@ impl Timer for ComplianceTimer {
 impl ComplianceWork {
     pub fn registration(
         self: Arc<Self>,
+        policy: rss_reconcile::Policy,
+        drain: std::time::Duration,
         notify: Arc<tokio::sync::Notify>,
     ) -> rss_runtime::ManagedTaskRegistration {
-        let (task, status) =
-            rss_runtime::ManagedTask::prepare("mdm-compliance-evaluation", Duration::from_secs(20));
+        let (task, status) = rss_runtime::ManagedTask::prepare("mdm-compliance-evaluation", drain);
         let _ = self.compliance.task_status.set(status);
         task.into_registration(move |cancel| async move {
             #[allow(clippy::disallowed_methods, reason="monotonic execution clock boundary")]
             let timer=ComplianceTimer(tokio::time::Instant::now());
             let force = tokio_util::sync::CancellationToken::new();
             let control=Control::new(&timer,Duration::MAX,&force);
-            let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
-                concurrency:CONCURRENCY,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(5),
-                initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
-            }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=Scope::new(self.compliance.tenant,"mdm.compliance").expect("constant scope");
                          rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,&cancel,&notify,|event| {
                 if !matches!(event, rss_reconcile::Observation::Deferred { .. }) {
@@ -432,7 +433,7 @@ impl ComplianceWork {
         self.compliance
             .runtime
             .local_tx_with_context(
-                self.compliance.tenant,
+                self.compliance.audit_store.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -465,7 +466,7 @@ impl ComplianceWork {
         self.compliance
             .runtime
             .local_tx_with_context(
-                self.compliance.tenant,
+                self.compliance.audit_store.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -510,7 +511,7 @@ impl ComplianceWork {
         self.compliance
             .runtime
             .local_tx_with_context(
-                self.compliance.tenant,
+                self.compliance.audit_store.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),

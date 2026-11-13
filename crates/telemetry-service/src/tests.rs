@@ -465,7 +465,7 @@ fn array_counters_use_declared_per_resource_reset_paths() {
 }
 
 #[test]
-fn current_destination_encoding_is_bounded_even_when_the_wire_body_fits() {
+fn current_destination_preserves_complete_large_values_within_its_batch_budget() {
     let mut definitions = fields();
     let mut spec = profile(TelemetryProjection::Current).spec().clone();
     let seed = definitions[0].clone();
@@ -503,7 +503,7 @@ fn current_destination_encoding_is_bounded_even_when_the_wire_body_fits() {
         })
         .collect();
     assert!(serde_json::to_vec(&point).unwrap().len() < 4 * 1024 * 1024);
-    let mut accepted = crate::admission::Accepted {
+    let accepted = crate::admission::Accepted {
         tenant: "11111111-1111-4111-8111-111111111111".into(),
         device: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
             .unwrap(),
@@ -518,18 +518,11 @@ fn current_destination_encoding_is_bounded_even_when_the_wire_body_fits() {
         input: point,
     };
     assert!(accepted.history().unwrap().is_none());
-    assert!(crate::current::prepare(&accepted).is_err());
-    for reading in accepted.input.observations[0].values.values_mut() {
-        let w::TelemetryReading::Valid {
-            value: w::Scalar::String(text),
-            ..
-        } = reading
-        else {
-            unreachable!()
-        };
-        text.truncate(65024);
-    }
-    assert_eq!(crate::current::prepare(&accepted).unwrap().1.len(), 1);
+    let (definition, batches) = crate::current::prepare(&accepted).unwrap();
+    assert_eq!(definition.fields().len(), 16);
+    assert_eq!(batches.len(), 1);
+    assert!(batches[0].encode().len() > 1024 * 1024);
+    assert!(batches[0].encode().len() <= 4 * 1024 * 1024);
 }
 
 #[test]

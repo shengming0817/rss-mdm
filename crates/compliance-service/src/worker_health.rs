@@ -106,7 +106,7 @@ impl crate::Compliance {
         let failed = self
             .runtime
             .local_tx_with_context(
-                self.tenant,
+                self.audit_store.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),
                 self,
                 |_, tx| {

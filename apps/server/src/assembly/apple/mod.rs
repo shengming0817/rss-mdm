@@ -82,6 +82,7 @@ pub(crate) fn router(
     apple: Option<&Apple>,
     app: Arc<rss_mdm_apple_channel::HttpState>,
     clock: Arc<dyn rss_observation::Clock>,
+    request_budget: rss_axum::RequestBudget,
 ) -> Option<crate::native::ChannelRouter> {
     use crate::native::{ChannelRouter, admission};
     use axum::middleware;
@@ -90,6 +91,7 @@ pub(crate) fn router(
     let router = rss_mdm_apple_channel::router(
         app.clone(),
         Envelope {
+            request_budget,
             admission: Arc::new(tokio::sync::Semaphore::new(32)),
             host: apple
                 .config

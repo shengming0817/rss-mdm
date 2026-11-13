@@ -109,7 +109,7 @@ impl Groups {
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
-        transaction::inspect(&self.runtime,self.tenant,(self,proof,id,q),|ctx,tx|Box::pin(async move {
+        transaction::inspect(&self.runtime,self.audit_store.binding(),(self,proof,id,q),|ctx,tx|Box::pin(async move {
             let (s,p,id,q)=*ctx;
             let authority=transaction::query_authority(tx,p).await?;
             authority.require(p,Permission::GroupRead,None)?;

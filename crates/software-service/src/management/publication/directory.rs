@@ -39,7 +39,7 @@ pub async fn list(
         "management_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    transaction::inspect(&s.runtime,s.tenant,(s,p,audit,q),|ctx,tx|Box::pin(async move{
+    transaction::inspect(&s.runtime,s.audit_store.binding(),(s,p,audit,q),|ctx,tx|Box::pin(async move{
   let(s,p,_audit,q)=ctx;let current=transaction::current(tx,p).await?;current.require(p,Permission::ReleaseRead,None)?;
   let binding=q.binding(&(p.tenant_id(),p.instance_id(),current.query_binding(p)?)).map_err(query_error)?;let after=q.after(&s.cursor,&binding).map_err(query_error)?;
   s.audit_store.bind_in(tx).await.map_err(Error::from)?;crate::catalog::storage::lock(tx).await.map_err(|_|Error::Conflict)?;
@@ -69,7 +69,7 @@ pub async fn targets(
     p.manage(Permission::ReleaseRead)?;
     transaction::inspect(
         &s.runtime,
-        s.tenant,
+        s.audit_store.binding(),
         (s, p, q),
         |ctx, tx| {
             Box::pin(async move {

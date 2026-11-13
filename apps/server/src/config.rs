@@ -1,4 +1,5 @@
 //! Configuration is read once; all changes require a process restart.
+pub mod http;
 pub mod webhooks;
 use crate::ConfigIssue;
 use crate::Error;
@@ -79,9 +80,31 @@ pub struct MigrationConfig {
     pub device_access_database: Database,
     pub installation: crate::migration::Installation,
 }
+#[derive(Clone, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditReadConfig {
+    pub recovery_rows: u16,
+    pub recovery_bytes: u64,
+    pub recovery_seconds: u64,
+    pub max_rows: usize,
+    pub max_bytes: u64,
+}
+impl AuditReadConfig {
+    pub(crate) fn recovery_limit(&self) -> Result<rss_ledger_postgres::ReadLimit, Error> {
+        rss_ledger_postgres::ReadLimit::new(self.recovery_rows, self.recovery_bytes)
+            .map_err(|_| Error::Configuration(ConfigIssue::Budget))
+    }
+    pub(crate) fn compile(&self) -> Result<rss_mdm_timeline_service::QueryBudget, Error> {
+        self.recovery_limit()?;
+        crate::identity::policy::seconds(self.recovery_seconds)?;
+        rss_mdm_timeline_service::QueryBudget::new(self.max_rows, self.max_bytes)
+            .map_err(|_| Error::Configuration(ConfigIssue::Budget))
+    }
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Identity {
+    pub runtime: crate::identity::policy::RuntimePolicy,
     pub instance_id: String,
     pub tenant_id: String,
     pub database: Database,
@@ -132,6 +155,7 @@ impl NativeProtection {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub http: http::Http,
     pub device_access: Option<crate::assembly::device_access::config::Config>,
     pub background: crate::background::BackgroundConfig,
     pub telemetry: Option<crate::telemetry::Config>,
@@ -146,6 +170,8 @@ pub struct Config {
     pub native_protection: NativeProtection,
     pub recovery_credentials: Option<rss_mdm_recovery_credentials::configuration::Config>,
     pub audit: AuditConfig,
+    pub audit_query: AuditReadConfig,
+    pub inventory_runtime: InventoryRuntimeConfig,
     pub listen: SocketAddr,
     pub product_origin: String,
     #[serde(default)]
@@ -166,6 +192,11 @@ pub struct Config {
     pub tenant_administration: Option<crate::administration::tenants::service::Config>,
 }
 pub(crate) struct Compiled {
+    pub identity: crate::identity::policy::Compiled,
+    pub inventory_runtime: rss_mdm_inventory_service::inventory_runtime::Policy,
+    pub http: http::Compiled,
+    pub audit_query: rss_mdm_timeline_service::QueryBudget,
+    pub background: crate::background::Compiled,
     pub config: Config,
     pub identity_management:
         Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
@@ -196,7 +227,22 @@ impl Config {
         self.native_protection.load()
     }
     pub(crate) fn compile(self) -> Result<Compiled, Error> {
-        self.background.validate(&self)?;
+        let background = self.background.compile(&self)?;
+        let audit_query = self.audit_query.compile()?;
+        let inventory_runtime = self.inventory_runtime.compile()?;
+        let http = self.http.compile(&self.identity.runtime)?;
+        if [
+            background.device_drain,
+            background.commands_drain,
+            background.tasks_drain,
+            background.planning_drain,
+            background.policy_drain,
+        ]
+        .into_iter()
+        .any(|v| v > http.total_drain)
+        {
+            return Err(Error::Configuration(ConfigIssue::Budget));
+        }
         self.runtime_binding.validate()?;
         if self
             .task_signing
@@ -290,7 +336,16 @@ impl Config {
                 rss_mdm_install_support::StorageProfile::Mdm,
                 &self.identity.instance_id,
             )?;
+        let identity = self
+            .identity
+            .runtime
+            .compile(instance, self.audit.integrity()?)?;
         Ok(Compiled {
+            identity,
+            inventory_runtime,
+            http,
+            audit_query,
+            background,
             config: self,
             identity_management: Arc::new(identity_management),
         })
@@ -355,5 +410,44 @@ impl Database {
             ca_file: &self.ca_file,
             profile: rss_mdm_install_support::StorageProfile::Mdm,
         })
+    }
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InventoryRuntimeConfig {
+    pub startup_seconds: u64,
+    pub pass_seconds: u64,
+    pub drain_seconds: u64,
+    pub delivery_batch: u32,
+    pub delivery_bytes: u64,
+    pub projection_batch: u32,
+    pub projection_events: u64,
+}
+impl InventoryRuntimeConfig {
+    pub(crate) fn installation() -> Self {
+        Self {
+            startup_seconds: 5,
+            pass_seconds: 5,
+            drain_seconds: 5,
+            delivery_batch: 32,
+            delivery_bytes: 64 * 1024 * 1024,
+            projection_batch: 64,
+            projection_events: 64,
+        }
+    }
+    pub(crate) fn compile(
+        &self,
+    ) -> Result<rss_mdm_inventory_service::inventory_runtime::Policy, Error> {
+        rss_mdm_inventory_service::inventory_runtime::Policy::new(
+            crate::identity::policy::seconds(self.startup_seconds)?,
+            crate::identity::policy::seconds(self.pass_seconds)?,
+            crate::identity::policy::seconds(self.drain_seconds)?,
+            self.delivery_batch,
+            self.delivery_bytes,
+            self.projection_batch,
+            self.projection_events,
+        )
+        .map_err(Error::from)
     }
 }

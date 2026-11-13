@@ -76,7 +76,7 @@ impl Service {
         );
         audit.target(&id.to_string());
         audit.identify_service("command-dispatch");
-        let result=transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
+        let result=transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.audit_store.binding(),&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
             let (service,id,fingerprint,audit)=ctx;
             transaction::prepare_audit_in(&service.transactions.audit_store,tx,audit,&[]).await?;
             let run=super::storage::read_run(tx,*id).await?;

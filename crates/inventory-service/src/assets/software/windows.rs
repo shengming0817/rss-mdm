@@ -3,7 +3,7 @@ use rss_mdm_query::window::Schema;
 pub static STANDARDS: Schema = Schema {
     id: "standard_software",
     default_limit: 100,
-    max_limit: 1000,
+    max_limit: 1024,
     order: "configuration revision, UUID",
     purpose: rss_mdm_query::window::Purpose::Snapshot,
     reason: "The continuation freezes the software-standard configuration revision",
@@ -12,7 +12,7 @@ pub static STANDARDS: Schema = Schema {
 pub static BUCKETS: Schema = Schema {
     id: "software_asset_buckets",
     default_limit: 100,
-    max_limit: 1000,
+    max_limit: 1024,
     order: "frozen software identity",
     purpose: rss_mdm_query::window::Purpose::Snapshot,
     reason: "Rows belong to one fixed software asset query snapshot",
@@ -21,7 +21,7 @@ pub static BUCKETS: Schema = Schema {
 pub static DEVICES: Schema = Schema {
     id: "software_asset_devices",
     default_limit: 100,
-    max_limit: 1000,
+    max_limit: 1024,
     order: "frozen object identity",
     purpose: rss_mdm_query::window::Purpose::Snapshot,
     reason: "Rows belong to one fixed software asset query snapshot",
@@ -30,7 +30,7 @@ pub static DEVICES: Schema = Schema {
 pub static EVIDENCE: Schema = Schema {
     id: "software_asset_evidence",
     default_limit: 100,
-    max_limit: 1000,
+    max_limit: 1024,
     order: "frozen evidence identity",
     purpose: rss_mdm_query::window::Purpose::Snapshot,
     reason: "Rows belong to one fixed software asset query snapshot",
@@ -39,7 +39,7 @@ pub static EVIDENCE: Schema = Schema {
 pub static BREAKDOWNS: Schema = Schema {
     id: "software_asset_breakdowns",
     default_limit: 100,
-    max_limit: 1000,
+    max_limit: 1024,
     order: "frozen dimension value",
     purpose: rss_mdm_query::window::Purpose::Snapshot,
     reason: "Rows belong to one fixed software asset query snapshot",
@@ -49,7 +49,7 @@ pub static BREAKDOWNS: Schema = Schema {
 pub static MAPPINGS: Schema = Schema {
     id: "software_mappings",
     default_limit: 100,
-    max_limit: 1000,
+    max_limit: 1024,
     order: "configuration revision, UUID",
     purpose: rss_mdm_query::window::Purpose::Snapshot,
     reason: "The continuation freezes the complete software-mapping configuration revision",
@@ -59,7 +59,7 @@ pub static MAPPINGS: Schema = Schema {
 pub static COVERAGE: Schema = Schema {
     id: "software_asset_coverage",
     default_limit: 100,
-    max_limit: 1000,
+    max_limit: 1024,
     order: "frozen object identity",
     purpose: rss_mdm_query::window::Purpose::Snapshot,
     reason: "Rows belong to one fixed software asset query snapshot",

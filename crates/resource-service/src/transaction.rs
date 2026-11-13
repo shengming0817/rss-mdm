@@ -1,6 +1,6 @@
 //! Host transaction settlement for execution and action-plan requests.
 use crate::{Error, Failure};
-use rss_request_context::TenantId;
+use rss_transactional_messaging::fence::ExecutionBinding;
 use rss_transactional_messaging_postgres::{PgError, PgRuntime, PgTransaction};
 use std::{sync::Mutex, time::Duration};
 #[derive(Debug, thiserror::Error)]
@@ -91,7 +91,7 @@ pub fn settle<T>(
 pub async fn run<C: Send, R: Send, F>(
     audit_store: &rss_mdm_audit_integration::AuditStore,
     runtime: &PgRuntime,
-    tenant: TenantId,
+    binding: ExecutionBinding,
     audit: &RequestAudit,
     context: C,
     operation: F,
@@ -107,7 +107,7 @@ where
     let failure = Mutex::new(None);
     let attempt = runtime
         .local_tx_with_context(
-            tenant,
+            binding,
             deadline(),
             (audit_store, context, Some(operation), audit, &failure),
             |state, tx| {
@@ -154,7 +154,7 @@ use serde_json::Value;
 /// It deliberately does not advance the outer request's single mutation settlement state.
 pub async fn inspect<C: Send, R: Send, F>(
     runtime: &PgRuntime,
-    tenant: TenantId,
+    binding: ExecutionBinding,
     context: C,
     operation: F,
 ) -> std::result::Result<R, Error>
@@ -169,7 +169,7 @@ where
     let failure = Mutex::new(None);
     let attempt = runtime
         .local_tx_with_context(
-            tenant,
+            binding,
             deadline(),
             (context, Some(operation), &failure),
             |state, tx| {
@@ -213,7 +213,7 @@ pub async fn current(
     {
         return Err(Error::Forbidden.into());
     }
-    let tenant = proof.tenant_id().to_owned();
+    let binding = proof.tenant_id().to_owned();
     let instance = proof.instance_id().to_owned();
     Ok(tx
         .with_connection(move |c| {
@@ -221,7 +221,7 @@ pub async fn current(
                 crate::authorization::lock_shared_on(
                     rss_mdm_install_support::StorageProfile::Mdm,
                     c,
-                    &tenant,
+                    &binding,
                     &instance,
                 )
                 .await
@@ -229,7 +229,7 @@ pub async fn current(
                 Ok(crate::authorization::snapshot_on(
                     rss_mdm_install_support::StorageProfile::Mdm,
                     c,
-                    &tenant,
+                    &binding,
                     &instance,
                 )
                 .await)

@@ -28,7 +28,7 @@ impl Service {
         crate::enrollment::tasks::transaction::run(
             &self.transactions.audit_store,
             &self.transactions.runtime,
-            self.transactions.tenant,
+            self.transactions.audit_store.binding(),
             audit,
             (self, p, task, input, audit),
             |ctx, tx| {

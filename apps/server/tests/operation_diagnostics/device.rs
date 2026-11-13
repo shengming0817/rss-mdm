@@ -120,7 +120,7 @@ pub(super) async fn hold_retirement(c: &Context, operation: Uuid) -> Result<Prog
         )
         .await?;
     let batch = store
-        .claim_due(&scope, 1, Duration::from_secs(120), &control)
+        .claim_due(&scope, 1, 64, Duration::from_secs(120), &control)
         .await?;
     let claim = batch
         .claims

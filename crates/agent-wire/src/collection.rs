@@ -142,7 +142,7 @@ pub enum ValueType {
     /// Closed string vocabulary.
     Enum {
         /// Permitted nonempty values.
-        #[schemars(extend("minItems" = 1, "maxItems" = 128, "uniqueItems" = true, "items" = serde_json::json!({"type":"string","minLength":1,"maxLength":256})))]
+        #[schemars(extend("minItems" = 1, "maxItems" = 1024, "uniqueItems" = true, "items" = serde_json::json!({"type":"string","minLength":1,"maxLength":256})))]
         values: BTreeSet<String>,
     },
     /// Signed 64-bit integer.
@@ -205,7 +205,7 @@ impl ValueType {
             }
             Self::Enum { values } => {
                 if values.is_empty()
-                    || values.len() > 128
+                    || values.len() > 1024
                     || values
                         .iter()
                         .any(|v| v.is_empty() || v.len() > 256 || v.chars().any(char::is_control))
@@ -623,7 +623,7 @@ struct Definition {
     source: Source,
     #[schemars(extend("const" = serde_json::json!({"kind":"device"})))]
     scope: crate::CollectionScope,
-    #[schemars(extend("minItems" = 1, "maxItems" = 128))]
+    #[schemars(extend("minItems" = 1, "maxItems" = 4096))]
     fields: Vec<FieldDefinition>,
 }
 /// Frozen source and field definitions for one published collector version.
@@ -658,7 +658,7 @@ impl CollectionDefinition {
             || version.len() > 128
             || source == Source::Manual
             || fields.is_empty()
-            || fields.len() > 128
+            || fields.len() > super::MAX_REPORT_FIELDS
         {
             return Err(WireError::InvalidValue);
         }

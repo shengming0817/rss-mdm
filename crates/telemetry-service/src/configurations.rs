@@ -136,7 +136,7 @@ impl Service {
         let failure = Arc::new(Mutex::new(None));
         let rejected = failure.clone();
         self.runtime
-            .local_tx(self.tenant, crate::deadline(), move |tx| {
+            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
                 Box::pin(async move {
                     service
                         .audit_store

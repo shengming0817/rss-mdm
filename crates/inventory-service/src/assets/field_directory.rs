@@ -25,7 +25,7 @@ impl AssetService {
         q.require_schema(&SCHEMA).map_err(crate::query_error)?;
         crate::transaction::inspect(
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             (self, p, q, audit),
             |ctx, tx| {
                 Box::pin(async move {
@@ -92,7 +92,7 @@ impl AssetService {
     ) -> std::result::Result<AssetEnvelope, Error> {
         crate::transaction::inspect(
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             (self, p, key, audit),
             |ctx, tx| {
                 Box::pin(async move {

@@ -91,9 +91,22 @@ impl Context {
         for additional in additional_tenants {
             seed_tenant(&operator, *additional).await?;
         }
-        let mut identity_tenants = vec![tenant];
-        identity_tenants.extend_from_slice(additional_tenants);
-        Self::connect(profile, inputs, operator, tenant, identity_tenants).await
+        Self::connect(
+            profile,
+            inputs,
+            operator,
+            tenant,
+            &config::AuditConfig::Plain,
+        )
+        .await
+    }
+    pub async fn open_with_audit(profile: &str, audit: &config::AuditConfig) -> Result<Self> {
+        let mut inputs = Inputs::load()?;
+        inputs.installation.audit_mode = audit.mode();
+        let operator = inputs.pool(profile, "postgres").await?;
+        let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
+        seed_tenant(&operator, tenant).await?;
+        Self::connect(profile, inputs, operator, tenant, audit).await
     }
     pub async fn management(profile: &str) -> Result<Self> {
         let inputs = Inputs::load()?;
@@ -105,53 +118,56 @@ impl Context {
         .await?;
         sqlx::query("INSERT INTO identity_authority.guard(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING")
             .bind(tenant.to_string()).execute(&operator).await?;
-        Self::connect(profile, inputs, operator, tenant, vec![tenant]).await
+        Self::connect(
+            profile,
+            inputs,
+            operator,
+            tenant,
+            &config::AuditConfig::Plain,
+        )
+        .await
     }
     async fn connect(
         profile: &str,
         inputs: Inputs,
         operator: PgPool,
         tenant: TenantId,
-        identity_tenants: Vec<TenantId>,
+        audit_config: &config::AuditConfig,
     ) -> Result<Self> {
-        let database = crate::Database::connect(
-            inputs.options(profile, "mdm_access")?,
-            &config::AuditConfig::Plain {},
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("MDM connection admission: {e:?}"))?;
+        let database =
+            crate::Database::connect(inputs.options(profile, "mdm_access")?, audit_config)
+                .await
+                .map_err(|e| anyhow::anyhow!("MDM connection admission: {e:?}"))?;
         let runtime = identity::open_runtime(
             &inputs.database(profile, "mdm_access"),
             &inputs.installation.target,
             &inputs.installation.lineage,
-            &[(tenant, 1)],
             4,
         )
         .await
         .map_err(|e| anyhow::anyhow!("MDM messaging runtime: {e:?}"))?;
+        let binding = inputs.installation.execution(tenant, 1)?;
         let audit = database
-            .audit_store(&config::AuditConfig::Plain {}, runtime.clone(), tenant)
+            .audit_store(audit_config, runtime.clone(), binding)
             .await?;
         let identity_runtime = identity::open_runtime(
             &inputs.database(profile, "mdm_identity_runtime"),
             &inputs.installation.target,
             &inputs.installation.lineage,
-            &identity_tenants
-                .iter()
-                .map(|tenant| (*tenant, 1))
-                .collect::<Vec<_>>(),
             4,
         )
         .await?;
-        let kdf = Arc::new(PasswordKdf::new());
+        let policy = identity::policy::RuntimePolicy::installation();
+        let compiled = policy.compile(
+            InstanceId::parse(&inputs.installation.instance_id)?,
+            audit_config.integrity()?,
+        )?;
+        let kdf = compiled.kdf.clone();
         let authority = Authority::connect_runtime(
             identity_runtime.clone(),
             kdf.clone(),
-            identity::authority_config(
-                InstanceId::parse(&inputs.installation.instance_id)?,
-                identity_tenants,
-                rss_audit_postgres::Integrity::Plain,
-            )?,
+            compiled.authority,
+            binding,
             Arc::new(access::identity_management::IdentityManagementPolicy::new(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 &inputs.installation.instance_id,
@@ -181,6 +197,28 @@ impl Context {
             principal_id: principal.to_string(),
         }
     }
+    pub async fn authority_with_policy(
+        &self,
+        policy: &crate::identity::policy::RuntimePolicy,
+    ) -> Result<Authority> {
+        Ok(Authority::connect_runtime(
+            self.identity_runtime.clone(),
+            self.kdf.clone(),
+            policy
+                .compile(
+                    InstanceId::parse(&self.inputs.installation.instance_id)?,
+                    self.audit.integrity().clone(),
+                )?
+                .authority,
+            self.audit.binding(),
+            Arc::new(access::identity_management::IdentityManagementPolicy::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                &self.inputs.installation.instance_id,
+            )?),
+            deadline(),
+        )
+        .await?)
+    }
     pub async fn account(&self, permissions: &[Permission]) -> Result<Account> {
         let principal = Uuid::new_v4();
         let login = format!("foundation-{principal}");
@@ -199,7 +237,7 @@ impl Context {
         let issued = self
             .authority
             .login_local(
-                self.tenant,
+                self.audit.binding(),
                 LoginKey::parse(&login)?,
                 Password::new(password.into())?,
                 AttemptSource::parse("foundation-t2")?,
@@ -218,8 +256,8 @@ impl Context {
         account: &Account,
     ) -> Result<access::context::AuthorizedPrincipal> {
         Ok(
-            access::session::SessionAuthority::new(self.authority.clone(), self.tenant)
-                .authenticate(&self.access(), account.credential()?)
+            access::session::SessionAuthority::new(self.authority.clone(), self.audit.binding())
+                .authenticate(&self.access(), account.credential()?, deadline())
                 .await?,
         )
     }
@@ -237,10 +275,17 @@ impl Context {
         &self,
         proof: Arc<access::context::AuthorizedPrincipal>,
     ) -> access::context::RequestAuth {
+        let budget = Arc::new(rss_mdm_audit_integration::budget::AuditBudget::new(
+            Duration::from_secs(8),
+        ));
         access::context::RequestAuth {
             proof,
-            sessions: access::session::SessionAuthority::new(self.authority.clone(), self.tenant),
-            deadline: self.access().now() + std::time::Duration::from_secs(8),
+            sessions: access::session::SessionAuthority::new(
+                self.authority.clone(),
+                self.audit.binding(),
+            ),
+            deadline: budget.deadline().instant(),
+            cancellation: budget,
         }
     }
     pub fn request(&self, proof: &access::context::AuthorizedPrincipal) -> Result<RequestAudit> {
@@ -406,4 +451,16 @@ pub async fn seed_rule(
         .bind(&user.tenant_id).bind(&user.instance_id).bind(id).bind(serde_json::to_value(rule)?)
         .execute(pool).await?;
     Ok(())
+}
+
+/// Current host policy for focused fixtures that do not open a complete application.
+pub(crate) fn background() -> Result<crate::background::Compiled> {
+    let config: crate::config::Config =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))?;
+    Ok(config.background.compile(&config)?)
+}
+pub(crate) fn inventory_policy() -> Result<rss_mdm_inventory_service::inventory_runtime::Policy> {
+    let config: crate::config::Config =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))?;
+    Ok(config.inventory_runtime.compile()?)
 }

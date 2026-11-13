@@ -123,7 +123,7 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,mdm AS $$
 DECLARE message bytea; outcome text;
 BEGIN
  IF t IS DISTINCT FROM nullif(current_setting('rss.tenant_id',true),'')::uuid
-    OR octet_length(payload::text)>131072 THEN
+    OR octet_length(payload::text)>CASE WHEN route='asset.changed' AND contract='mdm.asset.changed' THEN 1048576 ELSE 131072 END THEN
   RAISE EXCEPTION 'invalid product input event' USING ERRCODE='23514';
  END IF;
  message=mdm.input_frame(0,convert_to('rss-transactional-message-v1','UTF8'))
@@ -168,7 +168,7 @@ BEGIN
  VALUES(t,v,epoch,pg_current_xact_id(),k,identity,fields);
  payload=jsonb_build_object('v',1,'tenant',t,'revision',v,'historyEpoch',epoch,'kind',k,'identity',identity,'fields',to_jsonb(fields));
  PERFORM mdm.append_input_event(t,'asset.changed.v1:'||epoch::text||':'||v::text,
-  'asset.changed','mdm.asset.changed','sha256:51142fb9482f4598cecbc514b902dc8572a9b38b6847ea9c352032db27bf4a66',payload);
+  'asset.changed','mdm.asset.changed','sha256:e261201f3f07ad3d8d8e58d8d88749103a68c9a7d1acf07679c142ad0af371e0',payload);
  -- Existing device/software lifecycle consumers still use this hint; this chain uses Outbox.
  PERFORM pg_notify('mdm_work_'||replace(t::text,'-',''),'assets_changed');
  RETURN v;
@@ -213,17 +213,17 @@ CREATE TABLE mdm.field_versions (
  revision bigint NOT NULL, definition jsonb,
  PRIMARY KEY(tenant_id,field,version),
  FOREIGN KEY(tenant_id,revision) REFERENCES mdm.asset_changes(tenant_id,revision),
- CHECK(definition IS NULL OR octet_length(definition::text)<=65536)
+ CHECK(definition IS NULL OR octet_length(definition::text)<=1048576)
 );
 CREATE INDEX field_versions_event ON mdm.field_versions(tenant_id,revision,field);
 CREATE TABLE mdm.collection_definitions (
  tenant_id uuid NOT NULL, dataset text NOT NULL, version text NOT NULL CHECK(length(version) BETWEEN 1 AND 128),
  source text NOT NULL CHECK(source IN ('mdm.windows','mdm.apple','agent.builtin','agent.script','agent.osquery','agent.native')),
  fingerprint text NOT NULL CHECK(fingerprint ~ '^[0-9a-f]{64}$'),
- coverage text NOT NULL, definition jsonb NOT NULL CHECK(octet_length(definition::text)<=1048576),
+ coverage text NOT NULL, definition jsonb NOT NULL CHECK(octet_length(definition::text)<=4194304),
  CONSTRAINT collection_field_scopes CHECK(
  NOT (definition ? 'scope') AND jsonb_typeof(definition->'fields')='array'
- AND jsonb_array_length(definition->'fields') BETWEEN 1 AND 128
+ AND jsonb_array_length(definition->'fields') BETWEEN 1 AND 4096
  AND NOT jsonb_path_exists(definition, '$.fields[*] ? (!exists(@.scope) || !exists(@.definition))')),
  PRIMARY KEY(tenant_id,dataset,source,version), UNIQUE(tenant_id,coverage,source)
 );

@@ -317,7 +317,7 @@ impl channels::AppleResults for Store {
         native_values: bool,
     ) -> Pending<'a, std::collections::BTreeMap<Uuid, channels::AppleEvidence>> {
         Box::pin(async move {
-            if requests.len() > 1000 {
+            if requests.len() > 1024 {
                 return Err(Error::Malformed);
             }
             let (declarations, other): (Vec<_>, Vec<_>) =
@@ -758,7 +758,7 @@ impl Store {
         tenant: rss_request_context::TenantId,
         ids: Vec<Uuid>,
     ) -> std::result::Result<std::collections::BTreeSet<Uuid>, Error> {
-        if ids.len() > 1000 {
+        if ids.len() > 1024 {
             return Err(Error::Malformed);
         }
         let ids:Vec<Uuid>=sqlx::query_scalar("SELECT DISTINCT operation FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=ANY($2) AND phase='execute' AND state<>'pending'").bind(tenant.to_string()).bind(ids).fetch_all(c).await.map_err(storage)?;

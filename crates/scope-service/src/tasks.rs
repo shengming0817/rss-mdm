@@ -116,32 +116,37 @@ impl Scopes {
         id: Uuid,
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
-        crate::transaction::inspect(&self.runtime, self.tenant, (self, p), |(s, p), tx| {
-            Box::pin(async move {
-                crate::action_admission::current(tx, p).await?.require(
-                    p,
-                    rss_mdm_authorization_service::Permission::PolicyRead,
-                    None,
-                )?;
-                let task = s.store.task_in(tx, id).await?;
-                let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
-                value.object = Some(task.scope.to_string());
-                value.accepted = Some(true);
-                value.executions.push(id);
-                value.state = Some(
-                    match task.failure.as_deref() {
-                        Some("superseded") => "superseded",
-                        Some(_) => "failed",
-                        None if task.completed => "completed",
-                        None if task.forwarded => "running",
-                        _ => "pending",
-                    }
-                    .into(),
-                );
-                p.check_live()?;
-                Ok(Some(value))
-            })
-        })
+        crate::transaction::inspect(
+            &self.runtime,
+            self.audit_store.binding(),
+            (self, p),
+            |(s, p), tx| {
+                Box::pin(async move {
+                    crate::action_admission::current(tx, p).await?.require(
+                        p,
+                        rss_mdm_authorization_service::Permission::PolicyRead,
+                        None,
+                    )?;
+                    let task = s.store.task_in(tx, id).await?;
+                    let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                    value.object = Some(task.scope.to_string());
+                    value.accepted = Some(true);
+                    value.executions.push(id);
+                    value.state = Some(
+                        match task.failure.as_deref() {
+                            Some("superseded") => "superseded",
+                            Some(_) => "failed",
+                            None if task.completed => "completed",
+                            None if task.forwarded => "running",
+                            _ => "pending",
+                        }
+                        .into(),
+                    );
+                    p.check_live()?;
+                    Ok(Some(value))
+                })
+            },
+        )
         .await
     }
 }

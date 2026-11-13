@@ -65,7 +65,7 @@ async fn wake(
 ) -> Result<()> {
     transaction::inspect(
         &app.runtime,
-        app.tenant,
+        app.audit_store.binding(),
         (app, vec![device.to_owned()]),
         |ctx, tx| {
             Box::pin(async move {
@@ -95,7 +95,7 @@ pub(crate) async fn step(
         Sha256::digest(device.to_string().as_bytes())
     );
     let batch = worker
-        .claim_due(&scope, 16, Duration::from_secs(30), &control)
+        .claim_due(&scope, 16, 64, Duration::from_secs(30), &control)
         .await?;
     let mut applied = false;
     for claim in batch.claims {
@@ -134,6 +134,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
         .await
         .map_err(|error| anyhow::anyhow!("configuration policy runtime: {error:?}"))?;
     let app = crate::assembly::policy::application(
+        &command.resources.background,
         &owner,
         c.tenant,
         &[7; 32],
@@ -155,7 +156,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     let rollback = transaction::run(
         &owner.audit,
         &owner.runtime,
-        c.tenant,
+        c.audit.binding(),
         &audit,
         (&app, device, &audit),
         |ctx, tx| {
@@ -226,6 +227,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     drop(owner);
     let owner = planning::owner(&c, "mdm_policy_runtime").await?;
     let app = crate::assembly::policy::application(
+        &command.resources.background,
         &owner,
         c.tenant,
         &[7; 32],

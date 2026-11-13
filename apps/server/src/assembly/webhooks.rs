@@ -37,7 +37,7 @@ pub(crate) async fn open(
         PgRecoveryStore::connect(
             pg,
             crate::lifecycle::RuntimeTimer,
-            binding,
+            binding.storage(),
             protection.clone(),
         )
         .await

@@ -18,7 +18,7 @@ use std::sync::Arc;
 pub const DOMAIN: &str = "mdm-group";
 pub const CONSUMER: &str = "mdm-scope-group-changes";
 pub struct Validator {
-    pub tenant: TenantId,
+    pub binding: rss_transactional_messaging::fence::ExecutionBinding,
 }
 impl IngressValidator<Vec<u8>> for Validator {
     fn validate(
@@ -27,7 +27,7 @@ impl IngressValidator<Vec<u8>> for Validator {
     ) -> Result<VerifiedIngress, EnvelopeValidationFailure> {
         let message = challenge.message();
         let contract = message.metadata().contract();
-        if message.metadata().tenant_id() != self.tenant {
+        if message.metadata().tenant_id() != self.binding.tenant() {
             return Err(EnvelopeValidationFailure::MalformedIdentity);
         }
         let digest = format!(
@@ -58,7 +58,7 @@ impl IngressValidator<Vec<u8>> for Validator {
         {
             return Err(EnvelopeValidationFailure::MalformedMetadata);
         }
-        Ok(challenge.verified())
+        Ok(challenge.verified(self.binding))
     }
 }
 pub struct Receiver {

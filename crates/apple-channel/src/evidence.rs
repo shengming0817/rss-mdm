@@ -38,7 +38,7 @@ pub(crate) async fn observations_many(
     requests: Vec<(Uuid, Request)>,
     native_values: bool,
 ) -> Result<std::collections::BTreeMap<Uuid, Vec<Observation>>, Error> {
-    if requests.len() > 1000 {
+    if requests.len() > 1024 {
         return Err(Error::Malformed);
     }
     let ids = requests.iter().map(|(id, _)| *id).collect::<Vec<_>>();

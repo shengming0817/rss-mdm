@@ -42,7 +42,7 @@ pub async fn verify(c: &Context, trust: rss_mdm_agent_wire::pki::Trust) -> Resul
         (StorageProfile::Mdm, "mdm_policy_runtime"),
         (DA, "da_policy_runtime"),
     ] {
-        let runtime = c.inputs.runtime(role, c.tenant).await?;
+        let runtime = c.inputs.runtime(role).await?;
         let result = receipt(c, profile, &runtime, operation).await;
         runtime.close().await;
         result?;
@@ -95,10 +95,10 @@ async fn reconcile(c: &Context) -> Result<()> {
                 .wake(&da, &ResourceSet::empty(c.tenant), &control)
                 .await?;
             let m = store
-                .claim_due(mdm.scope(), 64, Duration::from_secs(30), &control)
+                .claim_due(mdm.scope(), 64, 64, Duration::from_secs(30), &control)
                 .await?;
             let d = store
-                .claim_due(da.scope(), 64, Duration::from_secs(30), &control)
+                .claim_due(da.scope(), 64, 64, Duration::from_secs(30), &control)
                 .await?;
             assert!(m.claims.iter().any(|v| v.target() == &mdm));
             assert!(
@@ -127,7 +127,7 @@ async fn receipt(
     for replay in [false, true] {
         runtime
             .local_tx_with_context(
-                c.tenant,
+                c.audit.binding(),
                 deadline(),
                 (&store, &value),
                 |(store, value), tx| {
@@ -166,7 +166,7 @@ async fn receipt(
             .fold(Ok, Err, Err, Err, Err, Err)?;
     }
     runtime
-        .local_tx_with_context(c.tenant, deadline(), &store, |store, tx| {
+        .local_tx_with_context(c.audit.binding(), deadline(), &store, |store, tx| {
             Box::pin(async move {
                 assert!(matches!(
                     store
@@ -232,10 +232,10 @@ server.serve_forever()
         }])?);
         for (profile,role) in [(StorageProfile::Mdm,"mdm_access"),(DA,"da_access")] {
             let pool = c.inputs.pool(role).await?;
-            let runtime = c.inputs.runtime(role,c.tenant).await?;
+            let runtime = c.inputs.runtime(role).await?;
             let result = async {
                 let budget = AuditBudget::new(Duration::from_secs(10));
-                let audit = Arc::new(c.audit.on_runtime(runtime.clone(),c.tenant,&budget.control()).await?);
+                let audit = Arc::new(c.audit.on_runtime(runtime.clone(),c.audit.binding(),&budget.control()).await?);
                 let registry = Registry::new(profile,pool.clone(),audit.clone(),vec![rss_mdm_device_trust::DeviceTrust::new(trust.clone(),trust.purpose,now())?],providers.clone());
                 registry.admit(c.tenant,now()).await?;
                 registry.admit(c.tenant,now()).await?; // The owner replay does not append a second fact.
@@ -247,7 +247,7 @@ server.serve_forever()
                 request.identify_service("service:device-pki");
                 request.operation(id,"device_pki_admit",AuditIntent::Management);
                 let fact=rss_mdm_audit_integration::Fact::observation(&request,&format!("pki:{id}:admit"),200,"success",None)?;
-                let append=runtime.local_tx_with_context(c.tenant,deadline(),(&audit,&fact),|(audit,fact),tx|Box::pin(async move {
+                let append=runtime.local_tx_with_context(c.audit.binding(),deadline(),(&audit,&fact),|(audit,fact),tx|Box::pin(async move {
                     audit.bind_in(tx).await.map_err(PgError::from)?;
                     audit.append_in(tx,fact).await.map_err(PgError::from)
                 })).await.fold(Ok,Err,Err,Err,Err,Err);
