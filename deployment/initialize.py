@@ -11,7 +11,7 @@ import subprocess
 from render_gateway import origin
 
 
-def run(additional_hosts=()):
+def run():
     """Stage one installation's declared host inputs and invoke the product initializer."""
     root = Path('/var/lib/rss-mdm')
     inputs = root / 'inputs'
@@ -47,8 +47,6 @@ def run(additional_hosts=()):
         platform_login='platform',administrator_login='administrator',
         platform_password_file=str(inputs/'platform-password'),administrator_password_file=str(inputs/'administrator-password'),
         origin=os.environ['MDM_PRODUCT_ORIGIN'],listen=os.environ['MDM_BACKEND_ADDRESS']+':8081',trusted_gateway=os.environ['MDM_GATEWAY_ADDRESS'])
-    if additional_hosts:
-        config['additional_hosts'] = list(additional_hosts)
     ca_request = None
     ca_source = os.environ.get('MDM_STEP_CA_CONFIG') if os.environ.get('MDM_INITIALIZE_CA_ONLY') == '1' else None
     if ca_source:

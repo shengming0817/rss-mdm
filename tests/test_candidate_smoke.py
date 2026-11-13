@@ -284,3 +284,20 @@ class BaselinePrivacy(unittest.TestCase):
             owner.operator=mock.Mock(side_effect=prepare)
             owner.prepare_telemetry()
             owner.operator.assert_called_once()
+
+
+class InstallationObservation(unittest.TestCase):
+    def test_application_requires_exact_runtime_and_live_process(self):
+        from candidate_installation_driver import observe_runtime
+        runtime = {'runtime_binding': {'host_id':'host','operation_id':'operation','revision':2,'material_digest':'digest'},
+                   'identity': {'tenant_id':'tenant','instance_id':'installation'}}
+        observed = {'hostId':'host','operationId':'operation','revision':2,'materialDigest':'digest',
+                    'tenantId':'tenant','instanceId':'installation','processGeneration':'11111111-1111-4111-8111-111111111111'}
+        browser = mock.Mock()
+        browser.call.return_value = (200, {'ready':True,'observation':observed})
+        self.assertEqual(observe_runtime(browser,runtime),observed)
+        for field,value in [('revision',1),('tenantId','other'),('processGeneration','00000000-0000-0000-0000-000000000000')]:
+            with self.subTest(field=field):
+                browser.call.return_value = (200, {'ready':True,'observation':dict(observed,**{field:value})})
+                with self.assertRaises(RuntimeError):
+                    observe_runtime(browser,runtime)
