@@ -232,6 +232,7 @@ impl Config {
         let inventory_runtime = self.inventory_runtime.compile()?;
         let http = self.http.compile(&self.identity.runtime)?;
         if [
+            std::time::Duration::from_secs(self.inventory_runtime.drain_seconds),
             background.device_drain,
             background.commands_drain,
             background.tasks_drain,

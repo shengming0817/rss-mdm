@@ -337,3 +337,26 @@ fn configured_worker_capacity_and_pool_arithmetic_are_checked_together() {
     config.background.scheduling.device.attempt_ms = 0;
     assert!(config.background.compile(&config).is_err());
 }
+
+#[test]
+fn inventory_drain_must_fit_the_process_shutdown_budget() {
+    let mut value: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+    let root = independent_secrets(&mut value);
+    let total = value["http"]["total_drain_seconds"].as_u64().unwrap();
+    for (drain, accepted) in [(total - 1, true), (total, true), (total + 1, false)] {
+        value["inventory_runtime"]["drain_seconds"] = serde_json::json!(drain);
+        let result = serde_json::from_value::<Config>(value.clone())
+            .unwrap()
+            .compile();
+        if accepted {
+            assert!(result.is_ok());
+        } else {
+            assert!(matches!(
+                result,
+                Err(Error::Configuration(ConfigIssue::Budget))
+            ));
+        }
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}

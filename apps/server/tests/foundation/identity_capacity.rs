@@ -99,7 +99,12 @@ async fn complete_profile_and_existing_receipts_survive_quota_adjustment() -> Re
     };
     use rss_identity_postgres::ProfileChange;
     let c = Context::open("shared", &[]).await?;
-    let account = c.account(&[Permission::IdentityAccountsManage]).await?;
+    let account = c
+        .account(&[
+            Permission::IdentityAccountsManage,
+            Permission::UserAttributeDefinitionsWrite,
+        ])
+        .await?;
     let target = AccountKey {
         tenant: c.tenant,
         principal: PrincipalId::parse(&account.user.principal_id)?,
@@ -145,6 +150,7 @@ async fn complete_profile_and_existing_receipts_survive_quota_adjustment() -> Re
     assert_eq!(restored, value);
     assert_eq!(restored.as_object().unwrap().len(), 1024);
     assert_eq!(restored["items"].as_array().unwrap().len(), 1024);
+    complete_product_mapping(&c, &authority, &account, &value).await?;
     let second = ProfileChange {
         operation_id: Uuid::new_v4(),
         expected_revision: 1,
@@ -228,5 +234,108 @@ async fn complete_profile_and_existing_receipts_survive_quota_adjustment() -> Re
         Some("second")
     );
     c.close().await;
+    Ok(())
+}
+
+// Consume the persisted Identity observation through the real product definition and projection owners.
+async fn complete_product_mapping(
+    c: &Context,
+    authority: &Authority,
+    account: &Account,
+    value: &serde_json::Value,
+) -> Result<()> {
+    use crate::administration::user_profiles::{Backend, model::*};
+    use rss_identity_core::{
+        InstanceId,
+        account::{LoginKey, Password},
+        session::SessionSecret,
+    };
+    let issued = Box::pin(authority.login_local(
+        c.audit.binding(),
+        LoginKey::parse(&format!("foundation-{}", account.user.principal_id))?,
+        Password::new("foundation-only-valid-password".into())?,
+        rss_identity_postgres::AttemptSource::parse("profile-capacity")?,
+        None,
+        deadline(),
+    ))
+    .await?;
+    let principal = rss_mdm_authorization_service::session::SessionAuthority::new(
+        authority.clone(),
+        c.audit.binding(),
+    )
+    .authenticate(
+        &c.access(),
+        RequestCredential::Cookie(SessionSecret::parse(issued.secret().expose().to_owned())?),
+        deadline(),
+    )
+    .await?;
+    let backend = Backend {
+        source_page_size: 1024,
+        cursor: rss_mdm_query::cursor::CursorCodec::new(&[39; 32])?,
+        identity: authority.clone(),
+        tenant: c.tenant,
+        instance: InstanceId::parse(&c.inputs.installation.instance_id)?,
+        audit: c.audit.clone(),
+    };
+    for (name, pointer, value_type) in [
+        ("array", "/extensions/items", ValueType::Array),
+        ("object", "/extensions", ValueType::Object),
+    ] {
+        for max_items in [None, Some(1024)] {
+            let audit = c.request(&principal)?;
+            backend
+                .change(
+                    &principal,
+                    &audit,
+                    Uuid::new_v4(),
+                    &Change {
+                        operation_id: Uuid::new_v4(),
+                        expected_revision: 0,
+                        value: Some(DefinitionValue {
+                            key: format!("{name}_{}", max_items.unwrap_or(0)),
+                            display_name: name.into(),
+                            source: ProfileSource::IdentityLocal,
+                            pointer: pointer.into(),
+                            value_type,
+                            max_length: None,
+                            max_items,
+                            minimum: None,
+                            maximum: None,
+                            enabled: true,
+                            sensitive: false,
+                            visibility: Visibility::Both,
+                            display_use: DisplayUse::Profile,
+                            required: true,
+                            use_existing_observation: true,
+                        }),
+                    },
+                )
+                .await?;
+        }
+    }
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(10));
+    let profile = backend
+        .profile(
+            &principal,
+            &c.request(&principal)?,
+            None,
+            ProfileQuery {
+                view: View::Current,
+                preview: false,
+            },
+            budget.deadline(),
+        )
+        .await?;
+    assert_eq!(profile.fields.len(), 4);
+    assert_eq!(profile.completeness.complete, 4);
+    for field in profile.fields {
+        assert_eq!(field.status, FieldStatus::Available);
+        let expected = if field.value_type == ValueType::Array {
+            &value["items"]
+        } else {
+            value
+        };
+        assert_eq!(field.value.as_ref(), Some(expected));
+    }
     Ok(())
 }

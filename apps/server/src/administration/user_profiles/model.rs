@@ -244,11 +244,11 @@ pub(super) fn validate(v: &DefinitionValue) -> Result<(), Error> {
     if v.max_length.is_some_and(|n| n == 0 || n > 65536)
         || v.max_items.is_some_and(|n| {
             n == 0
-                || n > if v.value_type == ValueType::Object {
-                    256
-                } else {
-                    128
-                }
+                || u64::from(n)
+                    > match v.value_type {
+                        ValueType::Object => rss_identity_core::profile::MAX_MEMBERS as u64,
+                        _ => rss_identity_core::profile::MAX_ARRAY as u64,
+                    }
         })
         || v.minimum.is_some_and(|n| !number(n))
         || v.maximum.is_some_and(|n| !number(n))
@@ -305,12 +305,16 @@ pub(super) fn conforms(v: &Value, d: &DefinitionValue) -> bool {
                 && d.minimum.is_none_or(|min| n >= min)
                 && d.maximum.is_none_or(|max| n <= max)
         }),
-        ValueType::Array => v
-            .as_array()
-            .is_some_and(|v| v.len() <= d.max_items.unwrap_or(128) as usize),
-        ValueType::Object => v
-            .as_object()
-            .is_some_and(|v| v.len() <= d.max_items.unwrap_or(256) as usize),
+        ValueType::Array => v.as_array().is_some_and(|v| {
+            v.len()
+                <= d.max_items
+                    .map_or(rss_identity_core::profile::MAX_ARRAY, |n| n as usize)
+        }),
+        ValueType::Object => v.as_object().is_some_and(|v| {
+            v.len()
+                <= d.max_items
+                    .map_or(rss_identity_core::profile::MAX_MEMBERS, |n| n as usize)
+        }),
     }
 }
 pub(super) fn source(value: &ProfileSource) -> Result<rss_identity_postgres::ProfileSource, Error> {
@@ -328,5 +332,33 @@ pub(super) fn source_dto(value: rss_identity_postgres::ProfileSource) -> Profile
         rss_identity_postgres::ProfileSource::Idp { provider } => ProfileSource::Idp {
             provider: Uuid::parse_str(&provider.to_string()).expect("validated provider id"),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn mapping_limits_accept_current_capacity_and_reject_zero_or_overflow() {
+        let mut definition: DefinitionValue = serde_json::from_value(serde_json::json!({
+            "key":"items","displayName":"Items","source":{"kind":"identity_local"},
+            "pointer":"/extensions/items","valueType":"array","maxLength":null,"maxItems":1024,
+            "minimum":null,"maximum":null,"enabled":true,"sensitive":false,"visibility":"both",
+            "displayUse":"profile","required":true,"useExistingObservation":true
+        }))
+        .unwrap();
+        for value_type in [ValueType::Array, ValueType::Object] {
+            definition.value_type = value_type;
+            for (limit, accepted) in [
+                (1, true),
+                (1024, true),
+                (0, false),
+                (1025, false),
+                (u32::MAX, false),
+            ] {
+                definition.max_items = Some(limit);
+                assert_eq!(validate(&definition).is_ok(), accepted);
+            }
+        }
     }
 }

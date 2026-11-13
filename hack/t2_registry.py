@@ -9,7 +9,7 @@ MODULES = {
     'telemetry.query': dict(prefix='assembly::telemetry_queries_t2::', profiles=('shared',),
         inputs=('crates/agent-wire/src/identity.rs', 'crates/management-http/src/telemetry*', 'crates/management-http/src/decimal.rs',
                 'crates/telemetry-service/*', 'apps/server/src/telemetry.rs', 'apps/server/tests/telemetry/*',
-                'crates/http-contract/*', 'crates/inventory/src/telemetry.rs')),
+                'crates/http-contract/*', 'crates/inventory/src/telemetry.rs', 'crates/inventory/src/time_series.rs', 'crates/inventory/src/catalog.rs')),
     'directory.query': dict(prefix='assembly::directory_queries_t2::', profiles=('shared',),
         inputs=('crates/agent-wire/src/identity.rs', 'crates/query/*','crates/query-postgres/*','crates/resource/*','crates/resource-postgres/*','crates/resource-service/*',
                 'crates/certificate-archive-service/*','crates/webhook-service/*','crates/apple-channel/src/management_query.rs',
@@ -256,7 +256,7 @@ MODULES = {
         inputs=('crates/agent-wire/src/identity.rs', 'apps/server/src/identity.rs', 'apps/server/src/identity/*', 'apps/server/src/maintenance.rs', 'apps/server/src/authorization_bootstrap.rs', 'apps/server/src/installation/backup/accounts.rs', 'crates/audit-integration/src/*', 'crates/authorization-service/src/*', 'crates/authorization-service/schema/*',
                 'crates/management-http/src/authorization/http.rs', 'crates/device-access-http/src/browser.rs',
                 'crates/http-contract/*', 'crates/management-http/src/identity_contract.rs',
-                'apps/server/src/assembly/device_access/*', 'apps/server/tests/foundation/authorization.rs', 'apps/server/tests/foundation/identity_capacity.rs')),
+                'apps/server/src/assembly/device_access/*', 'apps/server/tests/foundation/authorization.rs', 'apps/server/tests/foundation/identity_capacity.rs', 'apps/server/src/administration/user_profiles/*')),
     'foundation.account_recovery': dict(
         prefix='installation::backup::accounts::t2::', profiles=('account_recovery',),
         inputs=('apps/server/src/installation/backup/accounts.rs', 'apps/server/src/identity/*', 'crates/authorization-service/src/*')),
