@@ -113,8 +113,8 @@ impl Clock {
     fn deadline(&self) -> Deadline {
         Deadline::at(self.now.now() + self.policy.pass)
     }
-    pub fn cutoff(&self) -> Duration {
-        rss_projection::Timer::now(self) + self.policy.pass
+    pub fn startup_cutoff(&self) -> Duration {
+        rss_projection::Timer::now(self) + self.policy.startup
     }
 }
 impl rss_observation::Clock for Clock {
@@ -447,7 +447,7 @@ impl InventoryRuntime {
         let pending_count = reports.len();
         for report in reports {
             if deadline.remaining(self.clock.now.now()).is_none() {
-                break;
+                return Ok(false);
             }
             if token.is_cancelled() {
                 return Ok(false);
@@ -496,7 +496,7 @@ impl InventoryRuntime {
             .map_err(|_| WorkerFailure::JournalAuthority)?,
         );
         let scope = rss_mdm_inventory_postgres::projection_scope(self.tenant);
-        let control = Control::new(&self.clock, self.clock.cutoff(), token);
+        let control = Control::new(&self.clock, self.clock.startup_cutoff(), token);
         let definition = rss_mdm_inventory_postgres::definition();
         self.projection
             .initialize(
@@ -564,6 +564,11 @@ impl InventoryRuntime {
             if token.is_cancelled() {
                 return Ok(());
             }
+            if deadline.remaining(self.clock.now.now()).is_none() {
+                self.readiness.initialized.store(false, Ordering::Release);
+                tokio::select! { () = token.cancelled() => return Ok(()), () = tokio::time::sleep(Duration::from_secs(1)) => {} }
+                continue;
+            }
             let control = Control::new(
                 &self.clock,
                 deadline
@@ -594,20 +599,40 @@ impl InventoryRuntime {
             {
                 observation.last_completed_at = Some(self.clock.now.now());
             }
-            let report = report.into_result().map_err(|error| {
-                let diagnostic = error.diagnostic();
-                eprintln!(
-                    "{}",
-                    serde_json::json!({
-                        "event": "mdm_projection_failure",
-                        "kind": format!("{:?}", error.kind()),
-                        "phase": diagnostic.map(|d| format!("{:?}", d.phase())),
-                        "sqlstate": diagnostic.and_then(|d| d.sqlstate()),
-                        "position": diagnostic.and_then(|d| d.position()).map(|p| format!("{p:?}")),
-                    })
-                );
-                WorkerFailure::ProjectionRun
-            })?;
+            let report = match report.into_result() {
+                Ok(report) => report,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        rss_projection::ErrorKind::Deadline | rss_projection::ErrorKind::Cancelled
+                    ) =>
+                {
+                    if token.is_cancelled() {
+                        return Ok(());
+                    }
+                    self.readiness.initialized.store(false, Ordering::Release);
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({"event":"mdm_projection_deferred","kind":format!("{:?}",error.kind())})
+                    );
+                    tokio::select! { () = token.cancelled() => return Ok(()), () = tokio::time::sleep(Duration::from_secs(1)) => {} }
+                    continue;
+                }
+                Err(error) => {
+                    let diagnostic = error.diagnostic();
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "mdm_projection_failure",
+                            "kind": format!("{:?}", error.kind()),
+                            "phase": diagnostic.map(|d| format!("{:?}", d.phase())),
+                            "sqlstate": diagnostic.and_then(|d| d.sqlstate()),
+                            "position": diagnostic.and_then(|d| d.position()).map(|p| format!("{p:?}")),
+                        })
+                    );
+                    return Err(WorkerFailure::ProjectionRun);
+                }
+            };
             self.readiness
                 .initialized
                 .store(delivered, Ordering::Release);

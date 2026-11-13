@@ -171,7 +171,7 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
         crate::authority_t2_support::inventory_policy()?,
     );
     let cancel = tokio_util::sync::CancellationToken::new();
-    let control = rss_projection::Control::new(&clock, clock.cutoff(), &cancel);
+    let control = rss_projection::Control::new(&clock, clock.startup_cutoff(), &cancel);
     let observation = rt::ObservationResource::open(
         c.inputs.database("shared", "mdm_runtime").options()?,
         clock.clone(),

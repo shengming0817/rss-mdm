@@ -69,6 +69,8 @@ lagging 是位置比较，不是精确事件数或原子快照。invocationAgeMs
 
 SIGINT/SIGTERM 先停止接入并排空，再取消和 join 工作任务，最后关闭存储及认证 KDF/runtime，整体关闭预算由 `http.total_drain_seconds` 指定，默认 60 秒。命令 worker 停止领取后等待在途 relay 完成 gateway 事务与 outbox 结算；各调度 owner 的 `drain_ms` 默认 20 秒（设备关联 30 秒），与请求、执行、lease 和 KDF 排空分别配置；任一并行分支退出会取消另一分支并等待它结算。关键任务异常或关闭失败返回非零；进程重启由部署 owner 决定。被动查询不延长认证 idle，组件事务使用自身预算完成，宿主不以请求 timeout 丢弃其提交结果。
 
+Inventory 恢复读取按 `inventory_runtime.delivery_batch` 和 `delivery_bytes` 选择完整报告前缀，积压合计超预算仍能逐批前进。单份报告超过读取预算时，`mdm_inventory_report_exceeds_read_budget` 给出 `requiredBytes` 和 `configuredBytes`，调整预算后重启继续读取原报告。运行轮次截止只让出当前工作，Projection 启动独立使用 `startup_seconds`。
+
 审计与业务状态在原 RSS 事务中直接提交。运行连接使用 `READ COMMITTED`，启动校验实际 writer 权限；Plain 不取得租户审计头锁，Ledger 在业务和 Outbox 锁之前取得所选链锁。提交未知沿原操作身份和原请求由业务回执恢复，不直接重执行业务，也不重新生成审计时间或复制回执。暂时缺失不能证明回滚；锁或读取超时继续保留未知状态。既有业务截止时间不续期，由原事务 owner 完成提交或回滚；这些资源边界不是吞吐或设备容量承诺。
 
 Ledger 启动会校验既有链身份并认证有界记录窗口，同 key ID 配错密钥也拒绝启动。新空链没有历史密钥认证证据，部署方仍须保管最初配置的秘密。运行时不自动生成密钥、轮转或降级 Plain；当前部署不支持更换既有审计完整性模式。关键动作拒绝、敏感查询、多阶段最终结果及其重放与未知结果使用独立请求事实，在受保护响应释放前完成可靠提交；普通读取与轮询不写管理审计。`RollbackFailed` 与 `CommitUnknown` 均不是成功回滚证明，日志也不替代持久审计。

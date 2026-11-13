@@ -505,10 +505,18 @@ impl Delivery {
                 .await
                 .map_err(db)?;
         tx.rollback().await.map_err(db)?;
-        if rows
+        if let Some(row) = rows
             .iter()
-            .any(|r| !r.try_get::<bool, _>("fits").unwrap_or(false))
+            .find(|r| !r.try_get::<bool, _>("fits").unwrap_or(false))
         {
+            eprintln!(
+                "{}",
+                serde_json::json!({
+                    "event":"mdm_inventory_report_exceeds_read_budget",
+                    "requiredBytes":row.try_get::<i64, _>("required_bytes").ok(),
+                    "configuredBytes":byte_limit,
+                })
+            );
             return Err(Error::Unavailable(Failure::Capacity));
         }
         rows.into_iter().map(durable_report).collect()

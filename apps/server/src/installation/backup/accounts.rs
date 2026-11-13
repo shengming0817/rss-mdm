@@ -55,13 +55,17 @@ pub(super) async fn verify_restored(
         compiled.maintenance,
     )
     .map_err(|_| Error::Input)?;
-    let runtime = crate::identity::open_runtime(
-        &config.identity.database,
-        &config.storage_binding.target,
-        &config.storage_binding.lineage,
-        crate::background::IDENTITY_CONNECTIONS,
+    let runtime = tokio::time::timeout_at(
+        cutoff.instant().into(),
+        crate::identity::open_runtime(
+            &config.identity.database,
+            &config.storage_binding.target,
+            &config.storage_binding.lineage,
+            crate::background::IDENTITY_CONNECTIONS,
+        ),
     )
     .await
+    .map_err(|_| Error::Storage)?
     .map_err(|_| Error::Storage)?;
     let kdf = compiled.kdf.clone();
     let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
@@ -72,7 +76,7 @@ pub(super) async fn verify_restored(
         tenant_id,
         rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| Error::Input)?,
     );
-    let result = async {
+    let result = tokio::time::timeout_at(cutoff.instant().into(), async {
         let policy = Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(
                 rss_mdm_install_support::StorageProfile::Mdm,
@@ -107,8 +111,11 @@ pub(super) async fn verify_restored(
                 .map_err(|_| Error::Storage)?;
         use sqlx::Connection;
         let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        let remaining = cutoff.remaining(rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)).ok_or(Error::Storage)?;
+        let milliseconds = remaining.as_millis().clamp(1, i32::MAX as u128).to_string();
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)")
             .bind(tenant)
+            .bind(milliseconds)
             .execute(&mut *tx)
             .await
             .map_err(|_| Error::Storage)?;
@@ -136,8 +143,8 @@ pub(super) async fn verify_restored(
             return Err(Error::Conflict);
         }
         Ok(())
-    }
-    .await;
+    })
+    .await.unwrap_or(Err(Error::Storage));
     kdf.close();
     tokio::time::timeout(compiled.drain, async {
         tokio::join!(kdf.wait_closed(), runtime.close());
@@ -165,6 +172,64 @@ fn administrator_grant(
 mod tests {
     use super::administrator_grant;
     use rss_mdm_authorization_service::{Grant, Permission, Scope};
+    #[tokio::test]
+    #[ignore = "T2: restored-account authorization SQL shares the original deadline and releases blocked connections"]
+    async fn blocked_authorization_read_expires_within_the_original_budget() -> anyhow::Result<()> {
+        use crate::authority_t2_support::Context;
+        use rss_mdm_authorization_service::Permission;
+        use std::time::Duration;
+        let c = Context::open("account_recovery", &[]).await?;
+        let account = c
+            .account(&[
+                Permission::Credentials,
+                Permission::RegistrationConfigurationWrite,
+                Permission::AuthorizationWrite,
+            ])
+            .await?;
+        let mut value: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/mdm-config.example.json"
+        )))?;
+        value["identity"]["database"] = serde_json::to_value(
+            c.inputs
+                .database("account_recovery", "mdm_identity_runtime"),
+        )?;
+        value["identity"]["instance_id"] = serde_json::json!(c.inputs.installation.instance_id);
+        value["identity"]["tenant_id"] = serde_json::json!(c.tenant.to_string());
+        value["identity"]["runtime"]["maintenance_seconds"] = serde_json::json!(3);
+        value["audit"] = serde_json::json!({"mode":"plain"});
+        value["access_database"] =
+            serde_json::to_value(c.inputs.database("account_recovery", "mdm_access"))?;
+        value["storage_binding"] = serde_json::json!({"target":c.inputs.installation.target,"lineage":c.inputs.installation.lineage,"epoch":1});
+        let config = serde_json::from_value(value)?;
+        let password = tempfile::NamedTempFile::new_in(&c.inputs.directory)?;
+        std::fs::write(password.path(), b"foundation-only-valid-password")?;
+        let original = super::OriginalAccount {
+            principal_id: account.user.principal_id.parse()?,
+            login: format!("foundation-{}", account.user.principal_id),
+            password_file: password.path().into(),
+        };
+        let mut lock = c.operator.begin().await?;
+        sqlx::query("LOCK TABLE mdm_access.authorization_rules IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut *lock)
+            .await?;
+        let tenant = c.tenant.to_string();
+        let verification = tokio::spawn(async move {
+            super::verify_restored(&config, &tenant, 1, &original, false).await
+        });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_access' AND wait_event_type='Lock' AND query LIKE '%authorization_rules%')").fetch_one(&c.operator).await?;
+                if blocked { return Ok::<_, anyhow::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await??;
+        let result = tokio::time::timeout(Duration::from_secs(5), verification).await??;
+        assert!(matches!(result, Err(crate::installation::Error::Storage)));
+        lock.rollback().await?;
+        c.close().await;
+        Ok(())
+    }
     #[test]
     fn restored_administrator_requires_the_complete_permission_scope() {
         let grant = |operation, scope| Grant { operation, scope };

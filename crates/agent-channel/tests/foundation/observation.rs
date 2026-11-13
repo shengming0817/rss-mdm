@@ -149,7 +149,7 @@ pub async fn enrollment(c: &Context, p: &registration::DevicePrincipal) -> Resul
         projection_scope.source().clone(),
     )?);
     let token = tokio_util::sync::CancellationToken::new();
-    let control = Control::new(&clock, clock.cutoff(), &token);
+    let control = Control::new(&clock, clock.startup_cutoff(), &token);
     let projection =
         rss_projection_postgres::PgStore::new(c.inputs.pool("da_runtime").await?, &control).await?;
     let identity = rss_mdm_inventory_postgres::definition();

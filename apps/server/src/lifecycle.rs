@@ -144,7 +144,7 @@ pub async fn serve(
                         let observation_store = observation.store.clone();
                         startup.stage_resource(DynManagedResource::new_box(observation));
                         let startup_control =
-                            rss_projection::Control::new(&clock, clock.cutoff(), &startup_cancel);
+                            rss_projection::Control::new(&clock, clock.startup_cutoff(), &startup_cancel);
                         let projection = ProjectionResource::open(
                             runtime_options,
                             clock.clone(),

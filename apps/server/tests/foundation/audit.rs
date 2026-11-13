@@ -100,7 +100,11 @@ async fn large_audit_records_and_complete_query_pages_share_current_capacity() -
         } else {
             crate::config::AuditConfig::Plain
         };
-        let profile = if ledger { "audit_ledger" } else { "audit" };
+        let profile = if ledger {
+            "audit_ledger"
+        } else {
+            "audit_plain"
+        };
         let c = Context::open_with_audit(profile, &config).await?;
         let account = c.account(&[Permission::AuditRead]).await?;
         let proof = c.authenticate(&account).await?;

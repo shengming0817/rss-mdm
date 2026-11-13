@@ -257,8 +257,11 @@ MODULES = {
                 'crates/management-http/src/authorization/http.rs', 'crates/device-access-http/src/browser.rs',
                 'crates/http-contract/*', 'crates/management-http/src/identity_contract.rs',
                 'apps/server/src/assembly/device_access/*', 'apps/server/tests/foundation/authorization.rs', 'apps/server/tests/foundation/identity_capacity.rs')),
+    'foundation.account_recovery': dict(
+        prefix='installation::backup::accounts::tests::', profiles=('account_recovery',),
+        inputs=('apps/server/src/installation/backup/accounts.rs', 'apps/server/src/identity/*', 'crates/authorization-service/src/*')),
     'foundation.audit': dict(
-        prefix='foundation_t2::audit::', profiles=('audit', 'audit_ledger'),
+        prefix='foundation_t2::audit::', profiles=('audit', 'audit_plain', 'audit_ledger'),
         inputs=('crates/management-http/src/boundary.rs', 'crates/timeline-service/*', 'apps/server/src/config.rs', 'apps/server/src/installation/backup/*', 'apps/server/src/database.rs', 'crates/audit-integration/src/*',
                 'apps/server/schema/audit-*.sql', 'apps/server/tests/foundation/audit.rs')),
     'foundation.tenants': dict(

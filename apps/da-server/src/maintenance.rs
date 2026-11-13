@@ -187,7 +187,7 @@ pub async fn verify_account(config: &Config, input: &OriginalAccount) -> Result<
     let outcome=scope.drive(|mut startup| {Box::pin(async move {
  let cutoff=rss_request_context::Deadline::from_timeout(&host::Timer,compiled.identity.maintenance).map_err(|_|Error::Configuration)?;
  let remaining=||rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff,&host::Timer);
- let runtime=host::runtime(&identity_database,&installation).await?;
+ let runtime=tokio::time::timeout_at(cutoff.instant().into(), host::runtime(&identity_database,&installation)).await.map_err(|_|Error::Storage)??;
 
  startup.stage_resource(DynManagedResource::new_box(host::RuntimeResource(runtime.clone())));
 
@@ -196,7 +196,7 @@ pub async fn verify_account(config: &Config, input: &OriginalAccount) -> Result<
  startup.stage_resource(DynManagedResource::new_box(host::Kdf(kdf.clone(), compiled.identity.drain)));
 
  let binding=installation.execution(rss_request_context::TenantId::parse(&input.tenant.to_string()).map_err(|_|Error::Configuration)?)?;
- let result=async {
+ let result=tokio::time::timeout_at(cutoff.instant().into(), async {
   let authority=Authority::connect_runtime(runtime.clone(),kdf.clone(),compiled.identity.authority.clone(),binding,Arc::new(rss_mdm_authorization_service::identity_management::IdentityManagementPolicy::new(StorageProfile::Da,&installation.instance.to_string()).map_err(|_|Error::Configuration)?),remaining()).await.map_err(|_|Error::Identity)?;
 
   let user=rss_mdm_authorization_service::User{instance_id:installation.instance.to_string(),tenant_id:input.tenant.to_string(),principal_id:input.principal.to_string()};
@@ -210,7 +210,9 @@ pub async fn verify_account(config: &Config, input: &OriginalAccount) -> Result<
   let result=async {
    let mut tx=c.begin().await.map_err(|_|Error::Storage)?;
 
-   sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(input.tenant.to_string()).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
+   let remaining=cutoff.remaining(rss_request_context::Clock::now(&host::Timer)).ok_or(Error::Storage)?;
+   let milliseconds=remaining.as_millis().clamp(1,i32::MAX as u128).to_string();
+   sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(input.tenant.to_string()).bind(milliseconds).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
 
    let rules=rss_mdm_authorization_service::snapshot_on(StorageProfile::Da,&mut tx,&input.tenant.to_string(),&installation.instance.to_string()).await.map_err(|_| Error::AdmissionAt("original authorization"))?;
 
@@ -222,7 +224,7 @@ if allowed{Ok(())}else{Err(Error::Admission)}
 
   let close=c.close().await.map_err(|_|Error::Storage);
 result.and(close)
- }.await;
+ }).await.unwrap_or(Err(Error::Storage));
 
  result?;
 startup.commit().finish();

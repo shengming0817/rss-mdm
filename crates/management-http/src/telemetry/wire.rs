@@ -171,7 +171,7 @@ enum Metric {
     },
     Bool,
     State {
-        #[schemars(length(min = 1, max = 256))]
+        #[schemars(length(min = 1, max = 1024))]
         members: BTreeSet<Id>,
     },
 }
@@ -198,11 +198,11 @@ impl From<&ts::Metric> for Metric {
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DimensionRules {
-    #[schemars(length(max = 64))]
+    #[schemars(length(max = 1024))]
     allowed: BTreeSet<Id>,
-    #[schemars(length(max = 64))]
+    #[schemars(length(max = 1024))]
     required: BTreeSet<Id>,
-    #[schemars(range(max = 64))]
+    #[schemars(range(max = 1024))]
     max_count: u16,
     #[schemars(range(min = 1, max = 256))]
     max_value_bytes: u16,
