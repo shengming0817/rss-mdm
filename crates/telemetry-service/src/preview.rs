@@ -18,9 +18,7 @@ impl Service {
         query
             .require_schema(&rss_mdm_policy::pages::PREVIEW_SCHEMA)
             .map_err(|_| Error::Invalid)?;
-        if proof.tenant_id() != proof.binding().tenant().to_string() {
-            return Err(Error::Denied);
-        }
+
         input.definition.validate().map_err(|_| Error::Invalid)?;
         let rss_mdm_policy::Action::TelemetryProfile { resource } = &input.definition.action else {
             return Err(Error::Invalid);

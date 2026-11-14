@@ -113,9 +113,7 @@ impl Management {
     }
     pub async fn settings(&self, p: &AuthorizedPrincipal) -> Result<Settings, Error> {
         p.manage(Permission::RegistrationConfigurationRead)?;
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
+
         let mut tx = self.store.begin(p.tenant_id()).await?;
         sqlx::query("SET TRANSACTION READ ONLY")
             .execute(&mut *tx)
@@ -132,8 +130,7 @@ impl Management {
         a: &RequestAudit,
     ) -> Result<Revision, Error> {
         p.manage(Permission::RegistrationConfigurationWrite)?;
-        if p.tenant_id() != p.binding().tenant().to_string()
-            || input.operation_id.is_nil()
+        if input.operation_id.is_nil()
             || input.expected_revision < 0
             || input.expected_revision == i64::MAX
         {

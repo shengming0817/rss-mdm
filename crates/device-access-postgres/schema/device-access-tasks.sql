@@ -109,8 +109,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
 $$;
 CREATE FUNCTION rss_da.access_runs_work_relay_scopes(after_tenant uuid, after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
- SELECT DISTINCT tenant_id,expected_epoch FROM rss_da.access_runs
- WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32
+ SELECT DISTINCT r.tenant_id,r.expected_epoch FROM rss_da.access_runs r WHERE (after_tenant IS NULL OR (r.tenant_id,r.expected_epoch)>(after_tenant,after_epoch)) AND EXISTS (SELECT FROM rss_transactional_messaging.outbox o WHERE o.tenant_id=r.tenant_id AND o.domain='mdm.registration.access.v1' AND o.message_id='access.'||r.id::text AND o.status NOT IN ('published','resolved')) ORDER BY tenant_id,expected_epoch LIMIT 32
 $$;
 ALTER FUNCTION rss_da.access_runs_work_scopes(uuid) OWNER TO da_owner;
 ALTER FUNCTION rss_da.access_runs_work_epoch(uuid,text) OWNER TO da_owner;

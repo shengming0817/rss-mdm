@@ -69,9 +69,12 @@ impl AssetService {
             status: state.status,
             summary: state.summary,
             failure: state.failure,
-            result_url: state
-                .ready
-                .then(|| format!("/api/v1/device-queries/{task}/items")),
+            result_url: state.ready.then(|| {
+                format!(
+                    "/api/v1/tenants/{}/device-queries/{task}/items",
+                    tx.tenant_id()
+                )
+            }),
         })
     }
     fn query_cursor(

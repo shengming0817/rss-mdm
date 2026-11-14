@@ -37,9 +37,7 @@ impl ConfigurationService {
         config: &Configuration,
         write: bool,
     ) -> Result<(), Error> {
-        if p.profile() != self.trust.signing.profile
-            || p.tenant_id() != p.binding().tenant().to_string()
-        {
+        if p.profile() != self.trust.signing.profile {
             return Err(Error::Forbidden);
         }
         p.check_live()?;

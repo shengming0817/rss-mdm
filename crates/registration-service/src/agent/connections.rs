@@ -402,9 +402,7 @@ impl Service {
         let profile = self.profile();
 
         p.manage(Permission::RegistrationConfigurationRead)?;
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Error::Forbidden.into());
-        }
+
         let mut tx = self.store.begin(p.tenant_id()).await?;
         super::authorize_on(
             profile,
@@ -738,9 +736,7 @@ impl Service {
         let profile = self.profile();
 
         p.manage(Permission::RegistrationConfigurationRead)?;
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Error::Forbidden.into());
-        }
+
         let mut tx = self.store.begin(p.tenant_id()).await?;
         super::authorize_on(
             profile,
@@ -983,9 +979,7 @@ impl Service {
         let profile = self.profile();
 
         p.manage(Permission::RegistrationConfigurationRead)?;
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Error::Forbidden.into());
-        }
+
         let mut tx = self.store.begin(p.tenant_id()).await?;
         super::authorize_on(
             profile,
@@ -1071,9 +1065,7 @@ impl Service {
         let profile = self.profile();
 
         p.check_live()?;
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Error::Forbidden.into());
-        }
+
         let mut tx = self.store.begin(p.tenant_id()).await?;
         rss_mdm_authorization_service::lock_on(
             p.authority_profile(),

@@ -21,9 +21,7 @@ impl Service {
             > + Send,
     {
         proof.check_live().map_err(|_| Error::Denied)?;
-        if proof.tenant_id() != proof.binding().tenant().to_string() {
-            return Err(Error::Denied);
-        }
+
         let start = self.clock.now();
         let remaining = || {
             std::time::Duration::from_secs(6)

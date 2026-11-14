@@ -131,6 +131,16 @@ async fn only_same_scope_scan_and_confirmed_target_finish_recover_health() {
             .await
             .is_err()
     );
+    let other_tenant = Scope::new(
+        rss_request_context::TenantId::parse("00000000-0000-0000-0000-000000000002").unwrap(),
+        scope.reconciler(),
+    )
+    .unwrap();
+    store
+        .claim_due(&other_tenant, 1, 64, Duration::from_secs(1), &control)
+        .await
+        .unwrap();
+    health.scan(Ok(())); // An empty discovery page cannot erase the failed tenant scan.
     health.relay(Ok(()));
     assert_eq!(
         health.health().recovery,
@@ -145,6 +155,16 @@ async fn only_same_scope_scan_and_confirmed_target_finish_recover_health() {
             .is_empty()
     );
     assert_eq!(health.health().recovery, Phase::Healthy);
+    health.relay_scope(&scope, 1, Err(ErrorKind::Transient));
+    health.relay_scope(&other_tenant, 1, Ok(()));
+    health.relay_scope(&scope, 2, Ok(()));
+    assert_eq!(
+        health.health().recovery,
+        Phase::Failed(ErrorKind::Transient)
+    );
+    health.relay_scope(&scope, 1, Ok(()));
+    assert_eq!(health.health().recovery, Phase::Healthy);
+
     let target = Token(Target::new(scope.clone(), "a").unwrap());
     let other = Token(Target::new(scope, "b").unwrap());
     fail(&health, target.target());

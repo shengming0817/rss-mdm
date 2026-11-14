@@ -135,9 +135,7 @@ impl Service {
         let profile = self.profile();
 
         p.manage(Permission::AgentEnrollmentRead)?;
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Error::Forbidden.into());
-        }
+
         let mut tx = self.store.begin(p.tenant_id()).await?;
         authorize_on(profile, &mut tx, p, Permission::AgentEnrollmentRead).await?;
         let out = read_on(profile, &mut tx, p.tenant_id()).await?;

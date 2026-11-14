@@ -17,9 +17,7 @@ impl Scopes {
             .page
             .require_schema(&SCHEMA)
             .map_err(|_| Error::Malformed)?;
-        if proof.tenant_id() != proof.binding().tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
+
         proof.manage(Permission::PolicyRead)?;
         proof.require_all_devices(Permission::InventoryRead)?;
         let authority = proof.authorization()?.query_binding(proof)?;

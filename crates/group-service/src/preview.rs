@@ -57,9 +57,7 @@ impl Groups {
         request: &Request,
         audit: &RequestAudit,
     ) -> std::result::Result<Response, Error> {
-        if proof.tenant_id() != proof.binding().tenant().to_string()
-            || proof.initialization_authority().is_some()
-        {
+        if proof.initialization_authority().is_some() {
             return Err(Error::Forbidden);
         }
         proof.manage(Permission::GroupRead)?;

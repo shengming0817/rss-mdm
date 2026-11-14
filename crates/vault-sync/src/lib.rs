@@ -118,10 +118,7 @@ impl Service {
             Box<dyn Future<Output = Result<(R, bool), Error>> + Send + 'a>,
         > + Send,
     ) -> Result<R, Error> {
-        if actor.profile() != StorageProfile::Da
-            || actor.tenant_id() != actor.binding().tenant().to_string()
-            || audit.profile() != StorageProfile::Da
-        {
+        if actor.profile() != StorageProfile::Da || audit.profile() != StorageProfile::Da {
             return Err(Error::Denied);
         }
         actor.bind_audit(audit).map_err(|_| Error::Denied)?;

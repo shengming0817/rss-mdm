@@ -50,7 +50,7 @@ async fn same_session_reloads_current_grants_and_durable_authority_expires() -> 
         matches!(
             access::session::SessionAuthority::new(context.authority.clone())
                 .authenticate(
-                    context.execution(),
+                    context.inputs.installation.execution(other, 1)?,
                     &context.access(),
                     reader.credential()?,
                     rss_transactional_messaging::policy::OperationDeadline::from_remaining(
@@ -295,6 +295,7 @@ async fn embedded_da_http_binds_authority_before_purpose() -> Result<()> {
             .route_layer(axum::middleware::from_fn_with_state(state, identity_only));
         let app = protected
             .merge(identity)
+            .layer(Extension(c.execution()))
             .layer(Extension(crate::clock::monotonic()))
             .layer(axum::middleware::from_fn_with_state(
                 rss_axum::RequestBudget::new(Duration::from_secs(8))?,

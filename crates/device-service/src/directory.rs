@@ -149,9 +149,6 @@ impl Associations {
         personnel: &personnel::Reader<'_>,
         statistics: bool,
     ) -> Result<crate::view_response::DirectoryReply> {
-        if proof.tenant_id() != proof.binding().tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
         let budget = AuditBudget::new(Duration::from_secs(15));
         let access = self.directory_access(proof, &budget).await?;
         query

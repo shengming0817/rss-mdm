@@ -144,9 +144,7 @@ impl Service {
         audit: &RequestAudit,
     ) -> Result<Reply, Error> {
         proof.check_live().map_err(|_| Error::Denied)?;
-        if proof.tenant_id() != proof.binding().tenant().to_string()
-            || input.max_points.get() > self.storage_budget.points.get()
-        {
+        if input.max_points.get() > self.storage_budget.points.get() {
             return Err(Error::Denied);
         }
         let service = self.clone();

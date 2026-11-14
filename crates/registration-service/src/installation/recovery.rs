@@ -904,18 +904,29 @@ impl Service {
             let t = TenantId::parse(&tenant.to_string()).map_err(|_| Error::Malformed)?;
             let e = rss_transactional_messaging::fence::Epoch::new(epoch)
                 .map_err(|_| Error::Malformed)?;
-            count += self
+            let result = self
                 .relay_binding(rss_transactional_messaging::fence::ExecutionBinding::new(
                     self.storage,
                     t,
                     e,
                 ))
-                .await?;
+                .await;
             *self
                 .relay_after
                 .lock()
                 .map_err(|_| Error::Unavailable(Failure::CommandInvariant))? =
                 Some((tenant, epoch));
+            self.readiness.relay_scope(
+                &recovery_scope(t),
+                epoch,
+                result
+                    .as_ref()
+                    .map(|_| ())
+                    .map_err(|e| failure(e.clone()).kind()),
+            );
+            if let Ok(relayed) = result {
+                count += relayed;
+            }
         }
         Ok(count)
     }

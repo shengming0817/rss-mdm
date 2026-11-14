@@ -149,6 +149,20 @@ impl AutomationObservation {
             domain if domain == crate::worker::jobs::event_domain(profile) => 1,
             _ => return,
         };
+        let target =
+            rss_reconcile::Target::new(scope.clone(), "scan").expect("fixed scan observation");
+        if let Some(failure) = observation.failure {
+            self.failed(
+                target,
+                AttemptFailure {
+                    stage: rss_reconcile::Stage::Observe,
+                    failure,
+                    observed_at: observation.observed_at,
+                },
+            );
+        } else {
+            self.failures.remove(&target);
+        }
         self.scans[index] = Some(observation);
     }
     fn failed(&mut self, target: rss_reconcile::Target, failure: AttemptFailure) {
@@ -175,6 +189,15 @@ impl AutomationObservation {
                 .scans
                 .into_iter()
                 .flatten()
+                .chain(
+                    self.failures
+                        .iter()
+                        .filter(|(target, _)| target.entity() == "scan")
+                        .map(|(_, (_, failure))| RunObservation {
+                            failure: Some(failure.failure),
+                            observed_at: failure.observed_at,
+                        }),
+                )
                 .max_by_key(|o| (o.failure.is_some(), o.observed_at)),
             unresolved_attempts: self.failures.len() as u64,
             truncated: self.truncated,
@@ -210,6 +233,39 @@ impl Application {
                     observed_at,
                 },
             );
+    }
+    pub(crate) fn record_relay(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        result: &std::result::Result<usize, Error>,
+    ) {
+        let scope = rss_reconcile::Scope::new(
+            binding.tenant(),
+            crate::configuration::messaging_domain().as_str(),
+        )
+        .expect("fixed relay domain");
+        let target = rss_reconcile::Target::new(scope, format!("relay:{}", binding.epoch().get()))
+            .expect("epoch relay identity");
+        let mut observations = self
+            .automation_observation
+            .lock()
+            .expect("automation observation");
+        match result {
+            Ok(_) => observations.settled(&target, rss_reconcile::Completion::Converged),
+            Err(error) => observations.failed(
+                target,
+                AttemptFailure {
+                    stage: rss_reconcile::Stage::Apply,
+                    failure: match error {
+                        Error::CommitUnknown | Error::RollbackFailed => {
+                            AutomationFailure::SettlementUnknown
+                        }
+                        _ => AutomationFailure::StorageUnavailable,
+                    },
+                    observed_at: self.clock.unix_seconds().ok(),
+                },
+            ),
+        }
     }
     pub(crate) fn record_runner_failure(&self, event: rss_reconcile::Observation) {
         match event {
@@ -339,6 +395,21 @@ mod tests {
                 observed_at: Some(1),
             },
         );
+        let other_tenant = rss_reconcile::Scope::new(
+            rss_request_context::TenantId::parse("00000000-0000-0000-0000-000000000002").unwrap(),
+            events.reconciler(),
+        )
+        .unwrap();
+        observations.scanned(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &other_tenant,
+            RunObservation {
+                failure: None,
+                observed_at: Some(2),
+            },
+        );
+        assert!(observations.snapshot().scan.unwrap().failure.is_some());
+
         observations.scanned(
             rss_mdm_install_support::StorageProfile::Mdm,
             assets.scope(),

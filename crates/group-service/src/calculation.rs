@@ -250,7 +250,7 @@ impl Groups {
                 .reusable_group_job_in(tx, &current, &input_version, &sources)
                 .await?
         {
-            return Ok(tasks::accepted(existing, &job));
+            return Ok(tasks::accepted(tx.tenant_id(), existing, &job));
         }
         let request = g::BuildRequest {
             sources,

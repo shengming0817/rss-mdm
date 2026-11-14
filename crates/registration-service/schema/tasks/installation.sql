@@ -203,7 +203,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
 $$;
 CREATE FUNCTION mdm_registration_tasks.native_work_relay_scopes(after_tenant uuid,after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
- SELECT tenant_id,expected_epoch FROM ((SELECT DISTINCT tenant_id,expected_epoch FROM mdm_registration_tasks.operations WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32)) work ORDER BY tenant_id,expected_epoch LIMIT 32
+ SELECT DISTINCT r.tenant_id,r.expected_epoch FROM mdm_registration_tasks.operations r WHERE (after_tenant IS NULL OR (r.tenant_id,r.expected_epoch)>(after_tenant,after_epoch)) AND EXISTS (SELECT FROM rss_transactional_messaging.outbox o WHERE o.tenant_id=r.tenant_id AND o.domain='mdm.registration.installation.v1' AND o.message_id='dispatch.'||r.id::text AND o.status NOT IN ('published','resolved')) ORDER BY tenant_id,expected_epoch LIMIT 32
 $$;
 ALTER FUNCTION mdm_registration_tasks.native_work_scopes(uuid) OWNER TO mdm_owner;
 ALTER FUNCTION mdm_registration_tasks.native_work_epoch(uuid,text) OWNER TO mdm_owner;

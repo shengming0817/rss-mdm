@@ -297,9 +297,7 @@ fn proof<'a>(
     write: bool,
 ) -> Result<&'a rss_mdm_authorization_service::context::AuthorizedPrincipal, Error> {
     let p = &auth.proof;
-    if p.tenant_id() != p.binding().tenant().to_string() {
-        return Err(Error::Forbidden);
-    }
+
     p.require(
         if write {
             rss_mdm_authorization_service::Permission::RegistrationConfigurationWrite
@@ -347,9 +345,6 @@ pub async fn operation_receipt(
     p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
     id: Uuid,
 ) -> Result<Operation, Error> {
-    if p.tenant_id() != p.binding().tenant().to_string() {
-        return Err(Error::Forbidden);
-    }
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     rss_mdm_authorization_service::lock_shared_on(
         p.authority_profile(),

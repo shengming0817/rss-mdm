@@ -410,9 +410,7 @@ impl Service {
         let profile = self.profile();
 
         p.manage(Permission::AgentEnrollmentRead)?;
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Error::Forbidden.into());
-        }
+
         let mut tx = self.store.snapshot(p.tenant_id()).await?;
         authorize_on(profile, &mut tx, p, Permission::AgentEnrollmentRead).await?;
         let row = read_row(profile, &mut tx, p.tenant_id(), id).await?;
@@ -428,9 +426,6 @@ impl Service {
         p: &AuthorizedPrincipal,
         operation: Uuid,
     ) -> Result<Option<Read>, Failure> {
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Error::Forbidden.into());
-        }
         configuration_operation(&self.store, p, operation).await
     }
     pub async fn revoke_configuration(

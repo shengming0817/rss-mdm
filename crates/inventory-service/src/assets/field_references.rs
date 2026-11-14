@@ -153,9 +153,7 @@ impl AssetService {
     ) -> std::result::Result<Page<Entry>, Error> {
         q.require_schema(&SCHEMA).map_err(crate::query_error)?;
         proof.manage(Permission::InventoryFieldsWrite)?;
-        if proof.tenant_id() != proof.binding().tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
+
         crate::transaction::inspect(&self.runtime,proof.binding(),(self,proof,field,q),|ctx,tx|Box::pin(async move{
             let(s,p,field,q)=*ctx;let current=query_authority(tx,p).await?;
             current.require(p,Permission::InventoryFieldsWrite,None)?;

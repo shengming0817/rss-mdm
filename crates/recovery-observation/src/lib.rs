@@ -50,6 +50,19 @@ struct Rounds {
     failures: BTreeMap<String, ErrorKind>,
     overflow: bool,
 }
+impl Rounds {
+    fn record(&mut self, key: String, outcome: Result<(), ErrorKind>) {
+        match outcome {
+            Ok(()) => {
+                self.failures.remove(&key);
+            }
+            Err(error) if self.failures.len() < 1000 || self.failures.contains_key(&key) => {
+                self.failures.insert(key, error);
+            }
+            Err(_) => self.overflow = true,
+        }
+    }
+}
 /// A new process starts an observation window. Overflow remains failed until restart;
 /// successful work never erases failures for another target or scope.
 pub struct Readiness {
@@ -132,37 +145,23 @@ impl Readiness {
             && r.inputs.is_some()
         {
             r.inputs = Some(phase(outcome));
-            if outcome.is_ok() {
-                // Input owners confirm durable progress/failure before recording success.
-                // Another instance may have recovered this fixed target since our attempt.
-                r.failures.remove(&format!("{}:inputs", scope.tenant()));
-            }
+            r.record(format!("{}:inputs", scope.tenant()), outcome);
         }
     }
     /// Runner timeouts may drop the store future before it can return an observation.
     pub fn observe(&self, event: &Observation) {
         match event {
             Observation::ScanFailed { scope, error } if scope.reconciler() == self.domain => {
-                self.scan(Err(error.kind()))
+                self.scan_scope(scope, Err(error.kind()));
             }
             Observation::AttemptFailed { target, error, .. }
                 if target.scope().reconciler() == self.domain =>
             {
                 if let Ok(mut r) = self.rounds.lock() {
-                    if r.failures.len() < 1000
-                        || r.failures.contains_key(&format!(
-                            "{}:{}",
-                            target.scope().tenant(),
-                            target.entity()
-                        ))
-                    {
-                        r.failures.insert(
-                            format!("{}:{}", target.scope().tenant(), target.entity()),
-                            error.kind(),
-                        );
-                    } else {
-                        r.overflow = true;
-                    }
+                    r.record(
+                        format!("{}:{}", target.scope().tenant(), target.entity()),
+                        Err(error.kind()),
+                    );
                 }
             }
             _ => {}
@@ -178,6 +177,20 @@ impl Readiness {
     pub fn scan(&self, outcome: Result<(), ErrorKind>) {
         if let Ok(mut r) = self.rounds.lock() {
             r.scan = phase(outcome);
+        }
+    }
+    pub fn scan_scope(&self, scope: &Scope, outcome: Result<(), ErrorKind>) {
+        if let Ok(mut r) = self.rounds.lock() {
+            r.scan = phase(outcome);
+            r.record(format!("scope:{}:scan", scope.tenant()), outcome);
+        }
+    }
+    pub fn relay_scope(&self, scope: &Scope, epoch: i64, outcome: Result<(), ErrorKind>) {
+        if let Ok(mut r) = self.rounds.lock()
+            && r.relay.is_some()
+        {
+            r.relay = Some(phase(outcome));
+            r.record(format!("scope:{}:relay:{epoch}", scope.tenant()), outcome);
         }
     }
     fn settled(&self, target: &Target, completion: Completion) {

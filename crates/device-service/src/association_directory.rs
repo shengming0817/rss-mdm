@@ -19,9 +19,7 @@ impl Associations {
         q: &Query,
     ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<AssociationRow>>> {
         q.require_schema(&SCHEMA).map_err(|_| Error::Malformed)?;
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
+
         let budget = AuditBudget::new(Duration::from_secs(15));
         let (page,grants)=self.audit.read(p.binding().tenant(),&budget.control(),(self,p,q),|ctx,tx|Box::pin(async move {
             tx.with_connection_context(ctx,|(s,p,q),c|Box::pin(async move {

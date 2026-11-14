@@ -129,7 +129,7 @@ impl Groups {
                 },
             )
             .await?;
-        Ok(accepted(id, input))
+        Ok(accepted(tx.tenant_id(), id, input))
     }
 
     pub(crate) async fn replace_task_in(
@@ -149,12 +149,15 @@ impl Groups {
     }
 }
 
-pub(crate) fn accepted(id: Uuid, input: &TaskInput) -> crate::tasks::JobAccepted {
+pub(crate) fn accepted(tenant: TenantId, id: Uuid, input: &TaskInput) -> crate::tasks::JobAccepted {
     crate::tasks::JobAccepted {
         task: id,
         kind: input.kind().into(),
         target: input.target().to_string(),
-        status_url: format!("/api/v1/groups/{}/tasks/{id}", input.target()),
+        status_url: format!(
+            "/api/v1/tenants/{tenant}/groups/{}/tasks/{id}",
+            input.target()
+        ),
     }
 }
 

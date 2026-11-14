@@ -111,7 +111,7 @@ impl Catalog {
         let revision = resources
             .installer_in(tx, operation, &frozen, filename, at)
             .await?;
-        let value = json!({"packageId":id,"resource":id,"version":"v1","variant":"default","productVersion":version,"material":facts,"sha256":artifact.sha256,"length":artifact.length,"filename":filename,"href":format!("/api/v1/software/resources/{id}/versions/v1"),"storageRevision":revision});
+        let value = json!({"packageId":id,"resource":id,"version":"v1","variant":"default","productVersion":version,"material":facts,"sha256":artifact.sha256,"length":artifact.length,"filename":filename,"href":format!("/api/v1/tenants/{}/software/resources/{id}/versions/v1", tx.tenant_id()),"storageRevision":revision});
         self.record(tx, audit, (&key, operation, hash), &value, false)
             .await?;
         Ok(value)

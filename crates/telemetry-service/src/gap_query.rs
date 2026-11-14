@@ -49,9 +49,7 @@ impl Service {
         audit: &RequestAudit,
     ) -> Result<Page, Error> {
         proof.check_live().map_err(|_| Error::Denied)?;
-        if proof.tenant_id() != proof.binding().tenant().to_string() {
-            return Err(Error::Denied);
-        }
+
         if input.received_from < 0
             || input.received_until <= input.received_from
             || input.limit.get() > 1024

@@ -30,9 +30,7 @@ impl ResourceCatalog {
         Error,
     > {
         proof.manage(Permission::ResourceRead)?;
-        if proof.tenant_id() != proof.binding().tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
+
         crate::transaction::inspect(
             &self.runtime,
             proof.binding(),

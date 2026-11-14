@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::Context as _;
 use rss_mdm_management_http::operation_diagnostics::{LocatorQuery, Lookup, Reads};
 use serde_json::json;
 
@@ -97,7 +98,7 @@ async fn original_tenant_result_and_missing_result_have_independent_evidence() -
         audit.finalize(None);
     }
     // Consume the registered HTTP handlers with the actual installation realm proof.
-    let routes = crate::administration::tenants::http::routes(Some(service.clone()))
+    let routes = crate::administration::tenants::http::routes(Some(service.clone()), None)
         .into_checked_axum(rss_mdm_http_contract::module::Listener::Browser)
         .layer(axum::Extension(c.read_auth(proof.clone())))
         .layer(axum::Extension(c.request(&proof)?));
@@ -121,6 +122,14 @@ async fn original_tenant_result_and_missing_result_have_independent_evidence() -
         let page:serde_json::Value=response.json().await?;
         assert_eq!(page["items"].as_array().unwrap().len(),1);
         assert_eq!(page["items"][0]["operationId"],provision.to_string());
+        // A durable blocked baseline is legal read prestate; the original parent receipt remains pending.
+        let tenant = body["result"]["tenantId"].as_str().context("provisioned tenant")?;
+        sqlx::query("UPDATE mdm_initialization.baselines SET phase='blocked',blocked='authorization' WHERE tenant_id=$1::uuid")
+            .bind(tenant).execute(&c.operator).await?;
+        let detail:serde_json::Value=client.get(format!("{base}/provisionings/{provision}")).send().await?.error_for_status()?.json().await?;
+        let page:serde_json::Value=client.get(format!("{base}/provisionings")).query(&[("filter",format!("operationId=={provision};result.phase==blocked;result.blocked==authorization"))]).send().await?.error_for_status()?.json().await?;
+        assert_eq!(page["items"].as_array().unwrap().len(),1);
+        assert_eq!(page["items"][0],detail,"directory predicates and detail consume the same baseline projection");
         Ok::<_,anyhow::Error>(())
     }.await;
     server.abort();

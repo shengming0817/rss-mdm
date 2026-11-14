@@ -47,12 +47,14 @@ fn operation(headers: &HeaderMap) -> std::result::Result<Uuid, Error> {
 }
 pub(crate) fn routes(
     service: Option<Arc<Service>>,
+    baseline: Option<Arc<crate::administration::baseline::Service>>,
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     let enabled = service.is_some();
-    mount_registry(service, enabled)
+    mount_registry(service, baseline, enabled)
 }
 pub(crate) fn mount_registry(
     runtime: Option<Arc<Service>>,
+    baseline: Option<Arc<crate::administration::baseline::Service>>,
     enabled: bool,
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
@@ -67,7 +69,7 @@ delete_delete: rss_mdm_http_contract::module::Route::new("/tenants/{tenant}", rs
 post_administrator: rss_mdm_http_contract::module::Route::new("/tenants/{tenant}/administrators", post(administrator, &contracts::TENANTS, &[RouteOperation::Action])),
 get_receipt_2: rss_mdm_http_contract::module::Route::new("/operations/{operation}", get(receipt, &contracts::PROVISIONINGS, &[RouteOperation::Get])) }.assemble()
 }
-        .bind_with(runtime.as_ref(), Clone::clone).when("tenant_administration", enabled)
+        .bind_with(runtime.as_ref(), Clone::clone).layer(Extension(baseline)).when("tenant_administration", enabled)
 }
 async fn list(
     State(service): State<Arc<Service>>,
@@ -255,6 +257,7 @@ impl rss_mdm_http_contract::signature::Input for WriteHeaders {
 }
 
 pub(super) async fn create(
+    Extension(baseline): Extension<Option<Arc<crate::administration::baseline::Service>>>,
     State(service): State<Arc<Service>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -270,6 +273,7 @@ pub(super) async fn create(
             operation,
             &body,
             rss_request_context::Deadline::at(auth.deadline),
+            baseline.as_deref(),
         )
         .await?;
     Ok(ProvisioningResponse(receipt))

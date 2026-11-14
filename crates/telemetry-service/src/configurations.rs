@@ -128,9 +128,7 @@ impl Service {
         audit: &RequestAudit,
     ) -> Result<Configurations, Error> {
         proof.check_live().map_err(|_| Error::Denied)?;
-        if proof.tenant_id() != proof.binding().tenant().to_string() {
-            return Err(Error::Denied);
-        }
+
         let service = self.clone();
         let proof = proof.clone();
         let device = device.to_owned();

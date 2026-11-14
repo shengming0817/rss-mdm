@@ -59,9 +59,6 @@ impl Associations {
         p: &AuthorizedPrincipal,
         id: Uuid,
     ) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>> {
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
         let budget = AuditBudget::new(std::time::Duration::from_secs(5));
         self.audit
             .read(
@@ -118,9 +115,6 @@ impl Associations {
         p: &AuthorizedPrincipal,
         id: Uuid,
     ) -> Result<lifecycle::Retirement> {
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
         let budget = AuditBudget::new(std::time::Duration::from_secs(6));
         self.audit
             .write(
@@ -197,7 +191,7 @@ impl Associations {
         change: Change<'_>,
         audit: &RequestAudit,
     ) -> Result<Value> {
-        if p.tenant_id() != p.binding().tenant().to_string() || change.operation().is_nil() {
+        if change.operation().is_nil() {
             return Err(Error::Forbidden);
         }
         p.bind_audit(audit)?;

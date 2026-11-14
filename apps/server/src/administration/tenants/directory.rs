@@ -53,9 +53,10 @@ pub(super) async fn page(
         Tenants(Vec<Tenant>),
     }
     let rows = if provisionings {
-        let mut sql = sqlx::QueryBuilder::new(
-            "SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision'",
-        );
+        let mut sql = sqlx::QueryBuilder::new(format!(
+            "SELECT receipt FROM ({}) provisionings WHERE true",
+            super::provisioning::RECEIPTS,
+        ));
         rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*PROVISIONING_BINDINGS)
             .map_err(error)?;
         let values = sql

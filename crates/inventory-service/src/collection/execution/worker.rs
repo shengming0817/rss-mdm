@@ -673,18 +673,29 @@ impl Worker {
                 .map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))?;
             let e = rss_transactional_messaging::fence::Epoch::new(epoch)
                 .map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))?;
-            count += self
+            let result = self
                 .relay_binding(rss_transactional_messaging::fence::ExecutionBinding::new(
                     self.storage,
                     t,
                     e,
                 ))
-                .await?;
+                .await;
             *self
                 .relay_after
                 .lock()
                 .map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))? =
                 Some((tenant, epoch));
+            self.readiness.relay_scope(
+                &super::wake::scope(t),
+                epoch,
+                result
+                    .as_ref()
+                    .map(|_| ())
+                    .map_err(|e| failure(e.clone()).kind()),
+            );
+            if let Ok(relayed) = result {
+                count += relayed;
+            }
         }
         Ok(count)
     }

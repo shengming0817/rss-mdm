@@ -112,8 +112,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
 $$;
 CREATE FUNCTION mdm_script.relay_scopes(after_tenant uuid, after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
- SELECT DISTINCT tenant_id,expected_epoch FROM mdm_script.runs
- WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32
+ SELECT DISTINCT r.tenant_id,r.expected_epoch FROM mdm_script.runs r WHERE (after_tenant IS NULL OR (r.tenant_id,r.expected_epoch)>(after_tenant,after_epoch)) AND EXISTS (SELECT FROM rss_transactional_messaging.outbox o WHERE o.tenant_id=r.tenant_id AND o.domain='mdm.script.v1' AND o.message_id='script.'||r.id::text AND o.status NOT IN ('published','resolved')) ORDER BY tenant_id,expected_epoch LIMIT 32
 $$;
 ALTER FUNCTION mdm_script.work_scopes(uuid) OWNER TO mdm_owner;
 ALTER FUNCTION mdm_script.work_epoch(uuid,text) OWNER TO mdm_owner;

@@ -151,9 +151,7 @@ impl Service {
     ) -> Result<Reply, Error> {
         proof.manage(required(&command))?;
         proof.bind_audit(&audit)?;
-        if proof.tenant_id() != proof.binding().tenant().to_string() {
-            return Err(Error::Denied);
-        }
+
         let op = operation(&command);
         if let Some(id) = op {
             if id.is_nil() {

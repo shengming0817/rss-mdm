@@ -71,9 +71,7 @@ impl Associations {
         if !(1..=1024).contains(&limit) {
             return Err(Error::Malformed);
         }
-        if proof.tenant_id() != proof.binding().tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
+
         let budget = AuditBudget::new(Duration::from_secs(15));
         let subject = personnel.revalidate(proof).await?;
         let (page,grant,cursor)=self.audit.read(proof.binding().tenant(),&budget.control(),(self,proof,reference,field,token,subject.as_ref()),|ctx,tx|Box::pin(async move {

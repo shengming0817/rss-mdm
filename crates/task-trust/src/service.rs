@@ -180,7 +180,7 @@ impl Service {
         let profile = self.signing.profile;
         let usage = self.signing.usage;
 
-        if p.profile() != profile || p.tenant_id() != p.binding().tenant().to_string() {
+        if p.profile() != profile {
             return Err(Error::Forbidden);
         }
         p.require(Permission::RegistrationConfigurationWrite, None)?;
@@ -414,7 +414,7 @@ impl Service {
         let profile = self.signing.profile;
         let usage = self.signing.usage;
 
-        if p.profile() != profile || p.tenant_id() != p.binding().tenant().to_string() {
+        if p.profile() != profile {
             return Err(Error::Forbidden);
         }
         p.require(Permission::InventoryRead, Some(device))?;

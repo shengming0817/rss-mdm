@@ -50,6 +50,7 @@ impl Service {
         operation: Uuid,
         body: &Provision,
         cutoff: rss_request_context::Deadline,
+        baseline: Option<&crate::administration::baseline::Service>,
     ) -> std::result::Result<Receipt, Error> {
         proof.shared_session()?;
         proof.require(Permission::TenantCreate, None)?;
@@ -77,40 +78,60 @@ impl Service {
         let ReceiptResult::Provisioning(progress) = &receipt.result else {
             return Err(Error::Conflict);
         };
-        if progress.administrator_id.is_some() {
+        if progress.phase == Phase::Configured {
             return Ok(receipt);
         }
-        let child_audit = audit.transaction_copy();
-        proof.bind_audit(&child_audit)?;
-        let result = self
-            .create_administrator(
-                proof,
-                &child_audit,
-                &progress.tenant_id.to_string(),
-                administrator_operation,
-                AdministratorInput {
-                    login: login.as_str().into(),
-                    password: body.administrator_password.clone(),
-                },
-                cutoff,
-            )
-            .await;
-        child_audit.finalize(
-            result
-                .as_ref()
-                .err()
-                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
-        );
-        let account = result?;
-        let ReceiptResult::Administrator(account) = account.result else {
-            return Err(Error::Conflict);
-        };
-        let principal = Uuid::parse_str(&account.principal_id).map_err(|_| Error::Malformed)?;
-        let ReceiptResult::Provisioning(progress) = &mut receipt.result else {
-            return Err(Error::Conflict);
-        };
-        progress.administrator_id = Some(principal);
-        Ok(receipt)
+        let tenant = progress.tenant_id;
+        if progress.administrator_id.is_none() {
+            let child_audit = audit.transaction_copy();
+            proof.bind_audit(&child_audit)?;
+            let result = self
+                .create_administrator(
+                    proof,
+                    &child_audit,
+                    &progress.tenant_id.to_string(),
+                    administrator_operation,
+                    AdministratorInput {
+                        login: login.as_str().into(),
+                        password: body.administrator_password.clone(),
+                    },
+                    cutoff,
+                )
+                .await;
+            child_audit.finalize(
+                result
+                    .as_ref()
+                    .err()
+                    .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+            );
+            let account = result?;
+            let ReceiptResult::Administrator(account) = account.result else {
+                return Err(Error::Conflict);
+            };
+            let principal = Uuid::parse_str(&account.principal_id).map_err(|_| Error::Malformed)?;
+            let ReceiptResult::Provisioning(progress) = &mut receipt.result else {
+                return Err(Error::Conflict);
+            };
+            progress.administrator_id = Some(principal);
+        }
+        if let Some(baseline) = baseline {
+            let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
+                .map_err(|_| Error::Malformed)?;
+            let stop = tokio_util::sync::CancellationToken::new();
+            if let Some(binding) =
+                crate::administration::baseline::resume(baseline, tenant, &stop, cutoff).await?
+            {
+                self.complete_initialization(binding, cutoff).await?;
+            }
+        }
+        self.registry_read((self, receipt), |(service, receipt), c| {
+            Box::pin(async move {
+                let mut receipt = receipt.clone();
+                service.project_initialization(c, &mut receipt).await?;
+                Ok(receipt)
+            })
+        })
+        .await
     }
     async fn reserve_provisioning(
         &self,
@@ -148,7 +169,13 @@ impl Service {
                 if let Some((mut receipt,request))=receipt_on(c,*operation).await? {
                     if receipt.action!=Action::Provision || request["fingerprint"].as_str()!=Some(*digest) {return Err(Reason::Conflict);}
                     let child=Uuid::parse_str(request["administratorOperationId"].as_str().ok_or(Reason::Storage)?).map_err(|_|Reason::Storage)?;
-                    service.project_initialization(c, &mut receipt).await?;
+                    if let ReceiptResult::Provisioning(progress) = &mut receipt.result
+                        && progress.administrator_id.is_none()
+                        && let Some((account, _)) = receipt_on(c, child).await? {
+                        let ReceiptResult::Administrator(account) = account.result else { return Err(Reason::Storage) };
+                        if account.tenant_id != progress.tenant_id.to_string() { return Err(Reason::Storage) }
+                        progress.administrator_id = Some(Uuid::parse_str(&account.principal_id).map_err(|_| Reason::Storage)?);
+                    }
                     return Ok((receipt,child,true));
                 }
                 let tenant=Uuid::new_v4();let administrator_operation=Uuid::new_v4();
@@ -195,49 +222,26 @@ impl Service {
         c: &mut PgConnection,
         receipt: &mut Receipt,
     ) -> Result<()> {
-        let ReceiptResult::Provisioning(progress) = &mut receipt.result else {
-            return Ok(());
-        };
-        if progress.phase == Phase::Configured {
+        if !matches!(receipt.result, ReceiptResult::Provisioning(_)) {
             return Ok(());
         }
-        let child: Option<Uuid> = sqlx::query_scalar("SELECT (request->>'administratorOperationId')::uuid FROM public.mdm_tenant_operations WHERE operation_id=$1 AND action='provision'")
-            .bind(receipt.operation_id).fetch_optional(&mut *c).await.map_err(|_|Reason::Storage)?;
-        if let Some(child) = child
-            && let Some((account, _)) = receipt_on(c, child).await?
-        {
-            let ReceiptResult::Administrator(account) = account.result else {
-                return Err(Reason::Storage);
-            };
-            if account.tenant_id != progress.tenant_id.to_string() {
-                return Err(Reason::Storage);
-            }
-            progress.administrator_id =
-                Some(Uuid::parse_str(&account.principal_id).map_err(|_| Reason::Storage)?);
-        }
-        if progress.administrator_id.is_none() {
-            return Ok(());
-        }
-        let row: Option<(String, Option<String>)> = sqlx::query_as(
-            "SELECT phase,blocked FROM mdm_initialization.baselines WHERE tenant_id=$1",
-        )
-        .bind(progress.tenant_id)
-        .fetch_optional(c)
+        let projected: serde_json::Value = sqlx::query_scalar(&format!(
+            "SELECT receipt FROM ({RECEIPTS}) p WHERE operation_id=$1"
+        ))
+        .bind(receipt.operation_id)
+        .fetch_one(c)
         .await
         .map_err(|_| Reason::Storage)?;
-        if let Some((phase, blocked)) = row {
-            progress.phase = serde_json::from_value(serde_json::Value::String(phase))
-                .map_err(|_| Reason::Storage)?;
-            progress.blocked = blocked;
-        }
+        *receipt = serde_json::from_value(projected).map_err(|_| Reason::Storage)?;
         Ok(())
     }
     /// The original baseline owner calls this after all of its durable steps are configured.
     pub(crate) async fn complete_initialization(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
+        cutoff: rss_request_context::Deadline,
     ) -> std::result::Result<(), Error> {
-        self.source_runtime.local_tx(binding, crate::identity::deadline(), |tx| Box::pin(async move {
+        self.source_runtime.local_tx(binding, rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff, &crate::lifecycle::RuntimeTimer), |tx| Box::pin(async move {
             tx.with_connection(|c| Box::pin(async move {
                 sqlx::query("UPDATE public.mdm_tenant_operations o SET receipt=jsonb_set(jsonb_set(jsonb_set(o.receipt,'{result,phase}','\"configured\"'::jsonb),'{result,blocked}','null'::jsonb),'{result,administratorId}',a.receipt->'result'->'principalId') FROM public.mdm_tenant_operations a,mdm_initialization.baselines b WHERE o.tenant_id=$1::uuid AND o.action='provision' AND o.receipt->'result'->>'phase'<>'configured' AND a.operation_id=(o.request->>'administratorOperationId')::uuid AND a.action='administrator_create' AND a.tenant_id=o.tenant_id AND b.tenant_id=o.tenant_id AND b.phase='configured'")
                     .bind(binding.tenant().to_string()).execute(c).await?;
@@ -254,3 +258,15 @@ impl Service {
             .bind(after).fetch_all(&self.pool).await.map_err(|_|Error::Unavailable(Failure::Database))
     }
 }
+
+/// Baseline owns progress; the parent operation keeps its final success receipt.
+pub(super) const RECEIPTS: &str = "SELECT o.operation_id, CASE
+ WHEN o.receipt->'result'->>'phase'='configured' THEN o.receipt
+ ELSE jsonb_set(o.receipt,'{result}',o.receipt->'result' || jsonb_build_object(
+   'administratorId',COALESCE(a.receipt->'result'->'principalId',o.receipt->'result'->'administratorId'),
+   'phase',CASE WHEN a.operation_id IS NULL THEN 'pending' ELSE COALESCE(b.phase,'pending') END,
+   'blocked',CASE WHEN a.operation_id IS NULL THEN NULL ELSE b.blocked END)) END AS receipt
+ FROM public.mdm_tenant_operations o
+ LEFT JOIN public.mdm_tenant_operations a ON a.operation_id=(o.request->>'administratorOperationId')::uuid AND a.action='administrator_create' AND a.tenant_id=o.tenant_id
+ LEFT JOIN mdm_initialization.baselines b ON b.tenant_id=o.tenant_id
+ WHERE o.action='provision'";

@@ -50,7 +50,8 @@ async fn sensitive_http_body_is_withheld_when_audit_cannot_commit() -> Result<()
             requests: Arc::new(tokio::sync::Semaphore::new(2)),
         },
     )
-    .into_axum();
+    .into_axum()
+    .layer(Extension(context.execution()));
     let request = || {
         axum::http::Request::builder()
             .uri(format!("/api/v1/tenants/{}/audit-events", context.tenant))

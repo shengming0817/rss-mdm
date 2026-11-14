@@ -35,9 +35,6 @@ get_operation: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenan
         .bind_with(state.as_ref(),Clone::clone)
 }
 fn proof<'a>(auth: &'a RequestAuth) -> Result<&'a AuthorizedPrincipal, Error> {
-    if auth.proof.tenant_id() != auth.proof.binding().tenant().to_string() {
-        return Err(Error::Forbidden);
-    }
     auth.proof.check_live()?;
     Ok(&auth.proof)
 }

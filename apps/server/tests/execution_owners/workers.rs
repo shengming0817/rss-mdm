@@ -343,6 +343,7 @@ async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result
 async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()> {
     use rss_mdm_recovery_observation::Phase;
     let h = Harness::open().await?;
+    let other = Harness::open().await?;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
         .acquire_timeout(Duration::from_millis(500))
@@ -387,6 +388,21 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
     worker.record_relay_health(&Ok(0));
     assert_eq!(worker.health().recovery, failed);
     drop(held);
+    worker
+        .recovery_store()
+        .claim_due(
+            &script::wake::scope(other.c.tenant),
+            1,
+            64,
+            Duration::from_secs(30),
+            &control,
+        )
+        .await?;
+    assert_eq!(
+        worker.health().recovery,
+        failed,
+        "another tenant scan cannot clear this failure"
+    );
     assert!(
         worker
             .recovery_store()
@@ -398,5 +414,56 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
     assert_eq!(worker.health().recovery, Phase::Healthy);
     drop(worker);
     pool.close().await;
+    // The same worker must move past an old epoch and deliver another tenant's real outbox work.
+    let (blocked, ready) = if h.c.tenant.to_string() < other.c.tenant.to_string() {
+        (&h, &other)
+    } else {
+        (&other, &h)
+    };
+    let (_, old_version) = blocked.policy("relay-old").await?;
+    let old = Uuid::new_v4();
+    assert!(matches!(
+        blocked.admit(old_version, old).await?,
+        w::PolicyEventDecision::Accepted { .. }
+    ));
+    let (_, version) = ready.policy("relay-current").await?;
+    let pending = Uuid::new_v4();
+    assert!(matches!(
+        ready.admit(version, pending).await?,
+        w::PolicyEventDecision::Accepted { .. }
+    ));
+    let accepted = || async {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT gateway_accepted FROM mdm_script.runs WHERE tenant_id=$1::uuid AND id=$2",
+        )
+        .bind(ready.c.tenant.to_string())
+        .bind(pending)
+        .fetch_one(&ready.c.operator)
+        .await
+    };
+    assert!(!accepted().await?);
+    assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2 WHERE tenant_id=$1::uuid AND epoch=1")
+        .bind(blocked.c.tenant.to_string()).execute(&blocked.c.operator).await?.rows_affected(), 1);
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let _ = h.a.script_work.relay_once().await;
+            if accepted().await? {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
+    let epoch: i64 = sqlx::query_scalar(
+        "SELECT expected_epoch FROM mdm_script.runs WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(blocked.c.tenant.to_string())
+    .bind(old)
+    .fetch_one(&blocked.c.operator)
+    .await?;
+    assert_eq!(epoch, 1, "relay does not retag old work");
+    other.close().await?;
+
     h.close().await
 }

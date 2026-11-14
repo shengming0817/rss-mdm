@@ -44,9 +44,7 @@ impl Queries {
             > + Send,
     {
         proof.check_live()?;
-        if proof.tenant_id() != proof.binding().tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
+
         let started = self.clock.now();
         let remaining = || {
             crate::deployment::transaction::TRANSACTION_BUDGET

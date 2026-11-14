@@ -194,8 +194,13 @@ impl Http {
                     }
                 },
             ));
+        let router = axum::Router::new().nest("/api/v1/tenants/{tenant}", router);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let base = format!("http://{}", listener.local_addr()?);
+        let base = format!(
+            "http://{}/api/v1/tenants/{}",
+            listener.local_addr()?,
+            c.tenant
+        );
         let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         Ok(Self {
             base,
@@ -223,6 +228,17 @@ impl Http {
     pub async fn get(&self, path: &str) -> Result<Value> {
         let (status, value) = self.call(reqwest::Method::GET, path, None).await?;
         anyhow::ensure!(status == 200, "GET {path}: {status} {value}");
+        Ok(value)
+    }
+    pub async fn follow(&self, path: &str) -> Result<Value> {
+        let url = url::Url::parse(&self.base)?.join(path)?;
+        let response = self.client.get(url).send().await?;
+        let status = response.status();
+        let value: Value = response.json().await?;
+        anyhow::ensure!(
+            status.is_success(),
+            "response link {path}: {status} {value}"
+        );
         Ok(value)
     }
     pub async fn close(self) {

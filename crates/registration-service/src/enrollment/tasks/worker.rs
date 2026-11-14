@@ -682,14 +682,25 @@ impl Worker {
                 .map_err(|_| Error::Invariant)?;
             let e = rss_transactional_messaging::fence::Epoch::new(epoch)
                 .map_err(|_| Error::Invariant)?;
-            count += self
+            let result = self
                 .relay_binding(rss_transactional_messaging::fence::ExecutionBinding::new(
                     self.storage,
                     t,
                     e,
                 ))
-                .await?;
+                .await;
             *self.relay_after.lock().map_err(|_| Error::Invariant)? = Some((tenant, epoch));
+            self.readiness.relay_scope(
+                &crate::enrollment::tasks::wake::scope(self.service.profile(), t),
+                epoch,
+                result
+                    .as_ref()
+                    .map(|_| ())
+                    .map_err(|e| failure(e.clone()).kind()),
+            );
+            if let Ok(relayed) = result {
+                count += relayed;
+            }
         }
         Ok(count)
     }

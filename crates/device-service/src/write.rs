@@ -61,9 +61,6 @@ impl Associations {
         change: Change<'_>,
         audit: &RequestAudit,
     ) -> Result<Association> {
-        if proof.tenant_id() != proof.binding().tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
         proof.bind_audit(audit)?;
         audit.owned_operation(
             rss_mdm_audit_integration::operation::OperationOwner::DeviceManagement,

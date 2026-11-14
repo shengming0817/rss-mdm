@@ -48,7 +48,7 @@ impl<S: DurableStore> DurableStore for ObservedStore<'_, S> {
             .claim_due(scope, limit, scan_budget, lease, control)
             .await;
         self.readiness
-            .scan(result.as_ref().map(|_| ()).map_err(|e| e.kind()));
+            .scan_scope(scope, result.as_ref().map(|_| ()).map_err(|e| e.kind()));
         result
     }
     async fn renew<T: Timer>(

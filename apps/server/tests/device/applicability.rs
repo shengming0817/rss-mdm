@@ -40,11 +40,12 @@ impl Http {
             .layer(axum::Extension(c.request(&proof)?))
             .layer(axum::Extension(c.read_auth(proof)))
             .into_axum();
+        let router = axum::Router::new().nest("/api/v1/tenants/{tenant}", router);
         let response = tokio::time::timeout(
             Duration::from_secs(10),
             router.oneshot(
                 axum::http::Request::builder()
-                    .uri(format!("/devices/{device}"))
+                    .uri(format!("/api/v1/tenants/{}/devices/{device}", c.tenant))
                     .body(axum::body::Body::empty())?,
             ),
         )

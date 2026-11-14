@@ -358,8 +358,7 @@ async fn directory_on(
     principal: &DevicePrincipal,
 ) -> Result<rss_mdm_agent_wire::runtime::TelemetryDirectory, Error> {
     use rss_mdm_agent_wire::runtime::{TelemetryAssignment, TelemetryDirectory};
-    if principal.tenant() != principal.binding().tenant()
-        || principal.channel() != Some(rss_mdm_inventory::Channel::Agent)
+    if principal.channel() != Some(rss_mdm_inventory::Channel::Agent)
         || principal.purpose() != rss_mdm_registration_service::device::Purpose::Primary
     {
         return Err(Error::Denied);

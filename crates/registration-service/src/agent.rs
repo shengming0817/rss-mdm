@@ -174,10 +174,7 @@ impl Service {
         self.clock.unix_seconds()
     }
     pub(crate) fn proof(&self, p: &AuthorizedPrincipal, a: &RequestAudit) -> Result<(), Error> {
-        if p.profile() != self.profile()
-            || p.tenant_id() != p.binding().tenant().to_string()
-            || a.tenant() != p.tenant_id()
-        {
+        if p.profile() != self.profile() || a.tenant() != p.tenant_id() {
             return Err(Error::Forbidden);
         }
         p.check_live()?;

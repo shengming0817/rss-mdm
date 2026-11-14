@@ -267,6 +267,17 @@ pub(crate) fn from_state(
         asset_input_health: state.asset_input_health.clone(),
         instance: state.identity.instance.to_string(),
     });
+    let baseline = Arc::new(crate::administration::baseline::Service {
+        instance: state.identity.instance,
+        pool: state.access.archive_pool(),
+        authorization: state.access.authorization_store(),
+        groups: state.groups.clone(),
+        resources: state.resources.clone(),
+        content_access: state.content_access.clone(),
+        assets: state.assets.clone(),
+        policies: state.policies.clone(),
+        telemetry: state.telemetry.clone(),
+    });
     let tenant_administration = rss_mdm_management_http::tenant_administration::router(
         Arc::new(
             rss_mdm_management_http::authorization::http::AuthenticationState {
@@ -275,7 +286,10 @@ pub(crate) fn from_state(
                 requests: state.requests.clone(),
             },
         ),
-        crate::administration::tenants::http::routes(state.identity.tenant_administration.clone()),
+        crate::administration::tenants::http::routes(
+            state.identity.tenant_administration.clone(),
+            Some(baseline.clone()),
+        ),
         crate::administration::settings::http::platform_routes(Some(&settings)),
         rss_mdm_management_http::operation_diagnostics::management_routes().with_state(Arc::new(
             rss_mdm_management_http::operation_diagnostics::Services {
@@ -596,17 +610,7 @@ pub(crate) fn from_state(
     crate::native::Routers {
         windows_control: windows_state.clone(),
         baseline: crate::lifecycle::baseline_registration(
-            crate::administration::baseline::Service {
-                instance: state.identity.instance,
-                pool: state.access.archive_pool(),
-                authorization: state.access.authorization_store(),
-                groups: state.groups.clone(),
-                resources: state.resources.clone(),
-                content_access: state.content_access.clone(),
-                assets: state.assets.clone(),
-                policies: state.policies.clone(),
-                telemetry: state.telemetry.clone(),
-            },
+            baseline.clone(),
             state.identity.tenant_administration.clone(),
         ),
         telemetry: state.telemetry.clone(),
@@ -805,7 +809,7 @@ pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<St
     let browser = BrowserRoutes {
         device_access: super::device_access::browser(None, None, true),
         tenants: rss_mdm_management_http::tenant_administration::contract_routes(
-            crate::administration::tenants::http::mount_registry(None, true),
+            crate::administration::tenants::http::mount_registry(None, None, true),
             crate::administration::settings::http::platform_routes(None),
             rss_mdm_management_http::operation_diagnostics::management_routes().bind_with(
                 None::<&Arc<rss_mdm_management_http::operation_diagnostics::Services>>,

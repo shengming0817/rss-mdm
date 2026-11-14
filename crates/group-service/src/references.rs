@@ -106,9 +106,7 @@ impl Groups {
     ) -> std::result::Result<Page<Entry>, Error> {
         q.require_schema(&SCHEMA).map_err(|_| Error::Malformed)?;
         proof.manage(Permission::GroupRead)?;
-        if proof.tenant_id() != proof.binding().tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
+
         transaction::inspect(&self.runtime,proof.binding(),(self,proof,id,q),|ctx,tx|Box::pin(async move {
             let (s,p,id,q)=*ctx;
             let authority=transaction::query_authority(tx,p).await?;

@@ -36,8 +36,12 @@ async fn query(c: &Context, fixture: &Fixture, http: &Http, input: Value) -> Res
         .await?;
     anyhow::ensure!(status == 202, "query: {status} {value}");
     assert_eq!(value["asset"]["task"], id.to_string());
+    let status_url = value["asset"]["statusUrl"]
+        .as_str()
+        .context("query status link")?
+        .to_owned();
     fixture.settle(c, id).await?;
-    let value = http.get(&format!("/software-asset-queries/{id}")).await?;
+    let value = http.follow(&status_url).await?;
     assert_eq!(response(&value)["status"], "completed", "{value}");
     Ok(id)
 }

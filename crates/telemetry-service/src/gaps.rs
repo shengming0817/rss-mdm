@@ -14,8 +14,7 @@ const REGISTRATION_REPORTS: i64 = 4096;
 const TENANT_REPORTS: i64 = 100_000;
 
 async fn authenticate_on(c: &mut PgConnection, principal: &DevicePrincipal) -> Result<(), Error> {
-    if principal.tenant() != principal.binding().tenant()
-        || principal.channel() != Some(rss_mdm_inventory::Channel::Agent)
+    if principal.channel() != Some(rss_mdm_inventory::Channel::Agent)
         || principal.purpose() != Purpose::Primary
     {
         return Err(Error::Denied);

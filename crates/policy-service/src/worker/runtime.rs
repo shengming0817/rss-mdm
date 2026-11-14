@@ -874,7 +874,11 @@ impl PolicyWork {
             let force = tokio_util::sync::CancellationToken::new();
             let timer = Timer::new();
             let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &force);
-            count += configuration.relay_once(binding, &control).await?;
+            let result = configuration.relay_once(binding, &control).await;
+            self.service.record_relay(binding, &result);
+            if let Ok(relayed) = result {
+                count += relayed;
+            }
             *self
                 .relay_after
                 .lock()

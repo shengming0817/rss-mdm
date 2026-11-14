@@ -140,9 +140,7 @@ impl Groups {
             .require_schema(&SCHEMA)
             .map_err(|_| Error::Malformed)?;
         proof.manage(Permission::GroupRead)?;
-        if proof.tenant_id() != proof.binding().tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
+
         proof.require_all_devices(Permission::InventoryRead)?;
         let codec = CursorCodec::from_key(self.cursor_key.clone());
         let cursor = q

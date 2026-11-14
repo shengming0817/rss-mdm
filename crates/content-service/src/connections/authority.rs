@@ -64,9 +64,6 @@ impl Authority {
         audit: &RequestAudit,
         operation: Uuid,
     ) -> Result<Receipt, Failure> {
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Failure::Forbidden);
-        }
         p.require(Permission::StorageConfigurationRead, None)?;
         p.bind_audit(audit)?;
         let budget = AuditBudget::new(Duration::from_secs(6));
@@ -87,9 +84,6 @@ impl Authority {
         audit: &RequestAudit,
         operation: Uuid,
     ) -> Result<crate::migration::Receipt, Failure> {
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Failure::Forbidden);
-        }
         p.require(Permission::StorageConfigurationRead, None)?;
         p.bind_audit(audit)?;
         let budget = AuditBudget::new(Duration::from_secs(6));
@@ -126,9 +120,6 @@ impl Authority {
         p: &AuthorizedPrincipal,
         audit: &RequestAudit,
     ) -> Result<crate::migration::Directory, Failure> {
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Failure::Forbidden);
-        }
         p.require(Permission::StorageConfigurationRead, None)?;
         p.bind_audit(audit)?;
         let budget = AuditBudget::new(Duration::from_secs(6));
@@ -164,9 +155,6 @@ impl Authority {
         p: &AuthorizedPrincipal,
         audit: &RequestAudit,
     ) -> Result<Directory, Failure> {
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Failure::Forbidden);
-        }
         p.require(Permission::StorageConfigurationRead, None)?;
         p.bind_audit(audit)?;
         let applied = match &self.content {
@@ -195,9 +183,6 @@ impl Authority {
         operation: Uuid,
         input: &Request,
     ) -> Result<Receipt, Failure> {
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Failure::Forbidden);
-        }
         p.require(Permission::StorageConfigurationWrite, None)?;
         p.session()?;
         p.bind_audit(audit)?;
@@ -237,9 +222,6 @@ impl Authority {
         operation: Uuid,
         input: &crate::migration::Request,
     ) -> Result<crate::migration::Receipt, Failure> {
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Failure::Forbidden);
-        }
         p.require(Permission::StorageConfigurationWrite, None)?;
         p.session()?;
         p.bind_audit(audit)?;
@@ -278,9 +260,6 @@ impl Authority {
         audit: &RequestAudit,
         operation: Uuid,
     ) -> Result<crate::migration::Receipt, Failure> {
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Failure::Forbidden);
-        }
         p.require(Permission::StorageConfigurationWrite, None)?;
         p.session()?;
         p.bind_audit(audit)?;
@@ -334,9 +313,7 @@ impl Authority {
         codec: &rss_mdm_query::cursor::CursorCodec,
     ) -> Result<rss_mdm_query::Page<Receipt>, Failure> {
         q.require_schema(&HISTORY).map_err(|_| Failure::Malformed)?;
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Failure::Forbidden);
-        }
+
         p.require(Permission::StorageConfigurationRead, None)?;
         p.bind_audit(audit)?;
         let budget = AuditBudget::new(Duration::from_secs(6));

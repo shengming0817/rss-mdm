@@ -63,9 +63,6 @@ impl Authority {
         audit: &RequestAudit,
         write: bool,
     ) -> Result<(), Error> {
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
         p.require(
             if write {
                 Permission::RegistrationConfigurationWrite
@@ -191,9 +188,7 @@ impl Authority {
         codec: &rss_mdm_query::cursor::CursorCodec,
     ) -> Result<rss_mdm_query::Page<Receipt>, Error> {
         q.require_schema(&HISTORY).map_err(|_| Error::Malformed)?;
-        if p.tenant_id() != p.binding().tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
+
         p.require(Permission::RegistrationConfigurationRead, None)?;
         p.bind_audit(audit)?;
         let budget = AuditBudget::new(Duration::from_secs(6));

@@ -48,18 +48,22 @@ pub(crate) async fn resume(
     state: &Service,
     tenant: rss_request_context::TenantId,
     stop: &tokio_util::sync::CancellationToken,
+    cutoff: rss_request_context::Deadline,
 ) -> Result<Option<rss_transactional_messaging::fence::ExecutionBinding>, Error> {
-    let cutoff = rss_request_context::Deadline::from_timeout(
+    let Some(remaining) = cutoff.remaining(rss_request_context::Clock::now(
         &crate::lifecycle::RuntimeTimer,
-        std::time::Duration::from_secs(120),
-    )
-    .expect("fixed initialization budget");
+    )) else {
+        return Ok(None);
+    };
+    if stop.is_cancelled() {
+        return Ok(None);
+    }
     let tenant = tenant.to_string();
     let pool = state.pool.clone();
-    let mut c = pool
-        .acquire()
-        .await
-        .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
+    let Ok(acquired) = tokio::time::timeout(remaining, pool.acquire()).await else {
+        return Ok(None);
+    };
+    let mut c = acquired.map_err(|_| Error::Unavailable(crate::Failure::Database))?;
     c.close_on_drop();
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false),set_config('statement_timeout','6000',false),set_config('lock_timeout','6000',false)").bind(&tenant).execute(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
     let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtextextended($1,2863))")
@@ -132,7 +136,11 @@ pub(crate) async fn resume(
                 let reason = blocked_reason(&error);
                 eprintln!("baseline step {} blocked: {}", step.key, error);
                 sqlx::query("WITH fenced AS MATERIALIZED (SELECT rss_transactional_messaging.check_execution()) UPDATE mdm_initialization.baselines SET phase='blocked',blocked=$2 FROM fenced WHERE tenant_id=$1::uuid").bind(&tenant).bind(reason).execute(&mut *c).await.map_err(|_|Error::CommitUnknown)?;
-                return Err(error);
+                return if reason == "outcome_unknown" {
+                    Err(error)
+                } else {
+                    Ok(None)
+                };
             }
         }
     }

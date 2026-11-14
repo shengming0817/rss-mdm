@@ -95,8 +95,13 @@ impl Http {
             )?)?)
             .timeout(Duration::from_secs(15))
             .build()?;
+        let router = axum::Router::new().nest("/api/v1/tenants/{tenant}", router);
         let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let base = format!("https://localhost:{}", tcp.local_addr()?.port());
+        let base = format!(
+            "https://localhost:{}/api/v1/tenants/{}",
+            tcp.local_addr()?.port(),
+            c.tenant
+        );
         let task = tokio::spawn(async move {
             axum::serve(
                 Listener {

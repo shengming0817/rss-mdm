@@ -957,7 +957,7 @@ impl ManagedResource for AccessTransactionResource {
 
 /// Initialization retries share RSS task ownership and the original durable receipts.
 pub(crate) fn baseline_registration(
-    state: crate::administration::baseline::Service,
+    state: Arc<crate::administration::baseline::Service>,
     tenants: Option<Arc<crate::administration::tenants::service::Service>>,
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) = rss_runtime::ManagedTask::prepare("tenant-baseline", Duration::from_secs(20));
@@ -979,8 +979,9 @@ pub(crate) fn baseline_registration(
                 after=Some(tenant);
                 if cancel.is_cancelled() {return Ok(())}
                 let tenant=rss_request_context::TenantId::parse(&tenant.to_string()).map_err(ShutdownError::new)?;
-                let result=match crate::administration::baseline::resume(&state,tenant,&cancel).await {
-                    Ok(Some(binding))=>tenants.complete_initialization(binding).await,
+                let cutoff = rss_request_context::Deadline::from_timeout(&crate::lifecycle::RuntimeTimer, Duration::from_secs(120)).expect("fixed initialization budget");
+                let result=match crate::administration::baseline::resume(&state,tenant,&cancel,cutoff).await {
+                    Ok(Some(binding))=>tenants.complete_initialization(binding, cutoff).await,
                     Ok(None)=>Ok(()),
                     Err(error)=>Err(error),
                 };

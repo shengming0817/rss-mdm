@@ -28,9 +28,6 @@ impl Associations {
         proof: &AuthorizedPrincipal,
         query: &rss_mdm_query::window::Query,
     ) -> Result<rss_mdm_query::Page<ChangeEntry>> {
-        if proof.tenant_id() != proof.binding().tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
         let token = query.cursor().as_deref();
         query
             .require_schema(&SCHEMA)

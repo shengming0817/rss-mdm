@@ -172,7 +172,10 @@ impl AssetService {
         Ok(Response::Mutation {
             receipt: MutationReceipt::Accepted {
                 task,
-                status_url: format!("/api/v1/software-asset-queries/{task}"),
+                status_url: format!(
+                    "/api/v1/tenants/{}/software-asset-queries/{task}",
+                    tx.tenant_id()
+                ),
             },
         })
     }

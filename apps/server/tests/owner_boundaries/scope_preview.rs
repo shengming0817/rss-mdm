@@ -198,8 +198,13 @@ async fn http_preview_and_recompute_use_the_formal_contract() -> Result<()> {
                 }
             }
         }));
+    let app = axum::Router::new().nest("/api/v1/tenants/{tenant}", app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let base = format!("http://{}", listener.local_addr()?);
+    let base = format!(
+        "http://{}/api/v1/tenants/{}",
+        listener.local_addr()?,
+        c.tenant
+    );
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let client = reqwest::Client::new();
     let body = json!({"definition":saved.definition.scope,"channel":"mdm","expectedRevision":1});

@@ -171,6 +171,7 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
             .layer(axum::Extension(CursorCodec::new(&[8;32])?))
             .layer(axum::Extension(h.c.read_auth(proof.clone())))
             .layer(axum::Extension(h.c.request(&proof)?)).into_axum();
+        let router = axum::Router::new().nest("/api/v1/tenants/{tenant}", router);
         // Exercise the real mounted handlers and HTTP encoders over loopback transport.
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address=listener.local_addr()?;
@@ -180,7 +181,7 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
         });
         let http=async {
             let client=reqwest::Client::builder().timeout(std::time::Duration::from_secs(6)).build()?;
-            let base=format!("http://{address}");
+            let base=format!("http://{address}/api/v1/tenants/{}", h.c.tenant);
             let mut cursor=None::<String>;
             let mut ids=std::collections::BTreeSet::new();
             loop {
@@ -243,7 +244,8 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
             .layer(axum::Extension(CursorCodec::new(&[8;32])?))
             .layer(axum::Extension(h.c.read_auth(denied.clone())))
             .layer(axum::Extension(h.c.request(&denied)?)).into_axum();
-        let response=router.oneshot(axum::http::Request::builder().uri("/operations").body(axum::body::Body::empty())?).await?;
+        let router = axum::Router::new().nest("/api/v1/tenants/{tenant}", router);
+        let response=router.oneshot(axum::http::Request::builder().uri(format!("/api/v1/tenants/{}/operations", h.c.tenant)).body(axum::body::Body::empty())?).await?;
         assert_eq!(response.status(),axum::http::StatusCode::FORBIDDEN);
         Ok(())
     }.await;
@@ -356,6 +358,7 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
             }))
             .layer(axum::Extension(h.c.read_auth(proof.clone())))
             .layer(axum::Extension(h.c.request(&proof)?));
+        let app = axum::Router::new().nest("/api/v1/tenants/{tenant}", app);
         for path in [
             "/devices?limit=100".to_owned(),
             format!("/devices/{device}"),
@@ -367,7 +370,7 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
                 .clone()
                 .oneshot(
                     axum::http::Request::builder()
-                        .uri(&path)
+                        .uri(format!("/api/v1/tenants/{}{path}", h.c.tenant))
                         .body(axum::body::Body::empty())?,
                 )
                 .await?;
@@ -394,7 +397,7 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
         let mut seed=command::seed_transaction(&h.c).await?;
         sqlx::query("UPDATE mdm_access.report_sources SET enabled = FALSE WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(h.c.tenant.to_string()).bind(registration.into_uuid()).execute(&mut *seed).await?;
         seed.commit().await?;
-        let response=app.oneshot(axum::http::Request::builder().uri(format!("/devices/{device}")).body(axum::body::Body::empty())?).await?;
+        let response=app.oneshot(axum::http::Request::builder().uri(format!("/api/v1/tenants/{}/devices/{device}", h.c.tenant)).body(axum::body::Body::empty())?).await?;
         assert_eq!(response.status(),axum::http::StatusCode::OK);
         let value:Value=serde_json::from_slice(&axum::body::to_bytes(response.into_body(),1_048_576).await?)?;
         assert_eq!(value["inventoryAvailable"],false,"revoked source must not count archived observations");
