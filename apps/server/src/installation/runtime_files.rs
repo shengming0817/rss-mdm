@@ -22,7 +22,7 @@ pub(super) fn validate_listeners(config: &crate::config::Config) -> Result<()> {
 pub struct Config {
     /// Runtime files mounted by the deployment manifest.
     pub directory: PathBuf,
-    /// Shared ingress output for all tenant hosts on this gateway.
+    /// Shared ingress output for this installation.
     pub gateway_directory: PathBuf,
     /// Optional internal HTTPS endpoint; certificate identity remains product_origin.
     pub probe_address: Option<String>,
