@@ -181,7 +181,7 @@ def qualify(owner,origin,port):
     for route in ('/authorization','/resources','/asset-fields'):
         status,value=business.call('GET',business.business_path(route))
         check(status==200,'first tenant default business: '+route)
-        if route!='/authorization':check(value['items'],'installed default business: '+route)
+        if route!='/authorization':check((value['asset'] if route=='/asset-fields' else value)['items'],'installed default business: '+route)
 
     runtime_path='/var/lib/rss-mdm/installation/runtime.json'
     original_runtime=owner.read(runtime_path)
@@ -216,7 +216,7 @@ def qualify(owner,origin,port):
     for route in ('/authorization','/resources','/asset-fields'):
         status,value=peer.call('GET',peer.business_path(route))
         check(status==200,'second tenant default business: '+route)
-        if route!='/authorization':check(value['items'],'second tenant initialized defaults: '+route)
+        if route!='/authorization':check((value['asset'] if route=='/asset-fields' else value)['items'],'second tenant initialized defaults: '+route)
     for session,path in ((business,peer.business_path('/resources')),(peer,business.business_path('/resources')),(platform,peer.business_path('/resources'))):
         check(session.call('GET',path)[0] in (401,403),'session cannot cross business tenant')
     status,replayed=platform.call('POST','/api/v1/tenant-administration/provisionings',request,operation)

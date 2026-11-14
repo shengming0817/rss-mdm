@@ -469,7 +469,7 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
 let telemetry_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.telemetry),probe,compiled.background.telemetry_control_connections,audit_store.clone(),"telemetry-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let dependencies=rss_mdm_telemetry_service::PolicyDependencies {
  agent_facts: Arc::new(crate::assembly::agent_facts::AgentFacts),
-                    read_pool: commands.read_pool.clone(),
+                    read_pool: access.archive_pool(),
 clock: Arc::new(crate::lifecycle::RuntimeTimer),
  audit_store:telemetry_owner.audit.clone(),policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(rss_mdm_install_support::StorageProfile::Mdm, telemetry_owner.runtime.clone(),Arc::new(rss_mdm_device_service::planning::PlanningObjects))),objects:Arc::new(rss_mdm_device_service::planning::PlanningObjects),
 };
