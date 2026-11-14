@@ -363,7 +363,7 @@ pub(crate) async fn from_compiled(
     let webhooks = crate::assembly::webhooks::open(
         config.webhooks,
         protocol_runtime.clone(),
-        read_pool.clone(),
+        access.archive_pool(),
         audit_store.clone(),
         clock.clone(),
         protection.clone(),

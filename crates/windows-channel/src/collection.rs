@@ -5,6 +5,10 @@ use uuid::Uuid;
 fn corrupt() -> Error {
     Error::Unavailable(Failure::Database)
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep execution scope and existing operation inputs explicit"
+)]
 pub async fn terminate_session(
     execution: rss_transactional_messaging::fence::ExecutionBinding,
     tx: &mut sqlx::PgConnection,

@@ -301,6 +301,7 @@ async fn configuration_trust(
     tls: Option<Extension<ClientCertificateEvidence>>,
 ) -> Result<Json<da::ConfigurationTrust>, Error> {
     let p = s.registrations.authenticate(&peer(tls)?).await?;
+    a.bind_scope(p.binding()).map_err(|_| Error::Unavailable)?;
     Ok(Json(trust(
         s.configurations.trust().device_trust(&p, &a).await?,
     )))
@@ -312,6 +313,7 @@ async fn configuration_ack(
     v: Body<task_trust::Acknowledgement>,
 ) -> Result<(), Error> {
     let p = s.registrations.authenticate(&peer(tls)?).await?;
+    a.bind_scope(p.binding()).map_err(|_| Error::Unavailable)?;
     s.configurations
         .trust()
         .acknowledge_task_trust(&p, &a, &body(v)?)
@@ -394,6 +396,7 @@ async fn retrieve(
     Path(id): Path<Uuid>,
 ) -> Result<Json<da::SignedConfiguration>, Error> {
     let p = s.registrations.authenticate(&peer(tls)?).await?;
+    a.bind_scope(p.binding()).map_err(|_| Error::Unavailable)?;
     let b = s.business.as_ref().ok_or(Error::Unavailable)?;
     let current = b
         .service

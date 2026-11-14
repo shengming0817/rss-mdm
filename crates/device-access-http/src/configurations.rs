@@ -131,6 +131,7 @@ async fn status(
     v: Body<da::StatusReport>,
 ) -> Result<Json<reports::Receipt>, Error> {
     let p = s.registrations.authenticate(&peer(tls)?).await?;
+    a.bind_scope(p.binding()).map_err(|_| Error::Unavailable)?;
     Ok(Json(
         service(&s)
             .map_err(|_| Error::Unavailable)?
@@ -146,6 +147,7 @@ async fn application(
     v: Body<da::ApplicationReport>,
 ) -> Result<Json<reports::Receipt>, Error> {
     let p = s.registrations.authenticate(&peer(tls)?).await?;
+    a.bind_scope(p.binding()).map_err(|_| Error::Unavailable)?;
     Ok(Json(
         service(&s)
             .map_err(|_| Error::Unavailable)?
@@ -160,6 +162,7 @@ async fn current(
     tls: Option<Extension<ClientCertificateEvidence>>,
 ) -> Result<Json<config::CurrentConfiguration>, Error> {
     let p = s.registrations.authenticate(&peer(tls)?).await?;
+    a.bind_scope(p.binding()).map_err(|_| Error::Unavailable)?;
     Ok(Json(
         service(&s)
             .map_err(|_| Error::Unavailable)?

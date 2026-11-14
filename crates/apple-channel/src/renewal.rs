@@ -31,15 +31,15 @@ pub async fn maintain(
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
     let outcome=audit_store.write(execution,&budget.source_control(),(apple,&tenant),|(apple,tenant),transaction|Box::pin(async move{
-        transaction.with_connection_context(&mut (*apple,*tenant),|(apple,tenant),mut tx|Box::pin(async move{
+        transaction.with_connection_context(&mut (*apple,*tenant),|(apple,tenant),tx|Box::pin(async move{
     let (apple,tenant)=(*apple,*tenant);
 
     let health = sqlx::query("WITH due AS (SELECT a.device, s.not_after, CASE WHEN s.not_after <= $2 THEN 2 WHEN s.not_after - LEAST((s.not_after - s.not_before) / 3, 604800) <= $2 THEN 1 ELSE 0 END AS level FROM mdm_apple.devices AS a INNER JOIN mdm_apple.scep_attempts AS s ON (s.tenant_id, s.device) = (a.tenant_id, a.device) WHERE a.tenant_id = CAST($1 AS uuid) AND a.state = 'active' AND s.state = 'bound' AND a.identity_health <> CASE WHEN s.not_after <= $2 THEN 2 WHEN s.not_after - LEAST((s.not_after - s.not_before) / 3, 604800) <= $2 THEN 1 ELSE 0 END ORDER BY s.not_after, a.device LIMIT 32) UPDATE mdm_apple.devices AS a SET identity_health = due.level FROM due WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = due.device RETURNING a.device, due.not_after, due.level")
-        .bind(&tenant).bind(now).fetch_all(&mut *tx).await.map_err(db)?;
+        .bind(tenant).bind(now).fetch_all(&mut *tx).await.map_err(db)?;
     let mut candidates = Vec::new();
     let mut offset = 0i64;
     while candidates.len() < 32 {
-        let rows=sqlx::query("SELECT s.id, s.device FROM mdm_apple.scep_attempts AS s INNER JOIN mdm_apple.devices AS a ON (a.tenant_id, a.device) = (s.tenant_id, s.device) WHERE s.tenant_id = CAST($1 AS uuid) AND s.state = 'bound' AND a.state = 'active' AND s.configuration = $3 AND s.not_after > $2 AND s.not_after - LEAST((s.not_after - s.not_before) / 3, 604800) <= $2 AND NOT EXISTS (SELECT 1 FROM mdm_apple.scep_attempts AS pending WHERE pending.tenant_id = s.tenant_id AND pending.renewal_of = s.id AND pending.state IN ('prepared', 'consumed') AND pending.expires_at > clock_timestamp()) ORDER BY s.not_after, s.id LIMIT 64 OFFSET $4").bind(&tenant).bind(now).bind(apple.configuration.as_slice()).bind(offset).fetch_all(&mut *tx).await.map_err(db)?;
+        let rows=sqlx::query("SELECT s.id, s.device FROM mdm_apple.scep_attempts AS s INNER JOIN mdm_apple.devices AS a ON (a.tenant_id, a.device) = (s.tenant_id, s.device) WHERE s.tenant_id = CAST($1 AS uuid) AND s.state = 'bound' AND a.state = 'active' AND s.configuration = $3 AND s.not_after > $2 AND s.not_after - LEAST((s.not_after - s.not_before) / 3, 604800) <= $2 AND NOT EXISTS (SELECT 1 FROM mdm_apple.scep_attempts AS pending WHERE pending.tenant_id = s.tenant_id AND pending.renewal_of = s.id AND pending.state IN ('prepared', 'consumed') AND pending.expires_at > clock_timestamp()) ORDER BY s.not_after, s.id LIMIT 64 OFFSET $4").bind(tenant).bind(now).bind(apple.configuration.as_slice()).bind(offset).fetch_all(&mut *tx).await.map_err(db)?;
         let ids = rows
             .iter()
             .map(|r| {
@@ -52,8 +52,8 @@ pub async fn maintain(
             .map_err(db)?;
         let active = crate::device::read::active_sources_in(
             rss_mdm_install_support::StorageProfile::Mdm,
-            &mut tx,
-            &tenant,
+            tx,
+            tenant,
             &ids,
             rss_mdm_inventory::ReportSource::MdmApple,
         )
@@ -357,6 +357,10 @@ async fn current(
     let row=sqlx::query("SELECT s.state, s.issuer, s.scep_provisioner, CAST(s.enrollment AS text), s.device, CAST(s.renewal_of AS text), s.configuration, s.challenge_hash, s.transaction_id, s.csr_digest, s.spki, s.fingerprint, a.udid, old.spki AS old_spki FROM mdm_apple.scep_attempts AS s INNER JOIN mdm_apple.scep_attempts AS old ON (old.tenant_id, old.id) = (s.tenant_id, s.renewal_of) INNER JOIN mdm_apple.devices AS a ON (a.tenant_id, a.device) = (s.tenant_id, s.device) WHERE s.tenant_id = CAST($1 AS uuid) AND s.id = CAST($2 AS uuid) AND s.device=$3 AND s.state IN ('prepared', 'consumed') AND s.expires_at > clock_timestamp() AND old.state = 'bound' AND old.not_after > EXTRACT(EPOCH FROM clock_timestamp()) AND a.state = 'active' AND EXISTS (SELECT 1 FROM mdm_apple.attempts AS delivery WHERE (delivery.tenant_id, delivery.certificate) = (s.tenant_id, s.id) AND delivery.phase = 'renew' AND delivery.state IN ('sent', 'not_now', 'acknowledged') AND delivery.deadline > clock_timestamp()) FOR UPDATE OF s, old, a").bind(tenant).bind(id).bind(device.into_uuid()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     Ok(Some(row))
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep execution scope and existing operation inputs explicit"
+)]
 pub async fn challenge(
     app: &HttpState,
     apple: &Arc<crate::Apple>,

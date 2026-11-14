@@ -157,14 +157,15 @@ async fn evidence(
     body: Body<SignedObservation>,
 ) -> Result<Json<Accepted>, Error> {
     let business = s.business.as_ref().ok_or(Error::Unsupported)?;
+    let value = body.map_err(|_| Error::Malformed)?.0;
+    let verified = business.evidence.authenticate(&value)?;
+    let tenant = rss_request_context::TenantId::parse(&verified.tenant.to_string())
+        .map_err(|_| Error::Malformed)?;
+    a.bind_scope(s.registrations.execution(tenant))
+        .map_err(|_| Error::Unavailable)?;
     business
         .service
-        .record_deployment(
-            &business.evidence,
-            &s.configurations,
-            &body.map_err(|_| Error::Malformed)?.0,
-            &a,
-        )
+        .record_deployment(&business.evidence, &s.configurations, &value, &a)
         .await?;
     Ok(Json(Accepted { accepted: true }))
 }

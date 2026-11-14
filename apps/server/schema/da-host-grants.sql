@@ -53,7 +53,7 @@ GRANT EXECUTE ON FUNCTION rss_da.lock_policy(uuid),rss_da.current_da_registratio
 GRANT EXECUTE ON FUNCTION rss_da.current_da_registration(uuid),rss_da.save_retired_access_run(uuid,uuid,jsonb,jsonb) TO mdm_access;
 GRANT SELECT ON rss_da.agent_delivery,rss_da.access_runs TO mdm_access;
 GRANT UPDATE(enabled,revision) ON rss_da.agent_delivery TO mdm_access,mdm_command_runtime;
-GRANT SELECT ON rss_da.recovery_entries,rss_da.recovery_versions,rss_da.recovery_disclosures TO mdm_identity_runtime;
+GRANT SELECT ON rss_da.recovery_recipient_selection,rss_da.recovery_entries,rss_da.recovery_versions,rss_da.recovery_disclosures TO mdm_identity_runtime;
 GRANT INSERT ON rss_da.recovery_disclosures TO mdm_identity_runtime;
 GRANT UPDATE(tenant_id) ON rss_da.recovery_entries,rss_da.recovery_versions TO mdm_identity_runtime;
 GRANT SELECT,INSERT ON rss_da.recovery_entries,rss_da.recovery_versions,rss_da.recovery_agent_materials,rss_da.recovery_rss_login_uses TO mdm_command_runtime;
@@ -84,5 +84,10 @@ GRANT SELECT ON rss_da.signing_heads,rss_da.signing_versions TO mdm_owner;
 GRANT EXECUTE ON FUNCTION rss_da.binding_application_current(jsonb,bigint) TO mdm_access,mdm_identity_runtime,mdm_command_runtime,mdm_policy_runtime;
 GRANT SELECT ON rss_da.report_heads,rss_da.report_history,rss_da.signing_heads,rss_da.signing_versions,rss_da.signing_acknowledgements TO mdm_identity_runtime;
 GRANT SELECT,INSERT ON rss_da.configuration_exports TO mdm_identity_runtime;
-GRANT SELECT(tenant_id,usage,key_id,max_verify_until),UPDATE(max_verify_until) ON rss_da.signing_keys TO mdm_identity_runtime;
+GRANT SELECT(tenant_id,usage,key_id,private_key,max_verify_until),UPDATE(max_verify_until) ON rss_da.signing_keys TO mdm_identity_runtime;
 COMMIT;
+
+GRANT SELECT ON rss_da.recovery_recipient_selection TO mdm_command_runtime;
+
+-- The MDM host consumes the original DA work coordinates through its existing read pool.
+GRANT EXECUTE ON FUNCTION rss_da.access_runs_work_scopes(uuid),rss_da.access_runs_work_epoch(uuid,text),rss_da.access_runs_work_relay_scopes(uuid,bigint),rss_da.credential_runs_work_scopes(uuid),rss_da.credential_runs_work_epoch(uuid,text),rss_da.credential_runs_work_relay_scopes(uuid,bigint),rss_da.recovery_versions_maintenance_scopes(uuid) TO mdm_access;

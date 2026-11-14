@@ -50,6 +50,10 @@ impl Groups {
             .await?;
         Ok(true)
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     async fn dispatch_groups_in(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,

@@ -99,7 +99,7 @@ GRANT SELECT,INSERT ON "###, $heads, ",", $keys, ",", $versions, ",", $acknowled
 GRANT UPDATE(revision) ON "###, $heads, " TO ", $access, r###";
 GRANT UPDATE(private_key,max_verify_until) ON "###, $keys, " TO ", $access, r###";
 GRANT SELECT ON "###, $heads, ",", $versions, ",", $acknowledgements, " TO ", $command, r###";
-GRANT SELECT(tenant_id,usage,key_id,max_verify_until),UPDATE(max_verify_until) ON "###, $keys, " TO ", $command, ",", $telemetry, r###";
+GRANT SELECT(tenant_id,usage,key_id,private_key,max_verify_until),UPDATE(max_verify_until) ON "###, $keys, " TO ", $command, ",", $telemetry, r###";
 COMMIT;
 
 GRANT USAGE ON SCHEMA "###, $schema, " TO ", $policy, r###";

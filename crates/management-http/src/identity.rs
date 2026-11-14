@@ -26,6 +26,10 @@ pub(crate) fn failure(e: AuthorityError) -> Error {
     }
 }
 impl Identity {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     pub async fn authenticate_request(
         &self,
         binding: ExecutionBinding,

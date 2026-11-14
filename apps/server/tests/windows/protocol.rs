@@ -386,7 +386,7 @@ pub(crate) async fn windows(
     .derive();
     let secrets=protection.seal_bytes(&serde_json::to_vec(&serde_json::json!({"client_password":"client-secret","server_password":"server-secret","server_nonce":vec![7u8;32]}))?,&aad)?;
     let mut tx = command::seed_transaction(c).await?;
-    sqlx::query("INSERT INTO mdm_windows.enrollment_configuration(tenant_id,provider_id,poll,lifetime) VALUES($1::uuid,'rss-t2',$2,$3) ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).bind(serde_json::to_value(&poll)?).bind(serde_json::to_value(rss_mdm_certificate::windows::Lifetime::Production)?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_windows.enrollment_configuration(tenant_id,provider_id,poll,lifetime,entra_callbacks) VALUES($1::uuid,'rss-t2',$2,$3,ARRAY[]::text[]) ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).bind(serde_json::to_value(&poll)?).bind(serde_json::to_value(rss_mdm_certificate::windows::Lifetime::Production)?).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.enrollment_intents (tenant_id, request_id, csr, profile, issuer, configuration, device, credential, epoch, secrets, signing_attempt, protocol_device) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)").bind(c.tenant.to_string()).bind(n.request).bind(&n.csr).bind(profile).bind(&n.root).bind(configuration).bind(n.device.into_uuid()).bind(n.credential).bind(n.epoch).bind(secrets).bind(n.attempt).bind(n.device.to_string()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.enrollment_certificates(tenant_id,request_id,certificate,server_nonce) VALUES($1::uuid,$2,$3,$4)").bind(c.tenant.to_string()).bind(n.request).bind(&n.certificate).bind(vec![7u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;

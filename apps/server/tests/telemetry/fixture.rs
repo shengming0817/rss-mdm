@@ -109,7 +109,7 @@ impl Fixture {
             )),
             objects,
         };
-        Ok(Arc::new(Service::new(
+        let service = Arc::new(Service::new(
             c.execution(),
             self.owner.runtime.clone(),
             dependencies,
@@ -121,7 +121,7 @@ impl Fixture {
             Arc::new(rss_mdm_task_trust::Signing::new(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 rss_mdm_task_trust::Use::AgentTask,
-                crate::device_material_support::protection(&c)?,
+                crate::device_material_support::protection(c)?,
             )?),
             self.config.ingress.clone(),
             self.config.maintenance,
@@ -130,7 +130,9 @@ impl Fixture {
                 series: self.config.limits.max_series,
                 bytes: self.config.limits.max_bytes,
             },
-        )?))
+        )?);
+        service.admit_default(c.execution()).await?;
+        Ok(service)
     }
     pub async fn close(self, c: &Context) -> Result<()> {
         self.owner.runtime.close().await;

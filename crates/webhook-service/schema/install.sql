@@ -73,36 +73,22 @@ GRANT USAGE ON SCHEMA mdm_webhook TO mdm_identity_runtime;
 GRANT SELECT,INSERT ON mdm_webhook.events TO mdm_identity_runtime;
 COMMIT;
 
-CREATE INDEX events_work_scope ON mdm_webhook.events(tenant_id,expected_epoch);
-CREATE POLICY work_discovery ON mdm_webhook.events FOR SELECT TO mdm_owner USING(true);
-
-CREATE INDEX compliance_sources_work_scope ON mdm_webhook.compliance_sources(tenant_id,expected_epoch);
-CREATE POLICY work_discovery ON mdm_webhook.compliance_sources FOR SELECT TO mdm_owner USING(true);
-
 CREATE INDEX deliveries_work_scope ON mdm_webhook.deliveries(tenant_id,expected_epoch);
 CREATE POLICY work_discovery ON mdm_webhook.deliveries FOR SELECT TO mdm_owner USING(true);
 
 CREATE FUNCTION mdm_webhook.work_scopes(after_tenant uuid,after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
- SELECT tenant_id,expected_epoch FROM (
-  (SELECT DISTINCT tenant_id,expected_epoch FROM mdm_webhook.events WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32)
-  UNION
-  (SELECT DISTINCT tenant_id,expected_epoch FROM mdm_webhook.compliance_sources WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32)
-  UNION
-  (SELECT DISTINCT tenant_id,expected_epoch FROM mdm_webhook.deliveries WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32)
- ) work ORDER BY tenant_id,expected_epoch LIMIT 32
-$$;
-CREATE FUNCTION mdm_webhook.source_epoch(t uuid,event uuid,compliance boolean) RETURNS bigint
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
- SELECT expected_epoch FROM mdm_webhook.events WHERE tenant_id=t AND id=event AND NOT compliance
- UNION ALL SELECT expected_epoch FROM mdm_webhook.compliance_sources WHERE tenant_id=t AND id=event AND compliance
+ SELECT DISTINCT tenant_id,(envelope->'attributes'->>'executionEpoch')::bigint AS expected_epoch
+ FROM rss_transactional_messaging.outbox
+ WHERE domain IN ('mdm-webhook-source','mdm-webhook-delivery') AND status NOT IN ('published','resolved')
+  AND (after_tenant IS NULL OR (tenant_id,(envelope->'attributes'->>'executionEpoch')::bigint)>(after_tenant,after_epoch))
+ ORDER BY tenant_id,expected_epoch LIMIT 32
 $$;
 CREATE FUNCTION mdm_webhook.delivery_epoch(t uuid,delivery uuid) RETURNS bigint
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
  SELECT expected_epoch FROM mdm_webhook.deliveries WHERE tenant_id=t AND id=delivery
 $$;
 ALTER FUNCTION mdm_webhook.work_scopes(uuid,bigint) OWNER TO mdm_owner;
-ALTER FUNCTION mdm_webhook.source_epoch(uuid,uuid,boolean) OWNER TO mdm_owner;
 ALTER FUNCTION mdm_webhook.delivery_epoch(uuid,uuid) OWNER TO mdm_owner;
-REVOKE ALL ON FUNCTION mdm_webhook.work_scopes(uuid,bigint),mdm_webhook.source_epoch(uuid,uuid,boolean),mdm_webhook.delivery_epoch(uuid,uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_webhook.work_scopes(uuid,bigint),mdm_webhook.source_epoch(uuid,uuid,boolean),mdm_webhook.delivery_epoch(uuid,uuid) TO mdm_access;
+REVOKE ALL ON FUNCTION mdm_webhook.work_scopes(uuid,bigint),mdm_webhook.delivery_epoch(uuid,uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_webhook.work_scopes(uuid,bigint),mdm_webhook.delivery_epoch(uuid,uuid) TO mdm_access;

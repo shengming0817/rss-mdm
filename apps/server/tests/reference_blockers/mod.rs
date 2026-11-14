@@ -280,7 +280,9 @@ async fn resource_http_retention_permissions_and_continuations() -> Result<()> {
                 &rss_mdm_resource_service::references::SCHEMA.parse("")?.0
             )
             .await,
-        Err(rss_mdm_resource_service::Error::Forbidden)
+        Err(rss_mdm_resource_service::Error::Resource(
+            rss_mdm_resource_service::error::ResourceError::Missing
+        ))
     ));
     other.close().await;
     let writer = c.account(&[P::ResourceRead, P::ResourceWrite]).await?;

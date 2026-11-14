@@ -45,7 +45,6 @@ pub(super) async fn seed(
     let issuer = format!("{:x}", Sha256::digest(&n.root));
     let operation = Uuid::new_v4();
     let rotation = Uuid::new_v4();
-    sqlx::query("INSERT INTO mdm_pki.issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES($1::uuid,'windows',$2,1,'active',$3,'step_ca',$4)").bind(c.tenant.to_string()).bind(&issuer).bind(&n.root).bind(time::OffsetDateTime::now_utc().unix_timestamp()+86400).execute(&mut *tx).await?;
     let profile:Vec<u8>=sqlx::query_scalar("SELECT profile FROM mdm_access.enrollment_intents WHERE tenant_id=$1::uuid AND request_id=$2").bind(c.tenant.to_string()).bind(n.request).fetch_one(&mut *tx).await?;
     let profile = rss_mdm_certificate::windows::IssuanceProfile::decode(&profile)?;
     let csr = rss_mdm_certificate::windows::Csr::verify(&n.csr)?;
@@ -131,13 +130,16 @@ pub(super) async fn seed(
     let mut trust = n.trust.clone();
     trust.purpose = rss_mdm_agent_wire::pki::Purpose::Agent;
     trust.origin = "https://agent.example.test".into();
-    let trust_file = c
-        .inputs
-        .directory
-        .join(format!("directory-agent-trust-{}.json", c.tenant));
-    std::fs::write(&trust_file, serde_json::to_vec(&trust)?)?;
+    let mut tx = seed_transaction(c).await?;
+    rss_mdm_pki_service::registry::persist(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        &trust,
+    )
+    .await?;
+    tx.commit().await?;
     Ok((
-        json!({"agent_pki":{"mode":"step_ca","endpoint":{"origin":"https://agent.example.test"},"trust_file":trust_file,"lifetime":{"mode":"development","days":1}},"device_pki":[{"purpose":"agent","issuer":issuer,"origin":ca_origin,"tls_root_file":ca_root,"provisioner":"rss-agent","kid":"task-trust","provisioner_key_file":materials.directory.join("provider.pk8")}]}),
+        json!({"agent_pki":{"mode":"step_ca","endpoint":{"origin":"https://agent.example.test"},"lifetime":{"mode":"development","days":1}},"device_pki":[{"purpose":"agent","issuer":issuer,"origin":ca_origin,"tls_root_file":ca_root,"provisioner":"rss-agent","kid":"task-trust","provisioner_key_file":materials.directory.join("provider.pk8")}]}),
         ca_server,
     ))
 }

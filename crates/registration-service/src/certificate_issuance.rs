@@ -62,6 +62,10 @@ impl DeviceIssuer {
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
         self.profile
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "issuer materials, installation identity and clock remain explicit"
+    )]
     pub fn new(
         profile: rss_mdm_install_support::StorageProfile,
         providers: Arc<Providers>,

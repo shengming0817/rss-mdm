@@ -61,7 +61,7 @@ impl LockPins {
                 reconciles: None,
                 action: "lock_pin".into(),
                 coordinates: Some(coordinates),
-                recipient: recipient,
+                recipient,
             },
         )
         .await

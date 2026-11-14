@@ -6,8 +6,6 @@ use uuid::Uuid;
 
 // All restore paths use this shape before minting a Run or recovery capability.
 
-/// Recheck the principal inside the transaction accepting device input. Lock order matches revoke.
-
 #[derive(PartialEq, Eq)]
 pub struct Run {
     pub id: Uuid,

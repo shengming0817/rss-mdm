@@ -3,6 +3,10 @@ use super::{Runtime, crypto, store::Source};
 use crate::Error;
 use rss_mdm_agent_wire::platform_sso::*;
 use serde_json::{Value, json};
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep execution scope and existing operation inputs explicit"
+)]
 pub fn verify(
     tenant: uuid::Uuid,
     runtime: &Runtime,

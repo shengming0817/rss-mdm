@@ -23,6 +23,10 @@ impl Groups {
             json!({"group":group,"criteria":criteria,"member_set":member_set.map(|id|id.to_string()),"freshness":if self.current_in(tx,checked_input(Uuid::parse_str(&id.to_string()))?).await? {crate::Freshness::Current}else{crate::Freshness::Pending}}),
         )
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     pub async fn group_change(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
@@ -67,6 +71,10 @@ impl Groups {
             .await
     }
     /// Publish an already validated definition in the graph-fenced owner transaction.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     pub async fn publish_change_in(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
@@ -247,8 +255,13 @@ impl Groups {
             group_checked(self.groups.advance_graph_in(tx).await?)?;
         }
         if !matches!(op.input, GroupChange::Edit { .. }) {
-            rss_mdm_compliance_postgres::group_changed_in(tx, id, &self.reconcile_messaging)
-                .await?;
+            rss_mdm_compliance_postgres::group_changed_in(
+                binding,
+                tx,
+                id,
+                &self.reconcile_messaging,
+            )
+            .await?;
         }
         if matches!(op.input, GroupChange::Delete) {
             self.register_fields_in(tx, id, None).await?;

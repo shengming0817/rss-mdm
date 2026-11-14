@@ -156,7 +156,6 @@ where
     );
     let fanout = Arc::new(Fanout {
         storage,
-        discovery_pool: discovery_pool.clone(),
         runtime: runtime.clone(),
         host,
     });

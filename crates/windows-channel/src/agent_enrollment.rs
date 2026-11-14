@@ -3,6 +3,10 @@ use crate::{Error, Failure, HttpState};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_windows_mdm::{Secret, soap};
 use uuid::Uuid;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep execution scope and existing operation inputs explicit"
+)]
 pub(crate) async fn try_enrollment(
     app: &HttpState,
     windows: &crate::Windows,
@@ -109,7 +113,6 @@ pub(crate) async fn try_enrollment(
     let intent = crate::issuance::issue_intent(
         execution,
         &app.audit_store,
-        &app.access,
         windows,
         crate::issuance::IssuanceAuthority::Native(&admission),
         (&csr.0, profile),

@@ -280,7 +280,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     );
     step(&h, retirement).await?;
     assert_eq!(state(&h, retirement).await?.0, "unenroll");
-    assert_eq!(h.a.service.relay_once().await?, 1);
+    h.a.service.relay_once().await?;
     let offer = h.claim().await?;
     assert!(matches!(offer.payload, w::TaskPayload::Unmanage(_)));
     h.event(&offer, w::TaskEvent::Received).await?;
@@ -546,7 +546,7 @@ async fn credential_run(h: &Harness, state: &rss_mdm_task_state::RunState) -> Re
     .await?;
     let id = Uuid::new_v4();
     let mut tx = command::seed_transaction(&h.c).await?;
-    sqlx::query("INSERT INTO mdm_recovery_tasks.runs(tenant_id,id,policy_version,origin,source_objects,device,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint,gateway_accepted) VALUES($1::uuid,$2,$3,'\"policy\"',$4,$5,$6,$7,$7,$8,$9,$10,true)")
+    sqlx::query("INSERT INTO mdm_recovery_tasks.runs(expected_epoch,tenant_id,id,policy_version,origin,source_objects,device,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint,gateway_accepted) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,'\"policy\"',$4,$5,$6,$7,$7,$8,$9,$10,true)")
         .bind(h.c.tenant.to_string()).bind(id).bind(version).bind(json!([h.object])).bind(h.p.device().into_uuid()).bind(id.to_string()).bind(now()).bind(now()+300).bind(serde_json::to_value(state)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(id)

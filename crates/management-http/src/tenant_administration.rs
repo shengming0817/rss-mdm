@@ -10,6 +10,10 @@ type Runtime<'a> = (
     &'a crate::boundary::Envelope,
     &'a rss_mdm_query::cursor::CursorCodec,
 );
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep execution scope and existing operation inputs explicit"
+)]
 pub fn router<
     D0: rss_mdm_http_contract::module::Declaration,
     D1: rss_mdm_http_contract::module::Declaration,

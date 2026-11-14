@@ -346,6 +346,10 @@ async fn intent(
     )
     .await
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep execution scope and existing operation inputs explicit"
+)]
 async fn intent_on(
     connection: &mut sqlx::PgConnection,
     app: &HttpState,

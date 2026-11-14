@@ -228,7 +228,6 @@ mod t2 {
                 .database("account_recovery", "mdm_identity_runtime"),
         )?;
         value["identity"]["instance_id"] = serde_json::json!(c.inputs.installation.instance_id);
-        value["identity"]["tenant_id"] = serde_json::json!(c.tenant.to_string());
         value["identity"]["runtime"]["maintenance_seconds"] = serde_json::json!(3);
         value["audit"] = serde_json::json!({"mode":"plain"});
         value["access_database"] =

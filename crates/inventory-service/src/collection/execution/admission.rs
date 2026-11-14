@@ -27,6 +27,10 @@ pub enum TriggerInput {
         deadline: i64,
     },
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep execution scope and existing operation inputs explicit"
+)]
 pub async fn accept_for_device(
     binding: rss_transactional_messaging::fence::ExecutionBinding,
     service: &Transactions,

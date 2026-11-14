@@ -380,6 +380,10 @@ impl Reader {
         )
         .await?
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     pub(crate) async fn resolve_admitted_on(
         &self,
         tenant: rss_request_context::TenantId,

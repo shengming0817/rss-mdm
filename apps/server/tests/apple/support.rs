@@ -22,6 +22,10 @@ pub fn context(user: bool) -> rss_mdm_apple_mdm::applicability::Context {
         apple_silicon: Some(true),
     }
 }
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one legal material fixture prepares the existing native protocol proof"
+)]
 pub async fn apple(
     c: &Context,
     n: &Native,

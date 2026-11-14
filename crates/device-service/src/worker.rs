@@ -61,8 +61,52 @@ impl DeviceWork {
         Ok(worker)
     }
 
-    // Refresh only previously failed targets. A wake or an empty scan proves no recovery.
-    // Snapshot identities keep an older read from erasing a concurrent new failure.
+    // Refresh only this scope's already observed failures; no startup work enumeration.
+    async fn refresh_failures<T: Timer>(
+        &self,
+        scope: &Scope,
+        control: &Control<'_, T>,
+    ) -> Result<(), Error> {
+        let prefix = format!("{}:", scope.tenant());
+        let previous = self
+            .owner
+            .worker_failures
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::Invariant))?
+            .iter()
+            .filter_map(|(key, failure)| {
+                key.strip_prefix(&prefix)
+                    .map(|entity| (entity.to_owned(), failure.clone()))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if previous.is_empty() {
+            return Ok(());
+        }
+        let names = previous.keys().cloned().collect::<Vec<_>>();
+        let tenant = scope.tenant().to_string();
+        let recovered: Vec<String> = self.schedule.local_tx(scope, control, move |tx| Box::pin(async move {
+            tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query_scalar("SELECT entity FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.devices' AND entity=ANY($2) AND result='converged'")
+                    .bind(tenant).bind(names).fetch_all(c).await
+            })).await
+        })).await?;
+        let mut current = self
+            .owner
+            .worker_failures
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::Invariant))?;
+        for entity in recovered {
+            let key = format!("{prefix}{entity}");
+            if current
+                .get(&key)
+                .zip(previous.get(&entity))
+                .is_some_and(|(now, old)| Arc::ptr_eq(now, old))
+            {
+                current.remove(&key);
+            }
+        }
+        Ok(())
+    }
 
     fn scope(tenant: rss_request_context::TenantId) -> Scope {
         Scope::new(tenant, "mdm.devices").expect("Device scope")
@@ -224,6 +268,7 @@ impl DeviceWork {
             let force=tokio_util::sync::CancellationToken::new();
             let control=Control::new(&timer,Duration::MAX,&force);
             let mut after:Option<Uuid>=None;
+            let mut worked = false;
             loop {
                 if stop.is_cancelled(){return Ok(())}
                 let page:Result<Vec<Uuid>,sqlx::Error>=sqlx::query_scalar("SELECT tenant_id FROM mdm_devices.association_work_scopes($1)").bind(after).fetch_all(&self.read_pool).await;
@@ -231,12 +276,14 @@ impl DeviceWork {
                     Ok(tenants)=>{if let Ok(mut failures)=self.owner.worker_failures.lock(){failures.remove("!discovery");} self.owner.worker_observed.store(true,std::sync::atomic::Ordering::Release);tenants},
                     Err(_)=>{self.owner.record_worker_failure("!discovery".into(),ErrorKind::Transient);Vec::new()},
                 };
-                if tenants.is_empty(){after=None;tokio::select!{biased;()=stop.cancelled()=>return Ok(()),()=notify.notified()=>{},()=tokio::time::sleep(Duration::from_secs(5))=>{}}continue}
+                if tenants.is_empty(){after=None;
+                    if std::mem::take(&mut worked) { continue; }
+tokio::select!{biased;()=stop.cancelled()=>return Ok(()),()=notify.notified()=>{},()=tokio::time::sleep(Duration::from_secs(5))=>{}}continue}
                 for tenant in tenants {
                     after=Some(tenant);
                     let tenant=rss_request_context::TenantId::parse(&tenant.to_string()).map_err(rss_runtime::ShutdownError::new)?;
                     let scope=Self::scope(tenant);let pass_stop=stop.child_token();let pass=DevicePass{work:&self,stop:&pass_stop};
-                    rss_reconcile::run_with_notify(&pass,self.as_ref(),&scope,policy,&control,&pass_stop,&notify,|event|{
+                    let report = rss_reconcile::run_with_notify(&pass,self.as_ref(),&scope,policy,&control,&pass_stop,&notify,|event|{
                         let (key,kind)=match &event {
                             rss_reconcile::Observation::Deferred{..}=>return,
                             rss_reconcile::Observation::AttemptFailed{target,error,..}=>(format!("{}:{}",target.scope().tenant(),target.entity()),error.kind()),
@@ -244,6 +291,9 @@ impl DeviceWork {
                         };
                         self.owner.record_worker_failure(key,kind);
                     }).await.map_err(rss_runtime::ShutdownError::new)?;
+                    worked |= [report.converged, report.reobserve, report.deferred, report.retried,
+                        report.suspended, report.fenced, report.execution_failed]
+                        .into_iter().any(|count| count > 0);
                 }
             }
         })
@@ -433,6 +483,7 @@ impl DurableStore for DeviceWork {
             return Err(Error::new(ErrorKind::Invariant));
         }
 
+        self.refresh_failures(scope, c).await?;
         let result = self
             .schedule
             .claim_due(scope, limit, scan_budget, lease, c)

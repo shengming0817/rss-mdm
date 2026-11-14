@@ -6,6 +6,10 @@ pub(crate) struct Assembly {
     pub service: Arc<access::Service>,
     pub worker: Arc<access::worker::Worker>,
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep execution scope and existing operation inputs explicit"
+)]
 pub(crate) async fn assemble(
     discovery_pool: sqlx::PgPool,
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,

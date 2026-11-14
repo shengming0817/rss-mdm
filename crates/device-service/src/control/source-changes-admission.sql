@@ -1,5 +1,5 @@
 WITH expected_columns(name,type,required) AS (VALUES
- ('tenant_id','uuid',true),('from_cut','jsonb',false),('to_cut','jsonb',false),('event_after','bigint',true),('page_through','bigint',false),('cursor','uuid',false),
+ ('expected_epoch','bigint',true),('tenant_id','uuid',true),('from_cut','jsonb',false),('to_cut','jsonb',false),('event_after','bigint',true),('page_through','bigint',false),('cursor','uuid',false),
  ('relation_consumed','bigint',true),('relation_watermark','bigint',true),('relation_cursor','bigint',false),
  ('failure','text',false),('failure_generation','bigint',true)
 ), execution_roles AS (
@@ -19,7 +19,7 @@ SELECT EXISTS(SELECT 1 FROM pg_class c WHERE c.oid=to_regclass('mdm_devices.cont
  AND NOT has_table_privilege(current_user,c.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
  AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
   AND has_column_privilege(current_user,c.oid,a.attnum,'UPDATE')<>(a.attname IN('from_cut','to_cut','event_after','page_through','cursor','relation_consumed','relation_watermark','relation_cursor','failure','failure_generation')))
- AND (SELECT count(*) FROM pg_policy p WHERE p.polrelid=c.oid)=1
+ AND (SELECT count(*) FROM pg_policy p WHERE p.polrelid=c.oid AND polroles && (ARRAY[0::oid] || ARRAY(SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER'))))=1
  AND EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid AND p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid]
   AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
   AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid)))

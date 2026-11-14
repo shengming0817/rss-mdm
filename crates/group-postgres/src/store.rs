@@ -27,8 +27,8 @@ macro_rules! input {
 }
 pub(crate) use input;
 
-/// One tenant's Group adapter. The host owns and closes the shared RSS runtime.
-/// Borrowed methods validate the runtime owner and tenant before all reads/writes.
+/// Shared Group adapter. The host owns and closes the RSS runtime.
+/// Borrowed methods validate runtime ownership and use the original tenant-fenced transaction.
 /// Companion callers must propagate SQL errors to the outer
 /// local_tx owner, never issue transaction-control SQL or change tenant settings.
 pub struct GroupStore {
@@ -81,8 +81,6 @@ impl GroupStore {
     pub fn source_reader(&self) -> crate::GroupSources {
         self.sources.clone()
     }
-
-    /// Return the tenant used for all reads, writes, rules and operation identities.
 
     pub(crate) fn check_transaction(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
         self.writer.validate_transaction(tx)?;

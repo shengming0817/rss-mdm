@@ -134,29 +134,20 @@ impl Registry {
             "device_pki_crl_publish",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        self.publish_set(
-            p.binding(),
-            &input.publications,
-            input.purpose,
-            input.operation,
-            a,
-            Some(p),
-            now,
-        )
-        .await
+        self.publish_set(p.binding(), input, a, Some(p), now).await
     }
     async fn publish_set(
         &self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,
-        inputs: &[Publication],
-        requested_purpose: Purpose,
-        operation: Uuid,
+        input: &PublicationSet,
         a: &RequestAudit,
         principal: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
         now: i64,
     ) -> Result<(), Error> {
         let profile = self.profile();
-
+        let inputs = &input.publications;
+        let requested_purpose = input.purpose;
+        let operation = input.operation;
         if inputs.is_empty() || inputs.len() > 16 || operation.is_nil() {
             return Err(Error::Request);
         }
@@ -394,9 +385,11 @@ impl Registry {
             let result = self
                 .publish_set(
                     execution,
-                    &inputs,
-                    trust.purpose,
-                    operation,
+                    &PublicationSet {
+                        operation,
+                        purpose: trust.purpose,
+                        publications: inputs,
+                    },
                     &a,
                     None,
                     publication_now,

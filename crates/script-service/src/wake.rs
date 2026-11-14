@@ -43,7 +43,7 @@ pub async fn policy_in(
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move|c|Box::pin(async move {
         let updated=sqlx::query("INSERT INTO mdm_script.policy_recovery(tenant_id,policy,expected_epoch) VALUES($1::uuid,$2,$3) ON CONFLICT(tenant_id,policy) DO UPDATE SET input_revision=mdm_script.policy_recovery.input_revision+1 WHERE mdm_script.policy_recovery.expected_epoch=excluded.expected_epoch").bind(tenant).bind(id).bind(binding.epoch().get()).execute(c).await?;
-            if updated.rows_affected()!=1{return Err(sqlx::Error::Protocol("original work epoch mismatch".into()).into())}
+            if updated.rows_affected()!=1{return Err(sqlx::Error::Protocol("original work epoch mismatch".into()))}
             Ok(())
     })).await?;
     entity_in(reconcile, tx, &format!("policy:{id}")).await

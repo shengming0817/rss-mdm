@@ -35,7 +35,6 @@ struct Candidate {
 pub struct Completed(());
 pub struct Fanout<H> {
     pub storage: rss_transactional_messaging::fence::StorageIdentity,
-    pub discovery_pool: sqlx::PgPool,
     pub runtime: Arc<PgRuntime>,
     pub host: Arc<H>,
 }
@@ -81,18 +80,13 @@ impl<H: Eligibility> Publisher<Vec<u8>> for Fanout<H> {
         let Ok(tenant) = TenantId::parse(&t.to_string()) else {
             return failure();
         };
-        let compliance = matches!(source, events::Source::Compliance(_));
-        let epoch =
-            sqlx::query_scalar::<_, Option<i64>>("SELECT mdm_webhook.source_epoch($1,$2,$3)")
-                .bind(t)
-                .bind(id)
-                .bind(compliance)
-                .fetch_one(&self.discovery_pool)
-                .await;
-        let Ok(Some(epoch)) = epoch else {
-            return failure();
-        };
-        let Ok(epoch) = rss_transactional_messaging::fence::Epoch::new(epoch) else {
+        let Some(epoch) = message
+            .metadata()
+            .attributes()
+            .find(|(key, _)| *key == "executionEpoch")
+            .and_then(|(_, value)| value.parse::<i64>().ok())
+            .and_then(|value| rss_transactional_messaging::fence::Epoch::new(value).ok())
+        else {
             return failure();
         };
         let binding =
@@ -276,12 +270,14 @@ pub async fn queue(
             .fetch_one(&mut *c)
             .await?;
     let pending = events::message(
+        c,
         id,
         event.tenant_id,
         event.occurred_at,
         events::DELIVERY_DOMAIN,
         body,
-    )?;
+    )
+    .await?;
     let target = transport::Target::new(
         transport::TargetId::parse(&subscription.id.to_string()).map_err(|_| Error::Invalid)?,
         transport::TargetVersion::new(version.try_into().map_err(|_| Error::Invalid)?)

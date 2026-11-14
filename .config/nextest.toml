@@ -7,8 +7,8 @@ slow-timeout = { period = "180s", terminate-after = 1 }
 [profile.t2.junit]
 path = "foundation.xml"
 
-# This proof samples database-wide pg_stat counters; concurrent tests contaminate its idle baseline.
+# These proofs run installation-wide workers on the shared database; they can advance other fixtures.
 # ref: nextest site/src/docs/configuration/threads-required.md
 [[profile.t2.overrides]]
-filter = 'test(=assembly::owner_boundaries_t2::asset_inputs::actual_workers_recover_events_and_preserve_entry_without_idle_input_polling)'
+filter = 'test(=assembly::execution_owners_t2::workers::script_checkpoint_restart_and_convergence) | test(=assembly::execution_owners_t2::workers::collection_checkpoint_restart_and_convergence) | test(=assembly::owner_boundaries_t2::asset_inputs::actual_workers_recover_events_and_preserve_entry_without_idle_input_polling) | test(=assembly::owner_boundaries_t2::asset_inputs::coalesced_static_edit_and_scope_request_are_not_acknowledged_by_old_tasks) | test(=assembly::owner_boundaries_t2::asset_inputs::compliance_workers_share_candidate_and_freshness_semantics) | test(=assembly::owner_boundaries_t2::asset_inputs::input_health_is_durable_across_instances)'
 threads-required = "num-test-threads"

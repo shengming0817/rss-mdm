@@ -45,11 +45,7 @@ pub(crate) fn prepare(
                     Purpose::AgentBootstrap => ChannelName::AgentBootstrap,
                     Purpose::DaDevice => return Err(Error::Forbidden),
                 };
-                channels.set(
-                    name,
-                    ChannelState::Degraded,
-                    Some(Reason::MaterialUnreadable),
-                )?;
+                channels.set(name, ChannelState::Degraded, Some(Reason::Unreadable))?;
             }
             Err(error) => return Err(error),
         }

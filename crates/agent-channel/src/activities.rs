@@ -92,6 +92,10 @@ async fn changes(
 ) -> Result<CollectionResponse<Json<ManagementActivityPage>>, AgentError> {
     page(&origin, control, s, audit, peer, headers, raw, true).await
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "HTTP extractors preserve credential, origin and request controls"
+)]
 async fn page(
     origin: &rss_mdm_certificate::GatewayOrigin,
     control: rss_axum::RequestControl,
@@ -136,6 +140,10 @@ async fn page(
     })
     .await
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "HTTP extractors preserve credential, origin and request controls"
+)]
 async fn detail(
     axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     Extension(control): Extension<rss_axum::RequestControl>,

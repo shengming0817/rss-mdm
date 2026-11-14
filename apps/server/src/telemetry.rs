@@ -226,6 +226,10 @@ impl Config {
             Storage::ClickHouse { control, .. } => control,
         }
     }
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "selected backend admission preserves each backend error without fallback"
+    )]
     pub(crate) async fn open_backend(&self) -> Result<Backend, Error> {
         self.validate()?;
         let profile = self.profile()?;

@@ -20,9 +20,9 @@ pub(crate) enum ChannelState {
 }
 #[derive(Clone, Copy)]
 pub(crate) enum Reason {
-    MaterialNotSelected,
-    MaterialUnreadable,
-    MaterialInvalid,
+    NotSelected,
+    Unreadable,
+    Invalid,
 }
 #[derive(Clone)]
 pub(crate) struct Assembly {
@@ -97,7 +97,7 @@ impl Channels {
                     } else {
                         ChannelState::Disabled
                     },
-                    reason: enabled.then_some(Reason::MaterialNotSelected),
+                    reason: enabled.then_some(Reason::NotSelected),
                     mounted: false,
                 })
                 .collect(),
@@ -173,7 +173,7 @@ impl Channels {
             Err(crate::Error::Configuration(issue)) => {
                 use crate::ConfigIssue as C;
                 let reason = match issue {
-                    C::FileAccess => Reason::MaterialUnreadable,
+                    C::FileAccess => Reason::Unreadable,
                     C::AgentPki
                     | C::SecretContents
                     | C::SecretEncoding
@@ -186,7 +186,7 @@ impl Channels {
                     | C::AppleChallengeWebhook
                     | C::AppleNotifyWebhook
                     | C::FileShape
-                    | C::FileSize => Reason::MaterialInvalid,
+                    | C::FileSize => Reason::Invalid,
                     _ => return Err(crate::Error::Configuration(issue)),
                 };
                 self.set(name, ChannelState::Degraded, Some(reason))?;

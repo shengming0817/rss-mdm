@@ -864,7 +864,7 @@ async fn credential_runs<const N: usize>(
         .bind(serde_json::to_value(rss_mdm_authorization_service::Actor::Account { user: c.user(binding.person.principal) })?).bind(at).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1,$2,$3,1,'credential',$4,$5)")
         .bind(binding.tenant).bind(version).bind(policy).bind(&frozen).bind(vec![11_u8;32]).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO rss_da.credential_runs(tenant_id,id,policy_version,device,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,origin,material_binding) VALUES($1,$2,$3,$4,'rss-recovery-proof',$5,$6,$7,$8,$5,'[]','\"policy\"',$9)")
+        sqlx::query("INSERT INTO rss_da.credential_runs(expected_epoch,tenant_id,id,policy_version,device,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,origin,material_binding) VALUES(current_setting('rss.execution_epoch')::bigint,$1,$2,$3,$4,'rss-recovery-proof',$5,$6,$7,$8,$5,'[]','\"policy\"',$9)")
         .bind(binding.tenant).bind(id).bind(version).bind(agent.device().into_uuid())
         .bind(at).bind(at+600).bind(state).bind(vec![13_u8;32]).bind(serde_json::to_value(&anchor)?).execute(&mut *tx).await?;
     }

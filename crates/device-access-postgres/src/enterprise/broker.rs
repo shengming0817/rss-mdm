@@ -733,6 +733,10 @@ impl Service {
             expires_at: handoff.expires_at,
         })
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     pub async fn broker_current(
         &self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,

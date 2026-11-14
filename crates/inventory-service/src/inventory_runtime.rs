@@ -342,6 +342,10 @@ pub struct InventoryRuntime {
     latest_projection: std::sync::Mutex<Option<diagnostics::ProjectionObservation>>,
 }
 impl InventoryRuntime {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     pub fn new(
         observation: Arc<Observation<Clock>>,
         projection: Arc<Projection>,
@@ -575,11 +579,12 @@ impl InventoryRuntime {
                     pass_ready = false;
                     continue;
                 };
-                if !projections.contains_key(&tenant) {
+                if let std::collections::btree_map::Entry::Vacant(entry) = projections.entry(tenant)
+                {
                     let handles = self.projection_handles(current, token).await;
                     match handles {
                         Ok(handles) => {
-                            projections.insert(tenant, handles);
+                            entry.insert(handles);
                         }
                         Err(phase) => {
                             pass_ready = false;

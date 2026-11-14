@@ -241,7 +241,7 @@ impl Application {
     ) {
         let scope = rss_reconcile::Scope::new(
             binding.tenant(),
-            crate::configuration::messaging_domain().as_str(),
+            crate::worker::jobs::domain(self.profile()),
         )
         .expect("fixed relay domain");
         let target = rss_reconcile::Target::new(scope, format!("relay:{}", binding.epoch().get()))

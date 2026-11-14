@@ -153,7 +153,9 @@ impl Delivery {
         input: &wire::TaskClaimRequest,
         audit: &RequestAudit,
     ) -> Result<wire::TaskClaimResponse, Error> {
-        audit.bind_scope(p.binding())?;
+        audit
+            .bind_scope(p.binding())
+            .map_err(|_| Error::Forbidden)?;
 
         if self.tasks.profile() != self.profile() || self.profile() != p.profile() {
             return Err(Error::Forbidden);
@@ -260,7 +262,9 @@ impl Delivery {
         input: &wire::TaskEventRequest,
         audit: &RequestAudit,
     ) -> Result<wire::TaskEventAck, Error> {
-        audit.bind_scope(p.binding())?;
+        audit
+            .bind_scope(p.binding())
+            .map_err(|_| Error::Forbidden)?;
 
         if self.tasks.profile() != self.profile() || self.profile() != p.profile() {
             return Err(Error::Forbidden);
@@ -374,7 +378,9 @@ impl Delivery {
         key: Option<&str>,
         audit: &RequestAudit,
     ) -> Result<rss_mdm_content_service::Verified, Error> {
-        audit.bind_scope(p.binding())?;
+        audit
+            .bind_scope(p.binding())
+            .map_err(|_| Error::Forbidden)?;
 
         if self.tasks.profile() != self.profile() || self.profile() != p.profile() {
             return Err(Error::Forbidden);
@@ -401,7 +407,9 @@ impl Delivery {
         key: Option<&str>,
         audit: &RequestAudit,
     ) -> Result<rss_mdm_resource::Artifact, Error> {
-        audit.bind_scope(p.binding())?;
+        audit
+            .bind_scope(p.binding())
+            .map_err(|_| Error::Forbidden)?;
 
         if self.tasks.profile() != self.profile()
             || self.profile() != p.profile()

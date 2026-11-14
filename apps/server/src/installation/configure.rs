@@ -194,6 +194,10 @@ fn oidc(journal: &Journal, runtime: &mut Value, tenant: Uuid, settings: &Oidc) -
     runtime["identity"]["oidc"] = next;
     Ok(())
 }
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one owner applies the selected material with its original receipt and error boundary"
+)]
 async fn recovery(
     input: &Input,
     journal: &Journal,
@@ -400,6 +404,10 @@ fn merge_callbacks(installed: &Value, requested: &Value) -> Result<Vec<Value>> {
     }
     Ok(callbacks)
 }
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one owner applies the selected material with its original receipt and error boundary"
+)]
 async fn channels(
     journal: &Journal,
     c: &mut sqlx::PgConnection,
@@ -456,7 +464,7 @@ async fn channels(
         let settings = rss_mdm_windows_channel::runtime_materials::Configuration {
             provider_id: windows.provider_id.clone(),
             poll: windows.poll.clone(),
-            lifetime: windows.lifetime.clone(),
+            lifetime: windows.lifetime,
             entra: windows
                 .entra
                 .as_ref()
@@ -529,6 +537,10 @@ async fn channels(
     runtime["apple_material_roots"] = json!(roots);
     Ok(())
 }
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one owner applies the selected material with its original receipt and error boundary"
+)]
 pub async fn run(request: Request) -> Result<Receipt> {
     if request.operation_id.is_nil() || request.tenant.is_some_and(|id| id.is_nil()) {
         return Err(Error::Input);
@@ -683,7 +695,7 @@ pub async fn run(request: Request) -> Result<Receipt> {
         serde_json::from_value(candidate["runtime_binding"].clone()).map_err(|_| Error::Corrupt)?;
     let mut result = Receipt {
         operation_id: request.operation_id,
-        host_id: host_id,
+        host_id,
         requested_revision: binding.revision,
         deployment_required: true,
         applied: None,
@@ -760,6 +772,10 @@ fn completed(root: &Journal, journal: &Journal, operation: Uuid) -> Result<Optio
     Ok(receipt)
 }
 
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one owner applies the selected material with its original receipt and error boundary"
+)]
 async fn apply_change(
     input: &Input,
     root: &Journal,

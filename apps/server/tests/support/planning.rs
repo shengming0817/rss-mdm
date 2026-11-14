@@ -150,7 +150,7 @@ pub async fn staged(c: &Context, old: &Published, object: &DeviceObject) -> Resu
         },
     )
     .await?;
-    sqlx::query("INSERT INTO mdm_scope.tasks(tenant_id,id,scope) VALUES($1::uuid,$2,$3)")
+    sqlx::query("INSERT INTO mdm_scope.tasks(expected_epoch,tenant_id,id,scope) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3)")
         .bind(c.tenant.to_string())
         .bind(run)
         .bind(old.scope)

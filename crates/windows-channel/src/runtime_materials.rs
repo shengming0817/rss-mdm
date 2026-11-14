@@ -197,6 +197,6 @@ pub async fn install_on(
         }
         None => (None, None, Vec::new()),
     };
-    sqlx::query("INSERT INTO mdm_windows.enrollment_configuration(tenant_id,provider_id,poll,lifetime,entra_provider,entra_token,entra_callbacks) VALUES($1::uuid,$2,$3,$4,$5,$6,$7) ON CONFLICT(tenant_id) DO UPDATE SET provider_id=EXCLUDED.provider_id,poll=EXCLUDED.poll,lifetime=EXCLUDED.lifetime,entra_provider=EXCLUDED.entra_provider,entra_token=EXCLUDED.entra_token,entra_callbacks=EXCLUDED.entra_callbacks").bind(tenant.to_string()).bind(&input.provider_id).bind(serde_json::to_value(&input.poll).map_err(|_|Error::Malformed)?).bind(serde_json::to_value(&input.lifetime).map_err(|_|Error::Malformed)?).bind(provider).bind(token).bind(callbacks).execute(c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_windows.enrollment_configuration(tenant_id,provider_id,poll,lifetime,entra_provider,entra_token,entra_callbacks) VALUES($1::uuid,$2,$3,$4,$5,$6,$7) ON CONFLICT(tenant_id) DO UPDATE SET provider_id=EXCLUDED.provider_id,poll=EXCLUDED.poll,lifetime=EXCLUDED.lifetime,entra_provider=EXCLUDED.entra_provider,entra_token=EXCLUDED.entra_token,entra_callbacks=EXCLUDED.entra_callbacks").bind(tenant.to_string()).bind(&input.provider_id).bind(serde_json::to_value(&input.poll).map_err(|_|Error::Malformed)?).bind(serde_json::to_value(input.lifetime).map_err(|_|Error::Malformed)?).bind(provider).bind(token).bind(callbacks).execute(c).await.map_err(db)?;
     Ok(())
 }

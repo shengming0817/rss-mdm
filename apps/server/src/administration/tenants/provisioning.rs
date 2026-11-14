@@ -124,14 +124,11 @@ impl Service {
                 self.complete_initialization(binding, cutoff).await?;
             }
         }
-        self.registry_read((self, receipt), |(service, receipt), c| {
-            Box::pin(async move {
-                let mut receipt = receipt.clone();
-                service.project_initialization(c, &mut receipt).await?;
-                Ok(receipt)
-            })
+        self.registry_read((self, &mut receipt), |(service, receipt), c| {
+            Box::pin(async move { service.project_initialization(c, receipt).await })
         })
-        .await
+        .await?;
+        Ok(receipt)
     }
     async fn reserve_provisioning(
         &self,
@@ -225,10 +222,11 @@ impl Service {
         if !matches!(receipt.result, ReceiptResult::Provisioning(_)) {
             return Ok(());
         }
-        let projected: serde_json::Value = sqlx::query_scalar(&format!(
-            "SELECT receipt FROM ({RECEIPTS}) p WHERE operation_id=$1"
+        let projected: serde_json::Value = sqlx::QueryBuilder::new(format!(
+            "SELECT receipt FROM ({RECEIPTS}) p WHERE operation_id="
         ))
-        .bind(receipt.operation_id)
+        .push_bind(receipt.operation_id)
+        .build_query_scalar()
         .fetch_one(c)
         .await
         .map_err(|_| Reason::Storage)?;

@@ -30,6 +30,10 @@ fn item(input: &DeviceAssignment, enabled: bool) -> Value {
         "qualification":input.admission,"eligibility":input.admission,
         "sources":[input.object],"scopeResult":input.scope_result,"taskAdmission":null,"execution":{"kind":"operations","operationIds":[]}})
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep execution scope and existing operation inputs explicit"
+)]
 pub async fn assignments_on(
     tenant: rss_request_context::TenantId,
     s: &Reads,
@@ -85,6 +89,10 @@ pub async fn assignments_on(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep execution scope and existing operation inputs explicit"
+)]
 pub async fn preview_on(
     tenant: rss_request_context::TenantId,
     s: &Reads,

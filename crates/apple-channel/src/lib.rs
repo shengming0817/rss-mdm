@@ -138,8 +138,7 @@ impl Apple {
         tenant: &str,
         now: i64,
     ) -> Result<(), Error> {
-        let result = self.materials.check(store, tenant, now).await;
-        result
+        self.materials.check(store, tenant, now).await
     }
     pub fn apns_topic(&self) -> &str {
         &self.config.apns_topic

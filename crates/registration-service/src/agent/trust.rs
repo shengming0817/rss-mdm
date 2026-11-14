@@ -34,7 +34,7 @@ impl Service {
 
         input.validate().map_err(|_| Error::Malformed)?;
         let p = self.authenticate(peer).await?;
-        a.bind_scope(p.binding()).map_err(|_| Error::Unauthorized)?;
+        a.bind_scope(p.binding()).map_err(|_| Error::Forbidden)?;
         a.identify_device(p.device());
         a.target_device(p.device());
         a.operation(
@@ -122,7 +122,7 @@ impl Service {
 
         input.validate().map_err(|_| Error::Malformed)?;
         let p = self.authenticate(peer).await?;
-        a.bind_scope(p.binding()).map_err(|_| Error::Unauthorized)?;
+        a.bind_scope(p.binding()).map_err(|_| Error::Forbidden)?;
         if input.device_id != *p.device() {
             return Err(Error::Forbidden.into());
         }

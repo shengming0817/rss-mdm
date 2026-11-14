@@ -44,6 +44,10 @@ impl AssetService {
         }
         Ok(())
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     pub(super) async fn asset_query(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,

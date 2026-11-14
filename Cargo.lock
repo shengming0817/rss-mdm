@@ -3808,6 +3808,7 @@ dependencies = [
  "rss-reconcile",
  "rss-reconcile-postgres",
  "rss-request-context",
+ "rss-transactional-messaging",
  "rss-transactional-messaging-postgres",
  "serde",
  "serde_json",

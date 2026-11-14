@@ -350,6 +350,7 @@ FROM mdm_compliance.rules r WHERE r.tenant_id=$1::uuid
 /// Invalidate dependent assessments and notify their owner in the caller's transaction.
 /// The durable rule state is authoritative; notification only accelerates discovery.
 pub async fn group_changed_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     group: uuid::Uuid,
     store: &rss_reconcile_postgres::PgMessagingStore,
@@ -359,32 +360,7 @@ pub async fn group_changed_in(
         .with_connection(move |c| Box::pin(async move { invalidate_group(c, tenant, group).await }))
         .await?;
     if changed > 0 {
-        let target = rss_reconcile::Target::new(
-            rss_reconcile::Scope::new(tenant, INPUT_DOMAIN).expect("constant scope"),
-            "inputs",
-        )
-        .expect("constant target");
-        store
-            .wake_in(
-                tx,
-                &target,
-                &rss_reconcile::ResourceSet::empty(tenant),
-                (),
-                |_, tx| {
-                    Box::pin(async move {
-                        tx.with_connection(|c| {
-                            Box::pin(async move {
-                                sqlx::query("SELECT pg_notify('mdm_work','compliance')")
-                                    .execute(c)
-                                    .await?;
-                                Ok(())
-                            })
-                        })
-                        .await
-                    })
-                },
-            )
-            .await?;
+        wake_inputs_in(store, tx, binding).await?;
     }
     Ok(())
 }
@@ -414,3 +390,50 @@ pub async fn affected_rules<C: DeserializeOwned>(
 
 /// Narrow access-role work discovery exported by this owner.
 pub const WORK_ACCESS_CONTRACT: &str = r#"{"tables":[],"functions":[{"name":"mdm_compliance.compliance_work_scopes","search_path":"search_path=pg_catalog, pg_temp"},{"name":"mdm_compliance.compliance_work_epoch","search_path":"search_path=pg_catalog, pg_temp"}],"external_relations":[],"verified_schemas":[]}"#;
+
+use rss_reconcile::{ResourceSet, Scope, Target};
+use rss_reconcile_postgres::PgMessagingStore;
+use rss_transactional_messaging_postgres::{PgError, PgTransaction};
+
+/// Persist the original input scope and wake its existing durable target atomically.
+pub async fn wake_inputs_in(
+    store: &PgMessagingStore,
+    tx: &mut PgTransaction<'_>,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
+) -> std::result::Result<(), PgError> {
+    if binding.tenant() != tx.tenant_id() {
+        return Err(sqlx::Error::Protocol("compliance input binding mismatch".into()).into());
+    }
+
+    let tenant = tx.tenant_id();
+    let epoch = binding.epoch().get();
+    let t = tenant.to_string();
+    tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query("INSERT INTO mdm_compliance.dispatch(tenant_id,expected_epoch) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING")
+            .bind(&t).bind(epoch).execute(&mut *c).await?;
+        let accepted: i64 = sqlx::query_scalar("SELECT expected_epoch FROM mdm_compliance.dispatch WHERE tenant_id=$1::uuid")
+            .bind(t).fetch_one(c).await?;
+        if accepted != epoch { return Err(sqlx::Error::Protocol("compliance input epoch mismatch".into())); }
+        Ok(())
+    })).await?;
+    let target = Target::new(
+        Scope::new(tenant, INPUT_DOMAIN).expect("constant scope"),
+        "inputs",
+    )
+    .expect("constant target");
+    store
+        .wake_in(tx, &target, &ResourceSet::empty(tenant), (), |_, tx| {
+            Box::pin(async move {
+                tx.with_connection(|c| {
+                    Box::pin(async move {
+                        sqlx::query("SELECT pg_notify('mdm_work','compliance')")
+                            .execute(c)
+                            .await?;
+                        Ok(())
+                    })
+                })
+                .await
+            })
+        })
+        .await
+}

@@ -215,22 +215,30 @@ impl From<crate::device::DeviceError> for Fault {
 }
 /// Short preflight read/row-lock transaction. It must not persist business changes or audit facts.
 /// It deliberately does not advance the outer request's single mutation settlement state.
-pub async fn inspect<C: Send, R: Send, F>(
-    runtime: &PgRuntime,
+pub fn inspect<'a, C: Send + 'a, R: Send + 'a, F>(
+    runtime: &'a PgRuntime,
     binding: ExecutionBinding,
     context: C,
     operation: F,
     owner: TransactionOwner,
-) -> std::result::Result<R, Error>
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::result::Result<R, Error>> + Send + 'a>>
 where
     F: for<'c> FnOnce(
             &'c mut C,
             &'c mut PgTransaction<'_>,
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<R>> + Send + 'c>,
-        > + Send,
+        > + Send
+        + 'a,
 {
-    inspect_budget(runtime, binding, deadline(), context, operation, owner).await
+    Box::pin(inspect_budget(
+        runtime,
+        binding,
+        deadline(),
+        context,
+        operation,
+        owner,
+    ))
 }
 
 pub(crate) async fn inspect_budget<C: Send, R: Send, F>(

@@ -72,6 +72,7 @@ impl Worker {
             let force = tokio_util::sync::CancellationToken::new();
             let control = rss_reconcile::Control::new(&timer, Duration::MAX, &force);
             let mut after: Option<Uuid> = None;
+            let mut worked = false;
             let result = async {
                 loop {
                     if stop.is_cancelled() {
@@ -87,6 +88,10 @@ impl Worker {
                     if tenants.is_empty() {
                         self.readiness.scan(Ok(()));
                         after = None;
+                        if std::mem::take(&mut worked) {
+                            continue;
+                        }
+
                         tokio::select! { biased;
                             () = stop.cancelled() => return Ok(()),
                             () = notify.notified() => {},
@@ -104,7 +109,7 @@ impl Worker {
                             worker: &self,
                             stop: &turn,
                         };
-                        rss_reconcile::run_with_notify(
+                        let report = rss_reconcile::run_with_notify(
                             &pass,
                             self.as_ref(),
                             &scope,
@@ -118,6 +123,17 @@ impl Worker {
                         )
                         .await
                         .map_err(rss_runtime::ShutdownError::new)?;
+                        worked |= [
+                            report.converged,
+                            report.reobserve,
+                            report.deferred,
+                            report.retried,
+                            report.suspended,
+                            report.fenced,
+                            report.execution_failed,
+                        ]
+                        .into_iter()
+                        .any(|count| count > 0);
                     }
                 }
             }

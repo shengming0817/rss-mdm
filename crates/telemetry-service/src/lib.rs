@@ -343,7 +343,7 @@ pub async fn admit_configuration(
                 .map_err(|_| sqlx::Error::Protocol("collection producer admission rejected".into()))?;
             if !sqlx::query_scalar::<_,bool>(ADMISSION_SQL).fetch_one(&mut *c).await? { return Err(sqlx::Error::Protocol("owner storage admission rejected".into())); }
             sqlx::query("INSERT INTO mdm_telemetry.storage_binding(tenant_id,binding,expected_epoch) VALUES($1::uuid,$2,$3) ON CONFLICT DO NOTHING").bind(tenant.to_string()).bind(binding.as_slice()).bind(execution.epoch().get()).execute(&mut *c).await?;
-            let stored:Vec<u8>=sqlx::query_scalar("SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid FOR SHARE").bind(tenant.to_string()).fetch_one(c).await?;
+            let stored:Vec<u8>=sqlx::query_scalar("SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid").bind(tenant.to_string()).fetch_one(c).await?;
             Ok(stored==binding)
         })).await
     })).await.fold(|same|if same {Ok(())}else{Err(Error::Conflict)},|_|Err(Error::Storage),|_|Err(Error::Storage),|_|Err(Error::Unknown),|_|Err(Error::Unknown),|_|Err(Error::Storage))
@@ -388,7 +388,7 @@ impl Service {
         tenant: TenantId,
     ) -> Result<Arc<backend::Backend>, Error> {
         let key: Vec<u8> = sqlx::query_scalar(
-            "SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid FOR SHARE",
+            "SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid",
         )
         .bind(tenant.to_string())
         .fetch_one(c)

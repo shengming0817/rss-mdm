@@ -148,7 +148,7 @@ impl Service {
                                         return Err(Error::Forbidden);
                                     }
                                     rss_mdm_registration_service::admission::lock_in(
-                                        profile, c, &ctx.0,
+                                        profile, c, ctx.0,
                                     )
                                     .await?;
                                     let f = ctx.2.take().ok_or(Error::Corrupt)?;

@@ -116,6 +116,10 @@ pub async fn qualify_in(
     .await?
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep execution scope and existing operation inputs explicit"
+)]
 pub(super) async fn qualify_on(
     execution: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,

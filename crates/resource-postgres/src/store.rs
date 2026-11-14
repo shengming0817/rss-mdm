@@ -122,18 +122,12 @@ impl ResourceStore {
             runtime,
         })
     }
-    /// Return the tenant permanently bound to this store.
-
-    /// Validate runtime provenance and tenant before any companion effects.
+    /// Validate runtime provenance before any companion effects.
     pub fn validate_transaction(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
         self.writer.validate_transaction(tx)?;
-        Ok(if tx.tenant_id() == tx.tenant_id() {
-            Ok(())
-        } else {
-            Err(Rejection::TenantMismatch)
-        })
+        Ok(Ok(()))
     }
-    /// Read and validate the current aggregate for this store tenant. Missing identities return `None`.
+    /// Read and validate the current aggregate for the supplied execution binding. Missing identities return `None`.
     pub async fn get(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,

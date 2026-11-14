@@ -69,8 +69,6 @@ pub(crate) fn decide(
     })
 }
 
-/// Shared business preflight; caller still owns live permission, locks, CAS and confirmation.
-
 #[derive(Clone, Debug, Serialize)]
 pub struct Decision {
     pub authorization: Authorization,

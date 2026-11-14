@@ -105,7 +105,7 @@ impl PgConsumerEffect<Vec<u8>> for Receiver {
             rss_mdm_device_service::worker::wake_inputs_in(&self.messaging, tx, binding)
                 .await
                 .map_err(PgConsumerEffectFailure::infrastructure)?;
-            rss_mdm_compliance_service::input_wake::wake_in(&self.messaging, tx, binding)
+            rss_mdm_compliance_postgres::wake_inputs_in(&self.messaging, tx, binding)
                 .await
                 .map_err(PgConsumerEffectFailure::infrastructure)?;
         }

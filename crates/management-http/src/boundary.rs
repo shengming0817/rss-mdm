@@ -196,7 +196,7 @@ pub async fn authentication(
     {
         if let Some(replacement) = rss_mdm_audit_integration::completion::complete(
             &envelope.audit_store,
-            &audit,
+            audit,
             response.status().as_u16(),
             classify(response.extensions().get::<Error>()),
         )

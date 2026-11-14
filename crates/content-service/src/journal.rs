@@ -183,6 +183,10 @@ impl Store {
         commit(tx).await?;
         Ok(saved)
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     pub(super) async fn claim(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
@@ -227,6 +231,10 @@ impl Store {
         commit(tx).await?;
         Ok((saved, epoch))
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     pub(super) async fn claim_parse(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
@@ -268,6 +276,10 @@ impl Store {
         sqlx::query("UPDATE mdm_content.uploads SET held_until=0,epoch=NULL,reserved=greatest($5,reserved-$4) WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3").bind(binding.tenant().to_string()).bind(key).bind(epoch).bind(temporary as i64).bind(baseline as i64).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     pub(super) async fn put_piece(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,

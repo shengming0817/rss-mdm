@@ -182,6 +182,10 @@ async fn profile(settings: &Settings) -> Result<Profile> {
     })
 }
 
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one owner applies the selected material with its original receipt and error boundary"
+)]
 pub(in crate::installation) async fn prepare(
     root: &Journal,
     journal: &Journal,

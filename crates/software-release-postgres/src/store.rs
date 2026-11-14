@@ -73,13 +73,11 @@ impl ReleaseStore {
             runtime,
         })
     }
-    /// Return the tenant permanently bound to this store.
-
     fn check(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
         self.writer.validate_transaction(tx)?;
         Ok(Ok(()))
     }
-    /// Read and validate the current aggregate for this store tenant. Missing identities return `None`.
+    /// Read and validate the current aggregate for the supplied execution binding. Missing identities return `None`.
     pub async fn get(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
@@ -94,7 +92,7 @@ impl ReleaseStore {
                 .await,
         )
     }
-    /// Read through a borrowed transaction after runtime-owner and tenant validation.
+    /// Read through a borrowed transaction after runtime-owner validation.
     /// Never commits; propagate outer errors to the transaction owner.
     pub async fn get_in(
         &self,

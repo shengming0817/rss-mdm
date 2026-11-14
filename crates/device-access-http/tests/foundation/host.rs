@@ -168,7 +168,10 @@ pub async fn verify(
             .next()
             .unwrap();
         let response = client
-            .get(format!("{origin}/api/v1/da/pki/da_device/trust"))
+            .get(format!(
+                "{origin}/api/v1/tenants/{}/da/pki/da_device/trust",
+                c.tenant
+            ))
             .header("cookie", cookie)
             .send()
             .await?;
@@ -278,7 +281,10 @@ async fn vault_user_http(c: &Context, client: &reqwest::Client, origin: &str) ->
     };
     let post = |path: &str| {
         client
-            .post(format!("{origin}/api/v1/da/vault/{path}"))
+            .post(format!(
+                "{origin}/api/v1/tenants/{}/da/vault/{path}",
+                c.tenant
+            ))
             .header("origin", origin)
             .header("cookie", &cookie)
             .header("x-identity-request", "1")

@@ -220,7 +220,7 @@ impl Store {
             )
             .map_err(|_| invariant())?;
             out.push(Garbage {
-                execution: execution,
+                execution,
                 store: self.clone(),
                 manifest: self.unsign(
                     execution,

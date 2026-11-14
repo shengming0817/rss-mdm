@@ -31,6 +31,10 @@ pub async fn der(kind: &str, path: &std::path::Path) -> Result<Vec<u8>> {
     );
     Ok(o.stdout)
 }
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one legal material fixture prepares the existing native protocol proof"
+)]
 pub async fn seed(c: &Context, purpose: &str) -> Result<Native> {
     let request = Uuid::new_v4();
     let attempt = Uuid::new_v4();

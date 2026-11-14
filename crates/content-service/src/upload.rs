@@ -185,6 +185,10 @@ impl Store {
     ) -> Result<Upload, Error> {
         Ok(self.saved(execution, actor, id, now).await?.upload)
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     async fn append_in<R: tokio::io::AsyncRead + Unpin + Send>(
         &self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,
@@ -587,6 +591,10 @@ impl Store {
             .status_in(execution, actor, id, now)
             .await
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     pub async fn append<R: tokio::io::AsyncRead + Unpin + Send>(
         &self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,

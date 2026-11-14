@@ -93,7 +93,6 @@ pub(crate) async fn enrollment(
     let intent = crate::issuance::issue_intent(
         execution,
         &app.audit_store,
-        &app.access,
         &windows,
         crate::issuance::IssuanceAuthority::Native(&admission),
         (&csr.0, enrollment_type),

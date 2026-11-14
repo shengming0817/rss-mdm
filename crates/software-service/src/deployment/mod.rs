@@ -102,6 +102,10 @@ pub struct SoftwareService {
     pub(crate) transactions: Arc<Transactions>,
 }
 impl SoftwareService {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     pub fn new(
         read_pool: sqlx::PgPool,
         storage: rss_transactional_messaging::fence::StorageIdentity,

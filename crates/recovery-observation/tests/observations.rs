@@ -218,7 +218,7 @@ async fn failures_are_owner_scoped_and_overflow_requires_a_new_process_window() 
         fail(&health, &target);
         fail(&other, &target);
     }
-    assert_eq!(other.health().recovery, Phase::Initializing);
+    assert_eq!(other.health().recovery, Phase::Unobserved);
     store
         .claim_due(&scope, 1, 64, Duration::from_secs(1), &control)
         .await
@@ -238,7 +238,7 @@ async fn failures_are_owner_scoped_and_overflow_requires_a_new_process_window() 
         Phase::Failed(ErrorKind::Invariant)
     );
     let restarted = Readiness::new(scope.reconciler(), false, false);
-    assert_eq!(restarted.health().recovery, Phase::Initializing);
+    assert_eq!(restarted.health().recovery, Phase::Unobserved);
 }
 
 #[test]

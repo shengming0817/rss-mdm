@@ -19,7 +19,7 @@ SELECT has_schema_privilege(current_user,'mdm_apple','USAGE')
   OR has_table_privilege(current_user,oid,'INSERT')<>(relname NOT IN('native_commands','profiles','declarations','status_reports'))
   OR has_table_privilege(current_user,oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
   OR has_table_privilege(current_user,oid,'DELETE')<>(relname IN('account_flows','ade_sync_devices'))
-  OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>1
+  OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid AND polroles && (ARRAY[0::oid] || ARRAY(SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER'))))<>1
   OR NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=t.oid AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
     AND lower(replace(regexp_replace(pg_get_expr(polqual,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
     AND pg_get_expr(polqual,polrelid)=pg_get_expr(polwithcheck,polrelid))))

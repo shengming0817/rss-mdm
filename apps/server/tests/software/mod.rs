@@ -56,15 +56,30 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
             &budget.control(),
         )
         .await?;
+    let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
+        a.resources.storage.runtime.clone(),
+        c.execution(),
+        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+            std::time::Duration::from_secs(6),
+        ),
+    ))
+    .await?;
     let request = audit(&c);
     rss_mdm_device_service::control::transaction::run(
         &store,
         &a.resources.storage.runtime,
         c.execution(),
         &request,
-        &store,
-        move |store, tx| {
+        (&store, &messaging),
+        move |(store, messaging), tx| {
             Box::pin(async move {
+                rss_mdm_device_service::control::source_changes::wake_in(
+                    execution_binding,
+                    messaging,
+                    tx,
+                )
+                .await?;
+                owner::source_changes::wake_in(execution_binding, messaging, tx).await?;
                 rss_mdm_device_service::control::source_changes::fail_in(
                     execution_binding,
                     tx,

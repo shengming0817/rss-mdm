@@ -685,7 +685,6 @@ async fn enrollment(
         );
         let intent = crate::issuance::issuance_for_device(
             &app.audit_store,
-            &app.access,
             &windows,
             &auth,
             &proof,

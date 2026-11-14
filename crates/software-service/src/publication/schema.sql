@@ -103,4 +103,5 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
 $$;
 ALTER FUNCTION mdm_software_composition.work_scopes(uuid,bigint,text) OWNER TO mdm_owner;
 REVOKE ALL ON FUNCTION mdm_software_composition.work_scopes(uuid,bigint,text) FROM PUBLIC;
+GRANT USAGE ON SCHEMA mdm_software_composition TO mdm_access;
 GRANT EXECUTE ON FUNCTION mdm_software_composition.work_scopes(uuid,bigint,text) TO mdm_access;

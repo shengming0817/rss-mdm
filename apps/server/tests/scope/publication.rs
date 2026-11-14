@@ -6,7 +6,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 pub(crate) async fn open(c: &Context) -> Result<Arc<Scopes>> {
     let owner = fixture::owner(c, "mdm_scope_runtime").await?;
-    let pool = c.inputs.pool("shared", "mdm_scope_runtime").await?;
+    let pool = c.database.archive_pool();
     Ok(crate::scopes::open(
         owner.runtime,
         c.execution(),

@@ -526,17 +526,31 @@ impl GroupWork {
         let (task, status) = rss_runtime::ManagedTask::prepare("mdm-group-calculation", drain);
         let _ = self.groups.task_status.set(status);
         task.into_registration(move |cancel| async move {
-            #[allow(clippy::disallowed_methods, reason="monotonic execution clock boundary")]
-            let timer=GroupTimer(tokio::time::Instant::now());
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "monotonic execution clock boundary"
+            )]
+            let timer = GroupTimer(tokio::time::Instant::now());
             let force = tokio_util::sync::CancellationToken::new();
-            let control=Control::new(&timer,Duration::MAX,&force);
+            let control = Control::new(&timer, Duration::MAX, &force);
             let mut after: Option<Uuid> = None;
+            let mut worked = false;
             loop {
-                if cancel.is_cancelled() { return Ok(()); }
-                let tenants: Vec<Uuid> = sqlx::query_scalar("SELECT tenant_id FROM mdm_assets.group_work_scopes($1)")
-                    .bind(after).fetch_all(&self.groups.read_pool).await.map_err(rss_runtime::ShutdownError::new)?;
+                if cancel.is_cancelled() {
+                    return Ok(());
+                }
+                let tenants: Vec<Uuid> =
+                    sqlx::query_scalar("SELECT tenant_id FROM mdm_assets.group_work_scopes($1)")
+                        .bind(after)
+                        .fetch_all(&self.groups.read_pool)
+                        .await
+                        .map_err(rss_runtime::ShutdownError::new)?;
                 if tenants.is_empty() {
                     after = None;
+                    if std::mem::take(&mut worked) {
+                        continue;
+                    }
+
                     tokio::select! { biased;
                         () = cancel.cancelled() => return Ok(()),
                         () = notify.notified() => {},
@@ -546,16 +560,39 @@ impl GroupWork {
                 }
                 for tenant in tenants {
                     after = Some(tenant);
-                    let tenant = TenantId::parse(&tenant.to_string()).map_err(rss_runtime::ShutdownError::new)?;
-                    let scope = Scope::new(tenant,"mdm.groups").expect("constant scope");
+                    let tenant = TenantId::parse(&tenant.to_string())
+                        .map_err(rss_runtime::ShutdownError::new)?;
+                    let scope = Scope::new(tenant, "mdm.groups").expect("constant scope");
                     let stop = cancel.child_token();
-                    let pass = GroupPass { work: &self, stop: &stop };
-                    rss_reconcile::run_with_notify(&pass,self.as_ref(),&scope,policy,&control,&stop,&notify,|event| {
-                        if !matches!(event, rss_reconcile::Observation::Deferred { .. }) {
-                            eprintln!("{}",serde_json::json!({"event":"mdm_group_task_failure","diagnostic":format!("{event:?}")}));
-                        }
-                        self.groups.record_runner_failure(event);
-                    }).await.map_err(rss_runtime::ShutdownError::new)?;
+                    let pass = GroupPass {
+                        work: &self,
+                        stop: &stop,
+                    };
+                    let report = rss_reconcile::run_with_notify(
+                        &pass,
+                        self.as_ref(),
+                        &scope,
+                        policy,
+                        &control,
+                        &stop,
+                        &notify,
+                        |event| {
+                            self.groups.record_runner_failure(event);
+                        },
+                    )
+                    .await
+                    .map_err(rss_runtime::ShutdownError::new)?;
+                    worked |= [
+                        report.converged,
+                        report.reobserve,
+                        report.deferred,
+                        report.retried,
+                        report.suspended,
+                        report.fenced,
+                        report.execution_failed,
+                    ]
+                    .into_iter()
+                    .any(|count| count > 0);
                 }
             }
         })

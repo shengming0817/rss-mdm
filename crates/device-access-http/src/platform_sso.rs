@@ -135,6 +135,9 @@ async fn principal(
         .authenticate(&peer.ok_or(Error::Unauthorized)?.0, origin)
         .await
         .map_err(|e| e.source.map(Error::from).unwrap_or(Error::Unavailable))?;
+    audit
+        .bind_scope(p.binding())
+        .map_err(|_| Error::Unavailable)?;
     audit.identify_device(p.device());
     audit.target_device(p.device());
     Ok(p)

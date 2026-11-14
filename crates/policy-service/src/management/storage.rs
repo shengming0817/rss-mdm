@@ -42,6 +42,29 @@ pub async fn enqueue_change_in(
     policy: &Policy,
     old: Option<&Policy>,
 ) -> Result<()> {
+    if policy.state.is_enabled()
+        && matches!(
+            policy.definition.action,
+            rss_mdm_policy::Action::UnmanageDevice { .. }
+        )
+    {
+        rss_mdm_policy_postgres::schedules::accept_scan_in(profile, binding, tx).await?;
+        let scan = rss_reconcile::Target::new(
+            rss_reconcile::Scope::new(tx.tenant_id(), crate::worker::jobs::domain(profile))
+                .expect("constant domain"),
+            "schedules",
+        )
+        .expect("constant target");
+        reconcile
+            .wake_in(
+                tx,
+                &scan,
+                &rss_reconcile::ResourceSet::empty(tx.tenant_id()),
+                (),
+                |_, _| Box::pin(async { Ok(()) }),
+            )
+            .await?;
+    }
     crate::worker::jobs::enqueue_job_in(
         binding,
         profile,

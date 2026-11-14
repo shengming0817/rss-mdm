@@ -386,10 +386,8 @@ async fn fact_readers_reject_cross_runtime_and_tenant_and_keep_the_frozen_cut() 
         rss_mdm_install_support::StorageProfile::Mdm,
         other.runtime.clone(),
     );
-    let foreign = SnapshotReader::bind(
-        rss_mdm_install_support::StorageProfile::Mdm,
-        owners.storage.runtime.clone(),
-    );
+    let foreign_context = Context::open("shared", &[]).await?;
+    let foreign = cut::capture(&foreign_context.audit, foreign_context.tenant, &budget).await?;
     let refs = rss_mdm_resource_postgres::FieldReferences::bind(other.runtime.clone(), c.tenant);
     group::transaction::inspect(
         &owners.storage.runtime,
@@ -406,8 +404,8 @@ async fn fact_readers_reject_cross_runtime_and_tenant_and_keep_the_frozen_cut() 
                         .is_err()
                 );
                 assert!(
-                    ctx.2
-                        .summary_devices_in(tx, &ctx.5, &[], &catalog)
+                    ctx.0
+                        .summary_devices_in(tx, &ctx.2, &[first.members[0].device], &catalog)
                         .await
                         .is_err()
                 );
@@ -418,8 +416,8 @@ async fn fact_readers_reject_cross_runtime_and_tenant_and_keep_the_frozen_cut() 
                         .is_err()
                 );
                 assert!(
-                    ctx.2
-                        .changes_exist_in(tx, Some(&ctx.4), None)
+                    ctx.0
+                        .changes_exist_in(tx, Some(&ctx.2), None)
                         .await
                         .is_err()
                 );
@@ -446,6 +444,7 @@ async fn fact_readers_reject_cross_runtime_and_tenant_and_keep_the_frozen_cut() 
     .await?;
     drop(other);
     drop(owners);
+    foreign_context.close().await;
     c.close().await;
     Ok(())
 }

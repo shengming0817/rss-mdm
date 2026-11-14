@@ -38,7 +38,7 @@ pub(super) fn validate(frozen: &Frozen) -> Result<()> {
     {
         for config in configured(&frozen.runtime)? {
             let key = config.resource_id;
-            required.insert(key.clone());
+            required.insert(key);
             let profile = frozen
                 .request
                 .telemetry

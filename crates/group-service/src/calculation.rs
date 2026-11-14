@@ -667,8 +667,13 @@ impl Groups {
             || authority > old
             || definition_changed;
         if changed {
-            rss_mdm_compliance_postgres::group_changed_in(tx, id, &self.reconcile_messaging)
-                .await?;
+            rss_mdm_compliance_postgres::group_changed_in(
+                binding,
+                tx,
+                id,
+                &self.reconcile_messaging,
+            )
+            .await?;
         }
         dirty |= self.inputs_uncovered_in(tx, id, *covered_inputs).await?;
         if dirty {

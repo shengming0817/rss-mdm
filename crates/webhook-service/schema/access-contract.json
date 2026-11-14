@@ -104,10 +104,6 @@
       "search_path": "search_path=pg_catalog, pg_temp"
     },
     {
-      "name": "mdm_webhook.source_epoch",
-      "search_path": "search_path=pg_catalog, pg_temp"
-    },
-    {
       "name": "mdm_webhook.delivery_epoch",
       "search_path": "search_path=pg_catalog, pg_temp"
     }

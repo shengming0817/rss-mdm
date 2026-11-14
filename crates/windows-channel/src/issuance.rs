@@ -121,34 +121,8 @@ pub(crate) fn intent(row: sqlx::postgres::PgRow) -> Result<Intent, Error> {
     })
 }
 
-pub async fn issuance_intent(
-    audit_store: &rss_mdm_audit_integration::AuditStore,
-    database: &crate::Store,
-    windows: &Windows,
-    auth: &Authorization,
-    proof: &AuthorizedPrincipal,
-    input: (&[u8], EnrollmentType),
-    now: i64,
-) -> Result<Intent, Error> {
-    issuance_for_device(
-        audit_store,
-        database,
-        windows,
-        auth,
-        proof,
-        input,
-        None,
-        now,
-    )
-    .await
-}
-#[allow(
-    clippy::too_many_arguments,
-    reason = "explicit authorization and original audit transaction owner"
-)]
 pub(crate) async fn issuance_for_device(
     audit_store: &rss_mdm_audit_integration::AuditStore,
-    database: &crate::Store,
     windows: &Windows,
     auth: &Authorization,
     proof: &AuthorizedPrincipal,
@@ -159,7 +133,6 @@ pub(crate) async fn issuance_for_device(
     issue_intent(
         proof.binding(),
         audit_store,
-        database,
         windows,
         IssuanceAuthority::Password(auth, proof),
         input,
@@ -171,7 +144,6 @@ pub(crate) async fn issuance_for_device(
 pub(crate) async fn issue_intent(
     execution: rss_transactional_messaging::fence::ExecutionBinding,
     audit_store: &rss_mdm_audit_integration::AuditStore,
-    _database: &crate::Store,
     windows: &Windows,
     authority: IssuanceAuthority<'_>,
     input: (&[u8], EnrollmentType),

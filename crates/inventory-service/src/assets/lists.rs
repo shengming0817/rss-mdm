@@ -46,6 +46,10 @@ struct Cursor {
     source: Option<(rss_mdm_inventory::Source, Option<String>)>,
 }
 impl AssetService {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     fn list_cursor(
         &self,
         tenant: rss_request_context::TenantId,

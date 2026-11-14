@@ -756,7 +756,7 @@ fn recovery_component(
         .chain(state.inputs.map(|phase| (PhaseName::Inputs, phase)))
     {
         let (state, reason) = match phase {
-            Phase::Initializing => (PhaseState::Unobserved, Some(Reason::Initializing)),
+            Phase::Unobserved => (PhaseState::Unobserved, Some(Reason::Unobserved)),
             Phase::Healthy => (PhaseState::Healthy, None),
             Phase::Failed(kind) => (PhaseState::Failed, Some(execution_failure(kind))),
         };
@@ -774,12 +774,12 @@ fn recovery_component(
         .any(|phase| matches!(phase, Phase::Failed(_)))
     {
         result.health = Health::Degraded;
-    } else if state.phases().any(|phase| phase == Phase::Initializing) {
+    } else if state.phases().any(|phase| phase == Phase::Unobserved) {
         result.health = Health::Unknown;
     }
     result.runner = Some(Runner {
         scan: match state.scan {
-            Phase::Initializing => None,
+            Phase::Unobserved => None,
             Phase::Healthy => Some(RunResult {
                 successful: true,
                 reason: None,
@@ -805,7 +805,7 @@ fn worker_component(
 ) -> Component {
     let mut value = component(
         name,
-        status == Some(rss_runtime::TaskState::Running) && observed && !failed,
+        status == Some(rss_runtime::TaskState::Running) && !failed,
     );
     value.task = Some(task(status));
     if status != Some(rss_runtime::TaskState::Running) {
@@ -853,7 +853,6 @@ fn apply_runner(value: &mut Component, runner: Runner) {
         );
     } else if runner.scan.is_none() {
         value.health = Health::Unknown;
-        value.readiness = Readiness::NotReady;
         value.reasons.push(Reason::Unobserved);
     }
     if runner.truncated {
@@ -1118,9 +1117,9 @@ fn channel_projection(value: crate::channel_status::Assembly) -> ChannelStatus {
     let reasons = value
         .reason
         .map(|reason| match reason {
-            assembly::Reason::MaterialNotSelected => Reason::MaterialNotSelected,
-            assembly::Reason::MaterialUnreadable => Reason::MaterialUnreadable,
-            assembly::Reason::MaterialInvalid => Reason::MaterialInvalid,
+            assembly::Reason::NotSelected => Reason::MaterialNotSelected,
+            assembly::Reason::Unreadable => Reason::MaterialUnreadable,
+            assembly::Reason::Invalid => Reason::MaterialInvalid,
         })
         .into_iter()
         .collect();
@@ -1162,7 +1161,7 @@ mod channel_projection_tests {
             assembly::Assembly {
                 name: assembly::ChannelName::Agent,
                 state: assembly::ChannelState::Degraded,
-                reason: Some(assembly::Reason::MaterialUnreadable),
+                reason: Some(assembly::Reason::Unreadable),
                 mounted: false,
             },
             assembly::Assembly {

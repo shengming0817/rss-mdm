@@ -16,7 +16,7 @@ SELECT
  AND (NOT $6::boolean OR NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname=$1::text AND (c.relkind NOT IN('r','i') OR c.relkind='r' AND NOT c.relname=ANY($2::text[]))))
  AND (NOT $6::boolean OR NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
- WHERE n.nspname=$1::text AND NOT EXISTS(SELECT 1 FROM unnest($5::text[]) f WHERE p.oid=to_regprocedure(f))))
+ WHERE n.nspname=$1::text AND EXISTS(SELECT 1 FROM reachable r WHERE has_function_privilege(r.oid,p.oid,'EXECUTE')) AND NOT EXISTS(SELECT 1 FROM unnest($5::text[]) f WHERE p.oid=to_regprocedure(f))))
  AND NOT EXISTS(SELECT 1 FROM unnest($5::text[]) f WHERE to_regprocedure(f) IS NULL)
  AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication
  OR oid IN (SELECT relowner FROM tables) OR has_schema_privilege(oid,$1::text,'CREATE'))
@@ -26,7 +26,7 @@ SELECT
  OR NOT has_table_privilege(current_user,t.oid,'INSERT')
  OR EXISTS(SELECT 1 FROM reachable r
    WHERE has_table_privilege(r.oid,t.oid,'TRUNCATE,REFERENCES,TRIGGER,UPDATE,DELETE'))
- OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>1
+ OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid AND polroles && (ARRAY[0::oid] || ARRAY(SELECT oid FROM reachable)))<>1
  OR NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=t.oid AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
  AND lower(replace(regexp_replace(pg_get_expr(polqual,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
  AND lower(replace(regexp_replace(pg_get_expr(polwithcheck,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'))

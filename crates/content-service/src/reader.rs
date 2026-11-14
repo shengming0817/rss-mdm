@@ -195,6 +195,10 @@ impl Store {
         }
         bytes.ok_or(Error::Malformed)
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     pub(super) async fn check_pieces<G: Clone + Send + 'static>(
         &self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,
@@ -335,7 +339,7 @@ impl Store {
         }
         let (manifest, pin) = self.pin(execution, a, c, d, 0).await?;
         let mut verified = Verified {
-            execution: execution,
+            execution,
             store: self.clone(),
             artifact: a.clone(),
             manifest,

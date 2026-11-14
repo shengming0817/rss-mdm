@@ -358,7 +358,7 @@ async fn lifecycle_and_dependency_failures_are_not_platform_unsupported() -> Res
         let p=Arc::new(c.authenticate(&account).await?);
         assert_eq!(http.get(&c,p.clone(),&other.device).await?.0,404);
         let outsider=foreign.account(&[Permission::InventoryRead]).await?;
-        assert_eq!(http.get(&foreign,Arc::new(foreign.authenticate(&outsider).await?),&n.device).await?.0,403);
+        assert_eq!(http.get(&foreign,Arc::new(foreign.authenticate(&outsider).await?),&n.device).await?.0,404);
         windows(&c,&n,"10.0.22631.0").await?;
         change(&c, "UPDATE mdm_windows.capabilities SET protocol_epoch = gen_random_uuid() WHERE tenant_id = CAST($1 AS uuid) AND device = $2", n.device.into_uuid()).await?;
         assert_eq!(capability(&read(&c,&http,&p,&n).await?,"wipe")["devicePrerequisite"]["state"],"unknown");

@@ -73,16 +73,12 @@ impl Service {
         p: &rss_mdm_registration_service::DevicePrincipal,
         audit: &RequestAudit,
     ) -> Result<(), Error> {
-        audit.bind_scope(p.binding())?;
-        if p.profile() != self.signing.profile
-            || p.tenant() != audit.binding()?.tenant()
-            || audit.profile() != self.signing.profile
-            || audit.tenant() != audit.binding()?.tenant().to_string()
-        {
+        if p.profile() != self.signing.profile || audit.profile() != self.signing.profile {
             return Err(Error::Forbidden);
         }
-        Ok(())
+        audit.bind_scope(p.binding()).map_err(|_| Error::Forbidden)
     }
+
     /// Inspect the same current private material used by an operation, without a startup selection.
     pub async fn signing_material(
         &self,

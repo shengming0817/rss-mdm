@@ -49,8 +49,6 @@ impl PolicyWork {
         })
     }
 
-    /// Bind the current resource contract before exposing either Policy runner.
-
     fn execution(&self) -> Option<&dyn crate::events::participants::ExecutionEvents> {
         self.events.as_ref().map(|events| events.execution.as_ref())
     }
@@ -637,33 +635,6 @@ impl PolicyWork {
     }
 }
 
-#[cfg(test)]
-mod error_regression {
-    use super::*;
-    #[test]
-    fn configuration_corruption_is_permanent_and_settlement_remains_uncertain() {
-        use rss_reconcile::ErrorKind as K;
-        for failure in [Failure::NativeInputIntegrity, Failure::CommandInvariant] {
-            assert_eq!(
-                reconcile_error(Error::Unavailable(failure)).kind(),
-                K::Permanent
-            );
-        }
-        assert_eq!(
-            reconcile_error(Error::Unavailable(Failure::RequestDeadline)).kind(),
-            K::Deadline
-        );
-        assert_eq!(
-            reconcile_error(Error::CommitUnknown).kind(),
-            K::CommitUnknown
-        );
-        assert_eq!(
-            reconcile_error(Error::RollbackFailed).kind(),
-            K::RollbackFailed
-        );
-    }
-}
-
 struct Pass<'a> {
     worker: &'a PolicyWork,
     stop: &'a tokio_util::sync::CancellationToken,
@@ -781,6 +752,7 @@ impl PolicyWork {
         let timer = Timer::new();
         let control = rss_reconcile::Control::new(&timer, Duration::MAX, &force);
         let mut after: Option<Uuid> = None;
+        let mut worked = false;
         loop {
             if cancel.is_cancelled() {
                 return Ok(());
@@ -800,6 +772,10 @@ impl PolicyWork {
                 .map_err(rss_runtime::ShutdownError::new)?;
             if tenants.is_empty() {
                 after = None;
+                if std::mem::take(&mut worked) {
+                    continue;
+                }
+
                 tokio::select! {biased;
                     ()=cancel.cancelled()=>return Ok(()),
                     ()=notify.notified()=>{},
@@ -822,7 +798,7 @@ impl PolicyWork {
                     worker: self,
                     stop: &stop,
                 };
-                rss_reconcile::run_with_notify(
+                let report = rss_reconcile::run_with_notify(
                     &pass,
                     self,
                     &scope,
@@ -834,6 +810,17 @@ impl PolicyWork {
                 )
                 .await
                 .map_err(rss_runtime::ShutdownError::new)?;
+                worked |= [
+                    report.converged,
+                    report.reobserve,
+                    report.deferred,
+                    report.retried,
+                    report.suspended,
+                    report.fenced,
+                    report.execution_failed,
+                ]
+                .into_iter()
+                .any(|count| count > 0);
             }
         }
     }
@@ -904,5 +891,32 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for PolicyWork {
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, rss_reconcile::Error> {
         PolicyWork::apply(self, claim, diff, control).await
+    }
+}
+
+#[cfg(test)]
+mod error_regression {
+    use super::*;
+    #[test]
+    fn configuration_corruption_is_permanent_and_settlement_remains_uncertain() {
+        use rss_reconcile::ErrorKind as K;
+        for failure in [Failure::NativeInputIntegrity, Failure::CommandInvariant] {
+            assert_eq!(
+                reconcile_error(Error::Unavailable(failure)).kind(),
+                K::Permanent
+            );
+        }
+        assert_eq!(
+            reconcile_error(Error::Unavailable(Failure::RequestDeadline)).kind(),
+            K::Deadline
+        );
+        assert_eq!(
+            reconcile_error(Error::CommitUnknown).kind(),
+            K::CommitUnknown
+        );
+        assert_eq!(
+            reconcile_error(Error::RollbackFailed).kind(),
+            K::RollbackFailed
+        );
     }
 }

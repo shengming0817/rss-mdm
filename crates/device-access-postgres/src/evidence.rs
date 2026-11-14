@@ -49,11 +49,11 @@ impl Authorities {
             .collect()
     }
     fn verify(&self, signed: &SignedObservation, now: i64) -> Result<Observation, Error> {
-        let o = self.decode_verified(signed)?;
+        let o = self.authenticate(signed)?;
         o.validate(now)?;
         Ok(o)
     }
-    fn decode_verified(&self, signed: &SignedObservation) -> Result<Observation, Error> {
+    pub fn authenticate(&self, signed: &SignedObservation) -> Result<Observation, Error> {
         if signed.payload.len() > 32768 || signed.signature.len() > 128 {
             return Err(Error::Malformed);
         }
@@ -165,7 +165,7 @@ impl Authorities {
                 payload: r.try_get("payload").map_err(db)?,
                 signature: r.try_get("signature").map_err(db)?,
             };
-            let o = self.decode_verified(&signed)?;
+            let o = self.authenticate(&signed)?;
             if o.tenant.to_string() != tenant.to_string()
                 || o.installation != installation
                 || o.device != anchor.device
@@ -243,6 +243,20 @@ impl crate::Service {
         value: &SignedObservation,
         a: &RequestAudit,
     ) -> Result<(), Error> {
+        // Unknown organizations cannot acquire an audit identity from a signed tenant hint.
+        let tenant = a.binding()?.tenant().to_string();
+        let mut tx = self.store.begin(&tenant).await?;
+        let registered: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT FROM rss_da.devices WHERE tenant_id=$1::uuid)",
+        )
+        .bind(&tenant)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
+        tx.rollback().await.map_err(db)?;
+        if !registered {
+            return Err(Error::Forbidden);
+        }
         // A verifier owns authentication. The resulting fact and its receipt share the Audit transaction.
         a.operation(
             Uuid::new_v4(),

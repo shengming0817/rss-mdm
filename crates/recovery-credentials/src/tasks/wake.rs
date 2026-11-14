@@ -62,7 +62,7 @@ pub async fn policy_in(
                 .execute(c)
                 .await?;
             if updated.rows_affected() != 1 {
-                return Err(sqlx::Error::Protocol("original work epoch mismatch".into()).into());
+                return Err(sqlx::Error::Protocol("original work epoch mismatch".into()));
             }
             Ok(())
         })

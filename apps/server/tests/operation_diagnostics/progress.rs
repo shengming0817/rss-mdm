@@ -48,7 +48,7 @@ pub(super) async fn seed(
     sqlx::query("INSERT INTO mdm_policy.requests(tenant_id,id,fingerprint,receipt) VALUES($1::uuid,$2,$3,$4)").bind(c.tenant.to_string()).bind(id).bind(vec![17_u8;32])
         .bind(json!({"operationId":id,"policyId":policy,"versionId":Uuid::new_v4(),"deadline":1700000010})).execute(&mut *tx).await?;
     let work = rss_mdm_policy_postgres::work::Work::PolicyReconcile { policy };
-    sqlx::query("INSERT INTO mdm_policy.work(tenant_id,id,kind,target,input,completed) VALUES($1::uuid,$2,$3,$4,$5,true)").bind(c.tenant.to_string()).bind(id).bind(work.kind()).bind(work.target()).bind(serde_json::to_value(work)?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_policy.work(expected_epoch,tenant_id,id,kind,target,input,completed) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,$4,$5,true)").bind(c.tenant.to_string()).bind(id).bind(work.kind()).bind(work.target()).bind(serde_json::to_value(work)?).execute(&mut *tx).await?;
     let caller = rss_mdm_policy_service::events::Caller::Management { actor: p.actor() };
     sqlx::query("INSERT INTO mdm_policy.event_batches(tenant_id,id,request,actor,caller,device,input,fingerprint,created_at,deadline) VALUES($1::uuid,$2,$2,$3,$4,$5,$6,$7,1700000000,1700000010)")
         .bind(c.tenant.to_string()).bind(id).bind(serde_json::to_string(&caller)?).bind(serde_json::to_value(caller)?).bind(device.into_uuid()).bind(json!({"operationId":id,"event":"diagnostic","source":"human","executionContext":null})).bind(vec![17_u8;32]).execute(&mut *tx).await?;

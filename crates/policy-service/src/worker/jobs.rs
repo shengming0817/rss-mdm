@@ -53,21 +53,6 @@ pub async fn enqueue_job_in(
     input: &Work,
 ) -> Result<Value> {
     rss_mdm_policy_postgres::work::enqueue_in(binding, profile, tx, id, input).await?;
-    rss_mdm_policy_postgres::schedules::accept_scan_in(profile, binding, tx).await?;
-    let scan = rss_reconcile::Target::new(
-        rss_reconcile::Scope::new(tx.tenant_id(), domain(profile)).expect("constant domain"),
-        "schedules",
-    )
-    .expect("constant target");
-    reconcile
-        .wake_in(
-            tx,
-            &scan,
-            &rss_reconcile::ResourceSet::empty(tx.tenant_id()),
-            (),
-            |_, _| Box::pin(async { Ok(()) }),
-        )
-        .await?;
     let event = matches!(input, Work::PolicyEvent { .. });
     let tenant = tx.tenant_id();
     let target = if event {
@@ -96,13 +81,15 @@ pub async fn enqueue_job_in(
             },
         )
         .await?;
-    Ok(accepted(id, input))
+    Ok(accepted(tx.tenant_id(), id, input))
 }
-pub fn accepted(id: Uuid, input: &Work) -> Value {
+pub fn accepted(tenant: TenantId, id: Uuid, input: &Work) -> Value {
     let status_url = match input {
-        Work::PolicyEvent { batch } => format!("/api/v1/policy-event-batches/{batch}"),
-        Work::Lifecycle { policy, .. } => format!("/api/v1/policies/{policy}"),
-        Work::PolicyReconcile { policy } => format!("/api/v1/policies/{policy}"),
+        Work::PolicyEvent { batch } => {
+            format!("/api/v1/tenants/{tenant}/policy-event-batches/{batch}")
+        }
+        Work::Lifecycle { policy, .. } => format!("/api/v1/tenants/{tenant}/policies/{policy}"),
+        Work::PolicyReconcile { policy } => format!("/api/v1/tenants/{tenant}/policies/{policy}"),
     };
     serde_json::json!({"task":id,"kind":input.kind(),"target":input.target(),"statusUrl":status_url})
 }

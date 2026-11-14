@@ -371,7 +371,7 @@ CREATE FUNCTION mdm_software_deployment.advance_software_results() RETURNS trigg
 DECLARE p uuid; v bigint;
 BEGIN
  IF TG_OP='UPDATE' AND NEW.state IS NOT DISTINCT FROM OLD.state AND NEW.result IS NOT DISTINCT FROM OLD.result THEN RETURN NEW; END IF;
- INSERT INTO mdm_software_deployment.policy_recovery(tenant_id,policy,stats_revision) SELECT NEW.tenant_id,policy,1 FROM mdm_policy.versions WHERE tenant_id=NEW.tenant_id AND id=NEW.policy_version AND frozen->>'kind'='software'
+ INSERT INTO mdm_software_deployment.policy_recovery(tenant_id,policy,stats_revision,expected_epoch) SELECT NEW.tenant_id,policy,1,NEW.expected_epoch FROM mdm_policy.versions WHERE tenant_id=NEW.tenant_id AND id=NEW.policy_version AND frozen->>'kind'='software'
  ON CONFLICT(tenant_id,policy) DO UPDATE SET stats_revision=mdm_software_deployment.policy_recovery.stats_revision+1 RETURNING policy,stats_revision INTO p,v;
  IF FOUND THEN INSERT INTO mdm_software_deployment.software_result_changes VALUES(NEW.tenant_id,p,NEW.device,v) ON CONFLICT(tenant_id,policy,device) DO UPDATE SET revision=EXCLUDED.revision; END IF;
  RETURN NEW;

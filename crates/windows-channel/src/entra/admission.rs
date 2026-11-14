@@ -32,6 +32,10 @@ impl EntraPolicyAuthority for Gate {
     }
 }
 /// Policy and consent gate precede JIT. The resulting account enters the closed lifecycle basis.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep execution scope and existing operation inputs explicit"
+)]
 pub(super) async fn admit(
     app: &HttpState,
     entra: &Entra,

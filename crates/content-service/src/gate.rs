@@ -17,13 +17,13 @@ impl Kind {
     }
 }
 
+type FenceKey = (String, uuid::Uuid, i64, i64);
+
 /// A generation's readers and writers each share a reference-counted session fence.
 /// Weak entries never extend a fence beyond its actual operations or I/O owners.
 #[derive(Default)]
 pub(crate) struct Admissions {
-    active: tokio::sync::Mutex<
-        std::collections::BTreeMap<(String, uuid::Uuid, i64, i64), Weak<Permit>>,
-    >,
+    active: tokio::sync::Mutex<std::collections::BTreeMap<FenceKey, Weak<Permit>>>,
 }
 
 /// Kept by the actual I/O owner (including blocking work), not only its awaiting future.

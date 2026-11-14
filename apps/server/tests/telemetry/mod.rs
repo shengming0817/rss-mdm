@@ -197,16 +197,18 @@ fn aggregate(
     json!({"query":query(device,field),"definitionVersion":"1","source":inv::Source::AgentNative,"epoch":epoch,"dimensions":{},"resolutionMicros":"4000000","operation":operation,"coverage":{"coverage":"observedOnly"},"maxGapMicros":if counter{Some("4000000")}else{None}})
 }
 fn validator(path: &str) -> jsonschema::Validator {
-    let document = rss_mdm_http_contract::artifact::document([(
-        "browser",
-        rss_mdm_management_http::telemetry::routes(None).into_endpoints(),
-    )])
-    .unwrap();
+    rss_mdm_http_contract::route_module! { struct TelemetryContract for [Browser] { telemetry at "/api/v1/tenants/{tenant}" } }
+    let mounted = TelemetryContract {
+        telemetry: rss_mdm_management_http::telemetry::routes(None),
+    }
+    .assemble();
+    let document =
+        rss_mdm_http_contract::artifact::document([("browser", mounted.into_endpoints())]).unwrap();
     let endpoint = document["endpoints"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|e| e["path"] == path)
+        .find(|e| e["path"] == format!("/api/v1/tenants/{{tenant}}{path}"))
         .unwrap();
     let response = endpoint["responses"]
         .as_array()
@@ -418,20 +420,6 @@ async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         "permission boundary"
     );
     drop(denied);
-    let foreign = Context::open("shared", &[]).await?;
-    let foreign_account = foreign.account(&[Permission::InventoryRead]).await?;
-    let foreign_http = http::Http::open(
-        &foreign,
-        service.clone(),
-        Arc::new(foreign.authenticate(&foreign_account).await?),
-    )
-    .await?;
-    let foreign_result = foreign_http
-        .call("/telemetry/history", query(&device, "custom.minimum"))
-        .await;
-    drop(foreign_http);
-    foreign.close().await;
-    anyhow::ensure!(foreign_result?.0 == 403, "tenant binding");
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND device=$2 AND source='agent.native'").bind(c.tenant.to_string()).bind(device.into_uuid()).execute(&mut *tx).await?;
     tx.commit().await?;

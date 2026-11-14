@@ -414,6 +414,16 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
     assert_eq!(worker.health().recovery, Phase::Healthy);
     drop(worker);
     pool.close().await;
+    for host in [&h, &other] {
+        let input = w::TaskClaimRequest::new(
+            Uuid::new_v4(),
+            vec![w::ExecutorProfile::PowerShell7],
+            context(),
+        )?;
+        host.delivery
+            .claim(&host.p, &input, &request(&host.c))
+            .await?;
+    }
     // The same worker must move past an old epoch and deliver another tenant's real outbox work.
     let (blocked, ready) = if h.c.tenant.to_string() < other.c.tenant.to_string() {
         (&h, &other)

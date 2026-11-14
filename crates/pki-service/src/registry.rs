@@ -102,9 +102,7 @@ impl Registry {
     }
 
     /// Bootstrap is audited. Durable revisions win over deployment files after rotation.
-
     /// Isolate admission by purpose while keeping the same durable trust/rollback checks.
-
     pub async fn admit(
         &self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,
@@ -310,7 +308,6 @@ impl Registry {
         Ok(tx)
     }
     /// Durable approval and publications are shared across app processes.
-
     pub async fn prepare(
         &self,
         p: &AuthorizedPrincipal,
@@ -1240,7 +1237,6 @@ impl Registry {
                         )
                     })
                     .await
-                    .map_err(Error::from)
                 })
             })
             .await

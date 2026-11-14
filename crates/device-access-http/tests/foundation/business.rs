@@ -258,6 +258,13 @@ pub async fn verify(
     assert_eq!(settled.1, before.1 + 1);
     assert_eq!(settled.2, before.2 + 1);
     assert_eq!(settled.3, before.3 + 1);
+    let source_epochs: Vec<i64> = sqlx::query_scalar("SELECT (envelope->'attributes'->>'executionEpoch')::bigint FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm-webhook-source'")
+        .bind(c.tenant.to_string()).fetch_all(&c.operator).await?;
+    assert_eq!(
+        source_epochs,
+        vec![c.execution().epoch().get()],
+        "original execution captured without installing MDM webhook storage"
+    );
     let replay = Box::pin(business.service.change_device_access(
         &actor,
         &receipt.device,
@@ -396,6 +403,7 @@ pub async fn verify(
     tx.rollback().await?;
     let mut invalid = Vec::new();
     let mut v = observation.clone();
+    v.issued_at = now() - 60;
     v.expires_at = now() - 1;
     invalid.push(v);
     let mut v = observation.clone();
@@ -431,8 +439,9 @@ pub async fn verify(
         );
         assert_eq!(
             request_audits(c).await?,
-            requests_before + 1,
-            "rejected evidence retains its request Audit fact"
+            requests_before
+                + i64::from(v.tenant == observation.tenant && v.authority == observation.authority),
+            "authenticated evidence retains its tenant's denial fact; an unknown scope is not attributed to this tenant"
         );
     }
     let mut tampered = signed(&observation)?;
@@ -445,8 +454,8 @@ pub async fn verify(
     assert_eq!(counts(c).await?, evidence_count);
     assert_eq!(
         request_audits(c).await?,
-        requests_before + 1,
-        "invalid signature retains its denial Audit fact"
+        requests_before,
+        "an invalid signature does not acquire an audit tenant from its payload"
     );
     let mut tx = c.seed().await?;
     assert!(
@@ -630,7 +639,10 @@ async fn directory_http(
         .await??;
         let page = material::success::<serde_json::Value>(
             client
-                .get(format!("{origin}/api/v1/devices/{}/device-access", device))
+                .get(format!(
+                    "{origin}/api/v1/tenants/{}/devices/{}/device-access",
+                    c.tenant, device
+                ))
                 .header(
                     "cookie",
                     format!("__Host-identity-session={}", secret.expose()),
@@ -653,7 +665,10 @@ async fn directory_http(
         assert_eq!(page["items"][0]["id"], binding.to_string());
         let missing = material::success::<serde_json::Value>(
             client
-                .get(format!("{origin}/api/v1/devices/{}/device-access", device))
+                .get(format!(
+                    "{origin}/api/v1/tenants/{}/devices/{}/device-access",
+                    c.tenant, device
+                ))
                 .header(
                     "cookie",
                     format!("__Host-identity-session={}", secret.expose()),
@@ -668,7 +683,8 @@ async fn directory_http(
         let page = material::success::<serde_json::Value>(
             client
                 .get(format!(
-                    "{origin}/api/v1/device-access/enterprise/configuration"
+                    "{origin}/api/v1/tenants/{}/device-access/enterprise/configuration",
+                    c.tenant
                 ))
                 .header(
                     "cookie",

@@ -16,7 +16,7 @@ pub use store::ObservedStore;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
     #[default]
-    Initializing,
+    Unobserved,
     Healthy,
     Failed(ErrorKind),
 }
@@ -37,10 +37,11 @@ impl Health {
             .chain(self.relay)
             .chain(self.inputs)
     }
+    /// Startup belongs to the managed task; an idle owner need not invent tenant work.
     pub fn is_ready(&self) -> bool {
         self.task == Some(TaskState::Running)
             && !self.stopping
-            && self.phases().all(|p| p == Phase::Healthy)
+            && self.phases().all(|p| !matches!(p, Phase::Failed(_)))
     }
 }
 struct Rounds {
@@ -78,9 +79,9 @@ impl Readiness {
             task: OnceLock::new(),
             stopping: AtomicBool::new(false),
             rounds: Mutex::new(Rounds {
-                scan: Phase::Initializing,
-                relay: relay.then_some(Phase::Initializing),
-                inputs: inputs.then_some(Phase::Initializing),
+                scan: Phase::Unobserved,
+                relay: relay.then_some(Phase::Unobserved),
+                inputs: inputs.then_some(Phase::Unobserved),
                 failures: BTreeMap::new(),
                 overflow: false,
             }),
