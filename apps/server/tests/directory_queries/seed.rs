@@ -42,7 +42,7 @@ async fn resources(c: &Context, cases: &mut Cases) -> Result<r::Version> {
     let owner = planning::owner(c, "mdm_resource_runtime").await?;
     let store = ResourceStore::new(
         owner.runtime.clone(),
-        c.tenant,
+        c.audit.binding(),
         crate::authority_t2_support::deadline(),
     )
     .await?;
@@ -102,13 +102,12 @@ async fn foreign_resource(c: &Context) -> Result<()> {
         &c.inputs.database("shared", "mdm_resource_runtime"),
         &c.inputs.installation.target,
         &c.inputs.installation.lineage,
-        &[(foreign, 1)],
         4,
     )
     .await?;
     let foreign_store = ResourceStore::new(
         foreign_runtime.clone(),
-        foreign,
+        c.inputs.installation.execution(foreign, 1)?,
         crate::authority_t2_support::deadline(),
     )
     .await?;
@@ -192,7 +191,7 @@ async fn resource_rollback(
     };
     let rollback = runtime
         .local_tx_with_context(
-            c.tenant,
+            c.audit.binding(),
             crate::authority_t2_support::deadline(),
             (store, &rollback_request),
             |(store, request), tx| {
@@ -744,7 +743,7 @@ pub(super) async fn literal_name(c: &Context, name: &str, revision: u64) -> Resu
     let owner = planning::owner(c, "mdm_resource_runtime").await?;
     let store = ResourceStore::new(
         owner.runtime.clone(),
-        c.tenant,
+        c.audit.binding(),
         crate::authority_t2_support::deadline(),
     )
     .await?;

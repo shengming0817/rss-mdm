@@ -20,7 +20,7 @@ impl GroupStore {
         if bound.as_deref() != Some(self.tenant.to_string().as_str()) {
             return Ok(Err(Rejection::TenantMismatch));
         }
-        if !(1..=1000).contains(&limit)
+        if !(1..=1024).contains(&limit)
             || objects.len() > 32
             || objects.iter().any(|o| o.uuid().is_nil())
         {

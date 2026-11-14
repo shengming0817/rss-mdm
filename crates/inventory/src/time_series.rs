@@ -101,7 +101,7 @@ impl TimeSeriesBinding {
                         TelemetryKind::CumulativeCounter | TelemetryKind::DeltaCounter
                     )
             })
-            || self.dimensions.len() > 64
+            || self.dimensions.len() > 1024
             || self.aggregations.is_empty()
             || !name(&self.retention.key)
             || self.retention.revision == 0
@@ -117,7 +117,7 @@ impl TimeSeriesBinding {
                 || dimension.path.is_empty()
                 || !path(&dimension.path)
                 || dimension.values.is_empty()
-                || dimension.values.len() > 256
+                || dimension.values.len() > 1024
             {
                 return Err(crate::Invalid::Value);
             }
@@ -128,7 +128,9 @@ impl TimeSeriesBinding {
                 if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
                     return Err(crate::Invalid::Value);
                 }
-                vocabulary_bytes += value.len();
+                vocabulary_bytes = vocabulary_bytes
+                    .checked_add(value.len())
+                    .ok_or(crate::Invalid::Value)?;
             }
         }
         if combinations > 4096 || vocabulary_bytes > 32768 {

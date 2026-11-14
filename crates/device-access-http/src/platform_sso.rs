@@ -4,6 +4,7 @@ use rss_mdm_device_access_postgres::platform_sso::{
 };
 use std::sync::Arc;
 pub struct HttpState {
+    pub binding: rss_transactional_messaging::fence::ExecutionBinding,
     pub context: Arc<Context>,
     pub authority: rss_identity_postgres::Authority,
     pub origin: String,
@@ -333,9 +334,12 @@ fn origin(app: &HttpState, h: &HeaderMap) -> Result<(), Error> {
     }
     Ok(())
 }
-fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
-    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-        std::time::Duration::from_secs(10),
+fn deadline(
+    control: &rss_axum::RequestControl,
+) -> rss_transactional_messaging::policy::OperationDeadline {
+    rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+        control.deadline(),
+        &rss_mdm_audit_integration::budget::RuntimeTimer,
     )
 }
 fn identity_error(e: rss_identity_postgres::AuthorityError) -> Error {
@@ -347,6 +351,7 @@ fn identity_error(e: rss_identity_postgres::AuthorityError) -> Error {
     }
 }
 async fn begin(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<HttpState>>,
     Path(t): Path<Uuid>,
     BeginHeaders(headers): BeginHeaders,
@@ -359,13 +364,13 @@ async fn begin(
     let challenge = app
         .authority
         .begin_platform_login(
-            app.context.tenant,
+            app.binding,
             input.binding_id,
             rss_identity_postgres::platform::PlatformPurpose::BrowserLogin,
             browser.clone(),
             rss_identity_postgres::AttemptSource::parse("mdm-platform-sso")
                 .map_err(|_| Error::Malformed)?,
-            deadline(),
+            deadline(&control),
         )
         .await
         .map_err(identity_error)?;
@@ -386,6 +391,7 @@ async fn begin(
 }
 
 async fn complete(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<HttpState>>,
     Path(t): Path<Uuid>,
     CompleteHeaders(headers): CompleteHeaders,
@@ -412,12 +418,12 @@ async fn complete(
     let session = app
         .authority
         .complete_platform_login(
-            app.context.tenant,
+            app.binding,
             input.challenge_id,
             input.nonce,
             secret.into(),
             input.proof.into_bytes(),
-            deadline(),
+            deadline(&control),
         )
         .await
         .map_err(identity_error)?;

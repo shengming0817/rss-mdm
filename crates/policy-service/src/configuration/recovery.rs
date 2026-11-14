@@ -145,7 +145,8 @@ impl Transactions {
             .map(dc::CommandId::parse)
             .transpose()
             .map_err(|_| Error::Unavailable(Failure::CommandInvariant))?;
-        let candidates = command_candidates_in(tx, scope, device, after.as_ref()).await?;
+        let candidates =
+            command_candidates_in(tx, scope, device, after.as_ref(), self.recovery_batch).await?;
         let mut commands = Vec::with_capacity(candidates.operations.len());
         for (id, _) in &candidates.operations {
             let id = stored(dc::CommandId::parse(&id.to_string()))?;
@@ -235,6 +236,7 @@ impl Transactions {
         let claims = self
             .outbox
             .claim_partition_heads(
+                self.audit_store.binding(),
                 std::num::NonZeroUsize::MIN,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
@@ -308,7 +310,7 @@ impl Transactions {
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        let result=run_budget(&self.audit_store,&self.runtime,self.tenant,&audit,budget,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
+        let result=run_budget(&self.audit_store,&self.runtime,self.audit_store.binding(),&audit,budget,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
             let (service,id,fingerprint,audit)=ctx;service.audit_store.prepare_in(tx,audit,&[]).await?;
             let tenant=tx.tenant_id().to_string();let operation=*id;let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move{
@@ -406,7 +408,9 @@ async fn command_candidates_in(
     scope: dc::Scope,
     device: &rss_mdm_agent_wire::DeviceId,
     after: Option<&dc::CommandId>,
+    limit: dc::BatchLimit,
 ) -> Result<CommandCandidates> {
+    let limit = usize::from(limit.get());
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let after = after.map(|id| id.as_str().to_owned());
@@ -418,18 +422,18 @@ async fn command_candidates_in(
            FROM mdm_planning.configuration_operations o LEFT JOIN rss_device_command.commands c ON(c.tenant_id,c.command_id)=(o.tenant_id,o.id::text)
            WHERE o.tenant_id=$1::uuid AND o.device=$2 AND ($3::text IS NULL OR o.id::text COLLATE "C">$3 COLLATE "C")
              AND (c.terminal_at IS NULL OR c.version<>o.observed_command_version OR c.device_id IS DISTINCT FROM $4 OR c.outbox_domain IS DISTINCT FROM $5)
-           ORDER BY o.id::text COLLATE "C" LIMIT 65)
+           ORDER BY o.id::text COLLATE "C" LIMIT $6)
           UNION ALL
           (SELECT c.command_id,NULL::uuid,NULL::bigint FROM rss_device_command.commands c
            LEFT JOIN mdm_planning.configuration_operations o ON(o.tenant_id,o.id::text,o.device)=(c.tenant_id,c.command_id,$2)
            WHERE c.tenant_id=$1::uuid AND c.device_id=$4 AND c.outbox_domain=$5 AND o.id IS NULL
              AND ($3::text IS NULL OR c.command_id COLLATE "C">$3 COLLATE "C")
-           ORDER BY c.command_id COLLATE "C" LIMIT 65)
-        ) SELECT command_id,operation,observed FROM candidates ORDER BY command_id COLLATE "C" LIMIT 65"#)
-        .bind(tenant).bind(device.into_uuid()).bind(after).bind(command_device).bind(domain).fetch_all(c).await
+           ORDER BY c.command_id COLLATE "C" LIMIT $6)
+        ) SELECT command_id,operation,observed FROM candidates ORDER BY command_id COLLATE "C" LIMIT $6"#)
+        .bind(tenant).bind(device.into_uuid()).bind(after).bind(command_device).bind(domain).bind((limit + 1) as i64).fetch_all(c).await
     })).await?;
-    let more = rows.len() > 64;
-    rows.truncate(64);
+    let more = rows.len() > limit;
+    rows.truncate(limit);
     let after = if more {
         rows.last().map(|r| r.0.clone())
     } else {

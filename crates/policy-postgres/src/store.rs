@@ -3,6 +3,7 @@ use crate::{
     error::*,
 };
 use rss_request_context::TenantId;
+use rss_transactional_messaging::fence::ExecutionBinding;
 use rss_transactional_messaging::{message::MessagingDomain, policy::OperationDeadline};
 use rss_transactional_messaging_postgres::{PgError, PgOutboxWriter, PgRuntime, PgTransaction};
 use serde_json::Value;
@@ -13,6 +14,7 @@ use uuid::Uuid;
 pub struct PolicyStore {
     profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
+    binding: ExecutionBinding,
     runtime: Arc<PgRuntime>,
     reader: PolicyReader,
 }
@@ -51,12 +53,13 @@ impl PolicyStore {
     pub async fn new(
         profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
+        binding: ExecutionBinding,
         deadline: OperationDeadline,
     ) -> Result<Self, Error> {
+        let tenant = binding.tenant();
         settle(
             runtime
-                .local_tx(tenant, deadline, |tx| {
+                .local_tx(binding, deadline, |tx| {
                     Box::pin(async move {
                         crate::storage(profile)
                             .verify(tx, crate::admission(profile))
@@ -72,6 +75,7 @@ impl PolicyStore {
         Ok(Self {
             profile,
             tenant,
+            binding,
             runtime,
             reader,
         })
@@ -349,7 +353,7 @@ impl PolicyStore {
     ) -> Result<Option<Policy>, Error> {
         settle(
             self.runtime
-                .local_tx_with_context(self.tenant, deadline, self, move |s, tx| {
+                .local_tx_with_context(self.binding, deadline, self, move |s, tx| {
                     Box::pin(async move {
                         input!(s.check(tx)?);
                         s.reader.read_in(tx, id).await

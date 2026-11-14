@@ -37,7 +37,7 @@ pub async fn preview(
     authorize_preview(proof.authorization()?, proof, &input.definition)?;
     let prepared = crate::deployment::transaction::inspect(
         &s.runtime,
-        s.tenant,
+        s.binding,
         (s, proof, input),
         |ctx, tx| {
             Box::pin(async move {

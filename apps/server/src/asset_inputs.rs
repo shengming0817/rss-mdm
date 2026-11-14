@@ -1,5 +1,4 @@
 //! Fixed fact-to-owner scheduling. Business cursors and decisions remain in each owner.
-use rss_request_context::TenantId;
 use rss_transactional_messaging::{
     message::MessageEnvelope,
     policy::OperationDeadline,
@@ -16,7 +15,7 @@ use sha2::{Digest, Sha256};
 pub(crate) const DOMAIN: &str = "mdm-assets";
 pub(crate) const CONSUMER: &str = "mdm-asset-inputs";
 pub(crate) struct Validator {
-    pub tenant: TenantId,
+    pub binding: rss_transactional_messaging::fence::ExecutionBinding,
 }
 impl IngressValidator<Vec<u8>> for Validator {
     fn validate(
@@ -25,7 +24,14 @@ impl IngressValidator<Vec<u8>> for Validator {
     ) -> Result<VerifiedIngress, EnvelopeValidationFailure> {
         let message = challenge.message();
         let contract = message.metadata().contract();
-        if message.metadata().tenant_id() != self.tenant || message.payload().len() > 131_072 {
+        let payload_limit = if message.metadata().route().as_str() == "asset.changed" {
+            1024 * 1024
+        } else {
+            131_072
+        };
+        if message.metadata().tenant_id() != self.binding.tenant()
+            || message.payload().len() > payload_limit
+        {
             return Err(EnvelopeValidationFailure::MalformedIdentity);
         }
         let (schema, expected_contract, tenant, identity) =
@@ -60,7 +66,8 @@ impl IngressValidator<Vec<u8>> for Validator {
                 }
                 _ => return Err(EnvelopeValidationFailure::UnsupportedContract),
             };
-        if tenant.as_bytes() != &self.tenant.octets() || message.id().as_str() != identity {
+        if tenant.as_bytes() != &self.binding.tenant().octets() || message.id().as_str() != identity
+        {
             return Err(EnvelopeValidationFailure::MalformedIdentity);
         }
         if message.metadata().domain().as_str() != DOMAIN
@@ -71,7 +78,7 @@ impl IngressValidator<Vec<u8>> for Validator {
         {
             return Err(EnvelopeValidationFailure::UnsupportedContract);
         }
-        Ok(challenge.verified())
+        Ok(challenge.verified(self.binding))
     }
 }
 pub(crate) struct Receiver {

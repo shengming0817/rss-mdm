@@ -27,10 +27,16 @@ pub struct Config {
 pub struct Entra {
     pub authority: EntraAuthority,
     tenant: TenantId,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     pub config: Config,
 }
 impl Entra {
-    pub fn new(authority: EntraAuthority, tenant: TenantId, config: Config) -> Result<Self, Error> {
+    pub fn new(
+        authority: EntraAuthority,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        config: Config,
+    ) -> Result<Self, Error> {
+        let tenant = binding.tenant();
         config.token.validate().map_err(|_| Error::Malformed)?;
         if config.provider_id.is_nil() || config.token.required_scopes.is_empty() {
             return Err(Error::Malformed);
@@ -59,12 +65,17 @@ impl Entra {
         }
         Ok(Self {
             authority,
+            binding,
             tenant,
             config,
         })
     }
-    async fn verify(&self, token: Zeroizing<String>) -> Result<VerifiedExternalSubject, Error> {
-        Ok(identity::verify(&self.authority, token).await?)
+    async fn verify(
+        &self,
+        token: Zeroizing<String>,
+        cutoff: rss_request_context::Deadline,
+    ) -> Result<VerifiedExternalSubject, Error> {
+        Ok(identity::verify(&self.authority, self.binding, token, remaining(cutoff)).await?)
     }
 }
 fn bearer(headers: &axum::http::HeaderMap) -> Result<Zeroizing<String>, Error> {
@@ -97,3 +108,12 @@ mod web;
 pub(crate) use protocol::enrollment;
 use rss_mdm_registration_service::windows_entra::{Settings, settings_in};
 pub use web::{browser_routes, mount_browser};
+
+fn remaining(
+    cutoff: rss_request_context::Deadline,
+) -> rss_transactional_messaging::policy::OperationDeadline {
+    rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+        cutoff,
+        &rss_mdm_audit_integration::budget::RuntimeTimer,
+    )
+}

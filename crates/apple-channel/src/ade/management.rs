@@ -478,7 +478,7 @@ async fn append(
 }
 fn validate_devices(devices: &[String]) -> Result<(), Error> {
     if devices.is_empty()
-        || devices.len() > 1000
+        || devices.len() > 1024
         || devices
             .iter()
             .any(|s| s.is_empty() || s.len() > 128 || s.chars().any(char::is_control))

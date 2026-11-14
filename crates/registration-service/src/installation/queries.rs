@@ -76,7 +76,7 @@ pub async fn installations_on(
     tenant: TenantId,
     installations: &[Uuid],
 ) -> std::result::Result<std::collections::BTreeMap<Uuid, InstallationObservation>, crate::Error> {
-    if installations.len() > 1000 {
+    if installations.len() > 1024 {
         return Err(crate::Error::Malformed);
     }
     let rows = sqlx::query(INSTALLATIONS)

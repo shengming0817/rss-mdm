@@ -296,7 +296,7 @@ async fn request_snapshot_is_stable_and_revalidates_identity() -> Result<()> {
         let after: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.devices WHERE tenant_id=$1::uuid").bind(&tenant).fetch_one(&h.c.operator).await?;
         assert_eq!(after, before + 1);
         let rss_mdm_authorization_service::credential::RequestCredential::Cookie(secret) = account.credential()? else { unreachable!() };
-        let session = h.c.authority.inspect_session(h.c.tenant, secret, request.remaining()?).await?;
+        let session = h.c.authority.inspect_session(h.c.audit.binding(), secret, request.remaining()?).await?;
         let mut revoked = false;
         let rejected = h.a.task_reads.snapshot(&request, (&h.c.authority, Some(session), &mut revoked), |state, _, _, _| Box::pin(async move {
             state.0.revoke_current_session(state.1.take().unwrap(), rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(3))).await.expect("Identity revocation must commit before testing the response tail");
@@ -439,7 +439,7 @@ async fn activity_read_correlates_native_cancellation_with_only_coordinate_privi
         proof.bind_audit(&audit)?;
         audit.operation(change, "command_cancel", AuditIntent::Management);
         h.a.service.change(&proof, &native.device, operation, &rss_mdm_device_service::control::Change { request_id: change, expected_revision: revision }, None, &audit).await?;
-        let timeline = h.c.database.timeline(h.c.audit.clone(), h.c.tenant, &[7;32])?;
+        let timeline = h.c.database.timeline(h.c.audit.clone(), h.c.tenant, &[7;32], rss_mdm_timeline_service::QueryBudget::new(1024, 8 * 1024 * 1024)?)?;
         let reader = Reader::Management { proof: &proof, device: &native.device };
         let query = Query { operation: Some(operation), ..Default::default() };
         let mut found = None;

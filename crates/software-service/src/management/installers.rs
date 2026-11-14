@@ -35,7 +35,7 @@ async fn authorize<C: ManagementContentPort>(
     }
     transaction::inspect(
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         p,
         |p, tx| {
             Box::pin(async move {
@@ -151,7 +151,7 @@ pub async fn save<C: ManagementContentPort>(
     .map_err(|_| Error::Malformed)?;
     let old = transaction::inspect(
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         (&app, input.operation_id, &hash),
         |ctx, tx| {
             Box::pin(async move {
@@ -171,7 +171,7 @@ pub async fn save<C: ManagementContentPort>(
         return transaction::run(
             &app.audit,
             &app.runtime,
-            app.tenant,
+            app.audit.binding(),
             audit,
             (app, p, audit, value),
             |ctx, tx| {
@@ -234,7 +234,7 @@ pub async fn save<C: ManagementContentPort>(
     transaction::run(
         &app.audit,
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         audit,
         (
             app, p, audit, input, hash, file, declared, version, platform, arch, now,
@@ -285,7 +285,7 @@ pub async fn operation<C: ManagementContentPort>(
     if p.tenant_id() != app.tenant.to_string() {
         return Err(Error::Forbidden);
     }
-    transaction::inspect(&app.runtime, app.tenant, (app, p, id), |ctx, tx| Box::pin(async move {
+    transaction::inspect(&app.runtime, app.audit.binding(), (app, p, id), |ctx, tx| Box::pin(async move {
         let (app, p, id) = *ctx;
         let snapshot = transaction::current(tx, p).await?; snapshot.require(p, Permission::SoftwareRead, None)?;
         let tenant = app.tenant.to_string();

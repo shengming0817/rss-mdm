@@ -494,7 +494,7 @@ pub(crate) fn register_agent_packages()
 async fn agent_package_list(
     State(app): State<Arc<HttpState>>,
 ) -> Result<Json<Vec<rss_mdm_agent_wire::enroll::configuration::Package>>, Error> {
-    rss_mdm_software_service::agent_packages::list(&app.runtime, app.tenant)
+    rss_mdm_software_service::agent_packages::list(&app.runtime, app.audit.binding())
         .await
         .map(Json)
         .map_err(Into::into)

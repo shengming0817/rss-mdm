@@ -1,7 +1,7 @@
 //! Fixed RP backend exchange; Identity owns assertion and token verification.
 use crate::Error;
 use rss_request_context::TenantId;
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
 fn invalid() -> Error {
     Error::Configuration
 }
@@ -40,9 +40,13 @@ pub struct Backend {
     backend_digest: [u8; 32],
 }
 impl Backend {
-    pub fn load(input: &Configuration, tenant: TenantId) -> Result<Self, Error> {
+    pub fn load(
+        input: &Configuration,
+        tenant: TenantId,
+        policy: rss_identity_oidc::TransportPolicy,
+    ) -> Result<Self, Error> {
         Self::load_using(input, tenant, |access| {
-            rss_identity_oidc::HttpOidc::new(vec![], access).map_err(|_| invalid())
+            rss_identity_oidc::HttpOidc::new(vec![], access, policy).map_err(|_| invalid())
         })
     }
     fn load_using(
@@ -167,11 +171,12 @@ impl Client for Backend {
         assertion: &'a str,
         expires: i64,
         subject: &'a str,
+        deadline: rss_request_context::Deadline,
     ) -> Pending<'a, ExchangeToken> {
         Box::pin(async move {
-            let token = tokio::time::timeout(
-                Duration::from_secs(8),
-                self.transport.exchange_enterprise(
+            let token = self
+                .transport
+                .exchange_enterprise(
                     rss_identity_oidc::enterprise::EnterpriseExchange {
                         tenant: self.tenant,
                         provider: &self.settings,
@@ -181,11 +186,10 @@ impl Client for Backend {
                         assertion_expires_at: expires,
                         expected_subject: subject,
                     },
-                ),
-            )
-            .await
-            .map_err(|_| BusinessError::CommitUnknown)?
-            .map_err(|_| BusinessError::CommitUnknown)?;
+                    deadline,
+                )
+                .await
+                .map_err(|_| BusinessError::CommitUnknown)?;
             Ok(ExchangeToken {
                 token: Zeroizing::new(token.expose().to_owned()),
                 subject: token.subject().to_owned(),

@@ -47,6 +47,7 @@ pub async fn asset_binding(
         .find(|a| a.selection.identifier == identifier))
 }
 pub async fn asset(
+    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
     axum::extract::State(app): axum::extract::State<std::sync::Arc<crate::HttpState>>,
     peer: Option<axum::Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     axum::Extension(audit): axum::Extension<rss_mdm_audit_integration::RequestAudit>,
@@ -73,7 +74,14 @@ pub async fn asset(
         .bind(p.tenant().to_string()).bind(operation).bind(p.device().into_uuid()).fetch_optional(&mut *tx).await.map_err(db)?;
     tx.rollback().await.map_err(db)?;
     let user_access = if user.as_deref().is_some_and(|u| !u.is_empty()) {
-        match crate::account_enrollment::authorize_user(&app, leaf.enrollment(), &headers).await {
+        match crate::account_enrollment::authorize_user(
+            &app,
+            leaf.enrollment(),
+            &headers,
+            control.deadline(),
+        )
+        .await
+        {
             Ok(access) => access,
             Err(Error::Unauthorized) => {
                 return crate::account_enrollment::reauthentication(

@@ -30,11 +30,16 @@ async fn original_tenant_result_and_missing_result_have_independent_evidence() -
     });
     let config: crate::config::Config = serde_json::from_value(config)?;
     let compiled = config.compile()?;
-    let kdf = Arc::new(rss_identity_core::account::PasswordKdf::new());
+    let kdf = compiled.identity.kdf.clone();
     let service = crate::administration::tenants::service::Service::connect(
         &compiled.config,
         c.tenant,
         kdf.clone(),
+        compiled.identity.authority.clone(),
+        rss_request_context::Deadline::from_timeout(
+            &crate::lifecycle::RuntimeTimer,
+            compiled.identity.startup,
+        )?,
         compiled.identity_management,
     )
     .await?
@@ -53,7 +58,12 @@ async fn original_tenant_result_and_missing_result_have_independent_evidence() -
     let adapter = super::super::operation_diagnostics::Installation {
         tenants: Some(service.clone()),
         audit: c.audit.clone(),
-        timeline: c.database.timeline(c.audit.clone(), c.tenant, &[41; 32])?,
+        timeline: c.database.timeline(
+            c.audit.clone(),
+            c.tenant,
+            &[41; 32],
+            rss_mdm_timeline_service::QueryBudget::new(1024, 8 * 1024 * 1024)?,
+        )?,
         tenant: c.tenant,
     };
     let auth = c.read_auth(proof.clone());

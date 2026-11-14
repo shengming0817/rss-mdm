@@ -42,6 +42,10 @@ pub(crate) fn prepare(definition: &FieldDefinition, values: &[Scalar]) -> Result
     };
     let field = definition.key;
     let definition = serde_json::to_vec(definition)?;
+    ensure!(
+        definition.len() <= rss_mdm_inventory::MAX_FIELD_DEFINITION_BYTES,
+        "array field definition capacity"
+    );
     let definition_digest = format!("{:x}", Sha256::digest(&definition));
     let mut hash = Sha256::new();
     hash.update(PREFIX);
@@ -157,7 +161,7 @@ pub async fn page(
     byte_limit: usize,
 ) -> Result<Page> {
     ensure!(
-        (1..=1000).contains(&limit) && (1..=16 * 1024 * 1024).contains(&byte_limit),
+        (1..=1024).contains(&limit) && (1..=16 * 1024 * 1024).contains(&byte_limit),
         "array page budget"
     );
     let m = metadata(c, tenant, &[version.to_owned()])
@@ -165,7 +169,7 @@ pub async fn page(
         .remove(version)
         .ok_or_else(|| anyhow::anyhow!("array metadata"))?;
     ensure!(after <= m.count, "array cursor ordinal");
-    let definition:Vec<u8>=sqlx::query_scalar("SELECT definition FROM mdm.array_versions WHERE tenant_id=$1::uuid AND version=$2 AND octet_length(definition)<=65536")
+    let definition:Vec<u8>=sqlx::query_scalar("SELECT definition FROM mdm.array_versions WHERE tenant_id=$1::uuid AND version=$2 AND octet_length(definition)<=1048576")
         .bind(tenant.to_string()).bind(version).fetch_one(&mut *c).await?;
     ensure!(
         format!("{:x}", Sha256::digest(&definition)) == m.definition_digest,

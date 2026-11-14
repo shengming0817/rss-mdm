@@ -314,7 +314,7 @@ async fn run(
     authorize(auth, &command)?;
     let envelope = app
         .assets
-        .execute_authorized(&command, audit, &auth.proof, &|| authorize(auth, &command))
+        .execute_authorized(&command, audit, auth, &|| authorize(auth, &command))
         .await?;
     Ok(HttpResponse::new(envelope))
 }
@@ -847,7 +847,7 @@ impl rss_mdm_http_contract::query::WindowOwner for FieldReferencesQuery {
 #[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ScopePageRequest {
-    #[schemars(range(min = 1, max = 1000))]
+    #[schemars(range(min = 1, max = windows::SCOPES.max_limit))]
     limit: Option<u16>,
     #[schemars(length(min = 1, max = windows::MAX_CURSOR_BYTES))]
     cursor: Option<String>,
@@ -855,7 +855,7 @@ struct ScopePageRequest {
 #[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ListPageRequest {
-    #[schemars(range(min = 1, max = 1000))]
+    #[schemars(range(min = 1, max = windows::LISTS.max_limit))]
     limit: Option<u16>,
     #[schemars(length(min = 1, max = windows::MAX_CURSOR_BYTES))]
     cursor: Option<String>,

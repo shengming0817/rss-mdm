@@ -381,7 +381,7 @@ struct PageDoc {
     objects: Vec<ObjectDoc>,
 }
 pub(crate) fn encode_page(s: &PageInput<'_>) -> Result<Vec<u8>> {
-    check(s.objects.len() <= 1000)?;
+    check(s.objects.len() <= 1024)?;
     let mut unique = BTreeMap::new();
     for o in s.objects {
         check(o.key.tenant() == s.tenant)?;

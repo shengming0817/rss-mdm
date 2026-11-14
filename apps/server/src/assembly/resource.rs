@@ -12,7 +12,7 @@ pub(crate) async fn catalog(
     key: Vec<u8>,
 ) -> std::result::Result<Arc<service::ResourceCatalog>, Error> {
     runtime
-        .local_tx(tenant, crate::identity::deadline(), move |tx| {
+        .local_tx(audit.binding(), crate::identity::deadline(), move |tx| {
             Box::pin(async move {
                 tx.with_connection(move |c| {
                     Box::pin(async move {

@@ -18,6 +18,7 @@ impl Diagnostics {
                 &da.authorization,
                 l.address,
                 true,
+                l.auth.remaining()?,
             )
             .await
             .map_err(|r| {

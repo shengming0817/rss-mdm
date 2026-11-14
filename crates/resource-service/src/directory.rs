@@ -35,7 +35,7 @@ impl ResourceCatalog {
         }
         crate::transaction::inspect(
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             (self, proof, q, audit),
             |ctx, tx| {
                 Box::pin(async move {
@@ -83,40 +83,47 @@ impl ResourceCatalog {
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
         p.manage(Permission::ResourceRead)?;
-        crate::transaction::inspect(&self.runtime, self.tenant, (self, p), |(_, p), tx| {
-            Box::pin(async move {
-                crate::transaction::current(tx, p).await?.require(
-                    p,
-                    Permission::ResourceRead,
-                    None,
-                )?;
-                let raw = rss_mdm_resource_postgres::read_operation_in(
-                    tx,
-                    p.principal_id(),
-                    p.instance_id(),
-                    &id.to_string(),
-                )
-                .await?;
-                raw.map(|v| {
-                    let mut summary = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
-                    match crate::wire::Response::decode(v)? {
-                        crate::wire::Response::Receipt(v) => {
-                            summary.object = Some(v.resource);
-                            summary.revision = Some(
-                                i64::try_from(v.storage_revision).map_err(|_| Error::Conflict)?,
-                            );
+        crate::transaction::inspect(
+            &self.runtime,
+            self.audit_store.binding(),
+            (self, p),
+            |(_, p), tx| {
+                Box::pin(async move {
+                    crate::transaction::current(tx, p).await?.require(
+                        p,
+                        Permission::ResourceRead,
+                        None,
+                    )?;
+                    let raw = rss_mdm_resource_postgres::read_operation_in(
+                        tx,
+                        p.principal_id(),
+                        p.instance_id(),
+                        &id.to_string(),
+                    )
+                    .await?;
+                    raw.map(|v| {
+                        let mut summary =
+                            rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                        match crate::wire::Response::decode(v)? {
+                            crate::wire::Response::Receipt(v) => {
+                                summary.object = Some(v.resource);
+                                summary.revision = Some(
+                                    i64::try_from(v.storage_revision)
+                                        .map_err(|_| Error::Conflict)?,
+                                );
+                            }
+                            crate::wire::Response::Read(v) => {
+                                summary.object = Some(v.id);
+                                summary.revision =
+                                    Some(i64::try_from(v.revision).map_err(|_| Error::Conflict)?);
+                            }
                         }
-                        crate::wire::Response::Read(v) => {
-                            summary.object = Some(v.id);
-                            summary.revision =
-                                Some(i64::try_from(v.revision).map_err(|_| Error::Conflict)?);
-                        }
-                    }
-                    Ok(summary)
+                        Ok(summary)
+                    })
+                    .transpose()
                 })
-                .transpose()
-            })
-        })
+            },
+        )
         .await
     }
 }

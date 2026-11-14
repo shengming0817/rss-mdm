@@ -249,7 +249,7 @@ impl ValueType {
             }
             Self::Enum { values } => {
                 if values.is_empty()
-                    || values.len() > 128
+                    || values.len() > 1024
                     || values
                         .iter()
                         .any(|v| v.is_empty() || v.len() > 256 || v.chars().any(char::is_control))
@@ -565,7 +565,7 @@ pub struct Catalog {
 impl Catalog {
     /// Construct one bounded snapshot. Duplicate definitions cannot shadow one another.
     pub fn new(definitions: Vec<FieldDefinition>) -> Result<Self> {
-        if definitions.len() > 1024 {
+        if definitions.len() > crate::catalog_capacity() {
             return Err(Invalid::Value);
         }
         let mut fields = BTreeMap::new();

@@ -1,4 +1,5 @@
 //! Exact management JSON across real TLS, live authorization and persisted PG summaries.
+mod capacity;
 mod fixture;
 mod http;
 use crate::{authority_t2_support::Context, device_material_support as materials};
@@ -277,6 +278,7 @@ async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
             .await
             .with_context(|| format!("seed {key}"))?;
     }
+    capacity::seed(c, f, &device, epoch).await?;
     let account = c.account(&[Permission::InventoryRead]).await?;
     let service = f.service(c).await?;
     // The telemetry role revalidates primary credentials without native protocol column grants.
@@ -308,6 +310,7 @@ async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
     .await?;
     let h = validator("/telemetry/history");
     let a = validator("/telemetry/aggregate");
+    capacity::verify(&http, &device, &h).await?;
     for (field, n) in [("custom.minimum", i64::MIN), ("custom.maximum", i64::MAX)] {
         let mut input = query(&device, field);
         input["maxPoints"] = json!(1);

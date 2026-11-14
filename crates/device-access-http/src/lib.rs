@@ -26,6 +26,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub struct Services {
+    pub request_budget: rss_axum::RequestBudget,
     pub business: Option<Arc<Business>>,
     pub registrations: Arc<RegistrationService>,
     pub configurations: Arc<ConfigurationService>,
@@ -81,10 +82,15 @@ pub fn router(
     .assemble()
     .layer(axum::extract::DefaultBodyLimit::max(131072));
     match service {
-        Some(service) => routes.layer(axum::middleware::from_fn_with_state(
-            service,
-            boundary::admit,
-        )),
+        Some(service) => routes
+            .layer(axum::middleware::from_fn_with_state(
+                service.clone(),
+                boundary::admit,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                service.request_budget,
+                rss_axum::request_control,
+            )),
         None => routes,
     }
 }

@@ -78,20 +78,25 @@ impl Scopes {
             runner_health: Default::default(),
         };
         s.runtime
-            .local_tx_with_context(tenant, deadline(), (&s, editing), |(s, editing), tx| {
-                Box::pin(async move {
-                    s.audit_store.bind_in(tx).await.map_err(PgError::from)?;
-                    (if *editing {
-                        s.store.admit_configuration_in(tx).await
-                    } else {
-                        s.store.admit_in(tx).await
+            .local_tx_with_context(
+                s.audit_store.binding(),
+                deadline(),
+                (&s, editing),
+                |(s, editing), tx| {
+                    Box::pin(async move {
+                        s.audit_store.bind_in(tx).await.map_err(PgError::from)?;
+                        (if *editing {
+                            s.store.admit_configuration_in(tx).await
+                        } else {
+                            s.store.admit_in(tx).await
+                        })
+                        .map_err(|e| match e {
+                            rss_mdm_scope_postgres::BindingError::Storage(e) => e,
+                            _ => sqlx::Error::Protocol("Scope admission".into()).into(),
+                        })
                     })
-                    .map_err(|e| match e {
-                        rss_mdm_scope_postgres::BindingError::Storage(e) => e,
-                        _ => sqlx::Error::Protocol("Scope admission".into()).into(),
-                    })
-                })
-            })
+                },
+            )
             .await
             .fold(
                 Ok,

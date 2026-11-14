@@ -24,6 +24,7 @@ pub struct Request {
     pub device: rss_mdm_agent_wire::DeviceId,
     pub received_from: i64,
     pub received_until: i64,
+    #[schemars(range(min = 1, max = 1024))]
     pub limit: NonZeroU32,
     pub after: Option<Cursor>,
 }
@@ -53,7 +54,7 @@ impl Service {
         }
         if input.received_from < 0
             || input.received_until <= input.received_from
-            || input.limit.get() > 256
+            || input.limit.get() > 1024
             || input.after.as_ref().is_some_and(|c| {
                 c.received_at < input.received_from
                     || c.received_at >= input.received_until
@@ -69,7 +70,7 @@ impl Service {
         let failure = Arc::new(Mutex::new(None));
         let rejected = failure.clone();
         self.runtime
-            .local_tx(self.tenant, crate::deadline(), move |tx| {
+            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
                 Box::pin(async move {
                     service
                         .audit_store

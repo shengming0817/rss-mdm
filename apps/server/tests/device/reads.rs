@@ -68,7 +68,7 @@ async fn live_view_and_fixed_list_keep_distinct_read_semantics() -> Result<()> {
         assign(&c,&a,field,0,vec![1,2,3],proof.principal_id()).await?;
         assign(&c,&b,field,0,vec![8],proof.principal_id()).await?;
         let timer=rss_mdm_audit_integration::budget::RuntimeTimer;
-        let personnel=Reader::new(&c.authority,c.access().now()+Duration::from_secs(30),&timer,None);
+        let personnel=Reader::new(&c.authority,c.audit.binding(),c.access().now()+Duration::from_secs(30),&timer,None);
         let reference=ObjectRef::Endpoint(a);
         let detail:Value=serde_json::to_value(service.view(&proof,&reference,&personnel).await?)?;
         let token=detail["lists"][field.as_str()]["sources"][0]["cursor"].as_str().expect("manual array source cursor");

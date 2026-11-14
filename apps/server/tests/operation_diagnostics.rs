@@ -417,7 +417,12 @@ async fn original_result_survives_lost_response_new_config_and_index_failure() -
         }
     }
     assert_eq!(original_request, Some(first_request.to_string()));
-    let timeline = c.database.timeline(c.audit.clone(), c.tenant, &[41; 32])?;
+    let timeline = c.database.timeline(
+        c.audit.clone(),
+        c.tenant,
+        &[41; 32],
+        rss_mdm_timeline_service::QueryBudget::new(1024, 8 * 1024 * 1024)?,
+    )?;
     let services = Arc::new(Services {
         timeline: timeline.clone(),
         reads: Arc::new(super::operation_diagnostics::Installation {
@@ -427,16 +432,16 @@ async fn original_result_survives_lost_response_new_config_and_index_failure() -
             timeline,
         }),
     });
-    let webauthn = rss_identity_postgres::WebauthnAuthority::connect(
+    let webauthn = rss_identity_postgres::WebauthnAuthority::new(
         c.authority.clone(),
         "localhost".into(),
         url::Url::parse("https://localhost")?,
-        deadline(),
-    )
-    .await?;
+    )?;
     let authentication = Arc::new(
         rss_mdm_management_http::authorization::http::AuthenticationState {
             identity: Arc::new(rss_mdm_management_http::identity::Identity {
+                binding: c.audit.binding(),
+                rp_generation: rss_identity_postgres::RpGeneration::new(1)?,
                 authority: c.authority.clone(),
                 webauthn,
                 http: rss_identity_http_axum::HttpConfig::new(
@@ -462,6 +467,8 @@ async fn original_result_survives_lost_response_new_config_and_index_failure() -
     let router = rss_mdm_management_http::boundary::wrap(
         routes,
         rss_mdm_management_http::boundary::Envelope {
+            request_budget: rss_axum::RequestBudget::new(std::time::Duration::from_secs(8))
+                .unwrap(),
             profile: rss_mdm_install_support::StorageProfile::Mdm,
             admission: Arc::new(tokio::sync::Semaphore::new(8)),
             host: "localhost".into(),
@@ -564,7 +571,7 @@ async fn original_result_survives_lost_response_new_config_and_index_failure() -
     };
     let session = c
         .authority
-        .inspect_session(c.tenant, revoke_secret, deadline())
+        .inspect_session(c.audit.binding(), revoke_secret, deadline())
         .await?;
     c.authority
         .revoke_current_session(session, deadline())

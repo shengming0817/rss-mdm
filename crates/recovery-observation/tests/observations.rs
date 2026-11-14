@@ -1,7 +1,7 @@
 use rss_mdm_recovery_observation::{ObservedStore, Phase, Readiness};
 use rss_reconcile::*;
 use std::{
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
     time::Duration,
 };
 
@@ -26,6 +26,7 @@ impl Claim for Token {
 #[derive(Default)]
 struct Provider {
     scan_fails: AtomicBool,
+    scan_budget: AtomicU32,
     finish_fails: AtomicBool,
 }
 impl DurableStore for Provider {
@@ -50,9 +51,11 @@ impl DurableStore for Provider {
         &self,
         _: &Scope,
         _: usize,
+        scan_budget: u32,
         _: Duration,
         _: &Control<'_, T>,
     ) -> Result<ClaimBatch<Token>, Error> {
+        self.scan_budget.store(scan_budget, Ordering::Relaxed);
         if self.scan_fails.load(Ordering::Relaxed) {
             Err(Error::new(ErrorKind::Transient))
         } else {
@@ -112,7 +115,7 @@ async fn only_same_scope_scan_and_confirmed_target_finish_recover_health() {
     provider.scan_fails.store(true, Ordering::Relaxed);
     assert!(
         store
-            .claim_due(&scope, 1, Duration::from_secs(1), &control)
+            .claim_due(&scope, 1, 64, Duration::from_secs(1), &control)
             .await
             .is_err()
     );
@@ -124,7 +127,7 @@ async fn only_same_scope_scan_and_confirmed_target_finish_recover_health() {
     let unrelated = Scope::new(scope.tenant(), "collection").unwrap();
     assert!(
         store
-            .claim_due(&unrelated, 1, Duration::from_secs(1), &control)
+            .claim_due(&unrelated, 1, 64, Duration::from_secs(1), &control)
             .await
             .is_err()
     );
@@ -135,7 +138,7 @@ async fn only_same_scope_scan_and_confirmed_target_finish_recover_health() {
     );
     assert!(
         store
-            .claim_due(&scope, 1, Duration::from_secs(1), &control)
+            .claim_due(&scope, 1, 64, Duration::from_secs(1), &control)
             .await
             .unwrap()
             .claims
@@ -201,7 +204,7 @@ async fn failures_are_owner_scoped_and_overflow_requires_a_new_process_window() 
     }
     assert_eq!(other.health().recovery, Phase::Initializing);
     store
-        .claim_due(&scope, 1, Duration::from_secs(1), &control)
+        .claim_due(&scope, 1, 64, Duration::from_secs(1), &control)
         .await
         .unwrap();
     for id in 0..1001 {
@@ -239,4 +242,21 @@ fn durable_input_recovery_clears_only_its_own_attempt_failure() {
         health.health().recovery,
         Phase::Failed(ErrorKind::Permanent)
     );
+}
+
+#[tokio::test]
+async fn scan_budget_reaches_the_provider_without_losing_empty_scan_observation() {
+    let scope = scope("capacity");
+    let health = Readiness::new(scope.clone(), false, false);
+    let provider = Provider::default();
+    let store = ObservedStore::new(&provider, &health);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = Control::new(&Clock, Duration::from_secs(1), &cancel);
+    let batch = store
+        .claim_due(&scope, 1024, 4096, Duration::from_secs(1), &control)
+        .await
+        .unwrap();
+    assert!(batch.claims.is_empty());
+    assert!(!batch.more);
+    assert_eq!(provider.scan_budget.load(Ordering::Relaxed), 4096);
 }

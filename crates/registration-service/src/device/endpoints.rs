@@ -41,7 +41,7 @@ pub async fn current_page_in(
     tenant: &str,
     devices: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<Vec<PrimaryRegistration>, Error> {
-    if devices.len() > 1000 {
+    if devices.len() > 1024 {
         return Err(Error::Malformed);
     }
     let rows = sqlx::query(crate::storage_profile::sql(profile).device_endpoints_current_page_in_1)
@@ -74,7 +74,7 @@ pub async fn page_at(
     cut: &rss_mdm_inventory::AssetCut,
     devices: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<Vec<PrimaryRegistration>, Error> {
-    if devices.len() > 1000 || cut.tenant().to_string() != tenant {
+    if devices.len() > 1024 || cut.tenant().to_string() != tenant {
         return Err(Error::Malformed);
     }
     let rows = sqlx::query(crate::storage_profile::sql(profile).device_endpoints_page_at_1)
@@ -118,7 +118,7 @@ pub async fn page_in(
     after: Option<rss_mdm_agent_wire::DeviceId>,
     limit: i64,
 ) -> Result<Vec<rss_mdm_agent_wire::DeviceId>, Error> {
-    if !(1..=1001).contains(&limit) {
+    if !(1..=1025).contains(&limit) {
         return Err(Error::Malformed);
     }
     sqlx::query_scalar(crate::storage_profile::sql(profile).device_endpoints_page_in_1)
@@ -141,7 +141,7 @@ pub async fn candidate_page_in(
     allowed: Option<Vec<rss_mdm_agent_wire::DeviceId>>,
     limit: i64,
 ) -> Result<Vec<rss_mdm_agent_wire::DeviceId>, Error> {
-    if !(1..=1001).contains(&limit) {
+    if !(1..=1025).contains(&limit) {
         return Err(Error::Malformed);
     }
     sqlx::query_scalar(crate::storage_profile::sql(profile).device_endpoints_candidate_page_in_1)
@@ -179,8 +179,8 @@ pub async fn lifecycle_page_at(
     limit: usize,
 ) -> Result<Vec<Lifecycle>, Error> {
     if cut.tenant().to_string() != tenant
-        || !(1..=1000).contains(&limit)
-        || selected.as_ref().is_some_and(|v| v.len() > 1000)
+        || !(1..=1024).contains(&limit)
+        || selected.as_ref().is_some_and(|v| v.len() > 1024)
     {
         return Err(Error::Malformed);
     }

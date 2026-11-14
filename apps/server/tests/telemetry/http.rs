@@ -50,7 +50,7 @@ impl Http {
         let access = c.access();
         let sessions = rss_mdm_authorization_service::session::SessionAuthority::new(
             c.authority.clone(),
-            c.tenant,
+            c.audit.binding(),
         );
         let router = rss_mdm_management_http::telemetry::routes(Some(service))
             .into_axum()
@@ -75,6 +75,11 @@ impl Http {
                                 proof,
                                 sessions,
                                 deadline,
+                                cancellation: Arc::new(
+                                    rss_mdm_audit_integration::budget::AuditBudget::until(
+                                        rss_request_context::Deadline::at(deadline),
+                                    ),
+                                ),
                             },
                         );
                         next.run(request).await

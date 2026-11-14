@@ -67,7 +67,9 @@ lagging 是位置比较，不是精确事件数或原子快照。invocationAgeMs
 
 启动及执行前由各 owner 从现有业务事实校准资源声明，不复制任务、成员或完成记录。校准保留原 wake version、failures 和 next_run；资源变化后的旧 claim 必须让出后重新领取。资源键不替代注册、授权、Policy 或提交保护。Plain 审计允许上述重叠；Ledger 的原链锁仍可能进一步串行化。
 
-SIGINT/SIGTERM 先停止接入并排空，再取消和 join 工作任务，最后关闭存储及认证 KDF/runtime，整体关闭预算 40 秒。命令 worker 停止领取后等待在途 relay 完成 gateway 事务与 outbox 结算，单任务关闭上限二十秒覆盖领取、接受、结算各六秒的预算；任一并行分支退出会取消另一分支并等待它结算。关键任务异常或关闭失败返回非零；进程重启由部署 owner 决定。被动查询不延长认证 idle，组件事务使用自身预算完成，宿主不以请求 timeout 丢弃其提交结果。
+SIGINT/SIGTERM 先停止接入并排空，再取消和 join 工作任务，最后关闭存储及认证 KDF/runtime，整体关闭预算由 `http.total_drain_seconds` 指定，默认 60 秒。命令 worker 停止领取后等待在途 relay 完成 gateway 事务与 outbox 结算；各调度 owner 的 `drain_ms` 默认 20 秒（设备关联 30 秒），与请求、执行、lease 和 KDF 排空分别配置；任一并行分支退出会取消另一分支并等待它结算。关键任务异常或关闭失败返回非零；进程重启由部署 owner 决定。被动查询不延长认证 idle，组件事务使用自身预算完成，宿主不以请求 timeout 丢弃其提交结果。
+
+Inventory 恢复读取按 `inventory_runtime.delivery_batch` 和 `delivery_bytes` 选择完整报告前缀，积压合计超预算仍能逐批前进。单份报告超过读取预算时，`mdm_inventory_report_exceeds_read_budget` 给出 `requiredBytes` 和 `configuredBytes`，调整预算后重启继续读取原报告。运行轮次截止只让出当前工作，Projection 启动独立使用 `startup_seconds`。
 
 审计与业务状态在原 RSS 事务中直接提交。运行连接使用 `READ COMMITTED`，启动校验实际 writer 权限；Plain 不取得租户审计头锁，Ledger 在业务和 Outbox 锁之前取得所选链锁。提交未知沿原操作身份和原请求由业务回执恢复，不直接重执行业务，也不重新生成审计时间或复制回执。暂时缺失不能证明回滚；锁或读取超时继续保留未知状态。既有业务截止时间不续期，由原事务 owner 完成提交或回滚；这些资源边界不是吞吐或设备容量承诺。
 

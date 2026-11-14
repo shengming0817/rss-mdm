@@ -109,6 +109,7 @@ impl Service {
         let attempt = self
             .recovery
             .mutate(
+                self.audit.binding(),
                 &authorized,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(remaining),
             )

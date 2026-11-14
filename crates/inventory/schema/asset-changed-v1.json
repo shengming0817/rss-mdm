@@ -118,7 +118,7 @@
     },
     "fields": {
       "type": "array",
-      "maxItems": 128,
+      "maxItems": 4096,
       "items": {
         "type": "string"
       }

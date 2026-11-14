@@ -7,7 +7,7 @@ use crate::{
 
 use rss_identity_core::{
     PrincipalId,
-    account::{AccountKey, LoginKey, Password, PasswordKdf},
+    account::{AccountKey, LoginKey, Password},
 };
 
 use rss_identity_postgres::Authority;
@@ -16,7 +16,7 @@ use rss_mdm_install_support::{StorageProfile, files::secret};
 
 use rss_runtime::{DynManagedResource, LifecycleScope, ScopeExit, TotalDrainBudget};
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc};
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -37,7 +37,7 @@ pub enum AccountOperation {
 pub async fn account(input: Account, mode: AccountOperation) -> Result<()> {
     let config: Config = config::load(&input.runtime_file)?;
 
-    config.validate()?;
+    let compiled = config.compile()?;
 
     if input.maintenance_database.user != "da_identity_maintenance"
         || !input.maintenance_database.same_database(&config.database)
@@ -51,34 +51,38 @@ pub async fn account(input: Account, mode: AccountOperation) -> Result<()> {
         return Err(Error::Configuration);
     }
     let mut scope = LifecycleScope::<(), Error, std::io::Error>::try_new(
-        TotalDrainBudget::new(Duration::from_secs(30)).map_err(|_| Error::Lifecycle)?,
+        TotalDrainBudget::new(compiled.http.maintenance).map_err(|_| Error::Lifecycle)?,
         Arc::new(host::Timer),
     )
     .map_err(|_| Error::Lifecycle)?;
 
     let outcome=scope.drive(|mut startup| {Box::pin(async move {
+  let cutoff=rss_request_context::Deadline::from_timeout(&host::Timer,compiled.identity.maintenance).map_err(|_| Error::Configuration)?;
+  let remaining=||rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff,&host::Timer);
   let runtime=host::runtime(&input.maintenance_database,&config.installation).await?;
 startup.stage_resource(DynManagedResource::new_box(host::RuntimeResource(runtime.clone())));
 
-  let kdf=Arc::new(PasswordKdf::new());
-startup.stage_resource(DynManagedResource::new_box(host::Kdf(kdf.clone())));
-
-  let authority=Authority::connect_maintenance(runtime,kdf.clone(),host::authority_config(&config.installation,config.audit.integrity()?)?,host::deadline()).await.map_err(|_|Error::Identity)?;
+  let kdf=compiled.identity.kdf.clone();
+startup.stage_resource(DynManagedResource::new_box(host::Kdf(kdf.clone(), compiled.identity.drain)));
 
   let tenant=rss_request_context::TenantId::parse(&input.tenant.to_string()).map_err(|_|Error::Configuration)?;
+  let binding=config.installation.execution(tenant)?;
+  let authority=Authority::connect_maintenance(runtime,kdf.clone(),compiled.identity.authority.clone(),binding,remaining()).await.map_err(|_|Error::Identity)?;
+
+
 
   let key=AccountKey{tenant,principal:PrincipalId::parse(&input.principal.to_string()).map_err(|_|Error::Configuration)?};
 
   let password=||Password::new(secret(&input.password_file).map_err(|_|Error::Configuration)?.to_string()).map_err(|_|Error::Configuration);
 
-  if matches!(mode,AccountOperation::Initialize) {authority.initialize(key,LoginKey::parse(&input.login).map_err(|_|Error::Configuration)?,password()?,host::deadline()).await.map_err(|_|Error::Identity)?;
-} else if matches!(mode,AccountOperation::Recover) {authority.recover_local_password(key,password()?,host::deadline()).await.map_err(|_|Error::Identity)?;
+  if matches!(mode,AccountOperation::Initialize) {authority.initialize(binding,key,LoginKey::parse(&input.login).map_err(|_|Error::Configuration)?,password()?,remaining()).await.map_err(|_|Error::Identity)?;
+} else if matches!(mode,AccountOperation::Recover) {authority.recover_local_password(binding,key,password()?,remaining()).await.map_err(|_|Error::Identity)?;
 startup.commit().finish();
 return Ok(())}
   let identity=host::runtime(&config.identity_database,&config.installation).await?;
 startup.stage_resource(DynManagedResource::new_box(host::RuntimeResource(identity.clone())));
 
-  let authority=Authority::connect_runtime(identity,kdf,host::authority_config(&config.installation,config.audit.integrity()?)?,Arc::new(rss_mdm_authorization_service::identity_management::IdentityManagementPolicy::new(StorageProfile::Da,&config.installation.instance.to_string()).map_err(|_|Error::Configuration)?),host::deadline()).await.map_err(|_|Error::Identity)?;
+  let authority=Authority::connect_runtime(identity,kdf,compiled.identity.authority.clone(),binding,Arc::new(rss_mdm_authorization_service::identity_management::IdentityManagementPolicy::new(StorageProfile::Da,&config.installation.instance.to_string()).map_err(|_|Error::Configuration)?),remaining()).await.map_err(|_|Error::Identity)?;
 
   let pool=sqlx::postgres::PgPoolOptions::new().max_connections(2).connect_with(config.database.options()?).await.map_err(|_|Error::Storage)?;
 startup.stage_resource(DynManagedResource::new_box(host::Pool(pool.clone())));
@@ -86,13 +90,13 @@ startup.stage_resource(DynManagedResource::new_box(host::Pool(pool.clone())));
   let transactions=host::runtime(&config.database,&config.installation).await?;
 startup.stage_resource(DynManagedResource::new_box(host::RuntimeResource(transactions.clone())));
 
-  let budget=rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(10));
+  let budget=rss_mdm_audit_integration::budget::AuditBudget::until(cutoff);
 
-  let store=rss_mdm_audit_integration::AuditStore::new(pool,config.audit.integrity()?,transactions,tenant,&budget.control()).await.map_err(|_| Error::AdmissionAt("account Audit"))?;
+  let store=rss_mdm_audit_integration::AuditStore::new(pool,config.audit.integrity()?,transactions,binding,&budget.control()).await.map_err(|_| Error::AdmissionAt("account Audit"))?;
 
   let audit=rss_mdm_audit_integration::RequestAudit::new(rss_mdm_audit_integration::Origin::Background, StorageProfile::Da,tenant.to_string(),"da_initialize",rss_mdm_audit_integration::AuditIntent::Management);
 
-  let result=rss_mdm_authorization_service::initialization::initialize(StorageProfile::Da,&authority,&store,rss_mdm_authorization_service::initialization::Initialization{expected:rss_mdm_authorization_service::User{tenant_id:tenant.to_string(),instance_id:config.installation.instance.to_string(),principal_id:input.principal.to_string()},login:LoginKey::parse(&input.login).map_err(|_|Error::Configuration)?,password:password()?,operation_id:input.operation_id},&audit).await;
+  let result=rss_mdm_authorization_service::initialization::initialize(StorageProfile::Da,&authority,&store,rss_mdm_authorization_service::initialization::Initialization{expected:rss_mdm_authorization_service::User{tenant_id:tenant.to_string(),instance_id:config.installation.instance.to_string(),principal_id:input.principal.to_string()},login:LoginKey::parse(&input.login).map_err(|_|Error::Configuration)?,password:password()?,operation_id:input.operation_id},&audit,cutoff).await;
 
   audit.finalize(result.as_ref().err().map(|_|rss_mdm_audit_integration::FailureReason::Transaction));
 
@@ -113,8 +117,9 @@ Ok(())
 // teardown uses the same resource owner as serving.
 pub async fn diagnose(config: Config) -> Result<()> {
     host::validate_tls(&config)?;
+    let compiled = config.compile()?;
     let mut scope = LifecycleScope::<(), Error, std::io::Error>::try_new(
-        TotalDrainBudget::new(Duration::from_secs(30)).map_err(|_| Error::Lifecycle)?,
+        TotalDrainBudget::new(compiled.http.maintenance).map_err(|_| Error::Lifecycle)?,
         Arc::new(host::Timer),
     )
     .map_err(|_| Error::Lifecycle)?;
@@ -123,7 +128,17 @@ pub async fn diagnose(config: Config) -> Result<()> {
         .drive(
             |mut startup| {
                 Box::pin(async move {
-                    host::assemble(&config, |r| startup.stage_resource(r)).await?;
+                    let cutoff = rss_request_context::Deadline::from_timeout(
+                        &host::Timer,
+                        compiled.identity.startup,
+                    )
+                    .map_err(|_| Error::Configuration)?;
+                    tokio::time::timeout_at(
+                        cutoff.instant().into(),
+                        host::assemble(&config, &compiled, cutoff, |r| startup.stage_resource(r)),
+                    )
+                    .await
+                    .map_err(|_| Error::Lifecycle)??;
 
                     startup.commit().finish();
 
@@ -159,32 +174,34 @@ pub async fn verify_account(config: &Config, input: &OriginalAccount) -> Result<
     let database = config.database.clone();
 
     let installation = config.installation.clone();
-
-    let integrity = config.audit.integrity()?;
+    let compiled = config.compile()?;
 
     let input = input.clone();
 
     let mut scope = LifecycleScope::<(), Error, std::io::Error>::try_new(
-        TotalDrainBudget::new(Duration::from_secs(30)).map_err(|_| Error::Lifecycle)?,
+        TotalDrainBudget::new(compiled.http.maintenance).map_err(|_| Error::Lifecycle)?,
         Arc::new(host::Timer),
     )
     .map_err(|_| Error::Lifecycle)?;
 
     let outcome=scope.drive(|mut startup| {Box::pin(async move {
- let runtime=host::runtime(&identity_database,&installation).await?;
+ let cutoff=rss_request_context::Deadline::from_timeout(&host::Timer,compiled.identity.maintenance).map_err(|_|Error::Configuration)?;
+ let remaining=||rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff,&host::Timer);
+ let runtime=tokio::time::timeout_at(cutoff.instant().into(), host::runtime(&identity_database,&installation)).await.map_err(|_|Error::Storage)??;
 
  startup.stage_resource(DynManagedResource::new_box(host::RuntimeResource(runtime.clone())));
 
- let kdf=Arc::new(PasswordKdf::new());
+ let kdf=compiled.identity.kdf.clone();
 
- startup.stage_resource(DynManagedResource::new_box(host::Kdf(kdf.clone())));
+ startup.stage_resource(DynManagedResource::new_box(host::Kdf(kdf.clone(), compiled.identity.drain)));
 
- let result=async {
-  let authority=Authority::connect_runtime(runtime.clone(),kdf.clone(),host::authority_config(&installation,integrity.clone())?,Arc::new(rss_mdm_authorization_service::identity_management::IdentityManagementPolicy::new(StorageProfile::Da,&installation.instance.to_string()).map_err(|_|Error::Configuration)?),host::deadline()).await.map_err(|_|Error::Identity)?;
+ let binding=installation.execution(rss_request_context::TenantId::parse(&input.tenant.to_string()).map_err(|_|Error::Configuration)?)?;
+ let result=tokio::time::timeout_at(cutoff.instant().into(), async {
+  let authority=Authority::connect_runtime(runtime.clone(),kdf.clone(),compiled.identity.authority.clone(),binding,Arc::new(rss_mdm_authorization_service::identity_management::IdentityManagementPolicy::new(StorageProfile::Da,&installation.instance.to_string()).map_err(|_|Error::Configuration)?),remaining()).await.map_err(|_|Error::Identity)?;
 
   let user=rss_mdm_authorization_service::User{instance_id:installation.instance.to_string(),tenant_id:input.tenant.to_string(),principal_id:input.principal.to_string()};
 
-  let verified=rss_mdm_authorization_service::initialization::verify_local(&authority,user,LoginKey::parse(&input.login).map_err(|_|Error::Configuration)?,Password::new(secret(&input.password_file).map_err(|_|Error::Configuration)?.to_string()).map_err(|_|Error::Configuration)?).await.map_err(|_| Error::AdmissionAt("original account authentication"))?;
+  let verified=rss_mdm_authorization_service::initialization::verify_local(&authority,binding,user,LoginKey::parse(&input.login).map_err(|_|Error::Configuration)?,Password::new(secret(&input.password_file).map_err(|_|Error::Configuration)?.to_string()).map_err(|_|Error::Configuration)?,cutoff).await.map_err(|_| Error::AdmissionAt("original account authentication"))?;
 
   use sqlx::Connection;
 
@@ -193,7 +210,9 @@ pub async fn verify_account(config: &Config, input: &OriginalAccount) -> Result<
   let result=async {
    let mut tx=c.begin().await.map_err(|_|Error::Storage)?;
 
-   sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(input.tenant.to_string()).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
+   let remaining=cutoff.remaining(rss_request_context::Clock::now(&host::Timer)).ok_or(Error::Storage)?;
+   let milliseconds=remaining.as_millis().clamp(1,i32::MAX as u128).to_string();
+   sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(input.tenant.to_string()).bind(milliseconds).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
 
    let rules=rss_mdm_authorization_service::snapshot_on(StorageProfile::Da,&mut tx,&input.tenant.to_string(),&installation.instance.to_string()).await.map_err(|_| Error::AdmissionAt("original authorization"))?;
 
@@ -205,7 +224,7 @@ if allowed{Ok(())}else{Err(Error::Admission)}
 
   let close=c.close().await.map_err(|_|Error::Storage);
 result.and(close)
- }.await;
+ }).await.unwrap_or(Err(Error::Storage));
 
  result?;
 startup.commit().finish();

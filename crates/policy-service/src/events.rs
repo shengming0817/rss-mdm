@@ -126,7 +126,7 @@ impl Events {
         run(
             audit_store,
             &p.runtime,
-            p.tenant,
+            p.audit_store.binding(),
             audit,
             (self, &caller, requester, proof, device, input, audit),
             |ctx, tx| {

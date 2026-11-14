@@ -7,6 +7,11 @@ pub async fn verify_operator(
 ) -> Result<Vec<Head>> {
     let audit: crate::config::AuditConfig =
         serde_json::from_value(runtime["audit"].clone()).map_err(|_| Error::Input)?;
+    let settings: crate::config::AuditReadConfig =
+        serde_json::from_value(runtime["audit_query"].clone()).map_err(|_| Error::Input)?;
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(
+        crate::identity::policy::seconds(settings.recovery_seconds).map_err(|_| Error::Input)?,
+    );
     let key = match &audit {
         crate::config::AuditConfig::Plain => None,
         crate::config::AuditConfig::Ledger { key_id, .. } => Some(key_id.as_str()),
@@ -17,6 +22,8 @@ pub async fn verify_operator(
         key,
         tenants,
         &database.options().map_err(|_| Error::Input)?,
+        &budget,
+        settings.recovery_limit().map_err(|_| Error::Input)?,
     )
     .await
 }

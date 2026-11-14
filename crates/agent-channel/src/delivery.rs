@@ -106,7 +106,7 @@ impl Delivery {
         let attempt = self
             .runtime
             .local_tx_with_context(
-                self.tenant,
+                self.audit.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     Duration::from_secs(6),
                 ),
@@ -421,7 +421,7 @@ impl Delivery {
         let failure = Mutex::new(None);
         self.runtime
             .local_tx_with_context(
-                self.tenant,
+                self.audit.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     Duration::from_secs(6),
                 ),

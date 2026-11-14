@@ -20,6 +20,7 @@ impl Fixture {
         let config = &resources.resources.config;
         let protection = resources.resources.protection.clone();
         let app = crate::assembly::policy::application(
+            &resources.resources.background,
             &owner,
             c.tenant,
             &[7; 32],

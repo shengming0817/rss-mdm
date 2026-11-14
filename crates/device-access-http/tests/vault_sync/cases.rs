@@ -28,9 +28,12 @@ async fn user(c: &Context) -> Result<(AuthorizedPrincipal, String)> {
     let id = Uuid::new_v4();
     let login = format!("vault-{id}");
     let password = "vault-test-only-password-123";
-    let hash = PasswordKdf::new()
-        .hash(Password::new(password.into())?)
-        .await?;
+    let hash = PasswordKdf::new(
+        std::num::NonZeroUsize::new(4).unwrap(),
+        std::num::NonZeroU64::new(128 * 1024 * 1024).unwrap(),
+    )?
+    .hash(Password::new(password.into())?)
+    .await?;
     let mut tx = c.seed().await?;
     sqlx::query(
         "INSERT INTO identity_authority.guard(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
@@ -64,7 +67,7 @@ async fn user(c: &Context) -> Result<(AuthorizedPrincipal, String)> {
     let issued = c
         .authority
         .login_local_bearer(
-            c.tenant,
+            c.sessions.binding(),
             LoginKey::parse(&login)?,
             Password::new(password.into())?,
             rss_identity_postgres::AttemptSource::parse("vault-test")?,
@@ -80,6 +83,9 @@ async fn user(c: &Context) -> Result<(AuthorizedPrincipal, String)> {
             &c.authorization,
             rss_mdm_authorization_service::credential::RequestCredential::Bearer(
                 rss_identity_core::session::BearerSecret::parse(issued.secret().expose().into())?,
+            ),
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                std::time::Duration::from_secs(10),
             ),
         )
         .await?;
@@ -642,7 +648,7 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
     let session = c
         .authority
         .inspect_bearer(
-            c.tenant,
+            c.sessions.binding(),
             rss_identity_core::session::BearerSecret::parse(session_secret)?,
             deadline(),
         )

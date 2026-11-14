@@ -35,7 +35,6 @@ pub(crate) async fn assemble(
             scripts.clone(),
             storage.reconcile.clone(),
             storage.worker_budget.clone(),
-            config.background.device_concurrency,
         )
         .map_err(|_| Error::Configuration(crate::ConfigIssue::CommandStorage))?,
     );

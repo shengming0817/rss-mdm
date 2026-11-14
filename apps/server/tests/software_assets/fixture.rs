@@ -5,9 +5,12 @@ pub(super) struct Fixture {
 }
 impl Fixture {
     pub async fn open(c: &Context) -> Result<Self> {
-        let clock = rt::Clock::new(crate::clock::monotonic());
+        let clock = rt::Clock::new(
+            crate::clock::monotonic(),
+            crate::authority_t2_support::inventory_policy()?,
+        );
         let cancel = tokio_util::sync::CancellationToken::new();
-        let control = rss_projection::Control::new(&clock, clock.cutoff(), &cancel);
+        let control = rss_projection::Control::new(&clock, clock.startup_cutoff(), &cancel);
         let observation = rt::ObservationResource::open(
             c.inputs.options("shared", "mdm_runtime")?,
             clock.clone(),
@@ -31,21 +34,21 @@ impl Fixture {
         let owner = planning::owner(c, "mdm_inventory_runtime").await?;
         let groups = rss_mdm_group_postgres::GroupStore::new(
             owner.runtime.clone(),
-            c.tenant,
+            c.audit.binding(),
             rss_mdm_inventory_service::transaction::deadline(),
         )
         .await?;
-        let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+        let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             owner.runtime.clone(),
-            c.tenant,
+            c.audit.binding(),
             rss_mdm_inventory_service::transaction::deadline(),
-        )
+        ))
         .await?;
         let tenant = c.tenant;
         owner
             .runtime
             .local_tx(
-                c.tenant,
+                c.audit.binding(),
                 rss_mdm_inventory_service::transaction::deadline(),
                 |tx| {
                     Box::pin(async move {
@@ -106,6 +109,7 @@ impl Fixture {
             .claim_due(
                 target.scope(),
                 64,
+                64,
                 std::time::Duration::from_secs(90),
                 &control,
             )
@@ -150,10 +154,9 @@ impl Http {
         proof: Arc<rss_mdm_authorization_service::context::AuthorizedPrincipal>,
     ) -> Result<Self> {
         let tenant = c.tenant.to_string();
-        let access = c.access();
         let sessions = rss_mdm_authorization_service::session::SessionAuthority::new(
             c.authority.clone(),
-            c.tenant,
+            c.audit.binding(),
         );
         let router = rss_mdm_management_http::assets::routes()
             .into_axum()
@@ -164,10 +167,17 @@ impl Http {
                 move |mut request: axum::extract::Request, next: axum::middleware::Next| {
                     let proof = proof.clone();
                     let tenant = tenant.clone();
-                    let auth = rss_mdm_authorization_service::context::RequestAuth {
-                        proof: proof.clone(),
-                        sessions: sessions.clone(),
-                        deadline: access.now() + std::time::Duration::from_secs(8),
+                    let auth = {
+                        let request_budget =
+                            Arc::new(rss_mdm_audit_integration::budget::AuditBudget::new(
+                                std::time::Duration::from_secs(8),
+                            ));
+                        rss_mdm_authorization_service::context::RequestAuth {
+                            proof: proof.clone(),
+                            sessions: sessions.clone(),
+                            deadline: request_budget.deadline().instant(),
+                            cancellation: request_budget,
+                        }
                     };
                     async move {
                         let audit = rss_mdm_audit_integration::RequestAudit::new(

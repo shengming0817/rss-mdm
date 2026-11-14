@@ -40,6 +40,7 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
     rss_reconcile::Scope::new(tenant, "mdm.recovery.native.v1").expect("fixed Recovery scope")
 }
 pub struct Materials {
+    pub supersede_batch: rss_device_command::BatchLimit,
     pub credentials: Arc<crate::Protection>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub apple_profiles: Arc<dyn apple_facts::AppleProfiles>,
@@ -61,7 +62,7 @@ pub struct Service {
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
     pub(crate) reconcile: rss_reconcile_postgres::PgStore,
     pub(crate) worker_budget: Arc<tokio::sync::Semaphore>,
-    pub(crate) worker_concurrency: usize,
+    pub(crate) recovery_batch: rss_device_command::BatchLimit,
     pub(crate) readiness: rss_mdm_recovery_observation::Readiness,
 }
 impl Service {
@@ -70,7 +71,7 @@ impl Service {
         outbox: Arc<PgOutboxStore<()>>,
         reconcile: rss_reconcile_postgres::PgStore,
         worker_budget: Arc<tokio::sync::Semaphore>,
-        worker_concurrency: usize,
+        recovery_batch: rss_device_command::BatchLimit,
     ) -> Self {
         let readiness = rss_mdm_recovery_observation::Readiness::new(
             recovery_scope(transactions.tenant),
@@ -82,7 +83,7 @@ impl Service {
             outbox,
             reconcile,
             worker_budget,
-            worker_concurrency,
+            recovery_batch,
             readiness,
         }
     }
@@ -102,10 +103,11 @@ impl Transactions {
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         materials: Arc<Materials>,
     ) -> std::result::Result<Self, Error> {
+        let supersede_batch = materials.supersede_batch;
         let caller = runtime.clone();
         let audit = audit_store.clone();
         let store = runtime
-            .local_tx(tenant, deadline(), move |tx| {
+            .local_tx(audit_store.binding(), deadline(), move |tx| {
                 Box::pin(async move {
                     audit.bind_in(tx).await.map_err(PgError::from)?;
                     tx.with_connection(|c| {
@@ -126,6 +128,7 @@ impl Transactions {
                         caller,
                         tx,
                         rss_device_command_postgres::CommandClock::Postgres,
+                        supersede_batch,
                     )
                     .await
                     .map(|(_, store)| store)
@@ -140,10 +143,13 @@ impl Transactions {
                 |_| Err(Error::CommitUnknown),
                 |_| Err(Error::Unavailable(Failure::CommandInvariant)),
             )?;
-        let reconcile_messaging =
-            rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, deadline())
-                .await
-                .map_err(|_| Error::Unavailable(Failure::CommandInvariant))?;
+        let reconcile_messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
+            runtime.clone(),
+            audit_store.binding(),
+            deadline(),
+        ))
+        .await
+        .map_err(|_| Error::Unavailable(Failure::CommandInvariant))?;
         Ok(Self {
             runtime,
             tenant,

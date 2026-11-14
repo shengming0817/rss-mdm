@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use sqlx::PgConnection;
 
 pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<Item>("devices", &["id"], 64, 1000, &[]).and_then(|s|s.with_selectors::<HardwareSelectors>("Exact normalized historical hardware evidence; one complete predicate must match one accepted collection result")).and_then(|s|s.exact("serialNumber")).and_then(|s|s.exact("hardwareUuid")).and_then(|s|s.normalize_with("serialNumber",normalize_serial)).and_then(|s|s.normalize_with("hardwareUuid",normalize_uuid)).expect("Public directory model")
+    Schema::derived::<Item>("devices", &["id"], 64, 1024, &[]).and_then(|s|s.with_selectors::<HardwareSelectors>("Exact normalized historical hardware evidence; one complete predicate must match one accepted collection result")).and_then(|s|s.exact("serialNumber")).and_then(|s|s.exact("hardwareUuid")).and_then(|s|s.normalize_with("serialNumber",normalize_serial)).and_then(|s|s.normalize_with("hardwareUuid",normalize_uuid)).expect("Public directory model")
 });
 fn error(e: rss_mdm_query::Error) -> Error {
     match e {
@@ -298,7 +298,7 @@ pub async fn page_on(
     tenant: &str,
     devices: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<Value, Error> {
-    if devices.len() > 1000 {
+    if devices.len() > 1024 {
         return Err(Error::Malformed);
     }
     let rows = sqlx::query(crate::storage_profile::sql(profile).device_directory_page_on_1)

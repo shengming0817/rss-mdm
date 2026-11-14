@@ -174,7 +174,7 @@ impl GroupStore {
         limit: usize,
     ) -> InTransaction<DeltaPage> {
         crate::store::input!(self.check_transaction(tx)?);
-        if !(1..=1000).contains(&limit) {
+        if !(1..=1024).contains(&limit) {
             return Ok(Err(Rejection::InvalidInput));
         }
         let build = crate::store::input!(self.build_in(tx, id).await?);

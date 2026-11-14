@@ -4,6 +4,7 @@ use crate::deployment::*;
 
 /// Immutable configuration and channel ports shared without sharing a transaction identity.
 pub struct Materials {
+    pub supersede_batch: rss_device_command::BatchLimit,
     pub registration: Arc<rss_mdm_registration_service::installation::Materials>,
     pub capacity: Arc<dyn crate::deployment::capacity::DeviceCapacity>,
     pub inputs: Arc<InputMaterials>,
@@ -58,13 +59,14 @@ impl Transactions {
             _ => return Err(Error::Unavailable(Failure::CommandInvariant)),
         };
         let audit = audit_store.clone();
+        let supersede_batch = materials.supersede_batch;
         let caller = runtime.clone();
         let (_, store) = runtime
-            .local_tx(tenant, deadline(), move |tx| {
+            .local_tx(audit_store.binding(), deadline(), move |tx| {
                 Box::pin(async move {
                     audit.bind_in(tx).await.map_err(PgError::from)?;
                     storage::admit_policy_participant(tx).await?;
-                    storage::bind_command_in(caller, tx, clock).await
+                    storage::bind_command_in(caller, tx, clock, supersede_batch).await
                 })
             })
             .await
@@ -76,16 +78,26 @@ impl Transactions {
                 |_| Err(Error::CommitUnknown),
                 |_| Err(invalid()),
             )?;
-        storage::bind_native_key(&runtime, tenant, materials.protection.fingerprint_id()).await?;
-        let reconcile_messaging =
-            rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, deadline())
-                .await
-                .map_err(|_| invalid())?;
-        let bootstrap = rss_mdm_registration_service::installation::Transactions::bind(
+        storage::bind_native_key(
+            &runtime,
+            audit_store.binding(),
+            materials.protection.fingerprint_id(),
+        )
+        .await?;
+        let reconcile_messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            tenant,
-            audit_store.clone(),
-            materials.registration.clone(),
+            audit_store.binding(),
+            deadline(),
+        ))
+        .await
+        .map_err(|_| invalid())?;
+        let bootstrap = Box::pin(
+            rss_mdm_registration_service::installation::Transactions::bind(
+                runtime.clone(),
+                tenant,
+                audit_store.clone(),
+                materials.registration.clone(),
+            ),
         )
         .await
         .map_err(|_| invalid())?;

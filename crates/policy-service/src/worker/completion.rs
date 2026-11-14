@@ -44,11 +44,15 @@ impl DurableStore for PolicyWork {
         &self,
         scope: &Scope,
         limit: usize,
+        scan_budget: u32,
         lease: Duration,
         control: &Control<'_, T>,
     ) -> std::result::Result<ClaimBatch<PgClaim>, ReconcileError> {
         self.check_scope(scope)?;
-        let result = self.store.claim_due(scope, limit, lease, control).await;
+        let result = self
+            .store
+            .claim_due(scope, limit, scan_budget, lease, control)
+            .await;
         self.service.record_scan(scope, result.as_ref().map(|_| ()));
         result
     }
@@ -96,7 +100,7 @@ impl DurableStore for PolicyWork {
                     .service
                     .runtime
                     .local_tx_with_context(
-                        self.service.tenant,
+                        self.service.audit_store.binding(),
                         rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                             control.remaining(),
                         ),
@@ -145,7 +149,7 @@ impl DurableStore for PolicyWork {
                     .work_owner(entity)?
                     .0
                     .local_tx_with_context(
-                        self.service.tenant,
+                        self.service.audit_store.binding(),
                         rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                             control.remaining(),
                         ),

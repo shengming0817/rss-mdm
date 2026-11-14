@@ -14,6 +14,7 @@ pub(crate) struct Assembly {
 #[expect(clippy::too_many_arguments, reason = "explicit host capabilities")]
 pub(crate) async fn assemble(
     config: &crate::config::Config,
+    background: &crate::background::Compiled,
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -32,6 +33,7 @@ pub(crate) async fn assemble(
         },
     ));
     let native_materials = Arc::new(native::Materials {
+        supersede_batch: background.command_supersede_batch,
         installations: authority,
         endpoints,
         protection: protection.clone(),
@@ -72,7 +74,6 @@ pub(crate) async fn assemble(
             enrollment.clone(),
             reconcile.clone(),
             budget.clone(),
-            config.background.device_concurrency,
         )
         .map_err(super::owner_errors::enrollment)?,
     );
@@ -96,7 +97,7 @@ pub(crate) async fn assemble(
         outbox,
         reconcile,
         budget,
-        config.background.device_concurrency,
+        background.command_recovery_batch,
     ));
 
     Ok(Assembly {

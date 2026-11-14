@@ -6670,6 +6670,8 @@
           "items": {
             "type": "string"
           },
+          "maxItems": 1024,
+          "minItems": 1,
           "type": "array",
           "uniqueItems": true
         }
@@ -6722,6 +6724,7 @@
             "$ref": "#/$defs/TelemetryDimension"
           },
           "description": "Closed dimensions. Device/resource/source identities are not arbitrary dimensions.",
+          "maxProperties": 1024,
           "type": "object"
         },
         "intervalStartPath": {
@@ -6996,7 +6999,7 @@
                 "minLength": 1,
                 "type": "string"
               },
-              "maxItems": 128,
+              "maxItems": 1024,
               "minItems": 1,
               "type": "array",
               "uniqueItems": true

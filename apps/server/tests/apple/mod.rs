@@ -28,7 +28,7 @@ async fn delivery(c: &Context, a: &Fixture) -> Result<rss_mdm_apple_channel::del
             c.audit
                 .on_runtime(
                     a.resources.storage.runtime.clone(),
-                    c.tenant,
+                    c.audit.binding(),
                     &rss_mdm_audit_integration::budget::AuditBudget::new(
                         std::time::Duration::from_secs(5),
                     )

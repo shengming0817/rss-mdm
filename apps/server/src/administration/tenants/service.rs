@@ -19,6 +19,7 @@ pub(crate) struct Service {
     pub(super) source_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(super) audit: AuditStore,
     pub(super) config: Config,
+    pub(super) identity_policy: rss_identity_postgres::AuthorityConfig,
     pub(super) installation: Installation,
     pub(super) management: TenantId,
     pub(super) kdf: Arc<rss_identity_core::account::PasswordKdf>,
@@ -32,6 +33,8 @@ impl Service {
         config: &crate::config::Config,
         management: TenantId,
         kdf: Arc<rss_identity_core::account::PasswordKdf>,
+        identity_policy: rss_identity_postgres::AuthorityConfig,
+        cutoff: rss_request_context::Deadline,
         policy: Arc<rss_mdm_authorization_service::identity_management::IdentityManagementPolicy>,
     ) -> std::result::Result<Option<Arc<Self>>, Error> {
         let Some(options) = &config.tenant_administration else {
@@ -66,10 +69,6 @@ impl Service {
             &options.registry_database,
             &installation.target,
             &installation.lineage,
-            &[(
-                management,
-                rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH,
-            )],
             crate::background::IDENTITY_CONNECTIONS,
         )
         .await
@@ -95,13 +94,13 @@ impl Service {
             if !bounded || !exact { return Err(invalid("registry capabilities")); }
             drop(connection);
             let budget = AuditBudget::new(Duration::from_secs(5));
-            let audit = AuditStore::new(pool.clone(), config.audit.integrity()?, source_runtime.clone(), management, &budget.control()).await.map_err(|_| invalid("audit"))?;
-            let this = Self { pool: pool.clone(), source_runtime: source_runtime.clone(), audit, config: options.clone(), installation, management, kdf, policy,
+            let audit = AuditStore::new(pool.clone(), config.audit.integrity()?, source_runtime.clone(), installation.execution(management, rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH).map_err(|_| invalid("execution"))?, &budget.control()).await.map_err(|_| invalid("audit"))?;
+            let this = Self { pool: pool.clone(), source_runtime: source_runtime.clone(), audit, config: options.clone(), identity_policy, installation, management, kdf, policy,
                 fingerprint: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
                 provisioning_slots: tokio::sync::Semaphore::new(crate::background::PROVISIONING_SLOTS as usize) };
             let target = TenantId::parse(&config.identity.tenant_id).map_err(|_| invalid("configuration"))?;
             let slot = this.provisioning_slots.try_acquire().map_err(|_| invalid("provisioning budget"))?;
-            let (runtime, _, _) = this.provisioner(target, config.storage_binding.epoch, &slot).await?;
+            let (runtime, _, _) = this.provisioner(target, config.storage_binding.epoch, &slot, cutoff).await?;
             runtime.close().await;
             drop(slot);
             Ok(Arc::new(this))

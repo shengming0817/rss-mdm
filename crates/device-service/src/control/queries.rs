@@ -11,6 +11,7 @@ pub struct Queries {
     pub(crate) apple_results: Arc<dyn apple_facts::AppleResults>,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) tenant: TenantId,
+    pub(crate) binding: rss_transactional_messaging::fence::ExecutionBinding,
 }
 pub struct Dependencies {
     pub read_pool: sqlx::PgPool,
@@ -18,7 +19,7 @@ pub struct Dependencies {
     pub windows_results: Arc<dyn crate::control::windows_results::Store>,
     pub apple_results: Arc<dyn apple_facts::AppleResults>,
     pub runtime: Arc<PgRuntime>,
-    pub tenant: TenantId,
+    pub binding: rss_transactional_messaging::fence::ExecutionBinding,
 }
 impl Queries {
     pub fn new(clock: Arc<dyn rss_request_context::Clock>, dependencies: Dependencies) -> Self {
@@ -29,7 +30,8 @@ impl Queries {
             windows_results: dependencies.windows_results,
             apple_results: dependencies.apple_results,
             runtime: dependencies.runtime,
-            tenant: dependencies.tenant,
+            tenant: dependencies.binding.tenant(),
+            binding: dependencies.binding,
         }
     }
 }

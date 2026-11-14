@@ -30,7 +30,6 @@ pub struct Policies {
     cursor_key: ring::hmac::Key,
     runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
     audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
-    tenant: rss_request_context::TenantId,
     policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
     inputs: std::sync::Arc<dyn crate::inputs::ExecutionPublication>,
     script: Option<std::sync::Arc<rss_mdm_script_service::inputs::Inputs>>,
@@ -49,7 +48,6 @@ pub struct Dependencies {
     pub cursor_key: Vec<u8>,
     pub runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
-    pub tenant: rss_request_context::TenantId,
     pub policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
     pub inputs: std::sync::Arc<dyn crate::inputs::ExecutionPublication>,
     pub script: Option<std::sync::Arc<rss_mdm_script_service::inputs::Inputs>>,
@@ -73,7 +71,6 @@ impl Policies {
             cursor_key,
             runtime,
             audit_store,
-            tenant,
             policy_store,
             inputs,
             script,
@@ -90,7 +87,6 @@ impl Policies {
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &cursor_key),
             runtime,
             audit_store,
-            tenant,
             policy_store,
             inputs,
             script,
@@ -180,7 +176,7 @@ impl Policies {
         run(
             &self.audit_store,
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             audit,
             (self, proof, id, op, audit, verified.as_ref(), &shape),
             |ctx, tx| {
@@ -320,7 +316,7 @@ impl Policies {
         run(
             &self.audit_store,
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             audit,
             (self, proof, audit),
             |ctx, tx| {

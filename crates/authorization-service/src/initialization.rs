@@ -13,9 +13,12 @@ pub struct Initialization {
     pub password: Password,
     pub operation_id: uuid::Uuid,
 }
-fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
-    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-        std::time::Duration::from_secs(10),
+fn remaining(
+    cutoff: rss_request_context::Deadline,
+) -> rss_transactional_messaging::policy::OperationDeadline {
+    rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+        cutoff,
+        &rss_mdm_audit_integration::budget::RuntimeTimer,
     )
 }
 fn identity_failure(error: AuthorityError) -> Error {
@@ -32,6 +35,7 @@ pub async fn initialize(
     store: &AuditStore,
     input: Initialization,
     audit: &RequestAudit,
+    cutoff: rss_request_context::Deadline,
 ) -> Result<Receipt, Error> {
     let Initialization {
         expected,
@@ -45,38 +49,52 @@ pub async fn initialize(
     if operation_id.is_nil() {
         return Err(Error::Malformed);
     }
-    let user = verify_local(authority, expected, login, password).await?.0;
-    crate::store::initialize_verified_user(profile, store, user, operation_id, audit).await
+    let user = verify_local(
+        authority,
+        store.binding(),
+        expected,
+        login,
+        password,
+        cutoff,
+    )
+    .await?
+    .0;
+    crate::store::initialize_verified_user(profile, store, user, operation_id, audit, cutoff).await
 }
 
 /// 原凭据的真实认证与精确主体核对；不创建账户、不恢复密码，也不新增授权。
 pub async fn verify_local(
     authority: &Authority,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     expected: User,
     login: LoginKey,
     password: Password,
+    cutoff: rss_request_context::Deadline,
 ) -> Result<VerifiedLocal, Error> {
     expected.validate(&expected.tenant_id, &expected.instance_id)?;
     crate::canonical_uuid(&expected.tenant_id)?;
     crate::canonical_uuid(&expected.instance_id)?;
     let tenant = TenantId::parse(&expected.tenant_id).map_err(|_| Error::Malformed)?;
+    if tenant != binding.tenant() {
+        return Err(Error::Forbidden);
+    }
     let issued = authority
         .login_local(
-            tenant,
+            binding,
             login,
             password,
             AttemptSource::parse("authorization-initialization")
                 .map_err(|_| Error::Configuration)?,
             None,
-            deadline(),
+            remaining(cutoff),
         )
         .await
         .map_err(identity_failure)?;
     let session = authority
         .inspect_session(
-            tenant,
+            binding,
             SessionSecret::parse(issued.secret().expose().into()).map_err(|_| Error::Corrupt)?,
-            deadline(),
+            remaining(cutoff),
         )
         .await
         .map_err(identity_failure)?;
@@ -87,7 +105,7 @@ pub async fn verify_local(
     };
     // Never leave a transferable bootstrap credential behind, including a target mismatch.
     authority
-        .revoke_current_session(session, deadline())
+        .revoke_current_session(session, remaining(cutoff))
         .await
         .map_err(identity_failure)?;
     if user != expected {
@@ -169,8 +187,17 @@ pub async fn initialize_baseline(
     input: Initialization,
     audit: &RequestAudit,
     targets: std::collections::BTreeSet<String>,
+    cutoff: rss_request_context::Deadline,
 ) -> Result<(Receipt, crate::baseline::Authority), Error> {
-    let verified = verify_local(authority, input.expected, input.login, input.password).await?;
+    let verified = verify_local(
+        authority,
+        store.binding(),
+        input.expected,
+        input.login,
+        input.password,
+        cutoff,
+    )
+    .await?;
     let user = verified.user().clone();
     let receipt = crate::store::initialize_verified_user(
         profile,
@@ -178,6 +205,7 @@ pub async fn initialize_baseline(
         user.clone(),
         input.operation_id,
         audit,
+        cutoff,
     )
     .await?;
     let frozen = crate::baseline::Authority::new(profile, user, receipt.clone(), targets)?;

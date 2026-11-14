@@ -36,3 +36,31 @@ fn ensure_authority(authority: &JournalAuthority<'_>, tenant: TenantId, token: &
     token.cancel();
     assert!(JournalReadGrant::verify(authority, tenant).is_err());
 }
+
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test owns the fixed monotonic origin"
+)]
+fn startup_and_pass_budgets_have_independent_cutoffs() {
+    struct Fixed(Instant);
+    impl rss_observation::Clock for Fixed {
+        fn now(&self) -> Instant {
+            self.0
+        }
+    }
+    let origin = Instant::now();
+    let policy = Policy::new(
+        Duration::from_secs(30),
+        Duration::from_secs(1),
+        Duration::from_secs(5),
+        64,
+        64 * 1024 * 1024,
+        64,
+        64,
+    )
+    .unwrap();
+    let clock = Clock::new(Arc::new(Fixed(origin)), policy);
+    assert_eq!(clock.startup_cutoff(), Duration::from_secs(30));
+    assert_eq!(clock.deadline().instant(), origin + Duration::from_secs(1));
+}

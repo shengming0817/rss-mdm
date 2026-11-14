@@ -10,6 +10,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub runtime: crate::identity::policy::RuntimePolicy,
     pub database: config::Database,
     pub audit: config::AuditConfig,
     pub installation: crate::migration::Installation,
@@ -20,6 +21,17 @@ pub struct Config {
     pub password_file: PathBuf,
 }
 pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
+    let cutoff = rss_request_context::Deadline::from_timeout(
+        &crate::lifecycle::RuntimeTimer,
+        crate::identity::policy::seconds(config.runtime.maintenance_seconds)?,
+    )
+    .map_err(|_| Error::Configuration(ConfigIssue::Budget))?;
+    let deadline = || {
+        rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+            cutoff,
+            &crate::lifecycle::RuntimeTimer,
+        )
+    };
     let invalid = || Error::Configuration(ConfigIssue::IdentityConfiguration);
     if config.database.user != "mdm_identity_maintenance" {
         return Err(invalid());
@@ -29,6 +41,9 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
         return Err(invalid());
     }
     let instance = InstanceId::parse(&config.installation.instance_id).map_err(|_| invalid())?;
+    let compiled = config
+        .runtime
+        .compile(instance, config.audit.integrity()?)?;
     let tenant = TenantId::parse(&config.tenant_id).map_err(|_| invalid())?;
     let key = AccountKey {
         tenant,
@@ -56,48 +71,69 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
         &config.database,
         &config.installation.target,
         &config.installation.lineage,
-        &[(tenant, config.expected_epoch)],
         crate::background::IDENTITY_CONNECTIONS,
     )
     .await?;
-    let kdf = Arc::new(PasswordKdf::new());
+    let kdf = compiled.kdf.clone();
     let result = async {
         let authority = Authority::connect_maintenance(
             runtime.clone(),
             kdf.clone(),
-            crate::identity::authority_config(instance, vec![tenant], config.audit.integrity()?)?,
-            crate::identity::deadline(),
+            compiled.authority,
+            config
+                .installation
+                .execution(tenant, config.expected_epoch)
+                .map_err(|_| invalid())?,
+            deadline(),
         )
         .await
         .map_err(crate::identity::failure)?;
         if let Some(login) = login {
             authority
-                .initialize(key, login, password, crate::identity::deadline())
+                .initialize(
+                    config
+                        .installation
+                        .execution(tenant, config.expected_epoch)
+                        .map_err(|_| invalid())?,
+                    key,
+                    login,
+                    password,
+                    deadline(),
+                )
                 .await
         } else {
             authority
-                .recover_local_password(key, password, crate::identity::deadline())
+                .recover_local_password(
+                    config
+                        .installation
+                        .execution(tenant, config.expected_epoch)
+                        .map_err(|_| invalid())?,
+                    key,
+                    password,
+                    deadline(),
+                )
                 .await
         }
         .map_err(crate::identity::failure)?;
         Ok(())
     }
     .await;
-    settle(runtime, kdf, result).await
+    settle(runtime, kdf, compiled.drain, result).await
 }
 /// Operator execution own the same bounded KDF/runtime cleanup, including failed authentication.
 pub(crate) async fn settle<T>(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     kdf: Arc<PasswordKdf>,
+    drain: Duration,
     result: Result<T, Error>,
 ) -> Result<T, Error> {
     kdf.close();
-    let drained = tokio::time::timeout(Duration::from_secs(5), kdf.wait_closed())
-        .await
-        .is_ok();
-    let closed = tokio::time::timeout(Duration::from_secs(5), runtime.close())
-        .await
-        .is_ok();
+    let (drained, closed) = tokio::join!(
+        tokio::time::timeout(drain, kdf.wait_closed()),
+        tokio::time::timeout(drain, runtime.close()),
+    );
+    let drained = drained.is_ok();
+    let closed = closed.is_ok();
     if !drained || !closed {
         eprintln!(
             "{}",

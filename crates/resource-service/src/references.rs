@@ -83,7 +83,7 @@ impl ResourceCatalog {
         let vid = id(version).map_err(|_| Error::Malformed)?;
         transaction::inspect(
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             (self, proof, resource, version, q, rid, vid),
             |ctx, tx| {
                 Box::pin(async move {

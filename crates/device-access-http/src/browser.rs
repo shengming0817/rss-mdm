@@ -14,6 +14,7 @@ use rss_mdm_authorization_service::context::{AuthorizedPrincipal, Principal, Req
 use rss_mdm_http_contract::{Router, module::Declaration};
 use std::{sync::Arc, time::Duration};
 pub struct Services {
+    pub request_budget: rss_axum::RequestBudget,
     pub vault: Arc<rss_mdm_vault_sync::Service>,
     pub identity: Arc<Identity>,
     pub authorization: Arc<rss_mdm_authorization_service::Store>,
@@ -73,6 +74,13 @@ async fn authenticate(
     mut request: Request,
     next: Next,
 ) -> Response {
+    let Some(control) = request
+        .extensions()
+        .get::<rss_axum::RequestControl>()
+        .cloned()
+    else {
+        return Error::Unavailable.into_response();
+    };
     let activity = if matches!(
         *request.method(),
         axum::http::Method::GET | axum::http::Method::HEAD
@@ -84,11 +92,12 @@ async fn authenticate(
     let authenticated = rss_identity_http_axum::authenticate_request(
         &s.identity.authority,
         &s.identity.http,
-        s.identity.tenant,
+        s.identity.binding,
         request.headers(),
         activity,
-        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-            Duration::from_secs(10),
+        rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+            control.deadline(),
+            &rss_mdm_audit_integration::budget::RuntimeTimer,
         ),
     )
     .await;
@@ -97,7 +106,7 @@ async fn authenticate(
         Err(r) => return r,
     };
     let audit = request.extensions().get::<RequestAudit>().cloned();
-    let deadline = s.authorization.now() + Duration::from_secs(8);
+    let deadline = control.deadline().instant();
     let result = tokio::time::timeout_at(deadline.into(), async {
         let principal = Principal::new(session)?;
         let proof = AuthorizedPrincipal::from_identity(&s.authorization, principal)?;
@@ -118,9 +127,10 @@ async fn authenticate(
                 proof: Arc::new(proof),
                 sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
                     s.identity.authority.clone(),
-                    s.identity.tenant,
+                    s.identity.binding,
                 ),
                 deadline,
+                cancellation: Arc::new(control),
             });
             tokio::time::timeout_at(deadline.into(), next.run(request))
                 .await
@@ -135,7 +145,11 @@ async fn authenticate(
 pub fn envelope(router: axum::Router, state: Arc<Services>) -> axum::Router {
     router
         .layer(axum::extract::DefaultBodyLimit::max(131072))
-        .layer(axum::middleware::from_fn_with_state(state, admit))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), admit))
+        .layer(axum::middleware::from_fn_with_state(
+            state.request_budget,
+            rss_axum::request_control,
+        ))
 }
 async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: Next) -> Response {
     let audit = RequestAudit::new(

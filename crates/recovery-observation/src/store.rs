@@ -38,11 +38,15 @@ impl<S: DurableStore> DurableStore for ObservedStore<'_, S> {
         &self,
         scope: &Scope,
         limit: usize,
+        scan_budget: u32,
         lease: Duration,
         control: &Control<'_, T>,
     ) -> Result<ClaimBatch<Self::Claim>, Error> {
         self.readiness.check(scope)?;
-        let result = self.store.claim_due(scope, limit, lease, control).await;
+        let result = self
+            .store
+            .claim_due(scope, limit, scan_budget, lease, control)
+            .await;
         self.readiness
             .scan(result.as_ref().map(|_| ()).map_err(|e| e.kind()));
         result

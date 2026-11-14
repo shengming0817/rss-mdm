@@ -1017,7 +1017,7 @@ pub async fn current_certificates_in(
     usage: Purpose,
     fingerprints: &[Vec<u8>],
 ) -> Result<std::collections::BTreeSet<Vec<u8>>, Error> {
-    if fingerprints.len() > 1000 || fingerprints.iter().any(|f| f.len() != 32) {
+    if fingerprints.len() > 1024 || fingerprints.iter().any(|f| f.len() != 32) {
         return Err(Error::Request);
     }
     let rows: Vec<Vec<u8>> =

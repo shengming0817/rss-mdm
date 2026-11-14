@@ -71,7 +71,13 @@ impl<'a> UploadAuthority<'a> {
                     .duplicate()
                     .map_err(|_| Error::Forbidden)?;
                 app.sessions
-                    .authenticate(&app.authorization, secret)
+                    .authenticate(
+                        &app.authorization,
+                        secret,
+                        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                            budget.remaining(),
+                        ),
+                    )
                     .await
                     .map_err(Error::from)
             })
@@ -277,7 +283,7 @@ pub async fn resolve(
     proof.require(Permission::ResourceWrite, None)?;
     transaction::inspect(
         &app.runtime,
-        app.tenant,
+        app.audit_store.binding(),
         Some(budget),
         (proof, id, input),
         |ctx, tx| {
@@ -317,7 +323,7 @@ pub async fn current(
     if matches!(value.binding.purpose, crate::Purpose::Software { .. }) {
         transaction::inspect(
             &app.runtime,
-            app.tenant,
+            app.audit_store.binding(),
             Some(budget),
             proof,
             |proof, tx| {
@@ -369,7 +375,7 @@ pub async fn record(
         return transaction::run(
             &app.audit_store,
             &app.runtime,
-            app.tenant,
+            app.audit_store.binding(),
             audit,
             &[],
             Some(budget),
@@ -394,7 +400,7 @@ pub async fn record(
     transaction::run(
         &app.audit_store,
         &app.runtime,
-        app.tenant,
+        app.audit_store.binding(),
         audit,
         &[
             crate::event::partition(app.tenant, &upload.binding.resource()?.resource).map_err(
@@ -506,7 +512,7 @@ pub async fn cleanup(
     for candidate in candidates {
         let deleted = transaction::inspect(
             &app.runtime,
-            app.tenant,
+            app.audit_store.binding(),
             None,
             (proof, &candidate),
             |ctx, tx| {
@@ -558,7 +564,7 @@ pub async fn mirror(
     let catalog = app.catalog.as_ref();
     transaction::inspect(
         &app.runtime,
-        app.tenant,
+        app.audit_store.binding(),
         Some(budget),
         (catalog, source),
         |ctx, tx| {
@@ -639,7 +645,7 @@ pub async fn receipt(
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, id);
     transaction::inspect(
         &app.runtime,
-        app.tenant,
+        app.audit_store.binding(),
         None,
         (proof, audit, &id, operation),
         |ctx, tx| {

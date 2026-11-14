@@ -14,7 +14,7 @@ impl PolicyWork {
             .ok_or_else(|| reconcile_error(Error::Unsupported))?;
         let pending = crate::transaction::inspect_budget(
             &self.service.runtime,
-            self.service.tenant,
+            self.service.audit_store.binding(),
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                 control.remaining(),
             ),
@@ -73,7 +73,7 @@ impl PolicyWork {
         let result = crate::transaction::run_budget(
             &self.service.audit_store,
             &self.service.runtime,
-            self.service.tenant,
+            self.service.audit_store.binding(),
             &audit,
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                 control.remaining(),

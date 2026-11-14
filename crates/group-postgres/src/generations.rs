@@ -86,7 +86,7 @@ fn check_page_selection(
     request: &BuildRequest,
 ) -> CommandOutcome<()> {
     if let Some(patch) = &request.patch {
-        if patch.add.len() + patch.remove.len() > 1000
+        if patch.add.len() + patch.remove.len() > 1024
             || patch.add.iter().any(|id| patch.remove.contains(id))
         {
             return Err(Rejection::InvalidInput);
@@ -98,7 +98,7 @@ fn check_page_selection(
     }
     if let Some(devices) = &request.changed_objects {
         if request.patch.is_some()
-            || devices.len() > 1000
+            || devices.len() > 1024
             || devices.windows(2).any(|v| v[0] >= v[1])
         {
             return Err(Rejection::InvalidInput);
@@ -167,7 +167,7 @@ impl GroupStore {
         limit: usize,
     ) -> InTransaction<Vec<GroupId>> {
         input!(self.check_transaction(tx)?);
-        if devices.len() > 1000 || !(1..=33).contains(&limit) {
+        if devices.len() > 1024 || !(1..=33).contains(&limit) {
             return Ok(Err(Rejection::InvalidInput));
         }
         for device in devices {
@@ -423,7 +423,7 @@ impl GroupStore {
         input!(check_build(&group, &build.request));
         if group.kind != GroupKind::System
             || decisions.is_empty()
-            || decisions.len() > 1000
+            || decisions.len() > 1024
             || decisions.windows(2).any(|v| v[0].object >= v[1].object)
             || decisions.iter().any(|d| {
                 d.origin != crate::DecisionOrigin::System

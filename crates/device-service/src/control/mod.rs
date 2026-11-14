@@ -63,7 +63,7 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 
 pub struct Service {
     pub(crate) worker_budget: Arc<tokio::sync::Semaphore>,
-    pub(crate) worker_concurrency: usize,
+    pub(crate) recovery_batch: rss_device_command::BatchLimit,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
     pub(crate) reconcile: rss_reconcile_postgres::PgStore,
     pub(crate) readiness: rss_mdm_recovery_observation::Readiness,
@@ -77,7 +77,7 @@ pub struct Dependencies {
     pub capacity: Arc<dyn capacity::DeviceCapacity>,
     pub task_cleanup: Arc<dyn crate::control::task_cleanup::TaskCleanup>,
     pub configuration_cleanup: Arc<dyn crate::control::configuration_cleanup::ConfigurationCleanup>,
-    pub worker_concurrency: usize,
+    pub recovery_batch: rss_device_command::BatchLimit,
     pub lock_pins: Option<Arc<dyn crate::control::lock_pin::LockPins>>,
     pub source: Arc<crate::planning::PlanningObjects>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
@@ -126,7 +126,7 @@ impl Service {
                 tenant: dependencies.tenant,
                 instance: dependencies.instance,
             },
-            worker_concurrency: dependencies.worker_concurrency,
+            recovery_batch: dependencies.recovery_batch,
             worker_budget: dependencies.worker_budget,
             readiness: rss_mdm_recovery_observation::Readiness::new(
                 recovery_scope(dependencies.tenant),

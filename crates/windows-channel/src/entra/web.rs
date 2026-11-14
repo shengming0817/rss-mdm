@@ -158,6 +158,7 @@ fn policy_matches(
     subject.check_live().map_err(|_| Error::Unauthorized)
 }
 async fn start(
+    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
     State(app): State<Arc<HttpState>>,
     StartHeaders(headers): StartHeaders,
     axum::Extension(a): axum::Extension<RequestAudit>,
@@ -172,7 +173,15 @@ async fn start(
         return Err(Error::Malformed);
     }
     let callback = input.redirect_uri.clone();
-    match start_flow(State(app), headers, axum::Extension(a), Query(input)).await {
+    match start_flow(
+        State(app),
+        headers,
+        axum::Extension(a),
+        Query(input),
+        control.deadline(),
+    )
+    .await
+    {
         Ok(response) => Ok(response),
         Err(error) => {
             let code = match &error {
@@ -192,6 +201,7 @@ async fn start_flow(
     headers: HeaderMap,
     axum::Extension(a): axum::Extension<RequestAudit>,
     Query(input): Query<Start>,
+    cutoff: rss_request_context::Deadline,
 ) -> Result<NativeRedirect, Error> {
     let entra = owner(&app)?;
     if input.client_request_id.is_nil()
@@ -205,7 +215,7 @@ async fn start_flow(
         return Err(Error::Malformed);
     }
     let token = bearer(&headers)?;
-    let subject = entra.verify(token.clone()).await?;
+    let subject = entra.verify(token.clone(), cutoff).await?;
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let expires_at = subject
         .claims()
@@ -252,6 +262,7 @@ async fn start_flow(
     Ok(response)
 }
 async fn context(
+    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
     State(app): State<Arc<HttpState>>,
     ContextHeaders(headers): ContextHeaders,
 ) -> Result<Json<TermsContext>, Error> {
@@ -262,7 +273,9 @@ async fn context(
     if origin(&headers)? != stored.flow.origin {
         return Err(Error::Forbidden);
     }
-    let subject = entra.verify(stored.flow.token.clone()).await?;
+    let subject = entra
+        .verify(stored.flow.token.clone(), control.deadline())
+        .await?;
     let settings = settings_in(&mut tx, &entra.tenant.to_string(), false).await?;
     policy_matches(&settings, &stored.flow, &subject)?;
     Ok(Json(TermsContext {
@@ -275,6 +288,7 @@ async fn context(
     }))
 }
 async fn finish(
+    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
     State(app): State<Arc<HttpState>>,
     FinishHeaders(headers): FinishHeaders,
     axum::Extension(a): axum::Extension<RequestAudit>,
@@ -297,7 +311,9 @@ async fn finish(
     if stored.flow.join && !input.accepted {
         return Err(Error::Forbidden);
     }
-    let subject = entra.verify(stored.flow.token.clone()).await?;
+    let subject = entra
+        .verify(stored.flow.token.clone(), control.deadline())
+        .await?;
     commit(&app, &subject, &stored, Some(input.accepted), &a).await?;
     let mut location = format!(
         "{}?IsAccepted={}",

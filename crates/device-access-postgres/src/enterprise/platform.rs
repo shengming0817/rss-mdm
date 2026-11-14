@@ -16,6 +16,7 @@ type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, PlatformError>> + Se
 pub struct Verifier {
     audience: String,
     tenant: TenantId,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     runtime: Arc<PgRuntime>,
     apple: Option<Arc<dyn PlatformVerifier>>,
     targets: BTreeMap<String, String>,
@@ -24,14 +25,15 @@ pub struct Verifier {
 impl Verifier {
     pub fn new(
         origin: &str,
-        tenant: TenantId,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         runtime: Arc<PgRuntime>,
         apple: Option<Arc<dyn PlatformVerifier>>,
         targets: BTreeMap<String, String>,
     ) -> Self {
         Self {
             audience: format!("{origin}/login"),
-            tenant,
+            tenant: execution.tenant(),
+            execution,
             runtime,
             apple,
             targets,
@@ -244,7 +246,7 @@ impl PlatformVerifier for Verifier {
             let attempt = self
                 .runtime
                 .local_tx_with_context(
-                    self.tenant,
+                    self.execution,
                     rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                         Duration::from_secs(5),
                     ),

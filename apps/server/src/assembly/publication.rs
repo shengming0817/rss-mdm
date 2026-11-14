@@ -2,7 +2,6 @@
 use crate::owner_storage::{OwnerRuntime, Resource, StorageBinding};
 use crate::{Error, Failure};
 use rss_request_context::{Deadline, TenantId};
-use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
 use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa, PgRuntime};
 use std::{sync::Arc, time::Duration};
 const SOURCE_STARTUP_SECONDS: u64 = 6;
@@ -34,11 +33,14 @@ pub(crate) async fn open(
 > {
     owner
         .runtime
-        .local_tx(tenant, crate::identity::deadline(), move |tx| {
-            Box::pin(async move {
-                tx.with_connection(move |c| {
-                    Box::pin(async move {
-                        if !sqlx::query_scalar::<_, bool>(
+        .local_tx(
+            owner.audit.binding(),
+            crate::identity::deadline(),
+            move |tx| {
+                Box::pin(async move {
+                    tx.with_connection(move |c| {
+                        Box::pin(async move {
+                            if !sqlx::query_scalar::<_, bool>(
                             rss_mdm_software_service::management::publication::HTTP_ADMISSION_SQL,
                         )
                         .fetch_one(&mut *c)
@@ -48,12 +50,13 @@ pub(crate) async fn open(
                                 "owner storage admission rejected".into(),
                             ));
                         }
-                        Ok(())
+                            Ok(())
+                        })
                     })
+                    .await
                 })
-                .await
-            })
-        })
+            },
+        )
         .await
         .fold(
             Ok,
@@ -97,11 +100,7 @@ pub(crate) async fn open_sources(
     use rss_mdm_software_service::publication as p;
     let invalid = || Error::Configuration(crate::ConfigIssue::Publication);
     let db = &config.database;
-    let binding = ExecutionBinding::new(
-        StorageIdentity::new(binding.target, binding.lineage).map_err(|_| invalid())?,
-        vec![(tenant, Epoch::new(binding.epoch).map_err(|_| invalid())?)],
-    )
-    .map_err(|_| invalid())?;
+    let binding = binding.execution(tenant)?;
     let pg = PgConfig::new(
         &db.host,
         db.port,
@@ -113,7 +112,7 @@ pub(crate) async fn open_sources(
     )
     .with_pool_limits(0, crate::background::AUXILIARY_CONNECTIONS);
     let runtime = Arc::new(
-        PgRuntime::connect_producer(pg, crate::lifecycle::RuntimeTimer, binding)
+        PgRuntime::connect_producer(pg, crate::lifecycle::RuntimeTimer, binding.storage())
             .await
             .map_err(|_| Error::Unavailable(Failure::Database))?,
     );
@@ -123,7 +122,7 @@ pub(crate) async fn open_sources(
     let publication_audit = Arc::new(
         directory
             .audit_store
-            .on_runtime(runtime.clone(), tenant, &audit_budget.control())
+            .on_runtime(runtime.clone(), binding, &audit_budget.control())
             .await?,
     );
     for source in &config.sources {
@@ -138,7 +137,7 @@ pub(crate) async fn open_sources(
                     &source.credentials,
                 )?),
             },
-            tenant,
+            binding,
             source.name.clone(),
             source.target.clone(),
             p::ServiceIdentity {

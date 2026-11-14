@@ -107,6 +107,9 @@ pub async fn reject_account_change(
             rss_mdm_authorization_service::credential::RequestCredential::Bearer(
                 rss_identity_core::session::BearerSecret::parse(token)?,
             ),
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                std::time::Duration::from_secs(10),
+            ),
         )
         .await?;
     let mut changed = publication.clone();
@@ -145,7 +148,7 @@ pub async fn publish_protected(
     let principal = c
         .authority
         .inspect_bearer(
-            c.tenant,
+            c.sessions.binding(),
             rss_identity_core::session::BearerSecret::parse(token)?,
             platform::deadline(),
         )

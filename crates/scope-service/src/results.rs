@@ -125,7 +125,7 @@ pub async fn source_devices_on(
     after: Option<&rss_mdm_agent_wire::DeviceId>,
     limit: usize,
 ) -> Result<Vec<rss_mdm_agent_wire::DeviceId>, sqlx::Error> {
-    if !(1..=1001).contains(&limit) || sources.len() > 1000 {
+    if !(1..=1025).contains(&limit) || sources.len() > 1024 {
         return Err(invariant());
     }
     sqlx::query_scalar::<_, Uuid>(crate::storage_profile::sql(profile).results_source_devices_on_1)
@@ -151,7 +151,7 @@ pub async fn source_objects_on(
     after: Option<rss_mdm_agent_wire::ObjectRef>,
     limit: usize,
 ) -> Result<Vec<rss_mdm_scope_postgres::SourceMember>, sqlx::Error> {
-    if !(1..=1001).contains(&limit) || sources.len() > 1000 {
+    if !(1..=1025).contains(&limit) || sources.len() > 1024 {
         return Err(invariant());
     }
     let rows = sqlx::query(crate::storage_profile::sql(profile).results_source_objects_on_1)

@@ -3,7 +3,7 @@ use super::*;
 use rss_mdm_query::directory::{Query, Schema};
 use serde_json::Value;
 pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<Metadata>("agent_configurations", &["configurationId"], 64, 1000, &[rss_mdm_query::directory::Exclusion { path: "targets", reason: "Each target combines platform and architecture; use the typed platform/architecture selectors with same-target matching" }]).and_then(|s| s.with_selectors::<TargetSelectors>("Installation target capabilities, matched within the same target")).expect("Public directory model")
+    Schema::derived::<Metadata>("agent_configurations", &["configurationId"], 64, 1024, &[rss_mdm_query::directory::Exclusion { path: "targets", reason: "Each target combines platform and architecture; use the typed platform/architecture selectors with same-target matching" }]).and_then(|s| s.with_selectors::<TargetSelectors>("Installation target capabilities, matched within the same target")).expect("Public directory model")
 });
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -28,7 +28,7 @@ impl Service {
         crate::control::transaction::run(
             &self.transactions.audit_store,
             &self.transactions.runtime,
-            self.transactions.tenant,
+            self.transactions.audit_store.binding(),
             audit,
             (self, proof, device, input, audit),
             |ctx, tx| {
@@ -133,7 +133,7 @@ impl Service {
         if change.request_id.is_nil() || change.expected_revision < 1 {
             return Err(Error::Malformed);
         }
-        crate::control::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.tenant,audit,(self,proof,device,id,change,reauthorization,audit),|ctx,tx|Box::pin(async move {
+        crate::control::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.audit_store.binding(),audit,(self,proof,device,id,change,reauthorization,audit),|ctx,tx|Box::pin(async move {
             let (service,proof,device,id,change,reauthorization,audit) = *ctx;
 
             let reauthorize = reauthorization.is_some();

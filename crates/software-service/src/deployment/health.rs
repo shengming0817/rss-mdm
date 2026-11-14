@@ -27,13 +27,14 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         &self,
         scope: &rss_reconcile::Scope,
         limit: usize,
+        scan_budget: u32,
         lease: std::time::Duration,
         control: &rss_reconcile::Control<'_, T>,
     ) -> Result<rss_reconcile::ClaimBatch<Self::Claim>, rss_reconcile::Error> {
         if self.0.readiness.health().inputs != Some(rss_mdm_recovery_observation::Phase::Healthy) {
             let suspended = crate::deployment::transaction::inspect(
                 &self.0.transactions.runtime,
-                self.0.transactions.tenant,
+                self.0.transactions.audit_store.binding(),
                 (),
                 |_, tx| {
                     Box::pin(async move {
@@ -52,7 +53,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
             });
         }
         rss_mdm_recovery_observation::ObservedStore::new(&self.0.reconcile, &self.0.readiness)
-            .claim_due(scope, limit, lease, control)
+            .claim_due(scope, limit, scan_budget, lease, control)
             .await
     }
     async fn renew<T: rss_reconcile::Timer>(
@@ -98,7 +99,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
             if matches!(completion, Completion::Converged | Completion::Reobserve(_)) {
                 let delay = crate::deployment::transaction::inspect(
                     &self.0.transactions.runtime,
-                    self.0.transactions.tenant,
+                    self.0.transactions.audit_store.binding(),
                     (self.0, work),
                     |(service, work), tx| {
                         Box::pin(async move {
@@ -118,7 +119,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         {
             let waiting = crate::deployment::transaction::inspect(
                 &self.0.transactions.runtime,
-                self.0.transactions.tenant,
+                self.0.transactions.audit_store.binding(),
                 work,
                 |work, tx| {
                     Box::pin(async move {
@@ -139,7 +140,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         {
             let pending = crate::deployment::transaction::inspect(
                 &self.0.transactions.runtime,
-                self.0.transactions.tenant,
+                self.0.transactions.audit_store.binding(),
                 policy,
                 |policy, tx| {
                     Box::pin(async move {
@@ -159,7 +160,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
                 (false, Completion::Reobserve(_)) => {
                     let pending = crate::deployment::transaction::inspect(
                         &self.0.transactions.runtime,
-                        self.0.transactions.tenant,
+                        self.0.transactions.audit_store.binding(),
                         claim.target().entity(),
                         |entity, tx| {
                             Box::pin(async move {

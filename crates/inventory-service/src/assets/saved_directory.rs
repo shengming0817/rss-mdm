@@ -48,7 +48,7 @@ impl AssetService {
             "asset_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        crate::transaction::inspect(&self.runtime,self.tenant,(self,p,q,audit),|ctx,tx|Box::pin(async move{
+        crate::transaction::inspect(&self.runtime,self.audit_store.binding(),(self,p,q,audit),|ctx,tx|Box::pin(async move{
    let(s,p,q,_audit)=*ctx;let current=query_authority(tx,p).await?;
    // Saved queries are personal documents, not a directory of device facts.
    current.inventory_devices(p)?;

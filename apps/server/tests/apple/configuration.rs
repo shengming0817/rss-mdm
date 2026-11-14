@@ -219,7 +219,7 @@ async fn reconcile(
         rss_mdm_policy_service::transaction::run(
             &owner.audit,
             &owner.runtime,
-            c.tenant,
+            c.audit.binding(),
             &audit,
             (cfg, device, &audit, &owner.audit),
             |ctx, tx| {
@@ -286,6 +286,7 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
     native.validate()?;
     let owner = planning::owner(&c, "mdm_policy_runtime").await?;
     let app = crate::assembly::policy::application(
+        &crate::authority_t2_support::background()?,
         &owner,
         c.tenant,
         &[7; 32],
@@ -492,6 +493,7 @@ async fn policy_profile_reservation_dispatch_and_observation() -> Result<()> {
     persist_policy(&c, policy, version, json!({"scope":scope,"action":{"resource":{"id":"policy-apple-test","version":"1","platform":"macos","architecture":"aarch64","variant":"default"},"kind":"configuration","exit":"retain"}}), serde_json::to_value(frozen)?).await?;
     let owner = planning::owner(&c, "mdm_policy_runtime").await?;
     let app = crate::assembly::policy::application(
+        &crate::authority_t2_support::background()?,
         &owner,
         c.tenant,
         &[7; 32],

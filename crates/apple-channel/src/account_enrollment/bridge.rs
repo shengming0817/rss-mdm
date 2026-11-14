@@ -182,6 +182,7 @@ pub struct Finish {
     csrf: String,
 }
 pub(super) async fn finish(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<HttpState>>,
     FinishHeaders(mut headers): FinishHeaders,
     Extension(audit): Extension<RequestAudit>,
@@ -202,7 +203,7 @@ pub(super) async fn finish(
         HeaderValue::from_str(&input.csrf).map_err(|_| Error::Forbidden)?,
     );
     headers.insert("x-identity-request", HeaderValue::from_static("1"));
-    let proof = authenticate(&app, &headers, true).await?;
+    let proof = authenticate(&app, &headers, true, control.deadline()).await?;
     proof.bind_audit(&audit)?;
     audit.owned_operation(
         rss_mdm_audit_integration::operation::OperationOwner::AppleAccountEnrollment,

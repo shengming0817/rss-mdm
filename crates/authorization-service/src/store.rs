@@ -485,6 +485,7 @@ pub(crate) async fn initialize_verified_user(
     user: User,
     key: Uuid,
     audit: &RequestAudit,
+    cutoff: rss_request_context::Deadline,
 ) -> Result<Receipt, Error> {
     canonical_uuid(&user.instance_id)?;
     canonical_uuid(&user.tenant_id)?;
@@ -511,8 +512,7 @@ pub(crate) async fn initialize_verified_user(
         key,
         digest: &digest,
     };
-    let budget =
-        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::until(cutoff);
     let fact = rss_mdm_audit_integration::Fact::business(
         audit,
         rss_mdm_audit_integration::operation::OperationOwner::Authorization,

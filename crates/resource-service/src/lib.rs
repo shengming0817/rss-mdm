@@ -464,11 +464,11 @@ impl ResourceCatalog {
         } = deps;
         let directory_cursor = rss_mdm_query::cursor::CursorCodec::new(&key)
             .map_err(|_| Error::Unavailable(Failure::ResourceAdmission))?;
-        let resources = pg::ResourceStore::new(runtime.clone(), tenant, deadline())
+        let resources = pg::ResourceStore::new(runtime.clone(), audit_store.binding(), deadline())
             .await
             .map_err(|_| Error::Unavailable(Failure::ResourceAdmission))?;
         runtime
-            .local_tx(tenant, deadline(), |tx| {
+            .local_tx(audit_store.binding(), deadline(), |tx| {
                 Box::pin(async move {
                     pg::admit_application_in(tx).await?;
                     Ok(())
@@ -523,7 +523,7 @@ impl ResourceCatalog {
         crate::transaction::run(
             &self.audit_store,
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             audit,
             (self, command, audit, proof, permission),
             |ctx, tx| {

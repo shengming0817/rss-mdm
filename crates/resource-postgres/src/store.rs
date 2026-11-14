@@ -5,6 +5,7 @@ use rss_mdm_backend_postgres_support::MAX_DOCUMENT;
 use rss_mdm_backend_postgres_support::digest;
 use rss_mdm_backend_postgres_support::{AggregateRecord, RequestRecord};
 use rss_request_context::TenantId;
+use rss_transactional_messaging::fence::ExecutionBinding;
 use rss_transactional_messaging::policy::OperationDeadline;
 use rss_transactional_messaging_postgres::{PgError, PgOutboxWriter, PgRuntime, PgTransaction};
 use serde_json::{Value, json};
@@ -77,6 +78,7 @@ pub struct Receipt {
 pub struct ResourceStore {
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
+    binding: ExecutionBinding,
     writer: PgOutboxWriter,
 }
 impl ResourceStore {
@@ -98,12 +100,13 @@ impl ResourceStore {
     /// Returns a settlement error on admission failure; never migrates or closes the runtime.
     pub async fn new(
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
+        binding: ExecutionBinding,
         d: OperationDeadline,
     ) -> Result<Self, Error> {
+        let tenant = binding.tenant();
         settle(
             runtime
-                .local_tx(tenant, d, |tx| {
+                .local_tx(binding, d, |tx| {
                     Box::pin(async move {
                         STORAGE.verify(tx, crate::ADMISSION).await?;
                         let complete: bool = tx.with_connection(|c| Box::pin(async move {
@@ -119,6 +122,7 @@ impl ResourceStore {
             writer: PgOutboxWriter::new(runtime.clone(), event::domain()),
             runtime,
             tenant,
+            binding,
         })
     }
     /// Return the tenant permanently bound to this store.
@@ -142,7 +146,7 @@ impl ResourceStore {
     ) -> Result<Option<StoredResource>, Error> {
         settle(
             self.runtime
-                .local_tx_with_context(self.tenant, d, (self, id), |(s, id), tx| {
+                .local_tx_with_context(self.binding, d, (self, id), |(s, id), tx| {
                     Box::pin(async move { s.get_in(tx, id).await })
                 })
                 .await,
@@ -193,7 +197,7 @@ impl ResourceStore {
         }
         settle(
             self.runtime
-                .local_tx_with_context(self.tenant, d, (self, r), |(s, r), tx| {
+                .local_tx_with_context(self.binding, d, (self, r), |(s, r), tx| {
                     Box::pin(async move {
                         tx.prepare_outbox_partitions(&[s.partition(r.resource.as_str())?])
                             .await?;
@@ -391,7 +395,7 @@ impl ResourceStore {
     pub async fn operation(&self, id: &Id, d: OperationDeadline) -> Result<Option<Receipt>, Error> {
         settle(
             self.runtime
-                .local_tx_with_context(self.tenant, d, id, |id, tx| {
+                .local_tx_with_context(self.binding, d, id, |id, tx| {
                     Box::pin(async move {
                         Ok(Ok(STORAGE
                             .receipt(tx, id.as_str())
@@ -412,7 +416,7 @@ impl ResourceStore {
     ) -> Result<Option<Version>, Error> {
         settle(
             self.runtime
-                .local_tx_with_context(self.tenant, d, (id, label), |(id, label), tx| {
+                .local_tx_with_context(self.binding, d, (id, label), |(id, label), tx| {
                     Box::pin(async move {
                         let value = STORAGE
                             .immutable(tx, id.as_str(), "version", label.as_str())
@@ -604,7 +608,7 @@ pub async fn version_facts_on(
             payload_bytes: 0,
         });
     }
-    if requests.len() > 1000 {
+    if requests.len() > 1024 {
         return Err(STORAGE.fault("store::version_facts_on"));
     }
     let current: Option<String> =

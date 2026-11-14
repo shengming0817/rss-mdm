@@ -54,11 +54,7 @@ impl Inputs {
             .connect_with(self.options(role)?)
             .await?)
     }
-    pub async fn runtime(
-        &self,
-        role: &str,
-        tenant: rss_request_context::TenantId,
-    ) -> Result<Arc<PgRuntime>> {
+    pub async fn runtime(&self, role: &str) -> Result<Arc<PgRuntime>> {
         let db = self.database(role);
         let config = PgConfig::new(
             &db.host,
@@ -69,14 +65,11 @@ impl Inputs {
             PgPrivateCa::from_pem(std::fs::read(&db.ca_file)?)?,
         )
         .with_pool_limits(0, 4);
-        let binding = ExecutionBinding::new(
-            StorageIdentity::new(self.installation.target, self.installation.lineage)?,
-            vec![(tenant, Epoch::new(1)?)],
-        )?;
+        let storage = StorageIdentity::new(self.installation.target, self.installation.lineage)?;
         let runtime = if role == "da_command_runtime" {
-            PgRuntime::connect(config, Timer, binding).await
+            PgRuntime::connect(config, Timer, storage).await
         } else {
-            PgRuntime::connect_producer(config, Timer, binding).await
+            PgRuntime::connect_producer(config, Timer, storage).await
         };
         Ok(Arc::new(
             runtime.map_err(|e| anyhow::anyhow!("DA runtime {role}: {e}"))?,
@@ -204,7 +197,12 @@ impl Context {
         rss_mdm_inventory_postgres::initialize_fields_in(&mut tx, tenant).await?;
         tx.commit().await?;
         let access = inputs.pool("da_access").await?;
-        let runtime = inputs.runtime("da_command_runtime", tenant).await?;
+        let runtime = inputs.runtime("da_command_runtime").await?;
+        let binding = ExecutionBinding::new(
+            StorageIdentity::new(inputs.installation.target, inputs.installation.lineage)?,
+            tenant,
+            Epoch::new(1)?,
+        );
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(10));
         let audit_pool = inputs.pool("da_command_runtime").await?;
         let audit = Arc::new(
@@ -212,27 +210,30 @@ impl Context {
                 audit_pool.clone(),
                 rss_audit_postgres::Integrity::Plain,
                 runtime.clone(),
-                tenant,
+                binding,
                 &budget.control(),
             )
             .await?,
         );
-        let access_runtime = inputs.runtime("da_access", tenant).await?;
+        let access_runtime = inputs.runtime("da_access").await?;
         let access_audit = Arc::new(
             audit
-                .on_runtime(access_runtime.clone(), tenant, &budget.control())
+                .on_runtime(access_runtime.clone(), binding, &budget.control())
                 .await?,
         );
-        let identity_runtime = inputs.runtime("da_identity_runtime", tenant).await?;
+        let identity_runtime = inputs.runtime("da_identity_runtime").await?;
         let authority = rss_identity_postgres::Authority::connect_runtime(
             identity_runtime.clone(),
-            Arc::new(rss_identity_core::account::PasswordKdf::new()),
+            Arc::new(rss_identity_core::account::PasswordKdf::new(
+                std::num::NonZeroUsize::new(4).unwrap(),
+                std::num::NonZeroU64::new(128 * 1024 * 1024).unwrap(),
+            )?),
             rss_identity_postgres::AuthorityConfig::new(
                 rss_identity_core::InstanceId::parse(&inputs.installation.instance_id)?,
-                vec![tenant],
                 rss_identity_core::session::SessionPolicy::new(900, 14400)?,
                 rss_audit_postgres::Integrity::Plain,
             )?,
+            binding,
             Arc::new(
                 rss_mdm_authorization_service::identity_management::IdentityManagementPolicy::new(
                     DA,
@@ -245,7 +246,7 @@ impl Context {
         )
         .await?;
         let sessions = Arc::new(
-            rss_mdm_authorization_service::session::SessionAuthority::new(authority, tenant),
+            rss_mdm_authorization_service::session::SessionAuthority::new(authority, binding),
         );
         Ok(Self {
             inputs,

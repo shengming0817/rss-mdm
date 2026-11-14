@@ -2,11 +2,11 @@
 use super::*;
 use rss_mdm_query::directory::Schema;
 pub static BATCHES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<Batch>("policy_event_batches", &["id"], 64, 1000, &[rss_mdm_query::directory::Exclusion{path:"request.executionContext.sourceCredentials",reason:"Each credential pairs its source and identity; this directory does not define a same-credential selector"}])
+    Schema::derived::<Batch>("policy_event_batches", &["id"], 64, 1024, &[rss_mdm_query::directory::Exclusion{path:"request.executionContext.sourceCredentials",reason:"Each credential pairs its source and identity; this directory does not define a same-credential selector"}])
         .expect("Public event batch model")
 });
 pub static MEMBERS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<Member>("policy_event_members", &["id"],64,1000,&[
+    Schema::derived::<Member>("policy_event_members", &["id"],64,1024,&[
     rss_mdm_query::directory::Exclusion { path:"decision.operations", reason:"Operation references are object arrays requiring kind and identity to match the same element" },
     rss_mdm_query::directory::Exclusion { path:"operations", reason:"Per-operation live progress has heterogeneous owner-specific evidence; inspect each original operation" },
 ]).expect("Public event member model")
@@ -22,7 +22,7 @@ impl Events {
     {
         crate::transaction::inspect(
             &self.application.runtime,
-            self.application.tenant,
+            self.application.audit_store.binding(),
             (self, p, device),
             |ctx, tx| {
                 Box::pin(async move {
@@ -64,7 +64,7 @@ impl Events {
         let caller = Caller::Management { actor: p.actor() }.key()?;
         crate::transaction::inspect(
             &self.application.runtime,
-            self.application.tenant,
+            self.application.audit_store.binding(),
             (self, p, device, caller),
             |ctx, tx| {
                 Box::pin(async move {
@@ -165,7 +165,7 @@ impl Events {
         let p = &self.application;
         crate::transaction::inspect(
             &self.application.runtime,
-            p.tenant,
+            p.audit_store.binding(),
             (
                 self, proof, principal, agent, device, batch, members, &query,
             ),

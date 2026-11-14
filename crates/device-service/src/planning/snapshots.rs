@@ -128,7 +128,7 @@ pub(super) async fn page(
     limit: usize,
     selected: Option<Vec<ObjectRef>>,
 ) -> Result<Vec<DeviceObject>, sqlx::Error> {
-    if !(1..=1000).contains(&limit) {
+    if !(1..=1024).contains(&limit) {
         return Err(storage("object page limit"));
     }
     let selected_kinds = selected

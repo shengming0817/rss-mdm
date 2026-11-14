@@ -11,7 +11,7 @@ impl AssetService {
         binding: &impl serde::Serialize,
         page: &Page,
     ) -> Result<(usize, Option<T>, String)> {
-        if !(1..=1000).contains(&page.limit) {
+        if !(1..=1024).contains(&page.limit) {
             return Err(Error::Malformed.into());
         }
         let binding = digest(&("software-assets", self.tenant.to_string(), scope, binding))?;

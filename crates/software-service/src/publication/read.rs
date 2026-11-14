@@ -74,7 +74,7 @@ impl PublicationService {
         let (version, subject, target) = settle(
             self.runtime
                 .local_tx_with_context(
-                    self.tenant(),
+                    self.binding,
                     budget(cutoff),
                     (self, publication),
                     |(s, id), tx| Box::pin(async move { s.exports().published_in(tx, *id).await }),
@@ -92,7 +92,7 @@ impl PublicationService {
         settle(
             self.runtime
                 .local_tx_with_context(
-                    self.tenant(),
+                    self.binding,
                     budget(cutoff),
                     (self, publication),
                     |(s, id), tx| {
@@ -146,7 +146,7 @@ impl PublicationService {
         }
         let binding = self.sources.binding().identity.clone();
         let after = after.to_owned();
-        settle(self.runtime.local_tx_with_context(self.tenant(),budget(cutoff),(binding,after),|(binding,after),tx|Box::pin(async move {
+        settle(self.runtime.local_tx_with_context(self.binding,budget(cutoff),(binding,after),|(binding,after),tx|Box::pin(async move {
             let tenant=tx.tenant_id().to_string();let binding=binding.clone();let after=after.clone();
             let rows=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT coordinate,publication FROM mdm_software_composition.projections WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate COLLATE \"C\">$3 ORDER BY coordinate COLLATE \"C\" LIMIT $4").bind(tenant).bind(binding).bind(after).bind(limit as i64).fetch_all(c).await})).await?;
             let mut values=Vec::new();for row in rows {let id:Vec<u8>=row.try_get("publication")?;values.push((row.try_get("coordinate")?,id.try_into().map_err(|_|db::fault())?));}Ok(Ok(values))
@@ -165,7 +165,7 @@ impl PublicationService {
         }
         let binding = self.sources.binding().identity.clone();
         let coordinate = coordinate.to_owned();
-        let id=settle(self.runtime.local_tx_with_context(self.tenant(),budget(cutoff),(binding,coordinate),|(binding,coordinate),tx|Box::pin(async move {
+        let id=settle(self.runtime.local_tx_with_context(self.binding,budget(cutoff),(binding,coordinate),|(binding,coordinate),tx|Box::pin(async move {
             let tenant=tx.tenant_id().to_string();let binding=binding.clone();let coordinate=coordinate.clone();
             let bytes:Option<Vec<u8>>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT publication FROM mdm_software_composition.projections WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3").bind(tenant).bind(binding).bind(coordinate).fetch_optional(c).await})).await?;
             Ok(bytes.map(|b|b.try_into().map_err(|_|Error::Content)).transpose().map(|v|v.ok_or(Error::PublicationNotFound)).and_then(|v|v))
@@ -182,7 +182,7 @@ impl PublicationService {
         let binding = self.sources.binding().identity.clone();
         let resource = resource.to_owned();
         let version = version.to_owned();
-        let ids=settle(self.runtime.local_tx_with_context(self.tenant(),budget(cutoff),(binding,resource,version),|(binding,resource,version),tx|Box::pin(async move {
+        let ids=settle(self.runtime.local_tx_with_context(self.binding,budget(cutoff),(binding,resource,version),|(binding,resource,version),tx|Box::pin(async move {
             let tenant=tx.tenant_id().to_string();let binding=binding.clone();let resource=resource.clone();let version=version.clone();
             let bytes:Vec<Vec<u8>>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT DISTINCT p.publication FROM mdm_software_composition.projections p JOIN mdm_software_composition.targets t ON t.tenant_id=p.tenant_id AND t.id LIKE ('p:'||encode(p.publication,'hex')||':%') JOIN mdm_software_composition.subjects s ON s.tenant_id=t.tenant_id AND s.record=t.record WHERE p.tenant_id=$1::uuid AND p.binding=$2 AND s.resource=$3 AND s.version=$4 LIMIT 4").bind(tenant).bind(binding).bind(resource).bind(version).fetch_all(c).await})).await?;
             let ids=bytes.into_iter().map(|b|b.try_into().map_err(|_|Error::Content)).collect::<Result<Vec<[u8;32]>>>();Ok(ids)
@@ -213,7 +213,7 @@ impl PublicationService {
         settle(
             self.runtime
                 .local_tx_with_context(
-                    self.tenant(),
+                    self.binding,
                     budget(cutoff),
                     (self, publication, repo, input),
                     |(s, id, repo, input), tx| {

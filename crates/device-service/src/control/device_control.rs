@@ -263,7 +263,7 @@ pub(crate) async fn applicability_on(
     checks: &[Check],
 ) -> crate::control::Result<Vec<Applicability>> {
     use std::collections::BTreeMap;
-    if checks.len() > 1000 {
+    if checks.len() > 1024 {
         return Err(Error::Malformed.into());
     }
     let mut output = BTreeMap::new();

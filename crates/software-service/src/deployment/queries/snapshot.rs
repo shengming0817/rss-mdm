@@ -90,7 +90,7 @@ impl Queries {
         }
         crate::deployment::transaction::inspect_budget(
             &self.runtime,
-            self.tenant,
+            self.binding,
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(remaining()),
             (proof, binding, registration),
             |state, tx| {

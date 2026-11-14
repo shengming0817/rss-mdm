@@ -21,7 +21,7 @@ pub async fn read(
     auth.manage(Permission::PolicyRead)?;
     crate::transaction::inspect(
         &service.runtime,
-        service.tenant,
+        service.audit_store.binding(),
         (&service, &auth, &audit),
         |ctx, tx| {
             Box::pin(async move {
@@ -58,7 +58,7 @@ pub async fn list(
     );
     crate::transaction::inspect(
         &service.runtime,
-        service.tenant,
+        service.audit_store.binding(),
         (service, auth, audit, query),
         |ctx, tx| {
             Box::pin(async move {
@@ -106,7 +106,7 @@ pub async fn resolve(
         "management_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    crate::transaction::inspect(&service.runtime, service.tenant, (service,auth,audit,selector), |ctx,tx| Box::pin(async move {
+    crate::transaction::inspect(&service.runtime, service.audit_store.binding(), (service,auth,audit,selector), |ctx,tx| Box::pin(async move {
         let (s,a,audit,selector) = *ctx;
         crate::action_admission::current(tx,a).await?.require(a,Permission::PolicyRead,None)?;
         let id = checked(s.policy_store.reader().resolve_in(tx,selector).await?)?.ok_or(Error::NotFound)?;
@@ -143,7 +143,7 @@ pub async fn operation_receipt(
     p.manage(Permission::PolicyRead)?;
     crate::transaction::inspect(
         &service.runtime,
-        service.tenant,
+        service.audit_store.binding(),
         (service, p),
         |(s, p), tx| {
             Box::pin(async move {
@@ -193,7 +193,7 @@ pub async fn work_receipt(
 ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
     crate::transaction::inspect(
         &service.runtime,
-        service.tenant,
+        service.audit_store.binding(),
         (service, p),
         |(s, p), tx| {
             Box::pin(async move {
@@ -232,7 +232,7 @@ pub fn parse(raw: &str) -> rss_mdm_query::Result<Query> {
 use rss_mdm_query::directory::Schema;
 pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
     use rss_mdm_query::directory::Exclusion;
-    Schema::derived::<Row>("policies", &["id"], 64, 1000, &[
+    Schema::derived::<Row>("policies", &["id"], 64, 1024, &[
         Exclusion { path: "definition.action.parameters", reason: "Dynamic Resource parameter names and fixed values require the Resource's sensitivity/type authority" },
         Exclusion { path: "definition.action.rollout.stages", reason: "Rollout object arrays require same-stage conditions" },
         Exclusion { path: "definition.selfService.access.selectors", reason: "Access selector object arrays require same-selector conditions" },

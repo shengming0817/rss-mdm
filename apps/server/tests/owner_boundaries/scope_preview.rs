@@ -110,9 +110,15 @@ async fn draft_algebra_is_read_only_and_enforces_live_permissions() -> Result<()
         .for_product(rss_mdm_audit_integration::StorageProfile::Da);
     let da = rss_mdm_authorization_service::session::SessionAuthority::new(
         c.authority.clone(),
-        c.tenant,
+        c.audit.binding(),
     )
-    .authenticate(&da_access, account.credential()?)
+    .authenticate(
+        &da_access,
+        account.credential()?,
+        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+            std::time::Duration::from_secs(8),
+        ),
+    )
     .await?;
     da.manage(P::PolicyRead)?;
     let da_audit = rss_mdm_audit_integration::RequestAudit::new(
@@ -160,13 +166,19 @@ async fn http_preview_and_recompute_use_the_formal_contract() -> Result<()> {
     let app = rss_mdm_management_http::planning::policies::scope_http::routes()
         .into_axum()
         .with_state(policies.policies.clone())
-        .layer(axum::Extension(RequestAuth {
-            proof: p.clone(),
-            sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
-                c.authority.clone(),
-                c.tenant,
-            ),
-            deadline: c.access().now() + std::time::Duration::from_secs(8),
+        .layer(axum::Extension({
+            let request_budget = Arc::new(rss_mdm_audit_integration::budget::AuditBudget::new(
+                std::time::Duration::from_secs(8),
+            ));
+            RequestAuth {
+                proof: p.clone(),
+                sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
+                    c.authority.clone(),
+                    c.audit.binding(),
+                ),
+                deadline: request_budget.deadline().instant(),
+                cancellation: request_budget,
+            }
         }))
         .layer(axum::middleware::from_fn({
             let proof = p.clone();

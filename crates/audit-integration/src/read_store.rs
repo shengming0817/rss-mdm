@@ -16,27 +16,22 @@ impl AuditReadStore {
     }
 
     /// 停写转交/恢复时逐页验证至已捕获的链头；同库链头本身不是外部防截断证明。
-    pub async fn verify_history_to(
+    pub async fn verify_history_to<T: ExecutionTimer>(
         &self,
         tenant: rss_request_context::TenantId,
         last: Option<u64>,
         tag: &[u8; 32],
+        control: &Control<'_, T>,
+        limit: rss_ledger_postgres::ReadLimit,
     ) -> Result<u64, Error> {
         if !self.ledger {
             return Err(Error::Admission);
         }
         let mut start = 0u64;
         loop {
-            let budget = crate::budget::AuditBudget::new(std::time::Duration::from_secs(10));
             let window = self
                 .adapter
-                .read_verified(
-                    tenant,
-                    rss_ledger::Sequence::new(start),
-                    rss_ledger_postgres::ReadLimit::new(64, 4 * 1024 * 1024)
-                        .map_err(rss_audit_postgres::Error::from)?,
-                    &budget.control(),
-                )
+                .read_verified(tenant, rss_ledger::Sequence::new(start), limit, control)
                 .await
                 .fold(
                     |v| Ok(v.into_value()),

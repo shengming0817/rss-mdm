@@ -374,31 +374,36 @@ impl Groups {
         id: Uuid,
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
-        crate::transaction::inspect(&self.runtime, self.tenant, (self, p), |(s, p), tx| {
-            Box::pin(async move {
-                let grant = crate::transaction::query_authority(tx, p).await?;
-                grant.require(
-                    p,
-                    rss_mdm_authorization_service::Permission::GroupRead,
-                    None,
-                )?;
-                grant.require_all_devices(
-                    p,
-                    rss_mdm_authorization_service::Permission::InventoryRead,
-                )?;
-                let state = s.read_task_in(tx, id).await?;
-                let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
-                value.object = Some(state.input.target().to_string());
-                value.accepted = Some(true);
-                value.executions.push(id);
-                let detail = s
-                    .task_read_in(tx, id, &state.input.target().to_string())
-                    .await?;
-                value.state = Some(detail["status"].as_str().ok_or(Error::Conflict)?.into());
-                p.check_live()?;
-                Ok(Some(value))
-            })
-        })
+        crate::transaction::inspect(
+            &self.runtime,
+            self.audit_store.binding(),
+            (self, p),
+            |(s, p), tx| {
+                Box::pin(async move {
+                    let grant = crate::transaction::query_authority(tx, p).await?;
+                    grant.require(
+                        p,
+                        rss_mdm_authorization_service::Permission::GroupRead,
+                        None,
+                    )?;
+                    grant.require_all_devices(
+                        p,
+                        rss_mdm_authorization_service::Permission::InventoryRead,
+                    )?;
+                    let state = s.read_task_in(tx, id).await?;
+                    let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                    value.object = Some(state.input.target().to_string());
+                    value.accepted = Some(true);
+                    value.executions.push(id);
+                    let detail = s
+                        .task_read_in(tx, id, &state.input.target().to_string())
+                        .await?;
+                    value.state = Some(detail["status"].as_str().ok_or(Error::Conflict)?.into());
+                    p.check_live()?;
+                    Ok(Some(value))
+                })
+            },
+        )
         .await
     }
 }

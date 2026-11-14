@@ -27,7 +27,7 @@ impl AssetService {
         token: Option<&str>,
         candidate: &AssetCut,
     ) -> Result<Response> {
-        if !(1..=1000).contains(&limit) {
+        if !(1..=1024).contains(&limit) {
             return Err(Error::Malformed.into());
         }
         if access

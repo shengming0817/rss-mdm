@@ -239,7 +239,7 @@ impl crate::Compliance {
     > {
         use rss_mdm_authorization_service::Permission;
         p.manage(Permission::ComplianceRuleRead)?;
-        crate::transaction::inspect(&self.runtime, self.tenant, p, |p, tx| {
+        crate::transaction::inspect(&self.runtime, self.audit_store.binding(), p, |p, tx| {
             Box::pin(async move {
                 crate::transaction::query_authority(tx, p).await?.require(
                     p,
@@ -281,30 +281,35 @@ impl Compliance {
         id: Uuid,
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
-        crate::transaction::inspect(&self.runtime, self.tenant, (self, p), |(s, p), tx| {
-            Box::pin(async move {
-                crate::transaction::query_authority(tx, p).await?.require(
-                    p,
-                    rss_mdm_authorization_service::Permission::ComplianceRuleRead,
-                    None,
-                )?;
-                let state = s.read_task_in(tx, id).await?;
-                let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
-                value.object = Some(state.input.rule.to_string());
-                value.revision = Some(state.input.revision);
-                value.accepted = Some(true);
-                value.executions.push(id);
-                let detail = s.task(tx, state.input.rule, id).await?;
-                value.state = Some(
-                    stored(serde_json::to_value(detail.phase))?
-                        .as_str()
-                        .ok_or(Error::Conflict)?
-                        .into(),
-                );
-                p.check_live()?;
-                Ok(Some(value))
-            })
-        })
+        crate::transaction::inspect(
+            &self.runtime,
+            self.audit_store.binding(),
+            (self, p),
+            |(s, p), tx| {
+                Box::pin(async move {
+                    crate::transaction::query_authority(tx, p).await?.require(
+                        p,
+                        rss_mdm_authorization_service::Permission::ComplianceRuleRead,
+                        None,
+                    )?;
+                    let state = s.read_task_in(tx, id).await?;
+                    let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                    value.object = Some(state.input.rule.to_string());
+                    value.revision = Some(state.input.revision);
+                    value.accepted = Some(true);
+                    value.executions.push(id);
+                    let detail = s.task(tx, state.input.rule, id).await?;
+                    value.state = Some(
+                        stored(serde_json::to_value(detail.phase))?
+                            .as_str()
+                            .ok_or(Error::Conflict)?
+                            .into(),
+                    );
+                    p.check_live()?;
+                    Ok(Some(value))
+                })
+            },
+        )
         .await
     }
 }

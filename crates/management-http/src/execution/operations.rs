@@ -9,7 +9,7 @@ use rss_mdm_query::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<Item>("executions", &["id", "kind"], 64, 1000, &[rss_mdm_query::directory::Exclusion { path: "evidence", reason: "Heterogeneous per-operation detail with owner-specific collections and qualification; read the original operation for evidence queries" }, rss_mdm_query::directory::Exclusion { path: "detailUrl", reason: "Navigation link derived from the operation identity; its routing encoding is not a business selector" }]).and_then(|s| s.no_sort("authorization", "Current authorization is classified during a bounded scan; it is not a persistent seek key")).and_then(|s| s.no_sort("reauthorization", "Current reauthorization is classified during a bounded scan; it is not a persistent seek key")).expect("Public directory model")
+    Schema::derived::<Item>("executions", &["id", "kind"], 64, 1024, &[rss_mdm_query::directory::Exclusion { path: "evidence", reason: "Heterogeneous per-operation detail with owner-specific collections and qualification; read the original operation for evidence queries" }, rss_mdm_query::directory::Exclusion { path: "detailUrl", reason: "Navigation link derived from the operation identity; its routing encoding is not a business selector" }]).and_then(|s| s.no_sort("authorization", "Current authorization is classified during a bounded scan; it is not a persistent seek key")).and_then(|s| s.no_sort("reauthorization", "Current reauthorization is classified during a bounded scan; it is not a persistent seek key")).expect("Public directory model")
 });
 
 #[derive(Serialize, schemars::JsonSchema)]

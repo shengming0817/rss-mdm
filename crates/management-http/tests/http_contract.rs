@@ -225,3 +225,41 @@ fn application_routes()
     }
     .assemble()
 }
+
+#[test]
+fn asset_body_pagination_schema_matches_the_execution_window() {
+    let document = rss_mdm_http_contract::artifact::document([(
+        "browser",
+        contract_routes(
+            Mounts {
+                filevault: true,
+                recovery_credentials: true,
+            },
+            application_routes(),
+        )
+        .into_endpoints(),
+    )])
+    .unwrap();
+    let mut checked = 0;
+    for endpoint in document["endpoints"].as_array().unwrap() {
+        let Some(identity) = endpoint["request"]["body"]["schema"]["schemaId"].as_str() else {
+            continue;
+        };
+        let schema = &document["schemas"][identity];
+        if !matches!(
+            schema["title"].as_str(),
+            Some("ScopePageRequest" | "ListPageRequest")
+        ) {
+            continue;
+        }
+        let validator = jsonschema::validator_for(schema).unwrap();
+        for (limit, accepted) in [(1, true), (1024, true), (0, false), (1025, false)] {
+            assert_eq!(
+                validator.is_valid(&serde_json::json!({"limit":limit})),
+                accepted
+            );
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 2);
+}

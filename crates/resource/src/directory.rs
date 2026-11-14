@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 /// Default management directory page size.
 pub const DEFAULT_LIMIT: u16 = 64;
 /// Maximum management directory page size.
-pub const MAX_LIMIT: u16 = 1000;
+pub const MAX_LIMIT: u16 = 1024;
 /// Field capabilities derived from the actual checked header model.
 pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
     Schema::derived::<Record>("resource", &["id"], DEFAULT_LIMIT, MAX_LIMIT, &[])
@@ -38,7 +38,7 @@ pub struct Record {
 }
 /// Nested version metadata has its own query identity; the aggregate remains its sole owner.
 pub static VERSION_SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<VersionRow>("software_versions", &["version"], 64, 1000, &[])
+    Schema::derived::<VersionRow>("software_versions", &["version"], 64, 1024, &[])
         .expect("Resource version directory model")
 });
 /// Public version metadata; shared by the Resource store and software HTTP consumer.

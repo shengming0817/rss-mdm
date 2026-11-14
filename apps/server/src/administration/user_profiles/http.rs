@@ -77,10 +77,15 @@ async fn definitions(
 ) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Definitions>>, Error> {
     (async {
         let query = query.parse().map_err(|_| Error::Malformed)?;
-        s.definitions(&a.proof, &audit, &query)
-            .await
-            .map_err(Error::from)
-            .map(Json)
+        s.definitions(
+            &a.proof,
+            &audit,
+            &query,
+            rss_request_context::Deadline::at(a.deadline),
+        )
+        .await
+        .map_err(Error::from)
+        .map(Json)
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
@@ -125,10 +130,16 @@ async fn me(
     Extension(audit): Extension<RequestAudit>,
     Query(q): Query<ProfileQuery>,
 ) -> Result<Json<Profile>, Error> {
-    s.profile(&a.proof, &audit, None, q)
-        .await
-        .map_err(Error::from)
-        .map(Json)
+    s.profile(
+        &a.proof,
+        &audit,
+        None,
+        q,
+        rss_request_context::Deadline::at(a.deadline),
+    )
+    .await
+    .map_err(Error::from)
+    .map(Json)
 }
 async fn person(
     State(s): State<Arc<Backend>>,
@@ -138,10 +149,16 @@ async fn person(
     Query(mut q): Query<ProfileQuery>,
 ) -> Result<Json<Profile>, Error> {
     q.view = View::Latest;
-    s.profile(&a.proof, &audit, Some(id), q)
-        .await
-        .map_err(Error::from)
-        .map(Json)
+    s.profile(
+        &a.proof,
+        &audit,
+        Some(id),
+        q,
+        rss_request_context::Deadline::at(a.deadline),
+    )
+    .await
+    .map_err(Error::from)
+    .map(Json)
 }
 
 struct DefinitionDirectory;

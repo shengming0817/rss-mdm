@@ -221,6 +221,7 @@ pub fn state(
         )?,
     );
     Ok(rss_mdm_device_access_http::Services {
+        request_budget: rss_axum::RequestBudget::new(std::time::Duration::from_secs(10))?,
         business: Some(super::business::assemble(c, m)?),
         registrations: registration,
         configurations,
@@ -288,7 +289,10 @@ async fn administrator_for(
     let principal = Uuid::new_v4();
     let login = format!("da-{principal}");
     let password = "foundation-only-valid-password";
-    let kdf = rss_identity_core::account::PasswordKdf::new();
+    let kdf = rss_identity_core::account::PasswordKdf::new(
+        std::num::NonZeroUsize::new(4).unwrap(),
+        std::num::NonZeroU64::new(128 * 1024 * 1024).unwrap(),
+    )?;
     let hash = kdf.hash(Password::new(password.into())?).await?;
     let mut tx = c.seed().await?;
     sqlx::query(
@@ -349,18 +353,17 @@ async fn administrator_for(
     };
     sqlx::query("INSERT INTO rss_da.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3,1,$4)").bind(c.tenant.to_string()).bind(&c.inputs.installation.instance_id).bind(Uuid::new_v4()).bind(serde_json::to_value(rule)?).execute(&mut *tx).await?;
     tx.commit().await?;
-    let issued = c
-        .authority
-        .login_local_bearer(
-            c.tenant,
-            LoginKey::parse(&login)?,
-            Password::new(password.into())?,
-            rss_identity_postgres::AttemptSource::parse("da-foundation")?,
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                Duration::from_secs(10),
-            ),
-        )
-        .await?;
+    // This SDK future is nested inside the complete protocol proof; keep its state on the heap.
+    let issued = Box::pin(c.authority.login_local_bearer(
+        c.sessions.binding(),
+        LoginKey::parse(&login)?,
+        Password::new(password.into())?,
+        rss_identity_postgres::AttemptSource::parse("da-foundation")?,
+        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+            Duration::from_secs(10),
+        ),
+    ))
+    .await?;
     kdf.close();
     kdf.wait_closed().await;
     Ok(issued.secret().expose().into())

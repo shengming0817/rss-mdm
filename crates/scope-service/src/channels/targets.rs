@@ -351,7 +351,7 @@ pub async fn devices_page(
     after: Option<&rss_mdm_agent_wire::DeviceId>,
     limit: usize,
 ) -> Result<ScopePreview, SourceError> {
-    if !(1..=1000).contains(&limit) {
+    if !(1..=1024).contains(&limit) {
         return Err(SourceError::Invariant);
     }
     let (run, _, frozen) = crate::results::published_on(profile, c, tenant, scope)

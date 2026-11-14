@@ -3,6 +3,7 @@ use crate::{STORAGE, codec, core::*, error::*, event};
 use rss_mdm_backend_postgres_support::digest;
 use rss_mdm_backend_postgres_support::{AggregateRecord, RequestRecord};
 use rss_request_context::TenantId;
+use rss_transactional_messaging::fence::ExecutionBinding;
 use rss_transactional_messaging::policy::OperationDeadline;
 use rss_transactional_messaging_postgres::{PgError, PgOutboxWriter, PgRuntime, PgTransaction};
 use serde_json::{Value, json};
@@ -32,6 +33,7 @@ pub struct HistoricalAttempt {
 pub struct ReleaseStore {
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
+    binding: ExecutionBinding,
     writer: PgOutboxWriter,
 }
 impl ReleaseStore {
@@ -53,12 +55,13 @@ impl ReleaseStore {
     /// Returns a settlement error on admission failure; never migrates or closes the runtime.
     pub async fn new(
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
+        binding: ExecutionBinding,
         d: OperationDeadline,
     ) -> Result<Self, Error> {
+        let tenant = binding.tenant();
         settle(
             runtime
-                .local_tx(tenant, d, |tx| {
+                .local_tx(binding, d, |tx| {
                     Box::pin(async move {
                         STORAGE.verify(tx, crate::ADMISSION).await?;
                         Ok(Ok(()))
@@ -70,6 +73,7 @@ impl ReleaseStore {
             writer: PgOutboxWriter::new(runtime.clone(), event::domain()),
             runtime,
             tenant,
+            binding,
         })
     }
     /// Return the tenant permanently bound to this store.
@@ -92,7 +96,7 @@ impl ReleaseStore {
     ) -> Result<Option<Publication>, Error> {
         settle(
             self.runtime
-                .local_tx_with_context(self.tenant, d, (self, id), |(s, id), tx| {
+                .local_tx_with_context(self.binding, d, (self, id), |(s, id), tx| {
                     Box::pin(async move { s.get_in(tx, id).await })
                 })
                 .await,
@@ -134,7 +138,7 @@ impl ReleaseStore {
     ) -> Result<OperationReceipt, Error> {
         settle(
             self.runtime
-                .local_tx_with_context(self.tenant, d, (self, id, c), |(s, id, c), tx| {
+                .local_tx_with_context(self.binding, d, (self, id, c), |(s, id, c), tx| {
                     Box::pin(async move {
                         tx.prepare_outbox_partitions(&[s.partition(c.snapshot().id.value())?])
                             .await?;
@@ -250,7 +254,7 @@ impl ReleaseStore {
     ) -> Result<Transition, Error> {
         settle(
             self.runtime
-                .local_tx_with_context(self.tenant, d, (self, id, r), |(s, id, r), tx| {
+                .local_tx_with_context(self.binding, d, (self, id, r), |(s, id, r), tx| {
                     Box::pin(async move {
                         tx.prepare_outbox_partitions(&[s.partition(id.value())?])
                             .await?;
@@ -358,7 +362,7 @@ impl ReleaseStore {
         let key = id.value().to_owned();
         settle(
             self.runtime
-                .local_tx(self.tenant, d, move |tx| {
+                .local_tx(self.binding, d, move |tx| {
                     Box::pin(async move {
                         let t = tx.tenant_id().to_string();
                         let row = tx
@@ -417,7 +421,7 @@ impl ReleaseStore {
         }
         settle(
             self.runtime
-                .local_tx_with_context(self.tenant, d, id, |id, tx| {
+                .local_tx_with_context(self.binding, d, id, |id, tx| {
                     Box::pin(async move {
                         Ok(Ok(STORAGE
                             .receipt(tx, id.value())
@@ -447,7 +451,7 @@ impl ReleaseStore {
         let owner = id.value().to_owned();
         settle(
             self.runtime
-                .local_tx(self.tenant, d, move |tx| {
+                .local_tx(self.binding, d, move |tx| {
                     Box::pin(async move {
                         let rows = query_attempts(tx, &owner, after, limit).await?;
                         let attempts = rows

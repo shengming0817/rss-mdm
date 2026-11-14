@@ -23,7 +23,7 @@ pub async fn sources<C: ManagementContentPort>(
     );
     transaction::inspect(
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         (app, p, audit, q),
         |ctx, tx| {
             Box::pin(async move {
@@ -100,7 +100,7 @@ pub async fn versions<C: ManagementContentPort>(
     p.manage(Permission::SoftwareRead)?;
     transaction::inspect(
         &app.runtime,
-        app.tenant,
+        app.audit.binding(),
         (app, p, audit, id, q),
         |ctx, tx| {
             Box::pin(async move {

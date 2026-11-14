@@ -87,7 +87,7 @@ pub async fn directory_presence_on(
     tenant: TenantId,
     devices: &[rss_mdm_agent_wire::DeviceId],
 ) -> crate::transaction::Result<BTreeSet<rss_mdm_agent_wire::DeviceId>> {
-    if devices.len() > 1000 {
+    if devices.len() > 1024 {
         return Err(Error::Malformed.into());
     }
     let rows:Vec<uuid::Uuid>=sqlx::query_scalar("SELECT device FROM mdm_assets.device_inventory_presence WHERE tenant_id=$1::uuid AND device=ANY($2)")

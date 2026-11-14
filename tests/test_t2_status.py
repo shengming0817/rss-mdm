@@ -22,6 +22,12 @@ def listing(cases):
 
 
 class T2Status(unittest.TestCase):
+    def test_capacity_proofs_follow_their_product_model_inputs(self):
+        for path in ('crates/inventory/src/time_series.rs', 'crates/inventory/src/catalog.rs'):
+            with self.subTest(path=path):
+                self.assertIn('telemetry.query', affected([path]))
+        self.assertIn('foundation.authorization', affected(['apps/server/src/administration/user_profiles/model.rs']))
+
     def test_disabled_report_source_proof_tracks_both_read_inputs(self):
         from t2_registry import affected
         for path in ('apps/server/src/assembly/device_reads.rs',

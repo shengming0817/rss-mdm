@@ -173,7 +173,7 @@ impl GroupStore {
         devices: &[rss_mdm_agent_wire::DeviceId],
     ) -> InTransaction<Vec<uuid::Uuid>> {
         input!(self.check_transaction(tx)?);
-        if groups.len() > 16 || devices.len() > 1000 {
+        if groups.len() > 16 || devices.len() > 1024 {
             return Ok(Err(Rejection::CapacityExceeded));
         }
         let groups = groups.to_vec();

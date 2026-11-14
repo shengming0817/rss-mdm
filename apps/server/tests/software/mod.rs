@@ -51,7 +51,7 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
         .audit
         .on_runtime(
             a.resources.storage.runtime.clone(),
-            c.tenant,
+            c.audit.binding(),
             &budget.control(),
         )
         .await?;
@@ -59,7 +59,7 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
     rss_mdm_device_service::control::transaction::run(
         &store,
         &a.resources.storage.runtime,
-        c.tenant,
+        c.audit.binding(),
         &request,
         &store,
         |store, tx| {
@@ -75,7 +75,7 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
         owner::transaction::run(
             &store,
             &a.resources.storage.runtime,
-            c.tenant,
+            c.audit.binding(),
             &request,
             &store,
             |store, tx| Box::pin(async move { owner::source_changes::fail_in(tx, store).await }),
@@ -263,7 +263,7 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
     changed.commit().await?;
     owner::transaction::inspect(
         &a.resources.storage.runtime,
-        c.tenant,
+        c.audit.binding(),
         a.software.service.as_ref(),
         move |service, tx| {
             Box::pin(async move { owner::actions::recovery::recover_one(service, tx, id).await })
@@ -288,7 +288,7 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
     tx.commit().await?;
     owner::transaction::inspect(
         &a.resources.storage.runtime,
-        c.tenant,
+        c.audit.binding(),
         a.software.service.as_ref(),
         move |service, tx| {
             Box::pin(async move { owner::actions::recovery::recover_one(service, tx, id).await })
@@ -416,15 +416,15 @@ async fn rollout_snapshot_invalidates_counts_before_opening_next_stage() -> Resu
 }
 async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Result<()> {
     use std::time::Duration;
-    let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+    let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         a.resources.storage.runtime.clone(),
-        c.tenant,
+        c.audit.binding(),
         owner::deadline(),
-    )
+    ))
     .await?;
     owner::transaction::inspect(
         &a.resources.storage.runtime,
-        c.tenant,
+        c.audit.binding(),
         messaging,
         move |m, tx| {
             Box::pin(
@@ -439,6 +439,8 @@ async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Res
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &force);
     let notify = tokio::sync::Notify::new();
     let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
+        claim_batch_size: 64,
+        scan_budget: 64,
         concurrency: 1,
         lease_ttl: Duration::from_secs(30),
         attempt_timeout: Duration::from_secs(6),
@@ -553,7 +555,7 @@ async fn unbatched_self_service_waits_for_main_scope() -> Result<()> {
     let accepted = owner::transaction::run(
         &a.resources.storage.audit,
         &a.resources.storage.runtime,
-        c.tenant,
+        c.audit.binding(),
         &request,
         (&a.software.service, &principal, &input, &request),
         |(service, p, input, audit), tx| {
@@ -592,7 +594,7 @@ async fn unbatched_self_service_waits_for_main_scope() -> Result<()> {
         let offered = owner::transaction::run(
             &a.resources.storage.audit,
             &a.resources.storage.runtime,
-            c.tenant,
+            c.audit.binding(),
             &request,
             (
                 &a.software.service,

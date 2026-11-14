@@ -101,7 +101,18 @@ pub async fn enrollment(c: &Context, p: &registration::DevicePrincipal) -> Resul
     .await?;
     let reference = run.batch().expect("durable sealed report").clone();
     tx.commit().await?;
-    let clock = rss_mdm_inventory_service::inventory_runtime::Clock::new(Arc::new(context::Timer));
+    let clock = rss_mdm_inventory_service::inventory_runtime::Clock::new(
+        Arc::new(context::Timer),
+        rss_mdm_inventory_service::inventory_runtime::Policy::new(
+            Duration::from_secs(20),
+            Duration::from_secs(20),
+            Duration::from_secs(5),
+            32,
+            64 * 1024 * 1024,
+            64,
+            64,
+        )?,
+    );
     let deadline = rss_request_context::Deadline::at(
         rss_observation::Clock::now(&clock) + Duration::from_secs(20),
     );
@@ -138,7 +149,7 @@ pub async fn enrollment(c: &Context, p: &registration::DevicePrincipal) -> Resul
         projection_scope.source().clone(),
     )?);
     let token = tokio_util::sync::CancellationToken::new();
-    let control = Control::new(&clock, clock.cutoff(), &token);
+    let control = Control::new(&clock, clock.startup_cutoff(), &token);
     let projection =
         rss_projection_postgres::PgStore::new(c.inputs.pool("da_runtime").await?, &control).await?;
     let identity = rss_mdm_inventory_postgres::definition();

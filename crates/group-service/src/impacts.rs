@@ -164,7 +164,7 @@ impl Groups {
         );
         crate::transaction::inspect(
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             (self, proof, q, audit, cursor),
             |ctx, tx| {
                 Box::pin(async move {

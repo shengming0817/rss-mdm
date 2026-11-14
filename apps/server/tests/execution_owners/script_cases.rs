@@ -50,7 +50,7 @@ async fn unknown_survives_restart_and_only_original_attempt_can_settle_it() -> R
     script::transaction::run(
         &h.audit,
         &h.a.resources.storage.runtime,
-        h.c.tenant,
+        h.c.audit.binding(),
         &request(&h.c),
         (&h.a.scripts, id),
         |ctx, tx| Box::pin(async move { script::recovery::recover_one(ctx.0, tx, ctx.1).await }),
@@ -71,7 +71,7 @@ async fn unknown_survives_restart_and_only_original_attempt_can_settle_it() -> R
         let target = target.clone();
         script::transaction::inspect(
             &h.a.resources.storage.runtime,
-            h.c.tenant,
+            h.c.audit.binding(),
             (target, resource),
             move |ctx, tx| {
                 Box::pin(async move {

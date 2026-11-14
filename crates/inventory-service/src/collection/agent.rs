@@ -19,7 +19,7 @@ pub async fn accept_in(
     let canonical = report.canonical().map_err(|_| Error::Malformed)?;
     let digest = format!("{:x}", Sha256::digest(&canonical));
     // Preserve the canonical representation as text: JSONB expands exponent-form
-    // numbers and can otherwise inflate a legal 1 MiB report beyond the evidence budget.
+    // numbers and can otherwise inflate a legal report beyond its canonical byte budget. The SQL check measures the extracted canonical text.
     let evidence = serde_json::json!({"agentReport": String::from_utf8(canonical).map_err(|_| Error::Malformed)?});
     let live_scope = crate::device::store::revalidate_source(
         profile,

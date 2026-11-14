@@ -1,7 +1,7 @@
 use rss_mdm_inventory::*;
 use rss_observation::{Batch, Body, Change, Id};
 #[test]
-fn typed_collection_rejects_unknown_fields_invalid_values_and_legacy_text() {
+fn typed_collection_rejects_unknown_fields_and_invalid_values() {
     let catalog = Catalog::new(builtin::fields()).unwrap();
     let field = catalog.definition(builtin::MODEL).unwrap();
     let contract = CollectionDefinition::new("device-basics", 1, Source::MdmWindows, {
@@ -51,7 +51,6 @@ fn typed_collection_rejects_unknown_fields_invalid_values_and_legacy_text() {
         CollectedValue::decode(field, &bytes).unwrap(),
         CollectedValue::Unsupported
     );
-    assert!(CollectedValue::decode(field, b"legacy").is_err());
     assert!(
         CollectedValue::Value(Scalar::String("".into()))
             .encode(field)

@@ -12,6 +12,20 @@ pub(crate) struct StorageBinding {
     pub lineage: [u8; 16],
     pub epoch: i64,
 }
+impl StorageBinding {
+    pub(crate) fn identity(&self) -> Result<StorageIdentity, Error> {
+        StorageIdentity::new(self.target, self.lineage)
+            .map_err(|_| Error::Configuration(ConfigIssue::BusinessDatabase))
+    }
+    pub(crate) fn execution(&self, tenant: TenantId) -> Result<ExecutionBinding, Error> {
+        Ok(ExecutionBinding::new(
+            self.identity()?,
+            tenant,
+            Epoch::new(self.epoch)
+                .map_err(|_| Error::Configuration(ConfigIssue::BusinessDatabase))?,
+        ))
+    }
+}
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Databases {
@@ -71,11 +85,7 @@ impl OwnerRuntime {
             Messaging::Producer(database) | Messaging::Runtime(database) => database,
         };
         let invalid = || Error::Configuration(ConfigIssue::BusinessDatabase);
-        let binding = ExecutionBinding::new(
-            StorageIdentity::new(binding.target, binding.lineage).map_err(|_| invalid())?,
-            vec![(tenant, Epoch::new(binding.epoch).map_err(|_| invalid())?)],
-        )
-        .map_err(|_| invalid())?;
+        let binding = binding.execution(tenant)?;
         let pg = PgConfig::new(
             &database.host,
             database.port,
@@ -91,10 +101,15 @@ impl OwnerRuntime {
         let runtime = Arc::new(
             match messaging {
                 Messaging::Producer(_) => {
-                    PgRuntime::connect_producer(pg, crate::lifecycle::RuntimeTimer, binding).await
+                    PgRuntime::connect_producer(
+                        pg,
+                        crate::lifecycle::RuntimeTimer,
+                        binding.storage(),
+                    )
+                    .await
                 }
                 Messaging::Runtime(_) => {
-                    PgRuntime::connect(pg, crate::lifecycle::RuntimeTimer, binding).await
+                    PgRuntime::connect(pg, crate::lifecycle::RuntimeTimer, binding.storage()).await
                 }
             }
             .map_err(|_| Error::Unavailable(Failure::Database))?,
@@ -103,11 +118,11 @@ impl OwnerRuntime {
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let audit = Arc::new(
             audit
-                .on_runtime(runtime.clone(), tenant, &budget.control())
+                .on_runtime(runtime.clone(), binding, &budget.control())
                 .await?,
         );
         runtime
-            .local_tx(tenant, crate::identity::deadline(), |tx| {
+            .local_tx(binding, crate::identity::deadline(), |tx| {
                 Box::pin(async move {
                     tx.with_connection(|c| {
                         Box::pin(async move {

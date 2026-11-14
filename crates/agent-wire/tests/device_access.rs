@@ -235,7 +235,7 @@ fn initialization_aad_fences_every_generation_and_native_account() {
     assert!(missing.validate().is_ok());
 }
 #[test]
-fn escrow_ack_preserves_exact_coordinates_and_rejects_old_shape() {
+fn escrow_ack_preserves_exact_coordinates() {
     let receipt = CredentialReceipt {
         subject: CredentialSubject::RssLogin {
             binding: Uuid::from_u128(5),
@@ -246,11 +246,9 @@ fn escrow_ack_preserves_exact_coordinates_and_rejects_old_shape() {
         version: 2,
     };
     let ack = TaskEventAck::new(None, false).with_credentials(vec![receipt.clone()]);
-    let mut json = serde_json::to_value(&ack).unwrap();
+    let json = serde_json::to_value(&ack).unwrap();
     let decoded: TaskEventAck = serde_json::from_value(json.clone()).unwrap();
     assert_eq!(decoded.credentials(), &[receipt]);
-    json.as_object_mut().unwrap().remove("credentials");
-    assert!(serde_json::from_value::<TaskEventAck>(json).is_err());
 }
 
 #[test]

@@ -69,6 +69,7 @@ pub fn routes(
     .bind_with(runtime.as_ref(), Clone::clone)
 }
 async fn access_begin(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -77,7 +78,7 @@ async fn access_begin(
 ) -> Result<NoStore<Json<wire::AccessChallenge>>, AgentError> {
     bounded(async {
         let p = principal(&app, &headers, peer.as_ref().map(|v| &v.0), &audit, false).await?;
-        let employee = employee(&app, &headers, &audit)
+        let employee = employee(&app, &headers, &audit, &control)
             .await?
             .ok_or(Error::Unauthorized)?;
         let input = body(input)?;
@@ -96,6 +97,7 @@ async fn access_begin(
     .await
 }
 async fn access_confirm(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -104,7 +106,7 @@ async fn access_confirm(
 ) -> Result<Json<wire::AccessBindingStatus>, AgentError> {
     bounded(async {
         let p = principal(&app, &headers, peer.as_ref().map(|v| &v.0), &audit, false).await?;
-        let employee = employee(&app, &headers, &audit)
+        let employee = employee(&app, &headers, &audit, &control)
             .await?
             .ok_or(Error::Unauthorized)?;
         let input = body(input)?;
@@ -139,23 +141,25 @@ async fn access_recovery_use(
 async fn access_directory(
     State(app): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
+    Extension(control): Extension<rss_axum::RequestControl>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     rss_mdm_http_contract::agent::RuntimeHeaders(headers): rss_mdm_http_contract::agent::RuntimeHeaders,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<AccessDirectory>,
     >,
 ) -> Result<NoStore<Json<wire::AccessDirectory>>, AgentError> {
-    let deadline = app.authorization.now() + std::time::Duration::from_secs(8);
+    let deadline = control.deadline().instant();
     bounded(async {
         let (page, _) = query.parse().map_err(|_| Error::Malformed)?;
         let p = principal(&app, &headers, peer.as_ref().map(|v| &v.0), &audit, false).await?;
-        let employee = employee(&app, &headers, &audit)
+        let employee = employee(&app, &headers, &audit, &control)
             .await?
             .ok_or(Error::Unauthorized)?;
         let request = rss_mdm_authorization_service::context::RequestAuth {
             proof: Arc::new(employee),
             sessions: app.identity.as_ref().clone(),
             deadline,
+            cancellation: Arc::new(control),
         };
         let value = app
             .business
@@ -202,6 +206,7 @@ async fn employee(
     app: &Services,
     headers: &axum::http::HeaderMap,
     audit: &RequestAudit,
+    control: &rss_axum::RequestControl,
 ) -> Result<Option<rss_mdm_authorization_service::context::AuthorizedPrincipal>, AgentError> {
     let headers = headers
         .get_all("x-rss-user-session")
@@ -219,6 +224,10 @@ async fn employee(
         .authenticate(
             &app.authorization,
             rss_mdm_authorization_service::credential::RequestCredential::Cookie(secret),
+            rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                control.deadline(),
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
+            ),
         )
         .await?;
     p.bind_audit(audit).map_err(Error::from)?;

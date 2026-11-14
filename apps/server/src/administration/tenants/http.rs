@@ -264,7 +264,13 @@ pub(super) async fn create(
     let Json(body) = body.map_err(|e| HttpFailure(Error::Http(e.into())))?;
     let operation = operation(&headers)?;
     let receipt = service
-        .provision(&auth.proof, &audit, operation, &body)
+        .provision(
+            &auth.proof,
+            &audit,
+            operation,
+            &body,
+            rss_request_context::Deadline::at(auth.deadline),
+        )
         .await?;
     Ok(ProvisioningResponse(receipt))
 }
@@ -311,6 +317,7 @@ pub(super) async fn administrator(
             &tenant,
             operation(&headers)?,
             body.map_err(|e| HttpFailure(Error::Http(e.into())))?.0,
+            rss_request_context::Deadline::at(auth.deadline),
         )
         .await
         .map(Json)

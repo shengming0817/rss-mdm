@@ -143,19 +143,21 @@ pub(crate) async fn authenticate(
     app: &HttpState,
     headers: &HeaderMap,
     active: bool,
+    cutoff: rss_request_context::Deadline,
 ) -> Result<AuthorizedPrincipal, Error> {
     let (session, _secret) = rss_identity_http_axum::authenticate_request(
         &app.authentication.authority,
         &app.authentication.http,
-        app.identity.tenant(),
+        app.identity.binding(),
         headers,
         if active {
             rss_identity_http_axum::SessionActivity::Active
         } else {
             rss_identity_http_axum::SessionActivity::Passive
         },
-        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-            std::time::Duration::from_secs(10),
+        rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+            cutoff,
+            &rss_mdm_audit_integration::budget::RuntimeTimer,
         ),
     )
     .await
@@ -274,6 +276,7 @@ pub(crate) async fn authorize_user(
     app: &HttpState,
     enrollment: Uuid,
     headers: &HeaderMap,
+    cutoff: rss_request_context::Deadline,
 ) -> Result<Option<UserAccess>, Error> {
     let tenant = app.identity.tenant().to_string();
     let mut tx = app.access.begin(&tenant).await?;
@@ -299,6 +302,10 @@ pub(crate) async fn authorize_user(
         enrollment,
         app.account_authority.clone(),
         None,
+        rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+            cutoff,
+            &rss_mdm_audit_integration::budget::RuntimeTimer,
+        ),
     )
     .await?;
     if admission.coordinates().version

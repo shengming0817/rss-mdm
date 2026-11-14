@@ -156,7 +156,7 @@ impl AssetService {
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
-        crate::transaction::inspect(&self.runtime,self.tenant,(self,proof,field,q),|ctx,tx|Box::pin(async move{
+        crate::transaction::inspect(&self.runtime,self.audit_store.binding(),(self,proof,field,q),|ctx,tx|Box::pin(async move{
             let(s,p,field,q)=*ctx;let current=query_authority(tx,p).await?;
             current.require(p,Permission::InventoryFieldsWrite,None)?;
             catalog_in(tx,s.tenant).await?.definition(field).map_err(|_|Error::NotFound)?;

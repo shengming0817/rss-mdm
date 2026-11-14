@@ -129,7 +129,7 @@ impl Publisher<Vec<u8>> for PublisherService {
         let outcome = self
             .0
             .runtime
-            .local_tx(self.0.tenant, budget, move |tx| {
+            .local_tx(self.0.audit_store.binding(), budget, move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
@@ -249,7 +249,7 @@ impl Service {
         };
         // Derived observation only: RSS owns retry and settlement.
         let tenant = self.tenant;
-        let _ = self.runtime.local_tx(tenant,crate::deadline(),move|tx|Box::pin(async move {
+        let _ = self.runtime.local_tx(self.audit_store.binding(),crate::deadline(),move|tx|Box::pin(async move {
             tx.with_connection(move|c|Box::pin(async move {
                 sqlx::query("UPDATE mdm_telemetry.batches SET delivery=$3 WHERE tenant_id=$1::uuid AND id=$2 AND delivery<>'published'")
                     .bind(tenant.to_string()).bind(batch_id).bind(state).execute(c).await?;
@@ -305,7 +305,10 @@ impl Service {
         let maintenance_cancel = local.clone();
         let (relay, maintenance) = tokio::join!(
             async {
-                let result = worker.run(relay_cancel).await.map_err(|_| Error::Storage);
+                let result = worker
+                    .run(self.audit_store.binding(), relay_cancel)
+                    .await
+                    .map_err(|_| Error::Storage);
                 local.cancel();
                 result
             },
@@ -338,7 +341,7 @@ impl Service {
         let tenant = self.tenant;
         let id = input.input.batch_id;
         let context = Sha256::digest(serde_json::to_vec(input)?).to_vec();
-        self.runtime.local_tx(tenant,crate::deadline(),move|tx|Box::pin(async move {
+        self.runtime.local_tx(self.audit_store.binding(),crate::deadline(),move|tx|Box::pin(async move {
             tx.with_connection(move|c|Box::pin(async move {
                 use sqlx::Row;
                 let row=sqlx::query("SELECT context_digest,delivery FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND id=$2")

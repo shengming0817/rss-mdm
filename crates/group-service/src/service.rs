@@ -119,7 +119,7 @@ impl Groups {
         crate::transaction::run_budget(
             &self.audit_store,
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             audit,
             (
                 self,

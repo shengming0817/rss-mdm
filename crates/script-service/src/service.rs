@@ -38,11 +38,11 @@ impl Transactions {
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         materials: Arc<Materials>,
     ) -> std::result::Result<Self, Error> {
-        let reconcile_messaging = rss_reconcile_postgres::PgMessagingStore::new(
+        let reconcile_messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            tenant,
+            audit_store.binding(),
             crate::transaction::deadline(),
-        )
+        ))
         .await
         .map_err(|_| Error::Unavailable)?;
         Ok(Self {

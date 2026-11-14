@@ -497,6 +497,7 @@ async fn initialize_account(
     // a real login, verifies the exact expected subject and revokes the temporary session.
     let initialized = crate::maintenance::run(
         crate::maintenance::Config {
+            runtime: crate::identity::policy::RuntimePolicy::installation(),
             audit: input.audit(journal)?,
             database: input.database("mdm_identity_maintenance")?,
             installation: coordinates(input, saved),
@@ -510,6 +511,7 @@ async fn initialize_account(
     )
     .await;
     crate::authorization_bootstrap::initialize(crate::authorization_bootstrap::Initialize {
+        runtime: crate::identity::policy::RuntimePolicy::installation(),
         profile: rss_mdm_install_support::StorageProfile::Mdm,
         database: input.database("mdm_access")?,
         audit: input.audit(journal)?,
@@ -543,12 +545,14 @@ fn runtime(
         }
     };
     Ok(serde_json::json!({
-        "background":{"device_concurrency":4,"database_connection_budget":connection_budget,"database_host_instances":input.additional_hosts.len()+1},
+        "http": crate::config::http::Http::installation(),
+        "inventory_runtime":crate::config::InventoryRuntimeConfig::installation(),
+        "background":{"device_concurrency":4,"command_recovery_batch_size":64,"command_supersede_batch_size":64,"scheduling":crate::background::SchedulingConfig::installation(),"database_connection_budget":connection_budget,"database_host_instances":input.additional_hosts.len()+1},
         "runtime_binding":{"host_id":saved.receipt.host_id,"operation_id":saved.receipt.operation_id,"revision":1,"material_digest":saved.fingerprint_digest()},
         "device_access":{"database":input.database("da_access")?,"deployment_authorities":[],"platform_sso":null,"registration":null},
         "agent_pki":{"mode":"disabled"},"device_pki":[],"native_protocols":{},"native_protection":{"active_file":journal.path("native.key")?,"historical_files":[],"fingerprint_file":journal.path("native-fingerprint.key")?},
-        "audit":audit,"listen":input.listen,"product_origin":input.origin,"trusted_gateway":input.trusted_gateway,
-        "identity":{"instance_id":saved.receipt.instance_id,"tenant_id":saved.receipt.tenant_id,"database":input.database("mdm_identity_runtime")?,"oidc":null},
+        "audit":audit,"audit_query":{"max_rows":1024,"max_bytes":8388608,"recovery_rows":64,"recovery_bytes":4194304,"recovery_seconds":10},"listen":input.listen,"product_origin":input.origin,"trusted_gateway":input.trusted_gateway,
+        "identity":{"runtime":crate::identity::policy::RuntimePolicy::installation(),"instance_id":saved.receipt.instance_id,"tenant_id":saved.receipt.tenant_id,"database":input.database("mdm_identity_runtime")?,"oidc":null},
         "access_database":input.database("mdm_access")?,"runtime_database":input.database("mdm_runtime")?,"command_database":input.database("mdm_command_runtime")?,
         "storage_binding":{"target":saved.target,"lineage":saved.lineage,"epoch":1},
         "business_databases":{"inventory":input.database("mdm_inventory_runtime")?,"scope":input.database("mdm_scope_runtime")?,"policy":input.database("mdm_policy_runtime")?,"resource":input.database("mdm_resource_runtime")?,"software":input.database("mdm_software_runtime")?,"content":input.database("mdm_content_runtime")?,"telemetry":input.database("mdm_telemetry_runtime")?,"scheduler":input.database("mdm_scheduler_runtime")?},

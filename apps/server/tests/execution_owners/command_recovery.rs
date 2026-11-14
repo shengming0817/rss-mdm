@@ -40,7 +40,7 @@ async fn claim_device(
         )
         .await?;
     let mut claims = store
-        .claim_due(target.scope(), 64, Duration::from_secs(30), control)
+        .claim_due(target.scope(), 64, 64, Duration::from_secs(30), control)
         .await?
         .claims;
     let index = claims
@@ -122,6 +122,7 @@ async fn native_consumers_never_recover_another_owners_commands() -> Result<()> 
     let credentials = super::super::credential_owners_t2::protection(&h.c, "new")?;
     let native = super::super::credential_execution::assemble(
         &resources.config,
+        &resources.background,
         resources.storage.runtime.clone(),
         h.c.tenant,
         resources.storage.audit.clone(),

@@ -3,35 +3,34 @@ pub use rss_identity_core::entra::{EntraTokenProfile, EntraTokenVerifier};
 pub use rss_identity_postgres::{EntraAuthority, RevalidatedAccount, VerifiedExternalSubject};
 pub async fn verify(
     authority: &EntraAuthority,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     token: zeroize::Zeroizing<String>,
+    deadline: rss_transactional_messaging::policy::OperationDeadline,
 ) -> Result<VerifiedExternalSubject, crate::Error> {
     authority
-        .verify(token, deadline())
+        .verify(binding, token, deadline)
         .await
         .map_err(authority_error)
 }
 pub async fn resolve(
     authority: &EntraAuthority,
     subject: VerifiedExternalSubject,
+    deadline: rss_transactional_messaging::policy::OperationDeadline,
 ) -> Result<RevalidatedAccount, crate::Error> {
     authority
-        .resolve(subject, deadline())
+        .resolve(subject, deadline)
         .await
         .map_err(authority_error)
 }
 pub async fn recheck(
     authority: &EntraAuthority,
     account: RevalidatedAccount,
+    deadline: rss_transactional_messaging::policy::OperationDeadline,
 ) -> Result<RevalidatedAccount, crate::Error> {
     authority
-        .recheck(account, deadline())
+        .recheck(account, deadline)
         .await
         .map_err(authority_error)
-}
-fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
-    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-        std::time::Duration::from_secs(10),
-    )
 }
 
 fn authority_error(error: rss_identity_postgres::AuthorityError) -> crate::Error {

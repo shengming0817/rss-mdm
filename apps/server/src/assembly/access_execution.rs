@@ -6,10 +6,6 @@ pub(crate) struct Assembly {
     pub service: Arc<access::Service>,
     pub worker: Arc<access::worker::Worker>,
 }
-#[expect(
-    clippy::too_many_arguments,
-    reason = "concrete MDM composition supplies each existing owner and the DA admission mode"
-)]
 pub(crate) async fn assemble(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     tenant: rss_request_context::TenantId,
@@ -17,7 +13,6 @@ pub(crate) async fn assemble(
     recovery: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     reconcile: rss_reconcile_postgres::PgStore,
     budget: Arc<tokio::sync::Semaphore>,
-    concurrency: usize,
     enabled: bool,
 ) -> Result<Assembly, crate::Error> {
     let materials = Arc::new(access::Materials {
@@ -49,7 +44,7 @@ pub(crate) async fn assemble(
             .map_err(super::owner_errors::access)?,
     ));
     let worker = Arc::new(
-        access::worker::Worker::new(service.clone(), reconcile, budget, concurrency)
+        access::worker::Worker::new(service.clone(), reconcile, budget)
             .map_err(super::owner_errors::access)?,
     );
     Ok(Assembly { service, worker })

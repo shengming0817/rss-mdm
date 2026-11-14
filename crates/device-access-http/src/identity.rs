@@ -15,11 +15,8 @@ pub struct Identity {
     pub webauthn: rss_identity_postgres::WebauthnAuthority,
     pub http: rss_identity_http_axum::HttpConfig,
     pub tenant: TenantId,
-}
-fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
-    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-        std::time::Duration::from_secs(10),
-    )
+    pub binding: rss_transactional_messaging::fence::ExecutionBinding,
+    pub rp_generation: rss_identity_postgres::RpGeneration,
 }
 pub(crate) fn failure(e: AuthorityError) -> Error {
     match e {
@@ -38,14 +35,15 @@ impl Identity {
     pub(crate) async fn ceremony_actor(
         &self,
         headers: &HeaderMap,
+        deadline: rss_transactional_messaging::policy::OperationDeadline,
     ) -> Result<rss_identity_postgres::AuthenticatedSession, Error> {
         rss_identity_http_axum::authenticate_request(
             &self.authority,
             &self.http,
-            self.tenant,
+            self.binding,
             headers,
             rss_identity_http_axum::SessionActivity::Active,
-            deadline(),
+            deadline,
         )
         .await
         .map(|(session, _)| session)

@@ -28,6 +28,7 @@ impl Service {
         audit: &RequestAudit,
         operation: Uuid,
         body: &Provision,
+        cutoff: rss_request_context::Deadline,
     ) -> std::result::Result<Receipt, Error> {
         proof.shared_session()?;
         proof.require(Permission::TenantCreate, None)?;
@@ -70,6 +71,7 @@ impl Service {
                     login: login.as_str().into(),
                     password: body.administrator_password.clone(),
                 },
+                cutoff,
             )
             .await;
         child_audit.finalize(

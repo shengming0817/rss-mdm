@@ -83,7 +83,7 @@ impl Service {
         let result = crate::enrollment::tasks::transaction::run(
             &self.transactions.audit_store,
             &self.transactions.runtime,
-            self.transactions.tenant,
+            self.transactions.audit_store.binding(),
             &audit,
             (self, id, fingerprint, &audit),
             |ctx, tx| {

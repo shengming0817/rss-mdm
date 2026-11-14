@@ -23,7 +23,7 @@ REVOKE ALL ON FUNCTION rss_transactional_messaging.append_outbox(p_message bytea
 GRANT ALL ON FUNCTION rss_transactional_messaging.append_outbox(p_message bytea, p_transport jsonb) TO da_policy_runtime;
 GRANT ALL ON FUNCTION rss_transactional_messaging.append_outbox(p_message bytea, p_transport jsonb) TO da_command_runtime;
 REVOKE ALL ON FUNCTION rss_transactional_messaging.apply_dr(p_operation uuid, p_digest bytea, p_kind text, p_evidence jsonb, p_members jsonb, p_expected bigint) FROM PUBLIC;
-REVOKE ALL ON FUNCTION rss_transactional_messaging.archive_claim(p_op uuid, p_id uuid, p_version bigint, p_digest bytea, p_hot bigint, p_cold bigint, p_hold boolean, p_ttl bigint) FROM PUBLIC;
+REVOKE ALL ON FUNCTION rss_transactional_messaging.archive_claim(p_op uuid, p_id uuid, p_version bigint, p_digest bytea, p_hot bigint, p_cold bigint, p_hold boolean, p_ttl bigint, p_scan integer) FROM PUBLIC;
 REVOKE ALL ON FUNCTION rss_transactional_messaging.archive_fault(p_op uuid, p_token uuid, p_digest bytea, p_fault text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION rss_transactional_messaging.archive_fence(p_op uuid, p_token uuid, p_digest bytea) FROM PUBLIC;
 REVOKE ALL ON FUNCTION rss_transactional_messaging.archive_missing(p_op uuid, p_token uuid, p_digest bytea, p_generation uuid, p_object jsonb) FROM PUBLIC;
@@ -70,7 +70,7 @@ GRANT EXECUTE ON FUNCTION
  rss_reconcile.wake(uuid,text,text,text[]),
  rss_reconcile.lock_authority(uuid,text,text,uuid,bigint),
  rss_reconcile.lock_execution(uuid,text,text,uuid,bigint,bigint),
- rss_reconcile.claim_due(uuid,text,integer,bigint),
+ rss_reconcile.claim_due(uuid,text,integer,integer,bigint),
  rss_reconcile.renew(uuid,text,text,uuid,bigint,bigint,bigint),
  rss_reconcile.finish(uuid,text,text,uuid,bigint,bigint,bigint,text,bigint,bigint),
  rss_reconcile.release(uuid,text,text,uuid,bigint),

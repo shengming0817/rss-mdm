@@ -65,6 +65,7 @@ pub fn assemble(
         service: runtime.business,
         admission: runtime.admission,
         platform: Arc::new(rss_mdm_device_access_http::platform_sso::HttpState {
+            binding: c.sessions.binding(),
             context: runtime.platform,
             authority: c.authority.clone(),
             origin: "https://localhost".into(),
@@ -81,7 +82,7 @@ pub(super) async fn login(
     principal: Uuid,
 ) -> Result<(AuthorizedPrincipal, SessionSecret)> {
     let issued = Box::pin(c.authority.login_local(
-        c.tenant,
+        c.sessions.binding(),
         LoginKey::parse(&format!("da-{principal}"))?,
         Password::new("foundation-only-valid-password".into())?,
         rss_identity_postgres::AttemptSource::parse("da-business")?,
@@ -93,6 +94,9 @@ pub(super) async fn login(
     let actor = Box::pin(c.sessions.authenticate(
         &c.authorization,
         RequestCredential::Cookie(SessionSecret::parse(secret.expose().into())?),
+        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+            std::time::Duration::from_secs(10),
+        ),
     ))
     .await?;
     Ok((actor, secret))
@@ -139,7 +143,11 @@ pub async fn verify(
         .context("create and log in business proof principal")?;
     let bearer = c
         .authority
-        .inspect_bearer(c.tenant, BearerSecret::parse(token)?, deadline())
+        .inspect_bearer(
+            c.sessions.binding(),
+            BearerSecret::parse(token)?,
+            deadline(),
+        )
         .await?;
     let principal = bearer.account().principal.as_uuid();
     let (actor, session_secret) = Box::pin(login(c, principal))
@@ -283,7 +291,7 @@ pub async fn verify(
         .revoke_current_session(
             c.authority
                 .inspect_session(
-                    c.tenant,
+                    c.sessions.binding(),
                     SessionSecret::parse(session_secret.expose().into())?,
                     deadline(),
                 )
@@ -524,22 +532,22 @@ pub(super) async fn operation_proof(
 ) -> Result<wire::Secret> {
     use webauthn_authenticator_rs::{WebauthnAuthenticator, softpasskey::SoftPasskey};
     let origin = url::Url::parse(c.browser_origin.get().expect("initialized host origin"))?;
-    let webauthn = Box::pin(rss_identity_postgres::WebauthnAuthority::connect(
+    let webauthn = rss_identity_postgres::WebauthnAuthority::new(
         c.authority.clone(),
         "localhost".into(),
         origin.clone(),
-        deadline(),
-    ))
-    .await?;
+    )?;
+    let generation = rss_identity_postgres::RpGeneration::new(1)?;
     let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
     let session = Box::pin(c.authority.inspect_session(
-        c.tenant,
+        c.sessions.binding(),
         SessionSecret::parse(session_secret.expose().into())?,
         deadline(),
     ))
     .await?;
     let registration = Box::pin(webauthn.begin_registration(
         session,
+        generation,
         "DA business proof".into(),
         false,
         rss_identity_postgres::RegistrationAuthorization::First,
@@ -548,29 +556,42 @@ pub(super) async fn operation_proof(
     .await?;
     let response = authenticator.do_registration(origin.clone(), registration.options)?;
     let session = Box::pin(c.authority.inspect_session(
-        c.tenant,
+        c.sessions.binding(),
         SessionSecret::parse(session_secret.expose().into())?,
         deadline(),
     ))
     .await?;
-    Box::pin(webauthn.finish_registration(session, registration.id, response, deadline())).await?;
+    Box::pin(webauthn.finish_registration(
+        session,
+        generation,
+        registration.id,
+        response,
+        deadline(),
+    ))
+    .await?;
     let session = Box::pin(c.authority.inspect_session(
-        c.tenant,
+        c.sessions.binding(),
         SessionSecret::parse(session_secret.expose().into())?,
         deadline(),
     ))
     .await?;
-    let challenge = Box::pin(webauthn.begin_authentication(session, context, deadline())).await?;
+    let challenge =
+        Box::pin(webauthn.begin_authentication(session, generation, context, deadline())).await?;
     let response = authenticator.do_authentication(origin, challenge.options)?;
     let session = Box::pin(c.authority.inspect_session(
-        c.tenant,
+        c.sessions.binding(),
         SessionSecret::parse(session_secret.expose().into())?,
         deadline(),
     ))
     .await?;
-    let grant =
-        Box::pin(webauthn.finish_authentication(session, challenge.id, response, deadline()))
-            .await?;
+    let grant = Box::pin(webauthn.finish_authentication(
+        session,
+        generation,
+        challenge.id,
+        response,
+        deadline(),
+    ))
+    .await?;
     Ok(wire::Secret::parse(grant.expose())?)
 }
 

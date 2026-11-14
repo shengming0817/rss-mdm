@@ -11,6 +11,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Initialize {
+    pub runtime: crate::identity::policy::RuntimePolicy,
     pub profile: rss_mdm_install_support::StorageProfile,
     pub database: config::Database,
     pub audit: config::AuditConfig,
@@ -56,9 +57,13 @@ impl Initialize {
 /// Explicit operator command. The target must authenticate against this installed Identity.
 /// No caller-selected UUID can permanently seed a rule for an absent or foreign account.
 pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
+    let compiled = config.runtime.compile(
+        InstanceId::parse(&config.user.instance_id).map_err(|_| Error::Malformed)?,
+        config.audit.integrity()?,
+    )?;
     let clock = crate::lifecycle::RuntimeTimer;
     let deadline =
-        Deadline::from_timeout(&clock, Duration::from_secs(30)).expect("bounded command budget");
+        Deadline::from_timeout(&clock, compiled.maintenance).map_err(|_| Error::Malformed)?;
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         config.profile,
@@ -75,13 +80,14 @@ pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
         runtime: None,
         source_runtime: None,
         access: None,
-        kdf: Arc::new(PasswordKdf::new()),
+        kdf: compiled.kdf.clone(),
     };
-    // One total deadline, reserving five seconds for resources owned by this command.
+    let drain = compiled.drain;
+    // The command and its cleanup each have an explicit, separate total budget.
     let mut result = bounded(
         &audit,
-        deadline.capped(&clock, Duration::from_secs(25)),
-        initialize_owned(config, &mut owned, &audit),
+        deadline,
+        initialize_owned(config, compiled.authority, &mut owned, &audit, deadline),
     )
     .await;
     owned.kdf.close();
@@ -103,10 +109,7 @@ pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
             }
         );
     };
-    if tokio::time::timeout_at(deadline.instant().into(), cleanup)
-        .await
-        .is_err()
-    {
+    if tokio::time::timeout(drain, cleanup).await.is_err() {
         eprintln!(
             "{}",
             serde_json::json!({"event":"mdm_authorization_shutdown_failure","operation_id":audit.snapshot().operation_id,"write_outcome":audit.snapshot().write_outcome})
@@ -138,13 +141,14 @@ pub(crate) async fn bounded<T, E: Into<Error>>(
 }
 async fn initialize_owned(
     config: Initialize,
+    authority_config: rss_identity_postgres::AuthorityConfig,
     owned: &mut Resources,
     audit: &RequestAudit,
+    cutoff: Deadline,
 ) -> Result<Receipt, Error> {
     config.validate()?;
     let invalid = || Error::Configuration(ConfigIssue::IdentityConfiguration);
     let tenant = TenantId::parse(&config.user.tenant_id).map_err(|_| invalid())?;
-    let instance = InstanceId::parse(&config.user.instance_id).map_err(|_| invalid())?;
     let login = LoginKey::parse(&config.login).map_err(|_| invalid())?;
     let password =
         Password::new(config::secret(&config.password_file)?.to_string()).map_err(|_| invalid())?;
@@ -160,7 +164,6 @@ async fn initialize_owned(
             &config.identity_database,
             &config.installation.target,
             &config.installation.lineage,
-            &[(tenant, config.expected_epoch)],
             crate::background::IDENTITY_CONNECTIONS,
         )
         .await?,
@@ -179,9 +182,16 @@ async fn initialize_owned(
         let authority = Authority::connect_runtime(
             runtime.clone(),
             owned.kdf.clone(),
-            identity::authority_config(instance, vec![tenant], config.audit.integrity()?)?,
+            authority_config,
+            config
+                .installation
+                .execution(tenant, config.expected_epoch)
+                .map_err(|_| invalid())?,
             policy,
-            identity::deadline(),
+            rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                cutoff,
+                &crate::lifecycle::RuntimeTimer,
+            ),
         )
         .await
         .map_err(identity::failure)?;
@@ -205,17 +215,19 @@ async fn initialize_owned(
         &config.database,
         &config.installation.target,
         &config.installation.lineage,
-        &[(tenant, config.expected_epoch)],
         crate::background::IDENTITY_CONNECTIONS,
     )
     .await?;
     owned.source_runtime = Some(source_runtime.clone());
-    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::until(cutoff);
     let store = rss_mdm_audit_integration::AuditStore::new(
         database.clone(),
         config.audit.integrity()?,
         source_runtime,
-        tenant,
+        config
+            .installation
+            .execution(tenant, config.expected_epoch)
+            .map_err(|_| invalid())?,
         &budget.control(),
     )
     .await?;
@@ -240,6 +252,7 @@ async fn initialize_owned(
             &store,
             input,
             audit,
+            cutoff,
         )
         .await
         .map_err(Error::from);
@@ -253,6 +266,7 @@ async fn initialize_owned(
         input,
         audit,
         targets,
+        cutoff,
     )
     .await?;
     crate::administration::baseline::reserve(&pool, &store, frozen).await?;

@@ -4,7 +4,7 @@ const TENANT: &str = "11111111-1111-4111-8111-111111111111";
 #[test]
 fn bounded_query_rejects_invalid_input() {
     assert!(Query::default().validate().is_ok());
-    for limit in [0, 201, usize::MAX] {
+    for limit in [0, 1025, usize::MAX] {
         assert!(
             Query {
                 limit: Some(limit),

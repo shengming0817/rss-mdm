@@ -7,7 +7,7 @@ impl Scopes {
     ) -> std::result::Result<[u64; 5], Error> {
         self.runtime
             .local_tx_with_context(
-                self.tenant,
+                self.audit_store.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),
                 &self.store,
                 |store, tx| {
@@ -139,7 +139,7 @@ impl crate::Scopes {
         let failed = self
             .runtime
             .local_tx_with_context(
-                self.tenant,
+                self.audit_store.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),
                 self,
                 |owner, tx| {

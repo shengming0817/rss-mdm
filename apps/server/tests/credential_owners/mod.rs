@@ -54,7 +54,6 @@ impl Owners {
             &c.inputs.database(profile, "mdm_command_runtime"),
             &c.inputs.installation.target,
             &c.inputs.installation.lineage,
-            &[(c.tenant, 1)],
         )?;
         let runtime = Arc::new(
             rss_transactional_messaging_postgres::PgRuntime::connect(
@@ -68,13 +67,14 @@ impl Owners {
             rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
         let audit = Arc::new(
             c.audit
-                .on_runtime(runtime.clone(), c.tenant, &budget.control())
+                .on_runtime(runtime.clone(), c.audit.binding(), &budget.control())
                 .await?,
         );
         let native = material::protection(c)?;
         let copies = recovery::native::inputs::Copies::bind(
             runtime.clone(),
-            c.tenant,
+            c.audit.binding(),
+            crate::authority_t2_support::background()?.command_supersede_batch,
             native.clone(),
             Arc::new(rss_mdm_apple_channel::flow_store::Store { protection: native }),
         )

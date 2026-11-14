@@ -4,7 +4,7 @@ use crate::{Error, Result};
 use rss_identity_postgres::{Authority, AuthorityError, PersonnelRevision};
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_mdm_device_access::deployment::PlatformConfiguration;
-use rss_request_context::{Clock, TenantId};
+use rss_request_context::Clock;
 use rss_transactional_messaging::policy::OperationDeadline;
 use serde_json::Value;
 use sqlx::postgres::{PgArguments, PgRow};
@@ -12,6 +12,7 @@ use std::time::Instant;
 
 pub struct Reader<'a> {
     authority: &'a Authority,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     deadline: Instant,
     clock: &'a dyn Clock,
     platform: Option<&'a PlatformConfiguration>,
@@ -19,12 +20,14 @@ pub struct Reader<'a> {
 impl<'a> Reader<'a> {
     pub fn new(
         authority: &'a Authority,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         deadline: Instant,
         clock: &'a dyn Clock,
         platform: Option<&'a PlatformConfiguration>,
     ) -> Self {
         Self {
             authority,
+            binding,
             deadline,
             clock,
             platform,
@@ -46,16 +49,15 @@ impl<'a> Reader<'a> {
         proof: &AuthorizedPrincipal,
     ) -> Result<Option<rss_identity_postgres::RevalidatedSession>> {
         proof.check_live()?;
+        if proof.tenant_id() != self.binding.tenant().to_string() {
+            return Err(Error::Forbidden);
+        }
         let Ok(session) = proof.session() else {
             return Ok(None);
         };
         let reference = session.reference().map_err(identity_error)?;
         self.authority
-            .recheck_session_reference(
-                TenantId::parse(proof.tenant_id()).map_err(|_| Error::Storage)?,
-                &reference,
-                self.budget()?,
-            )
+            .recheck_session_reference(self.binding, &reference, self.budget()?)
             .await
             .map(Some)
             .map_err(identity_error)
@@ -69,6 +71,9 @@ impl<'a> Reader<'a> {
         max_rows: usize,
     ) -> Result<(PersonnelRevision, Vec<PgRow>)> {
         proof.check_live()?;
+        if proof.tenant_id() != self.binding.tenant().to_string() {
+            return Err(Error::Forbidden);
+        }
         let result = if let Ok(actor) = proof.session() {
             self.authority
                 .with_personnel_read(actor, self.budget()?, move |context| {
@@ -77,15 +82,16 @@ impl<'a> Reader<'a> {
                 .await
         } else {
             self.authority
-                .with_session_references_read(
-                    TenantId::parse(proof.tenant_id()).map_err(|_| Error::Storage)?,
-                    self.budget()?,
-                    move |context| Box::pin(query_rows(context, select, arguments, max_rows)),
-                )
+                .with_session_references_read(self.binding, self.budget()?, move |context| {
+                    Box::pin(query_rows(context, select, arguments, max_rows))
+                })
                 .await
         }
         .map_err(identity_error)?;
         proof.check_live()?;
+        if proof.tenant_id() != self.binding.tenant().to_string() {
+            return Err(Error::Forbidden);
+        }
         Ok(result)
     }
 }

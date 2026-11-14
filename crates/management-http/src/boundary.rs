@@ -15,6 +15,7 @@ use rss_mdm_http_contract::Router;
 use std::sync::Arc;
 #[derive(Clone)]
 pub struct Envelope {
+    pub request_budget: rss_axum::RequestBudget,
     pub profile: rss_mdm_install_support::StorageProfile,
     pub admission: Arc<tokio::sync::Semaphore>,
     pub host: String,
@@ -28,7 +29,15 @@ pub fn wrap<M: rss_mdm_http_contract::module::Declaration>(
     envelope: Envelope,
 ) -> Router<(), M> {
     let endpoints = Arc::new(router.endpoints().to_vec());
-    router.layer(middleware::from_fn_with_state((envelope, endpoints), admit))
+    router
+        .layer(middleware::from_fn_with_state(
+            (envelope.clone(), endpoints),
+            admit,
+        ))
+        .layer(middleware::from_fn_with_state(
+            envelope.request_budget,
+            rss_axum::request_control,
+        ))
 }
 fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
     match error {

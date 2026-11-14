@@ -34,6 +34,7 @@ struct Candidate {
 }
 pub struct Completed(());
 pub struct Fanout<H> {
+    pub binding: rss_transactional_messaging::fence::ExecutionBinding,
     pub runtime: Arc<PgRuntime>,
     pub host: Arc<H>,
 }
@@ -79,10 +80,13 @@ impl<H: Eligibility> Publisher<Vec<u8>> for Fanout<H> {
         let Ok(tenant) = TenantId::parse(&t.to_string()) else {
             return failure();
         };
+        if tenant != self.binding.tenant() {
+            return failure();
+        }
         let host = self.host.clone();
         // One page per relay attempt. Partial durable progress is never an acceptance receipt.
         self.runtime
-            .local_tx(tenant, deadline, move |tx| {
+            .local_tx(self.binding, deadline, move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {

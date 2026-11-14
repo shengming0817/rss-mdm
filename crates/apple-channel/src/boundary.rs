@@ -15,6 +15,7 @@ use rss_mdm_http_contract::Router;
 use std::{sync::Arc, time::Duration};
 #[derive(Clone)]
 pub struct Envelope {
+    pub request_budget: rss_axum::RequestBudget,
     pub admission: Arc<tokio::sync::Semaphore>,
     pub host: String,
     pub clock: Arc<dyn rss_observation::Clock>,
@@ -26,7 +27,13 @@ pub fn wrap<M: rss_mdm_http_contract::module::Declaration>(
     router: Router<(), M>,
     envelope: Envelope,
 ) -> Router<(), M> {
-    router.layer(middleware::from_fn_with_state(envelope, admit))
+    let budget = envelope.request_budget;
+    router
+        .layer(middleware::from_fn_with_state(envelope, admit))
+        .layer(middleware::from_fn_with_state(
+            budget,
+            rss_axum::request_control,
+        ))
 }
 fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
     match error {

@@ -100,7 +100,7 @@ impl Scopes {
         .await?;
         let response = transaction::inspect_budget(
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                 budget.control().total_remaining(),
             ),

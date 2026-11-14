@@ -15,14 +15,12 @@ pub struct Worker {
     store: rss_reconcile_postgres::PgStore,
     outbox: Arc<PgOutboxStore<()>>,
     budget: Arc<tokio::sync::Semaphore>,
-    concurrency: usize,
 }
 impl Worker {
     pub fn new(
         service: Arc<ScriptService>,
         store: rss_reconcile_postgres::PgStore,
         budget: Arc<tokio::sync::Semaphore>,
-        concurrency: usize,
     ) -> std::result::Result<Self, Error> {
         let delivery = rss_transactional_messaging::policy::DeliveryBudget::new(
             Duration::from_secs(60),
@@ -50,23 +48,19 @@ impl Worker {
             store,
             outbox,
             budget,
-            concurrency,
         })
     }
     pub fn registration(
         self: Arc<Self>,
+        policy: rss_reconcile::Policy,
+        drain: std::time::Duration,
         notify: Arc<tokio::sync::Notify>,
     ) -> rss_runtime::ManagedTaskRegistration {
-        let (task, status) =
-            rss_runtime::ManagedTask::prepare("mdm-script-recovery", Duration::from_secs(20));
+        let (task, status) = rss_runtime::ManagedTask::prepare("mdm-script-recovery", drain);
         self.readiness.bind(status);
         task.into_registration(move|stop|async move {
             let timer=Timer::new();let force=tokio_util::sync::CancellationToken::new();
             let control=rss_reconcile::Control::new(&timer,Duration::MAX,&force);
-            let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
-                concurrency:self.concurrency,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),
-                scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(5),initial_backoff:Duration::from_secs(5),max_backoff:Duration::from_secs(60),max_attempts:1000,
-            }).map_err(rss_runtime::ShutdownError::new)?;
             let result = rss_reconcile::run_with_notify(&self.recovery_store(),self.as_ref(),&crate::wake::scope(self.service.transactions.tenant),policy,&control,&stop,&notify,|event| {
                 self.readiness.observe(&event);
                 if let rss_reconcile::Observation::ScanFailed { scope, error } = &event { eprintln!("{}",serde_json::json!({"event":"mdm_script_recovery_failure","phase":"scan","scope":scope.reconciler(),"reason":format!("{:?}",error.kind())})); }
@@ -96,7 +90,11 @@ impl Worker {
     pub async fn relay_once(&self) -> std::result::Result<usize, Error> {
         let claims = self
             .outbox
-            .claim_partition_heads(std::num::NonZeroUsize::MIN, crate::transaction::deadline())
+            .claim_partition_heads(
+                self.service.transactions.audit_store.binding(),
+                std::num::NonZeroUsize::MIN,
+                crate::transaction::deadline(),
+            )
             .await
             .map_err(|_| Error::Unavailable)?;
         let count = claims.len();
@@ -159,7 +157,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         let service = &self.service;
         let pending = crate::transaction::inspect_budget(
             &service.transactions.runtime,
-            service.transactions.tenant,
+            service.transactions.audit_store.binding(),
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                 control.remaining(),
             ),
@@ -201,7 +199,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
             .transactions
             .runtime
             .local_tx_with_context(
-                service.transactions.tenant,
+                service.transactions.audit_store.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -437,7 +435,7 @@ impl Worker {
             let mut after = String::new();
             loop {
                 let page = crate::transaction::inspect(
-                &transactions.runtime, tenant, (transactions, scope.clone(), after.clone()),
+                &transactions.runtime, transactions.audit_store.binding(), (transactions, scope.clone(), after.clone()),
                 move |(transactions, scope, after), tx| Box::pin(async move {
                     let t = tx.tenant_id().to_string();
                     let domain = scope.reconciler().to_owned();

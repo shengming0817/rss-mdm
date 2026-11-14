@@ -21,6 +21,19 @@ pub struct Installation {
     pub lineage: [u8; 16],
 }
 impl Installation {
+    pub(crate) fn execution(
+        &self,
+        tenant: rss_request_context::TenantId,
+        epoch: i64,
+    ) -> Result<rss_transactional_messaging::fence::ExecutionBinding> {
+        use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
+        let invalid = || MigrationError::at("installation", "invalid execution scope");
+        Ok(ExecutionBinding::new(
+            StorageIdentity::new(self.target, self.lineage).map_err(|_| invalid())?,
+            tenant,
+            Epoch::new(epoch).map_err(|_| invalid())?,
+        ))
+    }
     pub(crate) fn validate(&self) -> Result<rss_identity_core::InstanceId> {
         let invalid = || MigrationError::at("installation", "invalid instance or storage binding");
         rss_transactional_messaging::fence::StorageIdentity::new(self.target, self.lineage)
@@ -70,7 +83,7 @@ impl rss_mdm_install_support::Host for MdmInstallation<'_> {
         Box::pin(async move {
             if receipts
                 .iter()
-                .any(|(name, _, _)| name == "identity-authority-v17")
+                .any(|(name, _, _)| name == "identity-authority-v18")
             {
                 verify_installation(c, self.installation, self.instance).await?;
             }
@@ -113,7 +126,7 @@ async fn apply_schema(
             .execute(&mut **tx)
             .await
             .map_err(|_| MigrationError::at(name, "restore installer role"))?;
-    } else if name == "identity-authority-v17" {
+    } else if name == "identity-authority-v18" {
         install_identity_in(tx, installation, instance)
             .await
             .map_err(|_| MigrationError::at(name, "identity installation"))?;

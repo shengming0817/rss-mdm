@@ -78,6 +78,7 @@ def prepared(root, modules, binary, command, resources):
         values = {}
         try:
             for profile in profiles(modules):
+                selected_installation = dict(installation, audit_mode='ledger') if profile == 'audit_ledger' else installation
                 shared = profile == 'shared'
                 name = 't2_foundation' if shared else 't2_' + uuid.uuid4().hex
                 present = environment.sql("SELECT oid FROM pg_database WHERE datname='" + name + "'")
@@ -107,7 +108,7 @@ def prepared(root, modules, binary, command, resources):
                         'da_identity_runtime','da_identity_maintenance','da_identity_provisioning','da_runtime')})
                 if profile not in ('recovery', 'agent_foundation', 'da_foundation'):
                     config = directory / (name + '-migrate.json')
-                    private(config, dict(database=database(name, 'mdm_owner'),device_access_database=database(name,'da_owner'),installation=installation))
+                    private(config, dict(database=database(name, 'mdm_owner'),device_access_database=database(name,'da_owner'),installation=selected_installation))
                     command([str(binary), 'migrate', '--config', str(config)], name + '-migrate.log')
                     resources.append(dict(kind='schema', identity=name, action='validated' if present else 'installed'))
                     if shared:

@@ -17,29 +17,30 @@ struct Gate {
 }
 async fn change(
     runtime: &Arc<PgRuntime>,
-    tenant: rss_request_context::TenantId,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     policy: Uuid,
     collection: bool,
     gate: &Gate,
 ) -> Result<()> {
+    let tenant = binding.tenant();
     let changes = super::super::policy_ports::Changes {
         reader: rss_mdm_policy_postgres::PolicyReader::bind(
             rss_mdm_install_support::StorageProfile::Mdm,
             runtime.clone(),
             tenant,
         ),
-        messaging: rss_reconcile_postgres::PgMessagingStore::new(
+        messaging: Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            tenant,
+            binding,
             script::transaction::deadline(),
-        )
+        ))
         .await?,
         targets: Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
             rss_mdm_install_support::StorageProfile::Mdm,
             Some(Arc::new(rss_mdm_device_service::planning::PlanningObjects)),
         )),
     };
-    script::transaction::inspect(runtime,tenant,(changes,gate),move |ctx,tx|Box::pin(async move {
+    script::transaction::inspect(runtime,binding,(changes,gate),move |ctx,tx|Box::pin(async move {
         let tenant=tx.tenant_id().to_string();
         let pid=tx.with_connection(move |c|Box::pin(async move {
             // The management writer owns the Policy row before enqueue_change_in calls Changes.
@@ -132,7 +133,7 @@ async fn claim_policy<T: rss_reconcile::Timer>(
         script::wake::scope(h.c.tenant)
     };
     let mut batch = store
-        .claim_due(&scope, 1, Duration::from_secs(30), control)
+        .claim_due(&scope, 1, 64, Duration::from_secs(30), control)
         .await?;
     assert_eq!(batch.claims.len(), 1);
     let claim = batch.claims.remove(0);
@@ -158,7 +159,7 @@ async fn policy_change_race(collection: bool) -> Result<()> {
     let (changed, applied) = tokio::time::timeout(
         Duration::from_secs(15),
         futures::future::join(
-            change(&runtime, h.c.tenant, policy, collection, &gate),
+            change(&runtime, h.c.audit.binding(), policy, collection, &gate),
             worker,
         ),
     )
@@ -203,15 +204,15 @@ async fn independent_run_recovery_overlaps_and_existing_bindings_preserve_histor
     let collection_version =
         super::mixed::publish(&h, Uuid::new_v4(), 1, definition, frozen).await?;
     let collection_id = super::mixed::run(&h, collection_version, now() - 400).await?;
-    let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+    let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         h.a.resources.storage.runtime.clone(),
-        h.c.tenant,
+        h.c.audit.binding(),
         script::transaction::deadline(),
-    )
+    ))
     .await?;
     script::transaction::inspect(
         &h.a.resources.storage.runtime,
-        h.c.tenant,
+        h.c.audit.binding(),
         &messaging,
         |messaging, tx| {
             Box::pin(async move {
@@ -232,7 +233,7 @@ async fn independent_run_recovery_overlaps_and_existing_bindings_preserve_histor
     let script_scope = script::wake::scope(h.c.tenant);
     let collection_scope = collection::wake::scope(h.c.tenant);
     let mut scripts = store
-        .claim_due(&script_scope, 2, Duration::from_secs(30), &control)
+        .claim_due(&script_scope, 2, 64, Duration::from_secs(30), &control)
         .await?;
     assert_eq!(
         scripts.claims.len(),
@@ -241,7 +242,7 @@ async fn independent_run_recovery_overlaps_and_existing_bindings_preserve_histor
     );
     let script_claim = scripts.claims.remove(0);
     let mut collections = store
-        .claim_due(&collection_scope, 1, Duration::from_secs(30), &control)
+        .claim_due(&collection_scope, 1, 64, Duration::from_secs(30), &control)
         .await?;
     assert_eq!(
         collections.claims.len(),
@@ -297,7 +298,7 @@ async fn independent_run_recovery_overlaps_and_existing_bindings_preserve_histor
     // the Retry refers to its current wake version rather than superseded input.
     store.release(&script_claim, &control).await?;
     let mut retry = store
-        .claim_due(&script_scope, 1, Duration::from_secs(30), &control)
+        .claim_due(&script_scope, 1, 64, Duration::from_secs(30), &control)
         .await?;
     let retry = retry.claims.remove(0);
     let target = retry.target().clone();

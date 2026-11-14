@@ -11,7 +11,7 @@ impl Delivery {
         let discovered = self
             .runtime
             .local_tx(
-                self.tenant,
+                self.audit.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     std::time::Duration::from_secs(6),
                 ),

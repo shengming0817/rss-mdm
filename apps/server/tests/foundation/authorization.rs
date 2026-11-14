@@ -48,9 +48,18 @@ async fn same_session_reloads_current_grants_and_durable_authority_expires() -> 
     );
     assert!(
         matches!(
-            access::session::SessionAuthority::new(context.authority.clone(), other)
-                .authenticate(&context.access(), reader.credential()?)
-                .await,
+            access::session::SessionAuthority::new(
+                context.authority.clone(),
+                context.inputs.installation.execution(other, 1)?
+            )
+            .authenticate(
+                &context.access(),
+                reader.credential()?,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    std::time::Duration::from_secs(8)
+                )
+            )
+            .await,
             Err(access::Error::Unauthorized)
         ),
         "a second legally admitted tenant must reject the first tenant's credential"
@@ -180,7 +189,7 @@ async fn embedded_source_is_bound_before_purpose_and_revocation_blocks_reads() -
         let authenticated = c
             .authority
             .inspect_session(
-                c.tenant,
+                c.audit.binding(),
                 secret,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     std::time::Duration::from_secs(3),
@@ -209,7 +218,7 @@ async fn embedded_source_is_bound_before_purpose_and_revocation_blocks_reads() -
         };
         let revoked = c
             .authority
-            .inspect_session(c.tenant, secret, request.remaining()?)
+            .inspect_session(c.audit.binding(), secret, request.remaining()?)
             .await?;
         c.authority
             .revoke_current_session(
@@ -244,17 +253,15 @@ async fn embedded_da_http_binds_authority_before_purpose() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let result = async {
         let origin = "https://query-test.invalid";
-        let webauthn = rss_identity_postgres::WebauthnAuthority::connect(
+        let webauthn = rss_identity_postgres::WebauthnAuthority::new(
             c.authority.clone(),
             "query-test.invalid".into(),
             origin.parse()?,
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                Duration::from_secs(6),
-            ),
-        )
-        .await?;
+        )?;
         let state = Arc::new(AuthenticationState {
             identity: Arc::new(rss_mdm_management_http::identity::Identity {
+                binding: c.audit.binding(),
+                rp_generation: rss_identity_postgres::RpGeneration::new(1)?,
                 authority: c.authority.clone(),
                 webauthn,
                 http: rss_identity_http_axum::HttpConfig::new(origin, Duration::from_secs(8))?,
@@ -291,7 +298,11 @@ async fn embedded_da_http_binds_authority_before_purpose() -> Result<()> {
             .route_layer(axum::middleware::from_fn_with_state(state, identity_only));
         let app = protected
             .merge(identity)
-            .layer(Extension(crate::clock::monotonic()));
+            .layer(Extension(crate::clock::monotonic()))
+            .layer(axum::middleware::from_fn_with_state(
+                rss_axum::RequestBudget::new(Duration::from_secs(8))?,
+                rss_axum::request_control,
+            ));
         let allowed = c.account(&[Permission::InventoryRead]).await?;
         let denied = c.account(&[Permission::ResourceRead]).await?;
         for (account, path, expected) in [
@@ -369,3 +380,54 @@ async fn embedded_da_http_binds_authority_before_purpose() -> Result<()> {
     c.close().await;
     result
 }
+
+#[tokio::test]
+#[ignore = "T2: an actual session is scoped to the installed tenant and current epoch on every SDK operation"]
+async fn session_authentication_uses_the_current_execution_binding() -> anyhow::Result<()> {
+    use rss_transactional_messaging::fence::{Epoch, ExecutionBinding};
+    let c = crate::authority_t2_support::Context::open("shared", &[]).await?;
+    let account = c
+        .account(&[rss_mdm_authorization_service::Permission::AuditRead])
+        .await?;
+    let credential = || match account.credential().unwrap() {
+        rss_mdm_authorization_service::credential::RequestCredential::Cookie(secret) => secret,
+        _ => panic!("account fixture must issue a real cookie session"),
+    };
+    let binding = c.audit.binding();
+    let stale = ExecutionBinding::new(binding.storage(), c.tenant, Epoch::new(2)?);
+    assert!(
+        c.authority
+            .inspect_session(stale, credential(), crate::authority_t2_support::deadline())
+            .await
+            .is_err()
+    );
+    let foreign = ExecutionBinding::new(
+        binding.storage(),
+        rss_request_context::TenantId::parse(&uuid::Uuid::new_v4().to_string())?,
+        Epoch::new(1)?,
+    );
+    assert!(
+        c.authority
+            .inspect_session(
+                foreign,
+                credential(),
+                crate::authority_t2_support::deadline()
+            )
+            .await
+            .is_err()
+    );
+    let live = c
+        .authority
+        .inspect_session(
+            binding,
+            credential(),
+            crate::authority_t2_support::deadline(),
+        )
+        .await?;
+    assert_eq!(live.account().tenant, c.tenant);
+    c.close().await;
+    Ok(())
+}
+
+#[path = "identity_capacity.rs"]
+mod identity_capacity;

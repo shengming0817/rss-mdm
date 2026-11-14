@@ -27,7 +27,7 @@ pub async fn details_in(
 ) -> Result<std::collections::BTreeMap<(rss_mdm_agent_wire::DeviceId, String), Observation>, Error>
 {
     use std::collections::BTreeMap;
-    if targets.len() > 1000 {
+    if targets.len() > 1024 {
         return Err(Error::Malformed);
     }
     if targets.is_empty() {
@@ -49,7 +49,7 @@ pub async fn snapshot_details_in(
 ) -> Result<std::collections::BTreeMap<(rss_mdm_agent_wire::DeviceId, String), Observation>, Error>
 {
     use std::collections::BTreeMap;
-    if targets.len() > 1000 {
+    if targets.len() > 1024 {
         return Err(Error::Malformed);
     }
     if targets.is_empty() {

@@ -12,6 +12,7 @@ use sqlx::{Acquire, PgPool, Row};
 use std::{sync::Arc, time::Duration};
 /// Borrows the App-owned pool. Owns only the request-driven product projection.
 pub struct Timeline {
+    pub(crate) query_budget: crate::QueryBudget,
     pub(crate) associations: Arc<dyn crate::associations::Associations>,
     pub(crate) pool: PgPool,
     pub(crate) audit: Arc<AuditStore>,
@@ -30,6 +31,7 @@ impl Timeline {
     /// App composition selects an installation tenant; the reader still must authenticate for it.
     pub fn for_tenant(&self, tenant: TenantId) -> Self {
         Self {
+            query_budget: self.query_budget,
             associations: self.associations.clone(),
             pool: self.pool.clone(),
             audit: self.audit.clone(),
@@ -47,6 +49,7 @@ impl Timeline {
         Self {
             profile,
             audit,
+            query_budget: self.query_budget,
             associations: self.associations.clone(),
             pool: self.pool.clone(),
             tenant: self.tenant,
@@ -60,11 +63,13 @@ impl Timeline {
         tenant: TenantId,
         secret: &[u8],
         associations: Arc<dyn crate::associations::Associations>,
+        query_budget: crate::QueryBudget,
     ) -> Result<Self, Error> {
         if secret.len() != 32 {
             return Err(Error::Integrity);
         }
         Ok(Self {
+            query_budget,
             associations,
             pool,
             audit,
@@ -100,6 +105,9 @@ impl Timeline {
             .require(Permission::AuditRead, None)
             .map_err(|_| Error::Forbidden)?;
         query.validate()?;
+        if query.limit.unwrap_or(50) > self.query_budget.rows {
+            return Err(Error::BudgetExceeded);
+        }
         let token = query
             .cursor
             .as_ref()
@@ -395,9 +403,16 @@ impl Timeline {
             return Err(Error::Conflict);
         }
         // Coverage and result rows share one statement snapshot, not a durable consumption offset.
-        let rows=sqlx::query("WITH coverage AS (SELECT NOT EXISTS(SELECT 1 FROM rss_audit.records r WHERE r.tenant_id=$1::uuid AND starts_with(r.source_id,$17::text) AND NOT EXISTS(SELECT 1 FROM mdm_timeline.facts f WHERE f.tenant_id=r.tenant_id AND f.source=r.source_id AND f.event_id=r.event_id)) AS complete) SELECT coverage.complete,f.document,f.digest,f.position,f.recorded_at FROM coverage LEFT JOIN LATERAL (SELECT document,digest,position,recorded_at FROM mdm_timeline.facts WHERE tenant_id=$1::uuid AND starts_with(source,$17::text) AND (instance_id=$2::uuid OR (instance_id IS NULL AND source IN ('mdm.business','mdm.request','da.business','da.request') AND document->'fact'->>'actorKind' IN ('service','device','unidentified'))) AND ($3::uuid IS NULL OR devices @> ARRAY[$3]) AND ($4::uuid IS NULL OR operation_id=$4 OR ($16::text IS NULL AND operations @> ARRAY[$4])) AND ($5::text IS NULL OR CASE WHEN $16::text IS NULL THEN actor ELSE document->'operation'->>'actor' END=$5) AND ($6::text IS NULL OR action=$6) AND ($7::text IS NULL OR outcome=$7) AND ($8::bigint IS NULL OR recorded_at>=$8) AND ($9::bigint IS NULL OR recorded_at<$9) AND ($13::text IS NULL OR document->'fact'->'target'->>'id'=$13) AND ($14::text IS NULL OR document->'fact'->'target'->>'type'=$14) AND ($15::text IS NULL OR document->'fact'->>'requestId'=$15) AND ($16::text IS NULL OR document->'operation'->>'owner'=$16) AND ($10::bigint IS NULL OR (recorded_at,position)<($10,$11)) ORDER BY recorded_at DESC,position DESC LIMIT $12) f ON true ORDER BY f.recorded_at DESC,f.position DESC")
+        let rows=sqlx::query("WITH coverage AS (SELECT NOT EXISTS(SELECT 1 FROM rss_audit.records r WHERE r.tenant_id=$1::uuid AND starts_with(r.source_id,$17::text) AND NOT EXISTS(SELECT 1 FROM mdm_timeline.facts f WHERE f.tenant_id=r.tenant_id AND f.source=r.source_id AND f.event_id=r.event_id)) AS complete), candidates AS MATERIALIZED (SELECT document,digest,position,recorded_at,row_number() OVER (ORDER BY recorded_at DESC,position DESC) AS row_index FROM mdm_timeline.facts WHERE tenant_id=$1::uuid AND starts_with(source,$17::text) AND (instance_id=$2::uuid OR (instance_id IS NULL AND source IN ('mdm.business','mdm.request','da.business','da.request') AND document->'fact'->>'actorKind' IN ('service','device','unidentified'))) AND ($3::uuid IS NULL OR devices @> ARRAY[$3]) AND ($4::uuid IS NULL OR operation_id=$4 OR ($16::text IS NULL AND operations @> ARRAY[$4])) AND ($5::text IS NULL OR CASE WHEN $16::text IS NULL THEN actor ELSE document->'operation'->>'actor' END=$5) AND ($6::text IS NULL OR action=$6) AND ($7::text IS NULL OR outcome=$7) AND ($8::bigint IS NULL OR recorded_at>=$8) AND ($9::bigint IS NULL OR recorded_at<$9) AND ($13::text IS NULL OR document->'fact'->'target'->>'id'=$13) AND ($14::text IS NULL OR document->'fact'->'target'->>'type'=$14) AND ($15::text IS NULL OR document->'fact'->>'requestId'=$15) AND ($16::text IS NULL OR document->'operation'->>'owner'=$16) AND ($10::bigint IS NULL OR (recorded_at,position)<($10,$11)) ORDER BY recorded_at DESC,position DESC LIMIT $12), budget AS (SELECT coalesce(sum(octet_length(document::text)) FILTER (WHERE row_index < $12),0) <= $18 AS fits FROM candidates) SELECT coverage.complete,budget.fits,CASE WHEN budget.fits AND f.row_index < $12 THEN f.document END AS document,f.digest,f.position,f.recorded_at FROM coverage CROSS JOIN budget LEFT JOIN candidates f ON true ORDER BY f.recorded_at DESC,f.position DESC")
             .bind(self.tenant.to_string()).bind(proof.instance_id()).bind(query.device.map(|id|id.into_uuid())).bind(query.operation_id)
-            .bind(&query.actor).bind(&query.action).bind(&query.outcome).bind(query.from).bind(query.until).bind(token.map(|v|v.after_at)).bind(token.map(|v|v.after_position)).bind((query.limit.unwrap_or(50)+1) as i64).bind(&query.target_id).bind(&query.target_type).bind(query.request_id.map(|id|id.to_string())).bind(query.owner.map(|owner|serde_json::to_value(owner).expect("closed owner").as_str().expect("owner string").to_owned())).bind(format!("{}.",self.profile.name())).fetch_all(c).await?;
+            .bind(&query.actor).bind(&query.action).bind(&query.outcome).bind(query.from).bind(query.until).bind(token.map(|v|v.after_at)).bind(token.map(|v|v.after_position)).bind((query.limit.unwrap_or(50)+1) as i64).bind(&query.target_id).bind(&query.target_type).bind(query.request_id.map(|id|id.to_string())).bind(query.owner.map(|owner|serde_json::to_value(owner).expect("closed owner").as_str().expect("owner string").to_owned())).bind(format!("{}.",self.profile.name())).bind(self.query_budget.bytes).fetch_all(c).await?;
+        if !rows
+            .first()
+            .ok_or(Error::Storage)?
+            .try_get::<bool, _>("fits")?
+        {
+            return Err(Error::BudgetExceeded);
+        }
         let complete = rows.first().ok_or(Error::Storage)?.try_get("complete")?;
         Ok((complete, rows))
     }

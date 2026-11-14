@@ -18,14 +18,16 @@ pub(crate) async fn assemble(
     ),
     Error,
 > {
+    let supersede_batch = storage.command_supersede_batch;
     let caller = storage.runtime.clone();
     let (outbox, store) = storage
         .runtime
-        .local_tx(storage.tenant, deadline(), move |tx| {
+        .local_tx(storage.audit.binding(), deadline(), move |tx| {
             Box::pin(super::host_storage::bind_command_in(
                 caller,
                 tx,
                 command_clock,
+                supersede_batch,
                 rss_mdm_device_service::control::messaging_domain(),
             ))
         })
@@ -60,7 +62,7 @@ pub(crate) async fn assemble(
             apple_results: apple_store.clone(),
 
             runtime: storage.runtime.clone(),
-            tenant: storage.tenant,
+            binding: storage.audit.binding(),
         },
     ));
     let configuration_cleanup =
@@ -73,7 +75,7 @@ pub(crate) async fn assemble(
             capacity: Arc::new(super::capacity::Capacity),
             task_cleanup: Arc::new(super::task_cleanup::Cleanup(software)),
             configuration_cleanup,
-            worker_concurrency: config.background.device_concurrency,
+            recovery_batch: storage.command_recovery_batch,
             lock_pins: recovery_credentials.as_ref().map(|p| {
                 Arc::new(super::device_materials::Pins(
                     rss_mdm_recovery_credentials::lock_pin::LockPins::new(p.clone()),
@@ -97,11 +99,11 @@ pub(crate) async fn assemble(
             outbox,
             store,
             reconcile: storage.reconcile.clone(),
-            reconcile_messaging: rss_reconcile_postgres::PgMessagingStore::new(
+            reconcile_messaging: Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
                 storage.runtime.clone(),
-                storage.tenant,
+                storage.audit.binding(),
                 deadline(),
-            )
+            ))
             .await
             .map_err(|_| Error::Configuration(crate::ConfigIssue::CommandStorage))?,
             tenant: storage.tenant,

@@ -14,6 +14,7 @@ use rss_mdm_http_contract::Router;
 use std::{sync::Arc, time::Duration};
 #[derive(Clone)]
 pub struct Envelope {
+    pub request_budget: rss_axum::RequestBudget,
     pub profile: rss_mdm_install_support::StorageProfile,
     pub admission: Arc<tokio::sync::Semaphore>,
     pub host: String,
@@ -26,13 +27,31 @@ pub fn wrap<M: rss_mdm_http_contract::module::Declaration>(
     router: Router<(), M>,
     envelope: Envelope,
 ) -> Router<(), M> {
-    router.layer(middleware::from_fn_with_state((envelope, false), admit))
+    router
+        .layer(axum::extract::DefaultBodyLimit::disable())
+        .layer(middleware::from_fn_with_state(
+            (envelope.clone(), false),
+            admit,
+        ))
+        .layer(middleware::from_fn_with_state(
+            envelope.request_budget,
+            rss_axum::request_control,
+        ))
 }
 pub fn wrap_enroll<M: rss_mdm_http_contract::module::Declaration>(
     router: Router<(), M>,
     envelope: Envelope,
 ) -> Router<(), M> {
-    router.layer(middleware::from_fn_with_state((envelope, true), admit))
+    router
+        .layer(axum::extract::DefaultBodyLimit::disable())
+        .layer(middleware::from_fn_with_state(
+            (envelope.clone(), true),
+            admit,
+        ))
+        .layer(middleware::from_fn_with_state(
+            envelope.request_budget,
+            rss_axum::request_control,
+        ))
 }
 fn family(response: Response, enrollment: bool) -> Response {
     if !enrollment {
@@ -237,6 +256,8 @@ async fn body(
         .unwrap_or("");
     let limit = if route.contains("/telemetry/") {
         4 * 1024 * 1024
+    } else if route.ends_with("/reports") {
+        rss_mdm_agent_wire::runtime::MAX_REPORT_BYTES
     } else if route.contains("/self-service/") {
         131072
     } else if route.ends_with("/tasks/{id}/events") {

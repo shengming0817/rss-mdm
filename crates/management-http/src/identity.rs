@@ -12,11 +12,8 @@ pub struct Identity {
     pub webauthn: rss_identity_postgres::WebauthnAuthority,
     pub http: rss_identity_http_axum::HttpConfig,
     pub tenant: TenantId,
-}
-fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
-    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-        std::time::Duration::from_secs(10),
-    )
+    pub binding: rss_transactional_messaging::fence::ExecutionBinding,
+    pub rp_generation: rss_identity_postgres::RpGeneration,
 }
 pub(crate) fn failure(e: AuthorityError) -> Error {
     match e {
@@ -38,6 +35,7 @@ impl Identity {
         access: &rss_mdm_authorization_service::Store,
         address: Option<std::net::IpAddr>,
         programmatic: bool,
+        deadline: rss_transactional_messaging::policy::OperationDeadline,
     ) -> Result<(Principal, RequestCredential), Response> {
         let bearer = headers.contains_key("authorization");
         let key = headers.contains_key("x-api-key");
@@ -76,9 +74,9 @@ impl Identity {
             let (session, secret) = rss_identity_http_axum::authenticate_bearer_request(
                 &self.authority,
                 &self.http,
-                self.tenant,
+                self.binding,
                 headers,
-                deadline(),
+                deadline,
             )
             .await
             .map_err(project_failure)?;
@@ -92,10 +90,10 @@ impl Identity {
         let (session, credential) = rss_identity_http_axum::authenticate_request(
             &self.authority,
             &self.http,
-            self.tenant,
+            self.binding,
             headers,
             activity,
-            deadline(),
+            deadline,
         )
         .await
         .map_err(project_failure)?;

@@ -384,7 +384,6 @@ async fn verify_access_recovery(
         &c.inputs.database("shared", "mdm_command_runtime"),
         &c.inputs.installation.target,
         &c.inputs.installation.lineage,
-        &[(c.tenant, 1)],
     )
     .context("prepare the command worker runtime inputs")?;
     let runtime = Arc::new(
@@ -400,7 +399,7 @@ async fn verify_access_recovery(
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
     let audit = Arc::new(
         c.audit
-            .on_runtime(runtime.clone(), c.tenant, &budget.control())
+            .on_runtime(runtime.clone(), c.audit.binding(), &budget.control())
             .await
             .context("bind Audit to the command worker runtime")?,
     );
@@ -462,11 +461,14 @@ async fn verify_access_recovery(
         .await?;
     let proof = rss_mdm_authorization_service::session::SessionAuthority::new(
         c.authority.clone(),
-        c.tenant,
+        c.audit.binding(),
     )
     .authenticate(
         &c.access().for_product(StorageProfile::Da),
         account.credential()?,
+        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+            std::time::Duration::from_secs(8),
+        ),
     )
     .await?;
     let mut locator = rss_mdm_audit_integration::operation::OperationLocator {
@@ -535,7 +537,7 @@ async fn verify_access_recovery(
         execution::transaction::run(
             audit,
             runtime,
-            c.tenant,
+            c.audit.binding(),
             &request,
             (service, id),
             |ctx, tx| {
@@ -706,7 +708,7 @@ async fn verify_access_recovery(
         let result = execution::transaction::run(
             &audit,
             &runtime,
-            c.tenant,
+            c.audit.binding(),
             &request,
             (&service, agent, task.task_id, &input, &request, &audit),
             |(service, agent, id, input, request, audit), tx| {
@@ -889,7 +891,7 @@ async fn recover_credential(
     recovery::tasks::transaction::run(
         audit,
         runtime,
-        c.tenant,
+        c.audit.binding(),
         &request,
         (service, id),
         |ctx, tx| {
@@ -1052,7 +1054,7 @@ async fn retire_credential(
     recovery::tasks::transaction::run(
         audit,
         runtime,
-        c.tenant,
+        c.audit.binding(),
         &request,
         (audit, c.tenant.to_string(), registration.to_owned(), abort),
         |(audit, tenant, registration, abort), tx| {

@@ -228,6 +228,7 @@ async fn configuration(
 }
 
 async fn current(
+    Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -251,8 +252,15 @@ async fn current(
             C::NotRequested => wire::TelemetryCurrentState::NotRequested,
             C::Pending => wire::TelemetryCurrentState::Pending,
             C::Admitted(run) => {
-                let (observation, projection) =
-                    projection_status(app.inventory.inspect(&run).await?)?;
+                let (observation, projection) = projection_status(
+                    app.inventory
+                        .inspect(
+                            &run,
+                            control.deadline(),
+                            rss_request_context::Cancellation::observe(&control),
+                        )
+                        .await?,
+                )?;
                 wire::TelemetryCurrentState::Observed {
                     observation,
                     projection,

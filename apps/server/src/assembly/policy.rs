@@ -4,6 +4,7 @@ use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::PgTransaction;
 use std::sync::Arc;
 pub(crate) async fn application(
+    background: &crate::background::Compiled,
     owner: &crate::owner_storage::OwnerRuntime,
     tenant: TenantId,
     key: &[u8],
@@ -12,6 +13,7 @@ pub(crate) async fn application(
     content: Option<Arc<rss_mdm_content_service::Store>>,
 ) -> Result<Arc<Application>, crate::Error> {
     let configuration = configuration(
+        background,
         owner.runtime.clone(),
         owner.audit.clone(),
         tenant,
@@ -19,7 +21,7 @@ pub(crate) async fn application(
         content,
     )
     .await?;
-    let changes = changes(owner.runtime.clone(), tenant).await?;
+    let changes = changes(owner.runtime.clone(), owner.audit.binding()).await?;
     Ok(Arc::new(
         Application::new(rss_mdm_policy_service::application::Dependencies {
             profile: rss_mdm_install_support::StorageProfile::Mdm,
@@ -76,12 +78,12 @@ pub(crate) async fn events(
         .await?,
     );
     let software = Arc::new(
-        rss_mdm_software_service::deployment::Transactions::bind(
+        Box::pin(rss_mdm_software_service::deployment::Transactions::bind(
             application.runtime.clone(),
             application.tenant,
             application.audit_store.clone(),
             software_materials,
-        )
+        ))
         .await
         .map_err(super::owner_errors::software)?,
     );
@@ -152,7 +154,7 @@ pub(crate) async fn management(
         rss_mdm_policy_postgres::PolicyStore::new(
             rss_mdm_install_support::StorageProfile::Mdm,
             application.runtime.clone(),
-            application.tenant,
+            application.audit_store.binding(),
             rss_mdm_policy_service::transaction::deadline(),
         )
         .await
@@ -168,7 +170,6 @@ pub(crate) async fn management(
             cursor_key: key.to_vec(),
             runtime: application.runtime.clone(),
             audit_store: application.audit_store.clone(),
-            tenant: application.tenant,
             policy_store: store,
             inputs: Arc::new(super::policy_ports::Publication {
                 software: software_inputs,
@@ -184,14 +185,14 @@ pub(crate) async fn management(
             )),
             script: Some(Arc::new(rss_mdm_script_service::inputs::Inputs::bind(
                 application.runtime.clone(),
-                application.tenant,
+                application.audit_store.binding(),
                 content.clone(),
                 signing_enabled,
             ))),
             collections: Some(Arc::new(
                 rss_mdm_inventory_service::collection::execution::inputs::Inputs::bind(
                     application.runtime.clone(),
-                    application.tenant,
+                    application.audit_store.binding(),
                     content.clone(),
                     Arc::new(super::collection_ports::Delivery {
                         protection: protection.clone(),
@@ -201,7 +202,7 @@ pub(crate) async fn management(
             configuration: Some(Arc::new(
                 rss_mdm_policy_service::configuration::publication::Publications {
                     runtime: application.runtime.clone(),
-                    tenant: application.tenant,
+                    execution: application.audit_store.binding(),
                     content,
                     protection,
                 },
@@ -252,13 +253,14 @@ impl rss_mdm_scope_service::sources::ScopeDependents for ScopeDependents {
 
 pub(crate) async fn changes(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    tenant: TenantId,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
 ) -> Result<Arc<dyn rss_mdm_policy_service::inputs::ExecutionChanges>, crate::Error> {
-    let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+    let tenant = execution.tenant();
+    let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         runtime.clone(),
-        tenant,
+        execution,
         rss_mdm_policy_service::transaction::deadline(),
-    )
+    ))
     .await
     .map_err(|_| crate::Error::Unavailable(crate::Failure::PlanningStorage))?;
     Ok(Arc::new(super::policy_ports::Changes {
@@ -275,23 +277,26 @@ pub(crate) async fn changes(
     }))
 }
 pub(crate) async fn configuration(
+    background: &crate::background::Compiled,
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: TenantId,
     protection: Arc<rss_mdm_native_protection::Protector>,
     content: Option<Arc<rss_mdm_content_service::Store>>,
 ) -> Result<Arc<rss_mdm_policy_service::configuration::Transactions>, crate::Error> {
-    let changes = changes(runtime.clone(), tenant).await?;
+    let changes = changes(runtime.clone(), audit.binding()).await?;
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
     let audit = Arc::new(
         audit
-            .on_runtime(runtime.clone(), tenant, &budget.control())
+            .on_runtime(runtime.clone(), audit.binding(), &budget.control())
             .await?,
     );
     Ok(Arc::new(
         rss_mdm_policy_service::configuration::Transactions::bind(
             rss_mdm_policy_service::configuration::Dependencies {
+                supersede_batch: background.command_supersede_batch,
+                recovery_batch: background.command_recovery_batch,
                 runtime,
                 tenant,
                 audit_store: audit,

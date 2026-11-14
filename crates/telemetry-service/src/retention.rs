@@ -41,7 +41,7 @@ impl Service {
     pub(crate) async fn retain(self: &Arc<Self>) -> Result<(), Error> {
         let service = self.clone();
         self.runtime
-            .local_tx(self.tenant, crate::deadline(), move |tx| {
+            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {

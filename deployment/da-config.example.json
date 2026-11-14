@@ -1,11 +1,137 @@
 {
-  "installation": {"instance":"00000000-0000-4000-8000-000000000001","tenant":"00000000-0000-4000-8000-000000000002","management_tenant":"00000000-0000-4000-8000-000000000003","target":[1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"lineage":[2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"epoch":1},
-  "database":{"host":"postgres.example.com","port":5432,"name":"da","user":"da_access","password_file":"/srv/rss-da/runtime/da-access-password","ca_file":"/srv/rss-da/runtime/postgres-ca.pem"},
-  "identity_database":{"host":"postgres.example.com","port":5432,"name":"da","user":"da_identity_runtime","password_file":"/srv/rss-da/runtime/identity-password","ca_file":"/srv/rss-da/runtime/postgres-ca.pem"},
-  "audit":{"mode":"plain"},
-  "browser":{"listen":"0.0.0.0:8443","origin":"https://da.example.com","certificate_file":"/srv/rss-da/runtime/browser.pem","private_key_file":"/srv/rss-da/runtime/browser-key.pem"},
-  "registration":{"listener":{"listen":"0.0.0.0:8444","origin":"https://device.da.example.com","certificate_file":"/srv/rss-da/runtime/device.pem","private_key_file":"/srv/rss-da/runtime/device-key.pem"},"trust_file":"/srv/rss-da/runtime/device-trust.json","providers":[],"certificate_days":30,"configuration_revision":null,"configuration_lifetime":86400},
-  "protection":{"active_file":"/srv/rss-da/runtime/protection-key","historical_files":[],"fingerprint_file":"/srv/rss-da/runtime/fingerprint-key"},
-  "cursor_key_file":"/srv/rss-da/runtime/cursor-key",
-  "deployment_authorities":[],"platform_sso":null,"enterprise":null,"oidc":null,"recovery":null
+  "installation": {
+    "instance": "00000000-0000-4000-8000-000000000001",
+    "tenant": "00000000-0000-4000-8000-000000000002",
+    "management_tenant": "00000000-0000-4000-8000-000000000003",
+    "target": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "lineage": [
+      2,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "epoch": 1
+  },
+  "database": {
+    "host": "postgres.example.com",
+    "port": 5432,
+    "name": "da",
+    "user": "da_access",
+    "password_file": "/srv/rss-da/runtime/da-access-password",
+    "ca_file": "/srv/rss-da/runtime/postgres-ca.pem"
+  },
+  "identity_database": {
+    "host": "postgres.example.com",
+    "port": 5432,
+    "name": "da",
+    "user": "da_identity_runtime",
+    "password_file": "/srv/rss-da/runtime/identity-password",
+    "ca_file": "/srv/rss-da/runtime/postgres-ca.pem"
+  },
+  "audit": {
+    "mode": "plain"
+  },
+  "browser": {
+    "listen": "0.0.0.0:8443",
+    "origin": "https://da.example.com",
+    "certificate_file": "/srv/rss-da/runtime/browser.pem",
+    "private_key_file": "/srv/rss-da/runtime/browser-key.pem"
+  },
+  "registration": {
+    "listener": {
+      "listen": "0.0.0.0:8444",
+      "origin": "https://device.da.example.com",
+      "certificate_file": "/srv/rss-da/runtime/device.pem",
+      "private_key_file": "/srv/rss-da/runtime/device-key.pem"
+    },
+    "trust_file": "/srv/rss-da/runtime/device-trust.json",
+    "providers": [],
+    "certificate_days": 30,
+    "configuration_revision": null,
+    "configuration_lifetime": 86400
+  },
+  "protection": {
+    "active_file": "/srv/rss-da/runtime/protection-key",
+    "historical_files": [],
+    "fingerprint_file": "/srv/rss-da/runtime/fingerprint-key"
+  },
+  "cursor_key_file": "/srv/rss-da/runtime/cursor-key",
+  "deployment_authorities": [],
+  "platform_sso": null,
+  "enterprise": null,
+  "oidc": null,
+  "recovery": null,
+  "identity_policy": {
+    "kdf_concurrency": 4,
+    "kdf_memory_bytes": 134217728,
+    "source_attempts": 30,
+    "source_window_seconds": 300,
+    "scope_attempts": 5,
+    "scope_window_seconds": 900,
+    "password_attempts": 5,
+    "password_window_seconds": 600,
+    "record_capacity": 10000,
+    "cleanup_batch": 128,
+    "claim_seconds": 60,
+    "provider_capacity": 100,
+    "profile_receipt_capacity": 4096,
+    "request_seconds": 10,
+    "drain_seconds": 5,
+    "rp_generation": 1,
+    "oidc_request_seconds": 5,
+    "oidc_connect_seconds": 3,
+    "oidc_response_bytes": 1048576,
+    "oidc_jwks_keys": 128,
+    "audit_recovery_seconds": 10,
+    "audit_recovery_rows": 64,
+    "audit_recovery_bytes": 4194304,
+    "startup_seconds": 60,
+    "maintenance_seconds": 10,
+    "profile_bytes": 65536,
+    "profile_members": 1024,
+    "profile_depth": 8,
+    "profile_array": 1024,
+    "profile_max_age_seconds": 86400
+  },
+  "http": {
+    "max_connections": 32,
+    "handshake_seconds": 5,
+    "rejection_seconds": 3,
+    "connection_drain_seconds": 15,
+    "header_seconds": 3,
+    "max_headers": 64,
+    "max_header_bytes": 32768,
+    "request_drain_seconds": 15,
+    "total_drain_seconds": 45,
+    "maintenance_drain_seconds": 30
+  }
 }

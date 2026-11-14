@@ -25,7 +25,7 @@ impl SoftwareService {
         );
         crate::deployment::transaction::inspect(
             &self.transactions.runtime,
-            self.transactions.tenant,
+            self.transactions.audit_store.binding(),
             (self, id),
             |ctx, tx| {
                 Box::pin(async move {
@@ -169,7 +169,7 @@ pub(crate) async fn installation_observations_on(
     if ops.is_empty() {
         return Ok(Default::default());
     }
-    if ops.len() > 1000 {
+    if ops.len() > 1024 {
         return Err(Error::Malformed.into());
     }
     let targets = ops

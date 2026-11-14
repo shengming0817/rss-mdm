@@ -94,7 +94,7 @@ impl CollectionService {
         );
         audit.identify_service("collection-dispatch");
         audit.target(&id.to_string());
-        let result = crate::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
+        let result = crate::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.audit_store.binding(),&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
             let (service,id,fingerprint,audit)=ctx;
             service.transactions.audit_store.prepare_in(tx,audit,&[]).await?;
             let tenant=tx.tenant_id().to_string();let id=*id;let fingerprint=fingerprint.clone();

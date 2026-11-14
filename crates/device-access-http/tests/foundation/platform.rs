@@ -254,7 +254,7 @@ async fn browser_session(
 ) -> Result<SessionSecret> {
     let browser = crypto::random()?;
     let challenge = Box::pin(c.authority.begin_platform_login(
-        c.tenant,
+        c.sessions.binding(),
         binding,
         rss_identity_postgres::platform::PlatformPurpose::BrowserLogin,
         browser.clone(),
@@ -275,7 +275,7 @@ async fn browser_session(
         })?,
     )?;
     let result = Box::pin(c.authority.complete_platform_login(
-        c.tenant,
+        c.sessions.binding(),
         challenge.id,
         challenge.nonce,
         browser,
@@ -286,7 +286,7 @@ async fn browser_session(
     assert!(result.assertion.is_none());
     let secret = SessionSecret::parse(result.session.secret().expose().into())?;
     Box::pin(c.authority.inspect_session(
-        c.tenant,
+        c.sessions.binding(),
         SessionSecret::parse(secret.expose().into())?,
         deadline(),
     ))
@@ -307,7 +307,11 @@ pub async fn verify(
     let token = material::administrator(c).await?;
     let principal = c
         .authority
-        .inspect_bearer(c.tenant, BearerSecret::parse(token.clone())?, deadline())
+        .inspect_bearer(
+            c.sessions.binding(),
+            BearerSecret::parse(token.clone())?,
+            deadline(),
+        )
         .await?
         .account()
         .principal
@@ -671,7 +675,7 @@ pub async fn verify(
     );
     assert!(
         c.authority
-            .inspect_session(c.tenant, session, deadline())
+            .inspect_session(c.sessions.binding(), session, deadline())
             .await
             .is_err(),
         "evidence revocation invalidates the current Identity session"
@@ -679,7 +683,7 @@ pub async fn verify(
     assert!(
         c.authority
             .begin_platform_login(
-                c.tenant,
+                c.sessions.binding(),
                 id,
                 rss_identity_postgres::platform::PlatformPurpose::BrowserLogin,
                 crypto::random()?,

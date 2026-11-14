@@ -34,7 +34,7 @@ pub(crate) async fn advance(
     transaction::run(
         &s.audit_store,
         &s.runtime,
-        s.tenant,
+        s.audit_store.binding(),
         &audit,
         (s, id, cut, rollback, &audit),
         |ctx, tx| {
@@ -68,7 +68,7 @@ async fn admission(
     scope: Uuid,
     device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<(serde_json::Value, serde_json::Value)> {
-    Ok(transaction::inspect(&s.runtime, s.tenant, (scope, device.to_owned()), |ctx, tx| Box::pin(async move {
+    Ok(transaction::inspect(&s.runtime, s.audit_store.binding(), (scope, device.to_owned()), |ctx, tx| Box::pin(async move {
         let (scope, device) = *ctx;
         Ok(tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_as("SELECT mdm_scope.scope_state($1,NULL),mdm_scope.channel_admission($1,'mdm',$2)")
@@ -240,7 +240,7 @@ async fn recompute(
     transaction::run(
         &s.audit_store,
         &s.runtime,
-        s.tenant,
+        s.audit_store.binding(),
         &audit,
         (s, p, &audit, old),
         |(s, p, a, old), tx| {

@@ -10,6 +10,7 @@ use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use std::sync::Arc;
 
 pub struct Inputs {
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) tenant: rss_request_context::TenantId,
     content: Option<Arc<Store>>,
@@ -25,13 +26,14 @@ pub struct Publication<'a> {
 impl Inputs {
     pub fn bind(
         runtime: Arc<PgRuntime>,
-        tenant: rss_request_context::TenantId,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         content: Option<Arc<Store>>,
         signing_enabled: bool,
     ) -> Self {
         Self {
             runtime,
-            tenant,
+            tenant: execution.tenant(),
+            execution,
             content,
             signing_enabled,
         }
@@ -53,7 +55,7 @@ impl Inputs {
     ) -> std::result::Result<Verified, Error> {
         let artifact = inspect(
             &self.runtime,
-            self.tenant,
+            self.execution,
             (self, binding, parameters),
             |ctx, tx| {
                 Box::pin(async move {

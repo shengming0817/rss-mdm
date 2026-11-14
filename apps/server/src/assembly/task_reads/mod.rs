@@ -199,13 +199,13 @@ pub(crate) fn assemble(
         source,
         scripts: rss_mdm_script_service::inputs::Inputs::bind(
             storage.runtime.clone(),
-            storage.tenant,
+            storage.audit.binding(),
             content.clone(),
             signed,
         ),
         collections: rss_mdm_inventory_service::collection::execution::inputs::Inputs::bind(
             storage.runtime.clone(),
-            storage.tenant,
+            storage.audit.binding(),
             content.clone(),
             Arc::new(super::collection_ports::Delivery {
                 protection: protection.clone(),

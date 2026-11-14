@@ -30,13 +30,19 @@ impl Http {
     async fn open(router: axum::Router, c: &Context, p: Arc<AuthorizedPrincipal>) -> Result<Self> {
         let router = router
             .layer(axum::Extension(c.request(&p)?))
-            .layer(axum::Extension(RequestAuth {
-                proof: p,
-                sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
-                    c.authority.clone(),
-                    c.tenant,
-                ),
-                deadline: c.access().now() + std::time::Duration::from_secs(8),
+            .layer(axum::Extension({
+                let request_budget = Arc::new(rss_mdm_audit_integration::budget::AuditBudget::new(
+                    std::time::Duration::from_secs(8),
+                ));
+                RequestAuth {
+                    proof: p,
+                    sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
+                        c.authority.clone(),
+                        c.audit.binding(),
+                    ),
+                    deadline: request_budget.deadline().instant(),
+                    cancellation: request_budget,
+                }
             }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let base = format!("http://{}", listener.local_addr()?);
@@ -96,7 +102,7 @@ async fn version(c: &Context, v: r::Version) -> Result<()> {
     let owner = planning::owner(c, "mdm_resource_runtime").await?;
     let store = rss_mdm_resource_postgres::ResourceStore::new(
         owner.runtime.clone(),
-        c.tenant,
+        c.audit.binding(),
         crate::authority_t2_support::deadline(),
     )
     .await?;

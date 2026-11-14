@@ -157,7 +157,7 @@ pub async fn run_summaries_on(
     if ids.is_empty() {
         return Ok(Default::default());
     }
-    if ids.len() > 1000 {
+    if ids.len() > 1024 {
         return Err(Error::Malformed.into());
     }
     let expected = ids.len();

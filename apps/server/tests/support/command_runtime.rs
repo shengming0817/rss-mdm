@@ -5,6 +5,7 @@ use anyhow::Result;
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
 pub struct Prepared {
+    pub(crate) background: crate::background::Compiled,
     pub config: crate::config::Config,
     pub storage: Storage,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
@@ -46,6 +47,7 @@ impl Prepared {
         configure(&mut config);
 
         let config: crate::config::Config = serde_json::from_value(config)?;
+        let background = config.background.compile(&config)?;
         let protection = super::device_material_support::protection(c)?;
         let channels = Arc::new(crate::channel_status::Channels::new(&config));
         let (signing, _) = crate::assembly::task_trust::signing(
@@ -61,9 +63,13 @@ impl Prepared {
             Arc::new(crate::lifecycle::RuntimeTimer),
         )?;
         let mut startup = lifecycle.startup()?;
-        let storage = Storage::open(&config, c.audit.clone(), &protection, |resource| {
-            startup.stage_resource(resource)
-        })
+        let storage = Storage::open(
+            &config,
+            &background,
+            c.audit.clone(),
+            &protection,
+            |resource| startup.stage_resource(resource),
+        )
         .await;
         startup.commit().finish();
         let storage = match storage {
@@ -78,6 +84,7 @@ impl Prepared {
             }
         };
         Ok(Self {
+            background,
             config,
             storage,
             protection,
@@ -90,7 +97,7 @@ impl Prepared {
             sessions: Arc::new(
                 rss_mdm_authorization_service::session::SessionAuthority::new(
                     c.authority.clone(),
-                    c.tenant,
+                    c.audit.binding(),
                 ),
             ),
             lifecycle,

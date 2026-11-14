@@ -10,6 +10,7 @@ pub async fn bind_command_in(
     runtime: Arc<PgRuntime>,
     tx: &mut PgTransaction<'_>,
     clock: rss_device_command_postgres::CommandClock,
+    supersede_batch: rss_device_command::BatchLimit,
 ) -> std::result::Result<
     (
         Arc<PgOutboxStore<()>>,
@@ -31,8 +32,14 @@ pub async fn bind_command_in(
         "mdm_policy_runtime",
     ])
     .map_err(|_| PgError::from(sqlx::Error::Protocol("command caller declaration".into())))?;
-    let store =
-        rss_device_command_postgres::PgStore::new(tx, outbox.clone(), clock, &callers).await?;
+    let store = rss_device_command_postgres::PgStore::new(
+        tx,
+        outbox.clone(),
+        clock,
+        &callers,
+        supersede_batch,
+    )
+    .await?;
     Ok((outbox, store))
 }
 
@@ -115,7 +122,7 @@ pub(crate) async fn load_many_on(
     protection: &rss_mdm_native_protection::Protector,
     ids: Vec<Uuid>,
 ) -> Result<std::collections::BTreeMap<Uuid, Operation>> {
-    if ids.len() > 1000 {
+    if ids.len() > 1024 {
         return Err(Error::Malformed.into());
     }
     if ids.is_empty() {
@@ -136,7 +143,7 @@ pub(crate) async fn load_many_on(
         "registration.installation.inputs",
         count as u64,
         bytes as u64,
-        1000,
+        1024,
         16 * 1024 * 1024,
     ) {
         return Err(Error::Unavailable(Failure::Capacity).into());
@@ -287,7 +294,7 @@ pub async fn owned_ids_on(
     tenant: TenantId,
     ids: &[Uuid],
 ) -> std::result::Result<std::collections::BTreeSet<Uuid>, sqlx::Error> {
-    if ids.len() > 1000 {
+    if ids.len() > 1024 {
         return Err(sqlx::Error::Protocol("ownership batch limit".into()));
     }
     let ids: Vec<Uuid> = sqlx::query_scalar(

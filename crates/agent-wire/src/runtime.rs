@@ -51,11 +51,15 @@ pub const API_VERSION: u8 = 1;
 pub const WIRE_VERSION: u8 = 1;
 /// Maximum complete JSON request accepted by the product adapter.
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+/// Complete report JSON, including its frozen collection definition.
+pub const MAX_REPORT_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum values and covered fields in one complete report.
+pub const MAX_REPORT_FIELDS: usize = 4096;
 /// Canonical manifest for every public Agent V1 JSON shape.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "ecf5416d13be5c1b43328ac5cf8e87731eb8725704c4db4291186774f63946a0";
+    "66f4251774dddbaa778b27abd07a8b48829ae07ff600e21c9c95b7b1018a3409";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -345,11 +349,11 @@ pub enum ReportBody {
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 enum RawReportBody {
     Snapshot {
-        #[schemars(extend("maxItems" = 128))]
+        #[schemars(extend("maxItems" = 4096))]
         values: Vec<FieldValue>,
     },
     Partial {
-        #[schemars(extend("maxItems" = 128))]
+        #[schemars(extend("maxItems" = 4096))]
         values: Vec<FieldValue>,
     },
     Failed {
@@ -453,7 +457,7 @@ impl ReportRequest {
                 }));
             }
         };
-        if values.len() > 128
+        if values.len() > MAX_REPORT_FIELDS
             || values
                 .iter()
                 .any(|value| match collection.field(value.field) {
@@ -508,7 +512,7 @@ impl ReportRequest {
     /// Canonical semantic JSON used for durable duplicate detection.
     pub fn canonical(&self) -> Result<Vec<u8>, WireError> {
         let bytes = serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?;
-        if bytes.len() > MAX_REQUEST_BYTES {
+        if bytes.len() > MAX_REPORT_BYTES {
             return Err(WireError::InvalidValue);
         }
         Ok(bytes)

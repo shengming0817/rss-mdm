@@ -14,7 +14,7 @@ async fn shared_capacity_counts_each_owner_and_isolates_other_devices() -> Resul
     let capacity = |device: rss_mdm_agent_wire::DeviceId| {
         script::transaction::inspect(
             &h.a.resources.storage.runtime,
-            h.c.tenant,
+            h.c.audit.binding(),
             device,
             |device, tx| {
                 Box::pin(async move {

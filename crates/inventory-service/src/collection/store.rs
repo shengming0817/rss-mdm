@@ -484,17 +484,41 @@ impl Delivery {
         tx.rollback().await.map_err(db)?;
         Ok(count as u64)
     }
-    pub async fn pending_reports(&self, tenant: &str) -> Result<Vec<DurableReport>, Error> {
+    pub async fn pending_reports(
+        &self,
+        tenant: &str,
+        limit: rss_projection::BatchLimit,
+        byte_limit: i64,
+    ) -> Result<Vec<DurableReport>, Error> {
+        if byte_limit <= 0 {
+            return Err(Error::Malformed);
+        }
         let profile = self.profile();
 
         let mut tx = self.database.begin_read(tenant).await?;
         let rows =
             sqlx::query(crate::storage_profile::sql(profile).collection_store_pending_reports_1)
                 .bind(tenant)
+                .bind(i64::from(limit.get()))
+                .bind(byte_limit)
                 .fetch_all(&mut *tx)
                 .await
                 .map_err(db)?;
         tx.rollback().await.map_err(db)?;
+        if let Some(row) = rows
+            .iter()
+            .find(|r| !r.try_get::<bool, _>("fits").unwrap_or(false))
+        {
+            eprintln!(
+                "{}",
+                serde_json::json!({
+                    "event":"mdm_inventory_report_exceeds_read_budget",
+                    "requiredBytes":row.try_get::<i64, _>("required_bytes").ok(),
+                    "configuredBytes":byte_limit,
+                })
+            );
+            return Err(Error::Unavailable(Failure::Capacity));
+        }
         rows.into_iter().map(durable_report).collect()
     }
     pub async fn expire_timed(&self, tenant: &str) -> Result<usize, Error> {

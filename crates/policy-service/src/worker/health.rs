@@ -7,7 +7,7 @@ impl Application {
     ) -> std::result::Result<bool, HealthFailure> {
         configuration_input_suspended(
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             self.configuration.as_deref(),
             cutoff,
         )
@@ -21,7 +21,7 @@ impl Application {
         queue_health(
             self.profile(),
             &self.runtime,
-            self.tenant,
+            self.audit_store.binding(),
             self.configuration.as_deref(),
             cutoff,
         )
@@ -31,7 +31,7 @@ impl Application {
 /// Read native input suspension only when the actual configuration participant exists.
 pub async fn configuration_input_suspended(
     runtime: &std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    tenant: rss_request_context::TenantId,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     configuration: Option<&crate::configuration::Transactions>,
     cutoff: std::time::Instant,
 ) -> std::result::Result<bool, HealthFailure> {
@@ -39,7 +39,7 @@ pub async fn configuration_input_suspended(
         return Ok(false);
     }
     runtime
-            .local_tx(tenant, health_deadline(cutoff), |tx| {
+            .local_tx(binding, health_deadline(cutoff), |tx| {
                 Box::pin(async move {
                     let tenant = tx.tenant_id().to_string();
                     tx.with_connection(move |c| Box::pin(async move {
@@ -60,13 +60,13 @@ pub async fn configuration_input_suspended(
 pub async fn queue_health(
     profile: rss_mdm_install_support::StorageProfile,
     runtime: &std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    tenant: rss_request_context::TenantId,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     configuration: Option<&crate::configuration::Transactions>,
     cutoff: std::time::Instant,
 ) -> std::result::Result<[u64; 5], HealthFailure> {
     let configured = configuration.is_some();
     runtime
-            .local_tx(tenant, health_deadline(cutoff), |tx| {
+            .local_tx(binding, health_deadline(cutoff), |tx| {
                 Box::pin(async move {
                     let mut counts=rss_mdm_policy_postgres::work::counts_in(profile, tx).await?;
                     if !configured { return Ok(counts); }

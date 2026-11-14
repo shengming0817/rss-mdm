@@ -7,6 +7,20 @@
 
 /// Observation dataset name selected by the Inventory projection.
 pub const DATASET: &str = "inventory";
+/// Maximum field coverage in one complete collection.
+pub const MAX_COLLECTION_FIELDS: usize = 4096;
+/// Finite catalog capacity reserves installed system fields beside a complete custom collection.
+pub fn catalog_capacity() -> usize {
+    static CAPACITY: std::sync::LazyLock<usize> =
+        std::sync::LazyLock::new(|| MAX_COLLECTION_FIELDS + builtin::fields().len());
+    *CAPACITY
+}
+/// Preserve the prior catalog's nominal aggregate definition-byte envelope.
+pub const MAX_CATALOG_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum complete persisted field definition, including optional telemetry metadata.
+pub const MAX_FIELD_DEFINITION_BYTES: usize = 1024 * 1024;
+/// Maximum complete persisted collection definition.
+pub const MAX_COLLECTION_DEFINITION_BYTES: usize = 4 * 1024 * 1024;
 
 mod changes;
 pub use changes::{

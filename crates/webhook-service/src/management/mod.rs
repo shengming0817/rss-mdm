@@ -111,7 +111,7 @@ impl Service {
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let audit = Arc::new(
             audit
-                .on_runtime(runtime.clone(), tenant, &budget.control())
+                .on_runtime(runtime.clone(), audit.binding(), &budget.control())
                 .await?,
         );
         let result = Arc::new(Self {
@@ -129,7 +129,7 @@ impl Service {
                 sources,
             }),
         });
-        let check=result.runtime.local_tx(tenant,deadline(),|tx|Box::pin(async move {
+        let check=result.runtime.local_tx(result.audit.binding(),deadline(),|tx|Box::pin(async move {
             tx.with_connection(|c|Box::pin(async move {let ok:bool=sqlx::query_scalar("SELECT to_regclass('mdm_webhook.events') IS NOT NULL AND to_regclass('mdm_webhook.deliveries') IS NOT NULL").fetch_one(c).await?;if ok{Ok(())}else{Err(sqlx::Error::Protocol("webhook installation missing".into()))}})).await
         })).await.fold(Ok,Err,Err,Err,Err,Err);
         check.map_err(|_| Error::Storage)?;
@@ -174,7 +174,7 @@ impl Service {
         let attempt = self
             .runtime
             .local_tx_with_context(
-                self.tenant,
+                self.audit.binding(),
                 deadline(),
                 (
                     self,

@@ -88,7 +88,7 @@ impl<E> std::fmt::Debug for TransactionError<E> {
 
 pub(crate) async fn write<T: ExecutionTimer, C: Send, R: Send, E: Send + From<Error>, F>(
     runtime: &PgRuntime,
-    tenant: TenantId,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     control: &SourceControl<'_, T>,
     context: C,
     operation: F,
@@ -103,7 +103,7 @@ where
     let mut failure = None;
     let attempt = runtime
         .local_tx_with_context(
-            tenant,
+            binding,
             control.deadline(),
             (context, Some(operation), control, &mut failure),
             |(context, operation, control, failure), tx| {

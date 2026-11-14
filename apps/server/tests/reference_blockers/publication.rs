@@ -58,7 +58,7 @@ pub(in crate::assembly) async fn withdrawn(
     let owner = planning::owner(c, "mdm_software_driver").await?;
     let store = rss_mdm_software_release_postgres::ReleaseStore::new(
         owner.runtime.clone(),
-        c.tenant,
+        c.audit.binding(),
         crate::authority_t2_support::deadline(),
     )
     .await

@@ -6,7 +6,7 @@ use serde_json::Value;
 use sqlx::{PgConnection, QueryBuilder};
 use uuid::Uuid;
 pub static SUBSCRIPTIONS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<crate::model::Subscription>("webhook_subscriptions", &["id"], 32, 1000, &[])
+    Schema::derived::<crate::model::Subscription>("webhook_subscriptions", &["id"], 32, 1024, &[])
         .expect("Webhook subscription model is fully described")
 });
 static SUBSCRIPTION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
@@ -30,7 +30,7 @@ pub static DELIVERIES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(||
         "webhook_deliveries",
         &["id"],
         32,
-        1000,
+        1024,
         &[],
     )
     .expect("Public directory model")

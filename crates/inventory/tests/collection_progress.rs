@@ -195,3 +195,68 @@ fn installed_software_empty_snapshot_is_confirmed_not_missing_or_partial() {
     let partial = CollectionProgress::reported(d, &Body::Partial(vec![]), 1).unwrap();
     assert!(matches!(partial.body().unwrap(), Some(Body::Partial(values)) if values.is_empty()));
 }
+
+#[test]
+fn bulk_values_keep_the_aggregate_budget_and_do_not_charge_rejected_values() {
+    use rss_mdm_inventory::{CollectionField, CollectionScope, FieldKey, NativeValue, ValueType};
+    let template = builtin::fields()
+        .into_iter()
+        .find(|f| f.key == builtin::MODEL)
+        .unwrap();
+    let mut fields = (0..256)
+        .map(|i| {
+            let mut field = template.clone();
+            field.key = FieldKey::parse(&format!("custom.budget.f{i:03}")).unwrap();
+            field.value_type = ValueType::String {
+                max_length: 65536,
+                allow_empty: false,
+            };
+            field
+        })
+        .collect::<Vec<_>>();
+    let rejected = fields[255].key;
+    let mut small = template;
+    small.key = FieldKey::parse("custom.budget.zz").unwrap();
+    small.value_type = ValueType::Boolean;
+    let small_key = small.key;
+    fields.push(small);
+    let values = fields
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            (
+                f.key,
+                NativeValue::Value(CollectedValue::Value(if i == 256 {
+                    Scalar::Boolean(true)
+                } else {
+                    Scalar::String("x".repeat(65536))
+                })),
+            )
+        })
+        .collect();
+    let definition = CollectionDefinition::new(
+        "bounded-native",
+        1,
+        Source::MdmWindows,
+        fields
+            .into_iter()
+            .map(|definition| CollectionField {
+                definition,
+                scope: CollectionScope::Device,
+            })
+            .collect(),
+    )
+    .unwrap();
+    let progress = CollectionProgress::native(definition, values, 10).unwrap();
+    assert_eq!(
+        progress
+            .fields()
+            .values()
+            .filter(|f| f.quality == Quality::Success)
+            .count(),
+        256
+    );
+    assert_eq!(progress.fields()[&rejected].quality, Quality::Invalid);
+    assert_eq!(progress.fields()[&small_key].quality, Quality::Success);
+    assert!(progress.value_bytes().unwrap() <= 16 * 1024 * 1024);
+}

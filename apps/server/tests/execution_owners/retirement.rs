@@ -67,7 +67,7 @@ fn step(h: &Harness, id: Uuid) -> futures::future::LocalBoxFuture<'_, Result<()>
         loop {
             control.check()?;
             let batch = store
-                .claim_due(&scope, 64, Duration::from_secs(30), &control)
+                .claim_due(&scope, 64, 64, Duration::from_secs(30), &control)
                 .await?;
             let mut seen = false;
             for claim in batch.claims {
@@ -249,7 +249,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
             .wake(&target, &resources(&h, retirement).await?, &control)
             .await?;
         let mut batch = store
-            .claim_due(&scope, 64, Duration::from_secs(30), &control)
+            .claim_due(&scope, 64, 64, Duration::from_secs(30), &control)
             .await?;
         let index = batch
             .claims
@@ -350,9 +350,12 @@ async fn cancellation_audit(
     use rss_mdm_timeline_service::Query;
     let account = h.c.account(&[Permission::AuditRead]).await?;
     let proof = h.c.authenticate(&account).await?;
-    let timeline =
-        h.c.database
-            .timeline(h.c.audit.clone(), h.c.tenant, &[7; 32])?;
+    let timeline = h.c.database.timeline(
+        h.c.audit.clone(),
+        h.c.tenant,
+        &[7; 32],
+        rss_mdm_timeline_service::QueryBudget::new(1024, 8 * 1024 * 1024)?,
+    )?;
     let query = Query {
         device: Some(*h.p.device()),
         action: Some("credential_revoke".into()),

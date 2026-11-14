@@ -102,7 +102,7 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
         c.audit
             .on_runtime(
                 a.resources.storage.runtime.clone(),
-                c.tenant,
+                c.audit.binding(),
                 &rss_mdm_audit_integration::budget::AuditBudget::new(
                     std::time::Duration::from_secs(5),
                 )

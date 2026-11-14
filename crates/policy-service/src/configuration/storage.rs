@@ -265,7 +265,7 @@ pub(crate) async fn load_many_on(
     protection: &rss_mdm_native_protection::Protector,
     ids: Vec<Uuid>,
 ) -> Result<std::collections::BTreeMap<Uuid, Operation>> {
-    if ids.len() > 1000 {
+    if ids.len() > 1024 {
         return Err(Error::Malformed.into());
     }
     if ids.is_empty() {
@@ -286,7 +286,7 @@ pub(crate) async fn load_many_on(
         "configuration.inputs",
         count as u64,
         bytes as u64,
-        1000,
+        1024,
         16 * 1024 * 1024,
     ) {
         return Err(Error::Unavailable(Failure::Capacity).into());
@@ -321,7 +321,7 @@ pub async fn owned_ids_on(
     tenant: TenantId,
     ids: &[Uuid],
 ) -> std::result::Result<std::collections::BTreeSet<Uuid>, sqlx::Error> {
-    if ids.len() > 1000 {
+    if ids.len() > 1024 {
         return Err(sqlx::Error::Protocol("ownership batch limit".into()));
     }
     let ids:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid AND id=ANY($2)").bind(tenant.to_string()).bind(ids).fetch_all(c).await?;

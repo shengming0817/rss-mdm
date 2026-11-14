@@ -103,7 +103,7 @@ pub(super) async fn seed(
     for (event, subscription, operation) in deliveries {
         c.runtime
             .local_tx(
-                c.tenant,
+                c.audit.binding(),
                 rss_mdm_inventory_service::transaction::deadline(),
                 move |tx| {
                     Box::pin(async move {

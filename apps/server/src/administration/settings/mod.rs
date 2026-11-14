@@ -8,6 +8,7 @@ pub(crate) mod model;
 use std::{collections::BTreeMap, sync::Arc};
 #[derive(Clone)]
 pub(crate) struct Directory {
+    pub binding: rss_transactional_messaging::fence::ExecutionBinding,
     pub tenant: rss_request_context::TenantId,
     pub management_tenant: rss_request_context::TenantId,
     pub identity: rss_identity_postgres::Authority,
@@ -73,6 +74,7 @@ impl Directory {
         audit: RequestAudit,
         continuation: &rss_mdm_authorization_service::credential::RequestCredential,
         items: Vec<Item>,
+        cutoff: rss_request_context::Deadline,
     ) -> Result<Vec<Entry>, Error> {
         let business = proof.tenant_id() == self.tenant.to_string();
         if !business && proof.tenant_id() != self.management_tenant.to_string() {
@@ -106,6 +108,7 @@ impl Directory {
                     continuation,
                     item.id,
                     &mut organizations,
+                    cutoff,
                     &mut projection,
                 )
                 .await?;
@@ -176,6 +179,10 @@ impl Directory {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "projection borrows the original subject, continuation, audit and cumulative deadline"
+    )]
     async fn business_projection(
         &self,
         proof: &Arc<AuthorizedPrincipal>,
@@ -183,13 +190,14 @@ impl Directory {
         continuation: &rss_mdm_authorization_service::credential::RequestCredential,
         id: &str,
         organizations: &mut Option<serde_json::Value>,
+        cutoff: rss_request_context::Deadline,
         projection: &mut Projection,
     ) -> Result<(), Error> {
         match id {
             "user-attributes" => self.user_attributes(proof, audit, projection).await?,
             "recovery-key" | "recovery-rsa" => self.recovery_material(id, projection)?,
             "oidc" => {
-                self.identity_providers(proof, continuation, projection)
+                self.identity_providers(proof, continuation, projection, cutoff)
                     .await?
             }
             "ade-key" | "ade-token" | "apple-account" => {
@@ -346,6 +354,7 @@ impl Directory {
         proof: &Arc<AuthorizedPrincipal>,
         continuation: &rss_mdm_authorization_service::credential::RequestCredential,
         projection: &mut Projection,
+        cutoff: rss_request_context::Deadline,
     ) -> Result<(), Error> {
         if let Some(federation) = &self.federation {
             use rss_mdm_authorization_service::credential::RequestCredential;
@@ -353,17 +362,31 @@ impl Directory {
             let session = match credential {
                 RequestCredential::Cookie(secret) => {
                     self.identity
-                        .inspect_session(self.tenant, secret, crate::identity::deadline())
+                        .inspect_session(
+                            self.binding,
+                            secret,
+                            rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                                cutoff,
+                                &crate::lifecycle::RuntimeTimer,
+                            ),
+                        )
                         .await
                 }
                 RequestCredential::Bearer(secret) => {
                     self.identity
-                        .inspect_bearer(self.tenant, secret, crate::identity::deadline())
+                        .inspect_bearer(
+                            self.binding,
+                            secret,
+                            rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                                cutoff,
+                                &crate::lifecycle::RuntimeTimer,
+                            ),
+                        )
                         .await
                 }
                 RequestCredential::ApiKey(_) => return Err(Error::Forbidden),
             }
-            .map_err(|_| Error::Unauthorized)?;
+            .map_err(crate::identity::failure)?;
             if session.account() != proof.session()?.account()
                 || session.view().id != proof.session()?.view().id
             {
@@ -374,7 +397,13 @@ impl Directory {
                 href: format!("/api/v1/identity/tenants/{}/providers", proof.tenant_id()),
             });
             match federation
-                .list_providers(session, crate::identity::deadline())
+                .list_providers(
+                    session,
+                    rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                        cutoff,
+                        &crate::lifecycle::RuntimeTimer,
+                    ),
+                )
                 .await
             {
                 Ok(providers) => {
@@ -466,7 +495,7 @@ impl Directory {
     }
 
     async fn agent_packages(&self, projection: &mut Projection) -> Result<(), Error> {
-        match rss_mdm_software_service::agent_packages::list(&self.software_runtime, self.tenant)
+        match rss_mdm_software_service::agent_packages::list(&self.software_runtime, self.binding)
             .await
         {
             Ok(packages) => {

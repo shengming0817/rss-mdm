@@ -81,7 +81,7 @@ impl Database {
         &self,
         config: &crate::config::AuditConfig,
         runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
-        tenant: rss_request_context::TenantId,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
     ) -> Result<std::sync::Arc<rss_mdm_audit_integration::AuditStore>, Error> {
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
         let control = budget.control();
@@ -89,7 +89,7 @@ impl Database {
             self.pool.clone(),
             config.integrity()?,
             runtime,
-            tenant,
+            binding,
             &control,
         )
         .await
@@ -101,6 +101,7 @@ impl Database {
         audit: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
         tenant: rss_request_context::TenantId,
         key: &[u8],
+        budget: rss_mdm_timeline_service::QueryBudget,
     ) -> Result<std::sync::Arc<rss_mdm_timeline_service::Timeline>, Error> {
         rss_mdm_timeline_service::Timeline::new(
             rss_mdm_install_support::StorageProfile::Mdm,
@@ -109,6 +110,7 @@ impl Database {
             tenant,
             key,
             std::sync::Arc::new(crate::assembly::timeline_associations::Producers),
+            budget,
         )
         .map(std::sync::Arc::new)
         .map_err(|_| Error::Unavailable(Failure::Database))

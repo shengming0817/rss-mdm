@@ -6,16 +6,19 @@ use rss_transactional_messaging_postgres::PgError;
 
 pub async fn verify(c: &Context) -> Result<()> {
     scope(c).await?;
-    let runtime = c.inputs.runtime("da_policy_runtime", c.tenant).await?;
+    let runtime = c.inputs.runtime("da_policy_runtime").await?;
     let cutoff = rss_request_context::Clock::now(&context::Timer) + Duration::from_secs(10);
     assert!(
         !rss_mdm_policy_service::worker::configuration_input_suspended(
-            &runtime, c.tenant, None, cutoff,
+            &runtime,
+            c.audit.binding(),
+            None,
+            cutoff,
         )
         .await?
     );
     assert_eq!(
-        rss_mdm_policy_service::worker::queue_health(DA, &runtime, c.tenant, None, cutoff,).await?,
+        rss_mdm_policy_service::worker::queue_health(DA, &runtime, c.audit.binding(), None, cutoff,).await?,
         [0; 5]
     );
     let batch_query = rss_mdm_policy_service::events::queries::BATCHES.parse("")?;
@@ -25,7 +28,7 @@ pub async fn verify(c: &Context) -> Result<()> {
     let registration = Uuid::new_v4();
     let result = runtime
         .local_tx(
-            c.tenant,
+            c.audit.binding(),
             OperationDeadline::from_remaining(Duration::from_secs(10)),
             move |tx| {
                 Box::pin(async move {
@@ -106,11 +109,11 @@ pub async fn verify(c: &Context) -> Result<()> {
 }
 
 async fn scope(c: &Context) -> Result<()> {
-    let runtime = c.inputs.runtime("da_scope_runtime", c.tenant).await?;
+    let runtime = c.inputs.runtime("da_scope_runtime").await?;
     let store = rss_mdm_scope_postgres::ScopeBinding::new(DA, runtime.clone(), c.tenant);
     let result = runtime
         .local_tx_with_context(
-            c.tenant,
+            c.audit.binding(),
             OperationDeadline::from_remaining(Duration::from_secs(10)),
             &store,
             |store, tx| {

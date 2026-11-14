@@ -8,7 +8,7 @@ pub use parameters::Parameters;
 
 /// Default and maximum page size for product management collections.
 pub const DEFAULT_PAGE_LIMIT: u16 = 1000;
-pub const MAX_PAGE_LIMIT: u16 = 1000;
+pub const MAX_PAGE_LIMIT: u16 = 1024;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
