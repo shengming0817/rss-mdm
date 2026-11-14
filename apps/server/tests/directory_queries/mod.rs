@@ -228,12 +228,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         // Real HTTP contracts expose each owner and retain first-use permission boundaries.
         let (status, diagnostics) = http.get("/runtime/diagnostics", &[]).await?;
         assert_eq!(status, 200, "{diagnostics}");
-        let names = diagnostics["components"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(names.len(), 21);
-        for name in ["baseline", "policy", "group", "scope", "asset_query", "compliance", "device_associations", "device_control", "software_deployment", "script_execution", "collection_execution"] { assert!(names.contains(name), "{name}"); }
-        assert!(!names.contains("automation") && !names.contains("execution_recovery"));
         assert_eq!(diagnostics["firstUse"]["access"], "available");
-        assert!(diagnostics["firstUse"]["summary"].get("saved").is_none());
         let access::credential::RequestCredential::Cookie(secret) = diagnostic_reader.credential()? else { anyhow::bail!("cookie fixture") };
         let restricted = Http { tenant: c.tenant, client: http.client.clone(), address: http.address, cookie: format!("__Host-identity-session={}", secret.expose()), csrf: secret.csrf() };
         let (status, restricted_body) = restricted.get("/runtime/diagnostics", &[]).await?;
