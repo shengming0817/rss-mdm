@@ -2,7 +2,8 @@ use super::*;
 use rss_transactional_messaging::policy::OperationDeadline;
 use webhooks::transport::{AuthorizationFailure, AuthorizedTarget, Publication, TargetAuthorizer};
 struct Authorizer {
-    binding: rss_transactional_messaging::fence::ExecutionBinding,
+    storage: rss_transactional_messaging::fence::StorageIdentity,
+    discovery_pool: sqlx::PgPool,
     runtime: Arc<PgRuntime>,
     host: Arc<authority::Host>,
 }
@@ -12,21 +13,28 @@ impl TargetAuthorizer for Authorizer {
         p: &Publication<'_>,
         deadline: OperationDeadline,
     ) -> Result<AuthorizedTarget, AuthorizationFailure> {
-        if p.tenant().to_string() != self.host.tenant.to_string() {
-            return Err(AuthorizationFailure::Denied);
-        }
+        let tenant =
+            Uuid::parse_str(&p.tenant().to_string()).map_err(|_| AuthorizationFailure::Denied)?;
         let id = Uuid::parse_str(p.id().as_str()).map_err(|_| AuthorizationFailure::Denied)?;
+        let binding = webhooks::worker::delivery_execution(
+            &self.discovery_pool,
+            self.storage,
+            p.tenant(),
+            id,
+        )
+        .await
+        .map_err(|_| AuthorizationFailure::Unavailable)?;
         let target = p.target().id().as_str().to_owned();
         let version = p.target().version().get();
         let fingerprint = p.fingerprint().as_bytes().to_vec();
         let host = self.host.clone();
         self.runtime
-            .local_tx(self.binding, deadline, move |tx| {
+            .local_tx(binding, deadline, move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
                             Ok(async {
-                                let b = storage::binding(c, host.tenant, id).await?;
+                                let b = storage::binding(c, tenant, id).await?;
                                 if b.subscription.id.to_string() != target
                                     || b.subscription.target_version as u64 != version
                                     || b.fingerprint != fingerprint
@@ -38,7 +46,7 @@ impl TargetAuthorizer for Authorizer {
                                     .unix_seconds()
                                     .map_err(|_| webhooks::Error::Storage)?;
                                 host.policies
-                                    .target(c, &host.protection, host.tenant, &b.subscription, now)
+                                    .target(c, &host.protection, tenant, &b.subscription, now)
                                     .await
                             }
                             .await)
@@ -94,11 +102,13 @@ impl Service {
         token: tokio_util::sync::CancellationToken,
     ) -> Result<(), rss_transactional_messaging::error::MessagingError> {
         webhooks::worker::run(
-            self.audit.binding(),
+            self.storage,
+            self.discovery_pool.clone(),
             self.runtime.clone(),
             self.host.clone(),
             Authorizer {
-                binding: self.audit.binding(),
+                storage: self.storage,
+                discovery_pool: self.discovery_pool.clone(),
                 runtime: self.runtime.clone(),
                 host: self.host.clone(),
             },

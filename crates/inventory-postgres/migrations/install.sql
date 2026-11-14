@@ -78,6 +78,7 @@ REVOKE ALL ON mdm.asset_epochs FROM PUBLIC;
 CREATE SEQUENCE mdm.asset_event_ids AS bigint NO CYCLE CACHE 1;
 REVOKE ALL ON SEQUENCE mdm.asset_event_ids FROM PUBLIC;
 CREATE TABLE mdm.asset_changes (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL, revision bigint NOT NULL CHECK(revision>0),
  source_epoch uuid NOT NULL REFERENCES mdm.asset_epochs(id), writer_xid xid8 NOT NULL,
  kind text NOT NULL CHECK(kind IN ('inventory','manual','device','source','credential','collection','catalog')),
@@ -140,7 +141,7 @@ BEGIN
  IF outcome NOT IN ('inserted','already_present') THEN
   RAISE EXCEPTION 'asset input event conflict' USING ERRCODE='23514';
  END IF;
- PERFORM pg_notify('mdm_work_'||replace(t::text,'-',''),'asset_inputs');
+ PERFORM pg_notify('mdm_work','asset_inputs');
 END $$;
 REVOKE ALL ON FUNCTION mdm.append_input_event(uuid,text,text,text,text,jsonb) FROM PUBLIC;
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_owner;
@@ -164,13 +165,13 @@ BEGIN
   RAISE EXCEPTION 'invalid asset fact coordinates' USING ERRCODE='23514';
  END IF;
  fields=ARRAY(SELECT field FROM (SELECT DISTINCT field FROM unnest(f) field) fields ORDER BY field COLLATE "C");
- INSERT INTO mdm.asset_changes(tenant_id,revision,source_epoch,writer_xid,kind,identity,fields)
- VALUES(t,v,epoch,pg_current_xact_id(),k,identity,fields);
- payload=jsonb_build_object('v',1,'tenant',t,'revision',v,'historyEpoch',epoch,'kind',k,'identity',identity,'fields',to_jsonb(fields));
+ INSERT INTO mdm.asset_changes(tenant_id,revision,source_epoch,writer_xid,kind,identity,fields,expected_epoch)
+ VALUES(t,v,epoch,pg_current_xact_id(),k,identity,fields,current_setting('rss.execution_epoch')::bigint);
+ payload=jsonb_build_object('v',1,'executionEpoch',current_setting('rss.execution_epoch')::bigint,'tenant',t,'revision',v,'historyEpoch',epoch,'kind',k,'identity',identity,'fields',to_jsonb(fields));
  PERFORM mdm.append_input_event(t,'asset.changed.v1:'||epoch::text||':'||v::text,
-  'asset.changed','mdm.asset.changed','sha256:e261201f3f07ad3d8d8e58d8d88749103a68c9a7d1acf07679c142ad0af371e0',payload);
+  'asset.changed','mdm.asset.changed','sha256:fd05796b9bf5ccb7b0e82c764acc43a7e73de3d887fe2754effd6f1f8a91ea66',payload);
  -- Existing device/software lifecycle consumers still use this hint; this chain uses Outbox.
- PERFORM pg_notify('mdm_work_'||replace(t::text,'-',''),'assets_changed');
+ PERFORM pg_notify('mdm_work','assets_changed');
  RETURN v;
 END $$;
 REVOKE ALL ON FUNCTION mdm.record_asset_change(uuid,text,jsonb,text[]) FROM PUBLIC;
@@ -280,3 +281,6 @@ CREATE POLICY tenant ON mdm.retention_policies USING(tenant_id=nullif(current_se
 REVOKE ALL ON mdm.retention_policies FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm.retention_policies TO mdm_inventory_runtime;
 GRANT SELECT ON mdm.retention_policies TO mdm_telemetry_runtime;
+
+GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_runtime,da_runtime;
+GRANT EXECUTE ON FUNCTION rss_transactional_messaging.check_execution() TO mdm_runtime,da_runtime;

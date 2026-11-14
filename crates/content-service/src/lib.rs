@@ -87,7 +87,7 @@ impl StorageClass {
 #[derive(Clone)]
 pub struct Store {
     protection: Arc<rss_mdm_native_protection::Protector>,
-    tenant: rss_request_context::TenantId,
+
     pub config: Config,
     transfers: Arc<Semaphore>,
     admission_pool: sqlx::PgPool,
@@ -135,12 +135,10 @@ impl Store {
     pub async fn open(
         protection: Arc<rss_mdm_native_protection::Protector>,
         config: &Config,
-        tenant: &str,
+        probe: rss_transactional_messaging::fence::ExecutionBinding,
         timer: Arc<dyn Clock>,
         pool: sqlx::PgPool,
     ) -> Result<Arc<Self>, Error> {
-        let tenant =
-            rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Configuration)?;
         if config.max_artifact_bytes == 0
             || config.max_artifact_bytes > 1_099_511_627_776
             || config.max_temporary_bytes < config.max_artifact_bytes
@@ -165,13 +163,46 @@ impl Store {
         }
         let mut tx = pool.begin().await.map_err(|_| storage())?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-            .bind(tenant.to_string())
+            .bind(probe.tenant().to_string())
             .execute(&mut *tx)
             .await
             .map_err(|_| storage())?;
         if !migration::verify_contract(&mut tx).await? {
             return Err(Error::Configuration);
         }
+        tx.rollback().await.map_err(|_| storage())?;
+        if !matches!(config.storage, Storage::Volume { .. }) {
+            return Err(Error::Configuration);
+        }
+        Ok(Arc::new(Self {
+            protection,
+            config: config.clone(),
+            transfers: Arc::new(Semaphore::new(config.max_uploads)),
+            admissions: Arc::new(gate::Admissions::default()),
+            admission_pool: sqlx::postgres::PgPoolOptions::new()
+                .max_connections(ADMISSION_CONNECTIONS)
+                .acquire_timeout(std::time::Duration::from_secs(6))
+                .connect_lazy_with((*pool.connect_options()).clone()),
+            backend: backend::Backend::Unavailable {
+                timer: timer.clone(),
+            },
+            timer,
+            generation: uuid::Uuid::nil(),
+            storage_revision: 0,
+            current_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            pool,
+            cleanup_tasks: tokio_util::task::TaskTracker::new(),
+        }))
+    }
+    async fn load_generation(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<Self, Error> {
+        let tenant = binding.tenant();
+        let protection = self.protection.clone();
+        let timer = self.timer.clone();
+        let config = &self.config;
+        let mut tx = self.scope_tx(binding).await?;
         let existing: Option<(uuid::Uuid, i64, String, serde_json::Value)> = sqlx::query_as(
             "SELECT s.active_generation,s.revision,s.protection,g.descriptor FROM mdm_content.settings s JOIN mdm_content.generations g ON g.tenant_id=s.tenant_id AND g.id=s.active_generation WHERE s.tenant_id=$1::uuid",
         ).bind(tenant.to_string()).fetch_optional(&mut *tx).await.map_err(|_| storage())?;
@@ -193,11 +224,7 @@ impl Store {
         let config = &effective;
         let existing_binding = active.is_some();
         let connection = if let Storage::S3(s3) = &config.storage {
-            let mut tx = pool.begin().await.map_err(|_| storage())?;
-            sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-                .execute(&mut *tx)
-                .await
-                .map_err(|_| storage())?;
+            let mut tx = self.scope_tx(binding).await?;
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','3000',true)").bind(tenant.to_string()).execute(&mut *tx).await.map_err(|_|storage())?;
             let value = connections::load(&mut tx, tenant, s3.revision, &protection).await;
             tx.rollback().await.map_err(|_| storage())?;
@@ -242,7 +269,7 @@ impl Store {
                 return Err(Error::Configuration);
             }
         } else {
-            let mut tx = pool.begin().await.map_err(|_| storage())?;
+            let mut tx = self.scope_tx(binding).await?;
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true),pg_advisory_xact_lock(hashtextextended($1,3004))").bind(tenant.to_string()).execute(&mut *tx).await.map_err(|_| storage())?;
             let exists: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM mdm_content.settings WHERE tenant_id=$1::uuid)",
@@ -258,27 +285,15 @@ impl Store {
             sqlx::query("INSERT INTO mdm_content.settings(tenant_id,protection,active_generation) VALUES($1::uuid,$2,$3)").bind(tenant.to_string()).bind(protection.fingerprint_id()).bind(generation).execute(&mut *tx).await.map_err(|_| storage())?;
             journal::commit(tx).await?;
         }
+
         let mut store = Self {
-            protection,
-            tenant,
             config: config.clone(),
-            transfers: Arc::new(Semaphore::new(config.max_uploads)),
-            admissions: Arc::new(gate::Admissions::default()),
-            // Session fences have a separate, fixed budget; journal SQL must remain available
-            // while a whole publication/import batch holds its fence.
-            admission_pool: sqlx::postgres::PgPoolOptions::new()
-                .max_connections(ADMISSION_CONNECTIONS)
-                .acquire_timeout(std::time::Duration::from_secs(6))
-                .connect_lazy_with((*pool.connect_options()).clone()),
-            timer,
             backend,
             generation,
             storage_revision,
-            current_cache: Arc::new(tokio::sync::Mutex::new(None)),
-            pool,
-            cleanup_tasks: tokio_util::task::TaskTracker::new(),
+            ..self.clone()
         };
-        if let Err(error) = store.verify_marker().await {
+        if let Err(error) = store.verify_marker(binding).await {
             if !existing_binding {
                 return Err(error);
             }
@@ -286,7 +301,7 @@ impl Store {
                 timer: store.timer.clone(),
             };
         }
-        Ok(Arc::new(store))
+        Ok(store)
     }
     pub async fn close(&self) {
         self.cleanup_tasks.close();

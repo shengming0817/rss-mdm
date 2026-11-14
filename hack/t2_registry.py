@@ -249,7 +249,7 @@ MODULES = {
                 'crates/device-service/src/control/actions/agent.rs',
                 'crates/registration-service/src/device.rs',
                 'crates/registration-service/src/device/*',
-                'crates/agent-channel/src/tasks.rs', 'apps/server/src/task_signing.rs')),
+                'crates/agent-channel/src/tasks.rs')),
 
     'foundation.authorization': dict(
         prefix='foundation_t2::authorization::', profiles=('shared', 'transaction'),

@@ -115,7 +115,6 @@ pub struct Applied {
     pub revision: u64,
     pub material_digest: String,
     pub process_generation: uuid::Uuid,
-    pub tenant_id: String,
     pub instance_id: String,
 }
 fn public_file(name: &str) -> bool {
@@ -375,7 +374,6 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
             &client.build().map_err(|_| Error::Input)?,
             origin.as_str().trim_end_matches('/'),
             &decoded.runtime_binding,
-            &decoded.identity.tenant_id,
             &decoded.identity.instance_id,
             &public_origin,
         )
@@ -388,12 +386,11 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
     owner.save("applied.json", &applied)?;
     Ok(applied)
 }
-fn matches(value: &Applied, binding: &Binding, tenant: &str, instance: &str) -> bool {
+fn matches(value: &Applied, binding: &Binding, instance: &str) -> bool {
     value.host_id == binding.host_id
         && value.operation_id == binding.operation_id
         && value.revision == binding.revision
         && value.material_digest == binding.material_digest
-        && value.tenant_id == tenant
         && value.instance_id == instance
         && !value.process_generation.is_nil()
 }
@@ -401,7 +398,6 @@ async fn observe(
     client: &reqwest::Client,
     origin: &str,
     binding: &Binding,
-    tenant: &str,
     instance: &str,
     public_origin: &str,
 ) -> Result<Applied> {
@@ -430,58 +426,10 @@ async fn observe(
     }
     let observation: Applied =
         serde_json::from_value(value["observation"].clone()).map_err(|_| Error::Storage)?;
-    if !matches(&observation, binding, tenant, instance) {
+    if !matches(&observation, binding, instance) {
         return Err(Error::Conflict);
     }
     Ok(observation)
-}
-
-/// Called only after apply has verified every advertised origin over actual HTTPS.
-pub(super) async fn record_observation(
-    c: &mut sqlx::PgConnection,
-    runtime: &Value,
-    applied: &Applied,
-) -> Result<()> {
-    use sqlx::Connection;
-    let decoded: crate::config::Config =
-        serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
-    if !matches(
-        applied,
-        &decoded.runtime_binding,
-        &decoded.identity.tenant_id,
-        &decoded.identity.instance_id,
-    ) {
-        return Err(Error::Conflict);
-    }
-    let tenant = uuid::Uuid::parse_str(&applied.tenant_id).map_err(|_| Error::Corrupt)?;
-    let service = uuid::Uuid::parse_str(&applied.instance_id).map_err(|_| Error::Corrupt)?;
-    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(tenant.to_string())
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| Error::Storage)?;
-    if let crate::agent_pki::Config::StepCa {
-        endpoint,
-        additional_origins,
-        ..
-    } = &decoded.agent_pki
-    {
-        for origin in std::iter::once(&endpoint.origin).chain(additional_origins.iter()) {
-            rss_mdm_registration_service::agent::connections::record_deployment_on(
-                rss_mdm_install_support::StorageProfile::Mdm,
-                &mut tx,
-                tenant,
-                origin,
-                service,
-                applied.host_id,
-                applied.revision,
-            )
-            .await
-            .map_err(|_| Error::Storage)?;
-        }
-    }
-    tx.commit().await.map_err(|_| Error::Storage)
 }
 
 #[cfg(test)]

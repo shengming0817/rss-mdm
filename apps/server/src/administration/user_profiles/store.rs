@@ -199,7 +199,8 @@ pub(super) async fn change(
     )
     .to_vec();
     let budget = AuditBudget::new(Duration::from_secs(8));
-    let attempt=store.write(tenant(p)?,&budget.source_control(),(store,p,audit,id,input,&fingerprint),|ctx,tx|Box::pin(async move {
+    let attempt=store.write(
+            p.binding(),&budget.source_control(),(store,p,audit,id,input,&fingerprint),|ctx,tx|Box::pin(async move {
         let (store,p,audit,id,input,fingerprint)=*ctx;
         let mut context=(p,id,input,fingerprint);
         let (result,replayed)=tx.with_connection_context(&mut context,|(p,id,input,fingerprint),c|Box::pin(async move {

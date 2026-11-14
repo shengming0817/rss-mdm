@@ -22,7 +22,7 @@ impl Policies {
         );
 
         proof.manage(Permission::PolicyWrite)?;
-        run(&self.audit_store,&self.runtime,self.audit_store.binding(),audit,(self,proof,op,audit),|ctx,tx|Box::pin(async move {
+        run(&self.audit_store,&self.runtime,proof.binding(),audit,(self,proof,op,audit),|ctx,tx|Box::pin(async move {
             let (s,proof,op,audit)=*ctx;
             let snapshot=crate::action_admission::current(tx,proof).await?;
             snapshot.require(proof,Permission::PolicyWrite,None)?;
@@ -38,7 +38,7 @@ impl Policies {
             if !policy.definition.action.kind().supports_rerun() || op.operation_id.is_nil() || op.input.deadline<=now || op.input.deadline>now.saturating_add(604800) {return Err(Error::Malformed.into());}
             checked(s.policy_store.trigger_in(tx,op.operation_id,policy.version,now,op.input.deadline).await?)?;
             if matches!(policy.definition.action, Action::UnmanageDevice { .. }) {
-                crate::worker::jobs::enqueue_job_in(profile, &s.reconcile_messaging, tx,Uuid::new_v4(),&crate::worker::Work::PolicyReconcile { policy:id }).await?;
+                crate::worker::jobs::enqueue_job_in(proof.binding(), profile, &s.reconcile_messaging, tx,Uuid::new_v4(),&crate::worker::Work::PolicyReconcile { policy:id }).await?;
             }
 
             let value=Receipt {operation_id:op.operation_id,policy_id:id,version_id:policy.version,deadline:op.input.deadline};

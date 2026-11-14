@@ -15,7 +15,7 @@ impl Service {
         let service = self.clone();
         let principal = principal.clone();
         self.runtime
-            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
+            .local_tx(principal.binding(), crate::deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move { Ok(directory_on(&service, c, &principal).await) })
@@ -44,14 +44,20 @@ impl Service {
         let service = self.clone();
         let principal = principal.clone();
         self.runtime
-            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
+            .local_tx(principal.binding(), crate::deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
                             let result = async {
                                 let frozen = service
                                     .policies
-                                    .current_on(c, principal.device(), policy, version)
+                                    .current_on(
+                                        principal.binding(),
+                                        c,
+                                        principal.device(),
+                                        policy,
+                                        version,
+                                    )
                                     .await
                                     .map_err(policy_error)?;
                                 let configuration =
@@ -78,7 +84,10 @@ impl Service {
                                     rss_mdm_resource::Digest::from_bytes(digest),
                                 )
                                 .map_err(|_| Error::Storage)?;
-                                store.verify(&artifact).await.map_err(|_| Error::Storage)
+                                store
+                                    .verify(principal.binding(), &artifact)
+                                    .await
+                                    .map_err(|_| Error::Storage)
                             }
                             .await;
                             Ok(result)
@@ -104,13 +113,10 @@ impl Service {
         policy: Uuid,
         version: Uuid,
     ) -> Result<SignedTelemetryConfiguration, Error> {
-        if principal.tenant() != self.tenant {
-            return Err(Error::Denied);
-        }
         let service = self.clone();
         let principal = principal.clone();
         self.runtime
-            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
+            .local_tx(principal.binding(), crate::deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
@@ -148,18 +154,15 @@ async fn configuration_on(
     policy: Uuid,
     version: Uuid,
 ) -> Result<TelemetryConfiguration, Error> {
-    if principal.tenant() != service.tenant {
-        return Err(Error::Denied);
-    }
     let frozen = service
         .policies
-        .current_on(c, principal.device(), policy, version)
+        .current_on(principal.binding(), c, principal.device(), policy, version)
         .await
         .map_err(policy_error)?;
     capable_on(
         service.agent_facts.as_ref(),
         c,
-        service.tenant,
+        principal.binding().tenant(),
         *principal.device(),
         &frozen,
     )
@@ -177,9 +180,13 @@ async fn configuration_on(
         .iter()
         .map(|f| rss_mdm_inventory::FieldKey::parse(f.key.as_str()).map_err(|_| Error::Storage))
         .collect::<Result<Vec<_>, _>>()?;
-    if !rss_mdm_inventory_postgres::admit_time_series_fields_in(c, service.tenant, &keys)
-        .await
-        .map_err(|_| Error::Storage)?
+    if !rss_mdm_inventory_postgres::admit_time_series_fields_in(
+        c,
+        principal.binding().tenant(),
+        &keys,
+    )
+    .await
+    .map_err(|_| Error::Storage)?
     {
         return Err(Error::Denied);
     }
@@ -351,13 +358,15 @@ async fn directory_on(
     principal: &DevicePrincipal,
 ) -> Result<rss_mdm_agent_wire::runtime::TelemetryDirectory, Error> {
     use rss_mdm_agent_wire::runtime::{TelemetryAssignment, TelemetryDirectory};
-    if principal.tenant() != service.tenant
+    if principal.tenant() != principal.binding().tenant()
         || principal.channel() != Some(rss_mdm_inventory::Channel::Agent)
         || principal.purpose() != rss_mdm_registration_service::device::Purpose::Primary
     {
         return Err(Error::Denied);
     }
-    let eligible = crate::configurations::eligible_on(service, c, principal.device()).await?;
+    let eligible =
+        crate::configurations::eligible_on(principal.binding(), service, c, principal.device())
+            .await?;
     rss_mdm_registration_service::device::store::revalidate_management(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
@@ -381,8 +390,14 @@ async fn directory_on(
             Err(Error::Denied) => continue,
             Err(error) => return Err(error),
         }
-        let Some(supported) =
-            crate::configurations::supported_on(service, c, *principal.device(), frozen).await?
+        let Some(supported) = crate::configurations::supported_on(
+            principal.binding(),
+            service,
+            c,
+            *principal.device(),
+            frozen,
+        )
+        .await?
         else {
             continue;
         };

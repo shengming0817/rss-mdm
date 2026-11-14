@@ -17,9 +17,10 @@ pub async fn record(
     let event = Uuid::new_v4();
     let at = storage::now(tx).await?;
     let wake_device = device;
+    let expected_epoch = p.binding().epoch().get();
     let recorded = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_inventory.collection_native_checkins (tenant_id, device, pending_event, pending_at) SELECT CAST($1 AS uuid), $2, $3, $4 WHERE EXISTS (SELECT FROM mdm_policy.policies WHERE tenant_id = CAST($1 AS uuid) AND state = 'enabled' AND definition -> 'action' ->> 'kind' = 'native_collection' AND definition -> 'action' -> 'schedule' -> 'trigger' ->> 'kind' IN ('check_in', 'device')) ON CONFLICT (tenant_id, device) DO UPDATE SET pending_event = excluded.pending_event, pending_at = excluded.pending_at")
-            .bind(tenant).bind(device.into_uuid()).bind(event).bind(at).execute(c).await.map(|r|r.rows_affected()>0)
+        sqlx::query("INSERT INTO mdm_inventory.collection_native_checkins (tenant_id, device, pending_event, pending_at, pending_epoch) SELECT CAST($1 AS uuid), $2, $3, $4, $5 WHERE EXISTS (SELECT FROM mdm_policy.policies WHERE tenant_id = CAST($1 AS uuid) AND state = 'enabled' AND definition -> 'action' ->> 'kind' = 'native_collection' AND definition -> 'action' -> 'schedule' -> 'trigger' ->> 'kind' IN ('check_in', 'device')) ON CONFLICT (tenant_id, device) DO UPDATE SET pending_event = excluded.pending_event, pending_at = excluded.pending_at, pending_epoch = excluded.pending_epoch")
+            .bind(tenant).bind(device.into_uuid()).bind(event).bind(at).bind(expected_epoch).execute(c).await.map(|r|r.rows_affected()>0)
     })).await?;
     if !recorded {
         return Ok(());
@@ -27,6 +28,7 @@ pub async fn record(
     super::wake::entity_in(reconcile, tx, &format!("checkin:{wake_device}")).await
 }
 pub async fn step(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     service: &CollectionService,
     tx: &mut PgTransaction<'_>,
     device: rss_mdm_agent_wire::DeviceId,
@@ -35,7 +37,7 @@ pub async fn step(
     let tenant = tx.tenant_id().to_string();
     let current_device = device;
     let state = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query("UPDATE mdm_inventory.collection_native_checkins SET active_event = pending_event, active_at = pending_at, pending_event = NULL, pending_at = NULL, policy_after = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND active_event IS NULL AND pending_event IS NOT NULL")
+        sqlx::query("UPDATE mdm_inventory.collection_native_checkins SET active_event = pending_event, active_at = pending_at, active_epoch = pending_epoch, pending_event = NULL, pending_at = NULL, pending_epoch = NULL, policy_after = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND active_event IS NULL AND pending_event IS NOT NULL")
             .bind(&tenant).bind(current_device.into_uuid()).execute(&mut *c).await?;
         sqlx::query("SELECT s.active_event, s.active_at, s.policy_after, r.id AS device, r.state = 'active' AS current FROM mdm_inventory.collection_native_checkins AS s INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (s.tenant_id, s.device) WHERE s.tenant_id = CAST($1 AS uuid) AND s.device = $2 FOR UPDATE OF s")
             .bind(tenant).bind(current_device.into_uuid()).fetch_optional(c).await
@@ -77,6 +79,7 @@ pub async fn step(
             let now = storage::now(tx).await?;
             let id = run_id;
             super::admission::accept_for_device(
+                binding,
                 &service.transactions,
                 tx,
                 &plan,
@@ -103,7 +106,7 @@ async fn clear(
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query("UPDATE mdm_inventory.collection_native_checkins SET active_event = NULL, active_at = NULL, policy_after = NULL, pending_event = CASE WHEN $3 THEN NULL ELSE pending_event END, pending_at = CASE WHEN $3 THEN NULL ELSE pending_at END WHERE tenant_id = CAST($1 AS uuid) AND device = $2")
+        sqlx::query("UPDATE mdm_inventory.collection_native_checkins SET active_event = NULL, active_at = NULL, active_epoch = NULL, policy_after = NULL, pending_event = CASE WHEN $3 THEN NULL ELSE pending_event END, pending_at = CASE WHEN $3 THEN NULL ELSE pending_at END, pending_epoch = CASE WHEN $3 THEN NULL ELSE pending_epoch END WHERE tenant_id = CAST($1 AS uuid) AND device = $2")
             .bind(tenant).bind(device.into_uuid()).bind(stale).execute(c).await?;
         Ok(())
     })).await?;

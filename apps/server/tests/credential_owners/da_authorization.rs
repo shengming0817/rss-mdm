@@ -18,7 +18,7 @@ async fn session(
         anyhow::bail!("cookie session required for delivery authorization")
     };
     Ok(c.authority
-        .inspect_session(c.audit.binding(), secret, deadline())
+        .inspect_session(c.execution(), secret, deadline())
         .await?)
 }
 
@@ -79,7 +79,7 @@ fn audit(c: &Context) -> rss_mdm_audit_integration::RequestAudit {
     rss_mdm_audit_integration::RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         StorageProfile::Da,
-        c.tenant.to_string(),
+        c.execution(),
         "da-delivery-proof",
         rss_mdm_audit_integration::AuditIntent::Management,
     )
@@ -118,22 +118,18 @@ pub(super) async fn authorize(
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
     let business_audit = Arc::new(
         c.audit
-            .on_runtime(runtime.clone(), c.audit.binding(), &budget.control())
+            .on_runtime(runtime.clone(), c.execution(), &budget.control())
             .await?,
     );
     let proof_audit = Arc::new(
         c.audit
-            .on_runtime(
-                identity_runtime.clone(),
-                c.audit.binding(),
-                &budget.control(),
-            )
+            .on_runtime(identity_runtime.clone(), c.execution(), &budget.control())
             .await?,
     );
     let service = pg::Service::new(pg::Assembly {
         report_limits: Default::default(),
         cursor: rss_mdm_query::cursor::CursorCodec::new(&[37; 32])?,
-        tenant: c.tenant,
+
         instance: Uuid::parse_str(&c.inputs.installation.instance_id)?,
         store: Arc::new(rss_mdm_registration_service::Store::for_device_access(
             pool.clone(),
@@ -144,18 +140,17 @@ pub(super) async fn authorize(
     })?;
     let account = c.account(&[Permission::AccountWrite]).await?;
     let authorization_store = c.access().for_product(StorageProfile::Da);
-    let actor: AuthorizedPrincipal = rss_mdm_authorization_service::session::SessionAuthority::new(
-        c.authority.clone(),
-        c.audit.binding(),
-    )
-    .authenticate(
-        &authorization_store,
-        account.credential()?,
-        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-            std::time::Duration::from_secs(8),
-        ),
-    )
-    .await?;
+    let actor: AuthorizedPrincipal =
+        rss_mdm_authorization_service::session::SessionAuthority::new(c.authority.clone())
+            .authenticate(
+                c.execution(),
+                &authorization_store,
+                account.credential()?,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    std::time::Duration::from_secs(8),
+                ),
+            )
+            .await?;
     assert_eq!(actor.profile(), StorageProfile::Da);
     assert_eq!(actor.authority_profile(), StorageProfile::Mdm);
     let authorization = delivery::Authorization {

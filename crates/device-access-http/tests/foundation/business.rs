@@ -42,7 +42,7 @@ pub fn assemble(
                 reports_per_minute: 10,
                 ..Default::default()
             },
-            tenant: c.tenant,
+            probe: c.execution(),
             installation: Uuid::parse_str(&c.inputs.installation.instance_id)?,
             identity_instance: rss_identity_core::InstanceId::parse(
                 &c.inputs.installation.instance_id,
@@ -52,7 +52,7 @@ pub fn assemble(
             proof_audit: c.proof_audit.clone(),
             cursor: rss_mdm_query::cursor::CursorCodec::new(&[37; 32])?,
             protection: m.protection.clone(),
-            platform: Some(super::platform::runtime(c)?),
+            platform: Some(super::platform::runtime()?),
             evidence: evidence.clone(),
             broker_query: None,
             agent_facts: None,
@@ -65,7 +65,6 @@ pub fn assemble(
         service: runtime.business,
         admission: runtime.admission,
         platform: Arc::new(rss_mdm_device_access_http::platform_sso::HttpState {
-            binding: c.sessions.binding(),
             context: runtime.platform,
             authority: c.authority.clone(),
             origin: "https://localhost".into(),
@@ -82,7 +81,7 @@ pub(super) async fn login(
     principal: Uuid,
 ) -> Result<(AuthorizedPrincipal, SessionSecret)> {
     let issued = Box::pin(c.authority.login_local(
-        c.sessions.binding(),
+        c.execution(),
         LoginKey::parse(&format!("da-{principal}"))?,
         Password::new("foundation-only-valid-password".into())?,
         rss_identity_postgres::AttemptSource::parse("da-business")?,
@@ -92,6 +91,7 @@ pub(super) async fn login(
     .await?;
     let secret = SessionSecret::parse(issued.secret().expose().into())?;
     let actor = Box::pin(c.sessions.authenticate(
+        c.execution(),
         &c.authorization,
         RequestCredential::Cookie(SessionSecret::parse(secret.expose().into())?),
         rss_transactional_messaging::policy::OperationDeadline::from_remaining(
@@ -105,7 +105,7 @@ pub(super) fn audit(c: &Context) -> rss_mdm_audit_integration::RequestAudit {
     rss_mdm_audit_integration::RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         DA,
-        c.tenant.to_string(),
+        c.execution(),
         "da-business-proof",
         rss_mdm_audit_integration::AuditIntent::Management,
     )
@@ -143,11 +143,7 @@ pub async fn verify(
         .context("create and log in business proof principal")?;
     let bearer = c
         .authority
-        .inspect_bearer(
-            c.sessions.binding(),
-            BearerSecret::parse(token)?,
-            deadline(),
-        )
+        .inspect_bearer(c.execution(), BearerSecret::parse(token)?, deadline())
         .await?;
     let principal = bearer.account().principal.as_uuid();
     let (actor, session_secret) = Box::pin(login(c, principal))
@@ -291,7 +287,7 @@ pub async fn verify(
         .revoke_current_session(
             c.authority
                 .inspect_session(
-                    c.sessions.binding(),
+                    c.execution(),
                     SessionSecret::parse(session_secret.expose().into())?,
                     deadline(),
                 )
@@ -540,7 +536,7 @@ pub(super) async fn operation_proof(
     let generation = rss_identity_postgres::RpGeneration::new(1)?;
     let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
     let session = Box::pin(c.authority.inspect_session(
-        c.sessions.binding(),
+        c.execution(),
         SessionSecret::parse(session_secret.expose().into())?,
         deadline(),
     ))
@@ -556,7 +552,7 @@ pub(super) async fn operation_proof(
     .await?;
     let response = authenticator.do_registration(origin.clone(), registration.options)?;
     let session = Box::pin(c.authority.inspect_session(
-        c.sessions.binding(),
+        c.execution(),
         SessionSecret::parse(session_secret.expose().into())?,
         deadline(),
     ))
@@ -570,7 +566,7 @@ pub(super) async fn operation_proof(
     ))
     .await?;
     let session = Box::pin(c.authority.inspect_session(
-        c.sessions.binding(),
+        c.execution(),
         SessionSecret::parse(session_secret.expose().into())?,
         deadline(),
     ))
@@ -579,7 +575,7 @@ pub(super) async fn operation_proof(
         Box::pin(webauthn.begin_authentication(session, generation, context, deadline())).await?;
     let response = authenticator.do_authentication(origin, challenge.options)?;
     let session = Box::pin(c.authority.inspect_session(
-        c.sessions.binding(),
+        c.execution(),
         SessionSecret::parse(session_secret.expose().into())?,
         deadline(),
     ))

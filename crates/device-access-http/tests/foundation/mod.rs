@@ -39,6 +39,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     let proof = c
         .sessions
         .authenticate(
+            c.execution(),
             &c.authorization,
             rss_mdm_authorization_service::credential::RequestCredential::Bearer(
                 rss_identity_core::session::BearerSecret::parse(token.clone())?,
@@ -52,7 +53,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Request,
             DA,
-            c.tenant.to_string(),
+            c.execution(),
             "da_test",
             rss_mdm_audit_integration::AuditIntent::Management,
         )
@@ -60,11 +61,9 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     let empty = Arc::new(rss_mdm_task_trust::Signing::new(
         DA,
         Use::DaConfiguration,
-        c.tenant,
-        None,
+        material.protection.clone(),
     )?);
     let trust = Arc::new(rss_mdm_task_trust::Service::for_configurations(
-        c.tenant,
         empty,
         material.protection.clone(),
         c.access_audit.clone(),
@@ -88,12 +87,13 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         .unwrap()
         .id
         .clone();
-    let loaded = material::load(&c, &material, first.revision).await?;
+    let loaded = material::signing(&material)?;
     let state = material::state(&c, registration.clone(), loaded.clone(), &material)?;
     let server = material.listen(state).await?;
-    transport::bounded_connections(&material, &server).await?;
+    transport::bounded_connections(&material, &server, c.tenant).await?;
     let client = material.client(None)?;
     let base = &server.origin;
+    let management = material::management_base(base, c.tenant);
     let address = base
         .trim_start_matches("https://")
         .split('/')
@@ -102,7 +102,9 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     let stalled = tokio::net::TcpStream::connect(address).await?;
     let ping = tokio::time::timeout(
         Duration::from_secs(2),
-        client.get(format!("{base}/pki/trust")).send(),
+        client
+            .get(format!("{base}/pki/trust?tenantId={}", c.tenant))
+            .send(),
     )
     .await??;
     assert!(ping.status().is_success());
@@ -117,7 +119,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     };
     let grant_call = || {
         client
-            .post(format!("{base}/grants"))
+            .post(format!("{management}/grants"))
             .bearer_auth(&token)
             .json(&grant_request)
             .send()
@@ -133,7 +135,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     conflicting_grant["expiresInSeconds"] = serde_json::json!(1800);
     assert_eq!(
         client
-            .post(format!("{base}/grants"))
+            .post(format!("{management}/grants"))
             .bearer_auth(&token)
             .json(&conflicting_grant)
             .send()
@@ -165,7 +167,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .map(|value| STANDARD.decode(value).map(CertificateDer::from))
             .collect::<std::result::Result<Vec<_>, _>>()?;
         for change_instance in [true, false] {
-            let mut other = registration.trust().trust.public()?;
+            let mut other = registration.trust(c.execution()).await?.trust.public()?;
             if change_instance {
                 other.service_id = Uuid::new_v4();
             } else {
@@ -232,8 +234,12 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .await?
             .is_none()
     );
-    let public: pki::Trust =
-        material::success(peer.get(format!("{base}/pki/trust")).send().await?).await?;
+    let public: pki::Trust = material::success(
+        peer.get(format!("{base}/pki/trust?tenantId={}", c.tenant))
+            .send()
+            .await?,
+    )
+    .await?;
     assert_eq!(public.purpose, pki::Purpose::DaDevice);
     let trust_public: da::ConfigurationTrust = material::success(
         peer.get(format!("{base}/configuration-trust"))
@@ -275,7 +281,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     configuration::concurrent_export(&c, &client, base, &token, &proof, &export).await?;
     let signed: da::SignedConfiguration = material::success(
         client
-            .post(format!("{base}/configurations"))
+            .post(format!("{management}/configurations"))
             .bearer_auth(&token)
             .json(&export)
             .send()
@@ -288,7 +294,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     foreign.policy = Uuid::new_v4();
     assert_eq!(
         client
-            .post(format!("{base}/configurations"))
+            .post(format!("{management}/configurations"))
             .bearer_auth(&token)
             .json(&foreign)
             .send()
@@ -300,7 +306,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     foreign.version = Uuid::new_v4();
     assert_eq!(
         client
-            .post(format!("{base}/configurations"))
+            .post(format!("{management}/configurations"))
             .bearer_auth(&token)
             .json(&foreign)
             .send()
@@ -310,7 +316,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     );
     assert_eq!(
         client
-            .post(format!("{base}/configurations"))
+            .post(format!("{management}/configurations"))
             .json(&export)
             .send()
             .await?
@@ -323,7 +329,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     scoped.operation_id = Uuid::new_v4();
     assert_eq!(
         client
-            .post(format!("{base}/configurations"))
+            .post(format!("{management}/configurations"))
             .bearer_auth(&limited)
             .json(&scoped)
             .send()
@@ -337,7 +343,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     // Multiple immutable exports reference the same publication; no independent configuration counter.
     let _: da::SignedConfiguration = material::success(
         client
-            .post(format!("{base}/configurations"))
+            .post(format!("{management}/configurations"))
             .bearer_auth(&token)
             .json(&next_revision)
             .send()
@@ -412,25 +418,10 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     let mut second = export.clone();
     second.operation_id = Uuid::new_v4();
 
-    // A process pinned to the old signer loses signing authority immediately.
-    assert_eq!(
-        client
-            .post(format!("{base}/configurations"))
-            .bearer_auth(&token)
-            .json(&second)
-            .send()
-            .await?
-            .status(),
-        409
-    );
-    let next = material::load(&c, &material, active.revision).await?;
-    let next_server = material
-        .listen(material::state(&c, registration.clone(), next, &material)?)
-        .await?;
-    let base2 = &next_server.origin;
+    // Rotation is visible to the original running service.
     let next_signed: da::SignedConfiguration = material::success(
         client
-            .post(format!("{base2}/configurations"))
+            .post(format!("{management}/configurations"))
             .bearer_auth(&token)
             .json(&second)
             .send()
@@ -439,15 +430,15 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     .await?;
     assert_eq!(next_signed.key_id, new_key);
     assert_eq!(
-        peer.get(format!("{base2}/configurations/{}", second.operation_id))
+        peer.get(format!("{base}/configurations/{}", second.operation_id))
             .send()
             .await?
             .status(),
         403
     );
-    // Current trust and recovery remain available while signing is gated.
+    // Current trust and recovery remain available through rotation.
     let current: da::ConfigurationTrust = material::success(
-        peer.get(format!("{base2}/configuration-trust"))
+        peer.get(format!("{base}/configuration-trust"))
             .send()
             .await?,
     )
@@ -459,14 +450,14 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         ..ack
     };
     material::empty(
-        peer.post(format!("{base2}/configuration-trust/acknowledgements"))
+        peer.post(format!("{base}/configuration-trust/acknowledgements"))
             .json(&next_ack)
             .send()
             .await?,
     )
     .await?;
     let _: da::SignedConfiguration = material::success(
-        peer.get(format!("{base2}/configurations/{}", second.operation_id))
+        peer.get(format!("{base}/configurations/{}", second.operation_id))
             .send()
             .await?,
     )
@@ -487,14 +478,14 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     );
     // A retained old-key receipt remains available after rotation.
     let old_receipt: da::SignedConfiguration = material::success(
-        peer.get(format!("{base2}/configurations/{}", export.operation_id))
+        peer.get(format!("{base}/configurations/{}", export.operation_id))
             .send()
             .await?,
     )
     .await?;
     assert_eq!(old_receipt.signature, signed.signature);
     assert_eq!(
-        peer.get(format!("{base2}/configurations/{}", Uuid::new_v4()))
+        peer.get(format!("{base}/configurations/{}", Uuid::new_v4()))
             .send()
             .await?
             .status(),
@@ -518,7 +509,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         &c,
         &material,
         &client,
-        base2,
+        base,
         &token,
         export.operation_id,
         &receipt.device,
@@ -531,7 +522,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         ..grant_request
     };
     let renewed_grant: da::Grant = material::success(
-        peer.post(format!("{base2}/renewal-grants"))
+        peer.post(format!("{base}/renewal-grants"))
             .json(&renewal)
             .send()
             .await?,
@@ -539,7 +530,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     .await?;
     let renewed: enroll::Candidate = material::success(
         client
-            .post(format!("{base2}/certificates"))
+            .post(format!("{base}/certificates"))
             .json(&da::CertificateRequest {
                 operation_id: Uuid::new_v4(),
                 grant_id: renewed_grant.grant_id,
@@ -553,7 +544,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     let renewed_peer = material.client(Some((&renewed, 2)))?;
     let renewed_receipt: da::Registration = material::success(
         renewed_peer
-            .post(format!("{base2}/activate"))
+            .post(format!("{base}/activate"))
             .json(&enroll::ActivationRequest {
                 wire_version: 1,
                 operation_id: Uuid::new_v4(),
@@ -566,7 +557,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     assert_eq!(renewed_receipt.device, receipt.device);
     assert_ne!(renewed_receipt.credential, receipt.credential);
     assert_eq!(
-        peer.get(format!("{base2}/configuration-trust"))
+        peer.get(format!("{base}/configuration-trust"))
             .send()
             .await?
             .status(),
@@ -579,14 +570,14 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         &renewed_receipt,
         &renewed_peer,
         &client,
-        base2,
+        base,
     ))
     .await
     .context("DA platform owner proof")?;
     material::empty(
         client
             .post(format!(
-                "{base2}/devices/{}/registration/revoke",
+                "{management}/devices/{}/registration/revoke",
                 receipt.device
             ))
             .bearer_auth(&token)
@@ -597,7 +588,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     .await?;
     assert_eq!(
         renewed_peer
-            .get(format!("{base2}/configuration-trust"))
+            .get(format!("{base}/configuration-trust"))
             .send()
             .await?
             .status(),
@@ -605,14 +596,14 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     );
     assert!(
         c.authority
-            .inspect_session(c.sessions.binding(), platform_session, platform::deadline())
+            .inspect_session(c.execution(), platform_session, platform::deadline())
             .await
             .is_err(),
         "registration revocation invalidates the existing platform session"
     );
     assert_eq!(
         renewed_peer
-            .get(format!("{base2}/platform-sso/status"))
+            .get(format!("{base}/platform-sso/status"))
             .send()
             .await?
             .status(),
@@ -620,7 +611,6 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         "revoked DA registration cannot access the PSSO channel"
     );
 
-    next_server.shutdown().await?;
     server.shutdown().await?;
     c.close().await;
 
@@ -640,6 +630,7 @@ async fn unknown_recovery(
     old_export: Uuid,
     old_device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<()> {
+    let management = material::management_base(base, c.tenant);
     use base64::{Engine, engine::general_purpose::STANDARD};
     use rss_mdm_agent_wire::{da, enroll};
     let grant_request = da::GrantRequest {
@@ -653,7 +644,7 @@ async fn unknown_recovery(
     };
     let grant: da::Grant = material::success(
         client
-            .post(format!("{base}/grants"))
+            .post(format!("{management}/grants"))
             .bearer_auth(token)
             .json(&grant_request)
             .send()
@@ -720,7 +711,7 @@ async fn unknown_recovery(
     };
     let recovered: enroll::Candidate = material::success(
         client
-            .post(format!("{base}/certificates/{id}/recover"))
+            .post(format!("{management}/certificates/{id}/recover"))
             .bearer_auth(token)
             .json(&recovery)
             .send()
@@ -730,7 +721,7 @@ async fn unknown_recovery(
     assert_eq!(recovered.issuance_id, id);
     let replay: enroll::Candidate = material::success(
         client
-            .post(format!("{base}/certificates/{id}/recover"))
+            .post(format!("{management}/certificates/{id}/recover"))
             .bearer_auth(token)
             .json(&recovery)
             .send()

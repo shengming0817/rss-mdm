@@ -12,6 +12,7 @@ impl Queries {
     /// Bounded remaining-owner facts on the application's authorized read snapshot.
     pub async fn run_page_on(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut sqlx::PgConnection,
         policy: Uuid,
         after: Option<(i64, Uuid)>,
@@ -24,7 +25,7 @@ impl Queries {
         query.push(RESULT_SUMMARY_SQL).push(") FROM mdm_devices.unmanage_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND ($3::bigint IS NULL OR (r.available_at,r.id)<($3,$4)) ORDER BY r.available_at DESC,r.id DESC LIMIT $5");
         query
             .build_query_scalar::<Value>()
-            .bind(self.tenant.to_string())
+            .bind(binding.tenant().to_string())
             .bind(policy)
             .bind(after.map(|v| v.0))
             .bind(after.map(|v| v.1))
@@ -46,7 +47,7 @@ impl Queries {
         _now: i64,
     ) -> crate::control::Result<crate::control::queries::records::RunDetail> {
         use sqlx::Row;
-        let row=sqlx::query("SELECT r.device,r.state,v.frozen FROM mdm_devices.unmanage_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.id=$3").bind(self.tenant.to_string()).bind(policy).bind(id).fetch_optional(&mut *c).await?.ok_or(Error::Execution(crate::control::missing::ExecutionError::MissingTask))?;
+        let row=sqlx::query("SELECT r.device,r.state,v.frozen FROM mdm_devices.unmanage_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.id=$3").bind(proof.binding().tenant().to_string()).bind(policy).bind(id).fetch_optional(&mut *c).await?.ok_or(Error::Execution(crate::control::missing::ExecutionError::MissingTask))?;
         let device: rss_mdm_agent_wire::DeviceId =
             row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
                 rss_mdm_agent_wire::DeviceId::try_from(id)
@@ -57,7 +58,7 @@ impl Queries {
             crate::control::stored(serde_json::from_value(row.try_get("state")?))?;
         let _frozen: crate::control::frozen::Frozen =
             crate::control::stored(serde_json::from_value(row.try_get("frozen")?))?;
-        let mut value:Value=sqlx::query_scalar("SELECT jsonb_build_object('taskId', r.id, 'attemptId', r.state -> 'delivery' ->> 'attempt', 'device', r.device, 'availableAt', r.available_at, 'deadline', r.deadline, 'state', r.state, 'effect', COALESCE(r.result ->> 'effect', 'unverified'), 'result', r.result) FROM mdm_devices.unmanage_runs AS r WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2").bind(self.tenant.to_string()).bind(id).fetch_one(c).await?;
+        let mut value:Value=sqlx::query_scalar("SELECT jsonb_build_object('taskId', r.id, 'attemptId', r.state -> 'delivery' ->> 'attempt', 'device', r.device, 'availableAt', r.available_at, 'deadline', r.deadline, 'state', r.state, 'effect', COALESCE(r.result ->> 'effect', 'unverified'), 'result', r.result) FROM mdm_devices.unmanage_runs AS r WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2").bind(proof.binding().tenant().to_string()).bind(id).fetch_one(c).await?;
         value["policyId"] = json!(policy);
         value["userAction"] = Value::Null;
         crate::control::queries::records::decode(value)

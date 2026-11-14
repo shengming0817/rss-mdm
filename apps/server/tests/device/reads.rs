@@ -59,7 +59,7 @@ async fn live_view_and_fixed_list_keep_distinct_read_semantics() -> Result<()> {
         let b=planning_t2_support::endpoint(&c).await?.members[0].device;
         let account=c.account(&[Permission::InventoryRead,Permission::InventorySensitiveRead]).await?;
         let proof=c.authenticate(&account).await?;
-        let service=Associations::new(c.audit.clone(),c.tenant,&[9;32])?;
+        let service=Associations::new(c.audit.clone(),&[9;32])?;
         let field=FieldKey::parse("custom.query_list")?;
         let definition:FieldDefinition=serde_json::from_value(json!({"key":field,"version":1,"valueType":{"kind":"array","items":{"kind":"integer"},"maxItems":1000},"nullable":true,"manual":true,"sources":{"manual":0},"platforms":["macos","windows"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null}))?;
         let mut tx=seed_transaction(&c).await?;
@@ -68,7 +68,7 @@ async fn live_view_and_fixed_list_keep_distinct_read_semantics() -> Result<()> {
         assign(&c,&a,field,0,vec![1,2,3],proof.principal_id()).await?;
         assign(&c,&b,field,0,vec![8],proof.principal_id()).await?;
         let timer=rss_mdm_audit_integration::budget::RuntimeTimer;
-        let personnel=Reader::new(&c.authority,c.audit.binding(),c.access().now()+Duration::from_secs(30),&timer,None);
+        let personnel=Reader::new(&c.authority,c.execution(),c.access().now()+Duration::from_secs(30),&timer,None);
         let reference=ObjectRef::Endpoint(a);
         let detail:Value=serde_json::to_value(service.view(&proof,&reference,&personnel).await?)?;
         let token=detail["lists"][field.as_str()]["sources"][0]["cursor"].as_str().expect("manual array source cursor");

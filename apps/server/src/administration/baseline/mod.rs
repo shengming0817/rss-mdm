@@ -9,9 +9,17 @@ use uuid::Uuid;
 pub(crate) mod manifest;
 use manifest::{Action, Manifest, Step};
 
+/// Current initialization progress; domain receipts remain the authority for each step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    Pending,
+    Blocked,
+    Configured,
+}
+
 /// Dependencies required to resume the persisted tenant initialization intent.
 pub(crate) struct Service {
-    pub tenant: rss_request_context::TenantId,
     pub instance: rss_identity_core::InstanceId,
     pub pool: sqlx::PgPool,
     pub authorization: std::sync::Arc<rss_mdm_authorization_service::Store>,
@@ -20,7 +28,7 @@ pub(crate) struct Service {
     pub content_access: Option<std::sync::Arc<rss_mdm_content_service::service::Access>>,
     pub assets: std::sync::Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub policies: std::sync::Arc<rss_mdm_policy_service::management::Policies>,
-    pub telemetry_loaded: bool,
+    pub telemetry: Option<std::sync::Arc<rss_mdm_telemetry_service::Service>>,
 }
 
 /// Persist with the authenticated initialization/account transaction. Never replace old intent.
@@ -36,8 +44,17 @@ pub(crate) async fn reserve_on(
     Ok(inserted)
 }
 /// Resume only existing initialization intent; serve never seeds an arbitrary or historical tenant.
-pub(crate) async fn resume(state: &Service) -> Result<(), Error> {
-    let tenant = state.tenant.to_string();
+pub(crate) async fn resume(
+    state: &Service,
+    tenant: rss_request_context::TenantId,
+    stop: &tokio_util::sync::CancellationToken,
+) -> Result<Option<rss_transactional_messaging::fence::ExecutionBinding>, Error> {
+    let cutoff = rss_request_context::Deadline::from_timeout(
+        &crate::lifecycle::RuntimeTimer,
+        std::time::Duration::from_secs(120),
+    )
+    .expect("fixed initialization budget");
+    let tenant = tenant.to_string();
     let pool = state.pool.clone();
     let mut c = pool
         .acquire()
@@ -51,17 +68,10 @@ pub(crate) async fn resume(state: &Service) -> Result<(), Error> {
         .await
         .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
     if !locked {
-        return Ok(());
+        return Ok(None);
     }
     let row=sqlx::query("SELECT authority,manifest,completed,phase FROM mdm_initialization.baselines WHERE tenant_id=$1::uuid").bind(&tenant).fetch_optional(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
-    let Some(row) = row else { return Ok(()) };
-    if row
-        .try_get::<String, _>("phase")
-        .map_err(|_| Error::Malformed)?
-        == "configured"
-    {
-        return Ok(());
-    }
+    let Some(row) = row else { return Ok(None) };
     let authority: rss_mdm_authorization_service::baseline::Authority =
         serde_json::from_value(row.try_get("authority").map_err(|_| Error::Malformed)?)
             .map_err(|_| Error::Malformed)?;
@@ -69,6 +79,17 @@ pub(crate) async fn resume(state: &Service) -> Result<(), Error> {
         || authority.user().instance_id != state.instance.to_string()
     {
         return Err(Error::Forbidden);
+    }
+    let execution = authority.binding()?;
+    sqlx::query("SELECT set_config('rss.storage_target',$1,false),set_config('rss.storage_lineage',$2,false),set_config('rss.execution_epoch',$3,false)")
+        .bind(Uuid::from_bytes(execution.storage().target()).simple().to_string()).bind(Uuid::from_bytes(execution.storage().lineage()).simple().to_string()).bind(execution.epoch().get().to_string())
+        .execute(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
+    if row
+        .try_get::<String, _>("phase")
+        .map_err(|_| Error::Malformed)?
+        == "configured"
+    {
+        return Ok(Some(authority.binding()?));
     }
     let manifest: Manifest =
         serde_json::from_value(row.try_get("manifest").map_err(|_| Error::Malformed)?)
@@ -84,7 +105,16 @@ pub(crate) async fn resume(state: &Service) -> Result<(), Error> {
         if completed.contains_key(&step.key) {
             continue;
         }
-        let result = execute_step(state, &authority, tenant_id, step).await;
+        if stop.is_cancelled()
+            || cutoff
+                .remaining(rss_request_context::Clock::now(
+                    &crate::lifecycle::RuntimeTimer,
+                ))
+                .is_none()
+        {
+            return Ok(None);
+        }
+        let result = execute(state, &authority, tenant_id, step).await;
         match result {
             Ok(receipt) => {
                 use sha2::{Digest, Sha256};
@@ -95,20 +125,33 @@ pub(crate) async fn resume(state: &Service) -> Result<(), Error> {
                         Sha256::digest(serde_json::to_vec(&receipt).map_err(|_| Error::Malformed)?)
                     )),
                 );
-                sqlx::query("UPDATE mdm_initialization.baselines SET completed=$2,phase='pending',blocked=NULL WHERE tenant_id=$1::uuid")
+                sqlx::query("WITH fenced AS MATERIALIZED (SELECT rss_transactional_messaging.check_execution()) UPDATE mdm_initialization.baselines SET completed=$2,phase='pending',blocked=NULL FROM fenced WHERE tenant_id=$1::uuid")
                     .bind(&tenant).bind(Value::Object(completed.clone())).execute(&mut *c).await.map_err(|_|Error::CommitUnknown)?;
             }
             Err(error) => {
                 let reason = blocked_reason(&error);
                 eprintln!("baseline step {} blocked: {}", step.key, error);
-                sqlx::query("UPDATE mdm_initialization.baselines SET phase='blocked',blocked=$2 WHERE tenant_id=$1::uuid").bind(&tenant).bind(reason).execute(&mut *c).await.map_err(|_|Error::CommitUnknown)?;
+                sqlx::query("WITH fenced AS MATERIALIZED (SELECT rss_transactional_messaging.check_execution()) UPDATE mdm_initialization.baselines SET phase='blocked',blocked=$2 FROM fenced WHERE tenant_id=$1::uuid").bind(&tenant).bind(reason).execute(&mut *c).await.map_err(|_|Error::CommitUnknown)?;
                 return Err(error);
             }
         }
     }
-    let blocked = !state.telemetry_loaded;
+    let blocked = match &state.telemetry {
+        Some(telemetry) => {
+            telemetry
+                .admit_default(authority.binding()?)
+                .await
+                .map_err(|error| match error {
+                    rss_mdm_telemetry_service::Error::Unknown => Error::CommitUnknown,
+                    rss_mdm_telemetry_service::Error::Denied => Error::Forbidden,
+                    _ => Error::Unavailable(crate::Failure::Database),
+                })?;
+            false
+        }
+        None => true,
+    };
     sqlx::query(
-        "UPDATE mdm_initialization.baselines SET phase=$2,blocked=$3 WHERE tenant_id=$1::uuid",
+        "WITH fenced AS MATERIALIZED (SELECT rss_transactional_messaging.check_execution()) UPDATE mdm_initialization.baselines SET phase=$2,blocked=$3 FROM fenced WHERE tenant_id=$1::uuid",
     )
     .bind(&tenant)
     .bind(if blocked { "blocked" } else { "configured" })
@@ -120,35 +163,7 @@ pub(crate) async fn resume(state: &Service) -> Result<(), Error> {
     .execute(&mut *c)
     .await
     .map_err(|_| Error::CommitUnknown)?;
-    Ok(())
-}
-/// Retry only an acknowledged rolled-back transient step, retaining its original
-/// operation identity. The managed task's total deadline/cancellation bounds this
-/// continuation; no business transaction or resource lock spans the delay.
-async fn execute_step(
-    state: &Service,
-    authority: &rss_mdm_authorization_service::baseline::Authority,
-    tenant: Uuid,
-    step: &Step,
-) -> Result<Value, Error> {
-    let mut delay = std::time::Duration::from_millis(25);
-    loop {
-        match execute(state, authority, tenant, step).await {
-            Err(error) if retryable_step(&error) => {
-                tokio::time::sleep(delay).await;
-                delay = (delay * 2).min(std::time::Duration::from_secs(1));
-            }
-            outcome => return outcome,
-        }
-    }
-}
-fn retryable_step(error: &Error) -> bool {
-    matches!(
-        error,
-        Error::Policy(rss_mdm_policy_service::Error::Unavailable(
-            rss_mdm_policy_service::Failure::PolicyTransient
-        ))
-    )
+    Ok((!blocked).then_some(authority.binding()?))
 }
 // Owner wrappers retain the semantic category at this orchestration boundary.
 fn blocked_reason(error: &Error) -> &'static str {
@@ -226,7 +241,7 @@ async fn execute(
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        tenant.to_string(),
+        authority.binding()?,
         "baseline_initialize",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -401,7 +416,7 @@ pub(crate) async fn reserve(
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        tenant.to_string(),
+        authority.binding()?,
         "baseline_initialize",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -427,8 +442,7 @@ pub(crate) async fn reserve(
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
     let result = store
         .write(
-            rss_request_context::TenantId::parse(&tenant.to_string())
-                .map_err(|_| Error::Malformed)?,
+            audit.binding()?,
             &budget.source_control(),
             (store, authority, fact),
             |(store, authority, fact), tx| {
@@ -555,26 +569,5 @@ mod tests {
             ),
             "outcome_unknown"
         );
-    }
-}
-
-#[cfg(test)]
-mod retry_tests {
-    use super::*;
-    #[test]
-    fn only_confirmed_rollback_transients_retry_the_original_step() {
-        use rss_mdm_policy_service::{Error as P, Failure as F};
-        assert!(retryable_step(&Error::Policy(P::Unavailable(
-            F::PolicyTransient
-        ))));
-        for error in [
-            P::Conflict,
-            P::CommitUnknown,
-            P::RollbackFailed,
-            P::Unavailable(F::PolicyStorage),
-            P::Forbidden,
-        ] {
-            assert!(!retryable_step(&Error::Policy(error)));
-        }
     }
 }

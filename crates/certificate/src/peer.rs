@@ -82,3 +82,66 @@ impl ClientCertificateEvidence {
         &self.chain
     }
 }
+
+/// Request certificate possession on a shared TLS listener. Channel owners must
+/// verify the presented chain against the credential's tenant before authorization.
+/// This is the same boundary as the gateway's optional_no_ca transport.
+pub fn possession_verifier() -> Arc<dyn tokio_rustls::rustls::server::danger::ClientCertVerifier> {
+    Arc::new(PossessionVerifier(
+        tokio_rustls::rustls::crypto::ring::default_provider(),
+    ))
+}
+#[derive(Debug)]
+struct PossessionVerifier(tokio_rustls::rustls::crypto::CryptoProvider);
+impl tokio_rustls::rustls::server::danger::ClientCertVerifier for PossessionVerifier {
+    fn client_auth_mandatory(&self) -> bool {
+        false
+    }
+    fn root_hint_subjects(&self) -> &[tokio_rustls::rustls::DistinguishedName] {
+        &[]
+    }
+    fn verify_client_cert(
+        &self,
+        _end: &CertificateDer<'_>,
+        _chain: &[CertificateDer<'_>],
+        _: tokio_rustls::rustls::pki_types::UnixTime,
+    ) -> Result<tokio_rustls::rustls::server::danger::ClientCertVerified, tokio_rustls::rustls::Error>
+    {
+        Ok(tokio_rustls::rustls::server::danger::ClientCertVerified::assertion())
+    }
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &tokio_rustls::rustls::DigitallySignedStruct,
+    ) -> Result<
+        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
+        tokio_rustls::rustls::Error,
+    > {
+        tokio_rustls::rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &tokio_rustls::rustls::DigitallySignedStruct,
+    ) -> Result<
+        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
+        tokio_rustls::rustls::Error,
+    > {
+        tokio_rustls::rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+    fn supported_verify_schemes(&self) -> Vec<tokio_rustls::rustls::SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
+}

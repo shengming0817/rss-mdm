@@ -96,8 +96,7 @@ impl Service {
             .capabilities
             .contains(&wire::Capability::DeviceAccessV1)
         {
-            let prepared =
-                admission::prepare_reconciliation_in(&service.transactions, tx, p).await?;
+            let prepared = admission::prepare_reconciliation_in(tx, p).await?;
             Some(prepared)
         } else {
             None
@@ -154,7 +153,7 @@ impl Service {
         if !authorized {
             run.state.cancel();
         }
-        super::recovery::audit_recovery(service, tx, &run, &previous).await?;
+        super::recovery::audit_recovery(p.binding(), service, tx, &run, &previous).await?;
         if run.state.cancellation == Cancellation::None
             && run.available_at <= now
             && allowed
@@ -395,8 +394,7 @@ impl Service {
                 .await?;
                 if !run.state.trusts_result(now) {
                     run.state.uncertain_result(input.attempt_id())?;
-                    let tenant =
-                        checked_input(Uuid::parse_str(&service.transactions.tenant.to_string()))?;
+                    let tenant = checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?;
                     let recovery = service
                         .transactions
                         .recovery

@@ -46,9 +46,6 @@ impl Reads {
     {
         let proof = request.proof.as_ref();
         proof.check_live()?;
-        if proof.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
         let start = self.clock.now();
         let deadline_at = request
             .deadline
@@ -62,7 +59,7 @@ impl Reads {
         let result=tokio::time::timeout(remaining(),async {
             let mut tx=connection.begin().await.map_err(sql)?;
             sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY").execute(&mut *tx).await.map_err(sql)?;
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.tenant.to_string()).bind(remaining().as_millis().max(1).to_string()).execute(&mut *tx).await.map_err(sql)?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(proof.tenant_id()).bind(remaining().as_millis().max(1).to_string()).execute(&mut *tx).await.map_err(sql)?;
             let grant=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),proof.instance_id()).await?;
             let binding=grant.query_binding(proof)?;
             let now=sqlx::query_scalar("SELECT floor(extract(epoch FROM transaction_timestamp()))::bigint").fetch_one(&mut *tx).await.map_err(sql)?;
@@ -93,7 +90,7 @@ impl Reads {
         let result=tokio::time::timeout(remaining(),async {
             let mut tx=connection.begin().await.map_err(sql)?;
             sqlx::query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ ONLY").execute(&mut *tx).await.map_err(sql)?;
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.tenant.to_string()).bind(remaining().as_millis().max(1).to_string()).execute(&mut *tx).await.map_err(sql)?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(proof.tenant_id()).bind(remaining().as_millis().max(1).to_string()).execute(&mut *tx).await.map_err(sql)?;
             rss_mdm_authorization_service::lock_shared_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),proof.instance_id()).await?;
             let grant=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),proof.instance_id()).await?;
             if request.current_binding(&grant, fresh.as_ref())?!=binding {return Err(Error::QueryReadConflict);}

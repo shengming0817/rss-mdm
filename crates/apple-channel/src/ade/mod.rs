@@ -23,7 +23,7 @@ pub(crate) fn management_routes()
         rss_mdm_http_contract::route_module! { struct ManagementRoutesModule1 for [Browser] { get_status, put_configure, get_public_key, post_operation, get_operation_status, get_devices, get_profiles } }
         ManagementRoutesModule1 {
             get_status: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/apple/organizations/{id}/ade",
+                "/api/v1/tenants/{tenant}/apple/organizations/{id}/ade",
                 get(
                     management::status,
                     &contracts::ADE_CONFIGURATION,
@@ -31,7 +31,7 @@ pub(crate) fn management_routes()
                 ),
             ),
             put_configure: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/apple/organizations/{id}/ade/configuration",
+                "/api/v1/tenants/{tenant}/apple/organizations/{id}/ade/configuration",
                 put(
                     management::configure,
                     &contracts::ADE_CONFIGURATION,
@@ -39,7 +39,7 @@ pub(crate) fn management_routes()
                 ),
             ),
             get_public_key: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/apple/organizations/{id}/ade/public-key",
+                "/api/v1/tenants/{tenant}/apple/organizations/{id}/ade/public-key",
                 get(
                     management::public_key,
                     &contracts::ADE_CONFIGURATION,
@@ -47,7 +47,7 @@ pub(crate) fn management_routes()
                 ),
             ),
             post_operation: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/apple/organizations/{id}/ade/operations",
+                "/api/v1/tenants/{tenant}/apple/organizations/{id}/ade/operations",
                 post(
                     management::operation,
                     &contracts::ADE_CONFIGURATION,
@@ -55,7 +55,7 @@ pub(crate) fn management_routes()
                 ),
             ),
             get_operation_status: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/apple/organizations/{id}/ade/operations/{operation}",
+                "/api/v1/tenants/{tenant}/apple/organizations/{id}/ade/operations/{operation}",
                 get(
                     management::operation_status,
                     &contracts::ADE_CONFIGURATION,
@@ -63,7 +63,7 @@ pub(crate) fn management_routes()
                 ),
             ),
             get_devices: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/apple/organizations/{id}/ade/devices",
+                "/api/v1/tenants/{tenant}/apple/organizations/{id}/ade/devices",
                 get(
                     management::devices,
                     &contracts::ADE_DEVICES,
@@ -71,7 +71,7 @@ pub(crate) fn management_routes()
                 ),
             ),
             get_profiles: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/apple/organizations/{id}/ade/profiles",
+                "/api/v1/tenants/{tenant}/apple/organizations/{id}/ade/profiles",
                 get(
                     management::profiles,
                     &contracts::ADE_PROFILES,

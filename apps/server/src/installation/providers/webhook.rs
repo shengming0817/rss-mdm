@@ -59,7 +59,10 @@ async fn probe(
     Ok(bytes)
 }
 
-fn runtime(input: &Input, host: Uuid) -> Result<Value> {
+fn runtime(input: &Input) -> Result<Value> {
+    let root = Journal::open(&input.directory)?;
+    let base: crate::config::Config = root.load("runtime.json")?.ok_or(Error::Corrupt)?;
+    let host = base.runtime_binding.host_id;
     let journal = Journal::open(&input.directory.join(format!("rss-mdm-{}", host.simple())))?;
     let runtime: Value = journal
         .load("requested-runtime.json")?
@@ -73,19 +76,12 @@ fn runtime(input: &Input, host: Uuid) -> Result<Value> {
     }
     Ok(runtime)
 }
-pub(in crate::installation) async fn reconcile(input: &Input, c: &mut PgConnection) -> Result<()> {
-    let hosts:Vec<Value>=sqlx::query_scalar("SELECT receipt->'result' FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='enabled'").fetch_all(&mut *c).await.map_err(|_|Error::Storage)?;
-    for host in hosts {
-        qualify_host(input, c, host).await?;
-    }
-    Ok(())
-}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Export {
     pub installation: Input,
     pub operation_id: Uuid,
-    pub host_id: Uuid,
+    pub tenant: Uuid,
     pub reference: String,
     pub revision: i64,
 }
@@ -93,7 +89,7 @@ pub struct Export {
 #[serde(rename_all = "camelCase")]
 pub struct ExportReceipt {
     pub operation_id: Uuid,
-    pub host_id: Uuid,
+    pub tenant: Uuid,
     pub reference: String,
     pub revision: i64,
     pub key_digest: String,
@@ -121,9 +117,8 @@ pub async fn export(input: Export) -> Result<ExportReceipt> {
         &serde_json::to_vec(&input).map_err(|_| Error::Input)?,
     )?;
     let config: crate::config::Config =
-        serde_json::from_value(runtime(&input.installation, input.host_id)?)
-            .map_err(|_| Error::Input)?;
-    let tenant = Uuid::parse_str(&config.identity.tenant_id).map_err(|_| Error::Corrupt)?;
+        serde_json::from_value(runtime(&input.installation)?).map_err(|_| Error::Input)?;
+    let tenant = input.tenant;
     let mut c = PgConnection::connect_with(
         &input
             .installation
@@ -181,21 +176,20 @@ pub async fn export(input: Export) -> Result<ExportReceipt> {
     c.close().await.map_err(|_| Error::Storage)?;
     Ok(ExportReceipt {
         operation_id: input.operation_id,
-        host_id: input.host_id,
+        tenant: input.tenant,
         reference: input.reference,
         revision: input.revision,
         key_digest: material.key_digest,
     })
 }
 
-async fn qualify_host(input: &Input, c: &mut PgConnection, host: Value) -> Result<()> {
-    let id: Uuid = serde_json::from_value(host["hostId"].clone()).map_err(|_| Error::Corrupt)?;
-    let Ok(runtime) = runtime(input, id) else {
-        return Ok(());
-    };
+pub(super) async fn qualify_tenant(
+    input: &Input,
+    c: &mut PgConnection,
+    tenant: Uuid,
+) -> Result<()> {
     let config: crate::config::Config =
-        serde_json::from_value(runtime).map_err(|_| Error::Corrupt)?;
-    let tenant = Uuid::parse_str(&config.identity.tenant_id).map_err(|_| Error::Corrupt)?;
+        serde_json::from_value(runtime(input)?).map_err(|_| Error::Corrupt)?;
     let protection = config.native_protector().map_err(|_| Error::Corrupt)?;
     let configuration = config
         .webhooks

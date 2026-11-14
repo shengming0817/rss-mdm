@@ -13,9 +13,10 @@ impl Transactions {
         audit: &RequestAudit,
     ) -> Result<CleanupProgress> {
         self.runtime.validate_transaction(tx)?;
+        let expected_epoch = audit.binding()?.epoch().get();
         let tenant = tx.tenant_id();
         let name = device.to_owned();
-        tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(tenant.to_string()).bind(name.into_uuid()).execute(c).await?;Ok(())})).await?;
+        tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device,expected_epoch) VALUES($1::uuid,$2,$3) ON CONFLICT DO NOTHING").bind(tenant.to_string()).bind(name.into_uuid()).bind(expected_epoch).execute(c).await?;Ok(())})).await?;
         self.reconcile_in(tx, device, audit).await?;
         let name = device.to_owned();
         let (mut pending,mut blocker)=tx.with_connection(move|c|Box::pin(async move{

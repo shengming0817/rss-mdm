@@ -12,7 +12,7 @@ pub(crate) fn register()
         rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_download } }
         RegisterModule1 {
             get_download: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/software/installations/{id}/package",
+                "/api/v1/tenants/{tenant}/software/installations/{id}/package",
                 get(
                     download,
                     &contracts::DOWNLOAD_MANAGEMENT_HTTP,
@@ -32,7 +32,7 @@ pub(crate) struct Download {
 pub(crate) async fn download(
     axum::extract::State(service): axum::extract::State<std::sync::Arc<dyn Packages>>,
     axum::Extension(audit): axum::Extension<rss_mdm_audit_integration::RequestAudit>,
-    axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
+    axum::extract::Path((_tenant, id)): axum::extract::Path<(uuid::Uuid, uuid::Uuid)>,
     axum::extract::Query(grant): axum::extract::Query<Download>,
     crate::content::http::DownloadHeaders(headers): crate::content::http::DownloadHeaders,
 ) -> Result<rss_mdm_http_contract::download::Download, Error> {

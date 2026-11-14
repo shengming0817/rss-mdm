@@ -110,16 +110,17 @@ async fn canonical_fact_and_atomic_multi_owner_wake() -> Result<()> {
     );
     let runtime = consumer(&c).await?;
     let receiver = asset_inputs::Receiver {
+        storage: c.execution().storage(),
         messaging: Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            c.audit.binding(),
+            c.execution(),
             OperationDeadline::from_remaining(Duration::from_secs(6)),
         ))
         .await?,
     };
     runtime
         .local_tx_with_context(
-            c.audit.binding(),
+            c.execution(),
             OperationDeadline::from_remaining(Duration::from_secs(6)),
             (&receiver, &message),
             |(r, m), tx| {
@@ -147,7 +148,7 @@ async fn canonical_fact_and_atomic_multi_owner_wake() -> Result<()> {
     sqlx::query("SELECT 1 FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.scopes' AND entity='inputs' FOR UPDATE").bind(c.tenant.to_string()).fetch_one(&mut *lock).await?;
     let attempt = runtime
         .local_tx_with_context(
-            c.audit.binding(),
+            c.execution(),
             OperationDeadline::from_remaining(Duration::from_secs(1)),
             (&receiver, &message),
             |(r, m), tx| {
@@ -219,11 +220,10 @@ async fn late_commits_and_bounded_pages_do_not_use_sequence_as_commit_order() ->
     let reader = rss_mdm_inventory_service::assets::planning::SnapshotReader::bind(
         StorageProfile::Mdm,
         owners.storage.runtime.clone(),
-        c.tenant,
     );
     group::transaction::inspect(
         &owners.storage.runtime,
-        c.audit.binding(),
+        c.execution(),
         (&reader, &before, &middle, &after),
         |ctx, tx| {
             Box::pin(async move {
@@ -271,7 +271,7 @@ async fn late_commits_and_bounded_pages_do_not_use_sequence_as_commit_order() ->
     let upper = cut(&c).await?;
     group::transaction::inspect(
         &owners.storage.runtime,
-        c.audit.binding(),
+        c.execution(),
         (&reader, &after, &upper),
         |ctx, tx| {
             Box::pin(async move {
@@ -321,20 +321,22 @@ impl Workers {
         scopes: Arc<rss_mdm_scope_service::Scopes>,
         policy: Option<&crate::policy_configuration_t2::fixture::Fixture>,
     ) -> Result<Self> {
-        let config: crate::config::Config =
-            serde_json::from_value(crate::host_t2_support::configuration(
+        let config: crate::config::Config = serde_json::from_value(
+            crate::host_t2_support::configuration(
                 &c.inputs,
                 "shared",
-                c.tenant,
                 "127.0.0.1:0".parse()?,
                 Uuid::new_v4(),
-            )?)?;
+            )
+            .await?,
+        )?;
         let background = config.background.compile(&config)?;
         let protection = crate::device_material_support::protection(c)?;
-        let listener = worker_wake::Listener::new(config.access_options()?, c.tenant);
+        let listener = worker_wake::Listener::new(config.access_options()?);
         let signals = listener.signals.clone();
         let assets = local_delivery::Delivery::open(
             &config,
+            c.database.archive_pool(),
             protection.clone(),
             Arc::default(),
             local_delivery::Lane {
@@ -343,17 +345,24 @@ impl Workers {
                 domain: asset_inputs::DOMAIN,
                 consumer: asset_inputs::CONSUMER,
                 name: "asset-input-test",
+                scopes: "SELECT * FROM mdm_devices.asset_delivery_scopes($1,$2)",
             },
             |_, binding, messaging| {
                 (
-                    asset_inputs::Receiver { messaging },
-                    asset_inputs::Validator { binding },
+                    asset_inputs::Receiver {
+                        storage: binding.storage(),
+                        messaging,
+                    },
+                    asset_inputs::Validator {
+                        storage: binding.storage(),
+                    },
                 )
             },
         )
         .await?;
         let groups = local_delivery::Delivery::open(
             &config,
+            c.database.archive_pool(),
             protection,
             Arc::default(),
             local_delivery::Lane {
@@ -362,16 +371,19 @@ impl Workers {
                 domain: rss_mdm_scope_service::group_changes::DOMAIN,
                 consumer: rss_mdm_scope_service::group_changes::CONSUMER,
                 name: "group-input-test",
+                scopes: "SELECT * FROM mdm_group.delivery_scopes($1,$2)",
             },
             |runtime, binding, messaging| {
                 (
                     rss_mdm_scope_service::group_changes::Receiver::new(
                         StorageProfile::Mdm,
                         runtime,
-                        binding.tenant(),
+                        binding.storage(),
                         messaging,
                     ),
-                    rss_mdm_scope_service::group_changes::Validator { binding },
+                    rss_mdm_scope_service::group_changes::Validator {
+                        storage: binding.storage(),
+                    },
                 )
             },
         )
@@ -387,7 +399,7 @@ impl Workers {
             let app = crate::assembly::policy::application(
                 &background,
                 &owner,
-                c.tenant,
+                c.execution(),
                 &[7; 32],
                 Arc::new(crate::clock::SystemClock),
                 fixture.resources.protection.clone(),
@@ -395,6 +407,7 @@ impl Workers {
             )
             .await?;
             let events = crate::assembly::policy::events(
+                c.execution(),
                 app.clone(),
                 fixture.materials.clone(),
                 fixture.software.materials.clone(),
@@ -402,8 +415,13 @@ impl Workers {
                 Vec::new(),
             )
             .await?;
-            let work =
-                rss_mdm_policy_service::worker::PolicyWork::new(app, events, schedule.clone());
+            let work = rss_mdm_policy_service::worker::PolicyWork::new(
+                c.database.archive_pool(),
+                c.execution().storage(),
+                app,
+                events,
+                schedule.clone(),
+            );
             policy_owner = Some(owner);
             Some(rss_mdm_policy_service::worker::Automation::new(work))
         } else {
@@ -411,9 +429,10 @@ impl Workers {
         };
         let devices = Arc::new(
             rss_mdm_device_service::worker::DeviceWork::new(
+                c.database.archive_pool(),
+                c.execution(),
                 Arc::new(rss_mdm_device_service::Associations::new(
                     c.audit.clone(),
-                    c.tenant,
                     &[7; 32],
                 )?),
                 c.runtime.clone(),
@@ -640,7 +659,7 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     owners.groups.execute(&group::Command::Group{id,change:Box::new(group::operation::Operation{operation_id:Uuid::new_v4(),expected_revision:0,input:group::GroupChange::Create{presentation:serde_json::from_value(json!({"name":"asset-inputs","description":""}))?,criteria:Some(serde_json::from_value(json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.asset.ready","op":"eq","value":{"kind":"boolean","value":true}}}))?),asset_context:rss_mdm_group::AssetContext::Endpoint}})},&c.request(&proof)?,&proof).await?;
     let scope = super::scope(&c, &[id]).await?;
     let device = planning::endpoint(&c).await?;
-    let policy_fixture = crate::policy_configuration_t2::fixture::Fixture::open(&c, false).await?;
+    let policy_fixture = crate::policy_configuration_t2::fixture::Fixture::open(&c).await?;
     let policy = crate::policy_configuration_t2::seed(
         &c,
         scope,
@@ -936,21 +955,18 @@ async fn coalesced_static_edit_and_scope_request_are_not_acknowledged_by_old_tas
     let scopes = crate::scope_t2::open(&c).await?;
     let published = planning::published(&c, &b).await?;
     let staged = planning::staged(&c, &published, &b).await?;
-    let binding = rss_mdm_scope_postgres::ScopeBinding::new(
-        StorageProfile::Mdm,
-        scopes.runtime.clone(),
-        c.tenant,
-    );
+    let binding =
+        rss_mdm_scope_postgres::ScopeBinding::new(StorageProfile::Mdm, scopes.runtime.clone());
     scopes
         .runtime
         .local_tx_with_context(
-            c.audit.binding(),
+            c.execution(),
             OperationDeadline::from_remaining(Duration::from_secs(6)),
-            &binding,
-            |binding, tx| {
+            (&binding, c.execution()),
+            |(binding, execution), tx| {
                 Box::pin(async move {
                     let merged = binding
-                        .enqueue_in(tx, Uuid::new_v4(), published.scope)
+                        .enqueue_in(*execution, tx, Uuid::new_v4(), published.scope)
                         .await
                         .map_err(|_| {
                             rss_transactional_messaging_postgres::PgError::from(
@@ -964,7 +980,7 @@ async fn coalesced_static_edit_and_scope_request_are_not_acknowledged_by_old_tas
         )
         .await
         .fold(Ok, Err, Err, Err, Err, Err)?;
-    crate::scope_t2::advance(&scopes, staged, &published.cut, false).await?;
+    crate::scope_t2::advance(c.execution(), &scopes, staged, &published.cut, false).await?;
     let pending:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_scope.tasks WHERE tenant_id=$1::uuid AND scope=$2 AND NOT completed AND id<>$3").bind(c.tenant.to_string()).bind(published.scope).bind(staged).fetch_one(&c.operator).await?;
     assert_eq!(
         pending, 1,
@@ -1312,7 +1328,7 @@ async fn input_health_is_durable_across_instances() -> Result<()> {
     suspend!(group, "mdm.groups");
     suspend!(scope, "mdm.scopes");
     suspend!(compliance, "mdm.compliance");
-    let execution = crate::policy_configuration_t2::fixture::Fixture::open(&c, false).await?;
+    let execution = crate::policy_configuration_t2::fixture::Fixture::open(&c).await?;
     suspend!(execution.service.recovery_store(), "mdm.commands.v1");
     suspend!(
         execution.software.service.recovery_store(),
@@ -1326,29 +1342,46 @@ async fn input_health_is_durable_across_instances() -> Result<()> {
         execution.software.service.health().inputs,
         Some(rss_mdm_recovery_observation::Phase::Failed(_))
     ));
-    let execution_replica =
-        crate::policy_configuration_t2::fixture::Fixture::open(&c, false).await?;
+    let execution_replica = crate::policy_configuration_t2::fixture::Fixture::open(&c).await?;
     let replica = Owners::open(&c).await?;
     let replica_scopes = crate::scope_t2::open(&c).await?;
-    assert!(replica.groups.input_failed(Duration::from_secs(6)).await?);
+    assert!(
+        replica
+            .groups
+            .input_failed(c.execution(), Duration::from_secs(6))
+            .await?
+    );
     assert!(
         replica
             .compliance
-            .input_failed(Duration::from_secs(6))
+            .input_failed(c.execution(), Duration::from_secs(6))
             .await?
     );
-    assert!(replica_scopes.input_failed(Duration::from_secs(6)).await?);
+    assert!(
+        replica_scopes
+            .input_failed(c.execution(), Duration::from_secs(6))
+            .await?
+    );
     let workers =
         Workers::start_policy(&c, &replica, replica_scopes, Some(&execution_replica)).await?;
     settled(&c).await?;
-    assert!(!owners.groups.input_failed(Duration::from_secs(6)).await?);
+    assert!(
+        !owners
+            .groups
+            .input_failed(c.execution(), Duration::from_secs(6))
+            .await?
+    );
     assert!(
         !owners
             .compliance
-            .input_failed(Duration::from_secs(6))
+            .input_failed(c.execution(), Duration::from_secs(6))
             .await?
     );
-    assert!(!scopes.input_failed(Duration::from_secs(6)).await?);
+    assert!(
+        !scopes
+            .input_failed(c.execution(), Duration::from_secs(6))
+            .await?
+    );
     wait_sql(&c,"SELECT $2::uuid IS NOT NULL AND NOT EXISTS(SELECT FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler IN('mdm.commands.v1','mdm.software.deployment.v1') AND entity='inputs' AND next_run IS NOT NULL)",Uuid::new_v4()).await?;
     let fresh_control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
     assert!(
@@ -1435,10 +1468,11 @@ async fn association_health_recovers_after_another_instance_converges() -> Resul
     }
     let a = Arc::new(rss_mdm_device_service::Associations::new(
         c.audit.clone(),
-        c.tenant,
         &[7; 32],
     )?);
     let worker_a = rss_mdm_device_service::worker::DeviceWork::new(
+        c.database.archive_pool(),
+        c.execution(),
         a.clone(),
         c.runtime.clone(),
         schedule.clone(),
@@ -1447,10 +1481,11 @@ async fn association_health_recovers_after_another_instance_converges() -> Resul
     .await?;
     let b = Arc::new(rss_mdm_device_service::Associations::new(
         c.audit.clone(),
-        c.tenant,
         &[7; 32],
     )?);
     let worker_b = rss_mdm_device_service::worker::DeviceWork::new(
+        c.database.archive_pool(),
+        c.execution(),
         b,
         c.runtime.clone(),
         schedule.clone(),
@@ -1539,9 +1574,10 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(40), &cancel);
     let schedule = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
     let worker = rss_mdm_device_service::worker::DeviceWork::new(
+        c.database.archive_pool(),
+        c.execution(),
         Arc::new(rss_mdm_device_service::Associations::new(
             c.audit.clone(),
-            c.tenant,
             &[7; 32],
         )?),
         c.runtime.clone(),
@@ -1551,9 +1587,10 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
     .await?;
     let runtime = consumer(&c).await?;
     let receiver = asset_inputs::Receiver {
+        storage: c.execution().storage(),
         messaging: Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            c.audit.binding(),
+            c.execution(),
             OperationDeadline::from_remaining(Duration::from_secs(6)),
         ))
         .await?,
@@ -1561,7 +1598,7 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
     let (event, _) = message(&c).await?;
     runtime
         .local_tx_with_context(
-            c.audit.binding(),
+            c.execution(),
             OperationDeadline::from_remaining(Duration::from_secs(6)),
             (&receiver, &event),
             |(r, e), tx| {
@@ -1673,7 +1710,7 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
     let before:Vec<(String,i64)>=sqlx::query_as("SELECT reconciler,wake_version FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND entity IN('inputs','configuration-inputs') ORDER BY reconciler").bind(c.tenant.to_string()).fetch_all(&c.operator).await?;
     runtime
         .local_tx_with_context(
-            c.audit.binding(),
+            c.execution(),
             OperationDeadline::from_remaining(Duration::from_secs(6)),
             (&receiver, &event),
             |(r, e), tx| {

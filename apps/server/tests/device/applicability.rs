@@ -56,7 +56,7 @@ impl Http {
 }
 async fn open() -> Result<(Context, Fixture, Http)> {
     let c = Context::open("shared", &[]).await?;
-    let a = match Fixture::open(&c, false).await {
+    let a = match Fixture::open(&c).await {
         Ok(a) => a,
         Err(e) => {
             c.close().await;
@@ -160,7 +160,7 @@ async fn detail_capabilities_are_authorized_read_only_facts() -> Result<()> {
         assert_eq!(capability(&body,"restart")["permission"]["allowed"], true);
         assert_eq!(capability(&body,"wipe")["permission"], json!({"allowed":false,"reason":"permission_denied"}));
         let document = crate::http_contract_document().map_err(|e| anyhow::anyhow!("{e:?}"))?;
-        let endpoint = document["endpoints"].as_array().unwrap().iter().find(|e| e["method"]=="GET" && e["path"]=="/api/v1/devices/{device}").unwrap();
+        let endpoint = document["endpoints"].as_array().unwrap().iter().find(|e| e["method"]=="GET" && e["path"]=="/api/v1/tenants/{tenant}/devices/{device}").unwrap();
         let response = endpoint["responses"].as_array().unwrap().iter().find(|r|r["status"]==200).unwrap();
         let schema = response["body"]["schema"]["schemaId"].as_str().unwrap();
         jsonschema::validator_for(&document["schemas"][schema])?.validate(&body).map_err(|e|anyhow::anyhow!(e.to_string()))?;
@@ -386,7 +386,7 @@ async fn lifecycle_and_dependency_failures_are_not_platform_unsupported() -> Res
 async fn snapshot_revalidates_authority_and_registration_before_return() -> Result<()> {
     use rss_mdm_registration_service::device::endpoints;
     let c = Context::open("shared", &[]).await?;
-    let a = Fixture::open(&c, false).await?;
+    let a = Fixture::open(&c).await?;
     let result=async {
         let n=native::seed(&c,"windows").await?;
         let account=c.account(&[Permission::InventoryRead]).await?;

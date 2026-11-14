@@ -1,13 +1,34 @@
-//! Complete tenant creation starts one durable operation; host execution never runs in HTTP.
+//! One durable tenant operation composes existing account and baseline receipts.
 use super::administrator::AdministratorInput;
 use super::service::{Service, project, tx_error};
 use super::*;
-use crate::installation::model::{Phase, Provisioning};
+use crate::administration::baseline::Phase;
 use rss_identity_core::account::{LoginKey, Password};
 use rss_mdm_audit_integration::{Fact, RequestAudit, budget::AuditBudget};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use serde::Deserialize;
 use zeroize::Zeroize;
+
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Progress {
+    pub tenant_id: Uuid,
+    pub administrator_id: Option<Uuid>,
+    pub phase: Phase,
+    pub blocked: Option<String>,
+    pub entry_path: String,
+}
+impl Progress {
+    pub(crate) fn pending(tenant_id: Uuid, administrator_id: Option<Uuid>) -> Self {
+        Self {
+            tenant_id,
+            administrator_id,
+            phase: Phase::Pending,
+            blocked: None,
+            entry_path: format!("/tenants/{tenant_id}"),
+        }
+    }
+}
 
 #[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -50,8 +71,8 @@ impl Service {
             .iter()
             .map(|v| format!("{v:02x}"))
             .collect::<String>();
-        let (receipt, administrator_operation) = self
-            .reserve_provisioning(proof, audit, operation, &body.name, &digest)
+        let (mut receipt, administrator_operation) = self
+            .reserve_provisioning(proof, audit, operation, &body.name, &digest, cutoff)
             .await?;
         let ReceiptResult::Provisioning(progress) = &receipt.result else {
             return Err(Error::Conflict);
@@ -85,7 +106,11 @@ impl Service {
             return Err(Error::Conflict);
         };
         let principal = Uuid::parse_str(&account.principal_id).map_err(|_| Error::Malformed)?;
-        self.record_administrator(proof, operation, principal).await
+        let ReceiptResult::Provisioning(progress) = &mut receipt.result else {
+            return Err(Error::Conflict);
+        };
+        progress.administrator_id = Some(principal);
+        Ok(receipt)
     }
     async fn reserve_provisioning(
         &self,
@@ -94,6 +119,7 @@ impl Service {
         operation: Uuid,
         name: &str,
         digest: &str,
+        cutoff: rss_request_context::Deadline,
     ) -> std::result::Result<(Receipt, Uuid), Error> {
         audit.owned_operation(
             rss_mdm_audit_integration::operation::OperationOwner::TenantAdministration,
@@ -111,25 +137,25 @@ impl Service {
             None,
         )
         .map_err(|_| Error::Malformed)?;
-        let budget = AuditBudget::new(Duration::from_secs(6));
-        let attempt=self.audit.write(self.management,&budget.source_control(),(self,proof,operation,name,digest,fact,audit),|(service,proof,operation,name,digest,fact,audit),tx|Box::pin(async move {
+        let budget = AuditBudget::until(cutoff);
+        let attempt=self.audit.write(
+            proof.binding(),&budget.source_control(),(self,proof,operation,name,digest,fact,audit),|(service,proof,operation,name,digest,fact,audit),tx|Box::pin(async move {
             let mut context=(&**service,*proof,*operation,*name,*digest);
             let (receipt,administrator_operation,replayed)=tx.with_connection_context(&mut context,|(service,proof,operation,name,digest),c|Box::pin(async move { async {
                 sqlx::query("SELECT pg_advisory_xact_lock(2346)").execute(&mut *c).await.map_err(|_|Reason::Storage)?;
                 service.authorize(c,proof,Permission::TenantCreate).await?;
                 service.authorize(c,proof,Permission::TenantAdministratorCreate).await?;
-                if let Some((receipt,request))=receipt_on(c,*operation).await? {
+                if let Some((mut receipt,request))=receipt_on(c,*operation).await? {
                     if receipt.action!=Action::Provision || request["fingerprint"].as_str()!=Some(*digest) {return Err(Reason::Conflict);}
                     let child=Uuid::parse_str(request["administratorOperationId"].as_str().ok_or(Reason::Storage)?).map_err(|_|Reason::Storage)?;
+                    service.project_initialization(c, &mut receipt).await?;
                     return Ok((receipt,child,true));
                 }
                 let tenant=Uuid::new_v4();let administrator_operation=Uuid::new_v4();
                 let tenant_text=tenant.to_string();
-                let mutation=Mutation {installation:&service.installation,tenant_id:&tenant_text,operation_id:*operation,action:Action::Create,initial_epoch:Some(1),expected_revision:None,name:Some(name),notes:None};
+                let mutation=Mutation {installation:&service.installation,tenant_id:&tenant_text,operation_id:*operation,action:Action::Create,initial_epoch:Some(service.execution_epoch),expected_revision:None,name:Some(name),notes:None};
                 insert_tenant_on(c,&mutation).await?;
-                let receipt=Receipt {operation_id:*operation,action:Action::Provision,result:ReceiptResult::Provisioning(Provisioning {
-                    operation_id:*operation,tenant_id:tenant,administrator_id:None,host_id:Uuid::new_v4(),revision:1,phase:Phase::Reserved,blocked:None,origin:None,application:None,
-                })};
+                let receipt=Receipt {operation_id:*operation,action:Action::Provision,result:ReceiptResult::Provisioning(Progress::pending(tenant, None))};
                 let actor=serde_json::json!({"kind":"session","tenantId":proof.tenant_id(),"instanceId":proof.instance_id(),"principalId":proof.principal_id()});
                 let request=serde_json::json!({"fingerprint":digest,"administratorOperationId":administrator_operation});
                 sqlx::query("INSERT INTO public.mdm_tenant_operations(operation_id,tenant_id,action,request,receipt,operator) VALUES($1,$2,'provision',$3,$4,$5)")
@@ -161,53 +187,70 @@ impl Service {
             |error| Err(tx_error(error)),
         )
     }
+}
 
-    async fn record_administrator(
+impl Service {
+    pub(super) async fn project_initialization(
         &self,
-        proof: &AuthorizedPrincipal,
-        operation: Uuid,
-        principal: Uuid,
-    ) -> std::result::Result<Receipt, Error> {
-        let mut connection = self
-            .pool
-            .acquire()
-            .await
-            .map_err(|_| Error::Unavailable(Failure::Database))?;
-        connection.close_on_drop();
-        let mut tx = connection
-            .begin()
-            .await
-            .map_err(|_| Error::Unavailable(Failure::Database))?;
-        sqlx::raw_sql("SET LOCAL statement_timeout='6s'; SET LOCAL lock_timeout='6s'")
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| Error::Unavailable(Failure::Database))?;
-        sqlx::query("SELECT pg_advisory_xact_lock(2346)")
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| Error::Unavailable(Failure::Database))?;
-        self.authorize(&mut tx, proof, Permission::TenantAdministratorCreate)
-            .await
-            .map_err(project)?;
-        let (mut receipt, _) = receipt_on(&mut tx, operation)
-            .await
-            .map_err(project)?
-            .ok_or(Error::Conflict)?;
+        c: &mut PgConnection,
+        receipt: &mut Receipt,
+    ) -> Result<()> {
         let ReceiptResult::Provisioning(progress) = &mut receipt.result else {
-            return Err(Error::Conflict);
+            return Ok(());
         };
-        if progress.administrator_id.is_some_and(|id| id != principal) {
-            return Err(Error::Conflict);
+        if progress.phase == Phase::Configured {
+            return Ok(());
+        }
+        let child: Option<Uuid> = sqlx::query_scalar("SELECT (request->>'administratorOperationId')::uuid FROM public.mdm_tenant_operations WHERE operation_id=$1 AND action='provision'")
+            .bind(receipt.operation_id).fetch_optional(&mut *c).await.map_err(|_|Reason::Storage)?;
+        if let Some(child) = child
+            && let Some((account, _)) = receipt_on(c, child).await?
+        {
+            let ReceiptResult::Administrator(account) = account.result else {
+                return Err(Reason::Storage);
+            };
+            if account.tenant_id != progress.tenant_id.to_string() {
+                return Err(Reason::Storage);
+            }
+            progress.administrator_id =
+                Some(Uuid::parse_str(&account.principal_id).map_err(|_| Reason::Storage)?);
         }
         if progress.administrator_id.is_none() {
-            progress.administrator_id = Some(principal);
-            progress.phase = Phase::HostPending;
-            progress.revision = progress.revision.checked_add(1).ok_or(Error::Conflict)?;
-            sqlx::query("UPDATE public.mdm_tenant_operations SET receipt=$2 WHERE operation_id=$1 AND action='provision'")
-                .bind(operation).bind(serde_json::to_value(&receipt).map_err(|_|Error::Malformed)?)
-                .execute(&mut *tx).await.map_err(|_|Error::Unavailable(Failure::Database))?;
+            return Ok(());
         }
-        tx.commit().await.map_err(|_| Error::CommitUnknown)?;
-        Ok(receipt)
+        let row: Option<(String, Option<String>)> = sqlx::query_as(
+            "SELECT phase,blocked FROM mdm_initialization.baselines WHERE tenant_id=$1",
+        )
+        .bind(progress.tenant_id)
+        .fetch_optional(c)
+        .await
+        .map_err(|_| Reason::Storage)?;
+        if let Some((phase, blocked)) = row {
+            progress.phase = serde_json::from_value(serde_json::Value::String(phase))
+                .map_err(|_| Reason::Storage)?;
+            progress.blocked = blocked;
+        }
+        Ok(())
+    }
+    /// The original baseline owner calls this after all of its durable steps are configured.
+    pub(crate) async fn complete_initialization(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> std::result::Result<(), Error> {
+        self.source_runtime.local_tx(binding, crate::identity::deadline(), |tx| Box::pin(async move {
+            tx.with_connection(|c| Box::pin(async move {
+                sqlx::query("UPDATE public.mdm_tenant_operations o SET receipt=jsonb_set(jsonb_set(jsonb_set(o.receipt,'{result,phase}','\"configured\"'::jsonb),'{result,blocked}','null'::jsonb),'{result,administratorId}',a.receipt->'result'->'principalId') FROM public.mdm_tenant_operations a,mdm_initialization.baselines b WHERE o.tenant_id=$1::uuid AND o.action='provision' AND o.receipt->'result'->>'phase'<>'configured' AND a.operation_id=(o.request->>'administratorOperationId')::uuid AND a.action='administrator_create' AND a.tenant_id=o.tenant_id AND b.tenant_id=o.tenant_id AND b.phase='configured'")
+                    .bind(binding.tenant().to_string()).execute(c).await?;
+                Ok(())
+            })).await
+        })).await.fold(Ok, |e|Err(super::administrator::pg_error(e)), |e|Err(super::administrator::pg_error(e)), |_|Err(Error::RollbackFailed), |_|Err(Error::CommitUnknown), |e|Err(super::administrator::pg_error(e)))
+    }
+    /// Bounded discovery of existing initialization intents; no startup tenant list or scheduler.
+    pub(crate) async fn pending_initializations(
+        &self,
+        after: Option<Uuid>,
+    ) -> std::result::Result<Vec<Uuid>, Error> {
+        sqlx::query_scalar("SELECT b.tenant_id FROM mdm_initialization.baselines b JOIN public.mdm_tenants t USING(tenant_id) WHERE NOT t.deleted AND ($1::uuid IS NULL OR b.tenant_id>$1) AND (b.phase<>'configured' OR EXISTS(SELECT FROM public.mdm_tenant_operations o WHERE o.tenant_id=b.tenant_id AND o.action='provision' AND o.receipt->'result'->>'phase'<>'configured')) ORDER BY b.tenant_id LIMIT 32")
+            .bind(after).fetch_all(&self.pool).await.map_err(|_|Error::Unavailable(Failure::Database))
     }
 }

@@ -248,9 +248,6 @@ impl crate::service::Service {
         device: &rss_mdm_agent_wire::DeviceId,
         operation: Uuid,
     ) -> Result<Offboarding, Error> {
-        if actor.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
         let mut tx = self.store.begin(actor.tenant_id()).await?;
         super::service::authorize(&mut tx, actor, device, Permission::AccountWrite).await?;
         let value = load_on(&mut tx, actor, device, operation, false).await?;

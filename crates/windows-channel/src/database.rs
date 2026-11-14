@@ -89,3 +89,110 @@ pub(crate) fn db(e: sqlx::Error) -> Error {
 pub(crate) fn device_id(id: uuid::Uuid) -> Result<rss_mdm_agent_wire::DeviceId, sqlx::Error> {
     rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))
 }
+
+impl Store {
+    /// Locate a current or pending renewal certificate without treating the locator as authority.
+    pub async fn locate_certificate(
+        &self,
+        fingerprint: [u8; 32],
+    ) -> Result<Option<rss_request_context::TenantId>, Error> {
+        let rows: Vec<uuid::Uuid> =
+            sqlx::query_scalar("SELECT tenant_id FROM mdm_windows.renewal_certificate_tenants($1)")
+                .bind(fingerprint.as_slice())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db)?;
+        let renewal = match rows.as_slice() {
+            [] => None,
+            [tenant] => Some(
+                rss_request_context::TenantId::parse(&tenant.to_string())
+                    .map_err(|_| Error::Unavailable(Failure::Database))?,
+            ),
+            _ => return Err(Error::Unauthorized),
+        };
+        let credential = self.registration.locate_certificate(fingerprint).await?;
+        match (renewal, credential) {
+            (Some(a), Some(b)) if a != b => Err(Error::Unauthorized),
+            (Some(t), _) | (_, Some(t)) => Ok(Some(t)),
+            _ => Ok(None),
+        }
+    }
+}
+
+impl Store {
+    pub async fn locate_entra_profile(
+        &self,
+        tenant: uuid::Uuid,
+        audience: &str,
+    ) -> Result<Option<rss_request_context::TenantId>, Error> {
+        unique_tenant(
+            sqlx::query_scalar("SELECT tenant_id FROM mdm_windows.entra_profile_tenants($1,$2)")
+                .bind(tenant)
+                .bind(audience)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db)?,
+        )
+    }
+    pub async fn locate_entra_flow(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<
+        (
+            rss_request_context::TenantId,
+            rss_transactional_messaging::fence::Epoch,
+        ),
+        Error,
+    > {
+        let rows: Vec<(uuid::Uuid, i64)> =
+            sqlx::query_as("SELECT * FROM mdm_windows.entra_flow_scopes($1)")
+                .bind(id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db)?;
+        match rows.as_slice() {
+            [(tenant, epoch)] => Ok((
+                rss_request_context::TenantId::parse(&tenant.to_string())
+                    .map_err(|_| Error::Unauthorized)?,
+                rss_transactional_messaging::fence::Epoch::new(*epoch)
+                    .map_err(|_| Error::Unauthorized)?,
+            )),
+            _ => Err(Error::Unauthorized),
+        }
+    }
+}
+
+impl Store {
+    pub async fn push_work_page(
+        &self,
+        after: Option<(uuid::Uuid, uuid::Uuid)>,
+    ) -> Result<Vec<(uuid::Uuid, uuid::Uuid)>, Error> {
+        sqlx::query_as("SELECT * FROM mdm_windows.push_work_page($1,$2)")
+            .bind(after.map(|v| v.0))
+            .bind(after.map(|v| v.1))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)
+    }
+    pub async fn retention_scopes(
+        &self,
+        after: Option<(uuid::Uuid, i64)>,
+    ) -> Result<Vec<(uuid::Uuid, i64)>, Error> {
+        sqlx::query_as("SELECT * FROM mdm_windows.retention_scopes($1,$2)")
+            .bind(after.map(|v| v.0))
+            .bind(after.map(|v| v.1))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)
+    }
+}
+
+fn unique_tenant(rows: Vec<uuid::Uuid>) -> Result<Option<rss_request_context::TenantId>, Error> {
+    match rows.as_slice() {
+        [] => Ok(None),
+        [tenant] => rss_request_context::TenantId::parse(&tenant.to_string())
+            .map(Some)
+            .map_err(|_| Error::Unauthorized),
+        _ => Err(Error::Unauthorized),
+    }
+}

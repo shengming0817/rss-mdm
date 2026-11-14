@@ -23,7 +23,7 @@ pub fn browser_audience(origin: &str) -> String {
 pub struct Runtime {
     pub evidence: crate::evidence::Authorities,
     pub configuration: Configuration,
-    pub endpoints: Endpoints,
+    origin: String,
     pub browser_audience: String,
     active: String,
     keys: BTreeMap<String, crypto::Signer>,
@@ -40,7 +40,6 @@ impl Runtime {
     pub fn new(
         configuration: Configuration,
         origin: &str,
-        tenant: uuid::Uuid,
         active: String,
         keys: BTreeMap<String, crypto::Signer>,
     ) -> Result<Self, Error> {
@@ -48,7 +47,17 @@ impl Runtime {
         if keys.is_empty() || keys.len() > 4 || !keys.contains_key(&active) {
             return Err(Error::Malformed);
         }
-        let endpoints = Endpoints::new(origin, tenant).map_err(|_| Error::Malformed)?;
+        let url = url::Url::parse(origin).map_err(|_| Error::Malformed)?;
+        if url.scheme() != "https"
+            || url.origin().ascii_serialization() != origin
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || url.path() != "/"
+        {
+            return Err(Error::Malformed);
+        }
         let ids = keys
             .values()
             .map(|k| k.id())
@@ -59,12 +68,15 @@ impl Runtime {
         Ok(Self {
             evidence: crate::evidence::Authorities::default(),
             configuration,
-            endpoints,
+            origin: origin.to_owned(),
             browser_audience: browser_audience(origin),
             active,
             keys,
             password_providers: BTreeMap::new(),
         })
+    }
+    pub fn endpoints(&self, tenant: uuid::Uuid) -> Result<Endpoints, Error> {
+        Endpoints::new(&self.origin, tenant).map_err(|_| Error::Malformed)
     }
     /// Install explicit password capabilities; a browser OIDC configuration is insufficient.
     pub fn with_password_providers(
@@ -102,23 +114,19 @@ impl Runtime {
             .iter()
             .map(|(id, p)| Ok((*id, p.fingerprint()?)))
             .collect::<Result<Vec<_>, Error>>()?;
-        let bytes = serde_json::to_vec(&(&self.configuration, &self.endpoints, providers))
+        let bytes = serde_json::to_vec(&(&self.configuration, &self.origin, providers))
             .map_err(|_| Error::Malformed)?;
         Ok(crypto::encode(&sha2::Sha256::digest(bytes)))
     }
     pub fn profile_fingerprint(
         &self,
+        tenant: uuid::Uuid,
         login: &rss_mdm_agent_wire::platform_sso::LoginConfiguration,
     ) -> Result<String, Error> {
         // Routine signing-key rotation does not revoke device registrations.
         // Hash actual desired payload content using neutral object IDs, so changing a required
         // payload invalidates retained profile qualification without a second format-version knob.
-        let (origin, tenant) = self
-            .endpoints
-            .base
-            .split_once("/api/v1/apple/platform-sso/")
-            .ok_or(Error::Malformed)?;
-        let tenant = uuid::Uuid::parse_str(tenant).map_err(|_| Error::Malformed)?;
+        let origin = &self.origin;
         let template = rss_mdm_apple_mdm::platform_sso::profile(
             &self.configuration,
             login,
@@ -135,8 +143,13 @@ impl Runtime {
         } else {
             None
         };
-        let bytes = serde_json::to_vec(&(&self.configuration, &self.endpoints, template, provider))
-            .map_err(|_| Error::Malformed)?;
+        let bytes = serde_json::to_vec(&(
+            &self.configuration,
+            &self.endpoints(tenant)?,
+            template,
+            provider,
+        ))
+        .map_err(|_| Error::Malformed)?;
         use sha2::Digest;
         Ok(crypto::encode(&sha2::Sha256::digest(bytes)))
     }
@@ -169,25 +182,13 @@ impl Runtime {
     }
     pub fn profile(
         &self,
+        tenant: uuid::Uuid,
         login: &rss_mdm_agent_wire::platform_sso::LoginConfiguration,
     ) -> Result<rss_mdm_apple_mdm::native::profiles::ProfileInput, Error> {
-        let digest = crypto::decode(&self.profile_fingerprint(login)?)?;
+        let digest = crypto::decode(&self.profile_fingerprint(tenant, login)?)?;
         let id = uuid::Uuid::from_slice(&digest[..16]).map_err(|_| Error::Malformed)?;
         let payload = uuid::Uuid::from_slice(&digest[16..]).map_err(|_| Error::Malformed)?;
-        let tenant = uuid::Uuid::parse_str(
-            self.endpoints
-                .base
-                .rsplit('/')
-                .next()
-                .ok_or(Error::Malformed)?,
-        )
-        .map_err(|_| Error::Malformed)?;
-        let origin = self
-            .endpoints
-            .base
-            .split("/api/")
-            .next()
-            .ok_or(Error::Malformed)?;
+        let origin = &self.origin;
         let mut profile = rss_mdm_apple_mdm::platform_sso::profile(
             &self.configuration,
             login,

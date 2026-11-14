@@ -94,7 +94,6 @@ pub(super) fn fault(e: rss_mdm_device_service::control::transaction::Fault) -> F
 pub(super) struct Publication {
     pub software: Arc<rss_mdm_software_service::deployment::Inputs>,
     pub enrollment_entries: rss_mdm_registration_service::enrollment::task::Entries,
-    pub signing_enabled: bool,
 }
 
 impl ExecutionPublication for Publication {
@@ -158,7 +157,6 @@ impl ExecutionPublication for Publication {
                 }
                 let action = task::prepare(
                     &self.enrollment_entries,
-                    self.signing_enabled,
                     proof,
                     snapshot,
                     *organization,
@@ -183,6 +181,7 @@ pub(super) struct Changes {
 impl ExecutionChanges for Changes {
     fn policy_changed_in<'a>(
         &'a self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &'a mut PgTransaction<'_>,
         policy: &'a Policy,
         previous: Option<&'a Policy>,
@@ -200,6 +199,7 @@ impl ExecutionChanges for Changes {
             let id = policy.id;
             if kinds.contains(&K::Software) || kinds.contains(&K::EnsureAgentInstalled) {
                 rss_mdm_software_service::deployment::sources::storage::wake_execution_in(
+                    execution,
                     &self.messaging,
                     tx,
                     id,
@@ -209,6 +209,7 @@ impl ExecutionChanges for Changes {
             }
             if kinds.contains(&K::RequestMdmEnrollment) {
                 rss_mdm_registration_service::enrollment::tasks::wake::policy_in(
+                    execution,
                     rss_mdm_install_support::StorageProfile::Mdm,
                     &self.messaging,
                     tx,
@@ -223,6 +224,7 @@ impl ExecutionChanges for Changes {
                     rss_mdm_install_support::StorageProfile::Da,
                 ] {
                     rss_mdm_recovery_credentials::tasks::wake::policy_in(
+                        execution,
                         profile,
                         &self.messaging,
                         tx,
@@ -232,10 +234,11 @@ impl ExecutionChanges for Changes {
                 }
             }
             if kinds.contains(&K::Execution) {
-                rss_mdm_script_service::wake::policy_in(&self.messaging, tx, id).await?;
+                rss_mdm_script_service::wake::policy_in(execution, &self.messaging, tx, id).await?;
             }
             if kinds.contains(&K::NativeCollection) || kinds.contains(&K::AgentCollection) {
                 rss_mdm_inventory_service::collection::execution::wake::policy_in(
+                    execution,
                     &self.messaging,
                     tx,
                     id,
@@ -244,6 +247,7 @@ impl ExecutionChanges for Changes {
             }
             if kinds.contains(&K::UnmanageDevice) {
                 rss_mdm_device_service::control::sources::storage::wake_execution_in(
+                    execution,
                     &self.messaging,
                     tx,
                     id,
@@ -256,6 +260,7 @@ impl ExecutionChanges for Changes {
     }
     fn assignment_changed_in<'a>(
         &'a self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &'a mut PgTransaction<'_>,
         version: Uuid,
         target: &'a rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
@@ -269,10 +274,10 @@ impl ExecutionChanges for Changes {
             .ok_or(Error::NotFound)?;
             match persisted.action_kind {
                 ActionKind::NativeCollection if !available => {
-                    rss_mdm_inventory_service::collection::execution::wake::policy_in(&self.messaging, tx, persisted.policy).await?;
+                    rss_mdm_inventory_service::collection::execution::wake::policy_in(execution, &self.messaging, tx, persisted.policy).await?;
                 }
                 ActionKind::Software if !available => {
-                    rss_mdm_software_service::deployment::sources::storage::wake_execution_in(&self.messaging, tx, persisted.policy).await.map_err(software_fault)?;
+                    rss_mdm_software_service::deployment::sources::storage::wake_execution_in(execution, &self.messaging, tx, persisted.policy).await.map_err(software_fault)?;
                 }
                 ActionKind::NativeCollection => {
                     if let Some(verified) = rss_mdm_inventory_service::collection::execution::scheduled::VerifiedNativeCollectionVersion::verify_in(&self.reader, tx, version).await? {
@@ -292,11 +297,13 @@ impl ExecutionChanges for Changes {
 
     fn configuration_progressed_in<'a>(
         &'a self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &'a mut PgTransaction<'_>,
         devices: &'a [rss_mdm_agent_wire::DeviceId],
     ) -> Pending<'a, (), Fault> {
         Box::pin(async move {
             rss_mdm_software_service::deployment::wake::wake_native_batch_in(
+                execution,
                 &self.messaging,
                 Arc::new(super::software_sources::Source(self.targets.clone())),
                 tx,
@@ -315,6 +322,7 @@ impl ExecutionChanges for Changes {
     }
     fn retirement_accepted_in<'a>(
         &'a self,
+        _execution: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &'a mut PgTransaction<'_>,
         retirement: Uuid,
     ) -> Pending<'a, (), Fault> {
@@ -519,6 +527,7 @@ impl ExecutionEvents for Events {
                         .find(|s| s.profile() == profile)
                         .ok_or(Error::Unsupported)?
                         .accept_event_in(
+                            audit.binding()?,
                             tx,
                             policy.version,
                             &rss_mdm_recovery_credentials::tasks::Target {
@@ -534,6 +543,7 @@ impl ExecutionEvents for Events {
                     return self
                         .enrollment
                         .accept_event_in(
+                            audit.binding()?,
                             tx,
                             policy.version,
                             &rss_mdm_registration_service::enrollment::tasks::Target {
@@ -549,6 +559,7 @@ impl ExecutionEvents for Events {
                     return self
                         .scripts
                         .accept_event_in(
+                            audit.binding()?,
                             tx,
                             policy.version,
                             &rss_mdm_script_service::Target {
@@ -565,6 +576,7 @@ impl ExecutionEvents for Events {
                     return self
                         .collections
                         .accept_event_in(
+                            audit.binding()?,
                             tx,
                             policy.version,
                             &rss_mdm_inventory_service::collection::execution::model::Target {

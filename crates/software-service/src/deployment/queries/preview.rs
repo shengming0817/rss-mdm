@@ -37,7 +37,7 @@ pub async fn preview(
     authorize_preview(proof.authorization()?, proof, &input.definition)?;
     let prepared = crate::deployment::transaction::inspect(
         &s.runtime,
-        s.binding,
+        proof.binding(),
         (s, proof, input),
         |ctx, tx| {
             Box::pin(async move {
@@ -66,9 +66,9 @@ pub async fn preview(
         authorization.require(proof,Permission::PolicyRead,None)?;
         if input.definition.action.resource().is_some(){authorization.require(proof,Permission::ResourceRead,None)?;}
         authorize_preview(authorization,proof,&input.definition)?;
-        s.inputs.recheck_preview_on(c,&PublicationInput::try_from(&input.definition.action)?,prepared).await?;
+        s.inputs.recheck_preview_on(proof.binding(),c,&PublicationInput::try_from(&input.definition.action)?,prepared).await?;
         let authority=authorization.query_binding(proof)?;let scope=input.definition.scope;let definition=json!([input.definition,input.scope_result]);let limit=query.limit();
-        let coordinate=s.source.query_coordinate_on(c,s.tenant,scope).await?;
+        let coordinate=s.source.query_coordinate_on(c,proof.binding().tenant(),scope).await?;
         let binding=rss_mdm_query::cursor::fingerprint(&(rss_mdm_policy::pages::PREVIEW_SCHEMA.id,proof.tenant_id(),proof.instance_id(),proof.principal_id(),authority,scope,definition,coordinate)).map_err(|_|Error::Malformed)?;
         let after: Option<rss_mdm_agent_wire::ObjectRef>=query.cursor().as_ref().map(|v|codec.decode(&rss_contract::PageCursor::parse(v).map_err(|_|Error::Malformed)?,&binding).map_err(|_|Error::Conflict)).transpose()?;
         let prepared = &prepared.inputs;
@@ -78,9 +78,9 @@ pub async fn preview(
         } else { None };
         let onboarding = if let PreviewInputs::Onboarding(frozen) = prepared { Some(frozen) } else { None };
         authorization.require_all_devices(proof,Permission::InventoryRead)?;
-        let source=s.source.clone();let tenant=s.tenant;let scope=input.definition.scope;let channel=crate::deployment::sources::candidates::action_channel(&input.definition.action)?;
+        let source=s.source.clone();let tenant=proof.binding().tenant();let scope=input.definition.scope;let channel=crate::deployment::sources::candidates::action_channel(&input.definition.action)?;
         let mut objects=source.assignment_objects_on(c,tenant,scope,channel,after,limit).await?;
-        let source=s.source.clone();let tenant=s.tenant;
+        let source=s.source.clone();let tenant=proof.binding().tenant();
         let result=source.preview_scope_on(c,tenant,scope,channel,None).await?.result;
         if input.scope_result.is_some_and(|v|v!=result){return Err(Error::Conflict.into());}
         let more=objects.len()>limit;objects.truncate(limit);let next=if more{objects.last().map(|o|o.object)}else{None};let mut items=Vec::new();

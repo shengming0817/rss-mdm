@@ -100,9 +100,9 @@ def prepare_member(stack):
         if name=='member':stack.member=principal
         else:stack.sso_member=principal
         grant=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=principal)),grants=[dict(operation='inventory_read',scope=dict(kind='device',id='device-1'))])
-        require(browser.call('PUT','/api/v1/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=grant))[0]==200,'explicit member inventory authorization')
+        require(browser.call('PUT',f'/api/v1/tenants/{TENANT}/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=grant))[0]==200,'explicit member inventory authorization')
     grant=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)),grants=[dict(operation=operation,scope=dict(kind='tenant')) for operation in ['group_read','group_write','release_read']]+[dict(operation='inventory_read',scope=dict(kind='all_devices'))])
-    require(browser.call('PUT','/api/v1/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=grant))[0]==200,'explicit administrator management authorization')
+    require(browser.call('PUT',f'/api/v1/tenants/{TENANT}/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=grant))[0]==200,'explicit administrator management authorization')
     require(browser.call('POST',f'/api/v1/identity/tenants/{TENANT}/session/logout')[0]==204,'bootstrap logout')
 
 def installation_mismatch(stack):

@@ -6,6 +6,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 /// A deletion pin on a previously completed signed content manifest. Does not read bytes.
 pub struct Pinned {
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     store: Store,
     pin: Uuid,
     pub(super) manifest: Manifest,
@@ -14,6 +15,7 @@ pub struct Pinned {
 }
 impl Pinned {
     pub(super) fn new(
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         store: Store,
         pin: Uuid,
         manifest: Manifest,
@@ -21,6 +23,7 @@ impl Pinned {
         admission: Arc<crate::gate::Permit>,
     ) -> Self {
         Self {
+            execution,
             store,
             pin,
             manifest,
@@ -34,16 +37,18 @@ impl Pinned {
 }
 impl Drop for Pinned {
     fn drop(&mut self) {
+        let execution = self.execution;
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             let store = self.store.clone();
             let pin = self.pin;
             runtime.spawn(async move {
-                let _ = store.unpin(pin).await;
+                let _ = store.unpin(execution, pin).await;
             });
         }
     }
 }
 pub struct Verified {
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     store: Store,
     pub artifact: Artifact,
     manifest: Manifest,
@@ -96,11 +101,12 @@ impl Drop for TransferLease {
 }
 impl Drop for Verified {
     fn drop(&mut self) {
+        let execution = self.execution;
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             let s = self.store.clone();
             let id = self.pin;
             runtime.spawn(async move {
-                let _ = s.unpin(id).await;
+                let _ = s.unpin(execution, id).await;
             });
         }
     }
@@ -113,18 +119,25 @@ pub(super) fn blocking<G: Send + 'static, T: Send + 'static>(
     tokio::task::spawn_blocking(move || (work(), guard))
 }
 impl Store {
-    async fn pin_ready_in(&self, a: &Artifact, c: StorageClass) -> Result<Pinned, Error> {
-        let admission = self.admit(crate::gate::Kind::Read).await?;
-        self.pin_admitted(a, c, admission).await
+    async fn pin_ready_in(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        a: &Artifact,
+        c: StorageClass,
+    ) -> Result<Pinned, Error> {
+        let admission = self.admit(execution, crate::gate::Kind::Read).await?;
+        self.pin_admitted(execution, a, c, admission).await
     }
     pub(super) async fn pin_admitted(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         a: &Artifact,
         c: StorageClass,
         admission: Arc<crate::gate::Permit>,
     ) -> Result<Pinned, Error> {
-        let (manifest, pin) = self.pin(a, c, self.deadline()?, 0).await?;
+        let (manifest, pin) = self.pin(execution, a, c, self.deadline()?, 0).await?;
         Ok(Pinned {
+            execution,
             store: self.clone(),
             pin,
             manifest,
@@ -134,29 +147,41 @@ impl Store {
     }
     pub async fn pin_materials(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         artifacts: &[(Artifact, StorageClass)],
     ) -> Result<Vec<Pinned>, Error> {
         if artifacts.len() > 128 {
             return Err(Error::Malformed);
         }
-        let current = self.current().await?;
-        let admission = current.admit(crate::gate::Kind::Read).await?;
+        let current = self.current(execution).await?;
+        let admission = current.admit(execution, crate::gate::Kind::Read).await?;
         let mut files = Vec::new();
         for (a, c) in artifacts {
-            files.push(current.pin_admitted(a, *c, admission.clone()).await?);
+            files.push(
+                current
+                    .pin_admitted(execution, a, *c, admission.clone())
+                    .await?,
+            );
         }
         Ok(files)
     }
-    async fn verify_ready_report_in(&self, a: &Artifact) -> Result<Zeroizing<Vec<u8>>, Error> {
+    async fn verify_ready_report_in(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        a: &Artifact,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
         let permit = Arc::new(
             self.transfers
                 .clone()
                 .try_acquire_owned()
                 .map_err(|_| Error::Conflict)?,
         );
-        let pin = self.pin_ready_in(a, StorageClass::Artifact).await?;
+        let pin = self
+            .pin_ready_in(execution, a, StorageClass::Artifact)
+            .await?;
         let (bytes, digest, _) = self
             .check_pieces(
+                execution,
                 &pin.manifest.pieces,
                 a,
                 StorageClass::Artifact,
@@ -172,6 +197,7 @@ impl Store {
     }
     pub(super) async fn check_pieces<G: Clone + Send + 'static>(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         pieces: &[Piece],
         a: &Artifact,
         c: StorageClass,
@@ -207,7 +233,7 @@ impl Store {
             let physical = self
                 .backend
                 .read(
-                    &self.coordinate(p).await?,
+                    &self.coordinate(execution, p).await?,
                     p.content,
                     0,
                     p.content.length,
@@ -223,7 +249,7 @@ impl Store {
                 let logical = if class.protected() {
                     protected::plaintext(
                         &store.protection,
-                        store.tenant,
+                        execution.tenant(),
                         &physical,
                         &artifact,
                         class,
@@ -265,12 +291,17 @@ impl Store {
         }
         Ok((small, hash.finalize().into(), spool))
     }
-    pub async fn verify(self: &Arc<Self>, a: &Artifact) -> Result<Verified, Error> {
-        self.verify_class(a, StorageClass::Artifact, self.deadline()?)
+    pub async fn verify(
+        self: &Arc<Self>,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        a: &Artifact,
+    ) -> Result<Verified, Error> {
+        self.verify_class(execution, a, StorageClass::Artifact, self.deadline()?)
             .await
     }
     async fn verify_class_in(
         self: &Arc<Self>,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         a: &Artifact,
         c: StorageClass,
         d: Deadline,
@@ -281,15 +312,16 @@ impl Store {
                 .try_acquire_owned()
                 .map_err(|_| Error::Conflict)?,
         );
-        let admission = self.admit(crate::gate::Kind::Read).await?;
+        let admission = self.admit(execution, crate::gate::Kind::Read).await?;
         let mut v = self
-            .verify_at(a, c, d, permit.clone(), admission.clone())
+            .verify_at(execution, a, c, d, permit.clone(), admission.clone())
             .await?;
         v._permit = Some(TransferLease::new(permit, admission, d));
         Ok(v)
     }
     async fn verify_at(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         a: &Artifact,
         c: StorageClass,
         d: Deadline,
@@ -301,8 +333,9 @@ impl Store {
         {
             return Err(Error::Malformed);
         }
-        let (manifest, pin) = self.pin(a, c, d, 0).await?;
+        let (manifest, pin) = self.pin(execution, a, c, d, 0).await?;
         let mut verified = Verified {
+            execution: execution,
             store: self.clone(),
             artifact: a.clone(),
             manifest,
@@ -313,6 +346,7 @@ impl Store {
         };
         let (plaintext, digest, _) = self
             .check_pieces(
+                execution,
                 &verified.manifest.pieces,
                 a,
                 c,
@@ -380,7 +414,7 @@ impl Verified {
                             v.store
                                 .backend
                                 .read(
-                                    &v.store.coordinate(p).await?,
+                                    &v.store.coordinate(v.execution, p).await?,
                                     p.content,
                                     at - p.offset,
                                     (end - p.offset).min(p.length),
@@ -414,17 +448,26 @@ impl Verified {
 }
 
 impl Store {
-    pub async fn pin_ready(&self, a: &Artifact, c: StorageClass) -> Result<Pinned, Error> {
-        self.current().await?.pin_ready_in(a, c).await
+    pub async fn pin_ready(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        a: &Artifact,
+        c: StorageClass,
+    ) -> Result<Pinned, Error> {
+        self.current(execution)
+            .await?
+            .pin_ready_in(execution, a, c)
+            .await
     }
     pub async fn verify_class(
         self: &Arc<Self>,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         a: &Artifact,
         c: StorageClass,
         d: Deadline,
     ) -> Result<Verified, Error> {
-        Arc::new(self.current().await?)
-            .verify_class_in(a, c, d)
+        Arc::new(self.current(execution).await?)
+            .verify_class_in(execution, a, c, d)
             .await
     }
 }
@@ -432,9 +475,13 @@ impl Store {
 impl Store {
     pub(super) async fn verify_ready_report(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         a: &Artifact,
     ) -> Result<Zeroizing<Vec<u8>>, Error> {
-        self.current().await?.verify_ready_report_in(a).await
+        self.current(execution)
+            .await?
+            .verify_ready_report_in(execution, a)
+            .await
     }
 }
 

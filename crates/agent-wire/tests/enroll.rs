@@ -20,7 +20,7 @@ fn enrollment_has_an_independent_complete_artifact() {
 }
 #[test]
 fn bootstrap_is_closed_and_cannot_claim_a_device_or_runtime_credential() {
-    let value = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","platform":"macos","csr":"AA=="});
+    let value = json!({"tenantId":Uuid::new_v4(),"wireVersion":1,"operationId":Uuid::new_v4(),"secret":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","platform":"macos","csr":"AA=="});
     let request: wire::GrantRequest = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(format!("{:?}", request.secret), "[REDACTED]");
     let schema: Value = serde_json::from_str(include_str!(
@@ -40,6 +40,7 @@ fn bootstrap_is_closed_and_cannot_claim_a_device_or_runtime_credential() {
         ("csr", json!(null)),
         ("wireVersion", json!(6)),
         ("operationId", json!(Uuid::nil())),
+        ("tenantId", json!(Uuid::nil())),
     ] {
         let mut invalid = value.clone();
         invalid[key] = v;
@@ -80,6 +81,7 @@ fn renewal_lookup_requires_only_the_original_operation_and_secret() {
     for (field, invalid) in [
         ("wireVersion", json!(2)),
         ("operationId", json!(Uuid::nil())),
+        ("tenantId", json!(Uuid::nil())),
         ("secret", json!("invalid")),
         // 32-byte base64url secrets have two zero trailing bits.
         ("secret", json!(format!("{}B", "A".repeat(42)))),

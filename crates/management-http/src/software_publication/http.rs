@@ -67,7 +67,7 @@ async fn read(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<String>,
+    Path((_tenant, id)): Path<(uuid::Uuid, String)>,
 ) -> Result<Json<wire::Publication>, Error> {
     service::read(&app.publications, &app.access, &auth.proof, &audit, id)
         .await
@@ -75,6 +75,8 @@ async fn read(
         .map_err(Into::into)
 }
 async fn create(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -96,7 +98,7 @@ async fn change(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<String>,
+    Path((_tenant, id)): Path<(uuid::Uuid, String)>,
     body: Result<Json<Operation<Change>>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<wire::Publication>, Error> {
     let Json(request) = body.map_err(Error::from)?;
@@ -113,6 +115,8 @@ async fn change(
     .map_err(Into::into)
 }
 async fn list(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -141,6 +145,8 @@ async fn list(
     .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn targets(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     query: rss_mdm_http_contract::query::OwnedQuery<

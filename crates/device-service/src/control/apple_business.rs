@@ -73,7 +73,7 @@ impl Service {
                 Box::pin(async move { Ok(authority.dispatch_ready(c).await) })
             })
             .await??;
-        admission(self, op, accepted, dispatch)
+        admission(op, accepted, dispatch)
     }
     pub async fn apple_candidates_in(
         &self,
@@ -117,7 +117,7 @@ impl Service {
             Settlement::Received => dc::DeviceEvent::Received,
             Settlement::Reported => dc::DeviceEvent::Reported(op.request.digest(
                 &service.transactions.protection,
-                service.transactions.tenant,
+                tx.tenant_id(),
                 &op.device,
             )?),
             Settlement::Rejected => dc::DeviceEvent::Rejected,
@@ -194,12 +194,7 @@ impl Service {
         Ok(())
     }
 }
-fn admission(
-    s: &Service,
-    op: storage::Operation,
-    eligible: bool,
-    dispatch: bool,
-) -> Result<AppleAdmission> {
+fn admission(op: storage::Operation, eligible: bool, dispatch: bool) -> Result<AppleAdmission> {
     let Task::Macos { request } = &op.request.task else {
         return Err(Error::Malformed.into());
     };
@@ -207,7 +202,7 @@ fn admission(
         eligible,
         dispatch,
         target: apple_facts::AppleRegistration {
-            tenant: s.transactions.tenant.to_string(),
+            tenant: op.scope.tenant().to_string(),
             device: op.device,
         },
         command: apple_facts::AppleCommand {

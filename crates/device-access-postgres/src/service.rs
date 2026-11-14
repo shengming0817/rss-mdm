@@ -3,14 +3,12 @@ use crate::{Error, Pending};
 use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit, budget::AuditBudget};
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_mdm_install_support::StorageProfile;
-use rss_request_context::TenantId;
 use sqlx::PgConnection;
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 pub struct Assembly {
     pub report_limits: crate::reports::Limits,
     pub cursor: rss_mdm_query::cursor::CursorCodec,
-    pub tenant: TenantId,
     pub instance: Uuid,
     pub store: Arc<rss_mdm_registration_service::Store>,
     pub audit: Arc<AuditStore>,
@@ -20,7 +18,6 @@ pub struct Assembly {
 pub struct Service {
     pub(crate) report_limits: crate::reports::Limits,
     pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
-    pub(crate) tenant: TenantId,
     instance: Uuid,
     pub(crate) store: Arc<rss_mdm_registration_service::Store>,
     pub(crate) audit: Arc<AuditStore>,
@@ -40,7 +37,6 @@ impl Service {
         Ok(Self {
             report_limits: a.report_limits,
             cursor: a.cursor,
-            tenant: a.tenant,
             instance: a.instance,
             store: a.store,
             access_audit: a.access_audit,
@@ -55,10 +51,7 @@ impl Service {
         Ok(self.instance)
     }
     pub(crate) fn proof(&self, p: &AuthorizedPrincipal, a: &RequestAudit) -> Result<(), Error> {
-        if p.profile() != StorageProfile::Da
-            || p.tenant_id() != self.tenant.to_string()
-            || a.tenant() != p.tenant_id()
-        {
+        if p.profile() != StorageProfile::Da || a.tenant() != p.tenant_id() {
             return Err(Error::Forbidden);
         }
         p.check_live()?;
@@ -87,14 +80,14 @@ impl Service {
         context: C,
         f: impl for<'a> FnOnce(&'a mut C, &'a mut PgConnection) -> Pending<'a, R> + Send,
     ) -> Result<R, Error> {
-        if actor.profile() != StorageProfile::Da || actor.tenant_id() != self.tenant.to_string() {
+        if actor.profile() != StorageProfile::Da {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(6));
         let attempt = self
             .access_audit
             .write(
-                self.tenant,
+                actor.binding(),
                 &budget.source_control(),
                 (actor, context, Some(f)),
                 |ctx, tx| {
@@ -132,19 +125,12 @@ impl Service {
         let profile = self.profile();
         let installation = self.service_id()?;
 
-        if a.tenant() != self.tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
         let budget = AuditBudget::new(Duration::from_secs(6));
         let out = source
             .write(
-                self.tenant,
+                a.binding()?,
                 &budget.source_control(),
-                (
-                    source,
-                    a,
-                    (self.tenant.to_string(), context, Some(f), Some(before)),
-                ),
+                (source, a, (a.tenant(), context, Some(f), Some(before))),
                 |ctx, tx| {
                     Box::pin(async move {
                         let (store, a, context) = ctx;

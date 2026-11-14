@@ -3,11 +3,12 @@ use crate::*;
 impl Scopes {
     pub async fn queue_health(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         budget: std::time::Duration,
     ) -> std::result::Result<[u64; 5], Error> {
         self.runtime
             .local_tx_with_context(
-                self.audit_store.binding(),
+                execution,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),
                 &self.store,
                 |store, tx| {
@@ -134,12 +135,13 @@ impl crate::Scopes {
     /// Read the retained owner outcome without discovering or waking business work.
     pub async fn input_failed(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         budget: std::time::Duration,
     ) -> std::result::Result<bool, crate::Error> {
         let failed = self
             .runtime
             .local_tx_with_context(
-                self.audit_store.binding(),
+                execution,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),
                 self,
                 |owner, tx| {

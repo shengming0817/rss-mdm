@@ -1,12 +1,12 @@
 use crate::transaction::*;
 use crate::*;
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::PgRuntime;
 use std::sync::Arc;
 
 pub struct Scopes {
+    pub(crate) storage: rss_transactional_messaging::fence::StorageIdentity,
     pub runtime: Arc<PgRuntime>,
-    pub tenant: TenantId,
+
     pub(crate) read_pool: sqlx::PgPool,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
@@ -36,35 +36,36 @@ impl Scopes {
     pub async fn new(
         profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
+        probe: rss_transactional_messaging::fence::ExecutionBinding,
         clock: Arc<dyn clock::Clock>,
         dependencies: Dependencies,
     ) -> std::result::Result<Self, Error> {
-        Self::bind(profile, runtime, tenant, clock, dependencies, false).await
+        Self::bind(profile, runtime, probe, clock, dependencies, false).await
     }
     /// Bind a configuration participant to the caller's existing Policy runtime.
     pub async fn bind_policy(
         profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
+        probe: rss_transactional_messaging::fence::ExecutionBinding,
         clock: Arc<dyn clock::Clock>,
         dependencies: Dependencies,
     ) -> std::result::Result<Self, Error> {
-        Self::bind(profile, runtime, tenant, clock, dependencies, true).await
+        Self::bind(profile, runtime, probe, clock, dependencies, true).await
     }
     async fn bind(
         profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
+        probe: rss_transactional_messaging::fence::ExecutionBinding,
         clock: Arc<dyn clock::Clock>,
         dependencies: Dependencies,
         editing: bool,
     ) -> std::result::Result<Self, Error> {
-        let store = rss_mdm_scope_postgres::ScopeBinding::new(profile, runtime.clone(), tenant);
+        let store = rss_mdm_scope_postgres::ScopeBinding::new(profile, runtime.clone());
         let s = Self {
-            projection: crate::projection::ScopeProjection::new(profile, runtime.clone(), tenant),
+            storage: probe.storage(),
+            projection: crate::projection::ScopeProjection::new(profile, runtime.clone()),
             runtime,
-            tenant,
+
             clock,
             store,
             read_pool: dependencies.read_pool,
@@ -78,25 +79,20 @@ impl Scopes {
             runner_health: Default::default(),
         };
         s.runtime
-            .local_tx_with_context(
-                s.audit_store.binding(),
-                deadline(),
-                (&s, editing),
-                |(s, editing), tx| {
-                    Box::pin(async move {
-                        s.audit_store.bind_in(tx).await.map_err(PgError::from)?;
-                        (if *editing {
-                            s.store.admit_configuration_in(tx).await
-                        } else {
-                            s.store.admit_in(tx).await
-                        })
-                        .map_err(|e| match e {
-                            rss_mdm_scope_postgres::BindingError::Storage(e) => e,
-                            _ => sqlx::Error::Protocol("Scope admission".into()).into(),
-                        })
+            .local_tx_with_context(probe, deadline(), (&s, editing), |(s, editing), tx| {
+                Box::pin(async move {
+                    s.audit_store.bind_in(tx).await.map_err(PgError::from)?;
+                    (if *editing {
+                        s.store.admit_configuration_in(tx).await
+                    } else {
+                        s.store.admit_in(tx).await
                     })
-                },
-            )
+                    .map_err(|e| match e {
+                        rss_mdm_scope_postgres::BindingError::Storage(e) => e,
+                        _ => sqlx::Error::Protocol("Scope admission".into()).into(),
+                    })
+                })
+            })
             .await
             .fold(
                 Ok,

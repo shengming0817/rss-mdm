@@ -42,7 +42,11 @@ async fn connect_origin(material: &Material, origin: &str) -> Result<TlsStream<T
         )
         .await?)
 }
-pub async fn bounded_connections(material: &Material, server: &Server) -> Result<()> {
+pub async fn bounded_connections(
+    material: &Material,
+    server: &Server,
+    tenant: rss_request_context::TenantId,
+) -> Result<()> {
     let mut peers = Vec::new();
     // The host's four slots include established HTTP connections, not just TLS preparation.
     for _ in 0..4 {
@@ -70,7 +74,7 @@ pub async fn bounded_connections(material: &Material, server: &Server) -> Result
         Duration::from_secs(2),
         material
             .client(None)?
-            .get(format!("{}/pki/trust", server.origin))
+            .get(format!("{}/pki/trust?tenantId={tenant}", server.origin))
             .send(),
     )
     .await??;

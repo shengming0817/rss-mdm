@@ -97,6 +97,7 @@ CREATE TABLE mdm_software_deployment.action_receipts (
 ALTER TABLE ONLY mdm_software_deployment.action_receipts FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_software_deployment.action_runs (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     origin jsonb NOT NULL CHECK (origin IN ('"system"', '"policy"', '"human"', '"ai"'))
   , source_objects jsonb NOT NULL
   , tenant_id uuid NOT NULL
@@ -139,6 +140,7 @@ CREATE TABLE mdm_software_deployment.action_runs (
 ALTER TABLE ONLY mdm_software_deployment.action_runs FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_software_deployment.device_recovery (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL,device uuid NOT NULL,authority_epoch bigint NOT NULL CHECK(authority_epoch>0),recovery_after text,
  PRIMARY KEY(tenant_id,device)
 );
@@ -149,6 +151,7 @@ GRANT SELECT,INSERT ON mdm_software_deployment.device_recovery TO mdm_command_ru
 GRANT UPDATE(authority_epoch,recovery_after) ON mdm_software_deployment.device_recovery TO mdm_command_runtime;
 
 CREATE TABLE mdm_software_deployment.operations (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
   , device uuid NOT NULL
@@ -189,6 +192,7 @@ CREATE TABLE mdm_software_deployment.operations (
 ALTER TABLE ONLY mdm_software_deployment.operations FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_software_deployment.policy_recovery (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     input_revision bigint NOT NULL DEFAULT 1 CHECK(input_revision>0),
     input_consumed bigint NOT NULL DEFAULT 0 CHECK(input_consumed>=0),
     input_window bigint NOT NULL DEFAULT 0 CHECK(input_window>=input_consumed),
@@ -398,6 +402,7 @@ GRANT EXECUTE ON FUNCTION mdm_software_deployment.recovery_key(uuid) TO mdm_comm
 CREATE INDEX command_device_recovery ON mdm_software_deployment.device_recovery(tenant_id,mdm_software_deployment.recovery_key(device));
 
 CREATE TABLE mdm_software_deployment.agent_install_inputs(
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL,device uuid NOT NULL,input_revision bigint NOT NULL DEFAULT 1 CHECK(input_revision>0),observed_revision bigint NOT NULL DEFAULT 0 CHECK(observed_revision>=0),
  PRIMARY KEY(tenant_id,device),FOREIGN KEY(tenant_id,device) REFERENCES mdm_access.devices(tenant_id,id)
 );

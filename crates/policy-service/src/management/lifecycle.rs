@@ -26,7 +26,7 @@ impl crate::application::Application {
             return Ok(None);
         }
         let published = checked(
-            rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone(), self.tenant)
+            rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone())
                 .version_in(tx, policy.version)
                 .await?,
         )?
@@ -83,6 +83,7 @@ impl crate::application::Application {
     }
     pub(crate) async fn advance_lifecycle_assignment_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         prepared: PreparedLifecycle,
@@ -158,6 +159,7 @@ impl crate::application::Application {
                     deadline: end.min(now.saturating_add(i64::from(run_lifetime_seconds))),
                 };
                 crate::worker::jobs::enqueue_job_in(
+                    binding,
                     profile,
                     &self.reconcile_messaging,
                     tx,
@@ -171,7 +173,8 @@ impl crate::application::Application {
             rss_mdm_policy_postgres::work::cursor_in(profile, tx, task, next).await?;
             Ok(())
         } else {
-            crate::worker::jobs::finish_job_in(profile, tx, &self.audit_store, task, None).await
+            crate::worker::jobs::finish_job_in(binding, profile, tx, &self.audit_store, task, None)
+                .await
         }
     }
 }
@@ -179,6 +182,7 @@ impl crate::application::Application {
 impl crate::application::Application {
     pub(crate) async fn advance_lifecycle_work_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         input: &crate::worker::Work,
@@ -211,11 +215,7 @@ impl crate::application::Application {
         })
         .await?;
         let current = storage::read_in(
-            &rss_mdm_policy_postgres::PolicyReader::bind(
-                profile,
-                self.runtime.clone(),
-                self.tenant,
-            ),
+            &rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone()),
             tx,
             *policy,
         )
@@ -227,6 +227,7 @@ impl crate::application::Application {
             || now >= *deadline
         {
             return crate::worker::jobs::finish_job_in(
+                binding,
                 profile,
                 tx,
                 &self.audit_store,
@@ -236,7 +237,7 @@ impl crate::application::Application {
             .await;
         }
         let published = checked(
-            rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone(), self.tenant)
+            rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone())
                 .version_in(tx, *version)
                 .await?,
         )?
@@ -260,6 +261,7 @@ impl crate::application::Application {
                         tenant,
                         reader.as_ref(),
                         &Acceptance {
+                            execution: binding,
                             origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
                             policy: policy_id,
                             version,
@@ -275,12 +277,14 @@ impl crate::application::Application {
             })
             .await?
             .map_err(Error::from)?;
-        self.changes.retirement_accepted_in(tx, accepted.0).await?;
+        self.changes
+            .retirement_accepted_in(binding, tx, accepted.0)
+            .await?;
         if !accepted.1 {
             let audit = RequestAudit::new(
                 rss_mdm_audit_integration::Origin::Background,
                 self.profile(),
-                tenant.to_string(),
+                binding,
                 "device_retirement_accepted",
                 rss_mdm_audit_integration::AuditIntent::Management,
             );
@@ -309,7 +313,8 @@ impl crate::application::Application {
                 .map_err(Error::from)?;
             audit.finalize(None);
         }
-        crate::worker::jobs::finish_job_in(profile, tx, &self.audit_store, task, None).await
+        crate::worker::jobs::finish_job_in(binding, profile, tx, &self.audit_store, task, None)
+            .await
     }
 }
 
@@ -317,6 +322,7 @@ impl crate::application::Application {
     /// One claimed calendar page; occurrence identities and the page cursor commit together.
     pub(crate) async fn advance_lifecycle_schedules_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
     ) -> Result<()> {
         let profile = self.profile();
@@ -352,7 +358,7 @@ impl crate::application::Application {
                 let digest = Sha256::digest(
                     serde_json::to_vec(&(
                         "unmanage-scheduled",
-                        self.tenant.to_string(),
+                        tx.tenant_id().to_string(),
                         version,
                         occurrence,
                     ))
@@ -366,6 +372,7 @@ impl crate::application::Application {
                     rss_mdm_policy_postgres::work::exists_in(profile, tx, id, false).await?;
                 if !exists {
                     crate::worker::jobs::enqueue_job_in(
+                        binding,
                         profile,
                         &self.reconcile_messaging,
                         tx,

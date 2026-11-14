@@ -7,6 +7,7 @@ pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 pub trait ResourceWriter: Send + Sync {
     fn partition(
         &self,
+        tenant: rss_request_context::TenantId,
         resource: &str,
     ) -> Result<rss_transactional_messaging::message::PartitionIdentity>;
     fn import_in<'a>(

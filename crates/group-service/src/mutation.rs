@@ -15,7 +15,7 @@ impl Groups {
             if rule.view().dictionary_version != rss_mdm_inventory::DICTIONARY {
                 return Err(Error::Conflict.into());
             }
-            Some(super::condition_in(tx, self.tenant, id, version, &rule).await?)
+            Some(super::condition_in(tx, tx.tenant_id(), id, version, &rule).await?)
         } else {
             None
         };
@@ -25,6 +25,7 @@ impl Groups {
     }
     pub async fn group_change(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         op: &Operation<GroupChange>,
@@ -51,6 +52,7 @@ impl Groups {
             self.definition_references_in(tx, id, op).await?;
             return self
                 .define_in(
+                    binding,
                     tx,
                     DefinitionEdit {
                         authority: authority.to_vec(),
@@ -61,12 +63,13 @@ impl Groups {
                 )
                 .await;
         }
-        self.publish_change_in(tx, id, op, at, authority, candidate)
+        self.publish_change_in(binding, tx, id, op, at, authority, candidate)
             .await
     }
     /// Publish an already validated definition in the graph-fenced owner transaction.
     pub async fn publish_change_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         op: &Operation<GroupChange>,
@@ -93,7 +96,7 @@ impl Groups {
                 i64::try_from(op.expected_revision).map_err(|_| Error::Malformed)?,
             ))
         };
-        let catalog = rss_mdm_inventory_service::assets::catalog_in(tx, self.tenant).await?;
+        let catalog = rss_mdm_inventory_service::assets::catalog_in(tx, tx.tenant_id()).await?;
         match &op.input {
             GroupChange::Create {
                 criteria: Some(c), ..
@@ -102,7 +105,7 @@ impl Groups {
                 c.validate()?;
                 assets::filter::require_visible_rule(
                     &catalog,
-                    &rule(self.tenant, op.operation_id, &c.criteria, &catalog)?,
+                    &rule(tx.tenant_id(), op.operation_id, &c.criteria, &catalog)?,
                 )?
             }
             _ => (),
@@ -137,7 +140,7 @@ impl Groups {
                     definition: match criteria {
                         None => pg::Definition::Static,
                         Some(c) => pg::Definition::Dynamic(Box::new(rule(
-                            self.tenant,
+                            tx.tenant_id(),
                             op.operation_id,
                             &c.criteria,
                             &catalog,
@@ -153,7 +156,12 @@ impl Groups {
             GroupChange::Rule { criteria } => pg::Command::SetRule {
                 group,
                 expected: expected()?,
-                rule: rule(self.tenant, op.operation_id, &criteria.criteria, &catalog)?,
+                rule: rule(
+                    tx.tenant_id(),
+                    op.operation_id,
+                    &criteria.criteria,
+                    &catalog,
+                )?,
             },
             GroupChange::Members { add, remove } => {
                 if add.len() + remove.len() > 1024 {
@@ -177,6 +185,7 @@ impl Groups {
                 }
                 return self
                     .start_group_job_in(
+                        binding,
                         tx,
                         GroupStart {
                             asset_cut: candidate.clone(),
@@ -210,6 +219,7 @@ impl Groups {
             GroupChange::Recompute {} => {
                 return self
                     .start_group_job_in(
+                        binding,
                         tx,
                         GroupStart {
                             asset_cut: candidate.clone(),
@@ -257,6 +267,7 @@ impl Groups {
             )?;
             let accepted = self
                 .start_group_job_in(
+                    binding,
                     tx,
                     GroupStart {
                         asset_cut: candidate.clone(),
@@ -286,7 +297,7 @@ impl Groups {
                     condition.selector.clone(),
                     condition.quantifier,
                 )))?;
-                let tenant = self.tenant.to_string();
+                let tenant = tx.tenant_id().to_string();
                 tx.with_connection(move |c| Box::pin(async move {
                     sqlx::query("INSERT INTO mdm_assets.group_selections(tenant_id,group_id,rule_version,selection) VALUES($1::uuid,$2,$3,$4::jsonb) ON CONFLICT DO NOTHING")
                         .bind(tenant).bind(id).bind(version).bind(selection).execute(c).await?; Ok(())
@@ -301,6 +312,7 @@ impl Groups {
                 let task = Uuid::new_v4();
                 let accepted = self
                     .start_group_job_in(
+                        binding,
                         tx,
                         GroupStart {
                             asset_cut: candidate.clone(),
@@ -329,17 +341,17 @@ impl Groups {
         criteria: Option<&criteria::Criteria>,
     ) -> Result<()> {
         let mut fields = std::collections::BTreeSet::new();
-        let catalog = assets::catalog_in(tx, self.tenant).await?;
+        let catalog = assets::catalog_in(tx, tx.tenant_id()).await?;
         if let Some(criteria) = criteria {
             fields.extend(
-                rule(self.tenant, id, criteria, &catalog)?
+                rule(tx.tenant_id(), id, criteria, &catalog)?
                     .view()
                     .fields
                     .keys()
                     .cloned(),
             );
         }
-        let catalog = assets::catalog_in(tx, self.tenant).await?;
+        let catalog = assets::catalog_in(tx, tx.tenant_id()).await?;
         let fields = fields
             .into_iter()
             .map(|name| {
@@ -351,7 +363,7 @@ impl Groups {
                     .to_owned())
             })
             .collect::<Result<std::collections::BTreeSet<_>>>()?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let fields: Vec<_> = fields.into_iter().collect();
         tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("DELETE FROM mdm_assets.group_fields WHERE tenant_id=$1::uuid AND group_id=$2::uuid").bind(&tenant).bind(id.to_string()).execute(&mut *c).await?;

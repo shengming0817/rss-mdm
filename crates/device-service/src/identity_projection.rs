@@ -9,15 +9,6 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 const PAGE: usize = 64;
 
-async fn initialize(c: &mut PgConnection, tenant: TenantId) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO mdm_devices.checkpoints(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
-    )
-    .bind(tenant.to_string())
-    .execute(c)
-    .await?;
-    Ok(())
-}
 pub(crate) async fn pending(c: &mut PgConnection, tenant: TenantId) -> Result<bool> {
     Ok(sqlx::query_scalar("WITH input_cut AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context((SELECT from_cut FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid))) SELECT NOT EXISTS(SELECT FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid) OR EXISTS(SELECT FROM mdm_devices.checkpoints p WHERE p.tenant_id=$1::uuid AND (p.rebuilding OR EXISTS(SELECT FROM mdm.asset_changes a WHERE a.tenant_id=p.tenant_id AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM input_cut),false))))").bind(tenant.to_string()).fetch_one(c).await?)
 }
@@ -25,21 +16,27 @@ enum AssociationKey<'a> {
     Device(rss_mdm_agent_wire::DeviceId),
     Hardware(&'a str, &'a str),
 }
-async fn request(c: &mut PgConnection, tenant: TenantId, key: AssociationKey<'_>) -> Result<Uuid> {
+async fn request(
+    c: &mut PgConnection,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    key: AssociationKey<'_>,
+) -> Result<Uuid> {
+    let tenant = execution.tenant();
     let (kind, value, device) = match key {
         AssociationKey::Device(id) => ("device", None, Some(id.into_uuid())),
         AssociationKey::Hardware(kind, value) => (kind, Some(value), None),
     };
-    Ok(sqlx::query_scalar("INSERT INTO mdm_devices.association_work(tenant_id,id,kind,value,device) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT(tenant_id,kind,value,device) DO UPDATE SET requested=association_work.requested+1 RETURNING id")
-        .bind(tenant.to_string()).bind(Uuid::new_v4()).bind(kind).bind(value).bind(device).fetch_one(c).await?)
+    Ok(sqlx::query_scalar("INSERT INTO mdm_devices.association_work(tenant_id,id,kind,value,device,expected_epoch) VALUES($1::uuid,$2,$3,$4,$5,$6) ON CONFLICT(tenant_id,kind,value,device) DO UPDATE SET requested=association_work.requested+1 WHERE association_work.expected_epoch=EXCLUDED.expected_epoch RETURNING id")
+        .bind(tenant.to_string()).bind(Uuid::new_v4()).bind(kind).bind(value).bind(device).bind(execution.epoch().get()).fetch_one(c).await?)
 }
 /// Every input transaction records both old and new keys before replacing the projection.
 async fn project(
     c: &mut PgConnection,
-    tenant: TenantId,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     cut: &AssetCut,
     ids: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<Vec<Uuid>> {
+    let tenant = execution.tenant();
     let t = tenant.to_string();
     let prior:Vec<(Uuid,String,serde_json::Value,serde_json::Value)>=sqlx::query_as("SELECT device,channel,input,hardware FROM mdm_devices.endpoint_identities WHERE tenant_id=$1::uuid AND device=ANY($2)").bind(&t).bind(ids.iter().map(|id|id.into_uuid()).collect::<Vec<_>>()).fetch_all(&mut *c).await?;
     let endpoints = identity::endpoint_page(c, tenant, cut, ids).await?;
@@ -97,7 +94,7 @@ async fn project(
     for id in ids {
         publish_endpoint(c, tenant, id, true).await?;
         if changed.contains(id) {
-            work.push(request(c, tenant, AssociationKey::Device(*id)).await?);
+            work.push(request(c, execution, AssociationKey::Device(*id)).await?);
         }
     }
     // Input projection can invalidate evidence, but only the association owner
@@ -119,7 +116,7 @@ async fn project(
         publish(c, tenant, &object, Some(input), true).await?;
     }
     for (kind, value) in keys {
-        work.push(request(c, tenant, AssociationKey::Hardware(&kind, &value)).await?);
+        work.push(request(c, execution, AssociationKey::Hardware(&kind, &value)).await?);
     }
     Ok(work)
 }
@@ -136,10 +133,10 @@ struct InputWindow {
 /// Only Device advances this checkpoint. Source transactions append canonical facts.
 pub(crate) async fn advance(
     c: &mut PgConnection,
-    tenant: TenantId,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     candidate: &AssetCut,
 ) -> Result<Vec<Uuid>> {
-    initialize(c, tenant).await?;
+    let tenant = execution.tenant();
     let t = tenant.to_string();
     let InputWindow { from_cut: from, to_cut: to, event_after: after, page_through: through, cursor, rebuilding, rebuild_after } =
         sqlx::query_as::<_, InputWindow>("SELECT from_cut,to_cut,event_after,page_through,cursor,rebuilding,rebuild_after FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid FOR UPDATE")
@@ -179,7 +176,7 @@ pub(crate) async fn advance(
         .map_err(|_| Error::Storage)?;
     let more = ids.len() > PAGE;
     let selected = &ids[..ids.len().min(PAGE)];
-    let work = project(c, tenant, &cut, selected).await?;
+    let work = project(c, execution, &cut, selected).await?;
     if rebuild && !more {
         // A full rebuild covers the entire frozen cut, including all remaining event pages.
         finish_window(c, tenant, to).await?;
@@ -201,7 +198,7 @@ async fn finish_window(
 /// Object publication order is local to Device; it does not order asset commits.
 pub(crate) async fn seal(c: &mut PgConnection, tenant: TenantId) -> Result<()> {
     let id = Uuid::new_v4();
-    sqlx::query("WITH sealed AS (UPDATE mdm_devices.checkpoints SET object_revision=object_revision+1,current_cut=$2 WHERE tenant_id=$1::uuid AND NOT rebuilding AND to_cut IS NULL AND from_cut IS NOT NULL RETURNING tenant_id,from_cut,object_revision) INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through) SELECT tenant_id,$2,from_cut,object_revision FROM sealed")
+    sqlx::query("WITH sealed AS (UPDATE mdm_devices.checkpoints SET object_revision=object_revision+1,current_cut=$2 WHERE tenant_id=$1::uuid AND NOT rebuilding AND to_cut IS NULL AND from_cut IS NOT NULL RETURNING tenant_id,from_cut,object_revision) INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through,expected_epoch) SELECT tenant_id,$2,from_cut,object_revision,current_setting('rss.execution_epoch')::bigint FROM sealed")
         .bind(tenant.to_string()).bind(id).execute(c).await?;
     Ok(())
 }
@@ -212,7 +209,6 @@ async fn publish(
     input: Option<DeviceObject>,
     force: bool,
 ) -> Result<()> {
-    initialize(c, tenant).await?;
     let t = tenant.to_string();
     let old:Option<(Option<serde_json::Value>,Vec<Uuid>)>=sqlx::query_as("SELECT v.input,v.devices FROM mdm_devices.object_heads h JOIN mdm_devices.object_versions v USING(tenant_id,object_kind,object_id,revision) WHERE h.tenant_id=$1::uuid AND (h.object_kind,h.object_id)=($2,$3)").bind(&t).bind(key.kind()).bind(key.uuid()).fetch_optional(&mut *c).await?;
     let devices = input
@@ -300,9 +296,10 @@ struct AssociationWork {
 }
 pub(crate) async fn key_page(
     c: &mut PgConnection,
-    tenant: TenantId,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     id: Uuid,
 ) -> Result<Option<(Option<(rss_mdm_agent_wire::DeviceId, i64)>, Vec<Uuid>)>> {
+    let tenant = execution.tenant();
     let t = tenant.to_string();
     let row:Option<AssociationWork>=sqlx::query_as("SELECT kind,value,device,requested,completed,watermark,cursor FROM mdm_devices.association_work WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE SKIP LOCKED")
         .bind(&t).bind(id).fetch_optional(&mut *c).await?;
@@ -338,7 +335,7 @@ pub(crate) async fn key_page(
         work.push(
             request(
                 c,
-                tenant,
+                execution,
                 AssociationKey::Device(
                     rss_mdm_agent_wire::DeviceId::try_from(*device).map_err(|_| Error::Storage)?,
                 ),

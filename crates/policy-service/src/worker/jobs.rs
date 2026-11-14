@@ -45,13 +45,29 @@ pub async fn read_in(
     ))
 }
 pub async fn enqueue_job_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
     input: &Work,
 ) -> Result<Value> {
-    rss_mdm_policy_postgres::work::enqueue_in(profile, tx, id, input).await?;
+    rss_mdm_policy_postgres::work::enqueue_in(binding, profile, tx, id, input).await?;
+    rss_mdm_policy_postgres::schedules::accept_scan_in(profile, binding, tx).await?;
+    let scan = rss_reconcile::Target::new(
+        rss_reconcile::Scope::new(tx.tenant_id(), domain(profile)).expect("constant domain"),
+        "schedules",
+    )
+    .expect("constant target");
+    reconcile
+        .wake_in(
+            tx,
+            &scan,
+            &rss_reconcile::ResourceSet::empty(tx.tenant_id()),
+            (),
+            |_, _| Box::pin(async { Ok(()) }),
+        )
+        .await?;
     let event = matches!(input, Work::PolicyEvent { .. });
     let tenant = tx.tenant_id();
     let target = if event {
@@ -91,6 +107,7 @@ pub fn accepted(id: Uuid, input: &Work) -> Value {
     serde_json::json!({"task":id,"kind":input.kind(),"target":input.target(),"statusUrl":status_url})
 }
 pub async fn finish_job_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     store: &rss_mdm_audit_integration::AuditStore,
@@ -119,7 +136,7 @@ pub async fn finish_job_in(
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             profile,
-            tx.tenant_id().to_string(),
+            binding,
             action,
             rss_mdm_audit_integration::AuditIntent::Management,
         );

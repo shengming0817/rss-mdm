@@ -77,12 +77,36 @@
       "read_only": false,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "recovery_recipient_selection",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [
     {
       "name": "rss_da.credential_save_retired_run",
       "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "rss_da.credential_runs_work_scopes",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "rss_da.credential_runs_work_epoch",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "rss_da.credential_runs_work_relay_scopes",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "rss_da.recovery_versions_maintenance_scopes",
+      "search_path": "search_path=pg_catalog, pg_temp"
     }
   ],
   "external_relations": [],

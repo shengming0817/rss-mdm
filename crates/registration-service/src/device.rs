@@ -14,6 +14,7 @@ use crate::{Error, Store, device::coordinates::Coordinates};
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_observation::{Epoch, Id, Registration, Scope};
 use rss_request_context::TenantId;
+use rss_transactional_messaging::fence::ExecutionBinding;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -54,6 +55,7 @@ impl Purpose {
 /// let proof = rss_mdm_registration_service::VerifiedChannelCredential::new("fingerprint");
 /// ```
 pub struct VerifiedChannelCredential {
+    binding: ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
     channel: Channel,
@@ -65,7 +67,6 @@ pub struct VerifiedChannelCredential {
 #[derive(Clone)]
 pub struct ChannelMount {
     profile: rss_mdm_install_support::StorageProfile,
-    tenant: TenantId,
     source: ReportSource,
     purpose: Purpose,
 }
@@ -75,27 +76,27 @@ impl ChannelMount {
     }
     pub fn new(
         profile: rss_mdm_install_support::StorageProfile,
-        tenant: TenantId,
         source: ReportSource,
         purpose: Purpose,
     ) -> Self {
         Self {
             profile,
-            tenant,
             source,
             purpose,
         }
     }
-    pub fn tenant(&self) -> TenantId {
-        self.tenant
-    }
-    pub fn credential(&self, locator: [u8; 32]) -> Result<VerifiedChannelCredential, Error> {
+    pub fn credential(
+        &self,
+        binding: ExecutionBinding,
+        locator: [u8; 32],
+    ) -> Result<VerifiedChannelCredential, Error> {
         if self.source.channel() != Channel::Mdm {
             return Err(Error::Forbidden);
         }
         Ok(VerifiedChannelCredential {
             profile: self.profile,
-            tenant: self.tenant,
+            tenant: binding.tenant(),
+            binding,
             channel: self.source.channel(),
             source: self.source,
             locator,
@@ -179,6 +180,7 @@ pub async fn consumers_for_device_in(
 /// ```
 #[derive(Clone)]
 pub struct DevicePrincipal {
+    binding: ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
     device: rss_mdm_agent_wire::DeviceId,
@@ -191,6 +193,9 @@ pub struct DevicePrincipal {
     epoch: Uuid,
 }
 impl DevicePrincipal {
+    pub fn binding(&self) -> ExecutionBinding {
+        self.binding
+    }
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
         self.profile
     }
@@ -257,7 +262,6 @@ pub struct RevocationReceipt {
 pub struct DeviceService {
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     access: Arc<Store>,
-    tenant: String,
 }
 impl DeviceService {
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
@@ -268,12 +272,10 @@ impl DeviceService {
     }
     pub fn new(
         access: Arc<Store>,
-        tenant: String,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     ) -> Self {
         Self {
             access,
-            tenant,
             audit_store,
         }
     }
@@ -289,10 +291,10 @@ impl DeviceService {
     ) -> Result<DevicePrincipal, Error> {
         let profile = self.profile();
 
-        if self.profile() != credential.profile || self.tenant != credential.tenant.to_string() {
+        if self.profile() != credential.profile {
             return Err(Error::Forbidden);
         }
-        let mut tx = self.access.snapshot(&self.tenant).await?;
+        let mut tx = self.access.snapshot(&credential.tenant.to_string()).await?;
         let principal = management::read(profile, &mut tx, credential).await?;
         tx.commit().await.map_err(crate::database::db)?;
         Ok(principal)
@@ -400,12 +402,13 @@ impl DeviceService {
 pub async fn authenticate_endpoint_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
-    tenant: TenantId,
+    binding: ExecutionBinding,
     peer: &rss_mdm_device_trust::device_identity::VerifiedDevicePeer,
 ) -> Result<DevicePrincipal, Error> {
     use crate::database::db;
     use rss_mdm_agent_wire::enroll::ErrorCode as C;
     use sqlx::Row;
+    let tenant = binding.tenant();
     let installation = installation_in(profile, c).await?;
     if peer.metadata().service_id != installation
         || peer.metadata().tenant.to_string() != tenant.to_string()
@@ -439,6 +442,7 @@ pub async fn authenticate_endpoint_in(
         .map_err(db)?;
     store::lock_registration(profile, c, &tenant.to_string(), &device, kind).await?;
     let p = DevicePrincipal {
+        binding,
         profile,
         tenant,
         device,

@@ -25,7 +25,6 @@ pub struct IdentityConfig {
 pub struct MdmConfig {
     service_id: Uuid,
     canonical_origin: String,
-    tenant: Uuid,
     management_tenant: Uuid,
 }
 
@@ -38,19 +37,12 @@ pub async fn read(config: &crate::config::Config) -> Result<Inputs> {
     project(
         &config.product_origin,
         config.identity.oidc.is_some(),
-        &config.identity.tenant_id,
         &management.to_string(),
         &config.identity.instance_id,
     )
 }
 
-fn project(
-    origin: &str,
-    oidc_enabled: bool,
-    tenant: &str,
-    management: &str,
-    service: &str,
-) -> Result<Inputs> {
+fn project(origin: &str, oidc_enabled: bool, management: &str, service: &str) -> Result<Inputs> {
     let url = url::Url::parse(origin).map_err(|_| Error::Input)?;
     let canonical_uuid = |value: &str| {
         Uuid::parse_str(value)
@@ -58,10 +50,8 @@ fn project(
             .filter(|id| !id.is_nil() && id.to_string() == value)
             .ok_or(Error::Input)
     };
-    let tenant = canonical_uuid(tenant)?;
     let management_tenant = canonical_uuid(management)?;
-    if tenant == management_tenant
-        || url.scheme() != "https"
+    if url.scheme() != "https"
         || url.origin().ascii_serialization() != origin
         || !url.username().is_empty()
         || url.password().is_some()
@@ -76,7 +66,6 @@ fn project(
         mdm: MdmConfig {
             service_id: canonical_uuid(service)?,
             canonical_origin: origin.into(),
-            tenant,
             management_tenant,
         },
     })

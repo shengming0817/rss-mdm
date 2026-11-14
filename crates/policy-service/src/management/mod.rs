@@ -136,7 +136,7 @@ impl Policies {
                     self.configuration
                         .as_ref()
                         .ok_or(Error::Unsupported)?
-                        .prepare(resource)
+                        .prepare(proof.binding(), resource)
                         .await?,
                 ),
                 Action::Execution {
@@ -148,6 +148,7 @@ impl Policies {
                         .as_ref()
                         .ok_or(Error::Unsupported)?
                         .prepare_resource(
+                            proof.binding(),
                             resource,
                             rss_mdm_script_service::Parameters::Sources(parameters),
                         )
@@ -157,14 +158,22 @@ impl Policies {
                     self.collections
                         .as_ref()
                         .ok_or(Error::Unsupported)?
-                        .prepare_resource(resource, rss_mdm_inventory::Channel::Agent)
+                        .prepare_resource(
+                            proof.binding(),
+                            resource,
+                            rss_mdm_inventory::Channel::Agent,
+                        )
                         .await?,
                 ),
                 Action::NativeCollection { resource, .. } => Some(
                     self.collections
                         .as_ref()
                         .ok_or(Error::Unsupported)?
-                        .prepare_resource(resource, rss_mdm_inventory::Channel::Mdm)
+                        .prepare_resource(
+                            proof.binding(),
+                            resource,
+                            rss_mdm_inventory::Channel::Mdm,
+                        )
                         .await?,
                 ),
                 _ => None,
@@ -176,7 +185,7 @@ impl Policies {
         run(
             &self.audit_store,
             &self.runtime,
-            self.audit_store.binding(),
+            proof.binding(),
             audit,
             (self, proof, id, op, audit, verified.as_ref(), &shape),
             |ctx, tx| {
@@ -280,7 +289,7 @@ impl Policies {
                             .await?;
                     }
                     // Publication performs no Agent fanout. Native reconciliation is a bounded background job.
-                    storage::enqueue_change_in(profile, &s.reconcile_messaging, s.changes.as_ref(), tx, &policy, old.as_ref()).await?;
+                    storage::enqueue_change_in(p.binding(), profile, &s.reconcile_messaging, s.changes.as_ref(), tx, &policy, old.as_ref()).await?;
                     s.retire_children_in(tx, old.as_ref(), &policy).await?;
                     let value = s.view_in(tx, p, &policy).await?;
                     checked(
@@ -316,7 +325,7 @@ impl Policies {
         run(
             &self.audit_store,
             &self.runtime,
-            self.audit_store.binding(),
+            proof.binding(),
             audit,
             (self, proof, audit),
             |ctx, tx| {

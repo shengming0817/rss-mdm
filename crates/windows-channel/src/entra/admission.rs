@@ -34,6 +34,7 @@ impl EntraPolicyAuthority for Gate {
 /// Policy and consent gate precede JIT. The resulting account enters the closed lifecycle basis.
 pub(super) async fn admit(
     app: &HttpState,
+    entra: &Entra,
     token: Zeroizing<String>,
     opaque: Option<&str>,
     csr: &[u8],
@@ -41,8 +42,9 @@ pub(super) async fn admit(
     a: &RequestAudit,
     cutoff: rss_request_context::Deadline,
 ) -> Result<Admission, Error> {
-    let entra = owner(app)?;
     let subject = entra.verify(token, cutoff).await?;
+    a.bind_scope(entra.binding)
+        .map_err(|_| Error::Unauthorized)?;
     let claims = subject.claims().map_err(|_| Error::Unauthorized)?;
     let device = claims.device.ok_or(Error::Unauthorized)?;
     let user = claims.user;
@@ -70,7 +72,8 @@ pub(super) async fn admit(
         revision: settings.revision,
     });
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
-    let result=app.audit_store.write(entra.tenant,
+    let result=app.audit_store.write(
+            a.binding()?,
             &budget.source_control(),(app,Some(proof),policy,&settings,opaque,&digest,a),|(app,proof,policy,settings,opaque,digest,a),tx|Box::pin(async move {
         let (app,settings,opaque,digest,a)=(*app,*settings,*opaque,*digest,*a);
         let (admission,replayed)=tx.with_connection_context(&mut (proof,policy,settings,opaque,digest),|(proof,policy,settings,opaque,digest),c|Box::pin(async move {

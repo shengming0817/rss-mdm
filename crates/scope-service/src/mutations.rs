@@ -26,7 +26,7 @@ impl Scopes {
                     )?;
                 }
                 Reference::Device(id) => {
-                    let tenant = self.tenant.to_string();
+                    let tenant = tx.tenant_id().to_string();
                     if !tx
                         .with_connection(move |c| {
                             Box::pin(rss_mdm_registration_service::device::read::registered(
@@ -105,7 +105,10 @@ impl Scopes {
             self.store
                 .put_in(tx, id, expected, owner, definition)
                 .await?;
-            Some(self.enqueue_in(tx, Uuid::new_v4(), id).await?)
+            Some(
+                self.enqueue_in(proof.binding(), tx, Uuid::new_v4(), id)
+                    .await?,
+            )
         } else {
             self.store.pending_task_in(tx, id).await?
         };
@@ -201,9 +204,12 @@ impl Scopes {
             if self.store.run_in(tx, old).await?.is_some() {
                 self.store.phase_in(tx, old, "superseded").await?;
             }
-            self.finish_in(tx, old, Some("superseded")).await?;
+            self.finish_in(proof.binding(), tx, old, Some("superseded"))
+                .await?;
         }
-        let new = self.enqueue_in(tx, Uuid::new_v4(), child.id).await?;
+        let new = self
+            .enqueue_in(proof.binding(), tx, Uuid::new_v4(), child.id)
+            .await?;
         if let Some(old) = old {
             self.store.replace_task_in(tx, old, new).await?;
         }
@@ -257,37 +263,31 @@ impl Scopes {
     {
         use rss_mdm_authorization_service::Permission;
         p.manage(Permission::PolicyRead)?;
-        crate::transaction::inspect(
-            &self.runtime,
-            self.audit_store.binding(),
-            (self, p),
-            |(s, p), tx| {
-                Box::pin(async move {
-                    crate::action_admission::current(tx, p).await?.require(
-                        p,
-                        Permission::PolicyRead,
-                        None,
-                    )?;
-                    let value = s
-                        .store
-                        .operation_in(tx, p.principal_id(), p.instance_id(), id)
-                        .await?;
-                    value
-                        .map(|v| {
-                            let mut s =
-                                rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
-                            s.object = Some(v["id"].as_str().ok_or(Error::Conflict)?.into());
-                            s.revision = Some(v["revision"].as_i64().ok_or(Error::Conflict)?);
-                            if let Some(task) = v["task"].as_str() {
-                                s.executions
-                                    .push(Uuid::parse_str(task).map_err(|_| Error::Conflict)?);
-                            }
-                            Ok(s)
-                        })
-                        .transpose()
-                })
-            },
-        )
+        crate::transaction::inspect(&self.runtime, p.binding(), (self, p), |(s, p), tx| {
+            Box::pin(async move {
+                crate::action_admission::current(tx, p).await?.require(
+                    p,
+                    Permission::PolicyRead,
+                    None,
+                )?;
+                let value = s
+                    .store
+                    .operation_in(tx, p.principal_id(), p.instance_id(), id)
+                    .await?;
+                value
+                    .map(|v| {
+                        let mut s = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                        s.object = Some(v["id"].as_str().ok_or(Error::Conflict)?.into());
+                        s.revision = Some(v["revision"].as_i64().ok_or(Error::Conflict)?);
+                        if let Some(task) = v["task"].as_str() {
+                            s.executions
+                                .push(Uuid::parse_str(task).map_err(|_| Error::Conflict)?);
+                        }
+                        Ok(s)
+                    })
+                    .transpose()
+            })
+        })
         .await
     }
 }

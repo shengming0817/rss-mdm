@@ -106,7 +106,7 @@ impl Service {
         {
             run.state.cancel();
         }
-        super::recovery::audit_recovery(service, tx, &run, &previous).await?;
+        super::recovery::audit_recovery(p.binding(), service, tx, &run, &previous).await?;
         if run.state.cancellation == Cancellation::None
             && run.available_at <= now
             && allowed

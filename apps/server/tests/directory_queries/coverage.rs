@@ -32,7 +32,10 @@ pub(super) fn check(cases: &[(String, String, Value)]) -> Result<()> {
             .context("directory identity")?;
         mounted.insert(id.to_owned());
         let path = endpoint["path"].as_str().context("mounted path")?;
-        if cases.iter().any(|(actual, _, _)| matches(path, actual)) {
+        if cases
+            .iter()
+            .any(|(actual, _, _)| matches(path, &format!("/api/v1/tenants/{{tenant}}{actual}")))
+        {
             exercised.insert(id.into());
         }
     }

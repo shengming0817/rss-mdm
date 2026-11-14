@@ -122,12 +122,12 @@ async fn receipt(
     runtime: &Arc<PgRuntime>,
     id: Uuid,
 ) -> Result<()> {
-    let store = rss_mdm_scope_postgres::ScopeBinding::new(profile, runtime.clone(), c.tenant);
+    let store = rss_mdm_scope_postgres::ScopeBinding::new(profile, runtime.clone());
     let value = json!({"product":format!("{profile:?}")});
     for replay in [false, true] {
         runtime
             .local_tx_with_context(
-                c.audit.binding(),
+                c.execution(),
                 deadline(),
                 (&store, &value),
                 |(store, value), tx| {
@@ -166,7 +166,7 @@ async fn receipt(
             .fold(Ok, Err, Err, Err, Err, Err)?;
     }
     runtime
-        .local_tx_with_context(c.audit.binding(), deadline(), &store, |store, tx| {
+        .local_tx_with_context(c.execution(), deadline(), &store, |store, tx| {
             Box::pin(async move {
                 assert!(matches!(
                     store
@@ -235,19 +235,19 @@ server.serve_forever()
             let runtime = c.inputs.runtime(role).await?;
             let result = async {
                 let budget = AuditBudget::new(Duration::from_secs(10));
-                let audit = Arc::new(c.audit.on_runtime(runtime.clone(),c.audit.binding(),&budget.control()).await?);
-                let registry = Registry::new(profile,pool.clone(),audit.clone(),vec![rss_mdm_device_trust::DeviceTrust::new(trust.clone(),trust.purpose,now())?],providers.clone());
-                registry.admit(c.tenant,now()).await?;
-                registry.admit(c.tenant,now()).await?; // The owner replay does not append a second fact.
+                let audit = Arc::new(c.audit.on_runtime(runtime.clone(),c.execution(),&budget.control()).await?);
+                let registry = Registry::new(profile,pool.clone(),audit.clone(),c.execution(),providers.clone());
+                registry.admit(c.execution(),trust.clone(),now()).await?;
+                registry.admit(c.execution(),trust.clone(),now()).await?; // The owner replay does not append a second fact.
                 // A new business mutation cannot silently reuse either product's existing fact.
                 use sha2::{Digest,Sha256};
                 let hash=Sha256::digest(serde_json::to_vec(&trust)?);
                 let id=Uuid::from_bytes(hash[..16].try_into()?);
-                let request=RequestAudit::new(rss_mdm_audit_integration::Origin::Request, profile,c.tenant.to_string(),"device_pki_admit",AuditIntent::Management);
+                let request=RequestAudit::new(rss_mdm_audit_integration::Origin::Request, profile,c.execution(),"device_pki_admit",AuditIntent::Management);
                 request.identify_service("service:device-pki");
                 request.operation(id,"device_pki_admit",AuditIntent::Management);
                 let fact=rss_mdm_audit_integration::Fact::observation(&request,&format!("pki:{id}:admit"),200,"success",None)?;
-                let append=runtime.local_tx_with_context(c.audit.binding(),deadline(),(&audit,&fact),|(audit,fact),tx|Box::pin(async move {
+                let append=runtime.local_tx_with_context(c.execution(),deadline(),(&audit,&fact),|(audit,fact),tx|Box::pin(async move {
                     audit.bind_in(tx).await.map_err(PgError::from)?;
                     audit.append_in(tx,fact).await.map_err(PgError::from)
                 })).await.fold(Ok,Err,Err,Err,Err,Err);

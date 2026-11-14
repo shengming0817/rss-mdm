@@ -30,27 +30,41 @@ pub async fn run_in(
             Box::pin(async { Ok(()) })
         })
         .await?;
-    tx.with_connection(|c| Box::pin(async move {
-        sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'enrollment_recovery')").execute(c).await?;
-        Ok(())
-    })).await?;
+    tx.with_connection(|c| {
+        Box::pin(async move {
+            sqlx::query("SELECT pg_notify('mdm_work','enrollment_recovery')")
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await?;
     Ok(())
 }
 
 pub async fn policy_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
 ) -> Result<()> {
+    if binding.tenant() != tx.tenant_id() {
+        return Err(Error::Malformed.into());
+    }
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            sqlx::query(crate::storage_profile::sql(profile).enrollment_tasks_wake_policy_in_1)
-                .bind(tenant)
-                .bind(id)
-                .execute(c)
-                .await?;
+            let updated =
+                sqlx::query(crate::storage_profile::sql(profile).enrollment_tasks_wake_policy_in_1)
+                    .bind(tenant)
+                    .bind(id)
+                    .bind(binding.epoch().get())
+                    .execute(c)
+                    .await?;
+            if updated.rows_affected() != 1 {
+                return Err(sqlx::Error::Protocol("original work epoch mismatch".into()).into());
+            }
             Ok(())
         })
     })
@@ -71,7 +85,15 @@ pub async fn entity_in(
             Box::pin(async { Ok(()) })
         })
         .await?;
-    tx.with_connection(|c|Box::pin(async move {sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'enrollment_recovery')").execute(c).await?;Ok(())})).await?;
+    tx.with_connection(|c| {
+        Box::pin(async move {
+            sqlx::query("SELECT pg_notify('mdm_work','enrollment_recovery')")
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await?;
     Ok(())
 }
 

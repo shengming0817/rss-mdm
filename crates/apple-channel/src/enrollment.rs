@@ -43,12 +43,13 @@ async fn admitted(c: &mut sqlx::PgConnection, proof: &Admission) -> Result<PgRow
 }
 async fn authorized(
     app: &HttpState,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     id: Uuid,
     secret: Option<&str>,
     audit: &RequestAudit,
     cutoff: rss_request_context::Deadline,
 ) -> Result<(Coordinates, Admission), Error> {
-    let tenant = app.identity.tenant().to_string();
+    let tenant = execution.tenant().to_string();
     let mut tx = app.access.begin(&tenant).await?;
     let row = request(
         rss_mdm_install_support::StorageProfile::Mdm,
@@ -78,8 +79,9 @@ async fn authorized(
         )
         .await?
     } else if kind == "apple_account" {
-        crate::account_enrollment::require_binding(app, id).await?;
+        crate::account_enrollment::require_binding(app, execution, id).await?;
         rss_mdm_registration_service::enrollment::native::account(
+            execution,
             &app.access.registration(),
             &app.identity,
             id,
@@ -105,9 +107,13 @@ async fn authorized(
         } else {
             rss_mdm_registration_service::enrollment::store::authorization(row)?
         };
+        if auth.expected_epoch != execution.epoch().get() {
+            return Err(Error::Unauthorized);
+        }
         let identity = app
             .identity
             .authenticate(
+                execution,
                 &app.access.authorization,
                 app.credentials.get(auth.credential_ref)?,
                 rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
@@ -121,6 +127,9 @@ async fn authorized(
     if proof.coordinates().source != rss_mdm_inventory::ReportSource::MdmApple {
         return Err(Error::Unauthorized);
     }
+    audit
+        .bind_scope(execution)
+        .map_err(|_| Error::Unauthorized)?;
     proof.bind_audit(audit)?;
     audit.target_device(&proof.coordinates().device);
     Ok((proof.coordinates().clone(), proof))
@@ -133,23 +142,26 @@ pub(crate) async fn download(
     input: Result<Json<Resume>, axum::extract::rejection::JsonRejection>,
 ) -> Result<EnrollmentProfile, Error> {
     let input = input.map_err(|_| Error::Malformed)?.0;
-    let apple = app.apple()?;
+    let execution = app.request_binding(id).await?;
     let (auth, proof) = authorized(
         &app,
+        execution,
         id,
         Some(input.password.expose()),
         &audit,
         control.deadline(),
     )
     .await?;
+    let apple = app.apple(execution).await?;
     if proof.is_account() || proof.is_organization() {
         return Err(Error::Unauthorized);
     }
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let outcome = app.audit_store.write(app.identity.tenant(),
+    let outcome = app.audit_store.write(
+            audit.binding()?,
             &budget.source_control(),
-        (&app, apple, &auth, &proof, &input, &audit, id),
+        (&app, &apple, &auth, &proof, &input, &audit, id),
         |(app, apple, auth, proof, input, audit, id), tx| Box::pin(async move {
             let (attempt, replayed, bytes) = tx.with_connection_context(&mut (*app, *apple, *auth, *proof, *input, *id),
                 |(app, apple, auth, proof, input, id), c| Box::pin(async move {
@@ -215,7 +227,7 @@ pub(crate) async fn prepared(
     }
     let id = Uuid::new_v4();
     let (issuer, scep_url, scep_provisioner) = apple.active_scep(tx, tenant).await?;
-    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,authorization_version,configuration,state,issuer,expires_at,access_rights,scep_url,scep_provisioner) VALUES($1::uuid,$3::uuid,$2::uuid,$6,$4,'prepared',$5,$7::timestamptz,$8,$9,$10)")
+    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,authorization_version,configuration,state,issuer,expires_at,access_rights,scep_url,scep_provisioner,expected_epoch) VALUES($1::uuid,$3::uuid,$2::uuid,$6,$4,'prepared',$5,$7::timestamptz,$8,$9,$10,current_setting('rss.execution_epoch')::bigint)")
         .bind(tenant).bind(auth.id.to_string()).bind(id.to_string()).bind(apple.configuration.as_slice()).bind(issuer).bind(auth.version).bind(deadline).bind(apple.access_rights()).bind(&scep_url).bind(&scep_provisioner).execute(&mut *tx).await.map_err(db)?;
     Ok((id, false, scep_url, scep_provisioner))
 }
@@ -225,8 +237,12 @@ pub(crate) async fn challenge(
     Extension(audit): Extension<RequestAudit>,
     WebhookInput { headers, bytes }: WebhookInput,
 ) -> Result<Json<ChallengeResponse>, Error> {
-    let apple = app.apple()?;
-    let verified = apple.webhooks.verify(
+    let callbacks = app
+        .apple
+        .as_ref()
+        .and_then(|runtime| runtime.webhooks.as_ref())
+        .ok_or(Error::Unsupported)?;
+    let verified = callbacks.verify(
         webhook::Stage::Challenge,
         &headers,
         &bytes,
@@ -250,9 +266,15 @@ pub(crate) async fn challenge(
         .as_deref()
         .ok_or(Error::Unauthorized)?;
     let csr = certificate::csr(&input.x509_certificate_request.der()?)?;
+    let execution = app.scep_binding(csr.attempt(), csr.enrollment()).await?;
+    let apple = app.apple(execution).await?;
+    audit
+        .bind_scope(execution)
+        .map_err(|_| Error::Unauthorized)?;
     let challenge = input.scep_challenge.as_ref().ok_or(Error::Unauthorized)?;
     if super::renewal::challenge(
         &app,
+        &apple,
         &csr,
         challenge,
         &input.transaction,
@@ -271,6 +293,7 @@ pub(crate) async fn challenge(
     }
     let (auth, proof) = authorized(
         &app,
+        execution,
         csr.enrollment(),
         Some(challenge),
         &audit,
@@ -279,9 +302,10 @@ pub(crate) async fn challenge(
     .await?;
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let outcome = app.audit_store.write(app.identity.tenant(),
+    let outcome = app.audit_store.write(
+            audit.binding()?,
             &budget.source_control(),
-        (&app, apple, &auth, &proof, &csr, input.transaction.as_str(), provisioner, issuer, &audit),
+        (&app, &apple, &auth, &proof, &csr, input.transaction.as_str(), provisioner, issuer, &audit),
         |(app, apple, auth, proof, csr, transaction, provisioner, issuer, audit), tx| Box::pin(async move {
             tx.with_connection_context(&mut (*app, *apple, *auth, *proof, *csr, *transaction, *provisioner, *issuer),
                 |(_app, apple, auth, proof, csr, transaction, provisioner, issuer), c| Box::pin(async move {
@@ -316,8 +340,12 @@ pub(crate) async fn notify(
     Extension(audit): Extension<RequestAudit>,
     WebhookInput { headers, bytes }: WebhookInput,
 ) -> Result<Json<webhook::NotifyResponse>, Error> {
-    let apple = app.apple()?;
-    let verified = apple.webhooks.verify(
+    let callbacks = app
+        .apple
+        .as_ref()
+        .and_then(|runtime| runtime.webhooks.as_ref())
+        .ok_or(Error::Unsupported)?;
+    let verified = callbacks.verify(
         webhook::Stage::Notify,
         &headers,
         &bytes,
@@ -327,6 +355,11 @@ pub(crate) async fn notify(
     )?;
     let input = verified.request();
     let csr = certificate::csr(&input.x509_certificate_request.der()?)?;
+    let execution = app.scep_binding(csr.attempt(), csr.enrollment()).await?;
+    let apple = app.apple(execution).await?;
+    audit
+        .bind_scope(execution)
+        .map_err(|_| Error::Unauthorized)?;
     if input.scep_error_code.is_some() {
         return Err(Error::CertificateRequest);
     }
@@ -353,7 +386,7 @@ pub(crate) async fn notify(
     {
         return Err(Error::Unauthorized);
     }
-    if super::renewal::notify(&app, &leaf, &csr, &input.transaction, &audit).await? {
+    if super::renewal::notify(&app, &apple, &leaf, &csr, &input.transaction, &audit).await? {
         return Ok(Json(webhook::NotifyResponse { allow: true }));
     }
     let budget =
@@ -361,23 +394,29 @@ pub(crate) async fn notify(
     let outcome = app
         .audit_store
         .write(
-            app.identity.tenant(),
+            audit.binding()?,
             &budget.source_control(),
-            (&app, apple, &leaf, &csr, input.transaction.as_str(), &audit),
+            (
+                &app,
+                &apple,
+                &leaf,
+                &csr,
+                input.transaction.as_str(),
+                &audit,
+            ),
             |(app, apple, leaf, csr, transaction, audit), tx| {
                 Box::pin(async move {
                     let replayed = tx
                         .with_connection_context(
                             &mut (*app, *apple, *leaf, *csr, *transaction, *audit),
-                            |(app, apple, leaf, csr, transaction, audit), c| {
+                            |(_, apple, leaf, csr, transaction, audit), c| {
                                 Box::pin(async move {
-                                    let app = *app;
                                     let apple = *apple;
                                     let leaf = *leaf;
                                     let csr = *csr;
                                     let transaction = *transaction;
                                     let audit = *audit;
-                                    let tenant = app.identity.tenant().to_string();
+                                    let tenant = audit.binding()?.tenant().to_string();
                                     let row = request(
                                         rss_mdm_install_support::StorageProfile::Mdm,
                                         c,
@@ -401,7 +440,7 @@ pub(crate) async fn notify(
                                         )
                                         .await?;
                                     }
-                                    let attempt = attempt(c, &tenant, apple, leaf).await?;
+                                    let attempt = attempt(c, audit.binding()?, apple, leaf).await?;
                                     if attempt.try_get::<String, _>("transaction_id").map_err(db)?
                                         != transaction
                                         || attempt
@@ -467,16 +506,20 @@ pub(crate) async fn notify(
 }
 pub async fn attempt(
     tx: &mut sqlx::PgConnection,
-    tenant: &str,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     apple: &Apple,
     leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
 ) -> Result<PgRow, Error> {
-    let row=sqlx::query("SELECT state, configuration, spki, fingerprint, authorization_version, transaction_id, csr_digest, device FROM mdm_apple.scep_attempts WHERE tenant_id = CAST($1 AS uuid) AND id = CAST($2 AS uuid) AND enrollment = CAST($3 AS uuid) AND issuer = $4 FOR UPDATE")
-        .bind(tenant).bind(leaf.attempt().to_string()).bind(leaf.enrollment().to_string()).bind(leaf.issuer().as_slice()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
-    if !matches!(
-        row.try_get::<String, _>("state").map_err(db)?.as_str(),
-        "consumed" | "bound"
-    ) || row.try_get::<Vec<u8>, _>("configuration").map_err(db)? != apple.configuration
+    let tenant = execution.tenant().to_string();
+    let row=sqlx::query("SELECT state, configuration, spki, fingerprint, expected_epoch, authorization_version, transaction_id, csr_digest, device FROM mdm_apple.scep_attempts WHERE tenant_id = CAST($1 AS uuid) AND id = CAST($2 AS uuid) AND enrollment = CAST($3 AS uuid) AND issuer = $4 FOR UPDATE")
+        .bind(&tenant).bind(leaf.attempt().to_string()).bind(leaf.enrollment().to_string()).bind(leaf.issuer().as_slice()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    if (row.try_get::<String, _>("state").map_err(db)? != "bound"
+        && row.try_get::<i64, _>("expected_epoch").map_err(db)? != execution.epoch().get())
+        || !matches!(
+            row.try_get::<String, _>("state").map_err(db)?.as_str(),
+            "consumed" | "bound"
+        )
+        || row.try_get::<Vec<u8>, _>("configuration").map_err(db)? != apple.configuration
         || row.try_get::<Vec<u8>, _>("spki").map_err(db)? != leaf.spki()
         || row
             .try_get::<Option<Vec<u8>>, _>("fingerprint")
@@ -524,21 +567,31 @@ pub async fn persist_leaf(
 
 pub async fn bind(
     app: &HttpState,
+    apple: &Arc<Apple>,
     leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
     udid: &str,
     audit: &RequestAudit,
     cutoff: rss_request_context::Deadline,
 ) -> Result<(), Error> {
-    let (auth, proof) = authorized(app, leaf.enrollment(), None, audit, cutoff).await?;
+    let (auth, proof) = authorized(
+        app,
+        audit.binding()?,
+        leaf.enrollment(),
+        None,
+        audit,
+        cutoff,
+    )
+    .await?;
     let budget = app.devices.retirement_budget();
     let attempt = app
         .audit_store
         .write(
-            app.identity.tenant(),
+            audit.binding()?,
             &budget.source_control(),
             (
                 app,
                 BindInputs {
+                    apple,
                     app,
                     leaf,
                     udid,
@@ -572,6 +625,7 @@ pub async fn bind(
     crate::operations::settle(attempt, audit)
 }
 struct BindInputs<'a> {
+    apple: &'a Arc<Apple>,
     app: &'a HttpState,
     leaf: &'a rss_mdm_device_trust::apple::CheckedLeaf,
     udid: &'a str,
@@ -581,6 +635,7 @@ struct BindInputs<'a> {
 }
 async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Result<(), Error> {
     let BindInputs {
+        apple,
         app,
         leaf,
         udid,
@@ -594,12 +649,12 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
     let auth = *auth;
     let proof = *proof;
     let audit = *audit;
-    let tenant = app.identity.tenant().to_string();
+    let tenant = audit.binding()?.tenant().to_string();
     admitted(tx, proof).await?;
     if proof.is_organization() {
         crate::ade::authority::udid_in(tx, &tenant, leaf.enrollment(), udid).await?;
     }
-    let attempt = attempt(tx, &tenant, app.apple()?, leaf).await?;
+    let attempt = attempt(tx, audit.binding()?, apple, leaf).await?;
     if attempt.try_get::<String, _>("state").map_err(db)? != "consumed"
         || attempt
             .try_get::<i64, _>("authorization_version")
@@ -608,7 +663,7 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
     {
         return Err(Error::Unauthorized);
     }
-    let credential = app.mount.credential(leaf.fingerprint())?;
+    let credential = app.mount.credential(audit.binding()?, leaf.fingerprint())?;
     let receipt = app
         .devices
         .bind_native_in(tx, proof, &credential, [Uuid::new_v4(), Uuid::new_v4()])

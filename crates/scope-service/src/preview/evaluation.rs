@@ -156,7 +156,7 @@ impl Scopes {
                         };
                         seen.insert(member.device);
                         let explanation = crate::channels::targets::frozen_explanation(
-                            self.tenant,
+                            tx.tenant_id(),
                             frozen,
                             &member.device,
                             &rows,
@@ -206,7 +206,7 @@ impl Scopes {
             key,
         ))?;
         let reader = self.objects.clone();
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         if let Some(snapshot) = &source.snapshot {
             let snapshot = snapshot.id;
             let allowance = reads.bytes;
@@ -277,7 +277,7 @@ impl Scopes {
                     };
                     let objects = if let Some(snapshot) = &source.snapshot {
                         let reader = self.objects.clone();
-                        let tenant = self.tenant;
+                        let tenant = tx.tenant_id();
                         let snapshot = snapshot.id;
                         let endpoint = device.to_owned();
                         let allowance = reads.bytes;

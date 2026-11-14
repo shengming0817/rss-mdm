@@ -63,11 +63,10 @@ pub struct Apple {
     pub(crate) config: Config,
     pub(crate) authority: rss_mdm_device_trust::apple::AppleDeviceTrust,
     pub(crate) signer: certificate::ProfileSigner,
-    pub(crate) push: push::Push,
-    push_ready: std::sync::atomic::AtomicBool,
+    pub(crate) push: Arc<push::Push>,
+    pub(crate) push_available: bool,
     materials: runtime_materials::runtime::Binding,
-    materials_ready: std::sync::atomic::AtomicBool,
-    pub(crate) webhooks: webhook::Verifier,
+
     configuration: [u8; 32],
     providers: Arc<rss_mdm_pki_service::providers::Providers>,
     pub(crate) account_keys:
@@ -130,6 +129,9 @@ impl Apple {
             })
             .collect()
     }
+    pub fn material_selection(&self) -> runtime_materials::runtime::Selection {
+        self.materials.selection()
+    }
     pub async fn check_materials(
         &self,
         store: &Store,
@@ -137,8 +139,6 @@ impl Apple {
         now: i64,
     ) -> Result<(), Error> {
         let result = self.materials.check(store, tenant, now).await;
-        self.materials_ready
-            .store(result.is_ok(), std::sync::atomic::Ordering::Relaxed);
         result
     }
     pub fn apns_topic(&self) -> &str {
@@ -156,9 +156,9 @@ impl Apple {
         config: Config,
         authority: rss_mdm_device_trust::apple::AppleDeviceTrust,
         signer: certificate::ProfileSigner,
-        push: push::Push,
+        push: Arc<push::Push>,
         materials: runtime_materials::runtime::Binding,
-        webhooks: webhook::Verifier,
+
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
     ) -> Self {
         let configuration = protocol_identity(&config);
@@ -170,10 +170,9 @@ impl Apple {
             authority,
             signer,
             push,
-            push_ready: std::sync::atomic::AtomicBool::new(true),
+            push_available: true,
             materials,
-            materials_ready: std::sync::atomic::AtomicBool::new(true),
-            webhooks,
+
             configuration,
             providers,
             account_keys: Default::default(),
@@ -264,7 +263,7 @@ pub fn mount_browser(
     app: Option<Arc<HttpState>>,
 ) -> rss_mdm_http_contract::Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     use rss_mdm_http_contract::routing::post;
-    let mut routes = {
+    let routes = {
         rss_mdm_http_contract::route_module! { struct MountBrowserModule1 for [Browser] { post_download, post_challenge, post_notify, account_enrollment_routes, ade_routes } }
         MountBrowserModule1 {
             post_download: rss_mdm_http_contract::module::Route::new(
@@ -296,12 +295,6 @@ pub fn mount_browser(
         }
         .assemble()
     };
-    if let Some(app) = app.as_ref() {
-        routes = routes.layer(axum::middleware::from_fn_with_state(
-            app.clone(),
-            runtime_materials::runtime::admit,
-        ));
-    }
     routes
         .bind_with(app.as_ref(), Clone::clone)
         .layer(axum::extract::DefaultBodyLimit::max(128 * 1024))
@@ -316,7 +309,7 @@ pub fn router(
 pub fn mount_native(
     app: Option<Arc<HttpState>>,
 ) -> rss_mdm_http_contract::Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
-    let mut routes = {
+    let routes = {
         rss_mdm_http_contract::route_module! { struct RouterModule1 for [Apple] { external_put_checkin, external_get_asset, external_put_manage } }
         RouterModule1 {
             external_put_checkin: rss_mdm_http_contract::module::Route::new(
@@ -349,12 +342,6 @@ pub fn mount_native(
         }
         .assemble()
     };
-    if let Some(app) = app.as_ref() {
-        routes = routes.layer(axum::middleware::from_fn_with_state(
-            app.clone(),
-            runtime_materials::runtime::admit,
-        ));
-    }
     routes
         .bind_with(app.as_ref(), Clone::clone)
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
@@ -402,11 +389,7 @@ impl Apple {
     }
     pub fn health(&self, now: i64) -> Health {
         Health {
-            push_available: self.push_ready.load(std::sync::atomic::Ordering::Relaxed)
-                && self
-                    .materials_ready
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                && self.materials.valid_at(now),
+            push_available: self.push_available && self.materials.valid_at(now),
             certificates: self.certificate_health(now),
         }
     }
@@ -440,6 +423,12 @@ impl Apple {
 }
 
 pub struct HttpState {
+    pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
+    pub providers: Arc<rss_mdm_pki_service::providers::Providers>,
+    pub credential_receipts:
+        Option<Arc<rss_mdm_recovery_credentials::native_receipts::NativeReceipts>>,
+    pub storage: rss_transactional_messaging::fence::StorageIdentity,
+    pub expected_epoch: rss_transactional_messaging::fence::Epoch,
     pub query_cursor: rss_mdm_query::cursor::CursorCodec,
     /// Deployment-approved signing roots; tenant requests cannot add trust anchors.
     pub material_roots: Arc<Vec<Vec<u8>>>,
@@ -449,7 +438,7 @@ pub struct HttpState {
     pub mount: crate::device::ChannelMount,
     pub audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     pub access: std::sync::Arc<crate::Store>,
-    pub apple: Option<std::sync::Arc<crate::Apple>>,
+    pub apple: Option<Arc<runtime_materials::runtime::Runtime>>,
     pub clock: std::sync::Arc<dyn rss_mdm_inventory_service::clock::Clock>,
     pub delivery: Arc<crate::delivery::Delivery>,
     pub enrollment_authority:
@@ -463,8 +452,15 @@ pub struct HttpState {
     pub requests: std::sync::Arc<tokio::sync::Semaphore>,
 }
 impl HttpState {
-    pub fn apple(&self) -> std::result::Result<&Arc<crate::Apple>, crate::Error> {
-        self.apple.as_ref().ok_or(crate::Error::Unsupported)
+    pub async fn apple(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<Arc<crate::Apple>, Error> {
+        self.apple
+            .as_ref()
+            .ok_or(Error::Unsupported)?
+            .load(self, execution)
+            .await
     }
 }
 
@@ -486,7 +482,10 @@ pub async fn retire_in(
 }
 
 pub(crate) async fn notify(c: &mut sqlx::PgConnection, work: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),$1)").bind(work).execute(c).await?;
+    sqlx::query("SELECT pg_notify('mdm_work',$1)")
+        .bind(work)
+        .execute(c)
+        .await?;
     Ok(())
 }
 async fn wait(
@@ -562,3 +561,83 @@ pub mod command_binding;
 pub const NATIVE_COMMANDS_SQL: &str = include_str!("../schema/native-commands.sql");
 
 pub mod collection_admission;
+
+impl HttpState {
+    pub fn execution(
+        &self,
+        tenant: rss_request_context::TenantId,
+    ) -> rss_transactional_messaging::fence::ExecutionBinding {
+        rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            tenant,
+            self.expected_epoch,
+        )
+    }
+    pub async fn certificate_binding(
+        &self,
+        peer: &rss_mdm_certificate::ClientCertificateEvidence,
+    ) -> Result<rss_transactional_messaging::fence::ExecutionBinding, Error> {
+        use sha2::Digest;
+        let certificate = peer.chain().first().ok_or(Error::Unauthorized)?;
+        let fingerprint: [u8; 32] = sha2::Sha256::digest(certificate.as_ref()).into();
+        let tenant = self
+            .access
+            .locate_certificate(fingerprint)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        Ok(self.execution(tenant))
+    }
+    pub async fn request_binding(
+        &self,
+        request: uuid::Uuid,
+    ) -> Result<rss_transactional_messaging::fence::ExecutionBinding, Error> {
+        let (tenant, epoch) = self
+            .access
+            .registration
+            .locate_request(request)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            tenant,
+            epoch,
+        ))
+    }
+}
+
+impl HttpState {
+    pub async fn scep_binding(
+        &self,
+        attempt: uuid::Uuid,
+        enrollment: uuid::Uuid,
+    ) -> Result<rss_transactional_messaging::fence::ExecutionBinding, Error> {
+        let (tenant, epoch) = self
+            .access
+            .locate_scep_attempt(attempt, enrollment)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            tenant,
+            epoch,
+        ))
+    }
+}
+
+impl HttpState {
+    pub async fn account_flow_binding(
+        &self,
+        flow: uuid::Uuid,
+    ) -> Result<rss_transactional_messaging::fence::ExecutionBinding, Error> {
+        let (tenant, epoch) = self
+            .access
+            .locate_account_flow(flow)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            tenant,
+            epoch,
+        ))
+    }
+}

@@ -12,13 +12,11 @@ impl Timeline {
         c: &mut PgConnection,
         reader: &Reader<'_>,
     ) -> Result<Scope, Error> {
+        let execution = reader.execution();
         let mut reasons = Vec::new();
         let mut personal = None;
         let (device, authority, anchor) = match reader {
             Reader::Management { proof, device } => {
-                if proof.tenant_id() != self.tenant.to_string() {
-                    return Err(Error::Forbidden);
-                }
                 proof
                     .check_live()
                     .map_err(crate::service::authorization_error)?;
@@ -56,21 +54,18 @@ impl Timeline {
                 )
             }
             Reader::Agent { device: p, user } => {
-                if p.tenant() != self.tenant {
-                    return Err(Error::Forbidden);
-                }
                 store::revalidate_management(rss_mdm_install_support::StorageProfile::Mdm, c, p)
                     .await
                     .map_err(registration_error)?;
                 let binding = rss_mdm_registration_service::agent::current_user::binding_on(
                     rss_mdm_install_support::StorageProfile::Mdm,
                     c,
-                    &self.tenant.to_string(),
+                    &execution.tenant().to_string(),
                     p.device(),
                 )
                 .await
                 .map_err(registration_error)?;
-                let context:Option<serde_json::Value>=sqlx::query_scalar("SELECT execution_context FROM mdm_agent.bindings WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(self.tenant.to_string()).bind(p.device().into_uuid()).fetch_optional(&mut *c).await?;
+                let context:Option<serde_json::Value>=sqlx::query_scalar("SELECT execution_context FROM mdm_agent.bindings WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(execution.tenant().to_string()).bind(p.device().into_uuid()).fetch_optional(&mut *c).await?;
                 let os = context
                     .as_ref()
                     .and_then(|v| v.get("interactiveUser"))
@@ -79,7 +74,7 @@ impl Timeline {
                     proof
                         .check_live()
                         .map_err(crate::service::authorization_error)?;
-                    if proof.tenant_id() != self.tenant.to_string()
+                    if proof.tenant_id() != execution.tenant().to_string()
                         || !binding.registration_valid
                         || binding.reference.as_ref()
                             != Some(
@@ -121,7 +116,7 @@ impl Timeline {
                 )
             }
         };
-        let pair = PlanningObjects::activity_pair_in(c, self.tenant, &device).await?;
+        let pair = PlanningObjects::activity_pair_in(c, execution.tenant(), &device).await?;
         let (mut members, relation) = match pair {
             ActivityPair::Paired(object) => {
                 let members = object
@@ -170,7 +165,7 @@ impl Timeline {
         members.sort_by_key(|a| a.device);
         members.dedup();
         let binding = rss_mdm_query::cursor::fingerprint(&(
-            self.tenant.to_string(),
+            execution.tenant().to_string(),
             authority,
             relation,
             &members,

@@ -21,14 +21,14 @@ impl Owners {
         let groups = Arc::new(
             rss_mdm_group_postgres::GroupStore::new(
                 storage.runtime.clone(),
-                c.audit.binding(),
+                c.execution(),
                 group::transaction::deadline(),
             )
             .await?,
         );
         let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             storage.runtime.clone(),
-            c.audit.binding(),
+            c.execution(),
             group::transaction::deadline(),
         ))
         .await?;
@@ -38,7 +38,7 @@ impl Owners {
         let service = group::Groups::new(group::Dependencies {
             read_pool: c.inputs.pool("shared", "mdm_access").await?,
             objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
-            tenant: c.tenant,
+            probe: c.execution(),
             groups: groups.clone(),
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &[7; 32]),
             audit_store: storage.audit.clone(),
@@ -48,9 +48,10 @@ impl Owners {
         })
         .await?;
         let compliance = compliance::Compliance::new(compliance::Dependencies {
+            read_pool: c.database.archive_pool(),
             audit_store: storage.audit.clone(),
             runtime: storage.runtime.clone(),
-            tenant: c.tenant,
+            probe: c.execution(),
             clock,
             groups,
             reconcile_messaging: messaging,
@@ -380,22 +381,19 @@ async fn fact_readers_reject_cross_runtime_and_tenant_and_keep_the_frozen_cut() 
     let reader = SnapshotReader::bind(
         rss_mdm_install_support::StorageProfile::Mdm,
         owners.storage.runtime.clone(),
-        c.tenant,
     );
     let wrong = SnapshotReader::bind(
         rss_mdm_install_support::StorageProfile::Mdm,
         other.runtime.clone(),
-        c.tenant,
     );
     let foreign = SnapshotReader::bind(
         rss_mdm_install_support::StorageProfile::Mdm,
         owners.storage.runtime.clone(),
-        rss_request_context::TenantId::parse(&Uuid::new_v4().to_string())?,
     );
     let refs = rss_mdm_resource_postgres::FieldReferences::bind(other.runtime.clone(), c.tenant);
     group::transaction::inspect(
         &owners.storage.runtime,
-        c.audit.binding(),
+        c.execution(),
         (reader, wrong, foreign, refs, before, at),
         |ctx, tx| {
             Box::pin(async move {

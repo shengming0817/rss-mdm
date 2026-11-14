@@ -18,7 +18,7 @@ fn audit(c: &Context) -> RequestAudit {
     RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         DA,
-        c.tenant.to_string(),
+        c.execution(),
         "vault_test",
         AuditIntent::Routine,
     )
@@ -67,7 +67,7 @@ async fn user(c: &Context) -> Result<(AuthorizedPrincipal, String)> {
     let issued = c
         .authority
         .login_local_bearer(
-            c.sessions.binding(),
+            c.execution(),
             LoginKey::parse(&login)?,
             Password::new(password.into())?,
             rss_identity_postgres::AttemptSource::parse("vault-test")?,
@@ -80,6 +80,7 @@ async fn user(c: &Context) -> Result<(AuthorizedPrincipal, String)> {
     let actor = c
         .sessions
         .authenticate(
+            c.execution(),
             &c.authorization,
             rss_mdm_authorization_service::credential::RequestCredential::Bearer(
                 rss_identity_core::session::BearerSecret::parse(issued.secret().expose().into())?,
@@ -134,7 +135,6 @@ async fn run(
 async fn user_sync_atomicity_and_recovery() -> Result<()> {
     let c = Box::pin(Context::open()).await?;
     let s = Service::new(
-        c.tenant,
         Uuid::parse_str(&c.inputs.installation.instance_id)?,
         c.proof_audit.clone(),
         rss_mdm_query::cursor::CursorCodec::new(&[8; 32])?,
@@ -648,7 +648,7 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
     let session = c
         .authority
         .inspect_bearer(
-            c.sessions.binding(),
+            c.execution(),
             rss_identity_core::session::BearerSecret::parse(session_secret)?,
             deadline(),
         )

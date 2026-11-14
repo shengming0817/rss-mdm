@@ -19,6 +19,7 @@ pub(super) struct Piece {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Saved {
+    pub expected_epoch: i64,
     pub upload: Upload,
     pub pieces: Vec<Piece>,
 }
@@ -71,33 +72,33 @@ pub(super) async fn commit(tx: Transaction<'_, Postgres>) -> Result<(), Error> {
 impl Store {
     pub(super) fn sign<T: Serialize>(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         key: &str,
         value: &T,
     ) -> Result<serde_json::Value, Error> {
-        sign_document(&self.protection, self.tenant, key, value)
+        sign_document(&self.protection, binding.tenant(), key, value)
     }
     pub(super) fn unsign<T: serde::de::DeserializeOwned>(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         key: &str,
         v: serde_json::Value,
     ) -> Result<T, Error> {
-        verify_document(&self.protection, self.tenant, key, v)
+        verify_document(&self.protection, binding.tenant(), key, v)
     }
     pub(super) fn manifest_key(&self, c: StorageClass, a: &Artifact) -> String {
         format!("{}:{}:{}", class(c), hex(a.digest().bytes()), a.length())
     }
-    pub(super) async fn tx(&self) -> Result<Transaction<'_, Postgres>, Error> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+    pub(super) async fn tx(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<Transaction<'_, Postgres>, Error> {
+        let mut tx = self.scope_tx(binding).await?;
+        sqlx::query("SELECT set_config('rss.content_generation',$1,true)")
+            .bind(self.generation.to_string())
             .execute(&mut *tx)
             .await
-            .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('rss.content_generation',$2,true),set_config('statement_timeout','6000',true),set_config('lock_timeout','6000',true)")
-   .bind(self.tenant.to_string()).bind(self.generation.to_string()).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+            .map_err(|_| storage())?;
         // A detached old worker may never settle logical state after cutover. The maintenance
         // owner alone may address a non-active candidate generation.
         let valid: bool = sqlx::query_scalar("SELECT mdm_content.lock_generation($1)")
@@ -109,17 +110,18 @@ impl Store {
             return Err(Error::Conflict);
         }
         if let Storage::S3(s3) = &self.config.storage {
-            crate::connections::require_live(&mut tx, self.tenant, s3.revision).await?;
+            crate::connections::require_live(&mut tx, binding.tenant(), s3.revision).await?;
         }
         Ok(tx)
     }
     pub(super) async fn quota(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut Transaction<'_, Postgres>,
         extra: u64,
     ) -> Result<(), Error> {
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2664))")
-            .bind(self.tenant.to_string())
+            .bind(binding.tenant().to_string())
             .execute(&mut **tx)
             .await
             .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
@@ -137,17 +139,21 @@ impl Store {
         Ok(())
     }
     /// Resolve authenticated physical state; logical manifests carry no backend coordinates.
-    pub(super) async fn coordinate(&self, piece: &Piece) -> Result<Coordinate, Error> {
-        let mut tx = self.tx().await?;
+    pub(super) async fn coordinate(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        piece: &Piece,
+    ) -> Result<Coordinate, Error> {
+        let mut tx = self.tx(binding).await?;
         let document: Option<serde_json::Value> = sqlx::query_scalar(
             "SELECT location FROM mdm_content.objects WHERE generation=current_setting('rss.content_generation')::uuid AND tenant_id=$1::uuid AND generation=$2 AND id=$3 AND content=$4 AND state IN ('ready','deleting')",
         )
-        .bind(self.tenant.to_string()).bind(self.generation).bind(piece.id)
+        .bind(binding.tenant().to_string()).bind(self.generation).bind(piece.id)
         .bind(encode(&piece.content)?)
         .fetch_optional(&mut *tx).await.map_err(|e| pg_error("resolve_content_location", e))?;
         let location = crate::location::Location::open(
             &self.protection,
-            self.tenant,
+            binding.tenant(),
             self.generation,
             piece.id,
             piece.content,
@@ -156,12 +162,21 @@ impl Store {
         commit(tx).await?;
         location.coordinate.ok_or(Error::Invariant)
     }
-    pub(super) async fn saved(&self, actor: &str, id: Uuid, now: i64) -> Result<Saved, Error> {
+    pub(super) async fn saved(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        actor: &str,
+        id: Uuid,
+        now: i64,
+    ) -> Result<Saved, Error> {
         let key = upload::storage_key(actor, id);
-        let mut tx = self.tx().await?;
+        let mut tx = self.tx(binding).await?;
         let row:Option<serde_json::Value>=sqlx::query_scalar("SELECT document FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND expires>$3")
-   .bind(self.tenant.to_string()).bind(key).bind(now).fetch_optional(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
-        let saved: Saved = self.unsign(&key.to_string(), row.ok_or(Error::Conflict)?)?;
+   .bind(binding.tenant().to_string()).bind(key).bind(now).fetch_optional(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+        let saved: Saved = self.unsign(binding, &key.to_string(), row.ok_or(Error::Conflict)?)?;
+        if saved.expected_epoch != binding.epoch().get() {
+            return Err(Error::Conflict);
+        }
         if saved.upload.id != id || saved.upload.binding.actor != actor {
             return Err(Error::Metadata);
         }
@@ -170,6 +185,7 @@ impl Store {
     }
     pub(super) async fn claim(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         actor: &str,
         id: Uuid,
         offset: Option<u64>,
@@ -178,14 +194,18 @@ impl Store {
         budget: UploadBudget,
     ) -> Result<(Saved, Uuid), Error> {
         let key = upload::storage_key(actor, id);
-        let mut tx = self.tx().await?;
+        let mut tx = self.tx(binding).await?;
         let row=sqlx::query("SELECT document,held_until,epoch FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND expires>$3 FOR UPDATE")
-   .bind(self.tenant.to_string()).bind(key).bind(now).fetch_optional(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?.ok_or(Error::Conflict)?;
+   .bind(binding.tenant().to_string()).bind(key).bind(now).fetch_optional(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?.ok_or(Error::Conflict)?;
         let saved: Saved = self.unsign(
+            binding,
             &key.to_string(),
             row.try_get("document")
                 .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?,
         )?;
+        if saved.expected_epoch != binding.epoch().get() {
+            return Err(Error::Conflict);
+        }
         if saved.upload.id != id || saved.upload.binding.actor != actor {
             return Err(Error::Metadata);
         }
@@ -203,12 +223,13 @@ impl Store {
         {
             return Err(Error::Conflict);
         }
-        sqlx::query("UPDATE mdm_content.uploads SET epoch=$3,held_until=ceil(extract(epoch FROM clock_timestamp())+$4)::bigint WHERE tenant_id=$1::uuid AND id=$2").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(budget.remaining().as_secs_f64()).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+        sqlx::query("UPDATE mdm_content.uploads SET epoch=$3,held_until=ceil(extract(epoch FROM clock_timestamp())+$4)::bigint WHERE tenant_id=$1::uuid AND id=$2").bind(binding.tenant().to_string()).bind(key).bind(epoch).bind(budget.remaining().as_secs_f64()).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await?;
         Ok((saved, epoch))
     }
     pub(super) async fn claim_parse(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         actor: &str,
         id: Uuid,
         now: i64,
@@ -217,10 +238,10 @@ impl Store {
         length: u64,
     ) -> Result<(), Error> {
         let key = upload::storage_key(actor, id);
-        let mut tx = self.tx().await?;
-        self.quota(&mut tx, length).await?;
+        let mut tx = self.tx(binding).await?;
+        self.quota(binding, &mut tx, length).await?;
         let changed = sqlx::query("UPDATE mdm_content.uploads SET epoch=$3,reserved=$6,held_until=ceil(extract(epoch FROM clock_timestamp())+$4)::bigint WHERE tenant_id=$1::uuid AND id=$2 AND complete AND expires>$5 AND epoch IS NULL")
-            .bind(self.tenant.to_string()).bind(key).bind(epoch).bind(budget.remaining().as_secs_f64()).bind(now).bind(length as i64).execute(&mut *tx).await.map_err(|_| storage())?.rows_affected();
+            .bind(binding.tenant().to_string()).bind(key).bind(epoch).bind(budget.remaining().as_secs_f64()).bind(now).bind(length as i64).execute(&mut *tx).await.map_err(|_| storage())?.rows_affected();
         if changed != 1 {
             return Err(Error::Conflict);
         }
@@ -228,23 +249,28 @@ impl Store {
     }
     pub(super) async fn release(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         key: Uuid,
         epoch: Uuid,
         temporary: u64,
     ) -> Result<(), Error> {
-        let mut tx = self.tx().await?;
+        let mut tx = self.tx(binding).await?;
         let document: Option<serde_json::Value> = sqlx::query_scalar("SELECT document FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3 FOR UPDATE")
-            .bind(self.tenant.to_string()).bind(key).bind(epoch).fetch_optional(&mut *tx).await.map_err(|_| storage())?;
+            .bind(binding.tenant().to_string()).bind(key).bind(epoch).fetch_optional(&mut *tx).await.map_err(|_| storage())?;
         let Some(document) = document else {
             return commit(tx).await;
         };
-        let saved: Saved = self.unsign(&key.to_string(), document)?;
+        let saved: Saved = self.unsign(binding, &key.to_string(), document)?;
+        if saved.expected_epoch != binding.epoch().get() {
+            return Err(Error::Conflict);
+        }
         let baseline = protected::reservation(&saved.upload.binding)?;
-        sqlx::query("UPDATE mdm_content.uploads SET held_until=0,epoch=NULL,reserved=greatest($5,reserved-$4) WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(temporary as i64).bind(baseline as i64).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+        sqlx::query("UPDATE mdm_content.uploads SET held_until=0,epoch=NULL,reserved=greatest($5,reserved-$4) WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3").bind(binding.tenant().to_string()).bind(key).bind(epoch).bind(temporary as i64).bind(baseline as i64).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await
     }
     pub(super) async fn put_piece(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         lease: (Uuid, Uuid, Arc<crate::budget::UploadLease>),
         offset: u64,
         length: u64,
@@ -273,8 +299,8 @@ impl Store {
             intent: intent.clone(),
             coordinate: None,
         };
-        let mut tx = self.tx().await?;
-        self.quota(&mut tx, 0).await?;
+        let mut tx = self.tx(binding).await?;
+        self.quota(binding, &mut tx, 0).await?;
         let extra: i64 = sqlx::query_scalar(
             r#"SELECT (greatest(u.reserved, p.bytes + $2::bigint)
                       - greatest(u.reserved, p.bytes))::bigint
@@ -297,13 +323,13 @@ impl Store {
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
-        self.quota(&mut tx, extra as u64).await?;
-        let owns:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3 AND NOT complete)").bind(self.tenant.to_string()).bind(owner).bind(epoch).fetch_one(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+        self.quota(binding, &mut tx, extra as u64).await?;
+        let owns:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3 AND NOT complete)").bind(binding.tenant().to_string()).bind(owner).bind(epoch).fetch_one(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         if !owns {
             return Err(Error::Conflict);
         }
         sqlx::query("INSERT INTO mdm_content.objects(tenant_id,id,owner,content,location,expires,generation,state) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,'pending')")
-   .bind(self.tenant.to_string()).bind(id).bind(owner).bind(encode(&content)?).bind(location.seal(&self.protection,self.tenant)?).bind(expires).bind(self.generation).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+   .bind(binding.tenant().to_string()).bind(id).bind(owner).bind(encode(&content)?).bind(location.seal(&self.protection,binding.tenant())?).bind(expires).bind(self.generation).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await?;
         let coordinate = match self
             .backend
@@ -315,9 +341,9 @@ impl Store {
             Err(backend::WriteFailure::NotWritten(error)) => {
                 // Only the completed provider call can prove non-publication. Missing
                 // recovery or a dropped future never reaches this settlement path.
-                let mut tx = self.tx().await?;
+                let mut tx = self.tx(binding).await?;
                 sqlx::query("UPDATE mdm_content.objects SET state='deleted' WHERE generation=current_setting('rss.content_generation')::uuid AND tenant_id=$1::uuid AND id=$2 AND location->'value'->'coordinate'='null'::jsonb AND state IN ('pending','deleting')")
-                    .bind(self.tenant.to_string()).bind(id).execute(&mut *tx).await
+                    .bind(binding.tenant().to_string()).bind(id).execute(&mut *tx).await
                     .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
                 commit(tx).await?;
                 return Err(error);
@@ -325,13 +351,13 @@ impl Store {
         };
         // Preserve the exact version even if subsequent verification fails.
         location.coordinate = Some(coordinate.clone());
-        let mut tx = self.tx().await?;
+        let mut tx = self.tx(binding).await?;
         sqlx::query(
             "UPDATE mdm_content.objects SET location=$3 WHERE generation=current_setting('rss.content_generation')::uuid AND tenant_id=$1::uuid AND id=$2",
         )
-        .bind(self.tenant.to_string())
+        .bind(binding.tenant().to_string())
         .bind(id)
-        .bind(location.seal(&self.protection,self.tenant)?)
+        .bind(location.seal(&self.protection,binding.tenant())?)
         .execute(&mut *tx)
         .await
         .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
@@ -339,8 +365,8 @@ impl Store {
         self.backend
             .read(&coordinate, content, 0, content.length, deadline, capacity)
             .await?;
-        let mut tx = self.tx().await?;
-        sqlx::query("UPDATE mdm_content.objects SET state='ready' WHERE generation=current_setting('rss.content_generation')::uuid AND tenant_id=$1::uuid AND id=$2 AND state='pending'").bind(self.tenant.to_string()).bind(id).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+        let mut tx = self.tx(binding).await?;
+        sqlx::query("UPDATE mdm_content.objects SET state='ready' WHERE generation=current_setting('rss.content_generation')::uuid AND tenant_id=$1::uuid AND id=$2 AND state='pending'").bind(binding.tenant().to_string()).bind(id).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await?;
         Ok(Piece {
             id,
@@ -351,21 +377,22 @@ impl Store {
     }
     pub(super) async fn save_frontier(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         saved: &Saved,
         epoch: Uuid,
         deadline: Deadline,
         commit_started: &std::sync::atomic::AtomicBool,
     ) -> Result<(), Error> {
         self.check_deadline(deadline)?;
-        let mut tx = self.tx().await?;
+        let mut tx = self.tx(binding).await?;
         let count=sqlx::query("UPDATE mdm_content.uploads SET document=$4,held_until=0,epoch=NULL WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3 AND NOT complete")
-   .bind(self.tenant.to_string()).bind(saved.upload.storage_key()).bind(epoch).bind(self.sign(&saved.upload.storage_key().to_string(),saved)?).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?.rows_affected();
+   .bind(binding.tenant().to_string()).bind(saved.upload.storage_key()).bind(epoch).bind(self.sign(binding, &saved.upload.storage_key().to_string(),saved)?).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?.rows_affected();
         if count != 1 {
             return Err(Error::Conflict);
         }
         let pieces = saved.pieces.iter().map(|p| p.id).collect::<Vec<_>>();
         sqlx::query("UPDATE mdm_content.objects SET expires=0 WHERE generation=current_setting('rss.content_generation')::uuid AND tenant_id=$1::uuid AND owner=$2 AND state='ready' AND NOT(id=ANY($3))")
-         .bind(self.tenant.to_string()).bind(saved.upload.storage_key()).bind(pieces).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+         .bind(binding.tenant().to_string()).bind(saved.upload.storage_key()).bind(pieces).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         self.check_deadline(deadline)?;
         commit_started.store(true, std::sync::atomic::Ordering::Release);
         commit(tx).await
@@ -379,17 +406,22 @@ impl Store {
     }
     pub(super) async fn pin(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         a: &Artifact,
         c: StorageClass,
         deadline: Deadline,
         reserved: u64,
     ) -> Result<(Manifest, Uuid), Error> {
         self.check_deadline(deadline)?;
-        let mut tx = self.tx().await?;
-        self.quota(&mut tx, reserved).await?;
+        let mut tx = self.tx(binding).await?;
+        self.quota(binding, &mut tx, reserved).await?;
         let row:Option<serde_json::Value>=sqlx::query_scalar("SELECT document FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND state='ready' FOR UPDATE")
-   .bind(self.tenant.to_string()).bind(class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).fetch_optional(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
-        let manifest = self.unsign(&self.manifest_key(c, a), row.ok_or(Error::Invariant)?)?;
+   .bind(binding.tenant().to_string()).bind(class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).fetch_optional(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+        let manifest = self.unsign(
+            binding,
+            &self.manifest_key(c, a),
+            row.ok_or(Error::Invariant)?,
+        )?;
         let id = Uuid::new_v4();
         let now: i64 =
             sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
@@ -405,14 +437,18 @@ impl Store {
                     + 1,
             )
             .ok_or(Error::Deadline)?;
-        sqlx::query("INSERT INTO mdm_content.pins(tenant_id,id,class,sha256,length,expires,reserved) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)").bind(self.tenant.to_string()).bind(id).bind(class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).bind(expires).bind(reserved as i64).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+        sqlx::query("INSERT INTO mdm_content.pins(tenant_id,id,class,sha256,length,expires,reserved) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)").bind(binding.tenant().to_string()).bind(id).bind(class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).bind(expires).bind(reserved as i64).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await?;
         Ok((manifest, id))
     }
-    pub(super) async fn unpin(&self, id: Uuid) -> Result<(), Error> {
-        let mut tx = self.tx().await?;
+    pub(super) async fn unpin(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        id: Uuid,
+    ) -> Result<(), Error> {
+        let mut tx = self.tx(binding).await?;
         sqlx::query("DELETE FROM mdm_content.pins WHERE tenant_id=$1::uuid AND id=$2")
-            .bind(self.tenant.to_string())
+            .bind(binding.tenant().to_string())
             .bind(id)
             .execute(&mut *tx)
             .await
@@ -463,4 +499,33 @@ pub(super) fn sign_document<T: Serialize>(
         value,
         mac: mac.to_vec(),
     })
+}
+
+impl Store {
+    /// Existing RSS execution fence remains held by PostgreSQL through this journal commit.
+    pub(super) async fn scope_tx(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<Transaction<'_, Postgres>, Error> {
+        let mut tx = self.pool.begin().await.map_err(|_| storage())?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| storage())?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('rss.storage_target',$2,true),set_config('rss.storage_lineage',$3,true),set_config('rss.execution_epoch',$4,true),set_config('statement_timeout','6000',true),set_config('lock_timeout','6000',true)")
+            .bind(binding.tenant().to_string()).bind(binding.storage().target().iter().map(|b|format!("{b:02x}")).collect::<String>()).bind(binding.storage().lineage().iter().map(|b|format!("{b:02x}")).collect::<String>()).bind(binding.epoch().get().to_string()).execute(&mut *tx).await.map_err(|_|storage())?;
+        sqlx::query("SELECT rss_transactional_messaging.check_execution()")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                let e: rss_transactional_messaging_postgres::PgError = e.into();
+                if e.kind() == rss_transactional_messaging::error::MessagingErrorKind::OwnershipLost
+                {
+                    Error::Conflict
+                } else {
+                    storage()
+                }
+            })?;
+        Ok(tx)
+    }
 }

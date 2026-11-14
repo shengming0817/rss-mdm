@@ -47,6 +47,7 @@ pub(super) async fn read(
         .map_err(db)?
         .ok_or(Error::Unauthorized)?;
     let p = DevicePrincipal {
+        binding: credential.binding,
         profile,
         tenant: credential.tenant,
         device: row

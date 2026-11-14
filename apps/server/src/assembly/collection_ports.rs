@@ -80,7 +80,7 @@ impl NativeDelivery for Delivery {
     fn prepare_on<'a>(
         &'a self,
         c: &'a mut PgConnection,
-        tenant: TenantId,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         id: Uuid,
         platform: rss_mdm_policy::Platform,
     ) -> Pending<'a, Vec<rss_mdm_audit_integration::Fact>> {
@@ -93,7 +93,7 @@ impl NativeDelivery for Delivery {
                     };
                     (
                         store
-                            .prepare_native_collection(c, tenant.to_string(), id)
+                            .prepare_native_collection(c, execution, id)
                             .await
                             .map_err(apple)?,
                         "apple",
@@ -101,7 +101,10 @@ impl NativeDelivery for Delivery {
                 }
                 rss_mdm_policy::Platform::Windows => (vec![], "windows_push"),
             };
-            sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),$1)").bind(wake).execute(c).await?;
+            sqlx::query("SELECT pg_notify('mdm_work',$1)")
+                .bind(wake)
+                .execute(c)
+                .await?;
             Ok(facts)
         })
     }

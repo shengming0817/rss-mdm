@@ -33,7 +33,7 @@ pub async fn sources<C: ManagementContentPort>(
         .map_err(crate::management::query_error)?;
     transaction::inspect(
         &app.runtime,
-        app.audit.binding(),
+        proof.binding(),
         (app, proof, query),
         |ctx, tx| {
             Box::pin(async move {
@@ -87,7 +87,7 @@ pub async fn entries<C: ManagementContentPort>(
     query
         .require_schema(&ENTRIES)
         .map_err(crate::management::query_error)?;
-    transaction::inspect(&app.runtime, app.audit.binding(), (app, proof, source, query), |ctx, tx| Box::pin(async move {
+    transaction::inspect(&app.runtime, proof.binding(), (app, proof, source, query), |ctx, tx| Box::pin(async move {
         let (app, proof, source, query) = ctx;
         let current = authorize(tx, proof, Permission::SoftwareRead).await?;
         storage::lock(tx, source, true).await?;
@@ -113,7 +113,7 @@ pub async fn snapshot<C: ManagementContentPort>(
 ) -> Result<SnapshotDetail, Error> {
     read_audit(proof, audit)?;
     source_id(&source)?;
-    transaction::inspect(&app.runtime, app.audit.binding(), (proof, source), |ctx, tx| Box::pin(async move {
+    transaction::inspect(&app.runtime, proof.binding(), (proof, source), |ctx, tx| Box::pin(async move {
         let (proof, source) = ctx;
         authorize(tx, proof, Permission::SoftwareRead).await?;
         let tenant = tx.tenant_id().to_string();
@@ -135,7 +135,7 @@ pub async fn entry<C: ManagementContentPort>(
 ) -> Result<EntryDetail, Error> {
     read_audit(proof, audit)?;
     source_id(&source)?;
-    transaction::inspect(&app.runtime, app.audit.binding(), (proof, source, id), |ctx, tx| Box::pin(async move {
+    transaction::inspect(&app.runtime, proof.binding(), (proof, source, id), |ctx, tx| Box::pin(async move {
         let (proof, source, id) = ctx;
         authorize(tx, proof, Permission::SoftwareRead).await?;
         let tenant = tx.tenant_id().to_string();
@@ -164,7 +164,7 @@ pub async fn operation<C: ManagementContentPort>(
     source_id(&source)?;
     transaction::inspect(
         &app.runtime,
-        app.audit.binding(),
+        proof.binding(),
         (proof, source, id),
         |ctx, tx| {
             Box::pin(async move {

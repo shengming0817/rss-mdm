@@ -39,9 +39,9 @@ pub(super) async fn assignments(
         let page=async {
         let after=rss_mdm_scope_service::window::after(codec,query,&binding).map_err(window)?;
         if matches!(p.definition.action,Action::UnmanageDevice {..}) {
-            return super::retirement::assignments_on(s,c,&p,after,limit,codec,&binding).await;
+            return super::retirement::assignments_on(a.binding().tenant(),s,c,&p,after,limit,codec,&binding).await;
         }
-        let source=s.source.clone();let tenant=s.tenant;let scope=p.definition.scope;let cursor=after;let channel=match p.definition.action.target_channel() {Some(rss_mdm_policy::SoftwareChannel::Agent)=>rss_mdm_inventory::Channel::Agent,Some(rss_mdm_policy::SoftwareChannel::Mdm)=>rss_mdm_inventory::Channel::Mdm,None=>return Err(Error::Malformed)};
+        let source=s.source.clone();let tenant=a.binding().tenant();let scope=p.definition.scope;let cursor=after;let channel=match p.definition.action.target_channel() {Some(rss_mdm_policy::SoftwareChannel::Agent)=>rss_mdm_inventory::Channel::Agent,Some(rss_mdm_policy::SoftwareChannel::Mdm)=>rss_mdm_inventory::Channel::Mdm,None=>return Err(Error::Malformed)};
         let mut objects=source.assignment_objects_on(c,tenant,scope,channel,cursor,limit).await.map_err(super::source)?;
         let t=tenant.to_string();let version=p.version;let channel_name=channel.as_str();let cursor=after;
         let retired=sqlx::query_scalar::<_,serde_json::Value>("SELECT input FROM mdm_policy.assignments WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND channel=$4 AND reason='source_removed' AND ($5::smallint IS NULL OR (object_kind,object_id)>($5,$6::uuid)) ORDER BY object_kind,object_id LIMIT $7").bind(t).bind(id).bind(version).bind(channel_name).bind(cursor.map(|o|o.kind())).bind(cursor.map(|o|o.uuid())).bind((limit+1) as i64).fetch_all(&mut *c).await.map_err(sql)?;
@@ -69,7 +69,7 @@ pub(super) async fn assignments(
                 if !eligible && object.availability==rss_mdm_scope_service::channels::Availability::Ready {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some("source_pending".into());}
                 let diagnosis=match &p.definition.action {
                     Action::Software{..}|Action::EnsureAgentInstalled{..}=>{
-                        let state=s.software.assignment_state_on(c,&p,target,channel,now).await.map_err(software_fault)?;
+                        let state=s.software.assignment_state_on(a.binding(), c,&p,target,channel,now).await.map_err(software_fault)?;
                         task_admission=state.task_admission;operations=state.operations;state.diagnosis
                     },
                     Action::DeviceAccess{..}=>{operations=rss_mdm_device_access_postgres::device_access::execution::queries::assignment_ids_on(c,tenant,id,target,channel).await.map_err(access_fault)?;None},
@@ -78,7 +78,7 @@ pub(super) async fn assignments(
                         task_admission=Some(rss_mdm_registration_service::enrollment::tasks::queries::assignment_state_on(rss_mdm_install_support::StorageProfile::Mdm, c,tenant,&s.enrollment,&p,device,now).await.map_err(enrollment_fault)?);
                         operations=rss_mdm_registration_service::enrollment::tasks::queries::assignment_ids_on(super::super::policy_ports::credential_profile(&p.definition.action), c,tenant,id,target,channel).await.map_err(enrollment_fault)?;None
                     },
-                    Action::Configuration{..}=>{let state=s.configuration.assignment_on(c,p.id,target).await.map_err(super::configuration_fault)?;operations=state.operations;state.diagnosis},
+                    Action::Configuration{..}=>{let state=s.configuration.assignment_on(a.binding(), c,p.id,target).await.map_err(super::configuration_fault)?;operations=state.operations;state.diagnosis},
                     _=>None
                 };
                 if object.availability==rss_mdm_scope_service::channels::Availability::Ready && task_admission.as_ref().is_some_and(|a|!a.is_eligible()) {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some("target_unavailable".into());}
@@ -98,7 +98,7 @@ pub(super) async fn assignments(
                             let policy=collection_policy.as_ref().ok_or(Error::Unavailable(Failure::CommandInvariant))?;
                             let target_state=rss_mdm_inventory_service::collection::execution::model::Target{device:*device,};
                             let scope=super::super::collection_ports::admission(object.admission);
-                            let (admission,record)=s.collections.assignment_state_on(c,policy,scope,Arc::new(super::super::agent_facts::AgentFacts),&target_state,now,capacity).await?;
+                            let (admission,record)=s.collections.assignment_state_on(a.binding().tenant(), c,policy,scope,Arc::new(super::super::agent_facts::AgentFacts),&target_state,now,capacity).await?;
                             let latest=rss_mdm_inventory_service::collection::execution::queries::latest_assignment_on(c,tenant,id,target,channel).await?.map(RecurringRun::Collection);
                             (admission,record,latest)
                         };

@@ -71,6 +71,7 @@ fn error(e: rss_mdm_timeline_service::Error) -> AgentError {
     })
 }
 async fn history(
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     Extension(control): Extension<rss_axum::RequestControl>,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
@@ -78,9 +79,10 @@ async fn history(
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     raw: OwnedQuery<ActivityQuery>,
 ) -> Result<CollectionResponse<Json<ManagementActivityPage>>, AgentError> {
-    page(control, s, audit, peer, headers, raw, false).await
+    page(&origin, control, s, audit, peer, headers, raw, false).await
 }
 async fn changes(
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     Extension(control): Extension<rss_axum::RequestControl>,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
@@ -88,9 +90,10 @@ async fn changes(
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     raw: OwnedQuery<ActivityQuery>,
 ) -> Result<CollectionResponse<Json<ManagementActivityPage>>, AgentError> {
-    page(control, s, audit, peer, headers, raw, true).await
+    page(&origin, control, s, audit, peer, headers, raw, true).await
 }
 async fn page(
+    origin: &rss_mdm_certificate::GatewayOrigin,
     control: rss_axum::RequestControl,
     s: Arc<Services>,
     audit: RequestAudit,
@@ -100,8 +103,13 @@ async fn page(
     changes: bool,
 ) -> Result<CollectionResponse<Json<ManagementActivityPage>>, AgentError> {
     crate::bounded(async {
-        let p =
-            crate::authenticate(&s.tasks.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
+        let p = crate::authenticate(
+            origin,
+            &s.tasks.enrollment,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+        )
+        .await?;
         audit.set_action("management_activity_read", AuditIntent::Routine);
         let query = raw.parse().map_err(error)?;
         let proof = if query.view.as_deref() == Some("personal") {
@@ -129,6 +137,7 @@ async fn page(
     .await
 }
 async fn detail(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     Extension(control): Extension<rss_axum::RequestControl>,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
@@ -139,8 +148,13 @@ async fn detail(
 ) -> Result<Json<ManagementActivityDetail>, AgentError> {
     crate::bounded(async {
         let personal = raw.parse()?;
-        let p =
-            crate::authenticate(&s.tasks.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
+        let p = crate::authenticate(
+            &origin,
+            &s.tasks.enrollment,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+        )
+        .await?;
         audit.set_action("management_activity_read", AuditIntent::Routine);
         let proof = if personal {
             Some(

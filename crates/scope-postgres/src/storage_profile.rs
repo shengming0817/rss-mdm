@@ -48,7 +48,6 @@ pub(crate) struct Statements {
     pub store_evaluate_page_in_1: &'static str,
     pub store_evaluate_page_in_2: &'static str,
     pub store_evaluate_page_in_3: &'static str,
-    pub store_asset_page_in_1: &'static str,
     pub store_asset_page_in_2: &'static str,
     pub store_asset_page_in_3: &'static str,
     pub store_asset_page_in_4: &'static str,
@@ -57,7 +56,6 @@ pub(crate) struct Statements {
     pub store_input_failed: &'static str,
     pub store_set_input_failed: &'static str,
     pub store_inputs_pending_in_1: &'static str,
-    pub store_relation_window_in_1: &'static str,
     pub store_relation_window_in_2: &'static str,
     pub store_relation_targets_in_1: &'static str,
     pub store_complete_relation_page_in_1: &'static str,
@@ -274,6 +272,7 @@ REVOKE ALL ON FUNCTION "###, $schema, r###"scope_state(uuid,uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION "###, $schema, "scope_state(uuid,uuid) TO ", $access, ",", $scope_runtime, ",", $policy_runtime, ",", $inventory_runtime, ",", $telemetry_runtime, ",", $command_runtime, r###";
 CREATE TABLE "###, $tasks, r###" (
  tenant_id uuid NOT NULL,id uuid NOT NULL,scope uuid NOT NULL,
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  completed boolean NOT NULL DEFAULT false,failure text,failure_detail jsonb,replacement_task uuid,
  PRIMARY KEY(tenant_id,id),
  FOREIGN KEY(tenant_id,scope) REFERENCES "###, $schema, r###"scopes(tenant_id,id),
@@ -284,7 +283,7 @@ ALTER TABLE "###, $tasks, r###" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "###, $tasks, r###" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON "###, $tasks, r###" USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE TABLE "###, $asset_dispatch, r###" (
- tenant_id uuid PRIMARY KEY, from_cut jsonb, to_cut jsonb,
+ tenant_id uuid PRIMARY KEY, expected_epoch bigint NOT NULL CHECK(expected_epoch>0), from_cut jsonb, to_cut jsonb,
  input_failed boolean NOT NULL DEFAULT false,
  event_after bigint NOT NULL DEFAULT 0 CHECK(event_after>=0),
  page_through bigint CHECK(page_through>event_after), cursor uuid,
@@ -297,6 +296,21 @@ CREATE POLICY tenant ON "###, $asset_dispatch, r###" USING(tenant_id=nullif(curr
 GRANT SELECT,INSERT ON "###, $tasks, ",", $asset_dispatch, " TO ", $scope_runtime, r###";
 GRANT UPDATE(completed,failure,failure_detail,replacement_task) ON "###, $tasks, " TO ", $scope_runtime, r###";
 GRANT UPDATE(input_failed,from_cut,to_cut,event_after,page_through,cursor,relation_consumed,relation_watermark,relation_position,relation_cursor) ON "###, $asset_dispatch, " TO ", $scope_runtime, r###";
+CREATE POLICY work_discovery ON "###, $tasks, " FOR SELECT TO ", $owner, r###" USING(true);
+CREATE POLICY work_discovery ON "###, $asset_dispatch, " FOR SELECT TO ", $owner, r###" USING(true);
+CREATE FUNCTION "###, $schema, r###"scope_work_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT tenant_id FROM ((SELECT DISTINCT tenant_id FROM "###, $asset_dispatch, r###" WHERE after_tenant IS NULL OR tenant_id>after_tenant ORDER BY tenant_id LIMIT 32) UNION (SELECT DISTINCT tenant_id FROM "###, $tasks, r###" WHERE after_tenant IS NULL OR tenant_id>after_tenant ORDER BY tenant_id LIMIT 32)) work ORDER BY tenant_id LIMIT 32
+$$;
+CREATE FUNCTION "###, $schema, r###"scope_work_epoch(t uuid, task uuid) RETURNS bigint
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT expected_epoch FROM "###, $tasks, r###" WHERE task IS NOT NULL AND tenant_id=t AND id=task
+ UNION ALL SELECT expected_epoch FROM "###, $asset_dispatch, r###" WHERE task IS NULL AND tenant_id=t
+$$;
+ALTER FUNCTION "###, $schema, "scope_work_scopes(uuid) OWNER TO ", $owner, r###";
+ALTER FUNCTION "###, $schema, "scope_work_epoch(uuid,uuid) OWNER TO ", $owner, r###";
+REVOKE ALL ON FUNCTION "###, $schema, "scope_work_scopes(uuid),", $schema, r###"scope_work_epoch(uuid,uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION "###, $schema, "scope_work_scopes(uuid),", $schema, "scope_work_epoch(uuid,uuid) TO ", $access, r###";
 CREATE TABLE "###, $operations, r###" (
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
@@ -587,7 +601,7 @@ AND NOT EXISTS(SELECT 1 FROM relations t WHERE NOT relrowsecurity OR NOT relforc
  OR has_table_privilege(current_user,t.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
  OR EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=t.oid AND a.attnum>0 AND NOT a.attisdropped
     AND (has_column_privilege(current_user,t.oid,a.attnum,'UPDATE')<>($1 AND a.attname=ANY(t.updates)) OR has_column_privilege(current_user,t.oid,a.attnum,'REFERENCES')))
- OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>1
+ OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid AND polroles && (ARRAY[0::oid] || ARRAY(SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER'))))<>1
  OR NOT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=t.oid AND p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid]
   AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
   AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid))
@@ -640,7 +654,7 @@ AND NOT EXISTS(SELECT 1 FROM owned t WHERE NOT relrowsecurity OR NOT relforcerow
  OR has_table_privilege(current_user,t.oid,'TRUNCATE') OR has_table_privilege(current_user,t.oid,'TRIGGER')
  OR has_table_privilege(current_user,t.oid,'REFERENCES')
  OR has_table_privilege(current_user,t.oid,'DELETE')
- OR (SELECT count(*) FROM pg_policy p WHERE p.polrelid=t.oid)<>1
+ OR (SELECT count(*) FROM pg_policy p WHERE p.polrelid=t.oid AND polroles && (ARRAY[0::oid] || ARRAY(SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER'))))<>1
  OR NOT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=t.oid AND p.polname='tenant' AND p.polcmd='*' AND p.polroles=ARRAY[0::oid]
   AND p.polpermissive
   AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
@@ -702,7 +716,7 @@ AND NOT EXISTS(SELECT FROM owned t WHERE NOT relrowsecurity OR NOT relforcerowse
  OR has_table_privilege(current_user,t.oid,'SELECT')<>selectable
  OR has_table_privilege(current_user,t.oid,'INSERT')<>insertable
  OR has_table_privilege(current_user,t.oid,'DELETE')<>deletable
- OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>1
+ OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid AND polroles && (ARRAY[0::oid] || ARRAY(SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER'))))<>1
  OR NOT EXISTS(SELECT FROM pg_policy p WHERE p.polrelid=t.oid AND p.polname='tenant' AND p.polcmd='*' AND p.polroles=ARRAY[0::oid] AND p.polpermissive
  AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
  AND pg_get_expr(p.polwithcheck,p.polrelid)=pg_get_expr(p.polqual,p.polrelid))
@@ -738,7 +752,7 @@ SELECT (SELECT count(*) FROM relations)=(SELECT count(*) FROM expected)
  AND NOT EXISTS(SELECT 1 FROM relations c JOIN pg_attribute col ON col.attrelid=c.oid,LATERAL aclexplode(col.attacl) a
   WHERE a.grantee=0 OR a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)
  AND NOT EXISTS(SELECT 1 FROM relations c WHERE
- (SELECT count(*) FROM pg_policy WHERE polrelid=c.oid)<>1
+ (SELECT count(*) FROM pg_policy WHERE polrelid=c.oid AND polroles && (ARRAY[0::oid] || ARRAY(SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER'))))<>1
  OR NOT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid AND p.polname='tenant'
  AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid]
  AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
@@ -792,7 +806,7 @@ ORDER BY e.signature LIMIT 1
                 store_publish_in_3: concat!("UPDATE ", $schema, "scopes SET resolution=$3,resolution_revision=$4,calculation_revision=calculation_revision+1 WHERE tenant_id=$1::uuid AND id=$2"),
                 store_definition_at_1: concat!("SELECT definition FROM ", $schema, "scope_versions WHERE tenant_id=$1::uuid AND id=$2 AND revision=$3"),
                 store_enqueue_in_1: concat!("SELECT id FROM ", $tasks, " WHERE tenant_id=$1::uuid AND scope=$2 AND NOT completed"),
-                store_enqueue_in_2: concat!("INSERT INTO ", $tasks, "(tenant_id,id,scope) VALUES($1::uuid,$2,$3)"),
+                store_enqueue_in_2: concat!("INSERT INTO ", $tasks, "(tenant_id,id,scope,expected_epoch) VALUES($1::uuid,$2,$3,$4)"),
                 store_request_inputs: concat!("UPDATE ", $schema, "scopes SET input_revision=input_revision+1,input_epoch=(SELECT id FROM mdm.asset_epochs WHERE active),input_xid=pg_current_xact_id() WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted"),
                 store_covered_inputs: concat!("SELECT CASE WHEN input_revision=0 OR mdm.asset_cut_contains($3,input_epoch,input_xid) THEN input_revision ELSE 0 END FROM ", $schema, "scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted"),
                 store_uncovered_inputs: concat!("SELECT input_revision>$3 FROM ", $schema, "scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted"),
@@ -802,16 +816,14 @@ ORDER BY e.signature LIMIT 1
                 store_evaluate_page_in_1: concat!("SELECT DISTINCT object_kind,object_id FROM ", $schema, r###"scope_source_members WHERE tenant_id=$1::uuid AND run=$2 AND source=ANY($3) AND ($4::smallint IS NULL OR (object_kind,object_id)>($4,$5::uuid)) ORDER BY object_kind,object_id LIMIT $6"###),
                 store_evaluate_page_in_2: concat!("INSERT INTO ", $schema, "scope_results(tenant_id,run,object_kind,object_id,matched,explanation) SELECT $1::uuid,$2,k,d,m,e FROM unnest($3::smallint[],$4::uuid[],$5::boolean[],$6::jsonb[]) AS p(k,d,m,e)"),
                 store_evaluate_page_in_3: concat!("UPDATE ", $schema, "scope_runs SET object_count=object_count+$3,member_count=member_count+$3,evaluation_cursor_kind=$4,evaluation_cursor=$5,phase=$6 WHERE tenant_id=$1::uuid AND id=$2"),
-                store_asset_page_in_1: concat!("INSERT INTO ", $asset_dispatch, "(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING"),
                 store_asset_page_in_2: concat!("SELECT from_cut,to_cut,event_after,page_through,cursor FROM ", $asset_dispatch, " WHERE tenant_id=$1::uuid FOR UPDATE"),
                 store_asset_page_in_3: concat!("UPDATE ", $asset_dispatch, " SET from_cut=$2,to_cut=NULL,event_after=0,page_through=NULL,cursor=NULL WHERE tenant_id=$1::uuid"),
                 store_asset_page_in_4: concat!("UPDATE ", $asset_dispatch, " SET to_cut=$2,page_through=$3 WHERE tenant_id=$1::uuid"),
                 store_asset_page_in_5: concat!("WITH from_cut AS MATERIALIZED(SELECT * FROM mdm.asset_cut_context($2)),to_cut AS MATERIALIZED(SELECT * FROM mdm.asset_cut_context($3)),changed AS (SELECT DISTINCT a.identity ->> 'device' AS device FROM mdm.asset_changes AS a WHERE a.tenant_id = CAST($1 AS uuid) AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM from_cut),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM to_cut),false) AND a.revision > $4 AND a.revision <= $5 AND (a.kind IN ('device', 'source', 'credential') OR 'channel.agent.installation' = ANY(a.fields))) SELECT DISTINCT s.scope FROM changed INNER JOIN ", $schema, "scope_sources AS s ON s.tenant_id = CAST($1 AS uuid) AND s.kind = 'device' AND s.target = changed.device::uuid INNER JOIN ", $schema, "scopes AS h ON (h.tenant_id, h.id) = (s.tenant_id, s.scope) WHERE NOT h.deleted AND (CAST($6 AS uuid) IS NULL OR s.scope > $6) ORDER BY s.scope LIMIT 33"),
                 store_complete_asset_page_in_1: concat!("UPDATE ", $asset_dispatch, " SET event_after=$2,page_through=$3,cursor=$4 WHERE tenant_id=$1::uuid AND to_cut=$5"),
                 store_input_failed: concat!("SELECT coalesce((SELECT input_failed FROM ", $asset_dispatch, " WHERE tenant_id=$1::uuid),false)"),
-                store_set_input_failed: concat!("INSERT INTO ", $asset_dispatch, "(tenant_id,input_failed) VALUES($1::uuid,$2) ON CONFLICT(tenant_id) DO UPDATE SET input_failed=excluded.input_failed"),
+                store_set_input_failed: concat!("UPDATE ", $asset_dispatch, " SET input_failed=$2 WHERE tenant_id=$1::uuid"),
                 store_inputs_pending_in_1: concat!("WITH input_cut AS MATERIALIZED(SELECT * FROM mdm.asset_cut_context((SELECT from_cut FROM ", $asset_dispatch, " WHERE tenant_id=$1::uuid))) SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM input_cut),false)) OR $2>coalesce((SELECT relation_consumed FROM ", $asset_dispatch, " WHERE tenant_id=$1::uuid),0) OR EXISTS(SELECT 1 FROM ", $group_changes, " WHERE tenant_id=$1::uuid AND NOT completed)"),
-                store_relation_window_in_1: concat!("INSERT INTO ", $asset_dispatch, "(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING"),
                 store_relation_window_in_2: concat!("SELECT relation_consumed,relation_watermark,relation_position,relation_cursor FROM ", $asset_dispatch, " WHERE tenant_id=$1::uuid FOR UPDATE"),
                 store_relation_targets_in_1: concat!("SELECT DISTINCT s.scope FROM ", $schema, "scope_sources s JOIN ", $schema, "scopes h ON(h.tenant_id,h.id)=(s.tenant_id,s.scope) WHERE s.tenant_id=$1::uuid AND s.kind='device' AND s.target=ANY($2) AND NOT h.deleted AND ($3::uuid IS NULL OR s.scope>$3) ORDER BY s.scope LIMIT 33"),
                 store_complete_relation_page_in_1: concat!("UPDATE ", $asset_dispatch, " SET relation_consumed=$2,relation_watermark=$3,relation_position=$4,relation_cursor=$5 WHERE tenant_id=$1::uuid"),
@@ -829,7 +841,7 @@ SELECT EXISTS(SELECT FROM pg_class c WHERE c.oid='"###, $group_changes, r###"'::
  AND NOT EXISTS(SELECT FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
   AND (has_column_privilege(current_user,c.oid,a.attnum,'UPDATE')<>(NOT $1::boolean AND a.attname IN('cursor','completed'))
     OR has_column_privilege(current_user,c.oid,a.attnum,'REFERENCES')))
- AND (SELECT count(*) FROM pg_policy WHERE polrelid=c.oid)=1
+ AND (SELECT count(*) FROM pg_policy WHERE polrelid=c.oid AND polroles && (ARRAY[0::oid] || ARRAY(SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER'))))=1
  AND EXISTS(SELECT FROM pg_policy p WHERE p.polrelid=c.oid AND p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid]
   AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
   AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid))
@@ -837,8 +849,8 @@ SELECT EXISTS(SELECT FROM pg_class c WHERE c.oid='"###, $group_changes, r###"'::
  AND NOT EXISTS(SELECT FROM pg_attribute col CROSS JOIN LATERAL aclexplode(col.attacl) a WHERE col.attrelid=c.oid AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))))
  AND NOT EXISTS(SELECT FROM pg_roles WHERE oid IN(SELECT oid FROM reachable) AND (rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication))
 "###),
-                object_manifest: concat!(r###"{"tables":[""###, $asset_dispatch, r###"",""###, $group_changes, r###"",""###, $schema, r###"scope_channel_results",""###, $schema, r###"scope_projection_runs",""###, $schema, r###"scope_results",""###, $schema, r###"scope_runs",""###, $schema, r###"scope_source_members",""###, $schema, r###"scope_sources",""###, $schema, r###"scope_versions",""###, $schema, r###"scopes",""###, $tasks, r###"",""###, $operations, r###""],"functions":[""###, $schema, r###"channel_admission",""###, $schema, r###"guard_scope_channel_result",""###, $schema, r###"scope_admission",""###, $schema, r###"scope_state"],"views":[]}"###),
-                access_contract: concat!(r###"{"tables":[],"functions":[{"name":""###, $schema, r###"scope_admission","search_path":"search_path=pg_catalog"},{"name":""###, $schema, r###"scope_state","search_path":"search_path=pg_catalog"},{"name":""###, $schema, r###"channel_admission","search_path":"search_path=pg_catalog"}],"external_relations":["###, $access_contract_external_relations, r###"],"verified_schemas":[]}"###),
+                object_manifest: concat!(r###"{"tables":[""###, $asset_dispatch, r###"",""###, $group_changes, r###"",""###, $schema, r###"scope_channel_results",""###, $schema, r###"scope_projection_runs",""###, $schema, r###"scope_results",""###, $schema, r###"scope_runs",""###, $schema, r###"scope_source_members",""###, $schema, r###"scope_sources",""###, $schema, r###"scope_versions",""###, $schema, r###"scopes",""###, $tasks, r###"",""###, $operations, "\"],\"functions\":[", "\"", $schema, "scope_work_scopes", "\"", ",", "\"", $schema, "scope_work_epoch", "\"", ",", "\"", $schema, r###"channel_admission",""###, $schema, r###"guard_scope_channel_result",""###, $schema, r###"scope_admission",""###, $schema, r###"scope_state"],"views":[]}"###),
+                access_contract: concat!("{\"tables\":[],\"functions\":[", "{\"name\":\"", $schema, "scope_work_scopes", "\",\"search_path\":\"search_path=pg_catalog\"}", ",", "{\"name\":\"", $schema, "scope_work_epoch", "\",\"search_path\":\"search_path=pg_catalog\"}", ",", "{\"name\":\"", $schema, r###"scope_admission","search_path":"search_path=pg_catalog"},{"name":""###, $schema, r###"scope_state","search_path":"search_path=pg_catalog"},{"name":""###, $schema, r###"channel_admission","search_path":"search_path=pg_catalog"}],"external_relations":["###, $access_contract_external_relations, r###"],"verified_schemas":[]}"###),
                 operation_lock: concat!("SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text,'", $operations, "',$2::text,$3::text)::text,2889))"),
                 operation_replay: concat!("SELECT fingerprint,response,instance::text FROM ", $operations, " WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3"),
                 operation_receipt: concat!("INSERT INTO ", $operations, "(tenant_id,actor,id,fingerprint,response,instance) VALUES($1::uuid,$2,$3,$4,$5,$6::uuid)"),

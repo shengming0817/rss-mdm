@@ -31,7 +31,6 @@ pub(crate) struct Observation {
     #[serde(flatten)]
     binding: PublicBinding,
     process_generation: Uuid,
-    tenant_id: String,
     instance_id: String,
 }
 #[derive(schemars::JsonSchema, Clone, Serialize)]
@@ -43,7 +42,7 @@ struct PublicBinding {
     material_digest: String,
 }
 impl Observation {
-    pub(crate) fn new(binding: &Binding, tenant: String, instance: String) -> Self {
+    pub(crate) fn new(binding: &Binding, instance: String) -> Self {
         Self {
             binding: PublicBinding {
                 host_id: binding.host_id,
@@ -52,7 +51,6 @@ impl Observation {
                 material_digest: binding.material_digest.clone(),
             },
             process_generation: Uuid::new_v4(),
-            tenant_id: tenant,
             instance_id: instance,
         }
     }

@@ -1,3 +1,11 @@
+fn binding() -> rss_transactional_messaging::fence::ExecutionBinding {
+    use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
+    ExecutionBinding::new(
+        StorageIdentity::new([1; 16], [2; 16]).unwrap(),
+        rss_request_context::TenantId::parse(TENANT).unwrap(),
+        Epoch::new(1).unwrap(),
+    )
+}
 use rss_mdm_audit_integration::{Fact, RequestAudit};
 use rss_mdm_timeline_service::{Query, project};
 const TENANT: &str = "11111111-1111-4111-8111-111111111111";
@@ -38,7 +46,7 @@ fn accepted_request_does_not_prove_execution_and_details_are_not_exposed() {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        TENANT.into(),
+        binding(),
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -59,7 +67,7 @@ fn unknown_action_and_outcome_never_become_success() {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        TENANT.into(),
+        binding(),
         "future_stage",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -87,7 +95,7 @@ fn resource_namespace_is_part_of_identity_and_projection() {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        TENANT.into(),
+        binding(),
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -139,7 +147,7 @@ fn missing_targets_project_as_request_resources() {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        TENANT.into(),
+        binding(),
         "management_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
@@ -185,7 +193,7 @@ fn background_attempt_is_not_an_http_request_even_when_using_request_settlement(
         let audit = RequestAudit::new(
             origin,
             StorageProfile::Mdm,
-            TENANT.into(),
+            binding(),
             "recovery",
             AuditIntent::Management,
         );
@@ -216,7 +224,7 @@ fn request_replay_remains_a_request_observation_not_a_second_business_fact() {
     let audit = RequestAudit::new(
         Origin::Request,
         StorageProfile::Mdm,
-        TENANT.into(),
+        binding(),
         "management_write",
         AuditIntent::Management,
     );
@@ -241,7 +249,7 @@ fn push_observations_retain_the_producer_device_without_an_operation_locator() {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        TENANT.into(),
+        binding(),
         "windows_push",
         rss_mdm_audit_integration::AuditIntent::Management,
     );

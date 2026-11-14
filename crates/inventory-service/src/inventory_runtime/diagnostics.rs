@@ -15,6 +15,7 @@ impl Health {
 }
 #[derive(Clone)]
 pub(super) struct ProjectionObservation {
+    pub tenant: TenantId,
     pub run: RunObservation,
     pub started_at: Instant,
     pub last_completed_at: Option<Instant>,
@@ -35,18 +36,23 @@ pub struct Diagnostics {
 }
 impl InventoryRuntime {
     /// Called after host authorization of this exact tenant/instance. Each query grants a fresh read.
-    pub async fn diagnostics(&self, cutoff: Instant) -> Diagnostics {
-        let tenant = self.tenant.to_string();
+    pub async fn diagnostics(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        cutoff: Instant,
+    ) -> Diagnostics {
+        let tenant = binding.tenant().to_string();
         let (delivery, head) = tokio::join!(
             tokio::time::timeout_at(cutoff.into(), self.delivery.pending_count(&tenant)),
-            self.source_head(cutoff),
+            self.source_head(binding, cutoff),
         );
         let now = self.clock.now.now();
         let local = self
             .latest_projection
             .lock()
             .expect("projection observation")
-            .clone();
+            .clone()
+            .filter(|p| p.tenant == binding.tenant());
         Diagnostics {
             delivery: delivery
                 .map_err(|_| ProbeFailure::Deadline)
@@ -60,17 +66,21 @@ impl InventoryRuntime {
                 .map(|at| age_ms(now, at)),
         }
     }
-    async fn source_head(&self, cutoff: Instant) -> Result<(Option<u64>, Instant), ProbeFailure> {
+    async fn source_head(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        cutoff: Instant,
+    ) -> Result<(Option<u64>, Instant), ProbeFailure> {
         let cancel = CancellationToken::new();
-        let scope = rss_mdm_inventory_postgres::projection_scope(self.tenant);
+        let scope = rss_mdm_inventory_postgres::projection_scope(binding.tenant());
         let source = PgSource::new(
             self.observation.clone(),
             JournalReadGrant::verify(
                 &JournalAuthority {
-                    tenant: self.tenant,
+                    tenant: binding.tenant(),
                     token: &cancel,
                 },
-                self.tenant,
+                binding.tenant(),
             )
             .map_err(|_| ProbeFailure::Authority)?,
             scope.source().clone(),

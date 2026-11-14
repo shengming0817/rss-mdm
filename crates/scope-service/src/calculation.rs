@@ -99,6 +99,7 @@ impl Scopes {
     }
     pub async fn advance_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         candidate: &rss_mdm_inventory::AssetCut,
@@ -185,9 +186,9 @@ impl Scopes {
                 self.store.publish_in(tx, &publication, changed).await?;
                 let owner = self.store.owner_in(tx, run.scope).await?;
                 self.dependents
-                    .publication_recorded_in(tx, owner, id)
+                    .publication_recorded_in(binding, tx, owner, id)
                     .await?;
-                self.finish_in(tx, id, None).await?;
+                self.finish_in(binding, tx, id, None).await?;
                 let mut successor = self
                     .store
                     .inputs_uncovered_in(tx, run.scope, run.covered_inputs)
@@ -208,7 +209,7 @@ impl Scopes {
                             successor |= current.coordinates != source.coordinates;
                         }
                         Reference::Device(device) => {
-                            let tenant = self.tenant.to_string();
+                            let tenant = tx.tenant_id().to_string();
                             let device = *device;
                             let cut = run.asset_cut.to_json();
                             successor |= tx
@@ -230,12 +231,13 @@ impl Scopes {
                     }
                 }
                 if successor {
-                    self.enqueue_in(tx, Uuid::new_v4(), run.scope).await?;
+                    self.enqueue_in(binding, tx, Uuid::new_v4(), run.scope)
+                        .await?;
                 }
                 Ok(())
             }
-            "published" => self.finish_in(tx, id, None).await,
-            "superseded" => self.finish_in(tx, id, Some("superseded")).await,
+            "published" => self.finish_in(binding, tx, id, None).await,
+            "superseded" => self.finish_in(binding, tx, id, Some("superseded")).await,
             _ => Err(Error::Unavailable(Failure::Storage).into()),
         }
     }
@@ -247,7 +249,7 @@ impl Scopes {
     ) -> transaction::Result<u64> {
         let profile = self.profile();
 
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         let device = device.to_owned();
         let cut = cut.clone();
         Ok(tx
@@ -328,7 +330,7 @@ impl Scopes {
                 &key,
             ))?;
             let reader = self.objects.clone();
-            let tenant = self.tenant;
+            let tenant = tx.tenant_id();
             let object_key = object;
             let input = if let Some(snapshot) = &source.snapshot {
                 let snapshot = snapshot.id;

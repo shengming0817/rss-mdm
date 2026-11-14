@@ -7,7 +7,6 @@ use crate::{
     store::{active, input},
 };
 use rss_mdm_group::{GroupId, GroupSource, OperationId, SourceCoordinates};
-use rss_request_context::TenantId;
 use rss_transactional_messaging::fence::ExecutionBinding;
 use rss_transactional_messaging::policy::OperationDeadline;
 use rss_transactional_messaging_postgres::{PgError, PgRuntime, PgTransaction};
@@ -18,14 +17,10 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct GroupSources {
     runtime: Arc<PgRuntime>,
-    tenant: TenantId,
 }
 impl GroupSources {
-    pub(crate) fn bound(runtime: Arc<PgRuntime>, binding: ExecutionBinding) -> Self {
-        Self {
-            runtime,
-            tenant: binding.tenant(),
-        }
+    pub(crate) fn bound(runtime: Arc<PgRuntime>) -> Self {
+        Self { runtime }
     }
     /// Admit only the source-reader profile, without Group mutation or Outbox privileges.
     pub async fn bind(
@@ -44,15 +39,11 @@ impl GroupSources {
                 .await,
             None,
         )?;
-        Ok(Self::bound(runtime, binding))
+        Ok(Self::bound(runtime))
     }
     pub(crate) fn check_transaction(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
         self.runtime.validate_transaction(tx)?;
-        Ok(if self.tenant == tx.tenant_id() {
-            Ok(())
-        } else {
-            Err(Rejection::TenantMismatch)
-        })
+        Ok(Ok(()))
     }
     async fn locked_group_in(
         &self,
@@ -105,7 +96,7 @@ impl GroupSources {
     ) -> InTransaction<GroupSource> {
         input!(self.check_transaction(tx)?);
         let group = input!(self.lock_reference_target_in(tx, id).await?);
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let row = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_as::<_, (i64,i64)>("SELECT definition_version,authority_version FROM mdm_group.source_state WHERE tenant_id=$1::uuid AND group_id=$2::uuid")
                 .bind(tenant).bind(id.to_string()).fetch_optional(c).await
@@ -175,7 +166,7 @@ impl GroupSources {
     ) -> InTransaction<Option<OperationId>> {
         input!(self.check_transaction(tx)?);
         input!(self.lock_reference_target_in(tx, group).await?);
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let raw:Option<String>=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query_scalar("SELECT member_set::text FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2::uuid")
                 .bind(tenant).bind(group.to_string()).fetch_one(c).await
@@ -190,7 +181,7 @@ impl GroupSources {
         id: OperationId,
     ) -> InTransaction<MemberBuild> {
         input!(self.check_transaction(tx)?);
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let row=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("SELECT input,fingerprint,phase,cursor_kind,cursor,diff_cursor_kind,diff_cursor,object_count,processed_count,member_count,receipt,authority_version FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=$2::uuid")
                 .bind(tenant).bind(id.to_string()).fetch_optional(c).await
@@ -246,7 +237,7 @@ impl GroupSources {
             return Ok(Err(Rejection::IncompleteSnapshot));
         }
         let rows = if build.request.patch.is_some() {
-            let tenant = self.tenant.to_string();
+            let tenant = tx.tenant_id().to_string();
             let group = build.request.group.to_string();
             let base = build.request.base_calculation;
             tx.with_connection(move|c|Box::pin(async move {

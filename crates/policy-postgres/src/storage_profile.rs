@@ -101,7 +101,7 @@ CREATE TABLE "###, $triggers, r###" (
 "###, $index_26, " ON ", $triggers, r###"(tenant_id,version,deadline,created_at,id);
 
 CREATE TABLE "###, $schedule_scan, r###" (
- tenant_id uuid PRIMARY KEY, after_policy uuid, next_scan_at bigint NOT NULL DEFAULT 0 CHECK(next_scan_at>=0)
+ tenant_id uuid PRIMARY KEY, expected_epoch bigint NOT NULL CHECK(expected_epoch>0), after_policy uuid, next_scan_at bigint NOT NULL DEFAULT 0 CHECK(next_scan_at>=0)
 );
 CREATE TABLE "###, $requests, r###" (
  tenant_id uuid NOT NULL,id uuid NOT NULL,fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),receipt jsonb NOT NULL CHECK(octet_length(receipt::text)<=16777216),PRIMARY KEY(tenant_id,id)
@@ -138,6 +138,7 @@ CREATE FUNCTION "###, $policy_schema, r###"lock_policy(p_policy uuid) RETURNS vo
 $$;
 REVOKE ALL ON FUNCTION "###, $policy_schema, r###"lock_policy(uuid) FROM PUBLIC;
 CREATE TABLE "###, $work, r###" (
+    expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
     kind text NOT NULL,
@@ -205,6 +206,7 @@ CREATE POLICY tenant ON "###, $event_members, r###" USING(tenant_id=nullif(curre
 
 
 CREATE TABLE "###, $assignments, r###" (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL, policy uuid NOT NULL, version uuid NOT NULL,
  entry_revision bigint NOT NULL CHECK(entry_revision>=0),
  object_kind smallint NOT NULL CHECK(object_kind IN(0,1)), object_id uuid NOT NULL CHECK(object_id <> '00000000-0000-0000-0000-000000000000'::uuid), channel text NOT NULL CHECK(channel IN('agent','mdm')),
@@ -219,6 +221,23 @@ ALTER TABLE "###, $assignments, r###" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "###, $assignments, r###" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON "###, $assignments, r###" USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON "###, $assignments, ",", $work, ",", $event_batches, ",", $event_members, " TO ", $policy_role, r###";
+CREATE POLICY work_discovery ON "###, $assignments, " FOR SELECT TO ", $owner, r###" USING(true);
+CREATE POLICY work_discovery ON "###, $work, " FOR SELECT TO ", $owner, r###" USING(true);
+CREATE POLICY work_discovery ON "###, $schedule_scan, " FOR SELECT TO ", $owner, r###" USING(true);
+CREATE FUNCTION "###, $policy_schema, r###"policy_work_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT tenant_id FROM (SELECT tenant_id FROM "###, $work, " UNION SELECT tenant_id FROM ", $schedule_scan, r###") work
+ WHERE after_tenant IS NULL OR tenant_id>after_tenant ORDER BY tenant_id LIMIT 32
+$$;
+CREATE FUNCTION "###, $policy_schema, r###"policy_work_epoch(t uuid, entity text) RETURNS bigint
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT expected_epoch FROM "###, $work, r###" WHERE tenant_id=t AND (entity='job:'||id::text OR entity='event:'||id::text)
+ UNION ALL SELECT expected_epoch FROM "###, $schedule_scan, r###" WHERE tenant_id=t AND entity='schedules'
+$$;
+ALTER FUNCTION "###, $policy_schema, "policy_work_scopes(uuid) OWNER TO ", $owner, r###";
+ALTER FUNCTION "###, $policy_schema, "policy_work_epoch(uuid,text) OWNER TO ", $owner, r###";
+REVOKE ALL ON FUNCTION "###, $policy_schema, "policy_work_scopes(uuid),", $policy_schema, r###"policy_work_epoch(uuid,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION "###, $policy_schema, "policy_work_scopes(uuid),", $policy_schema, "policy_work_epoch(uuid,text) TO ", $access, r###";
 GRANT UPDATE(input,availability,reason,target,scope_result,entry_revision) ON "###, $assignments, " TO ", $policy_role, r###";
 GRANT UPDATE(started,completed,cursor_kind,cursor_id,replacement_task,authority_revision,failure,failure_detail) ON "###, $work, " TO ", $policy_role, r###";
 GRANT UPDATE(decision) ON "###, $event_members, " TO ", $policy_role, r###";
@@ -340,7 +359,7 @@ FROM "###, $policies, r###" WHERE tenant_id=$1::uuid
                 schedules_triggers_in_1: concat!("SELECT id,created_at FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$2 AND deadline>$3 ORDER BY created_at DESC,id DESC LIMIT 64"),
                 schedules_retirement_in_1: concat!("SELECT p.id,v.id,v.frozen FROM ", $policies, " p JOIN ", $versions, " v ON(v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND v.action_kind='unmanage_device' AND ($2::uuid IS NULL OR p.id>$2) ORDER BY p.id LIMIT 64"),
                 schedules_scan_due_in_1: concat!("SELECT coalesce((SELECT next_scan_at FROM ", $schedule_scan, " WHERE tenant_id=$1::uuid),0)<=$2"),
-                schedules_scan_cursor_in_1: concat!("INSERT INTO ", $schedule_scan, "(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING"),
+                schedules_scan_cursor_in_1: concat!("INSERT INTO ", $schedule_scan, "(tenant_id,expected_epoch) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING"),
                 schedules_scan_cursor_in_2: concat!("SELECT after_policy FROM ", $schedule_scan, " WHERE tenant_id=$1::uuid FOR UPDATE"),
                 schedules_complete_scan_in_1: concat!("UPDATE ", $schedule_scan, " SET after_policy=$2,next_scan_at=$3 WHERE tenant_id=$1::uuid"),
                 directory_policies_in_1: concat!("SELECT jsonb_build_object('id',id,'toolName','policy_' || replace(id::text,'-',''),'alias',definition->>'alias','customEvent',definition->>'customEvent','revision',revision,'version',version_number,'versionId',current_version,'state',state,'definition',definition,'action',definition->'action'->>'kind','scope',definition->>'scope','resource',definition->'action'->'resource'->>'id','category',definition->'selfService'->'presentation'->>'category') FROM ", $policies, " WHERE tenant_id="),
@@ -349,7 +368,7 @@ FROM "###, $policies, r###" WHERE tenant_id=$1::uuid
                 candidates_native_interests_on_1: concat!("SELECT DISTINCT (a.target->>'device')::uuid FROM ", $policies, " p JOIN ", $assignments, " a ON(a.tenant_id,a.policy,a.version)=(p.tenant_id,p.id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND p.definition->'action'->>'kind'=ANY($3::text[]) AND (p.definition->'action'->>'kind'<>'software' OR p.definition->'action'->>'channel'='mdm') AND a.channel='mdm' AND (a.target->>'device')::uuid=ANY($2::uuid[]) AND a.input->'admission'->>'state'<>'excluded' ORDER BY 1"),
                 candidates_configuration_candidates_on_1: concat!("WITH candidates AS MATERIALIZED (SELECT p.id,p.current_version,(p.definition->>'scope')::uuid AS scope,d.device FROM ", $policies, r###" p CROSS JOIN (SELECT DISTINCT unnest($2::uuid[]) AS device) d WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND p.definition->'action'->>'kind'='configuration' AND ($3::uuid IS NULL OR (p.id,d.device)>($3,$4)) ORDER BY p.id,d.device LIMIT 1001) SELECT *,"###, $scope, r###"channel_admission(scope,'mdm',device) AS admission FROM candidates ORDER BY id,device"###),
                 candidates_candidates_on_1: concat!("SELECT id,current_version,(definition->>'scope')::uuid AS scope FROM ", $policies, " WHERE tenant_id=$1::uuid AND (state='enabled') AND id>$2 AND definition->'action'->>'kind'=$3 ORDER BY id LIMIT 17"),
-                work_enqueue_in_1: concat!("INSERT INTO ", $work, "(tenant_id,id,kind,target,input) VALUES($1::uuid,$2,$3,$4,$5)"),
+                work_enqueue_in_1: concat!("INSERT INTO ", $work, "(tenant_id,id,kind,target,input,expected_epoch) VALUES($1::uuid,$2,$3,$4,$5,$6)"),
                 work_read_in_1: concat!("SELECT input,completed,failure,cursor_kind,cursor_id,started FROM ", $work, " WHERE tenant_id=$1::uuid AND id=$2"),
                 work_cursor_in_1: concat!("UPDATE ", $work, " SET cursor_kind=$3,cursor_id=$4 WHERE tenant_id=$1::uuid AND id=$2"),
                 work_started_in_1: concat!("UPDATE ", $work, " SET started=true WHERE tenant_id=$1::uuid AND id=$2 AND NOT started"),
@@ -357,11 +376,11 @@ FROM "###, $policies, r###" WHERE tenant_id=$1::uuid
                 work_exists_in_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND id=$2 AND (NOT $3 OR completed))"),
                 work_replacement_in_1: concat!("UPDATE ", $work, " SET replacement_task=$3 WHERE tenant_id=$1::uuid AND id=$2"),
                 work_counts_in_1: concat!("SELECT (SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure IS NULL AND NOT completed AND NOT started LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure IS NULL AND NOT completed AND started LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure IS NULL AND completed LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure IS NOT NULL AND failure<>'superseded' LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM ", $work, " WHERE tenant_id=$1::uuid AND failure='superseded' LIMIT 1001) q)"),
-                assignments_upsert_in_1: concat!("INSERT INTO ", $assignments, " AS current_assignment(tenant_id,policy,version,object_kind,object_id,channel,input,availability,reason,target,scope_result,entry_revision) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(tenant_id,policy,version,object_kind,object_id,channel) DO UPDATE SET input=EXCLUDED.input,availability=EXCLUDED.availability,reason=EXCLUDED.reason,target=EXCLUDED.target,scope_result=EXCLUDED.scope_result,entry_revision=EXCLUDED.entry_revision WHERE (current_assignment.input,current_assignment.availability,current_assignment.reason,current_assignment.target,current_assignment.scope_result,current_assignment.entry_revision) IS DISTINCT FROM (EXCLUDED.input,EXCLUDED.availability,EXCLUDED.reason,EXCLUDED.target,EXCLUDED.scope_result,EXCLUDED.entry_revision)"),
+                assignments_upsert_in_1: concat!("INSERT INTO ", $assignments, " AS current_assignment(tenant_id,policy,version,object_kind,object_id,channel,input,availability,reason,target,scope_result,entry_revision,expected_epoch) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(tenant_id,policy,version,object_kind,object_id,channel) DO UPDATE SET input=EXCLUDED.input,availability=EXCLUDED.availability,reason=EXCLUDED.reason,target=EXCLUDED.target,scope_result=EXCLUDED.scope_result,entry_revision=EXCLUDED.entry_revision WHERE (current_assignment.input,current_assignment.availability,current_assignment.reason,current_assignment.target,current_assignment.scope_result,current_assignment.entry_revision) IS DISTINCT FROM (EXCLUDED.input,EXCLUDED.availability,EXCLUDED.reason,EXCLUDED.target,EXCLUDED.scope_result,EXCLUDED.entry_revision)"),
                 assignments_objects_in_1: concat!("SELECT DISTINCT object_kind,object_id FROM ", $assignments, " WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND reason IS DISTINCT FROM 'source_removed'"),
                 assignments_withdraw_in_1: concat!("UPDATE ", $assignments, r###" SET input=jsonb_set(jsonb_set(jsonb_set(input,'{availability}','"unavailable"'),'{reason}','"source_removed"'),'{admission}','{"state":"excluded"}'),availability='unavailable',reason='source_removed',entry_revision=0 WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND (object_kind,object_id) IN(SELECT * FROM unnest($4::smallint[],$5::uuid[])) AND reason IS DISTINCT FROM 'source_removed' RETURNING object_kind,object_id,target"###),
-                object_manifest: concat!(r###"{"tables":[""###, $assignments, r###"",""###, $event_batches, r###"",""###, $event_members, r###"",""###, $policies, r###"",""###, $requests, r###"",""###, $schedule_scan, r###"",""###, $triggers, r###"",""###, $versions, r###"",""###, $work, r###""],"functions":[""###, $policy_schema, r###"lock_policy"],"views":[]}"###),
-                access_contract: concat!(r###"{"tables":[],"functions":[{"name":""###, $policy_schema, r###"lock_policy","search_path":"search_path=pg_catalog"}],"external_relations":["###, $access_contract_external_relations, r###"],"verified_schemas":[]}"###),
+                object_manifest: concat!(r###"{"tables":[""###, $assignments, r###"",""###, $event_batches, r###"",""###, $event_members, r###"",""###, $policies, r###"",""###, $requests, r###"",""###, $schedule_scan, r###"",""###, $triggers, r###"",""###, $versions, r###"",""###, $work, "\"],\"functions\":[", "\"", $policy_schema, "policy_work_scopes", "\"", ",", "\"", $policy_schema, "policy_work_epoch", "\"", ",", "\"", $policy_schema, r###"lock_policy"],"views":[]}"###),
+                access_contract: concat!("{\"tables\":[],\"functions\":[", "{\"name\":\"", $policy_schema, "policy_work_scopes", "\",\"search_path\":\"search_path=pg_catalog, pg_temp\"}", ",", "{\"name\":\"", $policy_schema, "policy_work_epoch", "\",\"search_path\":\"search_path=pg_catalog, pg_temp\"}", ",", "{\"name\":\"", $policy_schema, r###"lock_policy","search_path":"search_path=pg_catalog"}],"external_relations":["###, $access_contract_external_relations, r###"],"verified_schemas":[]}"###),
                 directory_event_batches: concat!("SELECT jsonb_build_object('request',b.input,'id',b.id,'operationId',b.request,'event',b.input->>'event','createdAt',b.created_at,'deadline',b.deadline,'processingFailure',(SELECT failure FROM ", $work, " WHERE tenant_id=b.tenant_id AND id=b.id),'members',(SELECT count(*) FROM ", $event_members, " m WHERE(m.tenant_id,m.batch)=(b.tenant_id,b.id)),'admission',(SELECT coalesce(jsonb_object_agg(state,n),'{}'::jsonb) FROM(SELECT decision->>'state' state,count(*) n FROM ", $event_members, " WHERE tenant_id=b.tenant_id AND batch=b.id GROUP BY decision->>'state') counts)) AS row FROM ", $event_batches, " b WHERE b.tenant_id="),
             };
         }

@@ -14,7 +14,7 @@ impl ScopeBinding {
         id: Uuid,
     ) -> Result<Option<Value>, BindingError> {
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let sql = crate::storage_profile::sql(self.profile()).operation_replay;
         let row = tx
             .with_connection_context(&mut (actor, &tenant), |(actor, tenant), c| {
@@ -55,7 +55,7 @@ impl ScopeBinding {
         if actor.is_empty() {
             return Err(BindingError::Invalid);
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let sql = crate::storage_profile::sql(self.profile());
         let row = tx
             .with_connection_context(&mut (actor, &tenant), |(actor, tenant), c| {
@@ -104,7 +104,7 @@ impl ScopeBinding {
         if actor.is_empty() {
             return Err(BindingError::Invalid);
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let sql = crate::storage_profile::sql(self.profile());
         tx.with_connection_context(
             &mut (actor, instance, &tenant, fingerprint, response),

@@ -23,7 +23,7 @@ SELECT (SELECT count(*)=7 FROM owned)
       OR has_column_privilege(current_user,o.oid,a.attnum,'REFERENCES')))
   OR EXISTS(SELECT FROM aclexplode(coalesce(o.relacl,acldefault('r',o.relowner))) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
   OR EXISTS(SELECT FROM pg_attribute col CROSS JOIN LATERAL aclexplode(col.attacl) a WHERE col.attrelid=o.oid AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable)))
-  OR (SELECT count(*) FROM pg_policy WHERE polrelid=o.oid)<>1
+  OR (SELECT count(*) FROM pg_policy WHERE polrelid=o.oid AND (0=ANY(polroles) OR polroles && ARRAY(SELECT oid FROM reachable)))<>1
   OR NOT EXISTS(SELECT FROM pg_policy p WHERE p.polrelid=o.oid AND p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid]
     AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
     AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid))

@@ -13,6 +13,7 @@ CREATE TABLE mdm_devices.identity_keys (
 );
 CREATE INDEX identity_keys_device ON mdm_devices.identity_keys(tenant_id,device);
 CREATE TABLE mdm_devices.object_cuts (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL,id uuid NOT NULL,asset_cut jsonb NOT NULL,through bigint NOT NULL CHECK(through>=0),
  PRIMARY KEY(tenant_id,id)
 );
@@ -38,6 +39,7 @@ CREATE TABLE mdm_devices.object_changes (
 -- Desired/completed input versions and fan-out cursor are business progress only.
 -- RSS owns the task target, claims, attempts and retry schedule.
 CREATE TABLE mdm_devices.association_work (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL,id uuid NOT NULL,kind text NOT NULL CHECK(kind IN('device','serial','uuid')),
  value text CHECK(octet_length(value) BETWEEN 1 AND 4096), device uuid,
  CHECK((kind='device' AND device IS NOT NULL AND value IS NULL) OR (kind<>'device' AND device IS NULL AND value IS NOT NULL)),
@@ -85,4 +87,20 @@ GRANT EXECUTE ON FUNCTION
  rss_reconcile.mark_applied(uuid,text,text,uuid,bigint,bigint)
  TO mdm_access;
 GRANT SELECT ON mdm.asset_changes,mdm_access.asset_authority_history TO mdm_access;
+-- Cross-tenant metadata is confined to owner work discovery; payload reads keep tenant RLS.
+CREATE POLICY work_discovery ON mdm_devices.checkpoints FOR SELECT TO mdm_owner USING(true);
+CREATE POLICY work_discovery ON mdm_devices.association_work FOR SELECT TO mdm_owner USING(true);
+CREATE FUNCTION mdm_devices.association_work_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT tenant_id FROM (
+  (SELECT tenant_id FROM mdm_devices.checkpoints WHERE after_tenant IS NULL OR tenant_id>after_tenant ORDER BY tenant_id LIMIT 32)
+  UNION
+  (SELECT DISTINCT tenant_id FROM mdm_devices.association_work WHERE after_tenant IS NULL OR tenant_id>after_tenant ORDER BY tenant_id LIMIT 32)
+ ) scopes ORDER BY tenant_id LIMIT 32
+$$;
+CREATE FUNCTION mdm_devices.association_work_epoch(tenant uuid,work uuid) RETURNS bigint LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT expected_epoch FROM mdm_devices.checkpoints WHERE work IS NULL AND tenant_id=tenant
+ UNION ALL SELECT expected_epoch FROM mdm_devices.association_work WHERE work IS NOT NULL AND tenant_id=tenant AND id=work
+$$;
+REVOKE ALL ON FUNCTION mdm_devices.association_work_scopes(uuid),mdm_devices.association_work_epoch(uuid,uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_devices.association_work_scopes(uuid),mdm_devices.association_work_epoch(uuid,uuid) TO mdm_access;
 COMMIT;

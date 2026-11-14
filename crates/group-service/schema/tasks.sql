@@ -14,6 +14,7 @@ ALTER TABLE mdm_assets.group_selections ADD FOREIGN KEY(tenant_id,group_id,rule_
 GRANT SELECT,INSERT ON mdm_assets.group_selections TO mdm_inventory_runtime;
 CREATE TABLE mdm_assets.group_tasks (
  tenant_id uuid NOT NULL,id uuid NOT NULL,target uuid NOT NULL,
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  kind text NOT NULL CHECK(kind IN('group_definition','group')),
  input jsonb NOT NULL CHECK(octet_length(input::text)<=1048576),
  completed boolean NOT NULL DEFAULT false,
@@ -49,7 +50,7 @@ GRANT UPDATE(binding) ON mdm_assets.group_evaluations TO mdm_inventory_runtime;
 GRANT UPDATE(state) ON mdm_assets.group_evaluation_arrays TO mdm_inventory_runtime;
 GRANT DELETE ON mdm_assets.group_evaluations,mdm_assets.group_evaluation_arrays TO mdm_inventory_runtime;
 CREATE TABLE mdm_assets.group_dispatch (
- tenant_id uuid PRIMARY KEY,from_cut jsonb, to_cut jsonb,
+ tenant_id uuid PRIMARY KEY,expected_epoch bigint NOT NULL CHECK(expected_epoch>0),from_cut jsonb, to_cut jsonb,
  input_failed boolean NOT NULL DEFAULT false,
  event_after bigint NOT NULL DEFAULT 0 CHECK(event_after>=0),
  page_through bigint CHECK(page_through>event_after),cursor uuid,
@@ -62,8 +63,36 @@ CREATE POLICY tenant ON mdm_assets.group_dispatch USING(tenant_id=nullif(current
 REVOKE ALL ON mdm_assets.group_dispatch FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm_assets.group_dispatch TO mdm_inventory_runtime;
 GRANT UPDATE(input_failed,from_cut,to_cut,event_after,page_through,cursor,relation_revision,relation_cursor,relation_pending_revision) ON mdm_assets.group_dispatch TO mdm_inventory_runtime;
+
+CREATE POLICY delivery_discovery ON mdm_group.operations FOR SELECT TO mdm_owner USING(true);
+CREATE POLICY delivery_discovery ON mdm_assets.group_tasks FOR SELECT TO mdm_owner USING(true);
+CREATE FUNCTION mdm_group.delivery_scopes(after_tenant uuid,after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT tenant_id,expected_epoch FROM ((SELECT DISTINCT tenant_id,expected_epoch FROM mdm_group.operations WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32) UNION (SELECT DISTINCT tenant_id,expected_epoch FROM mdm_assets.group_tasks WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32)) work ORDER BY tenant_id,expected_epoch LIMIT 32
+$$;
+REVOKE ALL ON FUNCTION mdm_group.delivery_scopes(uuid,bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_group.delivery_scopes(uuid,bigint) TO mdm_access;
 COMMIT;
 
 -- Live reverse membership uses the already admitted product read pool.
 GRANT USAGE ON SCHEMA mdm_group,mdm_assets TO mdm_access;
 GRANT SELECT ON mdm_group.groups,mdm_group.member_runs,mdm_group.member_changes,mdm_assets.group_fields TO mdm_access;
+
+-- Discovery exposes only original work coordinates; all execution remains tenant-fenced.
+CREATE POLICY work_discovery ON mdm_assets.group_tasks FOR SELECT TO mdm_owner USING(true);
+CREATE POLICY work_discovery ON mdm_assets.group_dispatch FOR SELECT TO mdm_owner USING(true);
+CREATE FUNCTION mdm_assets.group_work_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT tenant_id FROM (
+  (SELECT DISTINCT tenant_id FROM mdm_assets.group_dispatch WHERE after_tenant IS NULL OR tenant_id>after_tenant ORDER BY tenant_id LIMIT 32)
+  UNION (SELECT DISTINCT tenant_id FROM mdm_assets.group_tasks WHERE after_tenant IS NULL OR tenant_id>after_tenant ORDER BY tenant_id LIMIT 32)
+ ) work ORDER BY tenant_id LIMIT 32
+$$;
+CREATE FUNCTION mdm_assets.group_work_epoch(t uuid, task uuid) RETURNS bigint
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT expected_epoch FROM mdm_assets.group_tasks WHERE task IS NOT NULL AND tenant_id=t AND id=task
+ UNION ALL SELECT expected_epoch FROM mdm_assets.group_dispatch WHERE task IS NULL AND tenant_id=t
+$$;
+ALTER FUNCTION mdm_assets.group_work_scopes(uuid) OWNER TO mdm_owner;
+ALTER FUNCTION mdm_assets.group_work_epoch(uuid,uuid) OWNER TO mdm_owner;
+REVOKE ALL ON FUNCTION mdm_assets.group_work_scopes(uuid),mdm_assets.group_work_epoch(uuid,uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_assets.group_work_scopes(uuid),mdm_assets.group_work_epoch(uuid,uuid) TO mdm_access;

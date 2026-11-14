@@ -85,15 +85,3 @@ fn provider_reasons_choose_recovery_without_logging_arbitrary_text() {
         assert_eq!((receipt.outcome, receipt.reason), (outcome, Some(reason)));
     }
 }
-#[test]
-fn persistent_worker_failure_affects_health_and_recovers() {
-    let mut health = Health::default();
-    let error = Err(Error::Unavailable(Failure::AppleStorage));
-    assert!(health.observe(&error).0);
-    assert!(health.observe(&error).0);
-    assert!(!health.observe(&error).0);
-    assert!(health.observe(&Ok(WakeHealth::Idle)).0);
-    assert!(!health.observe(&Ok(WakeHealth::Configuration)).0);
-    assert!(!health.observe(&Ok(WakeHealth::Idle)).0);
-    assert!(health.observe(&Ok(WakeHealth::Healthy)).0);
-}

@@ -25,8 +25,10 @@ pub(crate) async fn enrollment(
         .clone()
         .try_acquire_owned()
         .map_err(|_| Error::Unavailable(crate::Failure::Capacity))?;
+    let execution = locate(app, &token).await?;
+    let windows = app.windows(execution).await?;
+    let entra = windows.entra.as_ref().ok_or(Error::Unsupported)?;
     if !issuing {
-        let entra = owner(app)?;
         let subject = entra.verify(token, cutoff).await?;
         let mut tx = app.access.begin_read(&entra.tenant.to_string()).await?;
         let settings = settings_in(&mut tx, &entra.tenant.to_string(), false).await?;
@@ -78,6 +80,7 @@ pub(crate) async fn enrollment(
     };
     let admission = admit(
         app,
+        entra,
         token,
         context("EnrollmentData"),
         &csr.0,
@@ -88,25 +91,26 @@ pub(crate) async fn enrollment(
     .await?;
     let d = admission.coordinates();
     let intent = crate::issuance::issue_intent(
+        execution,
         &app.audit_store,
         &app.access,
-        app.windows()?,
+        &windows,
         crate::issuance::IssuanceAuthority::Native(&admission),
         (&csr.0, enrollment_type),
         context("DeviceID"),
         now,
     )
     .await?;
-    let certificate = crate::issuance::sign(app, &d.tenant, &intent, now).await?;
+    let certificate = crate::issuance::sign(app, execution, &windows, &intent, now).await?;
     let provisioning =
-        crate::issuance::provision_request(app.windows()?, &intent, &certificate, d.id, &d.tenant)?;
+        crate::issuance::provision_request(&windows, &intent, &certificate, d.id, &d.tenant)?;
     // Identity recheck runs before the final MDM transaction and never under its locks.
     let admission = admission
-        .recheck_entra(&owner(app)?.authority, remaining(cutoff))
+        .recheck_entra(&entra.authority, remaining(cutoff))
         .await?;
     crate::issuance::complete(
         &app.audit_store,
-        app.windows()?,
+        &windows,
         crate::issuance::IssuanceAuthority::Native(&admission),
         &intent,
         &certificate,

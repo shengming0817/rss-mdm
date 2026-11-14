@@ -71,8 +71,12 @@ impl Service {
         query: &rss_mdm_query::window::Query,
         admission: &dyn Admission,
     ) -> Result<rss_mdm_agent_wire::runtime::AccessDirectory, Error> {
+        let execution = device.binding();
+
         let employee = request.proof.as_ref();
-        if device.tenant() != self.tenant || employee.tenant_id() != self.tenant.to_string() {
+        if device.tenant() != execution.tenant()
+            || employee.tenant_id() != execution.tenant().to_string()
+        {
             return Err(Error::Forbidden);
         }
         query
@@ -239,8 +243,13 @@ impl Service {
         admission: &dyn Admission,
         audit: &RequestAudit,
     ) -> Result<AccessChallenge, Error> {
+        let execution = device.binding();
+
         self.proof(employee, audit)?;
-        if device.tenant() != self.tenant || input.operation_id.is_nil() || input.policy.is_nil() {
+        if device.tenant() != execution.tenant()
+            || input.operation_id.is_nil()
+            || input.policy.is_nil()
+        {
             return Err(Error::Forbidden);
         }
         let who = person(employee)?;
@@ -292,8 +301,12 @@ impl Service {
         admission: &dyn Admission,
         audit: &RequestAudit,
     ) -> Result<Binding, Error> {
+        let execution = device.binding();
+
         self.proof(employee, audit)?;
-        if device.tenant() != self.tenant || input.operation_id.is_nil() || input.challenge.is_nil()
+        if device.tenant() != execution.tenant()
+            || input.operation_id.is_nil()
+            || input.challenge.is_nil()
         {
             return Err(Error::Forbidden);
         }

@@ -46,12 +46,14 @@ pub trait ExecutionPublication: Send + Sync {
 pub trait ExecutionChanges: Send + Sync {
     fn policy_changed_in<'a>(
         &'a self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &'a mut PgTransaction<'_>,
         policy: &'a rss_mdm_policy::Policy,
         previous: Option<&'a rss_mdm_policy::Policy>,
     ) -> Pending<'a, (), Fault>;
     fn assignment_changed_in<'a>(
         &'a self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &'a mut PgTransaction<'_>,
         version: uuid::Uuid,
         target: &'a rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
@@ -59,11 +61,13 @@ pub trait ExecutionChanges: Send + Sync {
     ) -> Pending<'a, (), Fault>;
     fn configuration_progressed_in<'a>(
         &'a self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &'a mut PgTransaction<'_>,
         devices: &'a [rss_mdm_agent_wire::DeviceId],
     ) -> Pending<'a, (), Fault>;
     fn retirement_accepted_in<'a>(
         &'a self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &'a mut PgTransaction<'_>,
         retirement: uuid::Uuid,
     ) -> Pending<'a, (), Fault>;

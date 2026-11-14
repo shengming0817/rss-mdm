@@ -67,15 +67,21 @@ pub(crate) fn prepare(input: &Accepted) -> Result<(CollectionDefinition, Vec<Bat
     Ok((definition, batches))
 }
 pub(crate) async fn deliver_on(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     c: &mut PgConnection,
     service: &crate::Service,
     input: &Accepted,
 ) -> Result<bool, Error> {
     let configuration = input.input.configuration();
-    let tenant = service.tenant;
+    let tenant = execution.tenant();
     let current = service
         .policies
-        .is_current_on(c, configuration.policy, configuration.policy_version)
+        .is_current_on(
+            execution,
+            c,
+            configuration.policy,
+            configuration.policy_version,
+        )
         .await
         .map_err(|_| Error::Storage)?;
     if !current

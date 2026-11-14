@@ -33,7 +33,10 @@
     "rss_da.platform_registration_matches",
     "rss_da.platform_session_qualifications",
     "rss_da.save_retired_access_run",
-    "rss_da.binding_application_current"
+    "rss_da.binding_application_current",
+    "rss_da.access_runs_work_scopes",
+    "rss_da.access_runs_work_epoch",
+    "rss_da.access_runs_work_relay_scopes"
   ],
   "views": []
 }

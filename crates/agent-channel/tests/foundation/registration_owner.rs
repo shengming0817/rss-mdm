@@ -8,6 +8,7 @@ impl registration::Retirement for Retire {
     }
     fn retire<'a>(
         &'a self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         c: &'a mut sqlx::PgConnection,
         facts: &'a mut Vec<rss_mdm_audit_integration::Fact>,
         tenant: &'a str,
@@ -15,9 +16,11 @@ impl registration::Retirement for Retire {
         _state: &'a str,
     ) -> agent::Pending<'a, ()> {
         Box::pin(async move {
-            registration::enrollment::tasks::retirement::retire_in(DA, c, facts, tenant, *id)
-                .await
-                .map_err(|_| registration::Error::Storage)?;
+            registration::enrollment::tasks::retirement::retire_in(
+                execution, DA, c, facts, tenant, *id,
+            )
+            .await
+            .map_err(|_| registration::Error::Storage)?;
             rss_mdm_pki_service::certificates::revoke_registration_in(DA, c, tenant, id)
                 .await
                 .map_err(|_| registration::Error::Storage)?;
@@ -60,13 +63,29 @@ pub async fn assemble(
         client,
         scep_url: None,
     }])?);
+    let registry = Arc::new(rss_mdm_pki_service::registry::Registry::new(
+        DA,
+        c.access.clone(),
+        c.access_audit.clone(),
+        c.execution(),
+        providers.clone(),
+    ));
+    let public = trust.trust.public()?;
+    let mut tx = c.seed().await?;
+    sqlx::query("INSERT INTO rss_da.pki_trust(tenant_id,purpose,revision,body) VALUES($1::uuid,'agent',$2,$3) ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).bind(public.revision as i64).bind(serde_json::to_vec(&public)?).execute(&mut *tx).await?;
+    for issuer in &public.issuers {
+        sqlx::query("INSERT INTO rss_da.pki_issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES($1::uuid,'agent',$2,$3,$4,$5,'step_ca',$6) ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).bind(&issuer.digest).bind(public.revision as i64).bind(serde_json::to_value(issuer.mode)?.as_str().unwrap()).bind(serde_json::to_vec(issuer)?).bind(trust.expires()).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
     let clock = Arc::new(context::Timer);
     let issuer = Arc::new(registration::certificate_issuance::DeviceIssuer::new(
         DA,
         providers,
         2,
         true,
-        Arc::new(trust),
+        Purpose::Agent,
+        registry,
+        Uuid::parse_str(&c.inputs.installation.instance_id)?,
         clock.clone(),
     )?);
     let service = agent::Service::new(agent::Assembly {
@@ -74,7 +93,7 @@ pub async fn assemble(
             ring::hmac::HMAC_SHA256,
             &[5; 32],
         )),
-        tenant: c.tenant,
+        probe: c.execution(),
         store: Arc::new(registration::Store::from_pool(
             DA,
             c.access.clone(),
@@ -94,12 +113,5 @@ pub async fn assemble(
         service.service_id()?.to_string(),
         c.inputs.installation.instance_id
     );
-    assert!(matches!(
-        service.bootstrap_configuration(),
-        Err(agent::Failure {
-            source: Some(registration::Error::Unsupported),
-            ..
-        })
-    ));
     Ok(service)
 }

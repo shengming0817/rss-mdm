@@ -1,5 +1,4 @@
 //! Registration readiness is observed independently from tenant admission.
-use rss_mdm_agent_wire::pki::Purpose;
 #[derive(Clone, Copy)]
 pub(crate) enum Availability {
     Unconfigured,
@@ -22,34 +21,24 @@ use rss_mdm_registration_service::quotas::Channel;
 use std::sync::Arc;
 pub(crate) struct Channels {
     pub preparation: Arc<crate::channel_status::Channels>,
-    pub windows: Option<Arc<crate::windows::Windows>>,
+    pub windows: Arc<rss_mdm_windows_channel::HttpState>,
     pub agent: Option<Arc<crate::agent_pki::AgentPki>>,
-    pub apple: Option<Arc<crate::apple::Apple>>,
-    pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
+    pub apple: Arc<rss_mdm_apple_channel::HttpState>,
+
     pub clock: Arc<dyn crate::clock::Clock>,
 }
 impl Channels {
-    pub(crate) fn status(&self, channel: Channel) -> Status {
-        let (configured, purpose) = match channel {
-            Channel::Agent => (self.agent.is_some(), Purpose::Agent),
-            Channel::WindowsMdm => (self.windows.is_some(), Purpose::Windows),
-            Channel::MacosMdm => (self.apple.is_some(), Purpose::Apple),
+    pub(crate) async fn status(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        channel: Channel,
+    ) -> Status {
+        let configured = match channel {
+            Channel::Agent => self.agent.is_some(),
+            Channel::WindowsMdm => self.windows.windows.is_some(),
+            Channel::MacosMdm => self.apple.apple.is_some(),
         };
         if !configured {
-            use crate::channel_status::{ChannelName, ChannelState};
-            let name = match channel {
-                Channel::Agent => ChannelName::Agent,
-                Channel::WindowsMdm => ChannelName::Windows,
-                Channel::MacosMdm => ChannelName::Apple,
-            };
-            if self
-                .preparation
-                .snapshot()
-                .iter()
-                .any(|c| c.name == name && c.state != ChannelState::Disabled)
-            {
-                return fault(Reason::CertificateUnavailable);
-            }
             return Status {
                 availability: Availability::Unconfigured,
                 reason: Some(Reason::NotConfigured),
@@ -58,38 +47,37 @@ impl Channels {
         let Ok(now) = self.clock.unix_seconds() else {
             return fault(Reason::ClockUnavailable);
         };
-        let valid = self
-            .pki
-            .trust(purpose)
-            .ok()
-            .and_then(|trust| rss_mdm_device_trust::DeviceTrust::new(trust, purpose, now).ok())
-            .is_some();
-        if !valid {
-            return fault(Reason::CertificateUnavailable);
-        }
-        let issuance_ready = match channel {
-            Channel::Agent => self.agent.as_ref().is_some_and(|p| p.issuance_ready(now)),
-            Channel::WindowsMdm => self
-                .windows
-                .as_ref()
-                .is_some_and(|w| w.channel.ca.issuance_end(now).is_ok()),
-            Channel::MacosMdm => true,
-        };
-        if !issuance_ready {
-            return fault(Reason::CertificateUnavailable);
-        }
-        if channel == Channel::MacosMdm {
-            let health = self
-                .apple
-                .as_ref()
-                .expect("configured Apple")
-                .channel
-                .health(now);
-            if health.certificates_expired() {
-                return fault(Reason::CertificateUnavailable);
+        match channel {
+            Channel::Agent => {
+                if !self
+                    .agent
+                    .as_ref()
+                    .expect("configured Agent")
+                    .issuance_ready(binding, now)
+                    .await
+                {
+                    return fault(Reason::CertificateUnavailable);
+                }
             }
-            if !health.push_available {
-                return fault(Reason::PushUnavailable);
+            Channel::WindowsMdm => {
+                let Ok(windows) = self.windows.windows(binding).await else {
+                    return fault(Reason::CertificateUnavailable);
+                };
+                if windows.ca.issuance_end(now).is_err() {
+                    return fault(Reason::CertificateUnavailable);
+                }
+            }
+            Channel::MacosMdm => {
+                let Ok(apple) = self.apple.apple(binding).await else {
+                    return fault(Reason::CertificateUnavailable);
+                };
+                let health = apple.health(now);
+                if health.certificates_expired() {
+                    return fault(Reason::CertificateUnavailable);
+                }
+                if !health.push_available {
+                    return fault(Reason::PushUnavailable);
+                }
             }
         }
         Status {

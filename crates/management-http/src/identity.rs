@@ -6,13 +6,11 @@ use axum::{
 use rss_identity_postgres::{Authority, AuthorityError};
 use rss_mdm_authorization_service::context::Principal;
 use rss_mdm_authorization_service::credential::{ApiKeySecret, RequestCredential};
-use rss_request_context::TenantId;
+use rss_transactional_messaging::fence::ExecutionBinding;
 pub struct Identity {
     pub authority: Authority,
     pub webauthn: rss_identity_postgres::WebauthnAuthority,
     pub http: rss_identity_http_axum::HttpConfig,
-    pub tenant: TenantId,
-    pub binding: rss_transactional_messaging::fence::ExecutionBinding,
     pub rp_generation: rss_identity_postgres::RpGeneration,
 }
 pub(crate) fn failure(e: AuthorityError) -> Error {
@@ -30,6 +28,7 @@ pub(crate) fn failure(e: AuthorityError) -> Error {
 impl Identity {
     pub async fn authenticate_request(
         &self,
+        binding: ExecutionBinding,
         headers: &HeaderMap,
         activity: rss_identity_http_axum::SessionActivity,
         access: &rss_mdm_authorization_service::Store,
@@ -65,7 +64,7 @@ impl Identity {
                     .map_err(Error::from)
                     .map_err(IntoResponse::into_response)?;
                 let proof = access
-                    .authenticate_key(&self.tenant.to_string(), &secret)
+                    .authenticate_key(binding, &secret)
                     .await
                     .map_err(Error::from)
                     .map_err(IntoResponse::into_response)?;
@@ -74,14 +73,14 @@ impl Identity {
             let (session, secret) = rss_identity_http_axum::authenticate_bearer_request(
                 &self.authority,
                 &self.http,
-                self.binding,
+                binding,
                 headers,
                 deadline,
             )
             .await
             .map_err(project_failure)?;
             return Ok((
-                Principal::new(session)
+                Principal::new(session, binding)
                     .map_err(Error::from)
                     .map_err(IntoResponse::into_response)?,
                 RequestCredential::Bearer(secret),
@@ -90,14 +89,14 @@ impl Identity {
         let (session, credential) = rss_identity_http_axum::authenticate_request(
             &self.authority,
             &self.http,
-            self.binding,
+            binding,
             headers,
             activity,
             deadline,
         )
         .await
         .map_err(project_failure)?;
-        let proof = Principal::new(session)
+        let proof = Principal::new(session, binding)
             .map_err(Error::from)
             .map_err(IntoResponse::into_response)?;
         Ok((proof, RequestCredential::Cookie(credential)))

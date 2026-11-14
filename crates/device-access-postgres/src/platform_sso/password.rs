@@ -58,14 +58,18 @@ struct Prepared {
     provider: Arc<super::password_provider::Provider>,
 }
 /// Discriminate the signed device request without materializing confidential JSON into a Value.
-pub async fn is_password(app: &Context, token: &str) -> Result<bool, Error> {
+pub async fn is_password(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    app: &Context,
+    token: &str,
+) -> Result<bool, Error> {
     let kid = crypto::signing_key_id(token)?;
-    let mut tx = app.access.begin(&app.tenant.to_string()).await?;
+    let mut tx = app.access.begin(&execution.tenant().to_string()).await?;
     let id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM rss_da.psso_sources WHERE tenant_id=$1::uuid AND kind='device' AND signing_kid=$2 AND NOT revoked")
-        .bind(app.tenant.to_string()).bind(kid).fetch_optional(&mut *tx).await.map_err(db)?;
+        .bind(execution.tenant().to_string()).bind(kid).fetch_optional(&mut *tx).await.map_err(db)?;
     let device = store::read(
         &mut tx,
-        &app.tenant.to_string(),
+        &execution.tenant().to_string(),
         id.ok_or(Error::Unauthorized)?,
     )
     .await?;
@@ -86,14 +90,20 @@ pub async fn is_password(app: &Context, token: &str) -> Result<bool, Error> {
         _ => Err(Error::Malformed),
     }
 }
-pub async fn login(app: &Context, audit: &RequestAudit, token: &str) -> Result<Value, Error> {
+pub async fn login(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    app: &Context,
+    audit: &RequestAudit,
+    token: &str,
+) -> Result<Value, Error> {
+    audit.bind_scope(execution)?;
     let kid = crypto::signing_key_id(token)?;
-    let mut read = app.access.begin(&app.tenant.to_string()).await?;
+    let mut read = app.access.begin(&execution.tenant().to_string()).await?;
     let id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM rss_da.psso_sources WHERE tenant_id=$1::uuid AND kind='device' AND signing_kid=$2 AND NOT revoked")
-        .bind(app.tenant.to_string()).bind(&kid).fetch_optional(&mut *read).await.map_err(db)?;
+        .bind(execution.tenant().to_string()).bind(&kid).fetch_optional(&mut *read).await.map_err(db)?;
     let device = store::read(
         &mut read,
-        &app.tenant.to_string(),
+        &execution.tenant().to_string(),
         id.ok_or(Error::Unauthorized)?,
     )
     .await?;
@@ -117,7 +127,7 @@ pub async fn login(app: &Context, audit: &RequestAudit, token: &str) -> Result<V
     let prepared = app
         .audit_store
         .write(
-            app.tenant,
+            audit.binding()?,
             &budget.source_control(),
             (app, &claims, &device, user, audit, operation),
             |(app, claims, device, user, audit, operation), tx| {
@@ -126,7 +136,7 @@ pub async fn login(app: &Context, audit: &RequestAudit, token: &str) -> Result<V
                         .with_connection_context(
                             &mut (*app, *claims, *device, *user),
                             |(app, claims, device, user), c| {
-                                Box::pin(prepare(app, c, claims, device, *user))
+                                Box::pin(prepare(execution, app, c, claims, device, *user))
                             },
                         )
                         .await?;
@@ -171,7 +181,7 @@ pub async fn login(app: &Context, audit: &RequestAudit, token: &str) -> Result<V
     let result = app
         .audit_store
         .write(
-            app.tenant,
+            audit.binding()?,
             &final_budget.source_control(),
             (app, &prepared, state, audit, operation),
             |(app, prepared, state, audit, operation), tx| {
@@ -179,7 +189,9 @@ pub async fn login(app: &Context, audit: &RequestAudit, token: &str) -> Result<V
                     let value = tx
                         .with_connection_context(
                             &mut (*app, *prepared, *state),
-                            |(app, prepared, state), c| Box::pin(finish(app, c, prepared, state)),
+                            |(app, prepared, state), c| {
+                                Box::pin(finish(execution, app, c, prepared, state))
+                            },
                         )
                         .await?;
                     let fact = Fact::business(
@@ -212,18 +224,20 @@ pub async fn login(app: &Context, audit: &RequestAudit, token: &str) -> Result<V
     Ok(result)
 }
 async fn prepare(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+
     app: &Context,
     c: &mut PgConnection,
     claims: &Claims,
     device: &store::Source,
     id: Uuid,
 ) -> Result<Prepared, Error> {
-    let tenant = app.tenant.to_string();
+    let tenant = execution.tenant().to_string();
     let candidate = store::read(c, &tenant, id).await?;
     service::admit(app, c, &candidate).await?;
-    let (user, parent, binding) = store::current_user(app, c, id, false).await?;
+    let (user, parent, binding) = store::current_user(execution, app, c, id, false).await?;
     let now = store::now(c).await?;
-    super::deployment::ready(app, c, &user.object, now).await?;
+    super::deployment::ready(execution, app, c, &user.object, now).await?;
     let rt = app.runtime()?;
     if user.login_configuration.authentication != AuthenticationMode::Password
         || user.signing.is_some()
@@ -234,7 +248,13 @@ async fn prepare(
         || user.subject_version != candidate.subject_version
         || claims.iss != rt.configuration.client_id.to_string()
         || claims.client_id != claims.iss
-        || claims.aud != rt.endpoints.token
+        || claims.aud
+            != rt
+                .endpoints(
+                    uuid::Uuid::parse_str(&execution.tenant().to_string())
+                        .map_err(|_| Error::Malformed)?,
+                )?
+                .token
         || claims.username != claims.sub
         || claims.sub != user.id.to_string()
         || claims.scope != SCOPE
@@ -255,7 +275,7 @@ async fn prepare(
         return Err(Error::Unauthorized);
     }
     let provider = rt.password_provider(&user.login_configuration)?;
-    provider.check_on(c, app.tenant).await?;
+    provider.check_on(c, execution.tenant()).await?;
     if user.password_identity.as_ref().is_none_or(|identity| {
         identity.person != binding.person || identity.provider != provider.configuration.id
     }) {
@@ -274,7 +294,7 @@ async fn prepare(
     if count >= 4096 {
         return Err(Error::Capacity);
     }
-    let accepted: Option<Uuid> = sqlx::query_scalar("UPDATE rss_da.psso_challenges SET consumed=true WHERE tenant_id=$1::uuid AND purpose='login' AND nonce_digest=$2 AND NOT consumed AND expires_at>$3 RETURNING id")
+    let accepted: Option<Uuid> = sqlx::query_scalar("UPDATE rss_da.psso_challenges SET consumed=true WHERE expected_epoch=current_setting('rss.execution_epoch')::bigint AND tenant_id=$1::uuid AND purpose='login' AND nonce_digest=$2 AND NOT consumed AND expires_at>$3 RETURNING id")
         .bind(&tenant).bind(crypto::digest(&claims.request_nonce)).bind(now).fetch_optional(&mut *c).await.map_err(db)?;
     let id = accepted.ok_or(Error::Unauthorized)?;
     let reservation = Reservation {
@@ -299,18 +319,20 @@ async fn prepare(
     })
 }
 async fn finish(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+
     app: &Context,
     c: &mut PgConnection,
     prepared: &Prepared,
     state: &str,
 ) -> Result<Value, Error> {
-    let tenant = app.tenant.to_string();
+    let tenant = execution.tenant().to_string();
     service::admit(app, c, &prepared.reservation.user).await?;
     let (user, parent, binding) =
-        store::current_user(app, c, prepared.reservation.user.id, false).await?;
+        store::current_user(execution, app, c, prepared.reservation.user.id, false).await?;
     let now = store::now(c).await?;
-    super::deployment::ready(app, c, &user.object, now).await?;
-    prepared.provider.check_on(c, app.tenant).await?;
+    super::deployment::ready(execution, app, c, &user.object, now).await?;
+    prepared.provider.check_on(c, execution.tenant()).await?;
     if now >= prepared.expires
         || user.version != prepared.reservation.user.version
         || user.configuration != prepared.reservation.user.configuration
@@ -323,7 +345,7 @@ async fn finish(
     {
         return Err(Error::Unauthorized);
     }
-    let row = sqlx::query("SELECT state,context,provider_fingerprint FROM rss_da.psso_password_attempts WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+    let row = sqlx::query("SELECT state,context,provider_fingerprint FROM rss_da.psso_password_attempts WHERE expected_epoch=current_setting('rss.execution_epoch')::bigint AND tenant_id=$1::uuid AND id=$2 FOR UPDATE")
         .bind(&tenant).bind(prepared.id).fetch_one(&mut *c).await.map_err(db)?;
     if row.try_get::<String, _>("state").map_err(db)? != "verifying"
         || row.try_get::<Value, _>("context").map_err(db)?
@@ -359,7 +381,7 @@ async fn finish(
         json!({"state":state})
     };
     sqlx::query(
-        "UPDATE rss_da.psso_password_attempts SET state=$3 WHERE tenant_id=$1::uuid AND id=$2",
+        "UPDATE rss_da.psso_password_attempts SET state=$3 WHERE expected_epoch=current_setting('rss.execution_epoch')::bigint AND tenant_id=$1::uuid AND id=$2",
     )
     .bind(&tenant)
     .bind(prepared.id)

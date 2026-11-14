@@ -68,6 +68,8 @@ pub(crate) fn register()
 }
 
 async fn definitions(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<Backend>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -94,7 +96,7 @@ async fn definition(
     State(s): State<Arc<Backend>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<Definition>, Error> {
     s.definition(&a.proof, &audit, id)
         .await
@@ -105,7 +107,7 @@ async fn operation(
     State(s): State<Arc<Backend>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<Receipt>, Error> {
     s.operation(&a.proof, &audit, id)
         .await
@@ -116,7 +118,7 @@ async fn change(
     State(s): State<Arc<Backend>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     input: Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Receipt>, Error> {
     s.change(&a.proof, &audit, id, &input?.0)
@@ -125,6 +127,8 @@ async fn change(
         .map(Json)
 }
 async fn me(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<Backend>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -145,7 +149,7 @@ async fn person(
     State(s): State<Arc<Backend>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     Query(mut q): Query<ProfileQuery>,
 ) -> Result<Json<Profile>, Error> {
     q.view = View::Latest;

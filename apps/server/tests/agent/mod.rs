@@ -41,7 +41,7 @@ async fn accepted(c: &Context, device: &rss_mdm_agent_wire::DeviceId) -> Result<
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'enabled',$4,$5,$6)").bind(c.tenant.to_string()).bind(policy).bind(version).bind(serde_json::to_value(definition)?).bind(serde_json::to_value(&actor)?).bind(now).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'unmanage_device',$4,$5)").bind(c.tenant.to_string()).bind(version).bind(policy).bind(frozen).bind(fingerprint).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_devices.retirements(tenant_id,id,policy,version,object_kind,object_id,occurrence,target,authority,delivery_seconds,created_at,origin) VALUES($1::uuid,$2,$3,$4,$5,$6,'once',$7,$8,300,$9,'\"policy\"')").bind(c.tenant.to_string()).bind(retirement).bind(policy).bind(version).bind(object.kind()).bind(object.uuid()).bind(target).bind(serde_json::to_value(actor)?).bind(now).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.retirements(expected_epoch,tenant_id,id,policy,version,object_kind,object_id,occurrence,target,authority,delivery_seconds,created_at,origin) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,$4,$5,$6,'once',$7,$8,300,$9,'\"policy\"')").bind(c.tenant.to_string()).bind(retirement).bind(policy).bind(version).bind(object.kind()).bind(object.uuid()).bind(target).bind(serde_json::to_value(actor)?).bind(now).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_devices.retirement_channels (tenant_id, operation, device, channel, stage, effect, execution) VALUES (CAST($1 AS uuid), $2, $3, 'agent', 'unenroll', 'pending', $4)").bind(c.tenant.to_string()).bind(retirement).bind(device.into_uuid()).bind(run).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_devices.retirement_work (tenant_id, operation, device, execution) VALUES (CAST($1 AS uuid), $2, $3, $4)").bind(c.tenant.to_string()).bind(retirement).bind(device.into_uuid()).bind(run).execute(&mut *tx).await?;
     sqlx::query("UPDATE mdm_access.devices SET retirement=$3 WHERE tenant_id=$1::uuid AND id=$2")
@@ -50,7 +50,7 @@ async fn accepted(c: &Context, device: &rss_mdm_agent_wire::DeviceId) -> Result<
         .bind(retirement)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO mdm_devices.unmanage_runs (tenant_id, id, origin, source_objects, policy_version, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint, gateway_accepted) VALUES (CAST($1 AS uuid), $2, '\"policy\"', '[]', $3, $4, 'once', $5, $5, $6, $7, $8, TRUE)").bind(c.tenant.to_string()).bind(run).bind(version).bind(device.into_uuid()).bind(now).bind(now+300).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(now+300,now)?)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.unmanage_runs (expected_epoch,tenant_id, id, origin, source_objects, policy_version, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint, gateway_accepted) VALUES (current_setting('rss.execution_epoch')::bigint,CAST($1 AS uuid), $2, '\"policy\"', '[]', $3, $4, 'once', $5, $5, $6, $7, $8, TRUE)").bind(c.tenant.to_string()).bind(run).bind(version).bind(device.into_uuid()).bind(now).bind(now+300).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(now+300,now)?)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(run)
 }
@@ -97,12 +97,12 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
         .fetch_one(&c.operator)
     };
     let untouched = state(sentinel).await?;
-    let a = Fixture::open(&c, true).await?;
+    let a = Fixture::open(&c).await?;
     let audit = Arc::new(
         c.audit
             .on_runtime(
                 a.resources.storage.runtime.clone(),
-                c.audit.binding(),
+                c.execution(),
                 &rss_mdm_audit_integration::budget::AuditBudget::new(
                     std::time::Duration::from_secs(5),
                 )
@@ -112,7 +112,7 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
     );
     let delivery = rss_mdm_agent_channel::delivery::Delivery {
         runtime: a.resources.storage.runtime.clone(),
-        tenant: c.tenant,
+
         audit,
         signing: a.resources.signing.clone(),
         tasks: Arc::new(crate::assembly::agent_tasks::AgentTasks {
@@ -133,7 +133,7 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
         RequestAudit::new(
             rss_mdm_audit_integration::Origin::Request,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            c.tenant.to_string(),
+            c.execution(),
             "agent_claim",
             AuditIntent::Management,
         )

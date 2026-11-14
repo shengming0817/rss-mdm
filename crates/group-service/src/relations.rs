@@ -3,20 +3,20 @@ use super::*;
 impl Groups {
     pub(crate) async fn advance_relations_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<()> {
         self.check_task_transaction(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let (after, cursor, pending) = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_assets.group_dispatch(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING").bind(&tenant).execute(&mut *c).await?;
             sqlx::query_as::<_, (i64, Option<Uuid>, Option<i64>)>("SELECT relation_revision,relation_cursor,relation_pending_revision FROM mdm_assets.group_dispatch WHERE tenant_id=$1::uuid FOR UPDATE").bind(tenant).fetch_one(c).await
         })).await?;
         let revision = match pending {
             Some(revision) => revision,
             None => {
                 let objects = self.objects.clone();
-                let tenant = self.tenant;
+                let tenant = tx.tenant_id();
                 tx.with_connection(move |c| {
                     Box::pin(async move { objects.change_head(c, tenant).await })
                 })
@@ -29,10 +29,11 @@ impl Groups {
         if revision < after {
             return Err(Error::Unavailable(Failure::GroupStorage).into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let groups=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Uuid>("SELECT id FROM mdm_group.groups WHERE tenant_id=$1::uuid AND NOT deleted AND asset_context='associated_device' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 33").bind(tenant).bind(cursor).fetch_all(c).await})).await?;
         for group in groups.iter().take(32) {
             self.dispatch_group_in(
+                binding,
                 tx,
                 checked_input(rss_mdm_group::GroupId::parse(&group.to_string()))?,
                 candidate,

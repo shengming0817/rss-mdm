@@ -2,12 +2,12 @@
 
 Group 持有成员求值；Scope 按“目标并集与限制并集取交集，再减排除并集”组合来源；Policy 独占主 Scope 和各灰度阶段 Scope，并分配闭合 Action；资源绑定位于需要资源的 Action 内。管理入口是 `/api/v1`，资源入口是 `/api/v1`。写入带 operationId、expectedRevision、input；提交未知时重试原身份和原文档。
 
-目录读取使用 `GET /api/v1/groups`、`/policies` 和 `/resources`，返回 `items/nextCursor`。
+目录读取使用 `GET /api/v1/tenants/{tenant}/groups`、`/policies` 和 `/resources`，返回 `items/nextCursor`。
 这些目录统一使用 `filter/sort/fields/limit/cursor`，不再接受 `after/descending` 或旧的散列过滤参数。
-例如 `/api/v1/groups?filter=kind==static;name=icontains=office&sort=kind&fields=id,presentation&limit=20`，
-`/api/v1/policies?filter=state==disabled;category==selfservice&sort=-revision`。
+例如 `/api/v1/tenants/{tenant}/groups?filter=kind==static;name=icontains=office&sort=kind&fields=id,presentation&limit=20`，
+`/api/v1/tenants/{tenant}/policies?filter=state==disabled;category==selfservice&sort=-revision`。
 Group 缺省排除删除记录；需要墓碑时显式使用 `filter=deleted==true`。
-Resource 示例为 `/api/v1/resources?filter=kind==script;active==false&sort=kind,-revision&fields=id,presentation&limit=20`。
+Resource 示例为 `/api/v1/tenants/{tenant}/resources?filter=kind==script;active==false&sort=kind,-revision&fields=id,presentation&limit=20`。
 `filter` 是有界 RSQL 子集，分号表示 AND、逗号表示 OR（AND 优先），支持括号、引号、转义及
 `== != =lt= =le= =gt= =ge= =in= =out=`；新增目录的 Text 字段还支持字面、不区分大小写的 `=icontains=`；不支持的字段、类型、操作和重复参数返回 400。
 完整字段、类型、操作符和过滤／排序／返回能力由各领域业务模型派生，见[正式 HTTP 契约](http-contract.md#目录查询能力)；
@@ -33,11 +33,11 @@ Policy 默认不列出 archived；指定 `filter=state==archived` 查询历史�
 
 Policy 响应使用 `state: enabled | disabled | archived`，不返回 enabled 布尔字段。
 创建/更新仍通过 POST 的 put，输入 enabled 表达本次启停意图；enable/disable 为显式变更。
-`DELETE /api/v1/policies/{id}` 接收 `{operationId, expectedRevision}`，仅允许 disabled 策略归档，返回归档后的对象。
+`DELETE /api/v1/tenants/{tenant}/policies/{id}` 接收 `{operationId, expectedRevision}`，仅允许 disabled 策略归档，返回归档后的对象。
 同 operation 重试恢复原回执；不同输入或过期 CAS 返回冲突。归档后不能编辑、启用或 rerun，保留版本、资源引用、执行及审计历史。
 既有任务的结算、未知恢复和配置撤回继续执行。没有物理删除或恢复接口。
 
-`GET /api/v1/devices/{device}/groups?limit&cursor` 反查已发布成员关系，要求 GroupRead 和全设备 InventoryRead。
+`GET /api/v1/tenants/{tenant}/devices/{device}/groups?limit&cursor` 反查已发布成员关系，要求 GroupRead 和全设备 InventoryRead。
 响应区分 endpoint 与 association 对象，包含成员/规则版本和评估新鲜度；stale 不表示当前仍满足规则。
 空列表不证明所有组都已计算或均不匹配。权限与设备绑定的游标不能用于另一设备。
 
@@ -51,16 +51,16 @@ Policy 响应使用 `state: enabled | disabled | archived`，不返回 enabled �
 详情返回 freshness，结果页返回 sources 来源坐标；过期结果的 current 为 false，历史证据仍可读取。
 实际注册身份和来源撤销仍由身份 owner 验证，不依赖全租户计算追平。
 
-引用选择复用 `GET /api/v1/groups?filter=assetContext==endpoint`；编辑时传
+引用选择复用 `GET /api/v1/tenants/{tenant}/groups?filter=assetContext==endpoint`；编辑时传
 `referenceableFor=<group-id>`，会排除本组和上下文不匹配的候选。完整禁环校验由异步保存任务完成。
 
-`GET /api/v1/groups/{id}/references?limit&cursor` 查询直接删除阻断，要求 GroupRead。
+`GET /api/v1/tenants/{tenant}/groups/{id}/references?limit&cursor` 查询直接删除阻断，要求 GroupRead。
 返回同租户当前 Group、Scope 与 Compliance 的最小身份、修订及引用角色；即使没有来源详情权限也返回坐标，
 不返回名称、配置或内容。Scope 项额外返回 `policy` 和可空 `stage`，用于定位所属 Policy 主范围或稳定阶段。
 摘要默认及最大页长为 1,000，游标绑定目标、主体及当前权限，不承诺跨页快照。
 空摘要不构成删除许可；写入遇到引用阻断返回 409 `object_referenced`，版本或生命周期冲突仍单独处理。
 
-`GET /api/v1/groups/{id}/impacts?kind&relation&limit&cursor` 查询递归影响，要求 GroupRead 和全设备 InventoryRead。
+`GET /api/v1/tenants/{tenant}/groups/{id}/impacts?kind&relation&limit&cursor` 查询递归影响，要求 GroupRead 和全设备 InventoryRead。
 kind 为 `group|scope|policy|compliance_rule`，省略时查询获授权类别；relation 为
 `direct|indirect|all`，默认 all。查询覆盖嵌套组、Scope 的 target/limitation/exclusion、
 策略主范围与软件灰度范围，以及合规规则。每项按来源对象及直接/间接关系归并，返回角色和
@@ -72,7 +72,7 @@ items 经过来源权限过滤；显式查询无权类别返回 403，根组不�
 先编辑来源移除引用再删除，历史版本不阻塞。Policy 归档或移除阶段会退役对应 Scope 并释放当前 Group 引用，历史结果仍保留。禁用 Policy 保持计算及引用。
 规则写入、删除及重试沿用 operationId/expectedRevision；提交未知时重试原身份和原请求。
 
-例如向 `POST /api/v1/groups/22222222-2222-4222-8222-222222222222` 保存纯组规则：
+例如向 `POST /api/v1/tenants/{tenant}/groups/22222222-2222-4222-8222-222222222222` 保存纯组规则：
 
 ```json
 {
@@ -92,7 +92,7 @@ items 经过来源权限过滤；显式查询无权类别返回 403，根组不�
 ```
 
 写入返回任务身份及 statusUrl。等待任务完成后，读取
-`GET /api/v1/groups/{id}/results/{task}/members?limit=64`，结果页结构如下。
+`GET /api/v1/tenants/{tenant}/groups/{id}/results/{task}/members?limit=64`，结果页结构如下。
 `memberSet` 是来源的不可变结果身份；其余坐标描述本次计算使用的定义、成员语义和授权。
 
 ```json
@@ -113,7 +113,7 @@ items 经过来源权限过滤；显式查询无权类别返回 403，根组不�
 }
 ```
 
-对来源组查询 `GET /api/v1/groups/11111111-1111-4111-8111-111111111111/impacts?relation=all&limit=64`：
+对来源组查询 `GET /api/v1/tenants/{tenant}/groups/11111111-1111-4111-8111-111111111111/impacts?relation=all&limit=64`：
 
 ```json
 {
@@ -132,7 +132,7 @@ items 经过来源权限过滤；显式查询无权类别返回 403，根组不�
 
 有 nextCursor 时将原值传入同一查询的 cursor；409 后丢弃旧游标，从首页重查。
 组引用保存除 GroupWrite 及全设备 InventoryRead 外还要求 GroupRead，并重新验证引用链的敏感字段权限。
-`POST /api/v1/groups/previews` 接收 `{criteria, assetContext, editing?}`，直接返回有界匹配对象，上限由 [Group preview owner](../../crates/group-service/src/preview.rs) 持有。
+`POST /api/v1/tenants/{tenant}/groups/previews` 接收 `{criteria, assetContext, editing?}`，直接返回有界匹配对象，上限由 [Group preview owner](../../crates/group-service/src/preview.rs) 持有。
 新建时省略 editing；编辑智能组时提供 `{groupId, expectedRevision}`，assetContext 必须与原组一致。
 响应 items 可用于设备链接展示；inputFingerprint、assetCut、objectSnapshot、sources 和 asOf 关联本次条件和固定输入。
 预览只返回确定匹配对象，不展示不匹配/资料不足清单、不计算全量统计、不分页或创建后台任务。
@@ -145,16 +145,16 @@ items 经过来源权限过滤；显式查询无权类别返回 403，根组不�
 
 ## Policy 范围保存、预览与重算
 
-`POST /api/v1/policies/{policy}` 保存完整 Policy：`definition.scope` 为完整范围定义，软件 `rollout.stages[]` 含稳定 UUID `id`、完整 `scope`、开放时间和门槛。空 `stages` 表示不分批，只使用主范围。阶段重排保留 ID，删除后重建阶段使用新 ID。
+`POST /api/v1/tenants/{tenant}/policies/{policy}` 保存完整 Policy：`definition.scope` 为完整范围定义，软件 `rollout.stages[]` 含稳定 UUID `id`、完整 `scope`、开放时间和门槛。空 `stages` 表示不分批，只使用主范围。阶段重排保留 ID，删除后重建阶段使用新 ID。
 一次 `operationId/expectedRevision` 在同一事务内保存所有范围、Policy、任务、审计和回执。写入不能指定内部 Scope ID 或修订；范围只在定义变化时增加内部修订。范围/灰度变化只推进 Policy 编辑 CAS，执行语义版本保持不变。提交结果未知时重提同一操作及原请求，返回原组合回执。
 
-主范围入口为 `/api/v1/policies/{policy}/scope`，阶段入口为 `/api/v1/policies/{policy}/stages/{stage}/scope`。
+主范围入口为 `/api/v1/tenants/{tenant}/policies/{policy}/scope`，阶段入口为 `/api/v1/tenants/{tenant}/policies/{policy}/stages/{stage}/scope`。
 读取使用 PolicyRead，编辑/重算使用 PolicyWrite；引用 Group、设备及敏感资料仍执行各自授权。
 在上述入口后追加 `/previews` 并 POST 完整 `definition`、`channel` 和 Policy `expectedRevision`，可预览当前草稿。新 Policy 使用 0。
 此入口只读，不保存定义、发布成员或排队策略。`limitations:null` 表示不限制，`[]` 表示显式空限制。
 返回的是有界匹配样例；上限与预算由 [Scope preview owner](../../crates/scope-service/src/preview.rs) 持有。
 `scanComplete`、`stopReason` 与 `hasUnknown` 分别说明扫描结束、提前停止和已观察到的未知事实；空样例不证明范围为空。
-动作资格预览使用 `POST /api/v1/policies/{policy}/previews`，提交完整 Policy 草稿与 `expectedRevision`；范围必须与已保存定义一致，并使用正式结果。范围改动尚未保存时返回冲突。
+动作资格预览使用 `POST /api/v1/tenants/{tenant}/policies/{policy}/previews`，提交完整 Policy 草稿与 `expectedRevision`；范围必须与已保存定义一致，并使用正式结果。范围改动尚未保存时返回冲突。
 
 重算使用上述范围入口的 `/recomputations`，提交 `operationId/expectedRevision`，其中 CAS 属于 Policy。
 定义修订保持不变，旧未完成任务标记为 superseded 并指向替代任务；新任务重新捕获来源。
@@ -175,7 +175,7 @@ AgentCollection Policy 可在任务签名配置前保存并冻结已验证的内
 
 通道接入使用 `ensure_agent_installed` 与 `request_mdm_enrollment` 两个独立 Action。当前来源注册身份的明确安装/注册观察经动态 Group 和 Scope 触发；Unknown、来源失败和其它组织冲突都不视为缺失，也不用最后连接时间或任意 TTL 推断缺失。发布时检查 SoftwareDeploy/Enrollment 权限；后续组织任务不依赖发布人会话或角色，保留真实注册、通道状态和材料边界。两端拥有独立 DeviceId、注册、数据与策略，详见[企业任务](enterprise-tasks.md)。
 
-策略分配使用 `GET /api/v1/policies/{id}/assignments`，返回 typed object、channel、availability、reason、可选原始 target、来源证据和执行记录身份。缺失通道只形成 unavailable 分配，不创建操作、尝试或 outbox；数据、通道和关联变更通过既有自动任务重算，通道可用后恢复。Agent 动作仅使用 Agent，配置、原生采集及安装 Agent 仅使用 MDM。派发前重新验证冻结来源，派发后的结果仍属于原任务的终端和注册身份。Compliance 只接受 endpoint 组。
+策略分配使用 `GET /api/v1/tenants/{tenant}/policies/{id}/assignments`，返回 typed object、channel、availability、reason、可选原始 target、来源证据和执行记录身份。缺失通道只形成 unavailable 分配，不创建操作、尝试或 outbox；数据、通道和关联变更通过既有自动任务重算，通道可用后恢复。Agent 动作仅使用 Agent，配置、原生采集及安装 Agent 仅使用 MDM。派发前重新验证冻结来源，派发后的结果仍属于原任务的终端和注册身份。Compliance 只接受 endpoint 组。
 
 本次契约为新装切换，没有旧 DTO、缺省 assetContext 或 `/policies/{id}/devices` 路由。rss-web 需独立完成 Group/Scope/assignment 契约切换后才能联合发布。
 
@@ -200,23 +200,23 @@ Scope 在发布固定结果前按目标通道完成集合运算，并持久化�
 设备离线、Agent 崩溃或 Profile 消失只改变通道事实，不产生退出意图。
 
 分配查询返回 `channel:null`、`target:null` 和 `operationIds`；通过
-`GET /api/v1/device-retirements/{id}` 查看各通道的清理阶段与证据。
+`GET /api/v1/tenants/{tenant}/device-retirements/{id}` 查看各通道的清理阶段与证据。
 配置和软件使用原安装合同清理，仅处理产品管理效果。缺少移除能力、失败、离线或回执
 丢失保留待处理／未知结果，不假定卸载成功。Agent 必须支持 `device.unmanage.v1`，
 退出任务签名绑定原安装注册、Policy、退出操作和投递尝试。
 
-`POST /api/v1/device-retirements/{id}/force-revoke` 接收 `{operationId,reason}`，
+`POST /api/v1/tenants/{tenant}/device-retirements/{id}/force-revoke` 接收 `{operationId,reason}`，
 要求 `device_unmanage` 并检查目标权限；它请求最终撤权，不证明设备已卸载。
 紧急凭据撤销仍是独立操作，不产生已成功清理设备的结论。
 
-`POST /api/v1/device-views/{kind}/{id}/asset-state` 接收
+`POST /api/v1/tenants/{tenant}/device-views/{kind}/{id}/asset-state` 接收
 `{operationId,state:active|archived|deleted}`，要求 InventoryAssign。
 归档允许退出中的资产；软删除要求所有注册已失效。列表默认只显示 active，
 可用 `filter=assetState==archived` 或 `filter=assetState==deleted` 查询归档或删除的资产，显式详情及审计历史保留。
 恢复为 active 不恢复凭据、旧任务或互注册授权。
 
 完成退管后，管理员创建新的 MDM 注册请求才能重新授权该端；Agent 使用新 CSR 请求，
-再通过 `POST /api/v1/agent-requests/{id}/reenroll/{device}` 和 `{operationId}`
+再通过 `POST /api/v1/tenants/{tenant}/agent-requests/{id}/reenroll/{device}` 和 `{operationId}`
 将其授权给原资产。两种方式都检查 Enrollment 权限并作废旧注册授权。
 新注册具有独立身份；普通责任人或策略调整无需重注册。
 
@@ -262,6 +262,6 @@ presentation/resourceRevision，展示只从 Resource 读取。原生软件发�
 
 Scope continuation 固定已发布 revision/result、请求与授权；结果或授权变化拒绝旧 cursor。成员页每项返回 `object/available`；决策页保留已发布的历史 `qualification`，并另带当前 `available`，历史符合条件不代表当前仍可执行。每页在同一只读快照中解释当前设备可用性，普通可用性变化不会单独使 cursor 失效，也不会混入新的已发布结果。设备反向分组采用 live keyset，按当前授权、设备和查询条件读取当前关联、成员结果及新鲜度；跨页允许观察变化。
 
-设备 `GET /api/v1/devices/{device}/registration` 返回该设备的单条注册记录，包括 source、status、enrolledUser、enrollmentId、certificateGrantId 和可选 WinDC 协议上下文；读取要求当前 credentials 权限。
+设备 `GET /api/v1/tenants/{tenant}/devices/{device}/registration` 返回该设备的单条注册记录，包括 source、status、enrolledUser、enrollmentId、certificateGrantId 和可选 WinDC 协议上下文；读取要求当前 credentials 权限。
 
 Scope 任务的 `completed` 表示集合结果和必要通道投影已原子发布，Policy 后续工作已持久接受；它不表示 Policy 已完成传播或设备执行。Policy 后续进度从相应 Policy/执行入口读取。Scope 来源等待、重启和替代任务由独立 Scope worker 恢复。

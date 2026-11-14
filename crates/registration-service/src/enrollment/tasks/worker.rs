@@ -10,6 +10,9 @@ use std::{
 };
 use uuid::Uuid;
 pub struct Worker {
+    read_pool: sqlx::PgPool,
+    storage: rss_transactional_messaging::fence::StorageIdentity,
+    relay_after: Mutex<Option<(Uuid, i64)>>,
     readiness: rss_mdm_recovery_observation::Readiness,
     service: Arc<Service>,
     store: rss_reconcile_postgres::PgStore,
@@ -18,6 +21,8 @@ pub struct Worker {
 }
 impl Worker {
     pub fn new(
+        read_pool: sqlx::PgPool,
+        storage: rss_transactional_messaging::fence::StorageIdentity,
         profile: rss_mdm_install_support::StorageProfile,
         service: Arc<Service>,
         store: rss_reconcile_postgres::PgStore,
@@ -39,11 +44,17 @@ impl Worker {
             .map_err(|_| Error::Unavailable)?,
         );
         let readiness = rss_mdm_recovery_observation::Readiness::new(
-            crate::enrollment::tasks::wake::scope(profile, service.transactions.tenant),
+            match profile {
+                rss_mdm_install_support::StorageProfile::Mdm => "mdm.registration.enrollment.v1",
+                rss_mdm_install_support::StorageProfile::Da => "da.registration.enrollment.v1",
+            },
             true,
             false,
         );
         Ok(Self {
+            read_pool,
+            storage,
+            relay_after: Mutex::new(None),
             readiness,
             service,
             store,
@@ -57,19 +68,70 @@ impl Worker {
         drain: std::time::Duration,
         notify: Arc<tokio::sync::Notify>,
     ) -> rss_runtime::ManagedTaskRegistration {
-        let profile = self.service.profile();
-
         let (task, status) =
             rss_runtime::ManagedTask::prepare("mdm-device-enrollment-recovery", drain);
         self.readiness.bind(status);
-        task.into_registration(move|stop|async move {
-            let timer=Timer::new();let force=tokio_util::sync::CancellationToken::new();
-            let control=rss_reconcile::Control::new(&timer,Duration::MAX,&force);
-            let result = rss_reconcile::run_with_notify(&self.recovery_store(),self.as_ref(),&crate::enrollment::tasks::wake::scope(profile, self.service.transactions.tenant),policy,&control,&stop,&notify,|event| {
-                self.readiness.observe(&event);
-                if let rss_reconcile::Observation::ScanFailed { scope, error } = &event { eprintln!("{}",serde_json::json!({"event":"mdm_registration_tasks_recovery_failure","phase":"scan","scope":scope.reconciler(),"reason":format!("{:?}",error.kind())})); }
-                if let rss_reconcile::Observation::AttemptFailed{target,error,..}=event {eprintln!("{}",serde_json::json!({"event":"mdm_registration_tasks_recovery_failure","target":target.entity(),"reason":format!("{:?}",error.kind())}));}
-            }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new);
+        task.into_registration(move |stop| async move {
+            let profile = self.service.profile();
+            let timer = Timer::new();
+            let force = tokio_util::sync::CancellationToken::new();
+            let control = rss_reconcile::Control::new(&timer, Duration::MAX, &force);
+            let mut after: Option<Uuid> = None;
+            let result = async {
+                loop {
+                    if stop.is_cancelled() {
+                        return Ok(());
+                    }
+                    let tenants: Vec<Uuid> = sqlx::query_scalar(match self.service.profile() {
+                        rss_mdm_install_support::StorageProfile::Mdm => {
+                            "SELECT tenant_id FROM mdm_registration_tasks.runs_work_scopes($1)"
+                        }
+                        rss_mdm_install_support::StorageProfile::Da => {
+                            "SELECT tenant_id FROM rss_da.enrollment_runs_work_scopes($1)"
+                        }
+                    })
+                    .bind(after)
+                    .fetch_all(&self.read_pool)
+                    .await
+                    .map_err(rss_runtime::ShutdownError::new)?;
+                    if tenants.is_empty() {
+                        self.readiness.scan(Ok(()));
+                        after = None;
+                        tokio::select! { biased;
+                            () = stop.cancelled() => return Ok(()),
+                            () = notify.notified() => {},
+                            () = tokio::time::sleep(Duration::from_secs(5)) => {},
+                        }
+                        continue;
+                    }
+                    for tenant in tenants {
+                        after = Some(tenant);
+                        let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
+                            .map_err(rss_runtime::ShutdownError::new)?;
+                        let scope = crate::enrollment::tasks::wake::scope(profile, tenant);
+                        let turn = stop.child_token();
+                        let pass = Pass {
+                            worker: &self,
+                            stop: &turn,
+                        };
+                        rss_reconcile::run_with_notify(
+                            &pass,
+                            self.as_ref(),
+                            &scope,
+                            policy,
+                            &control,
+                            &turn,
+                            &notify,
+                            |event| {
+                                self.readiness.observe(&event);
+                            },
+                        )
+                        .await
+                        .map_err(rss_runtime::ShutdownError::new)?;
+                    }
+                }
+            }
+            .await;
             self.readiness.stop();
             result
         })
@@ -91,11 +153,14 @@ impl Worker {
         );
     }
     /// Host polls each concrete owner once in the single existing relay loop.
-    pub async fn relay_once(&self) -> std::result::Result<usize, Error> {
+    async fn relay_binding(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> std::result::Result<usize, Error> {
         let claims = self
             .outbox
             .claim_partition_heads(
-                self.service.transactions.audit_store.binding(),
+                binding,
                 std::num::NonZeroUsize::MIN,
                 crate::enrollment::tasks::transaction::deadline(),
             )
@@ -112,7 +177,7 @@ impl Worker {
                 .ok_or(Error::Invariant)?;
             let result = self
                 .service
-                .accept_action_dispatch(id, message.fingerprint().as_bytes().to_vec())
+                .accept_action_dispatch(binding, id, message.fingerprint().as_bytes().to_vec())
                 .await;
             if result.as_ref().err().is_some_and(permanent) {
                 return result.map(|_| count);
@@ -158,18 +223,22 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error> {
+        let binding = self.execution(claim, control).await?;
         let profile = self.service.profile();
 
         control.check()?;
-        if claim.target().scope()
-            != &crate::enrollment::tasks::wake::scope(profile, self.service.transactions.tenant)
+        if claim.target().scope().reconciler()
+            != (match profile {
+                rss_mdm_install_support::StorageProfile::Mdm => "mdm.registration.enrollment.v1",
+                rss_mdm_install_support::StorageProfile::Da => "da.registration.enrollment.v1",
+            })
         {
             return Err(failure(Error::Invariant));
         }
         let service = &self.service;
         let pending = crate::enrollment::tasks::transaction::inspect_budget(
             &service.transactions.runtime,
-            service.transactions.audit_store.binding(),
+            binding,
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                 control.remaining(),
             ),
@@ -190,6 +259,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         _: ReconcileDiff<bool>,
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, rss_reconcile::Error> {
+        let binding = self.execution(claim, control).await?;
         let profile = self.service.profile();
 
         control.check()?;
@@ -197,15 +267,18 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
             return Ok(ReconcileStep::Deferred(Duration::from_millis(50)));
         };
         let service = &self.service;
-        if claim.target().scope()
-            != &crate::enrollment::tasks::wake::scope(profile, service.transactions.tenant)
+        if claim.target().scope().reconciler()
+            != (match profile {
+                rss_mdm_install_support::StorageProfile::Mdm => "mdm.registration.enrollment.v1",
+                rss_mdm_install_support::StorageProfile::Da => "da.registration.enrollment.v1",
+            })
         {
             return Err(failure(Error::Invariant));
         }
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             profile,
-            service.transactions.tenant.to_string(),
+            binding,
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -215,7 +288,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
             .transactions
             .runtime
             .local_tx_with_context(
-                service.transactions.audit_store.binding(),
+                binding,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -277,7 +350,10 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
                                                 ),
                                             );
                                         }
-                                        match advance_in(profile, service, tx, entity, ready).await
+                                        match advance_in(
+                                            binding, profile, service, tx, entity, ready,
+                                        )
+                                        .await
                                         {
                                             Ok(delay) => Ok(match delay {
                                                 Some(after) => {
@@ -375,6 +451,7 @@ async fn prepare_in(
     Ok(Prepared::Ready)
 }
 async fn advance_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     service: &Service,
     tx: &mut PgTransaction<'_>,
@@ -398,7 +475,7 @@ async fn advance_in(
         .strip_prefix("run:")
         .and_then(|s| Uuid::parse_str(s).ok())
     {
-        crate::enrollment::tasks::recovery::recover_one(profile, service, tx, id).await?;
+        crate::enrollment::tasks::recovery::recover_one(binding, profile, service, tx, id).await?;
         return Ok(pending_in(profile, service, tx, entity)
             .await?
             .then_some(Duration::from_secs(5)));
@@ -481,44 +558,139 @@ impl rss_reconcile::Timer for Timer {
     }
 }
 
-impl Worker {
-    /// Calibrate every existing declaration before runners start, including delayed
-    /// and suspended work. Binding preserves wake identity and recovery history.
-    pub fn initialize_resource_bindings(
+struct Pass<'a> {
+    worker: &'a Worker,
+    stop: &'a tokio_util::sync::CancellationToken,
+}
+impl rss_reconcile::DurableStore for Pass<'_> {
+    type Claim = rss_reconcile_postgres::PgClaim;
+    async fn wake<T: rss_reconcile::Timer>(
         &self,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = std::result::Result<(), Error>> + Send + '_>,
+        target: &rss_reconcile::Target,
+        resources: &rss_reconcile::ResourceSet,
+        control: &rss_reconcile::Control<'_, T>,
+    ) -> std::result::Result<(), rss_reconcile::Error> {
+        self.worker
+            .recovery_store()
+            .wake(target, resources, control)
+            .await
+    }
+    async fn bind_resources<T: rss_reconcile::Timer>(
+        &self,
+        target: &rss_reconcile::Target,
+        resources: &rss_reconcile::ResourceSet,
+        control: &rss_reconcile::Control<'_, T>,
+    ) -> std::result::Result<(), rss_reconcile::Error> {
+        self.worker
+            .recovery_store()
+            .bind_resources(target, resources, control)
+            .await
+    }
+    async fn claim_due<T: rss_reconcile::Timer>(
+        &self,
+        scope: &rss_reconcile::Scope,
+        limit: usize,
+        scan_budget: u32,
+        lease: Duration,
+        control: &rss_reconcile::Control<'_, T>,
+    ) -> std::result::Result<
+        rss_reconcile::ClaimBatch<rss_reconcile_postgres::PgClaim>,
+        rss_reconcile::Error,
     > {
-        Box::pin(async move {
-            let profile = self.service.profile();
-            let transactions = &self.service.transactions;
-            let tenant = transactions.tenant;
-            let scope = crate::enrollment::tasks::wake::scope(profile, tenant);
-            let mut after = String::new();
-            loop {
-                let page = crate::enrollment::tasks::transaction::inspect(
-                &transactions.runtime, transactions.audit_store.binding(), (transactions, scope.clone(), after.clone()),
-                move |(transactions, scope, after), tx| Box::pin(async move {
-                    let t = tx.tenant_id().to_string();
-                    let domain = scope.reconciler().to_owned();
-                    let after = after.clone();
-                    let page: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
-                        sqlx::query_scalar("SELECT entity FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity>$3 ORDER BY entity LIMIT 64")
-                            .bind(t).bind(domain).bind(after).fetch_all(c).await
-                    })).await?;
-                    for entity in &page {
-                        let target = rss_reconcile::Target::new(scope.clone(), entity).map_err(|_| Error::Malformed)?;
-                        let resources = crate::enrollment::tasks::wake::resources_in(profile, tx, entity).await?;
-                        transactions.reconcile_messaging.bind_in(tx, &target, &resources).await?;
-                    }
-                    Ok(page)
-                }),
-            ).await?;
-                if page.len() < 64 {
-                    return Ok(());
-                }
-                after = page.last().expect("nonempty page").clone();
+        let result = self
+            .worker
+            .recovery_store()
+            .claim_due(scope, limit, scan_budget, lease, control)
+            .await;
+        self.stop.cancel();
+        result
+    }
+    async fn renew<T: rss_reconcile::Timer>(
+        &self,
+        claim: &rss_reconcile_postgres::PgClaim,
+        lease: Duration,
+        control: &rss_reconcile::Control<'_, T>,
+    ) -> std::result::Result<(), rss_reconcile::Error> {
+        self.worker
+            .recovery_store()
+            .renew(claim, lease, control)
+            .await
+    }
+    async fn release<T: rss_reconcile::Timer>(
+        &self,
+        claim: &rss_reconcile_postgres::PgClaim,
+        control: &rss_reconcile::Control<'_, T>,
+    ) -> std::result::Result<(), rss_reconcile::Error> {
+        self.worker.recovery_store().release(claim, control).await
+    }
+    async fn finish<T: rss_reconcile::Timer>(
+        &self,
+        claim: &rss_reconcile_postgres::PgClaim,
+        completion: rss_reconcile::Completion,
+        control: &rss_reconcile::Control<'_, T>,
+    ) -> std::result::Result<(), rss_reconcile::Error> {
+        self.worker
+            .recovery_store()
+            .finish(claim, completion, control)
+            .await
+    }
+}
+
+impl Worker {
+    async fn execution<T: rss_reconcile::Timer>(
+        &self,
+        claim: &rss_reconcile_postgres::PgClaim,
+        control: &rss_reconcile::Control<'_, T>,
+    ) -> std::result::Result<
+        rss_transactional_messaging::fence::ExecutionBinding,
+        rss_reconcile::Error,
+    > {
+        control.check()?;
+        let tenant = claim.target().scope().tenant();
+        let epoch: i64 = sqlx::query_scalar(match self.service.profile() {
+            rss_mdm_install_support::StorageProfile::Mdm => {
+                "SELECT mdm_registration_tasks.runs_work_epoch($1::uuid,$2)"
+            }
+            rss_mdm_install_support::StorageProfile::Da => {
+                "SELECT rss_da.enrollment_runs_work_epoch($1::uuid,$2)"
             }
         })
+        .bind(tenant.to_string())
+        .bind(claim.target().entity())
+        .fetch_one(&self.read_pool)
+        .await
+        .map_err(|_| failure(Error::Unavailable))?;
+        let epoch = rss_transactional_messaging::fence::Epoch::new(epoch)
+            .map_err(|_| failure(Error::Invariant))?;
+        Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            tenant,
+            epoch,
+        ))
+    }
+    pub async fn relay_once(&self) -> std::result::Result<usize, Error> {
+        let after = *self.relay_after.lock().map_err(|_| Error::Invariant)?;
+        let scopes: Vec<(Uuid,i64)> = sqlx::query_as(match self.service.profile() {rss_mdm_install_support::StorageProfile::Mdm=>"SELECT tenant_id,expected_epoch FROM mdm_registration_tasks.runs_work_relay_scopes($1,$2)",rss_mdm_install_support::StorageProfile::Da=>"SELECT tenant_id,expected_epoch FROM rss_da.enrollment_runs_work_relay_scopes($1,$2)"})
+            .bind(after.map(|x|x.0)).bind(after.map(|x|x.1)).fetch_all(&self.read_pool).await.map_err(|_| Error::Unavailable)?;
+        if scopes.is_empty() {
+            *self.relay_after.lock().map_err(|_| Error::Invariant)? = None;
+            return Ok(0);
+        }
+        let mut count = 0;
+        for (tenant, epoch) in scopes {
+            let t = rss_request_context::TenantId::parse(&tenant.to_string())
+                .map_err(|_| Error::Invariant)?;
+            let e = rss_transactional_messaging::fence::Epoch::new(epoch)
+                .map_err(|_| Error::Invariant)?;
+            count += self
+                .relay_binding(rss_transactional_messaging::fence::ExecutionBinding::new(
+                    self.storage,
+                    t,
+                    e,
+                ))
+                .await?;
+            *self.relay_after.lock().map_err(|_| Error::Invariant)? = Some((tenant, epoch));
+        }
+        Ok(count)
     }
 }

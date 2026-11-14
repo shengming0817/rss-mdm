@@ -65,7 +65,7 @@ impl Reads {
                     let limit = page.limit();
                     let mut items = s
                         .execution
-                        .run_page_on(c, policy, after, limit + 1, now)
+                        .run_page_on(proof.binding(), c, policy, after, limit + 1, now)
                         .await
                         .map_err(execution_fault)?
                         .into_iter()
@@ -74,7 +74,7 @@ impl Reads {
                     items.extend(
                         rss_mdm_script_service::queries::page_on(
                             c,
-                            &s.tenant.to_string(),
+                            &proof.binding().tenant().to_string(),
                             policy,
                             after,
                             limit + 1,
@@ -87,7 +87,7 @@ impl Reads {
                     items.extend(
                         rss_mdm_inventory_service::collection::execution::queries::page_on(
                             c,
-                            &s.tenant.to_string(),
+                            &proof.binding().tenant().to_string(),
                             policy,
                             after,
                             limit + 1,
@@ -98,7 +98,7 @@ impl Reads {
                     );
                     items.extend(
                         s.software
-                            .run_page_on(c, policy, after, limit + 1, now)
+                            .run_page_on(proof.binding(), c, policy, after, limit + 1, now)
                             .await
                             .map_err(software_fault)?
                             .into_iter()
@@ -108,7 +108,7 @@ impl Reads {
                         rss_mdm_registration_service::enrollment::tasks::queries::page_on(
                             rss_mdm_install_support::StorageProfile::Mdm,
                             c,
-                            &s.tenant.to_string(),
+                            &proof.binding().tenant().to_string(),
                             policy,
                             after,
                             limit + 1,
@@ -121,7 +121,7 @@ impl Reads {
                     items.extend(
                         rss_mdm_device_access_postgres::device_access::execution::queries::page_on(
                             c,
-                            &s.tenant.to_string(),
+                            &proof.binding().tenant().to_string(),
                             policy,
                             after,
                             limit + 1,
@@ -139,7 +139,7 @@ impl Reads {
                             rss_mdm_recovery_credentials::tasks::queries::page_on(
                                 profile,
                                 c,
-                                &s.tenant.to_string(),
+                                &proof.binding().tenant().to_string(),
                                 policy,
                                 after,
                                 limit + 1,
@@ -197,7 +197,7 @@ impl Reads {
                 let (s, proof, policy, id) = *ctx;
                 grant.require(proof, Permission::PolicyRead, None)?;
                 use super::super::task_ownership::{self, Owner};
-                let owner = task_ownership::on(c, s.tenant, id)
+                let owner = task_ownership::on(c, proof.binding().tenant(), id)
                     .await
                     .map_err(|e| match e {
                         sqlx::Error::RowNotFound => Error::NotFound,
@@ -213,7 +213,7 @@ impl Reads {
                     Owner::Access => {
                         rss_mdm_device_access_postgres::device_access::execution::queries::detail_on(
                             c,
-                            &s.tenant.to_string(),
+                            &proof.binding().tenant().to_string(),
                             policy,
                             id,
                             proof,
@@ -226,7 +226,7 @@ impl Reads {
                     Owner::Credential(profile) => rss_mdm_recovery_credentials::tasks::queries::detail_on(
                         profile,
                         c,
-                        &s.tenant.to_string(),
+                        &proof.binding().tenant().to_string(),
                         policy,
                         id,
                         proof,
@@ -239,7 +239,7 @@ impl Reads {
                         rss_mdm_registration_service::enrollment::tasks::queries::detail_on(
                             rss_mdm_install_support::StorageProfile::Mdm,
                             c,
-                            &s.tenant.to_string(),
+                            &proof.binding().tenant().to_string(),
                             policy,
                             id,
                             proof,
@@ -257,7 +257,7 @@ impl Reads {
                         .map_err(execution_fault),
                     Owner::Script => rss_mdm_script_service::queries::detail_on(
                         c,
-                        &s.tenant.to_string(),
+                        &proof.binding().tenant().to_string(),
                         policy,
                         id,
                         proof,
@@ -269,7 +269,7 @@ impl Reads {
                     Owner::Collection => {
                         rss_mdm_inventory_service::collection::execution::queries::detail_on(
                             c,
-                            &s.tenant.to_string(),
+                            &proof.binding().tenant().to_string(),
                             policy,
                             id,
                             proof,

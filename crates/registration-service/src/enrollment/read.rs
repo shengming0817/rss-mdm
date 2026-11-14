@@ -137,6 +137,7 @@ pub trait NativeProgress: Send + Sync {
     fn channels(&self) -> Vec<ChannelOption>;
     fn read<'a>(
         &'a self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         connection: &'a mut sqlx::PgConnection,
         context: &'a Context,
     ) -> std::pin::Pin<
@@ -173,7 +174,9 @@ pub async fn enrollment_status(
         "cancelled" => State::Cancelled,
         _ => return Err(Error::Corrupt),
     };
-    let details = native.read(&mut tx, &context).await?;
+    let details = native
+        .read(permission.proof().binding(), &mut tx, &context)
+        .await?;
     let handoff = match row
         .try_get::<Option<Uuid>, _>("credential_ref")
         .map_err(db)?

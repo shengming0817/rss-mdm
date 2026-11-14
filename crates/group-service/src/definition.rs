@@ -10,6 +10,7 @@ pub struct Cursor {
 impl Groups {
     pub(crate) async fn advance_group_definition_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         edit: &DefinitionEdit,
@@ -24,7 +25,9 @@ impl Groups {
         {
             Ok(value) => value,
             Err(crate::transaction::Fault::Request(crate::Error::Conflict)) => {
-                return self.finish_task_in(tx, task, Some("owner_conflict")).await;
+                return self
+                    .finish_task_in(binding, tx, task, Some("owner_conflict"))
+                    .await;
             }
             Err(error) => return Err(error),
         };
@@ -35,6 +38,7 @@ impl Groups {
         if !restart && previous.as_ref().is_some_and(|c| c.ready) {
             editor
                 .publish_change_in(
+                    binding,
                     tx,
                     edit.group,
                     &edit.change,
@@ -43,7 +47,7 @@ impl Groups {
                     candidate,
                 )
                 .await?;
-            return self.finish_task_in(tx, task, None).await;
+            return self.finish_task_in(binding, tx, task, None).await;
         }
         if restart {
             group_checked(self.groups.clear_definition_walk_in(tx, task).await?)?;
@@ -81,7 +85,7 @@ impl Groups {
             graph_revision: revision,
             ready: !pending,
         }))?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| Box::pin(async move {
             sqlx::query("UPDATE mdm_assets.group_tasks SET definition_progress=$3 WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(tenant).bind(task).bind(cursor).execute(c).await?; Ok(())

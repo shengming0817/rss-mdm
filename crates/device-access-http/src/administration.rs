@@ -48,6 +48,7 @@ pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Dec
     .assemble()
 }
 async fn configuration(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
@@ -66,6 +67,7 @@ async fn configuration(
     ))
 }
 async fn delivery(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
@@ -89,6 +91,7 @@ struct Revision {
     revision: i64,
 }
 async fn step_up(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     CeremonyHeaders(headers): CeremonyHeaders,
@@ -100,7 +103,7 @@ async fn step_up(
         .step_up_context(&auth.proof)?;
     let actor = s
         .identity
-        .ceremony_actor(&headers, auth.remaining()?)
+        .ceremony_actor(auth.proof.binding(), &headers, auth.remaining()?)
         .await?;
     let result = s
         .identity
@@ -111,6 +114,7 @@ async fn step_up(
     Ok(Json(crate::identity_contract::TimedChallenge(result)))
 }
 async fn configuration_step_up(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     CeremonyHeaders(headers): CeremonyHeaders,
@@ -122,7 +126,7 @@ async fn configuration_step_up(
         .step_up_context(&auth.proof)?;
     let actor = s
         .identity
-        .ceremony_actor(&headers, auth.remaining()?)
+        .ceremony_actor(auth.proof.binding(), &headers, auth.remaining()?)
         .await?;
     let result = s
         .identity

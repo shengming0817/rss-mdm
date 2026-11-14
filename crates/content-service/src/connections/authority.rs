@@ -4,7 +4,6 @@ use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit, budget::AuditBud
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use std::{sync::Arc, time::Duration};
 pub struct Authority {
-    pub tenant: TenantId,
     pub protection: Arc<Protector>,
     pub audit: Arc<AuditStore>,
     pub content: Option<Arc<crate::Store>>,
@@ -65,14 +64,14 @@ impl Authority {
         audit: &RequestAudit,
         operation: Uuid,
     ) -> Result<Receipt, Failure> {
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != p.binding().tenant().to_string() {
             return Err(Failure::Forbidden);
         }
         p.require(Permission::StorageConfigurationRead, None)?;
         p.bind_audit(audit)?;
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let result=self.audit.read(self.tenant,&budget.control(),(self,p,operation),|(service,p,operation),tx|Box::pin(async move {
-            let tenant=service.tenant;let operation=*operation;
+        let result=self.audit.read(p.binding().tenant(),&budget.control(),(self,p,operation),|(_,p,operation),tx|Box::pin(async move {
+            let tenant=p.binding().tenant();let operation=*operation;
             let value=tx.with_connection(move|c|Box::pin(async move {
                 let row=sqlx::query("SELECT * FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND operation_id=$2").bind(tenant.to_string()).bind(operation).fetch_optional(c).await.map_err(|_|Failure::Storage)?.ok_or(Failure::Missing)?;
                 Ok::<_,Failure>(receipt(&row)?)
@@ -88,7 +87,7 @@ impl Authority {
         audit: &RequestAudit,
         operation: Uuid,
     ) -> Result<crate::migration::Receipt, Failure> {
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != p.binding().tenant().to_string() {
             return Err(Failure::Forbidden);
         }
         p.require(Permission::StorageConfigurationRead, None)?;
@@ -97,12 +96,12 @@ impl Authority {
         let result = self
             .audit
             .read(
-                self.tenant,
+                p.binding().tenant(),
                 &budget.control(),
                 (self, p, operation),
-                |(service, p, operation), tx| {
+                |(_, p, operation), tx| {
                     Box::pin(async move {
-                        let tenant = service.tenant;
+                        let tenant = p.binding().tenant();
                         let operation = *operation;
                         let value = tx
                             .with_connection(move |c| {
@@ -127,7 +126,7 @@ impl Authority {
         p: &AuthorizedPrincipal,
         audit: &RequestAudit,
     ) -> Result<crate::migration::Directory, Failure> {
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != p.binding().tenant().to_string() {
             return Err(Failure::Forbidden);
         }
         p.require(Permission::StorageConfigurationRead, None)?;
@@ -136,12 +135,12 @@ impl Authority {
         let result = self
             .audit
             .read(
-                self.tenant,
+                p.binding().tenant(),
                 &budget.control(),
                 (self, p),
-                |(service, p), tx| {
+                |(_, p), tx| {
                     Box::pin(async move {
-                        let tenant = service.tenant;
+                        let tenant = p.binding().tenant();
                         let value = tx
                             .with_connection(move |c| {
                                 Box::pin(async move {
@@ -165,18 +164,18 @@ impl Authority {
         p: &AuthorizedPrincipal,
         audit: &RequestAudit,
     ) -> Result<Directory, Failure> {
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != p.binding().tenant().to_string() {
             return Err(Failure::Forbidden);
         }
         p.require(Permission::StorageConfigurationRead, None)?;
         p.bind_audit(audit)?;
         let applied = match &self.content {
-            Some(store) => store.active_s3_revision().await.ok().flatten(),
+            Some(store) => store.active_s3_revision(p.binding()).await.ok().flatten(),
             None => None,
         };
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let result=self.audit.read(self.tenant,&budget.control(),(self,p,applied),|(service,p,applied),tx|Box::pin(async move {
-            let tenant=service.tenant;let applied=*applied;
+        let result=self.audit.read(p.binding().tenant(),&budget.control(),(self,p,applied),|(_,p,applied),tx|Box::pin(async move {
+            let tenant=p.binding().tenant();let applied=*applied;
             let directory=tx.with_connection(move|c|Box::pin(async move {
                 let (revision,desired): (i64,Option<i64>)=sqlx::query_as("SELECT h.revision,(SELECT (g.descriptor->'value'->'storage'->>'revision')::bigint FROM mdm_content.settings s JOIN mdm_content.generations g ON g.tenant_id=s.tenant_id AND g.id=s.active_generation WHERE s.tenant_id=h.tenant_id) FROM mdm_content_connections.heads h WHERE h.tenant_id=$1::uuid").bind(tenant.to_string()).fetch_optional(&mut *c).await.map_err(|_|Failure::Storage)?.unwrap_or((0,None));
                 let version_count=sqlx::query_scalar("SELECT count(*) FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid").bind(tenant.to_string()).fetch_one(&mut *c).await.map_err(|_|Failure::Storage)?;
@@ -196,7 +195,7 @@ impl Authority {
         operation: Uuid,
         input: &Request,
     ) -> Result<Receipt, Failure> {
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != p.binding().tenant().to_string() {
             return Err(Failure::Forbidden);
         }
         p.require(Permission::StorageConfigurationWrite, None)?;
@@ -209,7 +208,8 @@ impl Authority {
         );
         audit.require_final_request();
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let result=self.audit.write(self.tenant,&budget.source_control(),(self,p,audit,operation,input),|(service,p,audit,operation,input),tx|Box::pin(async move {
+        let result=self.audit.write(
+            p.binding(),&budget.source_control(),(self,p,audit,operation,input),|(service,p,audit,operation,input),tx|Box::pin(async move {
             let mut context=(*service,*p,*operation,*input);
             let (value,replayed)=tx.with_connection_context(&mut context,|(service,p,operation,input),c|Box::pin(async move {
                 rss_mdm_authorization_service::lock_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
@@ -217,9 +217,9 @@ impl Authority {
                 rules.require(p,Permission::StorageConfigurationWrite,None)?;
                 let now:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(&mut *c).await.map_err(|_|Failure::Storage)?;
                 if !p.recently_authenticated(now,300)? {return Err(Failure::Forbidden)}
-                let replayed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND operation_id=$2)").bind(service.tenant.to_string()).bind(*operation).fetch_one(&mut *c).await.map_err(|_|Failure::Storage)?;
+                let replayed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND operation_id=$2)").bind(p.binding().tenant().to_string()).bind(*operation).fetch_one(&mut *c).await.map_err(|_|Failure::Storage)?;
                 let actor=format!("{}:{}:{}",p.tenant_id(),p.instance_id(),p.principal_id());
-                let value=prepare(c,service.tenant,*operation,input,&actor,&service.protection).await?;
+                let value=prepare(c,p.binding().tenant(),*operation,input,&actor,&service.protection).await?;
                 p.check_live()?;Ok::<_,Failure>((value,replayed))
             })).await?;
 
@@ -237,7 +237,7 @@ impl Authority {
         operation: Uuid,
         input: &crate::migration::Request,
     ) -> Result<crate::migration::Receipt, Failure> {
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != p.binding().tenant().to_string() {
             return Err(Failure::Forbidden);
         }
         p.require(Permission::StorageConfigurationWrite, None)?;
@@ -250,7 +250,8 @@ impl Authority {
         );
         audit.require_final_request();
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let result=self.audit.write(self.tenant,&budget.source_control(),(self,p,audit,operation,input),|(service,p,audit,operation,input),tx|Box::pin(async move {
+        let result=self.audit.write(
+            p.binding(),&budget.source_control(),(self,p,audit,operation,input),|(service,p,audit,operation,input),tx|Box::pin(async move {
             let mut context=(*service,*p,*operation,*input);
             let (value,replayed)=tx.with_connection_context(&mut context,|(service,p,operation,input),c|Box::pin(async move {
                 rss_mdm_authorization_service::lock_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
@@ -258,9 +259,9 @@ impl Authority {
                 rules.require(p,Permission::StorageConfigurationWrite,None)?;
                 let now:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(&mut *c).await.map_err(|_|Failure::Storage)?;
                 if !p.recently_authenticated(now,300)? {return Err(Failure::Forbidden)}
-                let replayed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.migrations WHERE tenant_id=$1::uuid AND operation_id=$2)").bind(service.tenant.to_string()).bind(*operation).fetch_one(&mut *c).await.map_err(|_|Failure::Storage)?;
+                let replayed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.migrations WHERE tenant_id=$1::uuid AND operation_id=$2)").bind(p.binding().tenant().to_string()).bind(*operation).fetch_one(&mut *c).await.map_err(|_|Failure::Storage)?;
                 let actor=format!("{}:{}:{}",p.tenant_id(),p.instance_id(),p.principal_id());
-                let value=crate::migration::request_on(c,service.tenant,*operation,input,&actor,&service.protection).await?;
+                let value=crate::migration::request_on(c,p.binding(),*operation,input,&actor,&service.protection).await?;
                 p.check_live()?;Ok::<_,Failure>((value,replayed))
             })).await?;
 
@@ -277,7 +278,7 @@ impl Authority {
         audit: &RequestAudit,
         operation: Uuid,
     ) -> Result<crate::migration::Receipt, Failure> {
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != p.binding().tenant().to_string() {
             return Err(Failure::Forbidden);
         }
         p.require(Permission::StorageConfigurationWrite, None)?;
@@ -290,17 +291,18 @@ impl Authority {
         );
         audit.require_final_request();
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let result=self.audit.write(self.tenant,&budget.source_control(),(self,p,audit,operation),|(service,p,audit,operation),tx|Box::pin(async move {
+        let result=self.audit.write(
+            p.binding(),&budget.source_control(),(self,p,audit,operation),|(service,p,audit,operation),tx|Box::pin(async move {
             let mut context=(*service,*p,*operation);
-            let (value,replayed)=tx.with_connection_context(&mut context,|(service,p,operation),c|Box::pin(async move {
+            let (value,replayed)=tx.with_connection_context(&mut context,|(_,p,operation),c|Box::pin(async move {
                 rss_mdm_authorization_service::lock_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
                 let rules=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
                 rules.require(p,Permission::StorageConfigurationWrite,None)?;
                 let now:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(&mut *c).await.map_err(|_|Failure::Storage)?;
                 if !p.recently_authenticated(now,300)? {return Err(Failure::Forbidden)}
-                let old=crate::migration::receipt(c,service.tenant,*operation).await?;
+                let old=crate::migration::receipt(c,p.binding().tenant(),*operation).await?;
                 let replayed=old.phase==crate::migration::Phase::Cancelled;
-                let (value,_)=crate::migration::cancel_on(c,service.tenant,*operation).await?;
+                let (value,_)=crate::migration::cancel_on(c,p.binding().tenant(),*operation).await?;
                 p.check_live()?;Ok::<_,Failure>((value,replayed))
             })).await?;
 
@@ -332,13 +334,13 @@ impl Authority {
         codec: &rss_mdm_query::cursor::CursorCodec,
     ) -> Result<rss_mdm_query::Page<Receipt>, Failure> {
         q.require_schema(&HISTORY).map_err(|_| Failure::Malformed)?;
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != p.binding().tenant().to_string() {
             return Err(Failure::Forbidden);
         }
         p.require(Permission::StorageConfigurationRead, None)?;
         p.bind_audit(audit)?;
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let result=self.audit.read(self.tenant,&budget.control(),(p,q,codec),|ctx,tx|Box::pin(async move{
+        let result=self.audit.read(p.binding().tenant(),&budget.control(),(p,q,codec),|ctx,tx|Box::pin(async move{
    tx.with_connection_context(ctx,|(p,q,codec),c|Box::pin(async move{
     rss_mdm_authorization_service::lock_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
     let current=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;

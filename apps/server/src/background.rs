@@ -18,8 +18,6 @@ pub struct BackgroundConfig {
     pub command_recovery_batch_size: u16,
     pub command_supersede_batch_size: u16,
     pub database_connection_budget: u32,
-    /// Maximum tenant host processes sharing this deployment's database allocation.
-    pub database_host_instances: u32,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -153,7 +151,6 @@ impl BackgroundConfig {
         let bad = || Error::Configuration(ConfigIssue::Budget);
         if self.device_concurrency == 0
             || self.device_concurrency > tokio::sync::Semaphore::MAX_PERMITS
-            || self.database_host_instances == 0
         {
             return Err(bad());
         }
@@ -275,9 +272,11 @@ impl BackgroundConfig {
                 ),
             ]);
         }
-        if let Some(telemetry) = &config.telemetry {
-            pools.push(("telemetry", telemetry.connections.get()));
+        if !config.telemetry.is_empty() {
             pools.push(("telemetry-control", compiled.telemetry_control_connections));
+        }
+        for telemetry in &config.telemetry {
+            pools.push(("telemetry", telemetry.connections.get()));
             if matches!(
                 telemetry.backend,
                 crate::telemetry::Storage::TimescaleDedicated { .. }
@@ -288,7 +287,6 @@ impl BackgroundConfig {
         let total = pools
             .iter()
             .try_fold(0u32, |total, (_, max)| total.checked_add(*max))
-            .and_then(|per_host| per_host.checked_mul(self.database_host_instances))
             .ok_or_else(bad)?;
         if total > self.database_connection_budget {
             return Err(bad());

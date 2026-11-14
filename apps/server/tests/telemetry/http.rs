@@ -46,25 +46,22 @@ impl Http {
         service: Arc<rss_mdm_telemetry_service::Service>,
         proof: Arc<rss_mdm_authorization_service::context::AuthorizedPrincipal>,
     ) -> Result<Self> {
-        let tenant = c.tenant.to_string();
         let access = c.access();
-        let sessions = rss_mdm_authorization_service::session::SessionAuthority::new(
-            c.authority.clone(),
-            c.audit.binding(),
-        );
+        let sessions =
+            rss_mdm_authorization_service::session::SessionAuthority::new(c.authority.clone());
         let router = rss_mdm_management_http::telemetry::routes(Some(service))
             .into_axum()
             .layer(axum::middleware::from_fn(
                 move |mut request: axum::extract::Request, next: axum::middleware::Next| {
                     let proof = proof.clone();
-                    let tenant = tenant.clone();
+
                     let sessions = sessions.clone();
                     let deadline = access.now() + Duration::from_secs(8);
                     async move {
                         let audit = rss_mdm_audit_integration::RequestAudit::new(
                             rss_mdm_audit_integration::Origin::Request,
                             rss_mdm_install_support::StorageProfile::Mdm,
-                            tenant,
+                            proof.binding(),
                             "telemetry-query-t2",
                             rss_mdm_audit_integration::AuditIntent::Routine,
                         );

@@ -3,7 +3,6 @@ pub(crate) struct Installation {
     pub tenants: Option<Arc<crate::administration::tenants::service::Service>>,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub timeline: Arc<rss_mdm_timeline_service::Timeline>,
-    pub tenant: rss_request_context::TenantId,
 }
 impl Reads for Installation {
     fn operation<'a>(
@@ -12,11 +11,10 @@ impl Reads for Installation {
     ) -> futures::future::BoxFuture<'a, Result<Detail, Error>> {
         Box::pin(async move {
             let p = &l.auth.proof;
-            if p.tenant_id() != self.tenant.to_string()
-                || l.query
-                    .actor
-                    .as_deref()
-                    .is_some_and(|v| v != p.principal_id())
+            if l.query
+                .actor
+                .as_deref()
+                .is_some_and(|v| v != p.principal_id())
                 || l.query
                     .instance
                     .is_some_and(|v| v.to_string() != p.instance_id())
@@ -51,8 +49,6 @@ impl Reads for Installation {
                             }
                             R::Provisioning(v) => {
                                 result.object = Some(v.tenant_id.to_string());
-                                result.revision =
-                                    Some(i64::try_from(v.revision).map_err(|_| Error::Conflict)?);
                                 result.state = Some(enum_name(v.phase)?);
                             }
                         }

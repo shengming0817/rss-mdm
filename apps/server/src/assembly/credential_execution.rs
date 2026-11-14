@@ -1,6 +1,5 @@
 //! Recovery receives shared host resources; no capability retains another business service.
 use rss_mdm_recovery_credentials::{native, tasks};
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgOutboxStore, PgRuntime};
 use std::{sync::Arc, time::Duration};
 #[derive(Clone)]
@@ -14,10 +13,11 @@ pub(crate) struct Assembly {
 }
 #[expect(clippy::too_many_arguments, reason = "explicit shared host resources")]
 pub(crate) async fn assemble(
+    discovery_pool: sqlx::PgPool,
     config: &crate::config::Config,
     background: &crate::background::Compiled,
     runtime: Arc<PgRuntime>,
-    tenant: TenantId,
+    probe: rss_transactional_messaging::fence::ExecutionBinding,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
     protection: Arc<rss_mdm_native_protection::Protector>,
     credentials: Arc<rss_mdm_recovery_credentials::Protection>,
@@ -73,7 +73,7 @@ pub(crate) async fn assemble(
             tasks::Transactions::bind(
                 profile,
                 runtime.clone(),
-                tenant,
+                probe,
                 audit.clone(),
                 resources.clone(),
             )
@@ -81,14 +81,21 @@ pub(crate) async fn assemble(
             .map_err(super::owner_errors::credential)?,
         ));
         worker.push(Arc::new(
-            tasks::worker::Worker::new(profile, service.clone(), reconcile.clone(), budget.clone())
-                .map_err(super::owner_errors::credential)?,
+            tasks::worker::Worker::new(
+                discovery_pool.clone(),
+                probe.storage(),
+                profile,
+                service.clone(),
+                reconcile.clone(),
+                budget.clone(),
+            )
+            .map_err(super::owner_errors::credential)?,
         ));
         tasks.push(service);
     }
     let transactions = native::Transactions::bind(
         runtime.clone(),
-        tenant,
+        probe,
         audit.clone(),
         native_materials.clone(),
     )
@@ -106,6 +113,8 @@ pub(crate) async fn assemble(
             .map_err(|_| crate::Error::Unavailable(crate::Failure::CommandStorage))?,
     );
     let native = Arc::new(native::Service::new(
+        discovery_pool.clone(),
+        probe.storage(),
         transactions,
         outbox,
         reconcile,
@@ -118,7 +127,7 @@ pub(crate) async fn assemble(
     let copies = Arc::new(Copies {
         control: rss_mdm_device_service::control::credential_inputs::Copies::bind(
             runtime.clone(),
-            audit.binding(),
+            probe,
             background.command_supersede_batch,
             protection.clone(),
             Arc::new(super::device_materials::Channel(channel.clone())),
@@ -126,7 +135,7 @@ pub(crate) async fn assemble(
         .await?,
         recovery: native::inputs::Copies::bind(
             runtime.clone(),
-            audit.binding(),
+            probe,
             background.command_supersede_batch,
             protection,
             channel,
@@ -137,23 +146,26 @@ pub(crate) async fn assemble(
     let maintenance = Arc::new(rss_mdm_recovery_credentials::maintenance::Maintenance::new(
         rss_mdm_install_support::StorageProfile::Mdm,
         runtime.clone(),
-        tenant,
+        discovery_pool.clone(),
+        probe.storage(),
+        rss_transactional_messaging::fence::Epoch::new(config.storage_binding.epoch)
+            .map_err(|_| crate::Error::Malformed)?,
         audit.clone(),
         credentials.clone(),
         Some(copies),
         budget.clone(),
         None,
     ));
-    maintenance
-        .validate_keys()
-        .await
-        .map_err(super::owner_errors::credential)?;
+
     let mut maintenance = vec![maintenance];
     if config.device_access.is_some() {
         let da_maintenance = Arc::new(rss_mdm_recovery_credentials::maintenance::Maintenance::new(
             rss_mdm_install_support::StorageProfile::Da,
             runtime,
-            tenant,
+            discovery_pool.clone(),
+            probe.storage(),
+            rss_transactional_messaging::fence::Epoch::new(config.storage_binding.epoch)
+                .map_err(|_| crate::Error::Malformed)?,
             audit,
             credentials,
             None,
@@ -164,10 +176,7 @@ pub(crate) async fn assemble(
                 },
             )),
         ));
-        da_maintenance
-            .validate_keys()
-            .await
-            .map_err(super::owner_errors::credential)?;
+
         maintenance.push(da_maintenance);
     }
     Ok(Assembly {

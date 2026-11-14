@@ -1,6 +1,5 @@
 //! Enrollment materials bind to the initiating runtime, including Policy participants.
 use crate::enrollment::tasks::Error;
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use std::sync::Arc;
 
@@ -17,7 +16,7 @@ pub struct Transactions {
     profile: rss_mdm_install_support::StorageProfile,
     pub(crate) inventory: Arc<dyn super::Inventory>,
     pub(crate) runtime: Arc<PgRuntime>,
-    pub(crate) tenant: TenantId,
+
     pub(crate) instance: String,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) agent_store: Arc<dyn agent_facts::Store>,
@@ -34,7 +33,7 @@ impl Transactions {
     pub async fn bind(
         profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
+        probe: rss_transactional_messaging::fence::ExecutionBinding,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         materials: Arc<Materials>,
     ) -> std::result::Result<Self, Error> {
@@ -46,7 +45,7 @@ impl Transactions {
         }
         runtime
             .local_tx(
-                audit_store.binding(),
+                probe,
                 crate::enrollment::tasks::transaction::deadline(),
                 |tx| {
                     Box::pin(async move {
@@ -70,7 +69,7 @@ impl Transactions {
             )?;
         let reconcile_messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            audit_store.binding(),
+            probe,
             crate::enrollment::tasks::transaction::deadline(),
         ))
         .await
@@ -78,13 +77,9 @@ impl Transactions {
         Ok(Self {
             profile,
             inventory: materials.inventory.clone(),
-            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
-                profile,
-                runtime.clone(),
-                tenant,
-            ),
+            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(profile, runtime.clone()),
             runtime,
-            tenant,
+
             audit_store,
             reconcile_messaging,
             instance: materials.instance.clone(),
@@ -96,9 +91,7 @@ impl Transactions {
     }
     pub fn validate_in(&self, tx: &PgTransaction<'_>) -> crate::enrollment::tasks::Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::Forbidden.into());
-        }
+
         Ok(())
     }
 }

@@ -31,8 +31,8 @@ python3 hack/http_contract_artifact.py --output artifacts/http-contract/http-v1.
 
 Schema 中的 `x-rss-extension` 仅标识具体扩展位置及其 owner，例如 Resource 输出、展示元数据、Apple 已验证的原生 status 叶子。它不表示整个响应可接受任意 JSON。动态字段和列表仍由 Inventory/用户 schema 解释。
 
-资产数组和采集作用域分页分别使用 `POST /api/v1/devices/{id}/inventory-lists/{field}`、
-`POST /api/v1/devices/{id}/inventory-scopes`。JSON 请求体包含可选 `limit`、`cursor`；数组分页还可传
+资产数组和采集作用域分页分别使用 `POST /api/v1/tenants/{tenant}/devices/{id}/inventory-lists/{field}`、
+`POST /api/v1/tenants/{tenant}/devices/{id}/inventory-scopes`。JSON 请求体包含可选 `limit`、`cursor`；数组分页还可传
 类型化 `scope`。不使用 URL 参数；浏览器会话按 POST 规则提供 CSRF。两者仍是仅需原读取权限的只读
 操作，不追加管理变更审计。token 自包含固定 `AssetCut`，最大 256 KiB；Rust 与 Nginx 的请求体预算均为
 384 KiB。固定快照不得放入 URI（HTTP URI 类型自身有长度上限）。已有查询任务的结果分页引用原任务
@@ -52,7 +52,7 @@ Schema 中的 `x-rss-extension` 仅标识具体扩展位置及其 owner，例如
 
 普通目录只能从真实公开行模型推导，挂载时执行完整性检查将 `modelIdentity`、未投影模型引用 与实际成功响应的 `items` 对齐；`Projection<T>` 仍省略未选择字段。列表与统计的 `role` 不同，但必须引用同一个目录 owner。HTTP 制品只发布能力和模型，不包含 SQL、数据库角色或内部执行绑定。固定顺序历史、固定快照、资格扫描和引用列表另标注 `purpose` 与具体原因；DA 活跃配置属于普通目录。
 
-`/api/v1/devices` 的 `registeredAt` 是首次成功主注册事务记录的 Unix 秒，支持范围、空值过滤与排序；重试和续证保持不变，缺少可信历史的记录保持 null。`serialNumber`、`hardwareUuid` 是仅过滤的历史定位选择器，只支持 `==`、`=in=` 及逻辑组合，沿用 Inventory 规范化和字段敏感权限。组合条件必须在同一设备的同一份可信采集证据中成立；多个上报不会拼接，重复硬件返回全部获授权候选且不重复计数。非硬件 OR 分支不要求硬件证据。
+`/api/v1/tenants/{tenant}/devices` 的 `registeredAt` 是首次成功主注册事务记录的 Unix 秒，支持范围、空值过滤与排序；重试和续证保持不变，缺少可信历史的记录保持 null。`serialNumber`、`hardwareUuid` 是仅过滤的历史定位选择器，只支持 `==`、`=in=` 及逻辑组合，沿用 Inventory 规范化和字段敏感权限。组合条件必须在同一设备的同一份可信采集证据中成立；多个上报不会拼接，重复硬件返回全部获授权候选且不重复计数。非硬件 OR 分支不要求硬件证据。
 
 硬件定位包含仍保留的退管设备，普通 Inventory 保留清理不删除定位证据；已物理删除的设备不会复活。结果只用于选择原设备 ID，时间线仍需要原 `AuditRead` 权限，不据此自动关联、合并历史或继承身份。新安装定义不回填旧记录，不从证书时间或最近通信推测注册时间。
 

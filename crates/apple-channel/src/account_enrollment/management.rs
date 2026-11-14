@@ -43,6 +43,8 @@ pub(crate) fn operation(headers: &HeaderMap) -> Result<Uuid, Error> {
     Ok(id)
 }
 pub(super) async fn list(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     query: rss_mdm_http_contract::query::OwnedQuery<
@@ -71,7 +73,7 @@ pub(super) async fn list(
 pub(super) async fn accounts(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Directory<crate::management_query::AccountsQuery>,
     >,
@@ -98,7 +100,7 @@ pub(super) async fn accounts(
 pub(super) async fn organization_detail(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<crate::management_query::AccountConfiguration>, Error> {
     crate::management_query::detail(&app, &auth.proof, id, None)
         .await
@@ -108,7 +110,7 @@ pub(super) async fn organization_detail(
 pub(super) async fn account_detail(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((id, account)): Path<(Uuid, String)>,
+    Path((_tenant, id, account)): Path<(uuid::Uuid, Uuid, String)>,
 ) -> Result<Json<crate::management_query::Account>, Error> {
     crate::management_query::detail(&app, &auth.proof, id, Some(&account_name(&account)?))
         .await
@@ -117,7 +119,7 @@ pub(super) async fn account_detail(
 }
 pub(super) async fn organization(
     State(app): State<Arc<HttpState>>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     Extension(auth): Extension<RequestAuth>,
     WriteHeaders(headers): WriteHeaders,
     Extension(audit): Extension<RequestAudit>,
@@ -131,18 +133,21 @@ pub(super) async fn organization(
     {
         return Err(Error::Malformed);
     }
-    if input.enabled
-        && !app
-            .apple()?
-            .account_keys
-            .get(&input.signing_key)
-            .is_some_and(|s| {
-                app.clock
-                    .unix_seconds()
-                    .is_some_and(|now| s.expires() > now as u64)
-            })
-    {
-        return Err(Error::Conflict);
+    if input.enabled {
+        let mut tx = app.access.begin_read(auth.proof.tenant_id()).await?;
+        let keys = crate::runtime_materials::runtime::account_keys_on(
+            &app,
+            &mut tx,
+            auth.proof.tenant_id(),
+            app.clock
+                .unix_seconds()
+                .ok_or(Error::Unavailable(crate::Failure::Clock))?,
+        )
+        .await?;
+        tx.rollback().await.map_err(crate::database::db)?;
+        if !keys.contains(&input.signing_key) {
+            return Err(Error::Conflict);
+        }
     }
     change(
         &app,
@@ -157,7 +162,7 @@ pub(super) async fn organization(
 }
 pub(super) async fn account(
     State(app): State<Arc<HttpState>>,
-    Path((id, account)): Path<(Uuid, String)>,
+    Path((_tenant, id, account)): Path<(uuid::Uuid, Uuid, String)>,
     Extension(auth): Extension<RequestAuth>,
     WriteHeaders(headers): WriteHeaders,
     Extension(audit): Extension<RequestAudit>,
@@ -209,7 +214,7 @@ async fn change(
     let outcome = app
         .audit_store
         .write(
-            app.identity.tenant(),
+            proof.binding(),
             &budget.source_control(),
             (app, proof, audit, id, operation, &input),
             |(app, proof, audit, id, operation, input), tx| {

@@ -10,7 +10,7 @@ Rust 服务端支持设备和用户通道，使用外部 step-ca v0.30.2 完成 
 
 完整部署为 Apple 配置公开 HTTPS origin，可与其它能力共享域名和端口。Nginx 终止 TLS/mTLS，Rust 校验受信网关提供的证书证据及业务权限。可以先保存通道配置，APNs/Profile 版本暂为空；此时管理面正常运行，Apple 显示 waiting 及缺失原因。TLS、设备信任、SCEP webhook 或材料无效时状态为 degraded，相关设备操作拒绝，不能通过省略证书验证获得 ready。
 
-复用现有材料申请、导入、选择与撤销 API。选择后仍须 prepare-hosts、受控重建 server，并通过当前进程的加载版本与通道状态确认实际生效。进程健康、Apple 就绪、真实 APNs 唤醒和 Mac 管理成功是不同证据。部署不包含旧端口兼容、迁移或升级流程。
+复用现有材料申请、导入、选择与撤销 API。选择后由原 owner 在操作中加载该租户的当前材料，通过当前 revision 与通道状态确认实际生效。进程健康、Apple 就绪、真实 APNs 唤醒和 Mac 管理成功是不同证据。部署不包含旧端口兼容、迁移或升级流程。
 
 ## 注册与凭据
 
@@ -19,13 +19,13 @@ Rust 服务端支持设备和用户通道，使用外部 step-ca v0.30.2 完成 
 公开 HTTPS、Profile 的 CMS 签名、SCEP 设备身份和 APNs 各自验证证书用途与信任链。
 公网 HTTPS 证书有效，不表示任意 Profile 签名也受设备信任。面向未预置信任的设备，
 Profile 签名材料须能链到设备内置的可信根，并携带完整中间链；通过原 Profile 材料接口
-导入、选择版本，再应用宿主配置。`apple_material_roots` 只控制服务端接受哪些材料，
+导入并选择版本，后续业务操作由原 owner 加载该租户当前材料。`apple_material_roots` 只控制服务端接受哪些材料，
 不会为设备建立信任，不能通过添加测试根把部署验收判为通过。
 
 可以按 [Apple 的签名示例](https://developer.apple.com/library/archive/documentation/NetworkingInternet/Conceptual/iPhoneOTAConfiguration/profile-service/profile-service.html)
 使用公开可信的服务器证书签署 Profile，仍须独立验证 CMS、私钥匹配、完整链和实际 Mac 接纳。
 若与 HTTPS 使用同一证书，网关续期不会自动替换已导入的 Profile 材料：续期时同时发布新的
-Profile 材料版本、应用宿主并核对实际加载版本及到期告警。设备 CA 与 APNs 继续走自己的轮换流程，
+Profile 材料版本，并通过原 owner 核对当前版本及到期告警。设备 CA 与 APNs 继续走自己的轮换流程，
 不以重建 CA 或重新注册代替材料续期。
 
 首次注册验收先移除旧 MDM 和测试者手工建立的私有 CA 信任，确认公开 HTTPS 仍通过系统校验、
@@ -35,9 +35,9 @@ SCEP、Authenticate、TokenUpdate 和实际命令。注册成功后由受管 CA 
 [Apple 的首次信任分发要求](https://developer.apple.com/documentation/devicemanagement/managing-certificates-for-device-management-services-and-devices)
 受控交付，不能把普通用户手工设置“始终信任”作为公网生产部署步骤。
 
-管理员在线登录并拥有目标设备的 `enrollment` 权限后，调用 `POST /api/v1/enrollments`，提交 `deviceId`、`source:"mdm.apple"`、256 位随机 `password`，以及非零 UUID `Idempotency-Key`。返回 HTTP 200 的 pending 授权。注册生命周期管理入口统一使用 V1；Windows 原生注册使用 `mdm.windows`，不接受请求 `channel`。
+管理员在线登录并拥有目标设备的 `enrollment` 权限后，调用 `POST /api/v1/tenants/{tenant}/enrollments`，提交 `deviceId`、`source:"mdm.apple"`、256 位随机 `password`，以及非零 UUID `Idempotency-Key`。返回 HTTP 200 的 pending 授权。注册生命周期管理入口统一使用 V1；Windows 原生注册使用 `mdm.windows`，不接受请求 `channel`。
 
-设备通过 HTTPS `POST /api/v1/enrollments/{id}/profile` 提交 `{"password":"…"}` 下载附带 CMS 签名的 mobileconfig；响应不缓存。口令和配置只交付给授权设备。Profile 配置 RSA 2048 SCEP 身份、设备范围、AccessRights 8191、生产 APNs topic、CheckOutWhenRemoved，以及 `per-user-connections`、`bootstraptoken` capability；`SignMessage=false`，管理传输必须使用原生 mTLS。UserAuthenticate 在已绑定 mTLS 身份下返回空 DigestChallenge；不接收目录密码或建立业务账户身份。服务端保存设备实际安装 profile 的权限；后来启用 Agent 安装配置不会增加已有设备权限，也不会使其原生身份失效。缺少查询或安装权限时，策略返回 missing_native_rights，需通过正常注册流程取得用户/系统授权。
+设备通过 HTTPS `POST /api/v1/tenants/{tenant}/enrollments/{id}/profile` 提交 `{"password":"…"}` 下载附带 CMS 签名的 mobileconfig；响应不缓存。口令和配置只交付给授权设备。Profile 配置 RSA 2048 SCEP 身份、设备范围、AccessRights 8191、生产 APNs topic、CheckOutWhenRemoved，以及 `per-user-connections`、`bootstraptoken` capability；`SignMessage=false`，管理传输必须使用原生 mTLS。UserAuthenticate 在已绑定 mTLS 身份下返回空 DigestChallenge；不接收目录密码或建立业务账户身份。服务端保存设备实际安装 profile 的权限；后来启用 Agent 安装配置不会增加已有设备权限，也不会使其原生身份失效。缺少查询或安装权限时，策略返回 missing_native_rights，需通过正常注册流程取得用户/系统授权。
 
 SCEP challenge 在返回 allow 前提交唯一消费事实，绑定 enrollment、签发 attempt、事务 ID、CSR 摘要、公钥和配置身份。相同请求重试也被拒绝。通知丢失时，首次携带匹配有效证书的 Authenticate 可完成绑定；签发响应丢失不能重新签发，须由原管理员 resume，换口令后重新下载 Profile。新 attempt 使用新密钥；活跃已消费公钥不能跨 attempt 复用。
 
@@ -49,11 +49,11 @@ CN 为 enrollment UUID 的 32 位小写 hex 与 attempt UUID 的 32 位小写 he
 
 ADE 面向企业所有、分配到指定 Apple MDM server 的 Mac，产品 MDM 能力基线为 macOS 15+；账户驱动注册协议从 macOS 14 起可用，不因此承诺 macOS 14 的产品 MDM。首批真机验收以 Apple silicon 为主；Intel 按 Apple 客户端支持和组织分配资格确认。控制台由后续前端任务消费 API。
 
-组织身份共用 `/api/v1/apple/organizations`，响应为 `id`、可空 `accountEnrollment` 和可空 `ade`。账户驱动设置归 `/organizations/{id}/account-enrollment`，ADE 设置归 `/organizations/{id}/ade`。旧组织管理写入口直接替换；发现和设备原生协议入口保持实际协议语义。
+组织身份共用 `/api/v1/tenants/{tenant}/apple/organizations`，响应为 `id`、可空 `accountEnrollment` 和可空 `ade`。账户驱动设置归 `/organizations/{id}/account-enrollment`，ADE 设置归 `/organizations/{id}/ade`。旧组织管理写入口直接替换；发现和设备原生协议入口保持实际协议语义。
 
 管理员需要 `registration_configuration_write`，查询需要 `registration_configuration_read`；写入带 UUID `Idempotency-Key`，浏览器 Cookie 调用同时带 CSRF 和 Origin。ADE 操作步骤：
 
-1. `PUT /api/v1/apple/organizations/{id}/ade/configuration`，正文为 `expectedRevision`、`enabled`、Apple `serverUuid`、`orgId` 和 `rotateKey`。新组织 `expectedRevision=0`；组织与 server 身份建成后不能修改。公钥与私钥由服务端独立生成，私钥绑定租户/组织/密钥版本加密保存。
+1. `PUT /api/v1/tenants/{tenant}/apple/organizations/{id}/ade/configuration`，正文为 `expectedRevision`、`enabled`、Apple `serverUuid`、`orgId` 和 `rotateKey`。新组织 `expectedRevision=0`；组织与 server 身份建成后不能修改。公钥与私钥由服务端独立生成，私钥绑定租户/组织/密钥版本加密保存。
 2. `GET .../ade/public-key` 下载 PEM 公钥证书，上传到 Apple Business Manager / Apple School Manager 的对应 MDM server；随后从 Apple 下载加密 server token。
 3. `POST .../ade/operations` 提交 `{"kind":"token","expectedRevision":1,"p7m":"<原始 S/MIME 文件的 base64>"}`。服务端解密后检查到期，并读取 Apple `/account` 核对 server 与组织；导入不保存或返回明文凭据。轮换通过同一操作更新 token；公钥变更用 `rotateKey=true`，重新上传公钥、下载并导入新 token。不要替换其他组织的 token。
 4. `{"kind":"sync","full":true}` 触发全量同步；后台每半小时执行增量同步。失效 cursor 自动重建全量快照，分页结束前不改变已发布目录，缺席删除仅由完整全量快照证明。`GET .../ade/devices?after=<nextCursor>` 读取每页至多 100 条；同步新鲜度上限为七天。
@@ -70,7 +70,7 @@ Setup Assistant 下载 URL 由服务端生成，接收 Apple 制造商证书链�
 
 macOS 14 及以上可在系统设置中用 Managed Apple Account 注册组织设备。浏览器控制台另行实施；服务端提供发现、最小认证桥和管理 API。只提供 `mdm-adde`，不提供个人 BYOD User Enrollment。组织域名须将 `/.well-known/com.apple.remotemanagement` 的请求转送到产品浏览器 HTTPS origin；发现请求包含 `user-identifier` 和 `model-family=Mac`。
 
-在 `native_protocols.apple.materials.accounts` 中将组织使用的签名键名绑定到已选择的 `managed_account` 材料版本。RSA 私钥由 Apple 材料 owner 加密保存，对应 Apple 组织登记的公钥，与 Profile/APNs 材料分别管理。管理员从 Apple AccountDetail 取得真正的 `server_uuid` 后，用 `registration_configuration_write` 权限配置 `PUT /api/v1/apple/organizations/{id}/account-enrollment`：`expectedRevision`（首次 0）、`domain`、`serverUuid`、`signingKey`、`enabled`。再用同一权限配置 `PUT .../organizations/{id}/account-enrollment/accounts/{managed-account}`，提交 `expectedRevision`、`principalId`、`instanceId`、`enabled`。写入要求非零 UUID `Idempotency-Key`，更新采用预期版本；同一请求可重放。账户及域名规范为 ASCII、小写，账户本地部分支持字母数字与 `._+-`。映射必须属于当前 Identity 实例和组织域名。`registration_configuration_read` 可通过分页 `GET .../organizations` 查看组织摘要；`GET .../organizations/{id}/account-enrollment` 读取配置，`GET .../organizations/{id}/account-enrollment/accounts` 分页读取映射，追加 `/{managed-account}` 读取独立映射详情；`externalOrganizationVerification=not_observed` 表示外部组织配置尚未验收。
+在 Apple 材料应用 API 的 `accountAlias` 中将组织使用的签名键名绑定到已选择的 `managed_account` 材料版本。RSA 私钥由 Apple 材料 owner 加密保存，对应 Apple 组织登记的公钥，与 Profile/APNs 材料分别管理。管理员从 Apple AccountDetail 取得真正的 `server_uuid` 后，用 `registration_configuration_write` 权限配置 `PUT /api/v1/tenants/{tenant}/apple/organizations/{id}/account-enrollment`：`expectedRevision`（首次 0）、`domain`、`serverUuid`、`signingKey`、`enabled`。再用同一权限配置 `PUT .../organizations/{id}/account-enrollment/accounts/{managed-account}`，提交 `expectedRevision`、`principalId`、`instanceId`、`enabled`。写入要求非零 UUID `Idempotency-Key`，更新采用预期版本；同一请求可重放。账户及域名规范为 ASCII、小写，账户本地部分支持字母数字与 `._+-`。映射必须属于当前 Identity 实例和组织域名。`registration_configuration_read` 可通过分页 `GET .../organizations` 查看组织摘要；`GET .../organizations/{id}/account-enrollment` 读取配置，`GET .../organizations/{id}/account-enrollment/accounts` 分页读取映射，追加 `/{managed-account}` 读取独立映射详情；`externalOrganizationVerification=not_observed` 表示外部组织配置尚未验收。
 
 Apple 的签名 CMS 请求只证明载荷完整性，不作为设备认证或组织授权。首次请求获得 `401` 与 `apple-as-web` 认证地址；认证桥复用 RSS Identity 登录、联合身份和 CSRF 验证。登录人必须与管理员设置的组织账户映射完全一致。认证成功通过 `308` 返回 Apple 原生登录回调和随机 bearer；同一授权可重放。随后同一签名请求携带 bearer 取得固定签名 Profile，使用 `EnrollmentMode=ADDE`、`AssignedManagedAppleID`、`com.apple.mdm.token` 和设备范围。该 Profile 的 SCEP、证书绑定、首次 Authenticate 和 TokenUpdate 沿用共同注册生命周期；注册归属真实 RSS 用户，占用其 macOS MDM 额度。
 
@@ -88,13 +88,13 @@ GetBootstrapToken/SetBootstrapToken 由已绑定的设备证书认证，只有�
 
 Apple 采集通过普通 Resource 的 `native_collection` 模板发布、由 Policy 精确绑定版本。可以从官方蓝图实例化租户模板，再编辑字段和映射；周期执行、启用和显式重执行沿用既有 Policy 路径，见[资产采集](assets.md)。固定的采集 POST 入口已移除。
 
-设备 `/mdm` Idle 获取模板声明的 DeviceInformation 或 InstalledApplicationList 查询。只有准确关联的 CommandUUID 和当前身份才能封存结果。查询 `GET /api/v1/devices/{id}/collections/{run}` 需要 `inventory_read`，呈现每字段质量、服务端接收时间和真实 Observation 投递状态，Apple 字段没有伪造的 SyncML 数字状态。省略 `scope` 时读取设备范围；用户范围传入 URL 编码的 scope JSON，例如 `{"kind":"apple_user","identity":"规范小写非零 UUID"}`。历史用户范围读取不要求通道当前有效，仍检查当前读取权限；范围选择与规则契约见[资产采集](assets.md#macos-agent-声明式采集)。
+设备 `/mdm` Idle 获取模板声明的 DeviceInformation 或 InstalledApplicationList 查询。只有准确关联的 CommandUUID 和当前身份才能封存结果。查询 `GET /api/v1/tenants/{tenant}/devices/{id}/collections/{run}` 需要 `inventory_read`，呈现每字段质量、服务端接收时间和真实 Observation 投递状态，Apple 字段没有伪造的 SyncML 数字状态。省略 `scope` 时读取设备范围；用户范围传入 URL 编码的 scope JSON，例如 `{"kind":"apple_user","identity":"规范小写非零 UUID"}`。历史用户范围读取不要求通道当前有效，仍检查当前读取权限；范围选择与规则契约见[资产采集](assets.md#macos-agent-声明式采集)。
 
 采集结果经既有 Observation/Inventory 投影；完整快照只影响该定义选中的字段。失败、缺失或非法字段保留最后已知值，合法部分结果可更新对应字段，质量由 CollectionRun 单独呈现；不拼接旧值伪造新 Snapshot，不引入字段 TTL。纯超时且没有字段结果只记录失败 run，不制造 Observation 报告。
 
 ## 原生操作与 Profile
 
-设备控制使用 `POST /api/v1/devices/{id}/operations`，只接受固定 `restart`、`lock`、`wipe`；请求形状、确认与平台条件见[设备操作](device-operations.md)。此入口不接受 `inputVersion`、`target`、`task` 或任意 Apple 命令。资产采集由 CollectionRun 持有；Profile 与 DDM 配置通过 Resource 的 NativeConfiguration 内容和 Policy 持有。
+设备控制使用 `POST /api/v1/tenants/{tenant}/devices/{id}/operations`，只接受固定 `restart`、`lock`、`wipe`；请求形状、确认与平台条件见[设备操作](device-operations.md)。此入口不接受 `inputVersion`、`target`、`task` 或任意 Apple 命令。资产采集由 CollectionRun 持有；Profile 与 DDM 配置通过 Resource 的 NativeConfiguration 内容和 Policy 持有。
 
 原生字段显式保留 plist 类型：`string`、`boolean`、十进制字符串 `integer`、`unsigned`、`real`、`date`、Base64 `data`、`array` 和 `dictionary`。`RunScript` 返回 Unsupported；原生操作不会转成 Agent 脚本。平台合同来自固定 Apple release 和 macOS 15 起的必要历史定义，实际 OS、硬件、监督、注册方式、通道及安装的 AccessRights 由认证设备证据判定。设备先回答原生前提查询，服务端不会采用浏览器提交的可信平台事实。
 
@@ -117,7 +117,7 @@ Resource 的 NativeConfiguration `apply` 使用 `request.kind:"install_profile"`
 
 不重投已发送且结果未知的变更；只读恢复复用现有 attempt 流并有次数与期限上限。只读观测查询的错误不证明原变更被拒绝，仍保留其不确定性。Profile 存在、OS 设置效果及合规分别记录，`effect:"unknown"` 不证明防火墙或其他设置已生效。结果沿原操作坐标查询；Policy 子命令的取消与移除由 Policy owner 驱动。设备控制的取消和重新批准沿用[设备操作](device-operations.md)的 requestId 与 expectedRevision 契约。
 
-APNs 使用证书认证 HTTPS/HTTP2，token revision 和持久唤醒 lease 隔离过期回执。410 使对应当前 token 回到 pending_token；旧 revision 的 410 不撤销新 token。429 和网络失败按 30、60、120 秒递增退避，5xx 至少等待 900 秒，均封顶 960 秒，不改变命令结果。按闭合 APNs reason 判定 token 失效、配置拒绝或暂时故障；未知/畸形响应可重试，配置拒绝暂停当前 token revision/APNs 证书组合；TokenUpdate 或更换有效 APNs 证书并重启后可恢复。失效授权的采集会延后检查，不能持续占据有界队列前页。
+APNs 使用证书认证 HTTPS/HTTP2，token revision 和持久唤醒 lease 隔离过期回执。410 使对应当前 token 回到 pending_token；旧 revision 的 410 不撤销新 token。429 和网络失败按 30、60、120 秒递增退避，5xx 至少等待 900 秒，均封顶 960 秒，不改变命令结果。按闭合 APNs reason 判定 token 失效、配置拒绝或暂时故障；未知/畸形响应可重试，配置拒绝暂停当前 token revision/APNs 证书组合；TokenUpdate 或选择有效的新 APNs 材料后，后续操作使用对应传输恢复。失效授权的采集会延后检查，不能持续占据有界队列前页。
 
 APNs 唤醒在持久 lease 的授权事务完成时取得发送资格。已领取或已被 APNs 接受的提示可能在撤销后才到达；提示本身不包含业务命令，后续设备请求仍必须通过当前注册、代际、来源及操作授权校验。
 
@@ -144,18 +144,17 @@ DDM 及状态接缝的 T2 当前尚未重建。真实 Mac 的同步、状态与 
 ```json
 {"apple":{
   "management":{"origin":"https://apple.example.test"},
-  "trust_file":"/run/mdm/apple-trust.json",
-  "materials":{"apns":2,"profile":2,"accounts":{}},
-  "identity_seed":{"challengeId":"ORIGINAL-challenge-id","notifyId":"ORIGINAL-notify-id"},
   "webhooks":[{"issuer":"REPLACE-issuer-sha256",
     "challenge":{"id":"REPLACE-challenge-id","secret_file":"/run/mdm/challenge-secret"},
     "notify":{"id":"REPLACE-notify-id","secret_file":"/run/mdm/notify-secret"}}]
 }}
 ```
 
+租户 identity seed、材料选择与账户绑定由原 owner 持久化。
+
 网关 TLS 材料与渲染见[安装](../deployment/installation.md)。webhook secret 文件保存 CA 发放的 base64 字符串，解码至少 32 字节。两个 webhook ID/secret 分开配置。Profile、APNs 和 Managed Apple Account 的私钥不再从启动文件读取；旧字段被拒绝。顶层 `apple_material_roots` 指定部署认可的证书根，租户不能通过材料上传增加信任根。APNs topic 从验证后的证书 UID 派生，同一租户已选材料不能更换 topic。产品只接受实际 TCP peer 为受信网关的内部 HTTP 请求；继续独立核验证书用途、撤销、租户与注册，拒绝公网伪造身份头。
 
-使用 `/api/v1/apple/materials/{purpose}` 查询版本，purpose 为 `apns`、`profile` 或 `managed_account`。向其 `/keys` 提交生成或导入请求，取得 CSR；向 `/certificates` 提交证书链与确切 key revision；向 `/apply` 提交已验证的 material revision，再由部署侧受控重启加载。写操作都要求近期真实会话、`Idempotency-Key` 和 `expectedRevision`；响应丢失时查询 `/api/v1/apple/material-operations/{operation}`，重试沿用原操作与参数。保存、证书验证和选择版本均不代表宿主已应用，也不证明 Apple 供应方资格。
+使用 `/api/v1/tenants/{tenant}/apple/materials/{purpose}` 查询版本，purpose 为 `apns`、`profile` 或 `managed_account`。向其 `/keys` 提交生成或导入请求，取得 CSR；向 `/certificates` 提交证书链与确切 key revision；向 `/apply` 提交已验证的 material revision，后续业务操作由原 owner 加载当前材料。写操作都要求近期真实会话、`Idempotency-Key` 和 `expectedRevision`；响应丢失时查询 `/api/v1/tenants/{tenant}/apple/material-operations/{operation}`，重试沿用原操作与参数。保存与选择版本不证明 Apple 供应方资格或设备接纳。
 
 `/revoke` 撤销确切材料版本的本地使用资格，不代表已向 Apple 撤销证书。设备入口与推送工作会重新核验已加载版本是否仍有效；过期、撤销或无法读取权威状态时停止使用。新候选应用失败可重启上一份仍有效且曾选择的版本，不能回退到过期/撤销材料或文件。历史版本保留用于调查与恢复。
 
@@ -170,18 +169,18 @@ SCEP provisioner 名为 rss，最小 RSA 公钥 2048、禁用 renewal，默认�
 {"subject":{"commonName":{{ toJson .Webhooks.rss.subject }}},"keyUsage":["digitalSignature"],"extKeyUsage":["clientAuth"],"basicConstraints":{"isCA":false}}
 ```
 
-通过 `step ca provisioner webhook add rss rss --kind SCEPCHALLENGE --url https://mdm.example.test/api/v1/apple/scep/challenge` 配置 challenge；通过 `step ca provisioner webhook add rss rss_notify --kind NOTIFYING --url https://mdm.example.test/api/v1/apple/scep/notify` 配置通知。命令需附该部署的 ca-url/root/admin 身份参数；分别将输出 ID 和 secret 写入受保护配置。不能把通知类型写成不存在的 SCEPNOTIFY。
+通过 `step ca provisioner webhook add rss rss --kind SCEPCHALLENGE --url https://mdm.example.test/api/v1/tenants/{tenant}/apple/scep/challenge` 配置 challenge；通过 `step ca provisioner webhook add rss rss_notify --kind NOTIFYING --url https://mdm.example.test/api/v1/tenants/{tenant}/apple/scep/notify` 配置通知。命令需附该部署的 ca-url/root/admin 身份参数；分别将输出 ID 和 secret 写入受保护配置。不能把通知类型写成不存在的 SCEPNOTIFY。
 
 配置后重启 CA，确认 `/scep/rss?operation=GetCACaps` 可访问：该版本只在启动时安装 SCEP HTTP authority。Webhook HTTPS 证书须被 CA 的系统信任根或配置 root 信任；`federatedRoots` 不参与该版本 webhook TLS 客户端验证。生产应使用受信任服务证书，不能禁用 TLS 校验。产品要求 Host 与 product_origin 精确一致，反向代理保持 Host 并转发原始请求体和 X-Smallstep-Webhook-ID/X-Smallstep-Signature。
 
 challenge 是一次性事务，先消费提交再 allow；CA 的重复传输不能再次授权。签发完成通知不是唯一绑定通道，真实 mTLS 叶证书可恢复丢失通知；签发响应本身丢失须新口令、新 attempt、新密钥，不能静默重签。
 ## 健康、告警与排障
 
-`/readyz` 判断核心服务，Apple 材料故障不单独使核心 readiness 失败。通过授权 `/api/v1/runtime/diagnostics` 的 Apple channel 核对实际状态、路由挂载、材料版本与阻断原因；证书过期或撤销时相应依赖操作拒绝。后台输出 `apple_certificate_health`：用途为 `scep_issuer`、`profile_signer`、`apns`，剩余 30 日进入 `renew_soon`、7 日进入 `critical`、到期为 `expired`。每次进程运行仅在等级变化时输出；应由部署日志告警系统接收。Profile signer 与 APNs 材料替换后重启以装载新证书，同一用途轮换不改变注册身份。SCEP issuer 按[设备 PKI 运维](../deployment/operations.md#设备-pki-轮换与撤销)完成受控 CA 轮换，无须重新注册；管理 origin、APNs topic 或 webhook ID 等稳定注册配置变化才要求重新注册。
+`/readyz` 判断核心服务，Apple 材料故障不单独使核心 readiness 失败。通过授权 `/api/v1/tenants/{tenant}/runtime/diagnostics` 的 Apple channel 核对实际状态、路由挂载、材料版本与阻断原因；证书过期或撤销时相应依赖操作拒绝。后台输出 `apple_certificate_health`：用途为 `scep_issuer`、`profile_signer`、`apns`，剩余 30 日进入 `renew_soon`、7 日进入 `critical`、到期为 `expired`。每次进程运行仅在等级变化时输出；应由部署日志告警系统接收。Profile signer 与 APNs 材料选择后由后续业务操作加载新证书，同一用途轮换不改变注册身份。SCEP issuer 按[设备 PKI 运维](../deployment/operations.md#设备-pki-轮换与撤销)完成受控 CA 轮换，无须重新注册；管理 origin、APNs topic 或 webhook ID 等稳定注册配置变化才要求重新注册。
 
 启动失败按闭合类别定位：`AppleListeners`、`AppleScep`、`AppleProfileSigner`、`AppleApns`、`AppleChallengeWebhook`、`AppleNotifyWebhook`；不会输出路径、密钥、口令或 provider 原文。
 
-`apple_push_result` 包含 wake ID、device/user 通道类别、registration、token revision、HTTP status、outcome 及闭合 failure 类别。坏加密推送材料只隔离所属通道为 pending_token，等待真实 TokenUpdate 恢复；`apple_push_material_rejected` 输出闭合完整性类别及带密钥的 scope 摘要，健康候选继续处理。全局数据库失败继续影响 readiness，错误保护密钥由启动绑定拒绝。`transport` 表示连接/TLS/传输失败，`certificate_expired` 表示本地 APNs 材料到期。429/网络失败使用封顶 960 秒的退避，5xx 至少等待 900 秒；已知 token 失效 reason 清除当前 token/PushMagic 并等待 TokenUpdate；配置拒绝暂停相同 token revision 与 APNs 证书组合。修复证书配置后重启，或收到新 TokenUpdate 后恢复。以上状态都不推进命令结果；不得据 APNs 成功判断 Profile 已安装。
+`apple_push_result` 包含 wake ID、device/user 通道类别、registration、token revision、HTTP status、outcome 及闭合 failure 类别。坏加密推送材料只隔离所属通道为 pending_token，等待真实 TokenUpdate 恢复；`apple_push_material_rejected` 输出闭合完整性类别及带密钥的 scope 摘要，健康候选继续处理。全局数据库失败继续影响 readiness，错误保护密钥由启动绑定拒绝。`transport` 表示连接/TLS/传输失败，`certificate_expired` 表示本地 APNs 材料到期。429/网络失败使用封顶 960 秒的退避，5xx 至少等待 900 秒；已知 token 失效 reason 清除当前 token/PushMagic 并等待 TokenUpdate；配置拒绝暂停相同 token revision 与 APNs 证书组合。选择有效的新 APNs 材料后由后续操作加载，或收到新 TokenUpdate 后恢复。以上状态都不推进命令结果；不得据 APNs 成功判断 Profile 已安装。
 ## 续期与后台故障观测
 
 设备身份采用服务端受控的注册 profile 更新，step-ca 的通用 renewal 仍保持禁用；每次签发必须消费产品准备的一次性 challenge。配置身份变化仍要求重新注册，不会借续期接受漂移。监控 `apple_identity_health` 的 `renewal_due`/`expired` 和 `apple_identity_renewal`；离线跨过证书到期的设备使用人工重新注册恢复。
@@ -204,7 +203,7 @@ CA 公共证书由单独的受管理 `com.rss-mdm.pki.<device>` Profile 持有�
 
 ## 设备声明状态汇总
 
-`GET /api/v1/devices/{device}/ddm?limit&cursor` 分页读取当前 MDM 注册身份的声明，包括 device/user 通道及已撤回 publication。
+`GET /api/v1/tenants/{tenant}/devices/{device}/ddm?limit&cursor` 分页读取当前 MDM 注册身份的声明，包括 device/user 通道及已撤回 publication。
 每项保留 operation、deviceId、通道、inputVersion、声明 ServerToken 和既有 nativeStatus；历史执行通过原设备的操作详情读取。
 查询使用 OperationRead 和原生值权限，`nativeValuesRedacted` 明确标识脱敏。缺失、Unknown、原生错误与乱序冲突不会转成成功；
 publication 或 synchronized 不证明设置生效、合规或卸载。未注册设备返回 no_current_registration，不能解释为设备已清空配置。
@@ -213,11 +212,11 @@ publication 或 synchronized 不证明设置生效、合规或卸载。未注册
 
 ## macOS Platform SSO 服务端
 
-可选配置 `device_access.platform_sso` 固定 `configuration`（`teamId`、`extensionId`、`applicationId`、`applicationVersion`、非零 UUID `clientId`）、`active_key` 和 `signing_keys`（名称到受保护 P-256 PKCS#8 PEM 文件的映射，最多四把）。私钥只从部署材料读取；公钥由 `/api/v1/apple/platform-sso/{tenant}/jwks` 发布。轮转先同时发布新旧公钥，再切 active key，等待旧令牌 300 秒有效期结束后移除旧钥。更改应用、扩展、client 或 origin 会使旧注册失效，须重新部署并注册。
+可选配置 `device_access.platform_sso` 固定 `configuration`（`teamId`、`extensionId`、`applicationId`、`applicationVersion`、非零 UUID `clientId`）、`active_key` 和 `signing_keys`（名称到受保护 P-256 PKCS#8 PEM 文件的映射，最多四把）。私钥只从部署材料读取；公钥由 `/api/v1/tenants/{tenant}/apple/platform-sso/{tenant}/jwks` 发布。轮转先同时发布新旧公钥，再切 active key，等待旧令牌 300 秒有效期结束后移除旧钥。更改应用、扩展、client 或 origin 会使旧注册失效，须重新部署并注册。
 
 协议固定 Apple PSSO 1.0、共享设备密钥，支持 `UserSecureEnclaveKey` 或原生 Password。运行准入要求 Apple silicon、macOS 26.4 及以上、当前 Device Access 能力和本地 helper/broker；SDK 基线为 26.4。登录、锁屏、FileVault 策略分别配置，默认 local；Require 必须保留独立 maintenanceAccounts 维修路径，grace 由管理员明确指定。当前强化子集只用于 Password。服务端不证明硬件 attestation、用户在场或 MFA，不配置在线创建用户或 ADE 登录流程。签名应用、P5 原生扩展与 P9 真机证据独立交付，服务端协议测试不能代替 Mac 登录验收。
 
-管理员读取 `GET /api/v1/apple/platform-sso/configuration?deviceId=<当前关联设备>`（`registration_configuration_read`）取得由当前设备已分配 DA Policy 生成的 profile 和端点。业务策略由 Policy 唯一持有，部署应用身份或密钥配置不能另设登录策略。部署方安装签名应用与返回的 ExtensibleSSO profile，再由 `device_access.deployment_authorities` 中预置信任的 Ed25519 authority 向 `/api/v1/da/deployment-evidence` 提交签名观测。观测绑定当前 DA 注册代际、Policy/version、精确应用 ID/版本、profile UUID、平台版本与 helper/broker 事实，有效期最多 24 小时；过期、撤销或配置不匹配均不能授予资格。MDM 软件/ProfileList 观测可作为部署方可选适配的输入，不直接成为 DA 的数据权威。命令 Acknowledged 不证明扩展实际加载。
+管理员读取 `GET /api/v1/tenants/{tenant}/apple/platform-sso/configuration?deviceId=<当前关联设备>`（`registration_configuration_read`）取得由当前设备已分配 DA Policy 生成的 profile 和端点。业务策略由 Policy 唯一持有，部署应用身份或密钥配置不能另设登录策略。部署方安装签名应用与返回的 ExtensibleSSO profile，再由 `device_access.deployment_authorities` 中预置信任的 Ed25519 authority 向 `/api/v1/da/deployment-evidence` 提交签名观测。观测绑定当前 DA 注册代际、Policy/version、精确应用 ID/版本、profile UUID、平台版本与 helper/broker 事实，有效期最多 24 小时；过期、撤销或配置不匹配均不能授予资格。MDM 软件/ProfileList 观测可作为部署方可选适配的输入，不直接成为 DA 的数据权威。命令 Acknowledged 不证明扩展实际加载。
 
 PSSO 跨进程 DTO 和证明输入由 `rss-mdm-agent-wire::platform_sso` 单一持有，Agent 固定完整 Git revision 消费；服务端不保留旧类型导出。返回的 profile 同时包含 Associated Domains，将 `authsrv:<配置 origin 的域名>?mode=managed` 关联至精确 `TeamID.ApplicationID`。容器须声明 associated-domains 及 MDM-managed entitlement；部署域名必须提供系统信任的 HTTPS，`/.well-known/apple-app-site-association` 返回配置的唯一 authsrv 应用，不按请求参数扩展。此接口与 profile 均不证明设备已加载扩展。
 
@@ -241,4 +240,4 @@ Password 原生请求仍使用相同外层 form，但 assertion 是设备签署�
 
 组织、账户、ADE 设备和 Profile 管理列表使用 `filter/sort/fields/limit/cursor`，返回 `items/nextCursor`；组织不再嵌入全部账户。原生注册、check-in 与 ADE 协议保持各自契约。
 
-`GET /api/v1/apple/materials/{purpose}` 返回当前 revision、desiredRevision、versionCount、accountBindings 及其引用的公开 materials；它不承载历史集合。`GET .../{purpose}/versions?limit=64` 按 revision 倒序返回公开版本及 nextCursor，最大每页 200。可遍历全部历史，累计版本数不再限制为 64；创建、上传证书、apply 和 revoke 的 CAS、近期认证及操作恢复不变。保存或选择材料仍不代表宿主已经加载。
+`GET /api/v1/tenants/{tenant}/apple/materials/{purpose}` 返回当前 revision、desiredRevision、versionCount、accountBindings 及其引用的公开 materials；它不承载历史集合。`GET .../{purpose}/versions?limit=64` 按 revision 倒序返回公开版本及 nextCursor，最大每页 200。可遍历全部历史，累计版本数不再限制为 64；创建、上传证书、apply 和 revoke 的 CAS、近期认证及操作恢复不变。保存或选择材料仍不代表宿主已经加载。

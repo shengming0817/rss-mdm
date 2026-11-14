@@ -135,6 +135,7 @@ pub(crate) async fn device_in(
 }
 
 pub(crate) async fn advance_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     service: &CollectionService,
     tx: &mut PgTransaction<'_>,
     work: &Work,
@@ -147,6 +148,7 @@ pub(crate) async fn advance_in(
     let target = Target { device };
     let now = storage::now(tx).await?;
     production::accept_for_device(
+        binding,
         &service.transactions,
         tx,
         &plan,

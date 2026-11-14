@@ -40,32 +40,3 @@ fn startup_file_failures_keep_safe_categories() {
         Err(Error::Configuration(ConfigIssue::ProtocolKey))
     ));
 }
-
-#[test]
-fn startup_trust_file_failures_keep_safe_categories() {
-    let scratch = tempfile::tempdir().unwrap();
-    let value: serde_json::Value =
-        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
-    let path = scratch.path().join("sensitive-trust");
-    for (bytes, category) in [
-        (None, ConfigIssue::FileAccess),
-        (Some(vec![9; 31]), ConfigIssue::AgentPki),
-        (Some(vec![9; 64 * 1024 * 1024 + 1]), ConfigIssue::FileSize),
-    ] {
-        if let Some(bytes) = bytes {
-            std::fs::write(&path, bytes).unwrap();
-        }
-        let mut config = value["native_protocols"]["windows"].clone();
-        config["trust_file"] = serde_json::json!(path);
-        let providers = Arc::new(rss_mdm_pki_service::providers::Providers::new(vec![]).unwrap());
-        let result = Windows::load(serde_json::from_value(config).unwrap(), 0, providers, None);
-        let error = match result {
-            Err(error) => error,
-            Ok(_) => panic!("invalid trust accepted"),
-        };
-        assert!(
-            matches!(error, Error::Configuration(actual) if format!("{actual:?}") == format!("{category:?}"))
-        );
-        assert!(!format!("{error:?} {error}").contains("sensitive-trust"));
-    }
-}

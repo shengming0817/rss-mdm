@@ -23,7 +23,7 @@ async fn open(c: &Context) -> Result<Fixture> {
         &[rss_mdm_agent_wire::task_trust::KeyState::Active],
     )
     .await?;
-    Fixture::open_with(c, true, |config| {
+    Fixture::open_with(c, |config| {
         config["software_distribution"]["mdm_enabled"] = json!(true)
     })
     .await
@@ -44,14 +44,15 @@ async fn count(c: &Context) -> Result<i64> {
 #[ignore = "T2: independent input owners commit their first suspension and distinct audit facts in the same tenant"]
 async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
-    let a = Fixture::open(&c, false).await?;
+    let execution_binding = c.execution();
+    let a = Fixture::open(&c).await?;
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
     let store = c
         .audit
         .on_runtime(
             a.resources.storage.runtime.clone(),
-            c.audit.binding(),
+            c.execution(),
             &budget.control(),
         )
         .await?;
@@ -59,12 +60,17 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
     rss_mdm_device_service::control::transaction::run(
         &store,
         &a.resources.storage.runtime,
-        c.audit.binding(),
+        c.execution(),
         &request,
         &store,
-        |store, tx| {
+        move |store, tx| {
             Box::pin(async move {
-                rss_mdm_device_service::control::source_changes::fail_in(tx, store).await
+                rss_mdm_device_service::control::source_changes::fail_in(
+                    execution_binding,
+                    tx,
+                    store,
+                )
+                .await
             })
         },
     )
@@ -75,10 +81,14 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
         owner::transaction::run(
             &store,
             &a.resources.storage.runtime,
-            c.audit.binding(),
+            c.execution(),
             &request,
             &store,
-            |store, tx| Box::pin(async move { owner::source_changes::fail_in(tx, store).await }),
+            move |store, tx| {
+                Box::pin(async move {
+                    owner::source_changes::fail_in(execution_binding, tx, store).await
+                })
+            },
         )
         .await?;
         request.finalize(None);
@@ -100,6 +110,7 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
 #[ignore = "T2: concurrent Agent/MDM aliases on associated endpoints share one Software effect fence"]
 async fn associated_aliases_admit_exactly_one_effect_across_channels() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
+
     let (agent, native, agent_scope, native_scope, _) = endpoints(&c).await?;
     let original = software(&c, "editor-agent").await?;
     let alias = software(&c, "editor-native").await?;
@@ -176,6 +187,7 @@ async fn associated_aliases_admit_exactly_one_effect_across_channels() -> Result
 #[ignore = "T2: original durable Unknown blocks new Software identity/channel/revision after service reconstruction"]
 async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
+    let execution_binding = c.execution();
     let (agent, native, agent_scope, native_scope, _) = endpoints(&c).await?;
     let original = software(&c, "editor").await?;
     let alias = software(&c, "editor-alias").await?;
@@ -211,7 +223,7 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
     sqlx::query("UPDATE mdm_software_deployment.action_runs SET state=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).bind(serde_json::to_value(&state)?).execute(&mut *tx).await?;
     tx.commit().await?;
     Fixture::close(a).await?;
-    let a = Fixture::open_with(&c, true, |v| {
+    let a = Fixture::open_with(&c, |v| {
         v["software_distribution"]["mdm_enabled"] = json!(true)
     })
     .await?;
@@ -263,10 +275,12 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
     changed.commit().await?;
     owner::transaction::inspect(
         &a.resources.storage.runtime,
-        c.audit.binding(),
+        c.execution(),
         a.software.service.as_ref(),
         move |service, tx| {
-            Box::pin(async move { owner::actions::recovery::recover_one(service, tx, id).await })
+            Box::pin(async move {
+                owner::actions::recovery::recover_one(execution_binding, service, tx, id).await
+            })
         },
     )
     .await?;
@@ -288,10 +302,12 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
     tx.commit().await?;
     owner::transaction::inspect(
         &a.resources.storage.runtime,
-        c.audit.binding(),
+        c.execution(),
         a.software.service.as_ref(),
         move |service, tx| {
-            Box::pin(async move { owner::actions::recovery::recover_one(service, tx, id).await })
+            Box::pin(async move {
+                owner::actions::recovery::recover_one(execution_binding, service, tx, id).await
+            })
         },
     )
     .await?;
@@ -313,6 +329,7 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
 #[ignore = "T2: rollout denominator and verified effects use the same published generation; stale revisions close the next gate"]
 async fn rollout_snapshot_invalidates_counts_before_opening_next_stage() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
+
     let (agent, _, scope, second, _) = endpoints(&c).await?;
     let resource = software(&c, "rollout").await?;
     let (p, v) = policy(
@@ -415,21 +432,23 @@ async fn rollout_snapshot_invalidates_counts_before_opening_next_stage() -> Resu
     Ok(())
 }
 async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Result<()> {
+    let execution_binding = c.execution();
     use std::time::Duration;
     let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         a.resources.storage.runtime.clone(),
-        c.audit.binding(),
+        c.execution(),
         owner::deadline(),
     ))
     .await?;
     owner::transaction::inspect(
         &a.resources.storage.runtime,
-        c.audit.binding(),
+        c.execution(),
         messaging,
         move |m, tx| {
-            Box::pin(
-                async move { owner::sources::storage::wake_execution_in(m, tx, policy_id).await },
-            )
+            Box::pin(async move {
+                owner::sources::storage::wake_execution_in(execution_binding, m, tx, policy_id)
+                    .await
+            })
         },
     )
     .await?;
@@ -470,6 +489,7 @@ async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Res
 #[ignore = "T2: unbatched Software uses its main Scope and admits one ordinary effect without a stage Scope"]
 async fn unbatched_software_uses_main_scope() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
+
     let (agent, _, scope, _, _) = endpoints(&c).await?;
     let resource = software(&c, "unbatched").await?;
     let (policy, _) = policy(
@@ -494,6 +514,7 @@ async fn unbatched_software_uses_main_scope() -> Result<()> {
 #[ignore = "T2: unbatched self-service persists Pending and waits for the main Scope before offering"]
 async fn unbatched_self_service_waits_for_main_scope() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
+
     let (_, _, scope, _, principal) = endpoints(&c).await?;
     let resource = software(&c, "unbatched-self-service").await?;
     let (policy, version) = policy(
@@ -555,7 +576,7 @@ async fn unbatched_self_service_waits_for_main_scope() -> Result<()> {
     let accepted = owner::transaction::run(
         &a.resources.storage.audit,
         &a.resources.storage.runtime,
-        c.audit.binding(),
+        c.execution(),
         &request,
         (&a.software.service, &principal, &input, &request),
         |(service, p, input, audit), tx| {
@@ -594,7 +615,7 @@ async fn unbatched_self_service_waits_for_main_scope() -> Result<()> {
         let offered = owner::transaction::run(
             &a.resources.storage.audit,
             &a.resources.storage.runtime,
-            c.audit.binding(),
+            c.execution(),
             &request,
             (
                 &a.software.service,

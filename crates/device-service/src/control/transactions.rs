@@ -20,6 +20,6 @@ pub(crate) struct Transactions {
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) store: rss_device_command_postgres::PgStore<()>,
     pub(crate) reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
-    pub(crate) tenant: TenantId,
+
     pub(crate) instance: String,
 }

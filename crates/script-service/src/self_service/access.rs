@@ -91,20 +91,20 @@ fn source_coordinates(source: &rss_mdm_policy::SelfServiceSource) -> crate::auth
     }
 }
 pub async fn qualify_in(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &ScriptService,
     tx: &mut PgTransaction<'_>,
     config: &rss_mdm_policy::SelfService,
     basis: &Basis,
 ) -> Result<Option<wire::SelfServiceSubject>> {
-    let tenant = service.transactions.tenant;
     let instance = service.transactions.instance.clone();
     let sessions = service.sessions.clone();
     let config = config.clone();
     let basis = basis.clone();
     tx.with_connection(move |c| {
-        Box::pin(
-            async move { Ok(qualify_on(c, &config, &basis, tenant, &instance, &sessions).await) },
-        )
+        Box::pin(async move {
+            Ok(qualify_on(c, &config, &basis, execution, &instance, &sessions).await)
+        })
     })
     .await?
 }
@@ -113,15 +113,17 @@ pub(super) async fn qualify_on(
     c: &mut sqlx::PgConnection,
     config: &rss_mdm_policy::SelfService,
     basis: &Basis,
-    tenant: rss_request_context::TenantId,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     instance: &str,
     sessions: &crate::authorization::session::SessionAuthority,
 ) -> Result<Option<wire::SelfServiceSubject>> {
+    let tenant = execution.tenant();
     match (config.access.as_ref(), basis) {
         (Some(Access::Device), Basis::Device) => Ok(Some(wire::SelfServiceSubject::Device {})),
         (Some(Access::AuthenticatedUser | Access::Users { .. }), Basis::User { reference }) => {
             let facts = match sessions
                 .recheck(
+                    execution,
                     reference,
                     rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                         std::time::Duration::from_secs(10),

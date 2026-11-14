@@ -17,7 +17,7 @@ impl AssetService {
         field: FieldKey,
         change: &Operation<FieldChange>,
     ) -> Result<Response> {
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         tx.with_connection(move |c| {
             Box::pin(async move {
                 rss_mdm_inventory_postgres::lock_catalog_write_in(c, tenant)
@@ -26,7 +26,7 @@ impl AssetService {
             })
         })
         .await?;
-        let catalog = catalog_in(tx, self.tenant).await?;
+        let catalog = catalog_in(tx, tx.tenant_id()).await?;
         let old = catalog.definition(field).ok();
         let expected = change.expected_revision;
         if expected >= i64::MAX as u64 || old.map_or(0, |f| f.version) != expected {
@@ -92,7 +92,7 @@ impl AssetService {
                 None
             }
         };
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         let definition = next.clone();
         let changed = tx
             .with_connection(move |c| {

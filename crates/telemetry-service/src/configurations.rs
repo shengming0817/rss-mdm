@@ -44,13 +44,14 @@ pub(crate) struct Eligible {
 
 /// Resolve author/Policy locks before acquiring the registration fence, as ingress does.
 pub(crate) async fn eligible_on(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &Service,
     c: &mut sqlx::PgConnection,
     device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Vec<Eligible>, Error> {
     let candidates = service
         .policies
-        .candidates_on(c)
+        .candidates_on(execution, c)
         .await
         .map_err(|_| Error::Storage)?;
     if candidates.len() > 256 {
@@ -60,7 +61,7 @@ pub(crate) async fn eligible_on(
     for (policy, version, definition) in candidates {
         match service
             .policies
-            .current_on(c, device, policy, version)
+            .current_on(execution, c, device, policy, version)
             .await
         {
             Ok(frozen) => {
@@ -86,6 +87,7 @@ pub(crate) async fn eligible_on(
 
 /// Field retirement and collector capability have the same meaning in both projections.
 pub(crate) async fn supported_on(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &Service,
     c: &mut sqlx::PgConnection,
     registration: rss_mdm_agent_wire::DeviceId,
@@ -96,7 +98,7 @@ pub(crate) async fn supported_on(
         .iter()
         .map(|f| rss_mdm_inventory::FieldKey::parse(f.key.as_str()).map_err(|_| Error::Storage))
         .collect::<Result<Vec<_>, _>>()?;
-    if !rss_mdm_inventory_postgres::admit_time_series_fields_in(c, service.tenant, &keys)
+    if !rss_mdm_inventory_postgres::admit_time_series_fields_in(c, execution.tenant(), &keys)
         .await
         .map_err(|_| Error::Storage)?
     {
@@ -105,7 +107,7 @@ pub(crate) async fn supported_on(
     match capable_on(
         service.agent_facts.as_ref(),
         c,
-        service.tenant,
+        execution.tenant(),
         registration,
         frozen,
     )
@@ -126,7 +128,7 @@ impl Service {
         audit: &RequestAudit,
     ) -> Result<Configurations, Error> {
         proof.check_live().map_err(|_| Error::Denied)?;
-        if proof.tenant_id() != self.tenant.to_string() {
+        if proof.tenant_id() != proof.binding().tenant().to_string() {
             return Err(Error::Denied);
         }
         let service = self.clone();
@@ -136,7 +138,7 @@ impl Service {
         let failure = Arc::new(Mutex::new(None));
         let rejected = failure.clone();
         self.runtime
-            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
+            .local_tx(proof.binding(), crate::deadline(), move |tx| {
                 Box::pin(async move {
                     service
                         .audit_store
@@ -209,18 +211,18 @@ async fn read_on(
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2)",
     )
-    .bind(service.tenant.to_string())
+    .bind(proof.binding().tenant().to_string())
     .bind(device.into_uuid())
     .fetch_one(&mut *c)
     .await?;
     if !exists {
         return Err(Error::NotFound);
     }
-    let eligible = eligible_on(service, c, device).await?;
+    let eligible = eligible_on(proof.binding(), service, c, device).await?;
     endpoints::lock_in(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
-        &service.tenant.to_string(),
+        &proof.binding().tenant().to_string(),
         device,
         Channel::Agent,
     )
@@ -229,7 +231,7 @@ async fn read_on(
     let primary = endpoints::current_in(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
-        &service.tenant.to_string(),
+        &proof.binding().tenant().to_string(),
         device,
         Channel::Agent,
     )
@@ -238,7 +240,7 @@ async fn read_on(
     let live = store::live_collection_streams_on(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
-        service.tenant,
+        proof.binding().tenant(),
         device,
     )
     .await
@@ -256,8 +258,14 @@ async fn read_on(
             }) {
                 continue;
             }
-            let Some(supported) =
-                supported_on(service, c, primary.device, &candidate.frozen).await?
+            let Some(supported) = supported_on(
+                proof.binding(),
+                service,
+                c,
+                primary.device,
+                &candidate.frozen,
+            )
+            .await?
             else {
                 continue;
             };

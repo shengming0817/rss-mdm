@@ -30,7 +30,6 @@ impl Drop for ObservationAction<'_> {
 
 pub(crate) struct FirstUse {
     pub directory: Arc<settings::Directory>,
-    pub tenant: rss_request_context::TenantId,
     pub instance: rss_identity_core::InstanceId,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub admission: rss_mdm_registration_service::admission::Admission,
@@ -44,8 +43,7 @@ impl FirstUse {
         write: bool,
     ) -> Result<(), Error> {
         p.session()?;
-        if p.tenant_id() != self.tenant.to_string() || p.instance_id() != self.instance.to_string()
-        {
+        if p.instance_id() != self.instance.to_string() {
             return Err(Error::Forbidden);
         }
         p.require(
@@ -118,7 +116,7 @@ impl FirstUse {
     }
     async fn channel_step(&self, proof: &AuthorizedPrincipal, channel: Channel) -> Step {
         use crate::registration_channels::Availability;
-        let observed = self.channels.status(channel);
+        let observed = self.channels.status(proof.binding(), channel).await;
         let mut step = Step {
             id: channel.as_str().into(),
             status: match observed.availability {

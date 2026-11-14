@@ -43,6 +43,7 @@ ALTER TABLE ONLY mdm_assets.asset_query_results FORCE ROW LEVEL SECURITY;
 
 
 CREATE TABLE mdm_assets.asset_query_runs (
+    expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     input jsonb NOT NULL CHECK(octet_length(input::text)<=1048576),
     started boolean NOT NULL DEFAULT false,
     completed boolean NOT NULL DEFAULT false,
@@ -243,3 +244,16 @@ GRANT UPDATE(binding) ON mdm_assets.query_evaluations TO mdm_inventory_runtime;
 GRANT UPDATE(state) ON mdm_assets.query_evaluation_arrays TO mdm_inventory_runtime;
 
 GRANT DELETE ON mdm_assets.query_evaluations,mdm_assets.query_evaluation_arrays TO mdm_inventory_runtime;
+-- Read-only work discovery; execution still uses the original frozen generation.
+CREATE POLICY work_discovery ON mdm_assets.asset_query_runs FOR SELECT TO mdm_owner USING(true);
+CREATE FUNCTION mdm_assets.query_work_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT DISTINCT tenant_id FROM (SELECT tenant_id FROM mdm_assets.asset_query_runs) work WHERE after_tenant IS NULL OR tenant_id>after_tenant ORDER BY tenant_id LIMIT 32
+$$;
+CREATE FUNCTION mdm_assets.query_work_epoch(t uuid, task uuid) RETURNS bigint
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$ SELECT expected_epoch FROM mdm_assets.asset_query_runs WHERE tenant_id=t AND id=task $$;
+ALTER FUNCTION mdm_assets.query_work_scopes(uuid) OWNER TO mdm_owner;
+ALTER FUNCTION mdm_assets.query_work_epoch(uuid,uuid) OWNER TO mdm_owner;
+REVOKE ALL ON FUNCTION mdm_assets.query_work_scopes(uuid),mdm_assets.query_work_epoch(uuid,uuid) FROM PUBLIC;
+GRANT USAGE ON SCHEMA mdm_assets TO mdm_access;
+GRANT EXECUTE ON FUNCTION mdm_assets.query_work_scopes(uuid),mdm_assets.query_work_epoch(uuid,uuid) TO mdm_access;

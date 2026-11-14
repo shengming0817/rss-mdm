@@ -53,15 +53,15 @@ struct Rounds {
 /// A new process starts an observation window. Overflow remains failed until restart;
 /// successful work never erases failures for another target or scope.
 pub struct Readiness {
-    scope: Scope,
+    domain: String,
     task: OnceLock<TaskStatus>,
     stopping: AtomicBool,
     rounds: Mutex<Rounds>,
 }
 impl Readiness {
-    pub fn new(scope: Scope, relay: bool, inputs: bool) -> Self {
+    pub fn new(domain: &str, relay: bool, inputs: bool) -> Self {
         Self {
-            scope,
+            domain: domain.into(),
             task: OnceLock::new(),
             stopping: AtomicBool::new(false),
             rounds: Mutex::new(Rounds {
@@ -127,7 +127,7 @@ impl Readiness {
             r.relay = Some(phase(outcome));
         }
     }
-    pub fn inputs(&self, outcome: Result<(), ErrorKind>) {
+    pub fn inputs(&self, scope: &Scope, outcome: Result<(), ErrorKind>) {
         if let Ok(mut r) = self.rounds.lock()
             && r.inputs.is_some()
         {
@@ -135,20 +135,31 @@ impl Readiness {
             if outcome.is_ok() {
                 // Input owners confirm durable progress/failure before recording success.
                 // Another instance may have recovered this fixed target since our attempt.
-                r.failures.remove("inputs");
+                r.failures.remove(&format!("{}:inputs", scope.tenant()));
             }
         }
     }
     /// Runner timeouts may drop the store future before it can return an observation.
     pub fn observe(&self, event: &Observation) {
         match event {
-            Observation::ScanFailed { scope, error } if scope == &self.scope => {
+            Observation::ScanFailed { scope, error } if scope.reconciler() == self.domain => {
                 self.scan(Err(error.kind()))
             }
-            Observation::AttemptFailed { target, error, .. } if target.scope() == &self.scope => {
+            Observation::AttemptFailed { target, error, .. }
+                if target.scope().reconciler() == self.domain =>
+            {
                 if let Ok(mut r) = self.rounds.lock() {
-                    if r.failures.len() < 1000 || r.failures.contains_key(target.entity()) {
-                        r.failures.insert(target.entity().to_owned(), error.kind());
+                    if r.failures.len() < 1000
+                        || r.failures.contains_key(&format!(
+                            "{}:{}",
+                            target.scope().tenant(),
+                            target.entity()
+                        ))
+                    {
+                        r.failures.insert(
+                            format!("{}:{}", target.scope().tenant(), target.entity()),
+                            error.kind(),
+                        );
                     } else {
                         r.overflow = true;
                     }
@@ -158,13 +169,13 @@ impl Readiness {
         }
     }
     fn check(&self, scope: &Scope) -> Result<(), rss_reconcile::Error> {
-        if scope == &self.scope {
+        if scope.reconciler() == self.domain {
             Ok(())
         } else {
             Err(rss_reconcile::Error::new(ErrorKind::Invariant))
         }
     }
-    fn scan(&self, outcome: Result<(), ErrorKind>) {
+    pub fn scan(&self, outcome: Result<(), ErrorKind>) {
         if let Ok(mut r) = self.rounds.lock() {
             r.scan = phase(outcome);
         }
@@ -173,7 +184,8 @@ impl Readiness {
         if matches!(completion, Completion::Converged | Completion::Reobserve(_))
             && let Ok(mut r) = self.rounds.lock()
         {
-            r.failures.remove(target.entity());
+            r.failures
+                .remove(&format!("{}:{}", target.scope().tenant(), target.entity()));
         }
     }
 }

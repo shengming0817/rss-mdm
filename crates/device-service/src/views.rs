@@ -59,7 +59,7 @@ impl Associations {
         reference: &ObjectRef,
         personnel: &personnel::Reader<'_>,
     ) -> Result<crate::view_response::Detail> {
-        if proof.tenant_id() != self.tenant.to_string() {
+        if proof.tenant_id() != proof.binding().tenant().to_string() {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(15));

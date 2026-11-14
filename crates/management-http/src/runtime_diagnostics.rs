@@ -275,6 +275,8 @@ pub fn routes() -> Router<Arc<dyn Source>, impl rss_mdm_http_contract::module::D
     }
 }
 async fn read(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(source): State<Arc<dyn Source>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,

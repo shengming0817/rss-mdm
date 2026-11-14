@@ -296,7 +296,6 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
                     Arc::new(
                         rss_mdm_authorization_service::session::SessionAuthority::new(
                             s.identity.authority.clone(),
-                            s.identity.binding,
                         ),
                     ),
                     s.identity.authority.clone(),
@@ -340,7 +339,7 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
     let software_content = crate::software_content::register()
         .bind_with(context, |(s, _)| s.software_downloads.clone());
     {
-        rss_mdm_http_contract::route_module! { struct AssembleModule4 for [Browser] { software_content, host_context, api_v1_agent_enroll at "/api/v1/agent/enroll", api_v1 at "/api/v1" } }
+        rss_mdm_http_contract::route_module! { struct AssembleModule4 for [Browser] { software_content, host_context, api_v1_agent_enroll at "/api/v1/agent/enroll", api_v1 at "/api/v1/tenants/{tenant}" } }
         AssembleModule4 {
             software_content,
             host_context,
@@ -363,7 +362,10 @@ pub fn workspace_routes() -> Router<(), impl rss_mdm_http_contract::module::Decl
     }
 }
 
-async fn workspace(Extension(auth): Extension<RequestAuth>) -> Result<Json<Workspace>, Error> {
+async fn workspace(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+    Extension(auth): Extension<RequestAuth>,
+) -> Result<Json<Workspace>, Error> {
     use rss_mdm_authorization_service::Permission as P;
     let p = &auth.proof;
     let device = |permission| {
@@ -502,7 +504,7 @@ struct Action {
 }
 async fn action(
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, id)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
     Extension(audit): Extension<RequestAudit>,
     input: Result<Json<Action>, axum::extract::rejection::JsonRejection>,
 ) -> Result<std::convert::Infallible, Error> {

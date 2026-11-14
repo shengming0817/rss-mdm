@@ -72,15 +72,11 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 `init` 等待数据库健康后运行并退出；`server` 仅在 init 成功后启动。init 的短暂容器内 root 只将部署 secrets 复制为卷内 0600 文件，然后降为 UID10001 执行 Rust 初始化；没有宿主 root 操作或基础设施管理权限。运行后端、网关均为 UID10001，分别只读挂载自己的运行子目录；PostgreSQL 由官方镜像管理数据属主。
 
-正式 Compose 通过 `MDM_PG_MAX_CONNECTIONS` 配置产品 PostgreSQL 的 `max_connections`。声明额外宿主时，为全部宿主一起分配连接容量。安装器从实际 PostgreSQL 读取容量，扣除数据库保留槽和一个部署维护连接，应用启动时按已启用模块的物理连接池核对预算。宿主数量统一由主宿主加维护输入中的 `additional_hosts` 推导；首次安装不冻结后续扩容上限。调整已有部署时，按下方“后续租户与运行容量”执行 PostgreSQL 扩容、全部宿主配置导出、重建与实际观察。
+正式 Compose 通过 `MDM_PG_MAX_CONNECTIONS` 配置 PostgreSQL 的 `max_connections`。安装器读取实际容量，扣除数据库保留连接与部署维护连接；应用启动按实际物理池与并发配置核对预算。连接池由进程共享，新增租户不增加池、数据库、监听器或运行配置。
 
-`installation.json` 的 `stage=initialized` 表示种子初始化完成，不宣称网络或设备效果。检查 HTTPS `/readyz`、实际登录和授权后，用原安装输入执行一次真实宿主观察：
+`installation.json` 的 `stage=initialized` 表示安装身份、账户与基础授权已持久化；业务初始化由 baseline 的原步骤回执推进。检查 HTTPS `/readyz`、实际登录与授权，并通过平台会话读取首租户的开通操作，直到 `phase=configured`。`pending` 表示仍在推进，`blocked` 携带实际阻塞原因；缺少尚未选择的 APNs、OIDC 等外部能力不阻塞普通开通。
 
-```sh
-docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init prepare-hosts --config /var/lib/rss-mdm/installation-input.json
-```
-
-平台开通回执中的首租户必须从 `host_pending` 变为 `enabled`，再进行业务通道设置、轮换材料、备份和开始 T3；此命令只观察已启动服务，不管理容器。平台登录名为 `platform`，业务登录名为 `administrator`，密码分别取自部署 secrets。将 `gateway-ca.crt` 的公共证书加入专用浏览器/设备信任；CA 私钥不交付客户端。
+平台登录名为 `platform`，业务登录名为 `administrator`，密码分别取自部署 secrets。将 `gateway-ca.crt` 的公共证书加入专用浏览器/设备信任；CA 私钥不交付客户端。
 
 用相同 secrets、相同卷重复 `docker compose ... run --rm init` 保持原 tenant/principal/instance/operation、密码和密钥。安装已完成时不覆盖后续配置。停止、重建与重启使用普通 Compose 命令；`down` 保留卷，`down -v` 删除数据，不能用来恢复故障。没有常驻 operator 或自动创建子 Compose 的进程。
 
@@ -126,14 +122,14 @@ docker compose --env-file /absolute/sit/compose.env up -d step-ca rustfs
 
 接线按下面顺序执行一次，保留维护输入、操作 UUID 和回执。变更通过原领域 API/维护 CLI 完成；不能修改生成的 `runtime.json` 或写 SQL 伪造就绪。
 
-新实例使用 S3 作为内容后端时，在首次 `init` 前设置 `MDM_CONTENT_STORAGE=s3` 并保留在部署环境中。该选项暂缓首次内容存储绑定；准备下述租户连接后，由 `prepare-hosts` 导出 S3 配置，再重建服务完成首次准入。默认 `volume` 使用持久内容卷。已经绑定的后端不能通过修改这个选项或重放初始化来迁移，须保留原内容身份和数据。
+新实例使用 S3 作为内容后端时，在首次 `init` 前设置 `MDM_CONTENT_STORAGE=s3` 并保留在部署环境中。该选项暂缓首次内容存储绑定；准备下述租户连接后，由明确 tenant 的 `maintain-materials` 核验连接，领域 owner 选择后续读取的实际内容资源。默认 `volume` 使用持久内容卷。已经绑定的后端不能通过修改这个选项或重放初始化来迁移，须保留原内容身份和数据。
 
 1. **基础初始化**：沿上节启动一次性 `init` 和管理服务，取得原安装回执及首租户身份，使用真实业务管理员登录。后续维护从原 `installation-input.json` 派生独立输入，不修改首次安装输入。
-2. **内容存储**：确认实际桶存在并开启版本控制，在维护输入的 `storage_profiles` 登记真实 endpoint、region、bucket、namespace、CA 和部署管理员文件引用。业务管理员向 `POST /api/v1/storage/connections` 提交 `{"expectedRevision":0,"profile":"sit-rustfs","source":{"kind":"generate"}}` 及稳定 `Idempotency-Key`。初始 revision 仅适用于未创建连接的租户；已有连接先读目录。执行原 `prepare-hosts`，完成受限工作负载身份、真实版本化读写/删除及跨租户前缀拒绝检查，回执须为 `qualified` 且被选中。运行端只取得加密持久化的工作负载版本，不使用管理员身份。
-3. **任务签名**：通过 `POST /api/v1/task-signing/trust` 提交 `{"action":"prepare","expectedRevision":0}` 及稳定 `Idempotency-Key`。无已注册 Agent 的首把密钥由原 owner 生成并加密保存为 active；重放原操作，不再生成另一把钥。已有权威遵循原轮换流程。执行 `prepare-hosts` 导出期望版本，按下方命令重建服务并复验。
+2. **内容存储**：确认实际桶存在并开启版本控制，在维护输入的 `storage_profiles` 登记真实 endpoint、region、bucket、namespace、CA 和部署管理员文件引用。业务管理员向 `POST /api/v1/tenants/{tenant}/storage/connections` 提交 `{"expectedRevision":0,"profile":"sit-rustfs","source":{"kind":"generate"}}` 及稳定 `Idempotency-Key`。初始 revision 仅适用于未创建连接的租户；已有连接先读目录。执行明确 tenant 的 `maintain-materials`，完成受限工作负载身份、真实版本化读写/删除及跨租户前缀拒绝检查，回执须为 `qualified` 且被选中。运行端只取得加密持久化的工作负载版本，不使用管理员身份。
+3. **任务签名**：通过 `POST /api/v1/tenants/{tenant}/task-signing/trust` 提交 `{"action":"prepare","expectedRevision":0}` 及稳定 `Idempotency-Key`。无已注册 Agent 的首把密钥由原 owner 生成并加密保存为 active；重放原操作，不再生成另一把钥。已有权威遵循原轮换流程。通过同一租户的任务签名与通道状态核对当前 revision；无需导出启动版本或重启。
 4. **设备 CA**：只准备下方的一份 `step-ca.json`。先通过 channels 保存需要启用的通道及最终公开 origin（缺材料可为空）；随后 SIT 的独立 `ca-init` 调用统一初始化，发现真实签发者、准备所有用途、安装固定模板及回调、生成或复用凭据并导出网关。无需填写 purpose、provisioner、kid、模板、回调或每用途操作 ID。已有管理员、租户、设备、历史信任和签发材料保留。
 5. **通道**：使用原 `configure-host` 的 `channels` 变更，CA 信任和回调从统一初始化结果自动接入，不再手填 trust/provider；Agent 标准证书期限为 `{"mode":"standard"}`，Windows 为 `{"mode":"production"}`。Windows 首注 origin 必须独立于需要设备证书的入口；例如注册使用 `https://enroll.example.test`，Agent、Windows 管理和 Apple 共用 `https://mdm.example.test`。也可使用同域名不同端口；网关服务器证书覆盖全部公开名称。Windows 配置显式轮询计划，可在无 WNS 时使用轮询。Rust 仅使用隔离网络内的单个 HTTP 地址，Nginx 终止 TLS/mTLS、分流协议路径并覆盖证书证据；内部端口不公开。
-6. **恢复材料与注册**：需要凭据托管的 SIT 使用原 `configure-host` 的 `recovery` / `recipient.kind=generate`，幂等保存独立加密保护材料及接收证书。核对 `/api/v1/agent-enrollment-settings` 启用 Windows/macOS，并核对 `/api/v1/registration-channels` 的已选通道准入；已有租户规则保留，修改须使用当前 revision。Agent 发起 MDM 注册还须通过同一入口发布 `change:{kind:"enrollment_entries",settings:{windows:"https://发现服务入口",macos:"https://注册页面"}}`；未启用的平台填 null。入口使用 HTTPS，按当前 host revision 申请、prepare/restart 并核实 applied；仅启用原生通道不会自动授权 Agent 注册入口。Group/Scope/Policy 等测试业务对象由测试场景创建，不预置假设备或完成记录。
+6. **恢复材料与注册**：需要凭据托管的 SIT 使用原 `configure-host` 的 `recovery` / `profile=mdm`（DA 用 `da`）/ `recipient.kind=generate`，幂等保存独立加密保护材料及接收证书。核对 `/api/v1/tenants/{tenant}/agent-enrollment-settings` 启用 Windows/macOS，并核对 `/api/v1/tenants/{tenant}/registration-channels` 的已选通道准入；已有租户规则保留，修改须使用当前 revision。Agent 发起 MDM 注册还须通过同一入口发布 `change:{kind:"enrollment_entries",settings:{windows:"https://发现服务入口",macos:"https://注册页面"}}`；未启用的平台填 null。入口使用 HTTPS，按当前 host revision 申请、prepare/restart 并核实 applied；仅启用原生通道不会自动授权 Agent 注册入口。Group/Scope/Policy 等测试业务对象由测试场景创建，不预置假设备或完成记录。
 
 配置导出后，运维重建服务，再复验原操作：
 
@@ -143,53 +139,38 @@ docker compose --env-file /absolute/sit/compose.env up -d --no-deps --force-recr
 docker compose --env-file /absolute/sit/compose.env run --rm --no-deps --user 10001:10001 \
   --entrypoint /usr/local/bin/rss-mdm-installer init configure-host --config /var/lib/rss-mdm/channels-request.json
 docker compose --env-file /absolute/sit/compose.env run --rm --no-deps --user 10001:10001 \
-  --entrypoint /usr/local/bin/rss-mdm-installer init prepare-hosts --config /var/lib/rss-mdm/maintenance.json
+  --entrypoint /usr/local/bin/rss-mdm-installer init maintain-materials --config /var/lib/rss-mdm/materials-request.json
 ```
 
-维护输入、证书和秘密导入命名卷的方法见[Compose 维护材料](operations.md#compose-维护材料与数据库-tls-续期)。每次配置变更单独完成导出、重建、原操作复验，再进入下一项；`applied=null`、仅文件保存或历史观察均不能算已加载。
+维护输入、证书和秘密导入命名卷的方法见[Compose 维护材料](operations.md#compose-维护材料与数据库-tls-续期)。领域材料变更完成后读取当前租户状态。只有回执 `deploymentRequired=true` 的实际部署变更才需要导出、重建并复验原操作；此时 `applied=null`、仅文件保存或历史观察均不能算已加载。
 
 服务端 SIT 部署检查必须覆盖：
 
-- PostgreSQL、CA、RustFS 健康；`/readyz` 中当前进程观察与期望 revision、材料摘要、原租户/实例匹配。
+- PostgreSQL、CA、RustFS 健康；`/readyz` 中当前进程观察与期望 revision、材料摘要、安装实例匹配。
 - 原平台/业务管理员均能登录并取得各自授权；匿名管理请求被拒绝，设备保护接口要求真实客户端证书。Agent 公开 trust 可经真实域名 HTTPS 读取，Windows 管理入口无客户端证书时业务拒绝；首注 TLS 握手不得发出客户端证书请求。
-- Agent 与 Windows 通道分别返回 `availability=ready`，准入符合租户设置；内容连接为 `qualified` 且实际运行加载对应 revision，任务签名存在 active key，所选恢复材料已加载；正式 `/api/v1/audit-events` 可查询。
+- Agent 与 Windows 通道分别返回 `availability=ready`，准入符合租户设置；内容连接为 `qualified` 且实际运行加载对应 revision，任务签名存在 active key，所选恢复材料已加载；正式 `/api/v1/tenants/{tenant}/audit-events` 可查询。
 - 用相同输入至少重放一次 `init`，租户、管理员、instance、operation、密码与保护材料不变；重放 CA 准备保持原 issuer/kid；重启依赖并按上述顺序重建 server/gateway 后再次通过运行观察。
 - 保存 Compose 环境、固定镜像、维护操作回执和一致数据库/材料备份；不把运行中的卷简单打包作为一致备份。备份和恢复边界见[运维指南](operations.md#当前安装联合冷备)。
 
 Apple 原生 MDM 纳入完整部署清单：通过 channels 配置保存 Apple 入口与启用意图，`materials.apns`、`materials.profile` 可暂为 null。缺 APNs/Profile 或安全材料时显示 waiting/degraded，管理面继续服务。内部 CA 由独立 ca-init 准备，不作为核心 server 的健康启动依赖；APNs 出站与真实组织资格单独验收。ADE、WNS、OIDC、邮件与 Webhook 按所选集成准备真实外部材料。Agent 安装包发布、终端注册和真实任务效果在环境交付后测试，不通过 fixture 或手动勾选状态补成成功。
 
-### 后续租户与运行容量
+### 运行后新增租户
 
-正式平台会话调用 provisionings API 创建真实租户、管理员和授权。保留每业务进程绑定一个租户的拓扑。账户就绪不意味着运维已部署对应服务；宿主未启动时回执保持 `host_pending`，不会伪报 enabled。
+平台会话向 `POST /api/v1/tenant-administration/provisionings` 提交 `name`、`administratorLogin`、`administratorPassword` 和稳定的 UUID `Idempotency-Key`。同一进程复用账户、授权及 baseline owner 完成初始化；请求预算内未完成的工作由已有 baseline worker 继续。
 
-在独立维护输入中沿用原安装配置，追加 `additional_hosts`，每项提供 `origin`、内部 `listen` 和 `deployment`：后者包含运行输出 `directory`、共享 `gateway_directory`、可选 `probe_address`、TLS 文件及可选内容目录，不含镜像、网络或容器参数。例如输出目录 `/var/lib/rss-mdm/runtime/second`，probe 为 `gateway:443`，`gateway_directory` 与主宿主相同。槽位只允许在末尾追加；保留已有条目的顺序、origin、listen 和输出目录，不支持缩容或替换。将维护 JSON 导入安装卷；首次安装输入保持不变，也不重做种子初始化。命令及秘密导入方式见[维护材料](operations.md#compose-维护材料与数据库-tls-续期)。
+响应保留原 operation 外层。`result` 只包含 `tenantId`、`administratorId`、`phase`、`blocked`、`entryPath`。账户未完成时为 `pending`；baseline 沿用 `pending / blocked / configured`。完成返回 200，持久接纳后未完成返回 202；未知提交仍沿原错误语义重试相同 operation。通过 `GET /api/v1/tenant-administration/provisionings/{operation}` 查询原进度。
 
-扩容按以下顺序执行；每一步失败都保留同一维护输入和原租户开通 operation，修复原因后重试：
+新租户与已有租户使用相同 HTTPS origin，入口为 `/tenants/{tenant}`，业务 API 为 `/api/v1/tenants/{tenant}/…`。Identity 使用 `/api/v1/identity/tenants/{tenant}/…`。路径租户必须与真实会话和产品权限一致；平台会话不能访问业务资源。公开 host config 仅包含 `serviceId`、`canonicalOrigin`、`managementTenant`。
 
-1. 保留现有数据库和 state/content 卷，停止主及附加宿主的 server 和 maintenance。为所有声明宿主设置足够的 `MDM_PG_MAX_CONNECTIONS`，通过正式 Compose 重建 PostgreSQL 并等待健康。只修改环境文件尚未改变实际数据库容量。
-2. 执行 `prepare-hosts --config /var/lib/rss-mdm/maintenance.json`。该命令先校验全部已有和待启动宿主的实际配置；显式 S3 安装在连接核验完成前也预留 Content 物理池，避免同轮核验使预算失效。容量不足会拒绝，保留原运行文件、槽位和开通回执。成功准备会为容量发生变化的宿主输出新 revision 和材料摘要。
-3. 重建所有受影响 server，并恢复 maintenance。新增宿主使用下述独立 Compose；导出网关后执行配置检查和 reload。
-4. 再次使用同一维护输入执行 `prepare-hosts`，核对每个宿主 application 的 requested revision/material digest 与实际 HTTPS 观察一致且无 failure。仅账户创建、运行文件导出、旧进程的 readyz 或历史 enabled 均不证明本次配置已生效。
+普通开通只增加租户账户、授权和默认领域数据。部署配置、容器、角色池与默认共享 PostgreSQL 遥测资源保持不变；可选后端由维护入口显式选择。中断重试沿原账户子操作和 baseline 步骤回执恢复，不能以管理员已存在代替初始化完成。
 
-重复准备相同目标不会重新生成配置版本。中断后的部分导出通过原维护输入继续补齐；完成前不要执行配置变更、联合备份或保护轮换，这些入口会拒绝不一致的预算。后续维护统一携带完整槽位声明；原 `installation-input.json` 只用于初装重放，不能替代扩容后的维护输入。
-
-运维使用候选中的 `tenant.compose.yaml` 直接声明新租户实例，沿用主安装的 state、content 卷和数据库网络，设置：
-
-```sh
-export MDM_STATE_VOLUME=rss-mdm_state MDM_CONTENT_VOLUME=rss-mdm_content MDM_NETWORK=rss-mdm_default
-export MDM_RUNTIME_SUBPATH=runtime/second MDM_SERVER_ALIAS=second-server
-export MDM_INGRESS_NETWORK=rss-mdm_ingress
-export MDM_BACKEND_ADDRESS=172.30.86.4
-docker compose -p rss-mdm-second -f /absolute/candidate/deployment/tenant.compose.yaml up -d
-```
-
-新宿主使用不同的公开 hostname，仍共用同一公网 443；证书覆盖该 hostname。宿主输入导出后先运行 `deployment/render_gateway.py`，再执行 gateway 的 `nginx -t -c /run/gateway/nginx.conf`，成功后通过 `nginx -s reload -c /run/gateway/nginx.conf` 应用新 SNI/HTTP 配置。再次显式运行 `prepare-hosts`，它只通过 HTTPS 读取实际 readyz 并核对租户、安装、配置版本及进程代次，然后记录 enabled；不启动、重启或停止服务。容量由运维的 Compose/Kubernetes 声明持有，租户授权和业务数据隔离仍由产品持有。配置应用和供应方核验同样通过一次性维护命令执行，无后台部署轮询。
+现有 Compose 候选旅程在原服务运行后创建 B，检查真实登录、默认业务、A/B 路径隔离、分页目录、原操作重放及共享数据库恢复。候选中的 `http-contract.json` 由同一 OCI 内的 MDM 二进制只读导出，并将摘要写入 `candidate.json`。rss-web 独立消费本次当前合同；静态页面可达不代表前端已适配本次路由。
 
 ### 单机部署设计与配置归属
 
 Docker Desktop/Engine 可承载 MDM 后端、HTTPS 网关、PostgreSQL，以及按所选设备能力准备的对象存储和设备 CA。Identity 嵌入后端，Windows/Mac 与 Agent 在设备侧。本次正式交付为 Compose；Kubernetes/HA 未提供交付或验收承诺。
 
-标准部署只发布 gateway 的 TCP 443，容器同号监听。所有部署均须加载 renderer 生成的 ports 文件；缺文件不能启动发布入口。gateway、web、server 使用各自网络命名空间：gateway 与 server 通过专用 ingress bridge 通信，web 只连接 frontend 网络。后端管理监听使用明确的内部地址，`trusted_gateway` 只信任该网络的固定 gateway IP；不能配置整个子网或接受外部身份头。多租户按不同 hostname 分流，各自使用独立 server 地址，网关共享配置由 `deployment.gateway_directory` 汇集。
+标准部署只发布 gateway 的 TCP 443，容器同号监听。所有部署均须加载 renderer 生成的 ports 文件；缺文件不能启动发布入口。gateway、web、server 使用各自网络命名空间：gateway 与 server 通过专用 ingress bridge 通信，web 只连接 frontend 网络。后端管理监听使用明确的内部地址，`trusted_gateway` 只信任该网络的固定 gateway IP；不能配置整个子网或接受外部身份头。所有业务租户共享同一 server 地址与管理 HTTPS 入口；原生协议可按部署需求使用独立 origin。
 
 | 公开入口示例（HTTPS 443） | 流向与身份核验 |
 |---|---|
@@ -211,7 +192,7 @@ SIT 默认共用一个 step-ca/root/issuer，按用途配置独立 provisioner�
 
 | 输入或产物 | 当前 owner 与操作入口 |
 |---|---|
-| 镜像、网关 TLS、监听、数据库引导连接、可用宿主槽位 | 运维提供一份[安装输入](../../apps/server/src/installation/install.rs)，冻结真实镜像 ID/digest；运维持有部署权限，产品命令只导出运行输入，业务 API 不接收任意命令/路径 |
+| 镜像、网关 TLS、监听、数据库引导连接 | 运维提供一份[安装输入](../../apps/server/src/installation/install.rs)，冻结真实镜像 ID/digest；运维持有部署权限，产品命令只导出运行输入，业务 API 不接收任意命令/路径 |
 | instance/tenant/principal/operation、target/lineage、角色密码及安装保护材料 | 安装器生成并持久保存；首租户、独立平台/业务身份及授权由同一安装流程准备，重放不手工换 ID 或重置密码 |
 | 运行快照、网关配置、公开宿主 JSON 与应用摘要 | 由安装/宿主应用 owner 派生；原操作冻结实际文件字节，不能编辑生成文件绕过期望版本及进程观察 |
 | 用户、授权、注册设置、Group/Scope/Policy、软件与 Apple 组织 | 真实租户会话调用原领域 API；平台会话不自动获得业务数据权限，目录查询不成为第二个写 owner |
@@ -229,7 +210,7 @@ SIT 默认共用一个 step-ca/root/issuer，按用途配置独立 provisioner�
 
 部署输入 `storage_profiles` 列出允许使用的 HTTPS S3 端点、region、bucket、基础 namespace 和 CA 文件。`rustfs_administrator` 只供部署进程执行固定 IAM 创建动作；导入其它 S3 凭据时提供 `boundary_verifier`，用于确认租户前缀之外的实际对象确实存在。管理 HTTP 只接受 profile 名称，不能提交任意端点或部署管理员材料。
 
-业务管理员调用 `POST /api/v1/storage/connections`，携带 UUID `Idempotency-Key`，请求包含 `expectedRevision`、`profile`、`source`。`source.kind=generate` 在领域保护侧生成 RustFS 工作负载身份；`source.kind=import` 导入 `access_key`、`secret_key`，可选 `session_token` 和 `expires_at`，临时 token 必须有有效期限。材料加密入库后返回 202，供应方准备异步执行。`GET /api/v1/storage/connections` 投影当前目录；`GET /api/v1/storage/connections/operations/{id}` 查询原操作，未知提交不得换操作 ID 重建凭据。
+业务管理员调用 `POST /api/v1/tenants/{tenant}/storage/connections`，携带 UUID `Idempotency-Key`，请求包含 `expectedRevision`、`profile`、`source`。`source.kind=generate` 在领域保护侧生成 RustFS 工作负载身份；`source.kind=import` 导入 `access_key`、`secret_key`，可选 `session_token` 和 `expires_at`，临时 token 必须有有效期限。材料加密入库后返回 202，供应方准备异步执行。`GET /api/v1/tenants/{tenant}/storage/connections` 投影当前目录；`GET /api/v1/tenants/{tenant}/storage/connections/operations/{id}` 查询原操作，未知提交不得换操作 ID 重建凭据。
 
 部署进程在首次外部调用前固定端点、桶、命名空间与信任材料。自动创建验证 IAM 用户、策略和绑定；两条路径都验证 TLS、桶版本控制、真实版本化读写、精确版本删除以及对已确认存在的外部前缀对象的拒绝。失败保持原操作和凭据，可恢复重试；运行服务无权限自行标记供应方校验成功。桶须预先存在并启用版本控制。每个租户使用 `namespace/<tenant UUID>`；更新凭据不能改绑到其它桶或前缀。
 
@@ -237,13 +218,12 @@ SIT 默认共用一个 step-ca/root/issuer，按用途配置独立 provisioner�
 
 
 
-MDM 宿主使用同一份运行配置生成两份公开 bootstrap 输入：`ui.json` 的
-`canonicalOrigin/oidcEnabled` 和 `mdm.json` 的 `canonicalOrigin/tenant`。
-部署网关分别在 `/api/v1/identity-host/config.json`、`/api/v1/mdm-host/config.json` 精确提供这些文件，
-不得填入凭据或另设租户权威。环境初始化与候选运行工具从 `product_origin`、`identity` 自动生成，
-手工部署须将相同公开字段只读挂载到网关。
+MDM 宿主公开配置只提供 `serviceId`、`canonicalOrigin`、`managementTenant`，
+由当前安装材料生成并在 `/api/v1/mdm-host/config.json` 只读提供。
+业务租户由 `/tenants/{tenant}` 入口选择；公开字段不携带凭据，也不授予权限。
+Identity 的公开宿主配置仍由其原入口提供。
 
-`/api/v1/mdm-candidate/workspace` 返回当前会话的真实模块导航提示；提示不授予权限。
+`/api/v1/tenants/{tenant}/mdm-candidate/workspace` 返回当前会话的真实模块导航提示；提示不授予权限。
 Identity callback 固定 `/api/v1/identity/oidc/callback`，其它 API 保留后端路由和错误，不能落入 SPA。
 这些宿主配置和 HTTP 接缝由后端验证；前端消费和页面验收由前端 owner 负责。
 
@@ -267,7 +247,7 @@ Audit 与 Ledger 的组件 SQL 分别由 `mdm_audit_owner`、`mdm_ledger_owner` 
 
 | 命令 | 其它输入 | 输出与约束 |
 |---|---|---|
-| `tenant-get` | tenant_id | 当前租户详情，包括 initial_epoch、current_epoch、name、notes、revision、deletable、management |
+| `tenant-get` | tenant_id | 当前租户详情，包括 name、notes、revision、deletable、management |
 | `tenant-list` | 无 | 所有未删除租户详情，按 UUID 排序，最多 1024 个业务租户与 1 个管理租户 |
 | `tenant-update` | tenant_id、expected_revision、operation_id；可选 name、notes | 全量替换元数据；省略或 null 清空字段；成功时 revision 加一，即使值未改变 |
 | `tenant-delete` | tenant_id、expected_revision、operation_id | 仅允许删除从未声明使用的租户，revision 加一；保留墓碑、epoch、默认设置和回执 |
@@ -319,19 +299,19 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 
 创建管理员要求管理租户 `tenant_administrator_create` 及 300 秒内认证。服务生成新主体，原子写入账户、目标租户全部业务/设备 AllDevices 与账户/IdP 管理权限、审计和回执；不授予安装级租户管理权限，也不签发目标租户会话。可持续添加多个管理员；重复登录名返回 409，不重置或接管已有账户。重放会复核操作者当前会话与权限，但不重新赋权。开始账户初始化前永久登记首次使用，失败也不恢复可删除性。
 
-每个宿主通过 identity.tenant_id 和 storage_binding.epoch 绑定一个已登记业务租户，启动核验安装身份、audit mode、登记和期望 epoch。同库其它租户使用各自合法绑定宿主；新增登记不自动切换已有宿主。
+进程通过 storage_binding 固定经过安装验证的 target、lineage 与业务 epoch，identity.management_tenant 只定位管理域。请求、设备凭据与原工作记录提供业务租户；原工作保留最初的 epoch，恢复不能用数据库当前 epoch 重新标记。
 
 新实例使用前述 `install` 单输入入口，后续租户使用完整 provisionings 资源。`migrate`、`initialize` 与 `initialize-authorization` 保留给各自维护用途，不能组合成另一条公共租户创建路径。安装器按固定镜像身份准备运行输入，秘密由 UID 10001 持有且权限 0600；镜像不嵌入配置或私钥。
 
 ## 客户端入口与服务器证书交付
 
-浏览器网关的 `/api/v1/mdm-host/config.json` 使用同一份静态配置交付 `canonicalOrigin`、业务 `tenant` 和平台 `managementTenant`。两类租户坐标由实际安装登记生成，只用于选择正式登录入口，不授予业务或平台权限。#2825 替换原来的两字段配置；部署必须同时更新生成配置和消费它的 Web 制品，不提供旧格式解析或第二个发现端点。
+浏览器网关的 `/api/v1/mdm-host/config.json` 只提供当前安装的 `serviceId`、`canonicalOrigin` 和 `managementTenant`。业务租户入口来自当前租户目录或明确链接；前端由 rss-web 独立消费当前合同。
 
 安装与宿主部署直接使用产品的公开配置生成器。需要为既有受控网关重新生成文件时，运行 `rss-mdm public-host-config --config /absolute/runtime.json`，标准输出仅含 `ui.json`、`mdm.json` 的公开 JSON；该命令使用运行配置中的数据库角色读取原安装的管理租户，不创建账户、会话或新身份。将两份 JSON 分别放入网关既有的只读配置位置。数据库不可用、租户坐标无效或业务与管理租户相同均失败，不能手填替代身份绕过。
 
 网关加载部署方配置的服务器证书链与私钥。使用私有 CA 时，把签发该服务器证书的 CA 公共证书通过可信部署渠道分发到设备；CA 私钥留在部署端，不放入 Agent 配置、客户端安装包或前端静态资源。数据库连接的 `ca_file` 属于 PostgreSQL 信任，不复用为组织网关 CA。
 
-服务端向桌面客户端部署方提供 HTTPS `product_origin`、绑定的 `identity.tenant_id` 和签发网关证书的 CA 公共证书。桌面构建与组织信任配置由 [rss-mdm-agent 桌面开发指南](https://dev.azure.com/shengming0923/rss/_git/rss-mdm-agent?path=/docs/guides/desktop-development.md&version=GBdevelop) 维护。
+服务端向桌面客户端部署方提供 HTTPS `product_origin`、所选组织的 tenant ID 和签发网关证书的 CA 公共证书。桌面构建与组织信任配置由 [rss-mdm-agent 桌面开发指南](https://dev.azure.com/shengming0923/rss/_git/rss-mdm-agent?path=/docs/guides/desktop-development.md&version=GBdevelop) 维护。
 
 服务端通过受保护安装渠道向 Agent 部署方交付绑定 `instance_id` 与 tenant 的注册文件、当前签名连接配置及验证公钥、HTTPS 服务器 CA 公共证书和设备 purpose trust。Agent 依据已发布连接配置使用首选和候选入口，地址变化不改变服务身份，也不扩展已授权 CA。控制台与 Agent 入口分别核对对应服务器证书；同 CA 签发时可交付同一公共证书。HTTPS 信任与设备 purpose trust 分别校验，不能相互替代，也不跳过证书链或主机名校验。Agent 的配置生成、安装、升级与恢复由 [rss-mdm-agent 服务部署指南](https://dev.azure.com/shengming0923/rss/_git/rss-mdm-agent?path=/docs/guides/local-service-lab.md&version=GBdevelop) 唯一维护。
 
@@ -353,7 +333,7 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 运行配置必须显式包含 `identity.runtime`、`background.scheduling`、`http`、`inventory_runtime` 与 `audit_query`，完整形状见 [MDM 配置示例](../../fixtures/mdm-config.example.json)。安装生成器写入当前保守值；恢复时保留原安装 target、lineage、tenant epoch 和 `rp_generation`，新安装 RP generation 为 1。Identity 公共数据库 schema 使用 owner 的版本 18，自有 HTTP、Agent 和安装格式仍为 V1。
 
-`background.scheduling` 分别配置 device、commands、tasks、planning、policy 的领取量、扫描量、lease、执行、重试及排空预算。设备并发默认 4，领取／扫描默认 64；领取支持至 1024，扫描独立配置。`command_recovery_batch_size` 和 `command_supersede_batch_size` 分别控制恢复遍历与替代命令的处理批次，默认 64。并发对应的物理池预算与 `database_host_instances` 在启动前统一 checked 校验。
+`background.scheduling` 分别配置 device、commands、tasks、planning、policy 的领取量、扫描量、lease、执行、重试及排空预算。设备并发默认 4，领取／扫描默认 64；领取支持至 1024，扫描独立配置。`command_recovery_batch_size` 和 `command_supersede_batch_size` 分别控制恢复遍历与替代命令的处理批次，默认 64。并发对应的物理池预算在启动前统一 checked 校验。
 
 Identity 默认 KDF 并发 4、预留内存 128 MiB，请求 10 秒、认证 claim 60 秒、KDF 排空 5 秒。claim 必须覆盖当前配置允许的请求与维护密码操作总时长；密码计算在请求取消后仍由原 KDF 排空。OIDC 请求／连接默认 5／3 秒；JWKS TTL 60 秒、128 租户、刷新间隔 1 秒，租户容量可配置至 1024。独立 DA 使用 [DA 配置示例](../../deployment/da-config.example.json) 中必填的 `identity_policy` 和 `http`：启动总预算默认 60 秒，请求／连接排空 15 秒，宿主总排空 45 秒，维护总排空 30 秒。请求与 KDF 排空必须放入对应父预算；增大请求时需同步请求和连接排空。
 
@@ -392,7 +372,7 @@ Group、Scope、查询、合规与剩余任务共享容量为 2 的调度池，G
 不具备资产或各业务 owner 表写权限，也不具备消息生产权限；原子登记的固定输入目标由产品代码绑定。
 投影池的租户绑定跟随当前 host，恢复使用既有 native protector。Scope 的 `mdm.scopes` worker 独立注册、监视和关闭，复用原业务 runtime 与共享调度池，不另建数据库连接池。
 
-资源、Scope 与执行使用当前全新安装结构。产品配置中的 `storage_binding` 持有 target/lineage/epoch，`business_databases` 持有具名 owner 的独立数据库身份，`publication` 持有发布数据库与 sources，`command_database` 持有共享命令 runtime 数据库连接；具体字段以[配置示例](../../fixtures/mdm-config.example.json)为准。旧 `flow`、综合 `management` 和混合 `tasks` 配置不再接受。`content.storage` 显式选择 `volume` 或启用版本控制的 HTTPS `s3`（[S3 配置示例](../../fixtures/mdm-content-s3.example.json)）；PostgreSQL 持有内容控制状态，`content` 配置共享内容仓，`task_signing` 单独配置任务签名；脚本任务要求两者齐备，软件入库/启用不需要任务私钥，原生协议的 `management` 公开 origin 配置保持独立。本版本按全新安装交付，安装清单只持有当前完整 schema。
+资源、Scope 与执行使用当前全新安装结构。产品配置中的 `storage_binding` 持有 target/lineage/epoch，`business_databases` 持有具名 owner 的独立数据库身份，`publication` 持有发布数据库与 sources，`command_database` 持有共享命令 runtime 数据库连接；具体字段以[配置示例](../../fixtures/mdm-config.example.json)为准。旧 `flow`、综合 `management` 和混合 `tasks` 配置不再接受。`content.storage` 显式选择 `volume` 或启用版本控制的 HTTPS `s3`（[S3 配置示例](../../fixtures/mdm-content-s3.example.json)）；PostgreSQL 持有内容控制状态，`content` 配置共享内容仓，任务签名由当前租户的签名 owner 读取；脚本执行要求内容与有效私钥齐备，软件入库/启用不需要任务私钥，原生协议的 `management` 公开 origin 配置保持独立。本版本按全新安装交付，安装清单只持有当前完整 schema。
 
 内容与网关的大小及时间预算必须一致配置。随附 nginx 配置仅为精确上传路由关闭 request buffering，示例正文上限 8GiB；普通请求继续保留 16KiB。管理专属路由的网关上限对应 `management-http/src/body_policy.rs`：Policy/Resource 8MiB、设备 operations 16MiB、PKI rotation/CRL 64MiB、signing recovery 256KiB、Entra policy 128KiB、证书导入及授权规则/用户组 2MiB、软件目录及 Agent 包写入口 1MiB；应用继续按方法执行精确预算与 DTO 校验。内容目录须以可写持久卷提供给服务，签名秘密仍使用独立只读挂载。
 
@@ -419,7 +399,7 @@ Group、Scope、查询、合规与剩余任务共享容量为 2 的调度池，G
 }
 ```
 
-启用 Agent 时，`task_signing` 只引用已持久化权威的 `revision`；私钥由任务签名 owner 加密保管，不再接受 private_key_file、key_id 或 trusted_keys 启动字段。注册 owner 持有独立于任务轮换的受保护配置签名根，以独立签名域签发注册文件和连接配置；安装材料须固定服务身份、tenant 与配置验证公钥。任务密钥轮换不能替换连接配置根。授权期限和平台启用设置只由数据库后台接口持有，旧 `agent_pki.policy` 被拒绝，见 [Agent 接入](../guides/agent-integration.md)。
+启用 Agent 时，任务签名 owner 在操作中读取该租户的当前 revision 和加密私钥；首次准备和轮换不导出启动版本，也不要求重启。注册 owner 使用独立签名域签发注册文件和连接配置，固定服务身份、tenant 与配置验证公钥；任务密钥轮换不能替换连接配置根。授权期限和平台启用设置由领域接口持有，见 [Agent 接入](../guides/agent-integration.md)。
 
 Agent 证书由统一 step-ca 初始化准备，默认有效期 365 天；Windows 为 90 天。签发者必须覆盖完整证书窗口，剩余不足会拒绝签发。私钥留在设备，产品运行端只取得受限用途凭据，CA 根/中间私钥及管理员凭据不进入运行容器。任务签名仍由原产品 owner 管理，不与设备 CA 混用。
 
@@ -450,9 +430,9 @@ docker compose --env-file /absolute/sit/compose.env restart step-ca
 docker compose --env-file /absolute/sit/compose.env up -d --force-recreate server gateway
 ```
 
-重复运行 `ca-init` 复用同一 CA 初始化操作，核验远端 provisioner、模板和原回调身份；不重新生成原密钥或追加配置版本。首次没有运行进程时，配置回执可以处于待观察状态；按前文 `prepare-hosts` 读取实际进程观察，不能把初始化成功当成设备注册成功。
+重复运行 `ca-init` 复用同一 CA 初始化操作，核验远端 provisioner、模板和原回调身份；不重新生成原密钥或追加配置版本。首次没有运行进程时，配置回执可以处于待观察状态；重放原 `configure-host` 操作读取实际进程观察，不能把初始化成功当成设备注册成功。
 
-统一初始化自动处理 Agent、Windows、Apple 和可选 Agent bootstrap 所需资源。首次为缺失资源生成受限密钥；已有资源从当前部署材料及认证 CA 管理接口核对、复用。产品内部仍保留各通道授权、证书用途和租户隔离。其他租户由维护命令 `initialize-ca` 指定原 `host_id` 绑定同一份 settings，需要租户回调的资源名称按租户自动隔离；Agent 沿原客户端契约共用受限签发入口，以证书 SAN 和注册授权绑定租户，不覆盖首租户材料。原逐用途准备入口已移除，初始化只使用这一套输入；旧维护记录与材料继续保留。
+统一初始化自动处理 Agent、Windows、Apple 和可选 Agent bootstrap 所需资源。首次为缺失资源生成受限密钥；已有资源从当前部署材料及认证 CA 管理接口核对、复用。产品内部仍保留各通道授权、证书用途和租户隔离。其他租户由维护命令 `initialize-ca` 明确指定 `tenant`，复用安装中按用途与 issuer 管理的 CA 资源和回调凭据；证书 SAN、原注册授权与领域 Trust 绑定租户。原逐用途准备入口已移除，初始化只使用这一套输入；旧维护记录与材料继续保留。
 
 通道启用时只提供该通道公开 origin 和必要业务材料；公网 TLS 由部署网关统一持有，省略 `providers`、CA `trust_file` 和回调配置。首次启用时按实际 endpoint/management 地址绑定信任，并在同一维护操作内同步尚未使用的 bootstrap 回调，支持非默认公开端口；不把 CA 准备阶段的默认端口当作最终地址。原有已启用通道的协议密钥与信任历史保持不变。Apple 的 APNs/Profile 属于独立业务材料，未提供时只完成 CA 准备，不伪造 Apple MDM 就绪。
 
@@ -472,7 +452,6 @@ SCEP 解密身份、模板和 challenge/notify 回调由初始化自动处理，
 {
   "active_key": "recovery-2026",
   "key_files": { "recovery-2026": "/run/mdm/recovery.key" },
-  "active_recipient": "接收证书DER的SHA256小写十六进制指纹",
   "recipients": [{
     "certificate_file": "/run/mdm/recovery-recipient.crt",
     "private_key_file": "/run/mdm/recovery-recipient.key"
@@ -480,7 +459,7 @@ SCEP 解密身份、模板和 challenge/notify 回调由初始化自动处理，
 }
 ```
 
-每个密钥文件恰好 32 个随机原始字节，私密文件权限为 0600。凭据密钥、接收 RSA 私钥、现有 native protection 密钥及 APNs/身份密钥分别生成与保管。接收证书和私钥必须匹配，RSA 至少 2048 位。FileVault 使用该证书接收 CMS，Agent 使用其公钥包裹 AES-GCM 数据密钥；不在客户端配置服务端私钥。未配置时不开放恢复凭据接口或派发该类 Agent 任务，macOS 锁定 PIN 托管也不可用。
+接收者由 `configure-host` 的 recovery 变更针对明确 profile 与 tenant 选择，选择保存在恢复凭据 owner；运行配置只列出共享持有的实际密钥资源。每个密钥文件恰好 32 个随机原始字节，私密文件权限为 0600。凭据密钥、接收 RSA 私钥、现有 native protection 密钥及 APNs/身份密钥分别生成与保管。接收证书和私钥必须匹配，RSA 至少 2048 位。FileVault 使用该证书接收 CMS，Agent 使用其公钥包裹 AES-GCM 数据密钥；不在客户端配置服务端私钥。未配置时不开放恢复凭据接口或派发该类 Agent 任务，macOS 锁定 PIN 托管也不可用。
 
 
 ### Webhook 宿主输入
@@ -489,7 +468,7 @@ SCEP 解密身份、模板和 challenge/notify 回调由初始化自动处理，
 recovery_database 使用独立登录角色，具备 `mdm_webhook_operator` 的能力；按现有角色文件先部署
 `webhook-roles.sql`，密码由部署秘密提供，不与访问或投递角色混用。恢复能力不暴露原始 runtime。
 
-Webhook 密钥由 `/api/v1/webhooks/materials` 的领域权威加密持久化，接收端持钥确认后才能激活。安全交付、确认与旧签名退出见[Webhook 材料运维](operations.md#出站-webhook-签名材料)。运行配置不接受 keys/current_file/retiring，修改旧文件不能覆盖数据库材料。
+Webhook 密钥由 `/api/v1/tenants/{tenant}/webhooks/materials` 的领域权威加密持久化，接收端持钥确认后才能激活。安全交付、确认与旧签名退出见[Webhook 材料运维](operations.md#出站-webhook-签名材料)。运行配置不接受 keys/current_file/retiring，修改旧文件不能覆盖数据库材料。
 
 每条 networks 配置包含 tenant、reference、hostname、port、addresses（IP:port）、cidrs 和 ca_files。
 所有地址端口须匹配，地址须全部在允许 CIDR 内；CA 为 PEM。首版 DNS 策略为宿主固定地址快照，
@@ -502,7 +481,7 @@ execution epoch 来自原宿主配置，在连接建立时固定；源事件复�
 
 ### 固定候选的完整安装资格
 
-`python3 hack/candidate_installation.py /absolute/candidate` 使用普通 Compose 和空库运行正式初始化，覆盖幂等种子、独立管理员真实认证与授权、单宿主初装后的预算不足拒绝、真实 PostgreSQL 扩容、全部宿主精确配置应用、原第二租户开通操作重试及租户隔离、Compose 直接持有服务。该入口另验证同候选产品库停写后真实 pg_dump/pg_restore、重开、原回执重放及新写入；安全反例、各遥测 provider 与密钥/内容恢复的 T2 当前尚未重建，受控运维演练仍须独立提供实际结果；不使用开发 fixture 冒充正式初始化。
+`python3 hack/candidate_installation.py /absolute/candidate` 使用普通 Compose 和空库运行正式初始化，覆盖幂等种子、独立管理员真实认证与授权、原服务运行后新增 B、原开通操作重放、默认业务、A/B 路径隔离和租户目录分页。旅程检查容器、监听器、部署配置和数据库角色保持不变，并验证共享产品库停写后的真实 pg_dump/pg_restore、重开、原回执重放及新写入。协议 smoke 的合法预置独立于正式安装旅程；可选遥测后端、密钥与内容恢复以各 owner 的实际验证记录为准。
 
 只有验证与清理都完成才发布 `installation-result.json`，绑定候选/Compose 摘要，并分别记录执行客户端 OS/架构、Docker daemon OS/架构和系统说明、容器目标平台及 daemon 与容器架构是否相同。客户端可能连接远程 Docker，架构相同也不能独立证明物理宿主原生运行；验收人员补充实际宿主和仿真方式。arm64 与 amd64 候选分别运行；仿真、原生及不同宿主的结果分别记录，不能由一台 Mac 推导所有宿主均通过。协议 `candidate_smoke.py` 的合法预置仅证明相应协议接缝，不是本入口的完整初始化证据。浏览器与真机 T3 按各自输入继续，不能用安装、readiness 或 smoke 代替终端效果。
 

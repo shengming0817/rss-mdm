@@ -94,8 +94,10 @@ pub trait NativeAdmission: Send + Sync {
     ) -> Pending<'a, crate::enrollment::managed::Authority>;
 }
 pub struct Service {
+    storage: rss_transactional_messaging::fence::StorageIdentity,
+    expected_epoch: rss_transactional_messaging::fence::Epoch,
     pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
-    pub(crate) tenant: rss_request_context::TenantId,
+
     pub(crate) store: Arc<Store>,
     audit: Arc<AuditStore>,
     issuer: Arc<DeviceIssuer>,
@@ -104,11 +106,11 @@ pub struct Service {
     native: Option<Arc<dyn NativeAdmission>>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     installations: Option<Arc<dyn configurations::InstallationAdmission>>,
-    bootstrap: Option<Arc<bootstrap::Configuration>>,
+    bootstrap: Option<Arc<rss_mdm_pki_service::scep::Verifier>>,
 }
 pub struct Assembly {
     pub cursor: rss_mdm_query::cursor::CursorCodec,
-    pub tenant: rss_request_context::TenantId,
+    pub probe: rss_transactional_messaging::fence::ExecutionBinding,
     pub store: Arc<Store>,
     pub audit: Arc<AuditStore>,
     pub issuer: Arc<DeviceIssuer>,
@@ -117,7 +119,7 @@ pub struct Assembly {
     pub native: Option<Arc<dyn NativeAdmission>>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub installations: Option<Arc<dyn configurations::InstallationAdmission>>,
-    pub bootstrap: Option<Arc<bootstrap::Configuration>>,
+    pub bootstrap: Option<Arc<rss_mdm_pki_service::scep::Verifier>>,
 }
 pub(crate) struct Change<R> {
     pub(crate) value: R,
@@ -135,7 +137,8 @@ impl Service {
             return Err(Error::Configuration);
         }
         Ok(Self {
-            tenant: a.tenant,
+            storage: a.probe.storage(),
+            expected_epoch: a.probe.epoch(),
             cursor: a.cursor,
             store: a.store,
             audit: a.audit,
@@ -149,22 +152,30 @@ impl Service {
         })
     }
     pub fn service_id(&self) -> Result<Uuid, Error> {
-        self.issuer
-            .trust()
-            .trust
-            .public()
-            .map(|t| t.service_id)
-            .map_err(|_| Error::Configuration)
+        Ok(self.issuer.installation())
     }
-    pub fn trust(&self) -> &Arc<DeviceIdentityTrust> {
-        self.issuer.trust()
+    pub async fn trust(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<Arc<DeviceIdentityTrust>, Error> {
+        self.issuer.trust(execution).await
+    }
+    pub fn execution(
+        &self,
+        tenant: rss_request_context::TenantId,
+    ) -> rss_transactional_messaging::fence::ExecutionBinding {
+        rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            tenant,
+            self.expected_epoch,
+        )
     }
     pub fn now(&self) -> Result<i64, Error> {
         self.clock.unix_seconds()
     }
     pub(crate) fn proof(&self, p: &AuthorizedPrincipal, a: &RequestAudit) -> Result<(), Error> {
         if p.profile() != self.profile()
-            || p.tenant_id() != self.tenant.to_string()
+            || p.tenant_id() != p.binding().tenant().to_string()
             || a.tenant() != p.tenant_id()
         {
             return Err(Error::Forbidden);
@@ -199,18 +210,23 @@ impl Service {
         let profile = self.profile();
         let installation = self.service_id()?;
 
-        if a.profile() != profile || a.tenant() != self.tenant.to_string() {
+        if a.profile() != profile || a.tenant() != a.binding()?.tenant().to_string() {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(6));
         let out = source
             .write(
-                self.tenant,
+                a.binding()?,
                 &budget.source_control(),
                 (
                     source,
                     a,
-                    (self.tenant.to_string(), context, Some(f), Some(before)),
+                    (
+                        a.binding()?.tenant().to_string(),
+                        context,
+                        Some(f),
+                        Some(before),
+                    ),
                 ),
                 |ctx, tx| {
                     Box::pin(async move {
@@ -259,7 +275,15 @@ impl Service {
             .await;
         crate::operations::settle(out, a)
     }
-    async fn grant_live(&self, c: &mut PgConnection, row: &PgRow) -> Result<(), Error> {
+    async fn grant_live(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        c: &mut PgConnection,
+        row: &PgRow,
+    ) -> Result<(), Error> {
+        if row.try_get::<i64, _>("expected_epoch").map_err(db)? != binding.epoch().get() {
+            return Err(Error::Conflict);
+        }
         if row
             .try_get::<String, _>("certificate_purpose")
             .map_err(db)?
@@ -282,11 +306,11 @@ impl Service {
             .try_get::<Option<serde_json::Value>, _>("native_authority")
             .map_err(db)?
         {
-            let source = native::source(profile, c, self.tenant, authority).await?;
+            let source = native::source(profile, c, binding, authority).await?;
             crate::lifecycle::require_work_in(
                 profile,
                 c,
-                &self.tenant.to_string(),
+                &binding.tenant().to_string(),
                 source.principal().device(),
             )
             .await?;

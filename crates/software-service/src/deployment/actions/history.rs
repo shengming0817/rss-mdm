@@ -29,7 +29,7 @@ impl Queries {
             let mut prior=(0,0);
             let mut prior_ready=true;
             for (index,stage) in software.assignment.stages().iter().enumerate() {
-                let counts=software.assignment.counts_on(service.source.as_ref(),c,service.tenant,index).await?;
+                let counts=software.assignment.counts_on(service.source.as_ref(),c,proof.binding().tenant(),index).await?;
                 stages.push(json!({"id":stage.id,"scope":stage.scope,"opensAt":stage.opens_at,
                     "minimumVerifiedPercent":stage.minimum_verified_percent,
                     "open":policy.state.is_enabled() && (stage.minimum_verified_percent.is_none() || prior_ready) && stage.open(now,prior.0,prior.1),
@@ -47,6 +47,7 @@ impl Queries {
     /// Bounded remaining-owner facts on the application's authorized read snapshot.
     pub async fn run_page_on(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut sqlx::PgConnection,
         policy: Uuid,
         after: Option<(i64, Uuid)>,
@@ -59,7 +60,7 @@ impl Queries {
         query.push(RESULT_SUMMARY_SQL).push(") FROM mdm_software_deployment.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND ($3::bigint IS NULL OR (r.available_at,r.id)<($3,$4)) ORDER BY r.available_at DESC,r.id DESC LIMIT $6");
         query
             .build_query_scalar::<Value>()
-            .bind(self.tenant.to_string())
+            .bind(binding.tenant().to_string())
             .bind(policy)
             .bind(after.map(|v| v.0))
             .bind(after.map(|v| v.1))
@@ -82,7 +83,7 @@ impl Queries {
         now: i64,
     ) -> crate::deployment::Result<crate::deployment::queries::records::RunDetail> {
         use sqlx::Row;
-        let row=sqlx::query("SELECT r.device,r.state,v.frozen FROM mdm_software_deployment.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.id=$3").bind(self.tenant.to_string()).bind(policy).bind(id).fetch_optional(&mut *c).await?.ok_or(Error::Execution(crate::deployment::missing::ExecutionError::MissingTask))?;
+        let row=sqlx::query("SELECT r.device,r.state,v.frozen FROM mdm_software_deployment.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.id=$3").bind(proof.binding().tenant().to_string()).bind(policy).bind(id).fetch_optional(&mut *c).await?.ok_or(Error::Execution(crate::deployment::missing::ExecutionError::MissingTask))?;
         let device: rss_mdm_agent_wire::DeviceId =
             row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
                 rss_mdm_agent_wire::DeviceId::try_from(id)
@@ -99,7 +100,7 @@ impl Queries {
             {
                 let payload = self
                     .agent_store
-                    .payload(c, self.tenant.to_string(), id, attempt)
+                    .payload(c, proof.binding().tenant().to_string(), id, attempt)
                     .await?;
                 let super::evidence::Material::Software { steps, .. } =
                     super::evidence::Material::from_payload(&payload).ok_or(Error::Conflict)?;
@@ -113,7 +114,7 @@ impl Queries {
         } else {
             vec![]
         };
-        let mut value:Value=sqlx::query_scalar("SELECT jsonb_build_object('taskId', r.id, 'authorization', r.invocation -> 'authorization', 'attemptId', r.state -> 'delivery' ->> 'attempt', 'device', r.device, 'availableAt', r.available_at, 'deadline', r.deadline, 'state', r.state, 'effect', COALESCE(r.result ->> 'effect', 'unverified'), 'result', r.result) FROM mdm_software_deployment.action_runs AS r WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2").bind(self.tenant.to_string()).bind(id).fetch_one(c).await?;
+        let mut value:Value=sqlx::query_scalar("SELECT jsonb_build_object('taskId', r.id, 'authorization', r.invocation -> 'authorization', 'attemptId', r.state -> 'delivery' ->> 'attempt', 'device', r.device, 'availableAt', r.available_at, 'deadline', r.deadline, 'state', r.state, 'effect', COALESCE(r.result ->> 'effect', 'unverified'), 'result', r.result) FROM mdm_software_deployment.action_runs AS r WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2").bind(proof.binding().tenant().to_string()).bind(id).fetch_one(c).await?;
         value["nodes"] = json!(nodes);
         value["policyId"] = json!(policy);
         value["userAction"] = json!(user_action);

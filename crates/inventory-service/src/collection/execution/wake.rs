@@ -18,18 +18,32 @@ pub async fn run_in(
             Box::pin(async { Ok(()) })
         })
         .await?;
-    tx.with_connection(|c|Box::pin(async move{sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'collection_recovery')").execute(c).await?;Ok(())})).await?;
+    tx.with_connection(|c| {
+        Box::pin(async move {
+            sqlx::query("SELECT pg_notify('mdm_work','collection_recovery')")
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await?;
     Ok(())
 }
 
 pub async fn policy_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
 ) -> Result<()> {
+    if binding.tenant() != tx.tenant_id() {
+        return Err(Error::Malformed.into());
+    }
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_inventory.collection_policy_recovery(tenant_id,policy) VALUES($1::uuid,$2) ON CONFLICT(tenant_id,policy) DO UPDATE SET input_revision=mdm_inventory.collection_policy_recovery.input_revision+1").bind(tenant).bind(id).execute(c).await?;Ok(())
+        let updated=sqlx::query("INSERT INTO mdm_inventory.collection_policy_recovery(tenant_id,policy,expected_epoch) VALUES($1::uuid,$2,$3) ON CONFLICT(tenant_id,policy) DO UPDATE SET input_revision=mdm_inventory.collection_policy_recovery.input_revision+1 WHERE mdm_inventory.collection_policy_recovery.expected_epoch=excluded.expected_epoch").bind(tenant).bind(id).bind(binding.epoch().get()).execute(c).await?;
+            if updated.rows_affected()!=1{return Err(sqlx::Error::Protocol("original work epoch mismatch".into()).into())}
+            Ok(())
     })).await?;
     entity_in(reconcile, tx, &format!("policy:{id}")).await
 }
@@ -46,7 +60,15 @@ pub async fn entity_in(
             Box::pin(async { Ok(()) })
         })
         .await?;
-    tx.with_connection(|c|Box::pin(async move {sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'collection_recovery')").execute(c).await?;Ok(())})).await?;
+    tx.with_connection(|c| {
+        Box::pin(async move {
+            sqlx::query("SELECT pg_notify('mdm_work','collection_recovery')")
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await?;
     Ok(())
 }
 

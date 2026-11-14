@@ -60,29 +60,32 @@ fn error(e: rss_mdm_recovery_credentials::Error) -> AgentError {
     })
 }
 async fn principal(
+    origin: &rss_mdm_certificate::GatewayOrigin,
     s: &Services,
     headers: &HeaderMap,
     peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,
     audit: &RequestAudit,
 ) -> Result<rss_mdm_registration_service::DevicePrincipal, AgentError> {
-    let p = crate::authenticate(&s.enrollment, headers, peer).await?;
+    let p = crate::authenticate(origin, &s.enrollment, headers, peer).await?;
     audit.identify_device(p.device());
     audit.target_device(p.device());
     Ok(p)
 }
 async fn configuration(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     RuntimeHeaders(headers): RuntimeHeaders,
 ) -> Result<Json<w::Configuration>, AgentError> {
     crate::bounded(async {
-        let p = principal(&s, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let p = principal(&origin, &s, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         s.recovery.configuration(&p).await.map(Json).map_err(error)
     })
     .await
 }
 async fn upload(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -90,7 +93,7 @@ async fn upload(
     input: Result<Json<w::Upload>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<w::Receipt>, AgentError> {
     crate::bounded(async {
-        let p = principal(&s, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let p = principal(&origin, &s, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         let Json(input) = input.map_err(|_| Error::Malformed)?;
         s.recovery
             .receive(&p, &input, &audit)
@@ -101,6 +104,7 @@ async fn upload(
     .await
 }
 async fn receipt(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -108,7 +112,7 @@ async fn receipt(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Option<w::Receipt>>, AgentError> {
     crate::bounded(async {
-        let p = principal(&s, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let p = principal(&origin, &s, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         s.recovery.receipt(&p, id).await.map(Json).map_err(error)
     })
     .await

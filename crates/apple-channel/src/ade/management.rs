@@ -130,7 +130,7 @@ fn proof(auth: &RequestAuth, write: bool) -> Result<&AuthorizedPrincipal, Error>
 pub async fn configure(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     crate::account_enrollment::management::WriteHeaders(headers): crate::account_enrollment::management::WriteHeaders,
     Extension(audit): Extension<RequestAudit>,
     Json(input): Json<Configure>,
@@ -168,7 +168,8 @@ pub async fn configure(
     ));
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
-    let result=app.audit_store.write(app.identity.tenant(),&budget.source_control(),(&app,&p,&audit,&input,&key,id,op,&digest),|ctx,tx|Box::pin(async move{
+    let result=app.audit_store.write(
+            audit.binding()?,&budget.source_control(),(&app,&p,&audit,&input,&key,id,op,&digest),|ctx,tx|Box::pin(async move{
         let (app,p,audit,input,key,id,op,digest)=*ctx;
         let value=tx.with_connection_context(&mut (app,p,input,key,id,op,digest),|ctx,c|Box::pin(async move{
             let(app,p,input,key,id,op,digest)=*ctx;
@@ -200,7 +201,7 @@ pub async fn configure(
 pub async fn public_key(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<PublicKey, Error> {
     let p = proof(&auth, false)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
@@ -210,7 +211,7 @@ pub async fn public_key(
 pub async fn operation(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     crate::account_enrollment::management::WriteHeaders(headers): crate::account_enrollment::management::WriteHeaders,
     Extension(audit): Extension<RequestAudit>,
     Json(input): Json<Command>,
@@ -313,7 +314,8 @@ pub async fn operation(
     };
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
-    let result=app.audit_store.write(app.identity.tenant(),&budget.source_control(),(&app,&p,&audit,&input,&request,&imported,id,op,revision,token_revision,&digest),|ctx,tx|Box::pin(async move{
+    let result=app.audit_store.write(
+            audit.binding()?,&budget.source_control(),(&app,&p,&audit,&input,&request,&imported,id,op,revision,token_revision,&digest),|ctx,tx|Box::pin(async move{
         let(app,p,audit,input,request,imported,id,op,revision,token_revision,digest)=*ctx;
         let (value,replayed)=tx.with_connection_context(&mut(app,p,input,request,imported,id,op,revision,token_revision,digest),|ctx,c|Box::pin(async move{
             let(app,p,input,request,imported,id,op,revision,token_revision,digest)=*ctx;
@@ -449,7 +451,7 @@ pub(super) async fn save(
     full: bool,
     now: i64,
 ) -> Result<(), Error> {
-    sqlx::query("INSERT INTO mdm_apple.ade_operations(tenant_id,organization,id,kind,digest,actor,instance,server_revision,token_revision,request,state,result,full_sync,created_at,receipt) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)").bind(tenant).bind(organization).bind(id).bind(kind).bind(digest).bind(actor).bind(instance).bind(revision).bind(token_revision).bind(request).bind(state).bind(result).bind(full).bind(now).bind(result.cloned().unwrap_or_else(||json!({"operationId":id,"state":state}))).execute(c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_apple.ade_operations(tenant_id,organization,id,kind,digest,actor,instance,server_revision,token_revision,request,state,result,full_sync,created_at,receipt,expected_epoch) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,current_setting('rss.execution_epoch')::bigint)").bind(tenant).bind(organization).bind(id).bind(kind).bind(digest).bind(actor).bind(instance).bind(revision).bind(token_revision).bind(request).bind(state).bind(result).bind(full).bind(now).bind(result.cloned().unwrap_or_else(||json!({"operationId":id,"state":state}))).execute(c).await.map_err(db)?;
     Ok(())
 }
 async fn append(
@@ -507,7 +509,7 @@ async fn check_devices(
 pub async fn status(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<crate::management_query::Ade>, Error> {
     let p = proof(&auth, false)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
@@ -556,7 +558,7 @@ pub(crate) fn status_row(
 pub async fn operation_status(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((id, op)): Path<(Uuid, Uuid)>,
+    Path((_tenant, id, op)): Path<(uuid::Uuid, Uuid, Uuid)>,
 ) -> Result<Json<OperationStatus>, Error> {
     let p = proof(&auth, false)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
@@ -575,7 +577,7 @@ pub async fn operation_status(
 pub async fn devices(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Directory<crate::management_query::DevicesQuery>,
     >,
@@ -602,7 +604,7 @@ pub async fn devices(
 pub async fn profiles(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Directory<crate::management_query::ProfilesQuery>,
     >,
@@ -796,9 +798,6 @@ pub async fn diagnostic_receipt(
     p: &AuthorizedPrincipal,
     id: Uuid,
 ) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
-    if p.tenant_id() != app.identity.tenant().to_string() {
-        return Err(Error::Forbidden);
-    }
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     rss_mdm_authorization_service::lock_shared_on(
         p.authority_profile(),

@@ -27,6 +27,7 @@ pub struct Assignment {
 }
 /// Publish a changed assignment in the initiating transaction.
 pub async fn upsert_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     a: Assignment,
@@ -47,6 +48,7 @@ pub async fn upsert_in(
                 .bind(a.target)
                 .bind(a.scope_result)
                 .bind(a.entry_revision)
+                .bind(binding.epoch().get())
                 .execute(c)
                 .await
                 .map(|r| r.rows_affected() > 0)

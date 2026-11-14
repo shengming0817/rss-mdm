@@ -50,26 +50,21 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 pub const INSTALL_SQL: &str = include_str!("install.sql");
 pub struct Catalog {
-    tenant: TenantId,
     audit: Arc<dyn AuditPort>,
     writer: PgOutboxWriter,
 }
 /// Borrowed-transaction reads and lifecycle rules; no runtime, audit writer or commit capability.
-#[derive(Clone, Copy)]
-pub struct Reader {
-    tenant: TenantId,
-}
+#[derive(Clone, Copy, Default)]
+pub struct Reader {}
 impl Reader {
-    pub fn new(tenant: TenantId) -> Self {
-        Self { tenant }
+    pub fn new() -> Self {
+        Self::default()
     }
     /// Shared software lifecycle lock, acquired before Resource locks by companions.
     pub async fn lock_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
-        self.tenant(tx)?;
         storage::lock(tx).await
     }
     pub async fn read_lock_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
-        self.tenant(tx)?;
         storage::read_lock(tx).await
     }
 
@@ -79,26 +74,18 @@ impl Reader {
         id: &str,
         revision: &str,
     ) -> Result<Value> {
-        self.tenant(tx)?;
         let (definition, lifecycle) = storage::source(tx, id, revision)
             .await?
             .ok_or(Error::Missing)?;
         Ok(json!({"snapshot":definition.snapshot()?,"source":definition,"lifecycle":lifecycle}))
     }
-    fn tenant(&self, tx: &PgTransaction<'_>) -> Result<()> {
-        if tx.tenant_id() != self.tenant {
-            Err(Error::NotAdmitted)
-        } else {
-            Ok(())
-        }
-    }
+
     pub async fn version_in(
         &self,
         tx: &mut PgTransaction<'_>,
         resource: &str,
         version: &str,
     ) -> Result<r::Version> {
-        self.tenant(tx)?;
         let (v, state) = rss_mdm_resource_postgres::lock_reference_in(
             tx,
             &r::Id::new(resource).map_err(|_| Error::Input)?,
@@ -114,6 +101,7 @@ impl Reader {
     /// Borrow exact resource facts; mutation callers retain the resource lock.
     pub(crate) async fn version_on(
         &self,
+        tenant: rss_request_context::TenantId,
         c: &mut sqlx::PgConnection,
         resource: &str,
         label: &str,
@@ -122,14 +110,14 @@ impl Reader {
         if locked {
             rss_mdm_resource_postgres::lock_reference_key_on(
                 c,
-                self.tenant,
+                tenant,
                 &r::Id::new(resource).map_err(|_| Error::Input)?,
             )
             .await?;
         }
         let mut facts = rss_mdm_resource_postgres::version_facts_on(
             c,
-            self.tenant,
+            tenant,
             &[(resource.to_owned(), label.to_owned())],
         )
         .await?;
@@ -149,9 +137,14 @@ impl Reader {
         label: &str,
         op: &Operation<VersionChange>,
     ) -> Result<bool> {
-        self.tenant(tx)?;
         check_operation(op.operation_id, op.expected_revision)?;
-        let hash = fingerprint(&(self.tenant.to_string(), actor(audit)?, resource, label, op))?;
+        let hash = fingerprint(&(
+            tx.tenant_id().to_string(),
+            actor(audit)?,
+            resource,
+            label,
+            op,
+        ))?;
         Ok(storage::replay(tx, op.operation_id, &hash).await?.is_some())
     }
     /// Direct authoring is private; imported evidence is produced only by the importer.
@@ -160,7 +153,6 @@ impl Reader {
         tx: &mut PgTransaction<'_>,
         version: &r::Version,
     ) -> Result<()> {
-        self.tenant(tx)?;
         storage::lock(tx).await?;
         for variant in version.variants() {
             let r::Declaration::Software { definition } = variant.declaration() else {
@@ -191,7 +183,6 @@ impl Reader {
         tx: &mut PgTransaction<'_>,
         version: &r::Version,
     ) -> Result<()> {
-        self.tenant(tx)?;
         storage::lock(tx).await?;
         let current = self
             .version_in(tx, version.resource().as_str(), version.label().as_str())
@@ -215,7 +206,6 @@ impl Reader {
         tx: &mut PgTransaction<'_>,
         source: &r::SoftwareSource,
     ) -> Result<()> {
-        self.tenant(tx)?;
         storage::read_lock(tx).await?;
         let (stored, lifecycle) = storage::source(tx, &source.id, &source.revision)
             .await?
@@ -244,15 +234,16 @@ impl Reader {
         tx: &mut PgTransaction<'_>,
         root: &r::Version,
     ) -> Result<Vec<r::Version>> {
-        self.tenant(tx)?;
         self.read_lock_in(tx).await?;
+        let tenant = tx.tenant_id();
         tx.with_connection_context(&mut (self, root), |(reader, root), c| {
-            Box::pin(async move { Ok(reader.dependency_versions_on(c, root, true).await) })
+            Box::pin(async move { Ok(reader.dependency_versions_on(tenant, c, root, true).await) })
         })
         .await?
     }
     pub(crate) async fn dependency_versions_on(
         &self,
+        tenant: rss_request_context::TenantId,
         c: &mut sqlx::PgConnection,
         root: &r::Version,
         locked: bool,
@@ -290,10 +281,10 @@ impl Reader {
                 return Err(Error::Input);
             }
             let version = self
-                .version_on(c, &dependency.resource, &dependency.version, locked)
+                .version_on(tenant, c, &dependency.resource, &dependency.version, locked)
                 .await?;
             let lifecycle =
-                storage::lifecycle_on(c, self.tenant, &dependency.resource, &dependency.version)
+                storage::lifecycle_on(c, tenant, &dependency.resource, &dependency.version)
                     .await?
                     .ok_or(Error::NotAdmitted)?;
             if version.digest().bytes() != dependency.sha256
@@ -308,7 +299,7 @@ impl Reader {
                 };
                 let expected = &definition.spec().source;
                 let (source, lifecycle) =
-                    storage::source_on(c, self.tenant, &expected.id, &expected.revision)
+                    storage::source_on(c, tenant, &expected.id, &expected.revision)
                         .await?
                         .ok_or(Error::NotAdmitted)?;
                 if !matches!(lifecycle.state, LifecycleState::Enabled)
@@ -330,7 +321,6 @@ impl Reader {
         resource: &str,
         label: &str,
     ) -> Result<Value> {
-        self.tenant(tx)?;
         let version = self.version_in(tx, resource, label).await?;
         let lifecycle = storage::lifecycle(tx, resource, label).await?;
         Ok(
@@ -368,14 +358,15 @@ impl Reader {
         architecture: r::Architecture,
         variant: &r::Id,
     ) -> Result<FrozenSoftware> {
-        self.tenant(tx)?;
         storage::read_lock(tx).await?;
+        let tenant = tx.tenant_id();
         tx.with_connection_context(
             &mut (self, resource, label, variant),
             |(reader, resource, label, variant), c| {
                 Box::pin(async move {
                     Ok(reader
                         .resolve_admitted_on(
+                            tenant,
                             c,
                             resource,
                             label,
@@ -391,6 +382,7 @@ impl Reader {
     }
     pub(crate) async fn resolve_admitted_on(
         &self,
+        tenant: rss_request_context::TenantId,
         c: &mut sqlx::PgConnection,
         resource: &str,
         label: &str,
@@ -399,8 +391,8 @@ impl Reader {
         locked: bool,
     ) -> Result<FrozenSoftware> {
         let (platform, architecture) = target;
-        let version = self.version_on(c, resource, label, locked).await?;
-        let lifecycle = storage::lifecycle_on(c, self.tenant, resource, label)
+        let version = self.version_on(tenant, c, resource, label, locked).await?;
+        let lifecycle = storage::lifecycle_on(c, tenant, resource, label)
             .await?
             .ok_or(Error::NotAdmitted)?;
         if !matches!(lifecycle.state, LifecycleState::Enabled)
@@ -416,7 +408,7 @@ impl Reader {
         };
         let expected = &definition.spec().source;
         let (source, source_lifecycle) =
-            storage::source_on(c, self.tenant, &expected.id, &expected.revision)
+            storage::source_on(c, tenant, &expected.id, &expected.revision)
                 .await?
                 .ok_or(Error::NotAdmitted)?;
         if !matches!(source_lifecycle.state, LifecycleState::Enabled)
@@ -436,11 +428,10 @@ impl Reader {
 }
 impl Catalog {
     pub fn reader(&self) -> Reader {
-        Reader::new(self.tenant)
+        Reader::new()
     }
-    pub fn new(runtime: Arc<PgRuntime>, tenant: TenantId, audit: Arc<dyn AuditPort>) -> Self {
+    pub fn new(runtime: Arc<PgRuntime>, audit: Arc<dyn AuditPort>) -> Self {
         Self {
-            tenant,
             audit,
             writer: PgOutboxWriter::new(runtime, event::domain()),
         }
@@ -452,12 +443,9 @@ impl Catalog {
         audit: &RequestAudit,
         key: &str,
     ) -> Result<()> {
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::NotAdmitted);
-        }
         storage::lock(tx).await?;
         self.audit
-            .prepare_in(tx, audit, &[event::partition(self.tenant, key)?])
+            .prepare_in(tx, audit, &[event::partition(tx.tenant_id(), key)?])
             .await?;
         Ok(())
     }
@@ -470,7 +458,7 @@ impl Catalog {
         replayed: bool,
     ) -> Result<()> {
         let (key, id, hash) = identity;
-        if audit.tenant() != self.tenant.to_string() {
+        if audit.tenant() != tx.tenant_id().to_string() {
             return Err(Error::NotAdmitted);
         }
         if !replayed {
@@ -518,7 +506,7 @@ impl Catalog {
     ) -> Result<Value> {
         let key = format!("source/{id}/{revision}");
         let actor = actor(audit)?;
-        let hash = fingerprint(&(self.tenant.to_string(), &actor, id, revision, op))?;
+        let hash = fingerprint(&(tx.tenant_id().to_string(), &actor, id, revision, op))?;
         if let Some(value) = storage::replay(tx, op.operation_id, &hash).await? {
             self.record(tx, audit, (&key, op.operation_id, &hash), &value, true)
                 .await?;
@@ -583,13 +571,12 @@ impl Catalog {
     ) -> Result<Value> {
         check_operation(op.operation_id, op.expected_revision)?;
         let key = format!("resource/{resource}/{label}");
-        self.reader().tenant(tx)?;
         storage::lock(tx).await?;
         let mut partitions = additional.to_vec();
-        partitions.push(event::partition(self.tenant, &key)?);
+        partitions.push(event::partition(tx.tenant_id(), &key)?);
         self.audit.prepare_in(tx, audit, &partitions).await?;
         let actor = actor(audit)?;
-        let hash = fingerprint(&(self.tenant.to_string(), &actor, resource, label, op))?;
+        let hash = fingerprint(&(tx.tenant_id().to_string(), &actor, resource, label, op))?;
         if let Some(value) = storage::replay(tx, op.operation_id, &hash).await? {
             self.record(tx, audit, (&key, op.operation_id, &hash), &value, true)
                 .await?;

@@ -96,7 +96,7 @@ impl Groups {
     ) -> Result<Value> {
         use rss_mdm_group_postgres as pg;
         checked_input(query.require_schema(&SCHEMA))?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let binding = ResultBinding::Group {
             group,
             kind,
@@ -191,7 +191,7 @@ impl Groups {
                     let reference = object(&d.object)?;
                     let sources = if let Some(snapshot) = &snapshot {
                         let reader = self.objects.clone();
-                        let tenant = self.tenant;
+                        let tenant = tx.tenant_id();
                         let snapshot = snapshot.id;
                         let key = reference;
                         let no_match = d.decision == pg::DecisionValue::NoMatch;

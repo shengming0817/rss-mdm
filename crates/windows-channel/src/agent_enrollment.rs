@@ -5,13 +5,15 @@ use rss_mdm_windows_mdm::{Secret, soap};
 use uuid::Uuid;
 pub(crate) async fn try_enrollment(
     app: &HttpState,
+    windows: &crate::Windows,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     id: Uuid,
     password: &crate::enrollment::Password,
     message: &soap::Message,
     audit: &RequestAudit,
     issuing: bool,
 ) -> Result<Option<axum::response::Response>, Error> {
-    let tenant = app.identity.tenant().to_string();
+    let tenant = execution.tenant().to_string();
     let store = app.access.registration();
     let mut tx = app.access.begin_read(&tenant).await?;
     let kind: Option<String> = sqlx::query_scalar(
@@ -105,21 +107,22 @@ pub(crate) async fn try_enrollment(
         _ => return Err(Error::Malformed),
     };
     let intent = crate::issuance::issue_intent(
+        execution,
         &app.audit_store,
         &app.access,
-        app.windows()?,
+        windows,
         crate::issuance::IssuanceAuthority::Native(&admission),
         (&csr.0, profile),
         context("DeviceID"),
         now,
     )
     .await?;
-    let certificate = crate::issuance::sign(app, &tenant, &intent, now).await?;
+    let certificate = crate::issuance::sign(app, execution, windows, &intent, now).await?;
     let provisioning =
-        crate::issuance::provision_request(app.windows()?, &intent, &certificate, id, &tenant)?;
+        crate::issuance::provision_request(windows, &intent, &certificate, id, &tenant)?;
     crate::issuance::complete(
         &app.audit_store,
-        app.windows()?,
+        windows,
         crate::issuance::IssuanceAuthority::Native(&admission),
         &intent,
         &certificate,

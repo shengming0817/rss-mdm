@@ -38,7 +38,7 @@ impl Timeline {
         let initial = self
             .audit
             .read(
-                self.tenant,
+                reader.execution().tenant(),
                 &budget.control(),
                 (self, reader, query, changes),
                 |ctx, tx| {
@@ -48,7 +48,7 @@ impl Timeline {
                                 let scope = s.activity_scope(c, r).await?;
                                 let binding = binding(&scope, q)?;
                                 decode(s, q, &binding, *changes)?;
-                                let batch = s.prepare_on(c).await?;
+                                let batch = s.prepare_on(r.execution().tenant(), c).await?;
                                 Ok::<_, Error>((scope.binding, batch))
                             })
                         })
@@ -67,6 +67,7 @@ impl Timeline {
             )?;
         let now = RuntimeTimer.now();
         self.write_batch(
+            reader.execution(),
             &initial.1,
             Deadline::at(now + Duration::from_secs(2)),
             Deadline::at(now + Duration::from_millis(1500)),
@@ -74,7 +75,7 @@ impl Timeline {
         .await?;
         self.audit
             .read(
-                self.tenant,
+                reader.execution().tenant(),
                 &budget.control(),
                 (self, reader, query, changes, id, initial.0),
                 |ctx, tx| {
@@ -85,7 +86,16 @@ impl Timeline {
                                 if &scope.binding != expected {
                                     return Err(Error::Conflict);
                                 }
-                                let page = s.read_activities(c, &scope, q, *changes, *id).await?;
+                                let page = s
+                                    .read_activities(
+                                        r.execution().tenant(),
+                                        c,
+                                        &scope,
+                                        q,
+                                        *changes,
+                                        *id,
+                                    )
+                                    .await?;
                                 if s.activity_scope(c, r).await?.binding != scope.binding {
                                     return Err(Error::Conflict);
                                 }
@@ -162,16 +172,21 @@ impl Timeline {
     async fn activity_binding(&self, reader: &Reader<'_>) -> Result<String, Error> {
         let budget = AuditBudget::new(Duration::from_secs(5));
         self.audit
-            .read(self.tenant, &budget.control(), (self, reader), |ctx, tx| {
-                Box::pin(async move {
-                    tx.with_connection_context(ctx, |(s, r), c| {
-                        Box::pin(
-                            async move { Ok::<_, Error>(s.activity_scope(c, r).await?.binding) },
-                        )
+            .read(
+                reader.execution().tenant(),
+                &budget.control(),
+                (self, reader),
+                |ctx, tx| {
+                    Box::pin(async move {
+                        tx.with_connection_context(ctx, |(s, r), c| {
+                            Box::pin(async move {
+                                Ok::<_, Error>(s.activity_scope(c, r).await?.binding)
+                            })
+                        })
+                        .await
                     })
-                    .await
-                })
-            })
+                },
+            )
             .await
             .fold(
                 Ok,
@@ -192,12 +207,12 @@ impl Timeline {
             return Ok((Vec::new(), false, activity.recorded_at));
         };
         let budget = AuditBudget::new(Duration::from_secs(5));
-        self.audit.read(self.tenant,&budget.control(),(self,reader,policy,version,expected),|ctx,tx|Box::pin(async move {
+        self.audit.read(reader.execution().tenant(),&budget.control(),(self,reader,policy,version,expected),|ctx,tx|Box::pin(async move {
             tx.with_connection_context(ctx,|(s,r,policy,version,expected),c|Box::pin(async move {
                 if s.activity_scope(c,r).await?.binding!=*expected {return Err(Error::Conflict);}
                 // An authorized device fact grants only the exact immutable Policy parent,
                 // never current membership or arbitrary other targets of the same Policy.
-                let mut rows=sqlx::query("SELECT document,digest,activity,activity_digest FROM mdm_timeline.facts WHERE tenant_id=$1::uuid AND activity->>'kind'='policy' AND activity->'links'->>'policy'=$2 AND activity->'links'->>'version'=$3 AND activity->'target'='null'::jsonb ORDER BY recorded_at DESC,position DESC LIMIT 51").bind(s.tenant.to_string()).bind(policy.to_string()).bind(version.to_string()).fetch_all(&mut *c).await?;
+                let mut rows=sqlx::query("SELECT document,digest,activity,activity_digest FROM mdm_timeline.facts WHERE tenant_id=$1::uuid AND activity->>'kind'='policy' AND activity->'links'->>'policy'=$2 AND activity->'links'->>'version'=$3 AND activity->'target'='null'::jsonb ORDER BY recorded_at DESC,position DESC LIMIT 51").bind(r.execution().tenant().to_string()).bind(policy.to_string()).bind(version.to_string()).fetch_all(&mut *c).await?;
                 let truncated=rows.len()>50;rows.truncate(50);
                 let observed:i64=sqlx::query_scalar("SELECT extract(epoch FROM statement_timestamp())::bigint").fetch_one(c).await?;
                 Ok((rows.iter().map(decode_row).collect::<Result<Vec<_>,_>>()?,truncated,observed))
@@ -207,6 +222,7 @@ impl Timeline {
 
     async fn read_activities(
         &self,
+        tenant: rss_request_context::TenantId,
         c: &mut PgConnection,
         scope: &Scope,
         q: &Query,
@@ -215,7 +231,7 @@ impl Timeline {
     ) -> Result<ManagementActivityPage, Error> {
         let binding = binding(scope, q)?;
         let prior = decode(self, q, &binding, changes)?;
-        let (current, caught_up, now) = self.activity_heads(c, scope).await?;
+        let (current, caught_up, now) = self.activity_heads(tenant, c, scope).await?;
         let token = match prior {
             Some(mut p) => {
                 for old in &p.through {
@@ -250,7 +266,7 @@ impl Timeline {
         let mut sql = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "WITH visible AS NOT MATERIALIZED (SELECT f.document,f.digest,f.activity,f.activity_digest,e.device,e.revision,f.recorded_at,f.position,f.source,f.event_id FROM mdm_timeline.activity_entries e JOIN mdm_timeline.facts f ON(f.tenant_id,f.position)=(e.tenant_id,e.position) WHERE e.tenant_id=",
         );
-        scope_filter(&mut sql, self.tenant, scope, &token, false)?;
+        scope_filter(&mut sql, tenant, scope, &token, false)?;
         sql.push(") SELECT * FROM visible f WHERE true");
         if changes {
             sql.push(" AND (");
@@ -339,7 +355,7 @@ impl Timeline {
         let mut retained = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT min(f.recorded_at) FROM mdm_timeline.activity_entries e JOIN mdm_timeline.facts f ON(f.tenant_id,f.position)=(e.tenant_id,e.position) WHERE e.tenant_id=",
         );
-        scope_filter(&mut retained, self.tenant, scope, &token, false)?;
+        scope_filter(&mut retained, tenant, scope, &token, false)?;
         let retained_from: Option<i64> = retained.build_query_scalar().fetch_one(&mut *c).await?;
         let caught_up = token.caught_up;
         // A partial catch-up cannot establish completeness, even if the page is empty.
@@ -362,13 +378,14 @@ impl Timeline {
     }
     async fn activity_heads(
         &self,
+        tenant: rss_request_context::TenantId,
         c: &mut PgConnection,
         scope: &Scope,
     ) -> Result<(Vec<Watermark>, bool, i64), Error> {
         let devices = scope.members.iter().map(|m| m.device).collect::<Vec<_>>();
         // Heads and source coverage must share one statement snapshot. A later commit
         // remains discoverable by the anti-join and receives a later publication revision.
-        let row=sqlx::query("SELECT COALESCE((SELECT jsonb_agg(jsonb_build_object('device',device,'generation',generation,'revision',revision)) FROM mdm_timeline.activity_streams WHERE tenant_id=$1::uuid AND device=ANY($2)),'[]'::jsonb) AS heads, NOT EXISTS(SELECT 1 FROM rss_audit.records r WHERE r.tenant_id=$1::uuid AND r.source_id='mdm.business' AND NOT EXISTS(SELECT 1 FROM mdm_timeline.facts f WHERE f.tenant_id=r.tenant_id AND f.source=r.source_id AND f.event_id=r.event_id)) AS caught_up,extract(epoch FROM statement_timestamp())::bigint AS observed").bind(self.tenant.to_string()).bind(devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).fetch_one(c).await?;
+        let row=sqlx::query("SELECT COALESCE((SELECT jsonb_agg(jsonb_build_object('device',device,'generation',generation,'revision',revision)) FROM mdm_timeline.activity_streams WHERE tenant_id=$1::uuid AND device=ANY($2)),'[]'::jsonb) AS heads, NOT EXISTS(SELECT 1 FROM rss_audit.records r WHERE r.tenant_id=$1::uuid AND r.source_id='mdm.business' AND NOT EXISTS(SELECT 1 FROM mdm_timeline.facts f WHERE f.tenant_id=r.tenant_id AND f.source=r.source_id AND f.event_id=r.event_id)) AS caught_up,extract(epoch FROM statement_timestamp())::bigint AS observed").bind(tenant.to_string()).bind(devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).fetch_one(c).await?;
         let rows: Vec<Watermark> =
             serde_json::from_value(row.try_get("heads")?).map_err(|_| Error::Integrity)?;
         let mut heads: Vec<Watermark> = scope

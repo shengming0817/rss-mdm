@@ -16,7 +16,7 @@ impl Compliance {
         if input.rule != rule {
             return Err(Error::NotFound.into());
         }
-        let tenant = self.tenant();
+        let tenant = tx.tenant_id();
         let processed = tx
             .with_connection(move |c| {
                 Box::pin(async move { pg::result_count(c, tenant, task).await })
@@ -50,7 +50,7 @@ impl Compliance {
         tx: &mut PgTransaction<'_>,
         device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<()> {
-        let t = self.tenant().to_string();
+        let t = tx.tenant_id().to_string();
         let d = device.to_owned();
         if !tx
             .with_connection(move |c| {
@@ -76,7 +76,7 @@ impl Compliance {
         device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<CurrentView> {
         self.device(tx, device).await?;
-        let t = self.tenant();
+        let t = tx.tenant_id();
         let rules = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -172,7 +172,7 @@ impl Compliance {
         let codec = CursorCodec::from_key(self.cursor_key.clone());
         let binding = checked_input(fingerprint(&(
             HISTORY.id,
-            self.tenant().to_string(),
+            tx.tenant_id().to_string(),
             device,
             subject,
             query.bounds,
@@ -239,7 +239,7 @@ impl crate::Compliance {
     > {
         use rss_mdm_authorization_service::Permission;
         p.manage(Permission::ComplianceRuleRead)?;
-        crate::transaction::inspect(&self.runtime, self.audit_store.binding(), p, |p, tx| {
+        crate::transaction::inspect(&self.runtime, p.binding(), p, |p, tx| {
             Box::pin(async move {
                 crate::transaction::query_authority(tx, p).await?.require(
                     p,
@@ -281,35 +281,30 @@ impl Compliance {
         id: Uuid,
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
-        crate::transaction::inspect(
-            &self.runtime,
-            self.audit_store.binding(),
-            (self, p),
-            |(s, p), tx| {
-                Box::pin(async move {
-                    crate::transaction::query_authority(tx, p).await?.require(
-                        p,
-                        rss_mdm_authorization_service::Permission::ComplianceRuleRead,
-                        None,
-                    )?;
-                    let state = s.read_task_in(tx, id).await?;
-                    let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
-                    value.object = Some(state.input.rule.to_string());
-                    value.revision = Some(state.input.revision);
-                    value.accepted = Some(true);
-                    value.executions.push(id);
-                    let detail = s.task(tx, state.input.rule, id).await?;
-                    value.state = Some(
-                        stored(serde_json::to_value(detail.phase))?
-                            .as_str()
-                            .ok_or(Error::Conflict)?
-                            .into(),
-                    );
-                    p.check_live()?;
-                    Ok(Some(value))
-                })
-            },
-        )
+        crate::transaction::inspect(&self.runtime, p.binding(), (self, p), |(s, p), tx| {
+            Box::pin(async move {
+                crate::transaction::query_authority(tx, p).await?.require(
+                    p,
+                    rss_mdm_authorization_service::Permission::ComplianceRuleRead,
+                    None,
+                )?;
+                let state = s.read_task_in(tx, id).await?;
+                let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                value.object = Some(state.input.rule.to_string());
+                value.revision = Some(state.input.revision);
+                value.accepted = Some(true);
+                value.executions.push(id);
+                let detail = s.task(tx, state.input.rule, id).await?;
+                value.state = Some(
+                    stored(serde_json::to_value(detail.phase))?
+                        .as_str()
+                        .ok_or(Error::Conflict)?
+                        .into(),
+                );
+                p.check_live()?;
+                Ok(Some(value))
+            })
+        })
         .await
     }
 }

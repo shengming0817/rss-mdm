@@ -171,39 +171,11 @@ async fn exercise(c: &Context) -> Result<()> {
         )
         .await?;
     assert_eq!(binding.device_id, device);
-    let loaded = rss_mdm_task_trust::trust::load(
-        DA,
-        rss_mdm_task_trust::Use::AgentTask,
-        &mut tx,
-        c.tenant,
-        1,
-        &protection,
-    )
-    .await?;
     let signing = Arc::new(rss_mdm_task_trust::Signing::new(
         DA,
         rss_mdm_task_trust::Use::AgentTask,
-        c.tenant,
-        Some(loaded),
+        protection.clone(),
     )?);
-    let mismatch = rss_mdm_task_trust::trust::load(
-        DA,
-        rss_mdm_task_trust::Use::AgentTask,
-        &mut tx,
-        c.tenant,
-        1,
-        &protection,
-    )
-    .await?;
-    assert!(
-        rss_mdm_task_trust::Signing::new(
-            StorageProfile::Mdm,
-            rss_mdm_task_trust::Use::AgentTask,
-            c.tenant,
-            Some(mismatch)
-        )
-        .is_err()
-    );
     tx.commit().await?;
     audit_boundaries::task_trust(c, &p, signing.clone(), protection.clone(), &trust).await?;
     observation::enrollment(c, &p).await?;
@@ -226,7 +198,7 @@ async fn exercise(c: &Context) -> Result<()> {
     let transactions = registration::enrollment::tasks::Transactions::bind(
         DA,
         c.runtime.clone(),
-        c.tenant,
+        c.execution(),
         c.audit.clone(),
         materials,
     )
@@ -237,7 +209,7 @@ async fn exercise(c: &Context) -> Result<()> {
     ));
     let delivery = rss_mdm_agent_channel::delivery::Delivery {
         runtime: c.runtime.clone(),
-        tenant: c.tenant,
+
         audit: c.audit.clone(),
         signing,
         tasks: Arc::new(
@@ -249,7 +221,7 @@ async fn exercise(c: &Context) -> Result<()> {
         RequestAudit::new(
             rss_mdm_audit_integration::Origin::Request,
             DA,
-            c.tenant.to_string(),
+            c.execution(),
             "agent_claim",
             AuditIntent::Management,
         )

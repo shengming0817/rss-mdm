@@ -29,14 +29,6 @@ pub enum SourceConfig {
 pub struct ServiceIdentity {
     pub backend: rel::ActorId,
 }
-impl ServiceIdentity {
-    pub(super) fn check(&self, t: TenantId) -> Result<()> {
-        if self.backend.tenant() != t {
-            return Err(Error::Identity);
-        }
-        Ok(())
-    }
-}
 pub(super) enum Driver {
     Winget {
         base: String,
@@ -46,7 +38,7 @@ pub(super) enum Driver {
         base: String,
         artifacts_base: String,
         access: crate::BrewReadAccess,
-        repo: brew::Repository,
+        repo: brew::RepositoryScope,
         tap: String,
         credential_reference: String,
     },
@@ -62,116 +54,123 @@ pub(super) struct Sources {
     pub binding: Binding,
     pub digest: [u8; 32],
 }
-impl Sources {
-    pub async fn new(
-        tenant: TenantId,
-        logical: String,
-        config: SourceConfig,
-        credentials: &dyn crate::Credentials,
-    ) -> Result<Self> {
-        rel::TargetId::new(tenant, &logical).map_err(|_| Error::Input)?;
-        let mut binding = compile(tenant, &logical, config, credentials).await?;
-        binding.configuration = serde_json::to_vec(&serde_json::json!([
+pub(super) struct SourceResources {
+    logical: String,
+    config: SourceConfig,
+    repository: Option<std::sync::Arc<brew::Repository>>,
+    physical: String,
+}
+impl SourceResources {
+    pub async fn new(logical: String, config: SourceConfig) -> Result<Self> {
+        rss_mdm_resource::Id::new(&logical).map_err(|_| Error::Input)?;
+        let (repository, physical) = match &config {
+            SourceConfig::Winget(c) => (None, c.base.clone()),
+            SourceConfig::Brew(c) => {
+                let repository = brew::Repository::open(&c.repository, &c.tap)
+                    .await
+                    .map_err(|cause| Error::Source.context("config::compile", cause))?;
+                let path = c.repository.canonicalize().map_err(|_| Error::Input)?;
+                (
+                    Some(std::sync::Arc::new(repository)),
+                    path.to_str().ok_or(Error::Input)?.to_owned(),
+                )
+            }
+        };
+        Ok(Self {
+            logical,
+            config,
+            repository,
+            physical,
+        })
+    }
+    pub fn scope(&self, tenant: TenantId, credentials: &dyn crate::Credentials) -> Result<Sources> {
+        rel::TargetId::new(tenant, &self.logical).map_err(|_| Error::Input)?;
+        let address = |value: &str| -> Result<String> {
+            let value =
+                super::artifact::checked_url(&value.replace("{tenant}", &tenant.to_string()))?
+                    .to_string();
+            if !value.ends_with('/') {
+                return Err(Error::Input);
+            }
+            Ok(value)
+        };
+        let (driver, configuration) = match &self.config {
+            SourceConfig::Winget(c) => {
+                let base = address(&c.base)?;
+                let artifacts_base = address(&c.artifacts_base)?;
+                let document = serde_json::json!([2, "hosted-winget", base, artifacts_base]);
+                (
+                    Driver::Winget {
+                        base,
+                        artifacts_base,
+                    },
+                    document,
+                )
+            }
+            SourceConfig::Brew(c) => {
+                let base = address(&c.base)?;
+                let artifacts_base = address(&c.artifacts_base)?;
+                let document = serde_json::json!([
+                    2,
+                    "brew",
+                    self.physical,
+                    c.tap,
+                    base,
+                    artifacts_base,
+                    c.credential_reference
+                ]);
+                (
+                    Driver::Brew {
+                        base,
+                        artifacts_base,
+                        access: credentials.brew_read(
+                            tenant,
+                            &self.logical,
+                            &c.credential_reference,
+                        )?,
+                        repo: self.repository.as_ref().ok_or(Error::Source)?.scope(tenant),
+                        tap: c.tap.clone(),
+                        credential_reference: c.credential_reference.clone(),
+                    },
+                    document,
+                )
+            }
+        };
+        let configuration = serde_json::to_vec(&serde_json::json!([
             1,
             tenant.to_string(),
-            logical,
-            binding.configuration
+            self.logical,
+            configuration
         ]))
         .map_err(|_| Error::Input)?;
+        let identity = Sha256::digest(
+            serde_json::to_vec(&(tenant.to_string(), &self.physical)).map_err(|_| Error::Input)?,
+        )
+        .to_vec();
         let envelope = serde_json::to_vec(&serde_json::json!([
             1,
             tenant.to_string(),
-            logical,
-            binding.identity,
-            binding.configuration
+            self.logical,
+            identity,
+            configuration
         ]))
         .map_err(|_| Error::Input)?;
-        let digest = Sha256::digest(envelope).into();
-        Ok(Self {
+        Ok(Sources {
             tenant,
-            logical,
-            binding,
-            digest,
+            logical: self.logical.clone(),
+            binding: Binding {
+                identity,
+                configuration,
+                driver,
+            },
+            digest: Sha256::digest(envelope).into(),
         })
     }
+}
+impl Sources {
     pub fn binding(&self) -> &Binding {
         &self.binding
     }
-}
-async fn compile(
-    tenant: TenantId,
-    logical: &str,
-    config: SourceConfig,
-    credentials: &dyn crate::Credentials,
-) -> Result<Binding> {
-    let (driver, physical, configuration) = match config {
-        SourceConfig::Winget(c) => {
-            let physical = super::artifact::checked_url(&c.base)?.to_string();
-            let artifacts_base = super::artifact::checked_url(&c.artifacts_base)?.to_string();
-            if !physical.ends_with('/') || !artifacts_base.ends_with('/') {
-                return Err(Error::Input);
-            }
-            let configuration = serde_json::to_vec(&serde_json::json!([
-                2,
-                "hosted-winget",
-                physical,
-                artifacts_base
-            ]))
-            .map_err(|_| Error::Input)?;
-            (
-                Driver::Winget {
-                    base: physical.clone(),
-                    artifacts_base,
-                },
-                physical,
-                configuration,
-            )
-        }
-
-        SourceConfig::Brew(c) => {
-            let path = c
-                .repository
-                .canonicalize()
-                .map_err(|cause| Error::Input.context("config::compile", cause))?;
-            let physical = path.to_str().ok_or(Error::Input)?.to_owned();
-            let repo = brew::Repository::open(&path, tenant, &c.tap)
-                .await
-                .map_err(|cause| Error::Source.context("config::compile", cause))?;
-            let base = super::artifact::checked_url(&c.base)?.to_string();
-            let artifacts_base = super::artifact::checked_url(&c.artifacts_base)?.to_string();
-            if !base.ends_with('/') || !artifacts_base.ends_with('/') {
-                return Err(Error::Input);
-            }
-            let access = credentials.brew_read(tenant, logical, &c.credential_reference)?;
-            let configuration = serde_json::to_vec(&serde_json::json!([
-                2,
-                "brew",
-                physical,
-                c.tap,
-                base,
-                artifacts_base,
-                c.credential_reference
-            ]))
-            .map_err(|cause| Error::Input.context("config::compile", cause))?;
-            (
-                Driver::Brew {
-                    repo,
-                    tap: c.tap,
-                    base,
-                    artifacts_base,
-                    access,
-                    credential_reference: c.credential_reference,
-                },
-                physical,
-                configuration,
-            )
-        }
-    };
-    Ok(Binding {
-        identity: Sha256::digest(physical.as_bytes()).to_vec(),
-        configuration,
-        driver,
-    })
 }
 
 /// Frozen non-secret projection of an already validated source binding.

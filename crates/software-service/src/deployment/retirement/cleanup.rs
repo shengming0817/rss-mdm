@@ -76,6 +76,7 @@ impl Transactions {
     )]
     pub async fn cleanup_software_retirement_in(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         retirement: Uuid,
         channel: &Channel,
@@ -242,6 +243,7 @@ impl Transactions {
             .await??;
             let now = crate::deployment::storage::now(tx).await?;
             production::queue_run_in(
+                execution,
                 self,
                 tx,
                 production::RunInput {

@@ -14,9 +14,10 @@ impl SoftwareWriter {
     }
     pub fn partition(
         &self,
+        tenant: rss_request_context::TenantId,
         resource: &str,
     ) -> Result<rss_transactional_messaging::message::PartitionIdentity> {
-        Ok(self.store.partition(resource)?)
+        Ok(self.store.partition(tenant, resource)?)
     }
     pub async fn import_in(
         &self,

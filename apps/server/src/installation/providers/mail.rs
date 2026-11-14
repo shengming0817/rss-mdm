@@ -1,5 +1,5 @@
 //! 固定 SMTP 资格执行器；地址及 TLS 名字只来自受保护部署输入。
-use crate::installation::{Error, Result, install::Input, local::Journal};
+use crate::installation::{Error, Result, install::Input};
 use rss_mdm_mail_service::{store, transport};
 use serde::{Deserialize, Serialize};
 use sqlx::{Connection, PgConnection};
@@ -22,29 +22,16 @@ async fn scope(c: &mut PgConnection, tenant: Uuid) -> Result<()> {
         .map_err(|_| Error::Storage)?;
     Ok(())
 }
-pub async fn reconcile(input: &Input, c: &mut PgConnection) -> Result<()> {
+pub(super) async fn qualify_tenant(
+    input: &Input,
+    runtime: &crate::config::Config,
+    c: &mut PgConnection,
+    tenant: Uuid,
+) -> Result<()> {
     let mut ids = std::collections::BTreeSet::new();
     if input.mail_profiles.iter().any(|p| !ids.insert(&p.id)) {
         return Err(Error::Input);
     }
-    let hosts:Vec<(Uuid,String)>=sqlx::query_as("SELECT tenant_id,receipt->'result'->>'hostId' FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='enabled' ORDER BY operation_id").fetch_all(&mut *c).await.map_err(|_|Error::Storage)?;
-    for (tenant, host) in hosts {
-        qualify_host(input, c, tenant, host).await?;
-    }
-    Ok(())
-}
-
-async fn qualify_host(
-    input: &Input,
-    c: &mut PgConnection,
-    tenant: Uuid,
-    host: String,
-) -> Result<()> {
-    let host = Uuid::parse_str(&host).map_err(|_| Error::Corrupt)?;
-    let journal = Journal::open(&input.directory.join(format!("rss-mdm-{}", host.simple())))?;
-    let runtime: crate::config::Config = journal
-        .load("requested-runtime.json")?
-        .ok_or(Error::Corrupt)?;
     let key = runtime.native_protector().map_err(|_| Error::Corrupt)?;
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     scope(&mut tx, tenant).await?;

@@ -7,7 +7,19 @@ impl Service {
         peer: &ClientCertificateEvidence,
         input: &wire::ActivationRequest,
         a: &RequestAudit,
+        origin: &rss_mdm_certificate::GatewayOrigin,
     ) -> Result<wire::ActivationReceipt, Failure> {
+        let (tenant, epoch) = self
+            .store
+            .locate_issuance(input.issuance_id)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        self.require_connection_origin(
+            rss_transactional_messaging::fence::ExecutionBinding::new(self.storage, tenant, epoch),
+            origin,
+        )
+        .await?;
+
         if self.issuer.purpose() != rss_mdm_agent_wire::pki::Purpose::Agent {
             return Err(Error::Forbidden.into());
         }
@@ -25,10 +37,18 @@ impl Service {
         let profile = self.profile();
 
         version(input.wire_version, input.operation_id)?;
-        let proof = self
-            .trust()
+        let (tenant, epoch) = self
+            .store
+            .locate_issuance(input.issuance_id)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        let execution =
+            rss_transactional_messaging::fence::ExecutionBinding::new(self.storage, tenant, epoch);
+        let trust = self.trust(execution).await?;
+        let proof = trust
             .verify_peer(peer, self.now()?)
             .map_err(|_| Error::Unauthorized)?;
+        a.bind_scope(execution).map_err(|_| Error::Unauthorized)?;
         let fingerprint = hex(proof.metadata().fingerprint);
         let request_digest = digest(input)?;
         a.operation(
@@ -42,7 +62,7 @@ impl Service {
             |ctx, c| {
                 Box::pin(async move {
                     let (service, input, a, proof, fingerprint, digest) = ctx;
-                    let tenant = service.tenant.to_string();
+                    let tenant = a.binding()?.tenant().to_string();
                     let grant: Uuid = sqlx::query_scalar(
                         crate::storage_profile::sql(profile).agent_activation_activate_3,
                     )
@@ -98,7 +118,7 @@ impl Service {
                         }
                         let out: ActivationResult =
                             serde_json::from_value(result).map_err(|_| Error::Corrupt)?;
-                        let p = device::authenticate_endpoint_in(profile, c, service.tenant, proof)
+                        let p = device::authenticate_endpoint_in(profile, c, a.binding()?, proof)
                             .await?;
                         a.target_device(p.device());
                         return Ok(Change {
@@ -107,7 +127,7 @@ impl Service {
                         });
                     }
                     crate::lifecycle::require_work_in(profile, c, &tenant, &device).await?;
-                    service.grant_live(c, &g).await?;
+                    service.grant_live(a.binding()?, c, &g).await?;
                     if service.issuer.purpose() == rss_mdm_agent_wire::pki::Purpose::Agent
                         && g.try_get::<Option<Uuid>, _>("predecessor")
                             .map_err(db)?
@@ -248,7 +268,7 @@ impl Service {
                                         c,
                                         Binding {
                                             profile,
-                                            tenant: service.tenant,
+                                            tenant: a.binding()?.tenant(),
                                             device,
                                             epoch,
                                             operation: input.operation_id,
@@ -334,9 +354,18 @@ impl Service {
         &self,
         peer: &ClientCertificateEvidence,
     ) -> Result<DevicePrincipal, Failure> {
+        let fingerprint: [u8; 32] =
+            Sha256::digest(peer.chain().first().ok_or(Error::Unauthorized)?.as_ref()).into();
+        let tenant = self
+            .store
+            .locate_certificate(fingerprint)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        let binding = self.execution(tenant);
+        let trust = self.trust(binding).await?;
         let profile = self.profile();
 
-        let tenant = self.tenant.to_string();
+        let tenant = binding.tenant().to_string();
         let mut tx = self.store.begin(&tenant).await?;
         let fingerprint = hex(Sha256::digest(&peer.chain()[0]));
         let expiry: Option<i64> = sqlx::query_scalar(
@@ -350,11 +379,10 @@ impl Service {
         if expiry.is_some_and(|end| end <= self.now().unwrap_or(i64::MAX)) {
             return Err(Error::Agent(wire::ErrorCode::CertificateExpired).into());
         }
-        let proof = self
-            .trust()
+        let proof = trust
             .verify_peer(peer, self.now()?)
             .map_err(|_| Error::Unauthorized)?;
-        let p = device::authenticate_endpoint_in(profile, &mut tx, self.tenant, &proof).await?;
+        let p = device::authenticate_endpoint_in(profile, &mut tx, binding, &proof).await?;
         tx.commit().await.map_err(db)?;
         Ok(p)
     }

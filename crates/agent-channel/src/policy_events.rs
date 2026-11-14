@@ -78,6 +78,7 @@ fn error(e: rss_mdm_policy_service::Error) -> AgentError {
     .into()
 }
 async fn invoke(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<StateServices>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -92,8 +93,14 @@ async fn invoke(
 > {
     crate::bounded(async {
         let Json(input) = input.map_err(|_| Error::Malformed)?;
-        let p =
-            tasks::authenticate(&s.tasks, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let p = tasks::authenticate(
+            &origin,
+            &s.tasks,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+        )
+        .await?;
         s.events
             .invoke_agent(&p, &input, &audit)
             .await
@@ -103,6 +110,7 @@ async fn invoke(
     .await
 }
 async fn list(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<StateServices>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -117,8 +125,14 @@ async fn list(
     AgentError,
 > {
     crate::bounded(async {
-        let p =
-            tasks::authenticate(&s.tasks, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let p = tasks::authenticate(
+            &origin,
+            &s.tasks,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+        )
+        .await?;
         s.events
             .read_agent(
                 &p,
@@ -135,6 +149,7 @@ async fn list(
     .await
 }
 async fn read(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<StateServices>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -142,8 +157,14 @@ async fn read(
     Path(batch): Path<Uuid>,
 ) -> Result<Json<queries::Batch>, AgentError> {
     crate::bounded(async {
-        let p =
-            tasks::authenticate(&s.tasks, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let p = tasks::authenticate(
+            &origin,
+            &s.tasks,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+        )
+        .await?;
         s.events
             .read_agent(
                 &p,
@@ -160,6 +181,7 @@ async fn read(
     .await
 }
 async fn members(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<StateServices>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -175,8 +197,14 @@ async fn members(
     AgentError,
 > {
     crate::bounded(async {
-        let p =
-            tasks::authenticate(&s.tasks, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let p = tasks::authenticate(
+            &origin,
+            &s.tasks,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+        )
+        .await?;
         s.events
             .read_agent(
                 &p,

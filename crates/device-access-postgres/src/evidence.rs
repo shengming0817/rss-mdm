@@ -77,10 +77,11 @@ impl Authorities {
         &self,
         c: &mut PgConnection,
         signing: &ConfigurationService,
-        tenant: TenantId,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         installation: Uuid,
         signed: &SignedObservation,
     ) -> Result<bool, Error> {
+        let tenant = execution.tenant();
         let now = super::platform_sso::store::now(c).await?;
         let o = self.verify(signed, now)?;
         if o.tenant.to_string() != tenant.to_string() || o.installation != installation {
@@ -111,7 +112,7 @@ impl Authorities {
         if let Some(proof) = &o.configuration {
             // The configured authority proves transport; the original issued artifact proves
             // field authority. Neither a claimed delivery nor a Policy ID is sufficient.
-            let artifact = signing.read_on(c, proof.artifact).await?;
+            let artifact = signing.read_on(execution, c, proof.artifact).await?;
             let config = artifact.decode().map_err(|_| Error::Corrupt)?;
             let identity = da::ReportIdentity {
                 service_id: installation,
@@ -253,7 +254,7 @@ impl crate::Service {
             (
                 authorities,
                 value,
-                self.tenant,
+                a.binding()?,
                 self.service_id()?,
                 a,
                 signing,

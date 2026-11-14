@@ -6,6 +6,7 @@ use sqlx::Row;
 use uuid::Uuid;
 
 pub async fn retire_in(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     c: &mut sqlx::PgConnection,
     facts: &mut Vec<Fact>,
     tenant: &str,
@@ -15,7 +16,7 @@ pub async fn retire_in(
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        tenant.to_owned(),
+        execution,
         "credential_revoke",
         rss_mdm_audit_integration::AuditIntent::Management,
     );

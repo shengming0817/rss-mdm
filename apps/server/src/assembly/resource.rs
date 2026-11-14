@@ -1,18 +1,17 @@
 //! Resource assembly and foreign owner adapters, without business decisions.
 use crate::{Error, clock::Clock};
 use rss_mdm_resource_service::{self as service, transaction::Fault};
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use std::sync::Arc;
 pub(crate) async fn catalog(
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
     runtime: Arc<PgRuntime>,
-    tenant: TenantId,
+    probe: rss_transactional_messaging::fence::ExecutionBinding,
     clock: Arc<dyn Clock>,
     key: Vec<u8>,
 ) -> std::result::Result<Arc<service::ResourceCatalog>, Error> {
     runtime
-        .local_tx(audit.binding(), crate::identity::deadline(), move |tx| {
+        .local_tx(probe, crate::identity::deadline(), move |tx| {
             Box::pin(async move {
                 tx.with_connection(move |c| {
                     Box::pin(async move {
@@ -36,14 +35,13 @@ pub(crate) async fn catalog(
         service::ResourceCatalog::new(service::Dependencies {
             audit_store: audit,
             runtime: runtime.clone(),
-            tenant,
+            probe,
             clock: Arc::new(ResourceClock(clock)),
             cursor_key: key,
             references: Arc::new(crate::resource_usage::StoredReferences {
                 policies: rss_mdm_policy_postgres::PolicyReader::bind(
                     rss_mdm_install_support::StorageProfile::Mdm,
                     runtime,
-                    tenant,
                 ),
             }),
             collections: Arc::new(Validators),
@@ -127,7 +125,7 @@ impl service::inputs::SoftwareAuthoringValidator for Validators {
     ) -> service::inputs::Pending<'a, ()> {
         Box::pin(async move {
             use rss_mdm_software_service::catalog::Error as E;
-            rss_mdm_software_service::catalog::Reader::new(tx.tenant_id())
+            rss_mdm_software_service::catalog::Reader::new()
                 .private_authoring_in(tx, version)
                 .await
                 .map_err(|e| match e {
@@ -168,11 +166,14 @@ fn resource_write_error(
 impl rss_mdm_software_service::management::resource::ResourceWriter for SoftwareResources {
     fn partition(
         &self,
+        tenant: rss_request_context::TenantId,
         resource: &str,
     ) -> rss_mdm_software_service::catalog::Result<
         rss_transactional_messaging::message::PartitionIdentity,
     > {
-        self.0.partition(resource).map_err(resource_write_error)
+        self.0
+            .partition(tenant, resource)
+            .map_err(resource_write_error)
     }
     fn import_in<'a>(
         &'a self,

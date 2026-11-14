@@ -50,6 +50,7 @@ GRANT SELECT,INSERT ON mdm_group.groups,mdm_group.rules TO mdm_group_runtime;
 GRANT UPDATE(presentation,revision,member_version,member_count,rule_version,deleted,calculation_revision,input_revision,input_epoch,input_xid) ON mdm_group.groups TO mdm_group_runtime;
 
 CREATE TABLE mdm_group.operations (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL,id uuid NOT NULL,group_id uuid NOT NULL,digest bytea NOT NULL CHECK(octet_length(digest)=32),
  request bytea NOT NULL CHECK(octet_length(request)<=16777216),receipt bytea NOT NULL CHECK(octet_length(receipt)<=65536),
  receipt_digest bytea NOT NULL CHECK(octet_length(receipt_digest)=32),as_of bigint NOT NULL CHECK(as_of>=0),

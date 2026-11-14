@@ -168,6 +168,7 @@ impl SoftwareService {
         token: &str,
         audit: &RequestAudit,
     ) -> std::result::Result<rss_mdm_resource::Artifact, Error> {
+        audit.bind_scope(self.artifact_execution(id).await?)?;
         audit.identify_service("native-package-download");
         audit.operation(
             id,
@@ -176,12 +177,12 @@ impl SoftwareService {
         );
         crate::deployment::transaction::inspect(
             &self.transactions.runtime,
-            self.transactions.audit_store.binding(),
+            audit.binding()?,
             (self, id, token),
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, id, token) = *ctx;
-                    let tenant = s.transactions.tenant.to_string();
+                    let tenant = tx.tenant_id().to_string();
                     let instance = s.transactions.instance.clone();
                     tx.with_connection(move |c| {
                         Box::pin(async move {
@@ -218,7 +219,7 @@ impl SoftwareService {
                         .values()
                         .find(|package| {
                             package
-                                .task(id, &s.transactions.protection, s.transactions.tenant)
+                                .task(id, &s.transactions.protection, tx.tenant_id())
                                 .ok()
                                 .and_then(|task| serde_json::to_value(task).ok())
                                 .as_ref()
@@ -239,7 +240,7 @@ impl SoftwareService {
                         .verify_mac(
                             &serde_json::to_vec(&package.artifact).map_err(|_| Error::Malformed)?,
                             &crate::deployment::protection::aad(
-                                s.transactions.tenant,
+                                tx.tenant_id(),
                                 "software.download",
                                 &id,
                             )?,
@@ -275,7 +276,7 @@ impl SoftwareService {
                     {
                         return Err(Error::Forbidden.into());
                     }
-                    let tenant = s.transactions.tenant.to_string();
+                    let tenant = tx.tenant_id().to_string();
                     if !tx
                         .with_connection(move |c| {
                             Box::pin(async move {

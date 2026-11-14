@@ -397,14 +397,6 @@ pub const CATALOG: &[Item] = &[
         Credentials
     ),
     item!(
-        "host-config",
-        Platform,
-        "tenant-administration",
-        DeploymentOperator,
-        BusinessConfiguration,
-        TenantRead
-    ),
-    item!(
         "registration",
         Tenant,
         "registration-service",
@@ -463,7 +455,7 @@ pub struct Action {
     pub href: String,
 }
 impl Projection {
-    pub fn unknown(href: Option<&'static str>) -> Self {
+    pub fn unknown(href: Option<&str>) -> Self {
         Self {
             ready: false,
             status: Status::Unknown,
@@ -539,7 +531,15 @@ pub(super) fn domains(proof: &AuthorizedPrincipal, platform: bool) -> Vec<Domain
         if proof.require(permission, None).is_ok() {
             result.push(Domain {
                 id,
-                href: href.into(),
+                href: if platform {
+                    href.into()
+                } else {
+                    format!(
+                        "/api/v1/tenants/{}/{}",
+                        proof.tenant_id(),
+                        href.strip_prefix("/api/v1/").expect("business route")
+                    )
+                },
             });
         }
     }

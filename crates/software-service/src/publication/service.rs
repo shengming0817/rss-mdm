@@ -44,84 +44,123 @@ impl ServiceRequest {
     }
 }
 pub struct PublicationService {
-    pub(super) binding: rss_transactional_messaging::fence::ExecutionBinding,
     pub(super) runtime: Arc<PgRuntime>,
     pub(super) audit_store: Arc<dyn crate::AuditPort>,
     pub(super) resources: ResourceStore,
     pub(super) catalog: crate::catalog::Catalog,
     pub(super) releases: ReleaseStore,
-    pub(super) sources: Sources,
+    source: super::config::SourceResources,
+    credentials: Arc<dyn crate::Credentials>,
     pub(super) content: Arc<dyn crate::catalog::ContentPort>,
+    backend: String,
+}
+/// One publication operation borrows the shared resources and freezes its execution identity.
+pub struct PublicationOperation<'a> {
+    service: &'a PublicationService,
+    pub(super) binding: rss_transactional_messaging::fence::ExecutionBinding,
+    pub(super) sources: Sources,
     pub(super) actors: ServiceIdentity,
 }
-impl PublicationService {
-    pub fn exports(&self) -> super::ExportReader {
-        super::ExportReader::new(self.sources.exports())
+impl std::ops::Deref for PublicationOperation<'_> {
+    type Target = PublicationService;
+    fn deref(&self) -> &PublicationService {
+        self.service
     }
-
+}
+impl PublicationService {
+    pub fn exports(&self, tenant: TenantId) -> Result<super::ExportReader> {
+        Ok(super::ExportReader::new(
+            self.source
+                .scope(tenant, self.credentials.as_ref())?
+                .exports(),
+        ))
+    }
     pub async fn connect(
         host: crate::Host,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        probe: rss_transactional_messaging::fence::ExecutionBinding,
         logical_source: String,
         config: SourceConfig,
-        actors: ServiceIdentity,
+        backend: String,
         cutoff: Deadline,
     ) -> Result<Self> {
-        let tenant = binding.tenant();
+        rel::ActorId::new(probe.tenant(), &backend).map_err(|_| Error::Input)?;
         let crate::Host {
             runtime,
             audit: audit_store,
             credentials,
             content,
         } = host;
-        actors.check(tenant)?;
-        let sources = tokio::time::timeout_at(
-            cutoff.instant().into(),
-            Sources::new(tenant, logical_source, config, credentials.as_ref()),
-        )
-        .await
-        .map_err(|cause| Error::Source.context("service::connect", cause))??;
-        let resources = ResourceStore::new(runtime.clone(), binding, budget(cutoff)).await?;
-        let releases = ReleaseStore::new(runtime.clone(), binding, budget(cutoff)).await?;
-        let head = if let Driver::Brew { repo, .. } = &sources.binding.driver {
-            tokio::time::timeout_at(cutoff.instant().into(), repo.head())
+        let source = super::config::SourceResources::new(logical_source, config).await?;
+        let resources = ResourceStore::new(runtime.clone(), probe, budget(cutoff)).await?;
+        let releases = ReleaseStore::new(runtime.clone(), probe, budget(cutoff)).await?;
+        Ok(Self {
+            catalog: crate::catalog::Catalog::new(runtime.clone(), audit_store.clone()),
+            runtime,
+            audit_store,
+            resources,
+            releases,
+            source,
+            credentials,
+            content,
+            backend,
+        })
+    }
+    pub fn operation(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<PublicationOperation<'_>> {
+        Ok(PublicationOperation {
+            service: self,
+            binding,
+            sources: self
+                .source
+                .scope(binding.tenant(), self.credentials.as_ref())?,
+            actors: ServiceIdentity {
+                backend: rel::ActorId::new(binding.tenant(), &self.backend)
+                    .map_err(|_| Error::Identity)?,
+            },
+        })
+    }
+}
+impl PublicationOperation<'_> {
+    pub fn exports(&self) -> super::ExportReader {
+        super::ExportReader::new(self.sources.exports())
+    }
+    async fn register(&self, cutoff: Deadline) -> Result<()> {
+        let head = if let Driver::Brew { repo, .. } = &self.sources.binding.driver {
+            repo.head()
                 .await
-                .map_err(|_| Error::Source)?
                 .map_err(|_| Error::Source)?
                 .map(|c| c.as_str().to_owned())
         } else {
             None
         };
         settle(
-            runtime
+            self.runtime
                 .local_tx_with_context(
-                    binding,
+                    self.binding,
                     budget(cutoff),
-                    (&audit_store, &sources, &head, &actors.backend),
-                    |(audit, s, h, a), tx| {
+                    (self, head),
+                    |(s, head), tx| {
                         Box::pin(async move {
-                            audit
+                            s.audit_store
                                 .bind_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-
-                            db::register(audit.as_ref(), tx, s, h, a).await
+                            db::register(
+                                s.binding,
+                                s.audit_store.as_ref(),
+                                tx,
+                                &s.sources,
+                                head,
+                                &s.actors.backend,
+                            )
+                            .await
                         })
                     },
                 )
                 .await,
-        )?;
-        Ok(Self {
-            binding,
-            catalog: crate::catalog::Catalog::new(runtime.clone(), tenant, audit_store.clone()),
-            runtime,
-            audit_store,
-            resources,
-            releases,
-            sources,
-            content,
-            actors,
-        })
+        )
     }
     pub fn target(&self) -> PublicTarget {
         PublicTarget {
@@ -141,7 +180,7 @@ impl PublicationService {
         id: &rel::PublicationKey,
         cutoff: Deadline,
     ) -> Result<Option<rel::Publication>> {
-        Ok(self.releases.get(id, budget(cutoff)).await?)
+        Ok(self.releases.get(self.binding, id, budget(cutoff)).await?)
     }
     /// Public, credential-free document retained with the immutable record.
     /// The product caller authorizes disclosure before invoking this reader.
@@ -160,9 +199,9 @@ impl PublicationService {
         access: &dyn PublishAccess,
         cutoff: Deadline,
     ) -> Result<(rss_mdm_software_release_postgres::OperationReceipt, bool)> {
-        if i.actor.tenant() != self.tenant()
-            || i.record.tenant() != self.tenant()
-            || i.request.tenant() != self.tenant()
+        if i.actor.tenant() != self.binding.tenant()
+            || i.record.tenant() != self.binding.tenant()
+            || i.request.tenant() != self.binding.tenant()
         {
             return Err(Error::Identity);
         }
@@ -212,9 +251,10 @@ impl PublicationService {
                     .await,
             );
         }
+        self.register(cutoff).await?;
         let resource = self
             .resources
-            .get(&i.resource, budget(cutoff))
+            .get(self.binding, &i.resource, budget(cutoff))
             .await?
             .ok_or(Error::Content)?;
         if resource.storage_revision != i.expected_resource_revision {
@@ -222,7 +262,7 @@ impl PublicationService {
         }
         let version = self
             .resources
-            .version(&i.resource, &i.version, budget(cutoff))
+            .version(self.binding, &i.resource, &i.version, budget(cutoff))
             .await?
             .ok_or(Error::Content)?;
         if version.digest().bytes() != i.resource_digest {
@@ -253,7 +293,7 @@ impl PublicationService {
         let binding = rel::PublicationBinding {
             publication: i.record.clone(),
             content: prepared.content.digest(),
-            target: rel::TargetId::new(self.tenant(), &self.sources.logical)
+            target: rel::TargetId::new(self.binding.tenant(), &self.sources.logical)
                 .map_err(|_| Error::Input)?,
             target_digest: rel::Digest::from_bytes(self.sources.digest),
             lifecycle: rel::Digest::from_bytes(lifecycle),
@@ -300,10 +340,10 @@ impl PublicationService {
                                     .await
                                     .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                                 tx.prepare_outbox_partitions(&[
-                                    s.releases.partition(i.record.value())?,
+                                    s.releases.partition(s.binding.tenant(), i.record.value())?,
                                     input!(
                                         s.catalog
-                                            .publication_partition(version)
+                                            .publication_partition(s.binding, version)
                                             .map_err(|_| Error::Content)
                                     ),
                                 ])
@@ -402,7 +442,7 @@ impl PublicationService {
                                 db::reserve(tx, target, &target.key()).await?;
                                 db::insert_call(tx, db::Table::Publish, target).await?;
                                 let fact = db::fact(
-                                    tx.tenant_id(),
+                                    s.binding,
                                     &i.actor,
                                     i.record.value(),
                                     "software_publish",
@@ -439,7 +479,7 @@ impl PublicationService {
     async fn retired_owner(&self, tx: &mut PgTransaction<'_>, owner: &str) -> InTransaction<()> {
         let id = db::required(
             "publication owner",
-            rel::PublicationKey::new(self.tenant(), owner),
+            rel::PublicationKey::new(tx.tenant_id(), owner),
         )?;
         let c = input!(
             self.releases
@@ -486,7 +526,7 @@ impl PublicationService {
         let (c, subject, prepared) = self.context(id, cutoff).await?;
         let _pins = if self
             .releases
-            .operation(&request.id, budget(cutoff))
+            .operation(self.binding, &request.id, budget(cutoff))
             .await?
             .is_none()
         {
@@ -513,7 +553,10 @@ impl PublicationService {
         access: &dyn PublishAccess,
         cutoff: Deadline,
     ) -> Result<rel::Transition> {
-        let old = self.releases.operation(&r.id, budget(cutoff)).await?;
+        let old = self
+            .releases
+            .operation(self.binding, &r.id, budget(cutoff))
+            .await?;
         let preview = c
             .transition(r.clone(), old.as_ref().and_then(|r| r.transition.as_ref()))
             .map_err(|cause| Error::Conflict.context("service::publish_request", cause))?;
@@ -548,7 +591,7 @@ impl PublicationService {
                                     .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                                 tx.prepare_outbox_partitions(&[s
                                     .releases
-                                    .partition(c.snapshot().id.value())?])
+                                    .partition(tx.tenant_id(), c.snapshot().id.value())?])
                                     .await?;
                                 input!(access.check(tx).await);
                                 input!(
@@ -628,7 +671,7 @@ impl PublicationService {
                                 db::reserve(tx, target, &target.key()).await?;
                                 db::insert_call(tx, db::Table::Publish, target).await?;
                                 let fact = db::fact(
-                                    tx.tenant_id(),
+                                    s.binding,
                                     &r.actor,
                                     &target.record,
                                     "software_publish",
@@ -725,7 +768,7 @@ impl PublicationService {
             let prepared = repo
                 .prepare_snapshot(
                     base,
-                    recipe.documents(self.tenant(), tap)?,
+                    recipe.documents(self.binding.tenant(), tap)?,
                     &operation(&target),
                     p.requested_at,
                 )
@@ -746,7 +789,7 @@ impl PublicationService {
     ) -> Result<Option<rel::Transition>> {
         if self
             .releases
-            .operation(&r.id, budget(cutoff))
+            .operation(self.binding, &r.id, budget(cutoff))
             .await?
             .is_none()
         {
@@ -754,7 +797,7 @@ impl PublicationService {
         }
         let (owner, original) = self
             .releases
-            .original_request(&r.id, budget(cutoff))
+            .original_request(self.binding, &r.id, budget(cutoff))
             .await?
             .ok_or(Error::Conflict)?;
         match &original.operation {
@@ -789,7 +832,9 @@ impl PublicationService {
                                     .await
                                     .map_err(|_| Error::Content)
                             );
-                            tx.prepare_outbox_partitions(&[s.releases.partition(id.value())?])
+                            tx.prepare_outbox_partitions(&[s
+                                .releases
+                                .partition(s.binding.tenant(), id.value())?])
                                 .await?;
                             let transition = input!(
                                 s.releases
@@ -813,7 +858,7 @@ impl PublicationService {
         id: &rel::PublicationKey,
         cutoff: Deadline,
     ) -> Result<(rel::Publication, Subject, PreparedContent)> {
-        if id.tenant() != self.tenant() {
+        if id.tenant() != self.binding.tenant() {
             return Err(Error::Identity);
         }
         let (c, subject, version) = settle(
@@ -895,6 +940,7 @@ impl PublicationService {
                     let child = self
                         .resources
                         .version(
+                            self.binding,
                             &resource::Id::new(&dependency.resource).map_err(|_| Error::Content)?,
                             &resource::Id::new(&dependency.version).map_err(|_| Error::Content)?,
                             budget(cutoff),
@@ -921,7 +967,7 @@ impl PublicationService {
             for resource in &p.resources {
                 pins.push(
                     self.content
-                        .verify(resource)
+                        .verify(self.binding, resource)
                         .await
                         .map_err(|_| Error::Content)?,
                 );
@@ -963,7 +1009,7 @@ impl PublicationService {
                             );
                             tx.prepare_outbox_partitions(&[s
                                 .releases
-                                .partition(c.snapshot().id.value())?])
+                                .partition(tx.tenant_id(), c.snapshot().id.value())?])
                                 .await?;
                             let replay = db::required(
                                 "service::transition_audited",
@@ -982,7 +1028,7 @@ impl PublicationService {
                                         .context("service::transition_audited", cause))
                             );
                             let fact = db::fact(
-                                tx.tenant_id(),
+                                s.binding,
                                 &r.actor,
                                 c.snapshot().id.value(),
                                 action,

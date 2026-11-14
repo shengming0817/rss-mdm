@@ -48,6 +48,7 @@ struct Cursor {
 impl AssetService {
     fn list_cursor(
         &self,
+        tenant: rss_request_context::TenantId,
         device: &rss_mdm_agent_wire::DeviceId,
         field: FieldKey,
         scope: &ReadScope,
@@ -57,7 +58,7 @@ impl AssetService {
     ) -> Result<String> {
         let cursor = Cursor {
             kind: "inventory-list-v1".into(),
-            tenant: self.tenant.to_string(),
+            tenant: tenant.to_string(),
             device: *device,
             field,
             scope: digest(scope)?,
@@ -80,6 +81,8 @@ impl AssetService {
         scope: &ReadScope,
         cut: &AssetCut,
     ) -> Result<DeviceView> {
+        let tenant = rss_request_context::TenantId::parse(&cut.tenant().to_string())
+            .map_err(|_| Error::Malformed)?;
         for (field, resolved) in summary.arrays {
             let definition = stored(catalog.definition(field))?;
             summary.scalars.lists.insert(
@@ -94,6 +97,7 @@ impl AssetService {
                                 state: metadata_state(&s.state),
                                 evidence: s.evidence.clone(),
                                 cursor: self.list_cursor(
+                                    tenant,
                                     &summary.scalars.device,
                                     field,
                                     scope,
@@ -106,6 +110,7 @@ impl AssetService {
                         .collect::<Result<_>>()?,
                     item_key: definition.item_key.clone(),
                     cursor: self.list_cursor(
+                        tenant,
                         &summary.scalars.device,
                         field,
                         scope,
@@ -128,10 +133,9 @@ impl AssetService {
         let reader = planning::SnapshotReader::bind(
             rss_mdm_install_support::StorageProfile::Mdm,
             self.runtime.clone(),
-            self.tenant,
         );
         let ids = vec![device.to_owned()];
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let selected = ids.clone();
         let present = tx
             .with_connection_context(&mut (cut,), move |(cut,), c| {
@@ -154,7 +158,7 @@ impl AssetService {
             return Err(Error::NotFound.into());
         }
         let read_scope = scope.clone();
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         let (catalog, summary) = tx
             .with_connection_context(&mut (cut,), move |(cut,), c| {
                 Box::pin(async move {
@@ -164,6 +168,7 @@ impl AssetService {
                         )?;
                         let mut values = reader
                             .scoped_summary_devices_on(
+                                tenant,
                                 c,
                                 cut,
                                 &ids,
@@ -206,11 +211,11 @@ impl AssetService {
                 .decode_bounded(token, "inventory-list", windows::MAX_CURSOR_BYTES)
                 .map_err(|_| Error::Conflict)?;
             if c.kind != "inventory-list-v1"
-                || c.tenant != self.tenant.to_string()
+                || c.tenant != tx.tenant_id().to_string()
                 || c.device != *device
                 || c.field != field
                 || c.scope != digest(scope)?
-                || c.asset_cut.tenant().to_string() != self.tenant.to_string()
+                || c.asset_cut.tenant().to_string() != tx.tenant_id().to_string()
                 || c.offset > 100000
             {
                 return Err(Error::Conflict.into());
@@ -220,14 +225,13 @@ impl AssetService {
             (candidate.clone(), 0, None)
         };
         let cut = &cut;
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         let device_id = device.to_owned();
         let read_scope = scope.clone();
         let selected_source = source.clone();
         let snapshot = planning::SnapshotReader::bind(
             rss_mdm_install_support::StorageProfile::Mdm,
             self.runtime.clone(),
-            tenant,
         );
         let (total, items, next) = tx
             .with_connection_context(&mut (cut,), move |(cut,), c| {
@@ -247,6 +251,7 @@ impl AssetService {
                             stored(rss_mdm_inventory::Catalog::new(vec![definition.clone()]))?;
                         let mut summary = snapshot
                             .scoped_summary_devices_on(
+                                tenant,
                                 c,
                                 cut,
                                 &[device_id],
@@ -299,7 +304,9 @@ impl AssetService {
             total,
             items,
             next_cursor: next
-                .map(|offset| self.list_cursor(device, field, scope, cut, offset, source))
+                .map(|offset| {
+                    self.list_cursor(tx.tenant_id(), device, field, scope, cut, offset, source)
+                })
                 .transpose()?,
         })
     }

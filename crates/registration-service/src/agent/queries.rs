@@ -177,7 +177,7 @@ async fn issuance_device(
 impl Service {
     fn query_tenant(&self, p: &AuthorizedPrincipal) -> Result<(), Error> {
         p.check_live()?;
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != p.binding().tenant().to_string() {
             return Err(Error::Forbidden);
         }
         Ok(())

@@ -58,13 +58,14 @@ pub(in crate::assembly) async fn withdrawn(
     let owner = planning::owner(c, "mdm_software_driver").await?;
     let store = rss_mdm_software_release_postgres::ReleaseStore::new(
         owner.runtime.clone(),
-        c.audit.binding(),
+        c.execution(),
         crate::authority_t2_support::deadline(),
     )
     .await
     .context("admit release owner")?;
     store
         .create(
+            c.execution(),
             &rel::RequestId::new(c.tenant, Uuid::new_v4().to_string())?,
             &publication,
             crate::authority_t2_support::deadline(),
@@ -79,6 +80,7 @@ pub(in crate::assembly) async fn withdrawn(
     tx.commit().await?;
     store
         .transition(
+            c.execution(),
             &id,
             &rel::Request {
                 id: rel::RequestId::new(c.tenant, Uuid::new_v4().to_string())?,
@@ -93,7 +95,7 @@ pub(in crate::assembly) async fn withdrawn(
         .context("withdraw retained publication")?;
     assert!(
         store
-            .get(&id, crate::authority_t2_support::deadline())
+            .get(c.execution(), &id, crate::authority_t2_support::deadline())
             .await?
             .unwrap()
             .snapshot()

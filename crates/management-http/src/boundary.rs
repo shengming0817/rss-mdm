@@ -22,7 +22,6 @@ pub struct Envelope {
     pub clock: Arc<dyn rss_observation::Clock>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub requests: Arc<tokio::sync::Semaphore>,
-    pub tenant: String,
 }
 pub fn wrap<M: rss_mdm_http_contract::module::Declaration>(
     router: Router<(), M>,
@@ -64,13 +63,20 @@ async fn admit(
     next: Next,
 ) -> Response {
     let started = envelope.clock.now();
+    let Some(binding) = request
+        .extensions()
+        .get::<rss_transactional_messaging::fence::ExecutionBinding>()
+        .copied()
+    else {
+        return project(Error::Forbidden);
+    };
     let route = request
         .extensions()
         .get::<axum::extract::MatchedPath>()
         .map(|p| p.as_str())
         .unwrap_or("");
-    let uri_limit = if route == "/api/v1/resources" {
-        rss_mdm_query::MAX_RAW_QUERY_BYTES + "/api/v1/resources?".len()
+    let uri_limit = if route == "/api/v1/tenants/{tenant}/resources" {
+        rss_mdm_query::MAX_RAW_QUERY_BYTES + "/api/v1/tenants/{tenant}/resources?".len()
     } else {
         8192
     };
@@ -84,7 +90,7 @@ async fn admit(
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         envelope.profile,
-        envelope.tenant.clone(),
+        binding,
         route_action(route),
         intent,
     );
@@ -151,15 +157,24 @@ pub async fn authentication(
     next: Next,
 ) -> Response {
     let started = envelope.clock.now();
-    let audit = RequestAudit::new(
-        rss_mdm_audit_integration::Origin::Request,
-        envelope.profile,
-        envelope.tenant.clone(),
-        "authentication",
-        rss_mdm_audit_integration::AuditIntent::Routine,
-    );
-    let id = audit.request_id();
-    request.extensions_mut().insert(audit.clone());
+    let audit = request
+        .extensions()
+        .get::<rss_transactional_messaging::fence::ExecutionBinding>()
+        .map(|binding| {
+            RequestAudit::new(
+                rss_mdm_audit_integration::Origin::Request,
+                envelope.profile,
+                *binding,
+                "authentication",
+                rss_mdm_audit_integration::AuditIntent::Routine,
+            )
+        });
+    let id = audit
+        .as_ref()
+        .map_or_else(uuid::Uuid::new_v4, RequestAudit::request_id);
+    if let Some(audit) = &audit {
+        request.extensions_mut().insert(audit.clone());
+    }
     request.extensions_mut().insert(envelope.clock.clone());
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
@@ -173,10 +188,11 @@ pub async fn authentication(
     } else {
         body(request, next, envelope.requests).await
     };
-    if response
-        .extensions()
-        .get::<crate::api_access::AdmissionRejected>()
-        .is_some()
+    if let Some(audit) = &audit
+        && response
+            .extensions()
+            .get::<crate::api_access::AdmissionRejected>()
+            .is_some()
     {
         if let Some(replacement) = rss_mdm_audit_integration::completion::complete(
             &envelope.audit_store,
@@ -192,7 +208,7 @@ pub async fn authentication(
                 Replacement::Audit(e) => e.into(),
             });
         }
-    } else {
+    } else if let Some(audit) = &audit {
         audit.finalize(None);
     }
     eprintln!(
@@ -260,13 +276,17 @@ fn request_intent(
     use rss_mdm_audit_integration::{AuditIntent as I, SensitiveAction as S};
     use rss_mdm_http_contract::Operation as O;
     match endpoint.path.as_str() {
-        "/api/v1/devices/{device}/recovery-credentials/{id}/versions/{version}/secret"
-        | "/api/v1/devices/{device}/device-access/materials/{id}/versions/{version}/secret" => {
+        "/api/v1/tenants/{tenant}/devices/{device}/recovery-credentials/{id}/versions/{version}/secret"
+        | "/api/v1/tenants/{tenant}/devices/{device}/device-access/materials/{id}/versions/{version}/secret" => {
             I::Sensitive(S::CredentialReveal)
         }
-        "/api/v1/certificate-archive/export" => I::Sensitive(S::CertificatePrivateExport),
-        "/api/v1/audit-events" => I::Sensitive(S::AuditHistoryRead),
-        "/api/v1/resources/{id}/versions/{version}/script" => I::Sensitive(S::ScriptContentRead),
+        "/api/v1/tenants/{tenant}/certificate-archive/export" => {
+            I::Sensitive(S::CertificatePrivateExport)
+        }
+        "/api/v1/tenants/{tenant}/audit-events" => I::Sensitive(S::AuditHistoryRead),
+        "/api/v1/tenants/{tenant}/resources/{id}/versions/{version}/script" => {
+            I::Sensitive(S::ScriptContentRead)
+        }
         _ if endpoint
             .operations
             .iter()
@@ -279,80 +299,96 @@ fn request_intent(
 }
 fn route_action(route: &str) -> &'static str {
     match route {
-        "/api/v1/agent-connections" | "/api/v1/agent-connections/configuration" => {
-            "agent_connections_read"
+        "/api/v1/tenants/{tenant}/agent-connections"
+        | "/api/v1/tenants/{tenant}/agent-connections/configuration" => "agent_connections_read",
+        "/api/v1/tenants/{tenant}/agent-connections/publish" => "agent_connections_publish",
+        "/api/v1/tenants/{tenant}/agent-connection-operations/{id}" => {
+            "agent_connections_operation_read"
         }
-        "/api/v1/agent-connections/publish" => "agent_connections_publish",
-        "/api/v1/agent-connection-operations/{id}" => "agent_connections_operation_read",
-        "/api/v1/agent-connections/devices"
-        | "/api/v1/agent-connections/devices/{device}/observation" => {
+        "/api/v1/tenants/{tenant}/agent-connections/devices"
+        | "/api/v1/tenants/{tenant}/agent-connections/devices/{device}/observation" => {
             "agent_connections_devices_read"
         }
-        "/api/v1/agent-issuances/{id}/recovery-operations/{operation}" => {
+        "/api/v1/tenants/{tenant}/agent-issuances/{id}/recovery-operations/{operation}" => {
             "agent_certificate_recovery_read"
         }
-        "/api/v1/device-associations" => "device_association_confirm",
-        "/api/v1/device-associations/{id}/revoke" => "device_association_revoke",
-        "/api/v1/device-associations/changes"
-        | "/api/v1/device-associations/{id}"
-        | "/api/v1/devices/{device}/association-candidates" => "device_association_read",
-        "/api/v1/device-retirements/{id}" => "device_retirement_read",
-        "/api/v1/device-retirements/{id}/force-revoke" => "device_retirement_force_revoke",
-        "/api/v1/device-views/{kind}/{id}/asset-state" => "device_asset_state",
-        "/api/v1/agent-requests/{id}/reenroll/{device}" => "agent_grant_authorize",
-        "/api/v1/device-views"
-        | "/api/v1/device-views/{kind}/{id}"
-        | "/api/v1/device-views/{kind}/{id}/inventory-lists/{field}" => "device_view_read",
-        "/api/v1/certificate-archive/vault/unlock" => "certificate_archive_unlock",
-        "/api/v1/certificate-archive/vault/lock" => "certificate_archive_lock",
-        "/api/v1/devices/{device}/timeline" => "timeline_read",
-        "/api/v1/audit-events" => "audit_search",
-        "/api/v1/runtime/diagnostics" => "runtime_diagnostics_read",
-        "/api/v1/authorization" | "/api/v1/tenant-administration/authorization" => {
-            "authorization_effective_read"
+        "/api/v1/tenants/{tenant}/device-associations" => "device_association_confirm",
+        "/api/v1/tenants/{tenant}/device-associations/{id}/revoke" => "device_association_revoke",
+        "/api/v1/tenants/{tenant}/device-associations/changes"
+        | "/api/v1/tenants/{tenant}/device-associations/{id}"
+        | "/api/v1/tenants/{tenant}/devices/{device}/association-candidates" => {
+            "device_association_read"
         }
-        "/api/v1/authorization/rules" | "/api/v1/tenant-administration/authorization/rules" => {
-            "authorization_rules_read"
+        "/api/v1/tenants/{tenant}/device-retirements/{id}" => "device_retirement_read",
+        "/api/v1/tenants/{tenant}/device-retirements/{id}/force-revoke" => {
+            "device_retirement_force_revoke"
         }
-        "/api/v1/authorization/user-groups" => "authorization_groups_read",
-        "/api/v1/authorization/user-groups/{id}/members" => "authorization_members_read",
-        "/api/v1/authorization/departments" => "authorization_departments_read",
-        "/api/v1/authorization/rules/{id}"
-        | "/api/v1/authorization/user-groups/{id}"
+        "/api/v1/tenants/{tenant}/device-views/{kind}/{id}/asset-state" => "device_asset_state",
+        "/api/v1/tenants/{tenant}/agent-requests/{id}/reenroll/{device}" => "agent_grant_authorize",
+        "/api/v1/tenants/{tenant}/device-views"
+        | "/api/v1/tenants/{tenant}/device-views/{kind}/{id}"
+        | "/api/v1/tenants/{tenant}/device-views/{kind}/{id}/inventory-lists/{field}" => {
+            "device_view_read"
+        }
+        "/api/v1/tenants/{tenant}/certificate-archive/vault/unlock" => "certificate_archive_unlock",
+        "/api/v1/tenants/{tenant}/certificate-archive/vault/lock" => "certificate_archive_lock",
+        "/api/v1/tenants/{tenant}/devices/{device}/timeline" => "timeline_read",
+        "/api/v1/tenants/{tenant}/audit-events" => "audit_search",
+        "/api/v1/tenants/{tenant}/runtime/diagnostics" => "runtime_diagnostics_read",
+        "/api/v1/tenants/{tenant}/authorization"
+        | "/api/v1/tenant-administration/authorization" => "authorization_effective_read",
+        "/api/v1/tenants/{tenant}/authorization/rules"
+        | "/api/v1/tenant-administration/authorization/rules" => "authorization_rules_read",
+        "/api/v1/tenants/{tenant}/authorization/user-groups" => "authorization_groups_read",
+        "/api/v1/tenants/{tenant}/authorization/user-groups/{id}/members" => {
+            "authorization_members_read"
+        }
+        "/api/v1/tenants/{tenant}/authorization/departments" => "authorization_departments_read",
+        "/api/v1/tenants/{tenant}/authorization/rules/{id}"
+        | "/api/v1/tenants/{tenant}/authorization/user-groups/{id}"
         | "/api/v1/tenant-administration/authorization/rules/{id}" => "authorization_write",
-        "/api/v1/enrollments" | "/api/v1/self-enrollments" => "enrollment_create",
-        "/api/v1/self-enrollments/agent" => "agent_grant_create",
-        "/api/v1/self-enrollments/agent/{id}/cancel" => "agent_grant_revoke",
-        "/api/v1/registration-quotas/me"
-        | "/api/v1/registration-quotas/users/{instance}/{principal}/usage" => {
+        "/api/v1/tenants/{tenant}/enrollments" | "/api/v1/tenants/{tenant}/self-enrollments" => {
+            "enrollment_create"
+        }
+        "/api/v1/tenants/{tenant}/self-enrollments/agent" => "agent_grant_create",
+        "/api/v1/tenants/{tenant}/self-enrollments/agent/{id}/cancel" => "agent_grant_revoke",
+        "/api/v1/tenants/{tenant}/registration-quotas/me"
+        | "/api/v1/tenants/{tenant}/registration-quotas/users/{instance}/{principal}/usage" => {
             "registration_quota_read"
         }
-        "/api/v1/registration-quotas/defaults"
-        | "/api/v1/registration-quotas/users/{instance}/{principal}" => "registration_quota_change",
-        "/api/v1/devices/{device}/registration-user" => "registration_user_change",
-        "/api/v1/enrollments/{id}" => "enrollment_read",
-        "/api/v1/devices/{device}/registration" => "registration_read",
-        "/api/v1/enrollments/{id}/resume" => "enrollment_resume",
-        "/api/v1/enrollments/{id}/cancel" => "enrollment_cancel",
-        "/api/v1/devices/{device}/registration/revoke" => "credential_revoke",
-        "/api/v1/devices/{id}/inventory" => "inventory_read",
-        "/api/v1/devices/{id}/collections/{run}"
-        | "/api/v1/devices/{id}/collections/{run}/fields/{field}/items" => "collection_read",
-        "/api/v1/devices/{id}/actions" => "device_action",
-        "/api/v1/devices/{device}/device-access/operations/{id}/offboarding/identity"
-        | "/api/v1/devices/{device}/device-access/operations/{id}/offboarding/idp" => {
+        "/api/v1/tenants/{tenant}/registration-quotas/defaults"
+        | "/api/v1/tenants/{tenant}/registration-quotas/users/{instance}/{principal}" => {
+            "registration_quota_change"
+        }
+        "/api/v1/tenants/{tenant}/devices/{device}/registration-user" => "registration_user_change",
+        "/api/v1/tenants/{tenant}/enrollments/{id}" => "enrollment_read",
+        "/api/v1/tenants/{tenant}/devices/{device}/registration" => "registration_read",
+        "/api/v1/tenants/{tenant}/enrollments/{id}/resume" => "enrollment_resume",
+        "/api/v1/tenants/{tenant}/enrollments/{id}/cancel" => "enrollment_cancel",
+        "/api/v1/tenants/{tenant}/devices/{device}/registration/revoke" => "credential_revoke",
+        "/api/v1/tenants/{tenant}/devices/{id}/inventory" => "inventory_read",
+        "/api/v1/tenants/{tenant}/devices/{id}/collections/{run}"
+        | "/api/v1/tenants/{tenant}/devices/{id}/collections/{run}/fields/{field}/items" => {
+            "collection_read"
+        }
+        "/api/v1/tenants/{tenant}/devices/{id}/actions" => "device_action",
+        "/api/v1/tenants/{tenant}/devices/{device}/device-access/operations/{id}/offboarding/identity"
+        | "/api/v1/tenants/{tenant}/devices/{device}/device-access/operations/{id}/offboarding/idp" => {
             "device_access_external_phase"
         }
-        "/api/v1/webhooks/subscriptions/{id}/test" | "/api/v1/webhooks/deliveries/{id}/replay" => {
-            "webhook_write"
+        "/api/v1/tenants/{tenant}/webhooks/subscriptions/{id}/test"
+        | "/api/v1/tenants/{tenant}/webhooks/deliveries/{id}/replay" => "webhook_write",
+        "/api/v1/tenants/{tenant}/webhooks/deliveries/{id}/redrive" => "webhook_redrive",
+        "/api/v1/tenants/{tenant}/agent-packages/save" => "software_installer_save",
+        "/api/v1/tenants/{tenant}/devices/{device}/recovery-credentials/operations" => {
+            "command_accept"
         }
-        "/api/v1/webhooks/deliveries/{id}/redrive" => "webhook_redrive",
-        "/api/v1/agent-packages/save" => "software_installer_save",
-        "/api/v1/devices/{device}/recovery-credentials/operations" => "command_accept",
-        "/api/v1/devices/{device}/recovery-credentials/filevault/configuration" => {
+        "/api/v1/tenants/{tenant}/devices/{device}/recovery-credentials/filevault/configuration" => {
             "filevault_collection_configure"
         }
-        "/api/v1/devices/{device}/recovery-credentials/filevault/link" => "filevault_custody_link",
+        "/api/v1/tenants/{tenant}/devices/{device}/recovery-credentials/filevault/link" => {
+            "filevault_custody_link"
+        }
         _ => "protected_request",
     }
 }
@@ -394,7 +430,7 @@ mod tests {
         use rss_mdm_audit_integration::AuditIntent;
         let routes = crate::pki::routes();
         for mut endpoint in routes.endpoints().iter().cloned() {
-            endpoint.path = format!("/api/v1{}", endpoint.path);
+            endpoint.path = format!("/api/v1/tenants/{{tenant}}{}", endpoint.path);
             let expected = match endpoint.method {
                 "POST" => AuditIntent::Management,
                 "GET" => AuditIntent::Routine,
@@ -408,7 +444,7 @@ mod tests {
         expected: &[(&str, &str, rss_mdm_audit_integration::AuditIntent)],
     ) {
         let mounted = {
-            rss_mdm_http_contract::route_module! { struct AssertIntentsModule1 for [Browser] { api_v1 at "/api/v1" } }
+            rss_mdm_http_contract::route_module! { struct AssertIntentsModule1 for [Browser] { api_v1 at "/api/v1/tenants/{tenant}" } }
             AssertIntentsModule1 { api_v1: router }.assemble()
         };
         for (path, method, intent) in expected {
@@ -426,12 +462,28 @@ mod tests {
         assert_intents(
             crate::software_catalog::routes(),
             &[
-                ("/api/v1/agent-packages/save", "POST", Management),
-                ("/api/v1/agent-packages/uploads", "POST", Management),
-                ("/api/v1/agent-packages/uploads/{id}", "POST", Routine),
-                ("/api/v1/agent-packages/operations/{id}", "GET", Routine),
                 (
-                    "/api/v1/software/resources/{id}/versions/{version}/content",
+                    "/api/v1/tenants/{tenant}/agent-packages/save",
+                    "POST",
+                    Management,
+                ),
+                (
+                    "/api/v1/tenants/{tenant}/agent-packages/uploads",
+                    "POST",
+                    Management,
+                ),
+                (
+                    "/api/v1/tenants/{tenant}/agent-packages/uploads/{id}",
+                    "POST",
+                    Routine,
+                ),
+                (
+                    "/api/v1/tenants/{tenant}/agent-packages/operations/{id}",
+                    "GET",
+                    Routine,
+                ),
+                (
+                    "/api/v1/tenants/{tenant}/software/resources/{id}/versions/{version}/content",
                     "GET",
                     Routine,
                 ),
@@ -440,20 +492,28 @@ mod tests {
         assert_intents(
             crate::content::http::routes(),
             &[
-                ("/api/v1/resources/{id}/content", "POST", Management),
                 (
-                    "/api/v1/resources/{id}/uploads/{upload}",
+                    "/api/v1/tenants/{tenant}/resources/{id}/content",
                     "POST",
                     Management,
                 ),
                 (
-                    "/api/v1/resources/{id}/uploads/{upload}",
+                    "/api/v1/tenants/{tenant}/resources/{id}/uploads/{upload}",
+                    "POST",
+                    Management,
+                ),
+                (
+                    "/api/v1/tenants/{tenant}/resources/{id}/uploads/{upload}",
                     "PATCH",
                     Management,
                 ),
-                ("/api/v1/resources/{id}/uploads/{upload}", "GET", Routine),
                 (
-                    "/api/v1/resources/{id}/versions/{version}/script",
+                    "/api/v1/tenants/{tenant}/resources/{id}/uploads/{upload}",
+                    "GET",
+                    Routine,
+                ),
+                (
+                    "/api/v1/tenants/{tenant}/resources/{id}/versions/{version}/script",
                     "GET",
                     Sensitive(rss_mdm_audit_integration::SensitiveAction::ScriptContentRead),
                 ),
@@ -462,24 +522,36 @@ mod tests {
         assert_intents(
             crate::telemetry::routes(None),
             &[
-                ("/api/v1/telemetry/maintenance", "POST", Management),
-                ("/api/v1/telemetry/history", "POST", Routine),
-                ("/api/v1/telemetry/aggregate", "POST", Routine),
+                (
+                    "/api/v1/tenants/{tenant}/telemetry/maintenance",
+                    "POST",
+                    Management,
+                ),
+                (
+                    "/api/v1/tenants/{tenant}/telemetry/history",
+                    "POST",
+                    Routine,
+                ),
+                (
+                    "/api/v1/tenants/{tenant}/telemetry/aggregate",
+                    "POST",
+                    Routine,
+                ),
             ],
         );
     }
     #[test]
     fn route_templates_select_audit_actions() {
         assert_eq!(
-            route_action("/api/v1/devices/{device}/registration"),
+            route_action("/api/v1/tenants/{tenant}/devices/{device}/registration"),
             "registration_read"
         );
         assert_eq!(
-            route_action("/api/v1/devices/{device}/registration/revoke"),
+            route_action("/api/v1/tenants/{tenant}/devices/{device}/registration/revoke"),
             "credential_revoke"
         );
         assert_eq!(
-            route_action("/api/v1/devices/{id}/collections/{run}"),
+            route_action("/api/v1/tenants/{tenant}/devices/{id}/collections/{run}"),
             "collection_read"
         );
     }
@@ -565,7 +637,13 @@ mod tests {
             let audit = RequestAudit::new(
                 rss_mdm_audit_integration::Origin::Request,
                 rss_mdm_install_support::StorageProfile::Mdm,
-                "11111111-1111-4111-8111-111111111111".into(),
+                rss_transactional_messaging::fence::ExecutionBinding::new(
+                    rss_transactional_messaging::fence::StorageIdentity::new([1; 16], [2; 16])
+                        .unwrap(),
+                    rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111")
+                        .unwrap(),
+                    rss_transactional_messaging::fence::Epoch::new(1).unwrap(),
+                ),
                 "protected_request",
                 rss_mdm_audit_integration::AuditIntent::Management,
             );

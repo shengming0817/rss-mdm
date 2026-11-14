@@ -98,6 +98,17 @@ pub struct Context {
     pub authorization: Arc<rss_mdm_authorization_service::Store>,
 }
 impl Context {
+    pub fn execution(&self) -> ExecutionBinding {
+        ExecutionBinding::new(
+            StorageIdentity::new(
+                self.inputs.installation.target,
+                self.inputs.installation.lineage,
+            )
+            .unwrap(),
+            self.tenant,
+            Epoch::new(1).unwrap(),
+        )
+    }
     pub async fn open() -> Result<Self> {
         let inputs: Inputs =
             serde_json::from_slice(&std::fs::read(std::env::var("RSS_MDM_T2_ENV")?)?)?;
@@ -205,10 +216,7 @@ impl Context {
         )
         .await?;
         let sessions = Arc::new(
-            rss_mdm_authorization_service::session::SessionAuthority::new(
-                authority.clone(),
-                binding,
-            ),
+            rss_mdm_authorization_service::session::SessionAuthority::new(authority.clone()),
         );
         let authorization = Arc::new(rss_mdm_authorization_service::Store::from_pool(
             DA,
@@ -244,8 +252,8 @@ impl Context {
     }
     pub async fn seed(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>> {
         let mut tx = self.operator.begin().await?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-            .bind(self.tenant.to_string())
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('rss.execution_epoch',$2,true),set_config('rss.storage_target',$3,true),set_config('rss.storage_lineage',$4,true)")
+            .bind(self.tenant.to_string()).bind(self.execution().epoch().get().to_string()).bind(self.execution().storage().target().iter().map(|b|format!("{b:02x}")).collect::<String>()).bind(self.execution().storage().lineage().iter().map(|b|format!("{b:02x}")).collect::<String>())
             .execute(&mut *tx)
             .await?;
         Ok(tx)

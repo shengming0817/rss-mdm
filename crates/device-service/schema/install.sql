@@ -52,6 +52,7 @@ GRANT UPDATE (released)
   ON TABLE mdm_devices.members
   TO mdm_access;
 CREATE TABLE mdm_devices.checkpoints (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  tenant_id uuid PRIMARY KEY REFERENCES public.mdm_tenants(tenant_id), from_cut jsonb,to_cut jsonb,
  event_after bigint NOT NULL DEFAULT 0 CHECK(event_after>=0),page_through bigint CHECK(page_through>event_after),cursor uuid,rebuild_after uuid,rebuilding boolean NOT NULL DEFAULT true,object_revision bigint NOT NULL DEFAULT 0 CHECK(object_revision>=0),current_cut uuid,
  relation_revision bigint NOT NULL DEFAULT 0 CHECK(relation_revision>=0)
@@ -65,8 +66,9 @@ GRANT USAGE ON SCHEMA mdm TO mdm_access;
 GRANT SELECT ON mdm.inventory_history,mdm.manual_history,mdm.field_versions,mdm.collection_definitions TO mdm_access;
 CREATE FUNCTION mdm_devices.advance_relation_revision() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
 BEGIN
- INSERT INTO mdm_devices.checkpoints(tenant_id,relation_revision) VALUES(NEW.tenant_id,1)
- ON CONFLICT(tenant_id) DO UPDATE SET relation_revision=mdm_devices.checkpoints.relation_revision+1;
+ INSERT INTO mdm_devices.checkpoints(tenant_id,relation_revision,expected_epoch) VALUES(NEW.tenant_id,1,current_setting('rss.execution_epoch')::bigint)
+ ON CONFLICT(tenant_id) DO UPDATE SET relation_revision=mdm_devices.checkpoints.relation_revision+1 WHERE mdm_devices.checkpoints.expected_epoch=EXCLUDED.expected_epoch;
+ IF NOT FOUND THEN RAISE EXCEPTION 'device relation epoch mismatch'; END IF;
  RETURN NEW;
 END $$;
 REVOKE ALL ON FUNCTION mdm_devices.advance_relation_revision() FROM PUBLIC;
@@ -74,6 +76,7 @@ CREATE TRIGGER association_revision AFTER INSERT OR UPDATE ON mdm_devices.associ
 CREATE TRIGGER association_member_revision AFTER INSERT OR UPDATE ON mdm_devices.members FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_relation_revision();
 -- One product-owned retirement intent. Execution attempts remain in their owners.
 CREATE TABLE mdm_devices.retirements (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  origin jsonb NOT NULL CHECK(origin IN ('"system"','"policy"','"human"','"ai"')),
  tenant_id uuid NOT NULL REFERENCES public.mdm_tenants(tenant_id),
  id uuid NOT NULL, policy uuid NOT NULL, version uuid NOT NULL,

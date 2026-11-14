@@ -36,6 +36,13 @@
         "revision"
       ],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_apple_runtime",
+      "table": "identity",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [
@@ -45,6 +52,38 @@
     },
     {
       "name": "mdm_apple.profile_qualifications",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_apple.account_configuration_tenants",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_apple.account_domain_tenants",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_apple.account_flow_scopes",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_apple.ade_server_tenants",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_apple.ade_work_scopes",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_apple.scep_attempt_tenants",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "mdm_apple.scep_certificate_tenants",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "mdm_apple.push_work_scopes",
       "search_path": "search_path=pg_catalog"
     }
   ],

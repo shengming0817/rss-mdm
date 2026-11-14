@@ -24,6 +24,31 @@ impl Store {
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','1000',true),set_config('lock_timeout','1000',true)").bind(tenant).execute(&mut *tx).await?;
         Ok(tx)
     }
+    pub(crate) async fn begin_execution(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<Transaction<'_, Postgres>, sqlx::Error> {
+        let mut tx = self.begin_delivery(&binding.tenant().to_string()).await?;
+        sqlx::query("SELECT set_config('rss.storage_target',$1,true),set_config('rss.storage_lineage',$2,true),set_config('rss.execution_epoch',$3,true)")
+            .bind(uuid::Uuid::from_bytes(binding.storage().target()).simple().to_string())
+            .bind(uuid::Uuid::from_bytes(binding.storage().lineage()).simple().to_string())
+            .bind(binding.epoch().get().to_string()).execute(&mut *tx).await?;
+        sqlx::query("SELECT rss_transactional_messaging.check_execution()")
+            .execute(&mut *tx)
+            .await?;
+        Ok(tx)
+    }
+    pub(crate) async fn delivery_scopes(
+        &self,
+        after: Option<(uuid::Uuid, i64)>,
+    ) -> Result<Vec<(uuid::Uuid, i64)>, Error> {
+        sqlx::query_as(crate::storage_profile::sql(self.profile).collection_delivery_scopes)
+            .bind(after.map(|v| v.0))
+            .bind(after.map(|v| v.1))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)
+    }
     pub(crate) async fn begin_read(
         &self,
         tenant: &str,

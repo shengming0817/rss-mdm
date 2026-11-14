@@ -65,3 +65,158 @@ pub(crate) fn db(e: sqlx::Error) -> Error {
 pub(crate) fn device_id(id: uuid::Uuid) -> Result<rss_mdm_agent_wire::DeviceId, sqlx::Error> {
     rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))
 }
+
+impl Store {
+    pub async fn locate_scep_attempt(
+        &self,
+        attempt: uuid::Uuid,
+        enrollment: uuid::Uuid,
+    ) -> Result<
+        Option<(
+            rss_request_context::TenantId,
+            rss_transactional_messaging::fence::Epoch,
+        )>,
+        Error,
+    > {
+        let rows: Vec<(uuid::Uuid, i64)> = sqlx::query_as(
+            "SELECT tenant_id,expected_epoch FROM mdm_apple.scep_attempt_tenants($1,$2)",
+        )
+        .bind(attempt)
+        .bind(enrollment)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        match rows.as_slice() {
+            [] => Ok(None),
+            [(tenant, epoch)] => Ok(Some((
+                rss_request_context::TenantId::parse(&tenant.to_string())
+                    .map_err(|_| Error::Unauthorized)?,
+                rss_transactional_messaging::fence::Epoch::new(*epoch)
+                    .map_err(|_| Error::Unauthorized)?,
+            ))),
+            _ => Err(Error::Unauthorized),
+        }
+    }
+    pub async fn locate_certificate(
+        &self,
+        fingerprint: [u8; 32],
+    ) -> Result<Option<rss_request_context::TenantId>, Error> {
+        let attempt = unique_tenant(
+            sqlx::query_scalar("SELECT tenant_id FROM mdm_apple.scep_certificate_tenants($1)")
+                .bind(fingerprint.as_slice())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db)?,
+        )?;
+        let credential = self.registration.locate_certificate(fingerprint).await?;
+        match (attempt, credential) {
+            (Some(a), Some(b)) if a != b => Err(Error::Unauthorized),
+            (Some(t), _) | (_, Some(t)) => Ok(Some(t)),
+            _ => Ok(None),
+        }
+    }
+}
+fn unique_tenant(tenants: Vec<uuid::Uuid>) -> Result<Option<rss_request_context::TenantId>, Error> {
+    match tenants.as_slice() {
+        [] => Ok(None),
+        [tenant] => rss_request_context::TenantId::parse(&tenant.to_string())
+            .map(Some)
+            .map_err(|_| Error::Unavailable(Failure::Database)),
+        _ => Err(Error::Unauthorized),
+    }
+}
+
+impl Store {
+    pub async fn locate_account_configuration(
+        &self,
+        target: uuid::Uuid,
+    ) -> Result<Option<rss_request_context::TenantId>, Error> {
+        unique_tenant(
+            sqlx::query_scalar("SELECT tenant_id FROM mdm_apple.account_configuration_tenants($1)")
+                .bind(target)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db)?,
+        )
+    }
+    pub async fn locate_account_domain(
+        &self,
+        target: &str,
+    ) -> Result<Option<rss_request_context::TenantId>, Error> {
+        unique_tenant(
+            sqlx::query_scalar("SELECT tenant_id FROM mdm_apple.account_domain_tenants($1)")
+                .bind(target)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db)?,
+        )
+    }
+    pub async fn locate_ade_server(
+        &self,
+        target: uuid::Uuid,
+    ) -> Result<Option<rss_request_context::TenantId>, Error> {
+        unique_tenant(
+            sqlx::query_scalar("SELECT tenant_id FROM mdm_apple.ade_server_tenants($1)")
+                .bind(target)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db)?,
+        )
+    }
+    pub async fn locate_account_flow(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<
+        Option<(
+            rss_request_context::TenantId,
+            rss_transactional_messaging::fence::Epoch,
+        )>,
+        Error,
+    > {
+        let rows: Vec<(uuid::Uuid, i64)> =
+            sqlx::query_as("SELECT * FROM mdm_apple.account_flow_scopes($1)")
+                .bind(id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db)?;
+        match rows.as_slice() {
+            [] => Ok(None),
+            [(tenant, epoch)] => Ok(Some((
+                rss_request_context::TenantId::parse(&tenant.to_string())
+                    .map_err(|_| Error::Unauthorized)?,
+                rss_transactional_messaging::fence::Epoch::new(*epoch)
+                    .map_err(|_| Error::Unauthorized)?,
+            ))),
+            _ => Err(Error::Unauthorized),
+        }
+    }
+}
+
+impl Store {
+    pub async fn ade_work_scopes(
+        &self,
+        after: Option<(uuid::Uuid, i64)>,
+        fresh_epoch: rss_transactional_messaging::fence::Epoch,
+    ) -> Result<Vec<(uuid::Uuid, i64)>, Error> {
+        sqlx::query_as("SELECT * FROM mdm_apple.ade_work_scopes($1,$2,$3)")
+            .bind(after.map(|v| v.0))
+            .bind(after.map(|v| v.1))
+            .bind(fresh_epoch.get())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)
+    }
+}
+
+impl Store {
+    pub async fn push_work_scopes(
+        &self,
+        after: Option<uuid::Uuid>,
+    ) -> Result<Vec<uuid::Uuid>, Error> {
+        sqlx::query_scalar("SELECT tenant_id FROM mdm_apple.push_work_scopes($1)")
+            .bind(after)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)
+    }
+}

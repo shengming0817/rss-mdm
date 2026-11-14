@@ -504,6 +504,7 @@ fn current_destination_preserves_complete_large_values_within_its_batch_budget()
         .collect();
     assert!(serde_json::to_vec(&point).unwrap().len() < 4 * 1024 * 1024);
     let accepted = crate::admission::Accepted {
+        expected_epoch: 1,
         tenant: "11111111-1111-4111-8111-111111111111".into(),
         device: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
             .unwrap(),
@@ -566,6 +567,7 @@ fn failed_current_needs_no_historical_context(
             };
         }
         let accepted = crate::admission::Accepted {
+            expected_epoch: 1,
             tenant: "11111111-1111-4111-8111-111111111111".into(),
             device: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
                 .unwrap(),
@@ -661,6 +663,7 @@ fn raw_extensions_are_preserved_but_only_declared_values_become_facts() {
         );
         let raw_bytes = serde_json::to_vec(&point).unwrap();
         let accepted = crate::admission::Accepted {
+            expected_epoch: 1,
             tenant: "11111111-1111-4111-8111-111111111111".into(),
             device: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
                 .unwrap(),

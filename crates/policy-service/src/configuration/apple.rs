@@ -58,7 +58,7 @@ impl Transactions {
                 Box::pin(async move { Ok(authority.dispatch_ready(source.as_ref(), c).await) })
             })
             .await??;
-        admission(self, op, accepted, dispatch)
+        admission(op, accepted, dispatch)
     }
     pub async fn apple_candidates_in(
         &self,
@@ -102,7 +102,7 @@ impl Transactions {
             Settlement::Received => dc::DeviceEvent::Received,
             Settlement::Reported => dc::DeviceEvent::Reported(op.request.digest(
                 &service.protection,
-                service.tenant,
+                op.scope.tenant(),
                 &op.device,
             )?),
             Settlement::Rejected => dc::DeviceEvent::Rejected,
@@ -145,7 +145,7 @@ impl Transactions {
         if transition.command.version() != previous {
             service
                 .changes
-                .configuration_progressed_in(tx, std::slice::from_ref(&op.device))
+                .configuration_progressed_in(audit.binding()?, tx, std::slice::from_ref(&op.device))
                 .await?;
         }
         let withdrawal_received = transition.command.status() == dc::Status::Received
@@ -153,7 +153,7 @@ impl Transactions {
         if transition.command.status().is_terminal() || withdrawal_received {
             // Logical publication withdrawal can release desired claims without claiming an OS effect.
             service
-                .wake_devices_in(tx, std::slice::from_ref(&op.device))
+                .wake_devices_in(p.binding(), tx, std::slice::from_ref(&op.device))
                 .await?;
         }
         Ok(())
@@ -188,7 +188,7 @@ impl Transactions {
             return Err(Error::Malformed.into());
         }
         if eligible(self, tx, p, &op).await? {
-            complete_ddm(self, tx, &op).await?;
+            complete_ddm(p.binding(), self, tx, &op).await?;
         }
         Ok(())
     }
@@ -227,18 +227,13 @@ impl Transactions {
                     .await?
                     .is_authorized()
             {
-                output.push(admission(self, op, true, false)?);
+                output.push(admission(op, true, false)?);
             }
         }
         Ok(output)
     }
 }
-fn admission(
-    s: &Transactions,
-    op: storage::Operation,
-    eligible: bool,
-    dispatch: bool,
-) -> Result<AppleAdmission> {
+fn admission(op: storage::Operation, eligible: bool, dispatch: bool) -> Result<AppleAdmission> {
     let Task::Macos { request } = &op.request.task else {
         return Err(Error::Malformed.into());
     };
@@ -246,7 +241,7 @@ fn admission(
         eligible,
         dispatch,
         target: AppleRegistration {
-            tenant: s.tenant.to_string(),
+            tenant: op.scope.tenant().to_string(),
             device: op.device,
         },
         command: AppleCommand {
@@ -260,6 +255,7 @@ fn admission(
     })
 }
 async fn complete_ddm(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
     op: &storage::Operation,
@@ -292,7 +288,7 @@ async fn complete_ddm(
                 coordinate: op.coordinate,
                 event: dc::DeviceEvent::Reported(op.request.digest(
                     &service.protection,
-                    service.tenant,
+                    op.scope.tenant(),
                     &op.device,
                 )?),
             },
@@ -304,11 +300,11 @@ async fn complete_ddm(
     if transition.command.version() != previous {
         service
             .changes
-            .configuration_progressed_in(tx, std::slice::from_ref(&op.device))
+            .configuration_progressed_in(binding, tx, std::slice::from_ref(&op.device))
             .await?;
     }
     service
-        .wake_devices_in(tx, std::slice::from_ref(&op.device))
+        .wake_devices_in(binding, tx, std::slice::from_ref(&op.device))
         .await?;
     Ok(())
 }

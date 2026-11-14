@@ -113,20 +113,20 @@ pub(crate) async fn lock_members(
 impl Associations {
     /// Requires visibility of both members, including for revoked history.
     pub async fn get(&self, proof: &AuthorizedPrincipal, id: Uuid) -> Result<Association> {
-        if proof.tenant_id() != self.tenant.to_string() {
+        if proof.tenant_id() != proof.binding().tenant().to_string() {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(5));
-        let (value,grants)=self.audit.read(self.tenant,&budget.control(),(self,proof,id),|ctx,tx|Box::pin(async move {
+        let (value,grants)=self.audit.read(proof.binding().tenant(),&budget.control(),(self,proof,id),|ctx,tx|Box::pin(async move {
             tx.with_connection_context(ctx,|ctx,c|Box::pin(async move {
-                let (service,proof,id)=*ctx;
+                let (_,proof,id)=*ctx;
                 let grant=authorization(c,proof).await?;
                 let raw:serde_json::Value=sqlx::query_scalar("SELECT mdm_devices.read_world(ARRAY[$2::uuid],ARRAY(SELECT device FROM mdm_devices.members WHERE tenant_id=$1::uuid AND association_id=$2),ARRAY[]::text[])").bind(proof.tenant_id()).bind(id).fetch_one(c).await?;
                 let associations:Vec<Association>=serde_json::from_value(raw["associations"].clone()).map_err(|_|Error::Storage)?;
                 let association=associations.first().ok_or(Error::NotFound)?;
                 authorize(&grant,proof,&association.members,false).map_err(|e|if matches!(e,Error::Forbidden){Error::NotFound}else{e})?;
                 let ids=association.members.iter().map(|m|m.device).collect::<Vec<_>>();
-                let (world,_,_,_)=crate::snapshot::decode_world(&raw,service.tenant,&ids)?;
+                let (world,_,_,_)=crate::snapshot::decode_world(&raw,proof.binding().tenant(),&ids)?;
                 proof.check_live()?;
                 Ok((world.effective(association.clone()),grant.query_binding(proof)?))
             })).await
@@ -147,11 +147,11 @@ impl Associations {
         if !(1..=1024).contains(&limit) {
             return Err(Error::Malformed);
         }
-        if proof.tenant_id() != self.tenant.to_string() {
+        if proof.tenant_id() != proof.binding().tenant().to_string() {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(5));
-        let (value,grants)=self.audit.read(self.tenant,&budget.control(),(self,proof,device,token,selected),|(service,proof,device,token,selected),tx|Box::pin(async move {
+        let (value,grants)=self.audit.read(proof.binding().tenant(),&budget.control(),(self,proof,device,token,selected),|(service,proof,device,token,selected),tx|Box::pin(async move {
             tx.with_connection_context(&mut (*service,*proof,*device,*token,*selected),|(service,proof,device,token,selected),c|Box::pin(async move {
                 let snapshot=authorization(c,proof).await?;
                 snapshot.require(proof,Permission::InventoryRead,Some(device))?;
@@ -187,11 +187,11 @@ impl Associations {
         id: Uuid,
         namespace: ReceiptNamespace,
     ) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>> {
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != p.binding().tenant().to_string() {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(5));
-        self.audit.read(self.tenant,&budget.control(),(p,namespace),|ctx,tx|Box::pin(async move{
+        self.audit.read(p.binding().tenant(),&budget.control(),(p,namespace),|ctx,tx|Box::pin(async move{
             tx.with_connection_context(ctx,|(p,namespace),c|Box::pin(async move{
                 let grant=authorization(c,p).await?;
                 let (actor,instance)=namespace.coordinates(p);

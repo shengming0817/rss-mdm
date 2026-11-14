@@ -91,6 +91,37 @@ pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Dec
         search: rss_mdm_http_contract::module::Route::new(
             "/operation-diagnostics",
             get(
+                tenant_search,
+                &catalog::OPERATION_DIAGNOSTICS,
+                &[RouteOperation::List],
+            ),
+        ),
+        request: rss_mdm_http_contract::module::Route::new(
+            "/operation-diagnostics/requests/{requestId}",
+            get(
+                tenant_request,
+                &catalog::OPERATION_DIAGNOSTICS,
+                &[RouteOperation::List],
+            ),
+        ),
+        operation: rss_mdm_http_contract::module::Route::new(
+            "/operation-diagnostics/operations/{owner}/{operationId}",
+            get(
+                tenant_operation,
+                &catalog::OPERATION_DIAGNOSTICS,
+                &[RouteOperation::Get],
+            ),
+        ),
+    }
+    .assemble()
+}
+pub fn management_routes()
+-> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    rss_mdm_http_contract::route_module! {struct ManagementDiagnosticsRoutes for [Browser]{search,request,operation}}
+    ManagementDiagnosticsRoutes {
+        search: rss_mdm_http_contract::module::Route::new(
+            "/operation-diagnostics",
+            get(
                 search,
                 &catalog::OPERATION_DIAGNOSTICS,
                 &[RouteOperation::List],
@@ -328,4 +359,43 @@ mod tests {
             assert!(json.get("value").is_none());
         }
     }
+}
+
+async fn tenant_search(
+    Path(_tenant): Path<Uuid>,
+    state: State<Arc<Services>>,
+    auth: Extension<RequestAuth>,
+    audit: Extension<RequestAudit>,
+    params: rss_mdm_http_contract::query::OwnedQuery<Discovery>,
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<DiagnosticPage>>, Error> {
+    search(state, auth, audit, params).await
+}
+async fn tenant_request(
+    state: State<Arc<Services>>,
+    auth: Extension<RequestAuth>,
+    audit: Extension<RequestAudit>,
+    Path((_tenant, id)): Path<(Uuid, Uuid)>,
+    params: rss_mdm_http_contract::query::OwnedQuery<Discovery>,
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<DiagnosticPage>>, Error> {
+    request(state, auth, audit, Path(id), params).await
+}
+async fn tenant_operation(
+    state: State<Arc<Services>>,
+    auth: Extension<RequestAuth>,
+    audit: Extension<RequestAudit>,
+    Path((_tenant, owner, id)): Path<(Uuid, OperationOwner, Uuid)>,
+    headers: PresentedCredentials,
+    address: Option<Extension<rss_identity_http_axum::ClientAddress>>,
+    params: rss_mdm_http_contract::query::OwnedQuery<LocatorParameters>,
+) -> Result<Json<Detail>, Error> {
+    operation(
+        state,
+        auth,
+        audit,
+        Path((owner, id)),
+        headers,
+        address,
+        params,
+    )
+    .await
 }

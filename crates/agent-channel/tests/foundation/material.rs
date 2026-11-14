@@ -285,7 +285,7 @@ pub async fn authenticated_agent(
     let principal = rss_mdm_registration_service::device::authenticate_endpoint_in(
         super::DA,
         &mut tx,
-        c.tenant,
+        c.execution(),
         &peer,
     )
     .await?;

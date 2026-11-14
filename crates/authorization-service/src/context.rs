@@ -1,6 +1,7 @@
 //! Request-scoped product authorization, separate from Identity authentication facts.
 use crate::{Error, Permission};
 use rss_identity_postgres::AuthenticatedSession;
+use rss_transactional_messaging::fence::ExecutionBinding;
 
 pub struct AuthorizedPrincipal {
     profile: rss_mdm_install_support::StorageProfile,
@@ -46,7 +47,8 @@ impl AuthorizedPrincipal {
     /// Bind authenticated identity to the same tenant's audit facts, including denied requests.
     /// Expiry/authorization is checked by the operation; recording the known actor is not a grant.
     pub fn bind_audit(&self, audit: &rss_mdm_audit_integration::RequestAudit) -> Result<(), Error> {
-        if audit.profile() != self.profile() || audit.tenant() != self.tenant_id() {
+        audit.bind_scope(self.binding())?;
+        if audit.profile() != self.profile() || audit.binding()? != self.binding() {
             audit.intent(rss_mdm_audit_integration::AuditIntent::Security);
             return Err(Error::Forbidden);
         }
@@ -60,13 +62,15 @@ impl AuthorizedPrincipal {
     pub(crate) fn from_initialization(
         authority: Arc<crate::baseline::Authority>,
         clock: Arc<dyn rss_request_context::Clock>,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         let user = authority.user().clone();
-        Self {
+        let binding = authority.binding()?;
+        Ok(Self {
             profile: authority.profile(),
             authority_profile: authority.profile(),
             clock: clock.clone(),
             identity: Principal {
+                binding,
                 subject: user.principal_id.clone(),
                 actor: crate::Actor::Account { user },
                 proof: Authentication::Initialization {
@@ -76,7 +80,7 @@ impl AuthorizedPrincipal {
                 },
             },
             authorization: None,
-        }
+        })
     }
     /// Durable attempts cannot leave their fixed initialization object set.
     pub fn require_initialization_target(&self, target: &str) -> Result<(), Error> {
@@ -128,6 +132,9 @@ impl AuthorizedPrincipal {
     }
     pub fn tenant_id(&self) -> &str {
         self.identity.tenant_id()
+    }
+    pub fn binding(&self) -> ExecutionBinding {
+        self.identity.binding
     }
     pub fn principal_id(&self) -> &str {
         self.identity.principal_id()
@@ -297,16 +304,15 @@ impl RequestAuth {
     /// Refresh Identity before acquiring product locks; never renew the request budget.
     pub async fn revalidate(&self) -> Result<Option<crate::session::RevalidatedSession>, Error> {
         self.proof.check_live()?;
-        if self.sessions.tenant().to_string() != self.proof.tenant_id() {
-            return Err(Error::Forbidden);
-        }
         match &self.proof.identity.proof {
             Authentication::Account(session) => {
                 let reference = session
                     .reference()
                     .map_err(crate::session::authority_error)?;
                 Ok(Some(
-                    self.sessions.recheck(&reference, self.remaining()?).await?,
+                    self.sessions
+                        .recheck(self.proof.binding(), &reference, self.remaining()?)
+                        .await?,
                 ))
             }
             Authentication::ApiKey(_) | Authentication::Initialization { .. } => {
@@ -336,6 +342,7 @@ impl RequestAuth {
 
 /// A single private projection, created only from a request's authoritative component result.
 pub struct Principal {
+    binding: ExecutionBinding,
     proof: Authentication,
     actor: crate::Actor,
     subject: String,
@@ -350,26 +357,31 @@ enum Authentication {
     },
 }
 impl Principal {
-    pub fn new(session: AuthenticatedSession) -> Result<Self, Error> {
+    pub fn new(session: AuthenticatedSession, binding: ExecutionBinding) -> Result<Self, Error> {
         session.assurance().map_err(|_| Error::Unauthorized)?;
+        if session.account().tenant != binding.tenant() {
+            return Err(Error::Forbidden);
+        }
         let user = crate::User {
             instance_id: session.instance().to_string(),
             tenant_id: session.account().tenant.to_string(),
             principal_id: session.account().principal.as_uuid().to_string(),
         };
         Ok(Self {
+            binding,
             subject: user.principal_id.clone(),
             actor: crate::Actor::Account { user },
             proof: Authentication::Account(Arc::new(session)),
         })
     }
-    pub(crate) fn from_key(proof: crate::api_key::KeyProof) -> Self {
+    pub(crate) fn from_key(proof: crate::api_key::KeyProof, binding: ExecutionBinding) -> Self {
         let actor = crate::Actor::ApiKey {
             instance: proof.instance.clone(),
             tenant: proof.tenant.clone(),
             id: proof.id,
         };
         Self {
+            binding,
             subject: actor.subject(),
             actor,
             proof: Authentication::ApiKey(proof),
@@ -530,7 +542,15 @@ mod authority_tests {
         let principal = AuthorizedPrincipal {
             profile: product,
             authority_profile: source,
-            identity: Principal::from_key(key),
+            identity: Principal::from_key(
+                key,
+                ExecutionBinding::new(
+                    rss_transactional_messaging::fence::StorageIdentity::new([1; 16], [2; 16])
+                        .unwrap(),
+                    rss_request_context::TenantId::parse(&user.tenant_id).unwrap(),
+                    rss_transactional_messaging::fence::Epoch::new(1).unwrap(),
+                ),
+            ),
             clock: Arc::new(Clock(now)),
             authorization: None,
         };
@@ -574,7 +594,7 @@ mod authority_tests {
             rss_mdm_audit_integration::RequestAudit::new(
                 rss_mdm_audit_integration::Origin::Background,
                 product,
-                proof.tenant_id().into(),
+                proof.binding(),
                 "test",
                 rss_mdm_audit_integration::AuditIntent::Management,
             )

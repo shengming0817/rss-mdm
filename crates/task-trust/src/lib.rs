@@ -50,9 +50,8 @@ pub trait RetirementGuard: Send + Sync {
 /// Shared signing capability. Private key operations cannot bypass durable admission.
 pub struct Signing {
     profile: rss_mdm_install_support::StorageProfile,
-    tenant: TenantId,
     usage: Use,
-    signer: Option<signing::Signer>,
+    protection: Arc<rss_mdm_native_protection::Protector>,
 }
 impl Signing {
     pub const fn profile(&self) -> rss_mdm_install_support::StorageProfile {
@@ -61,27 +60,33 @@ impl Signing {
     pub fn new(
         profile: rss_mdm_install_support::StorageProfile,
         usage: Use,
-        tenant: TenantId,
-        loaded: Option<trust::Loaded>,
+        protection: Arc<rss_mdm_native_protection::Protector>,
     ) -> Result<Self, Error> {
-        if loaded
-            .as_ref()
-            .is_some_and(|v| v.tenant != tenant || v.profile != profile || v.usage != usage)
-        {
-            return Err(Error::Forbidden);
-        }
         Ok(Self {
             profile,
-            tenant,
             usage,
-            signer: loaded.map(|v| v.task),
+            protection,
         })
     }
-    pub fn loaded_key(&self) -> Option<&str> {
-        self.signer.as_ref().map(|s| s.key_id())
+    async fn load_on(
+        &self,
+        c: &mut PgConnection,
+        tenant: TenantId,
+    ) -> Result<signing::Signer, Error> {
+        let current = trust::current(self.profile, self.usage, c, tenant).await?;
+        let loaded = trust::load(
+            self.profile,
+            self.usage,
+            c,
+            tenant,
+            current.revision,
+            &self.protection,
+        )
+        .await?;
+        Ok(loaded.task)
     }
     async fn revalidate(&self, c: &mut PgConnection, p: &DevicePrincipal) -> Result<(), Error> {
-        if p.profile() != self.profile || p.tenant() != self.tenant {
+        if p.profile() != self.profile {
             return Err(Error::Forbidden);
         }
         rss_mdm_registration_service::device::require_use_in(c, p, self.usage).await?;
@@ -109,14 +114,13 @@ impl Signing {
             return Err(Error::Forbidden);
         }
         self.revalidate(c, p).await?;
-        let signer = self.signer.as_ref().ok_or(Error::Unsupported)?;
+        let signer = self.load_on(c, p.tenant()).await?;
         trust::require_issue(self.profile, self.usage, c, p, signer.key_id()).await?;
         signer.sign(payload)
     }
 }
 
 pub struct Service {
-    tenant: TenantId,
     signing: Arc<Signing>,
     protection: Arc<rss_mdm_native_protection::Protector>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -124,17 +128,15 @@ pub struct Service {
 }
 impl Service {
     pub fn new(
-        tenant: TenantId,
         signing: Arc<Signing>,
         protection: Arc<rss_mdm_native_protection::Protector>,
         audit: Arc<rss_mdm_audit_integration::AuditStore>,
         retirement: Arc<dyn RetirementGuard>,
     ) -> Result<Self, Error> {
-        if signing.tenant != tenant || signing.usage != Use::AgentTask {
+        if signing.usage != Use::AgentTask {
             return Err(Error::Forbidden);
         }
         Ok(Self {
-            tenant,
             signing,
             protection,
             audit,
@@ -146,19 +148,16 @@ impl Service {
 impl Service {
     /// Configuration signatures retain their own durable verification horizon; no Agent runtime is assembled.
     pub fn for_configurations(
-        tenant: TenantId,
         signing: Arc<Signing>,
         protection: Arc<rss_mdm_native_protection::Protector>,
         audit: Arc<rss_mdm_audit_integration::AuditStore>,
     ) -> Result<Self, Error> {
-        if signing.tenant != tenant
-            || signing.usage != Use::DaConfiguration
+        if signing.usage != Use::DaConfiguration
             || signing.profile != rss_mdm_install_support::StorageProfile::Da
         {
             return Err(Error::Forbidden);
         }
         Ok(Self {
-            tenant,
             signing,
             protection,
             audit,

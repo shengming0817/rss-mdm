@@ -27,7 +27,7 @@ pub async fn describe_in(
     let Some(basis) = access::select(config, proof)? else {
         return Ok(None);
     };
-    let Some(subject) = access::qualify_in(service, tx, config, &basis).await? else {
+    let Some(subject) = access::qualify_in(p.binding(), service, tx, config, &basis).await? else {
         return Ok(None);
     };
     let plan = db::load_source(

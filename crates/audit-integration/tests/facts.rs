@@ -1,3 +1,11 @@
+fn binding(tenant: &str) -> rss_transactional_messaging::fence::ExecutionBinding {
+    use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
+    ExecutionBinding::new(
+        StorageIdentity::new([1; 16], [2; 16]).unwrap(),
+        rss_request_context::TenantId::parse(tenant).unwrap(),
+        Epoch::new(1).unwrap(),
+    )
+}
 use rss_mdm_audit_integration::{Fact, RequestAudit};
 fn canonical(fact: &Fact) -> Vec<u8> {
     let time = rss_contract::Timepoint::try_from(1i64).unwrap();
@@ -11,14 +19,14 @@ fn business_identity_is_stable_but_originating_request_is_immutable() {
     let first = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        "f47ac10b-58cc-4372-a567-0e02b2c3d479".into(),
+        binding("f47ac10b-58cc-4372-a567-0e02b2c3d479"),
         "device_action",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     let second = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        first.tenant().into(),
+        first.binding().unwrap(),
         "device_action",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -70,7 +78,7 @@ fn detail_replacement_depends_only_on_final_facts() {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        "f47ac10b-58cc-4372-a567-0e02b2c3d479".into(),
+        binding("f47ac10b-58cc-4372-a567-0e02b2c3d479"),
         "device_action",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -107,21 +115,10 @@ fn detail_replacement_depends_only_on_final_facts() {
 #[test]
 fn invalid_facts_expose_closed_categories_without_input_values() {
     use rss_mdm_audit_integration::InvalidFact;
-    let context = RequestAudit::new(
-        rss_mdm_audit_integration::Origin::Request,
-        rss_mdm_audit_integration::StorageProfile::Mdm,
-        "bad-secret-tenant".into(),
-        "valid_action",
-        rss_mdm_audit_integration::AuditIntent::Management,
-    );
-    assert!(matches!(
-        Fact::request(&context, 200, "success"),
-        Err(InvalidFact::Tenant)
-    ));
     let valid = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        "11111111-1111-4111-8111-111111111111".into(),
+        binding("11111111-1111-4111-8111-111111111111"),
         "valid_action",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -144,7 +141,6 @@ fn invalid_facts_expose_closed_categories_without_input_values() {
         ),
         Err(InvalidFact::Identity)
     ));
-    context.finalize(None);
     valid.finalize(None);
 }
 
@@ -153,7 +149,7 @@ fn device_request_coordinates_are_explicit_and_generic_targets_clear_them() {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        "11111111-1111-4111-8111-111111111111".into(),
+        binding("11111111-1111-4111-8111-111111111111"),
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -181,7 +177,7 @@ fn product_source_survives_context_projection() {
         let context = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Request,
             profile,
-            "f47ac10b-58cc-4372-a567-0e02b2c3d479".into(),
+            binding("f47ac10b-58cc-4372-a567-0e02b2c3d479"),
             "device_action",
             AuditIntent::Management,
         );
@@ -217,7 +213,6 @@ fn product_source_survives_context_projection() {
             copy.finalize(None);
         }
         identities.push(fact.identity().source().source_id().as_str().to_owned());
-        context.finalize(None);
     }
     assert_eq!(identities, ["mdm.business", "da.business"]);
 }
@@ -230,7 +225,7 @@ fn background_facts_do_not_invent_request_causality_or_write_outcomes() {
         let audit = RequestAudit::new(
             origin,
             StorageProfile::Mdm,
-            "11111111-1111-4111-8111-111111111111".into(),
+            binding("11111111-1111-4111-8111-111111111111"),
             "command_accept",
             AuditIntent::Management,
         );
@@ -267,7 +262,7 @@ fn replay_request_and_tenant_child_keep_only_explicit_coordinates() {
     let audit = RequestAudit::new(
         Origin::Request,
         StorageProfile::Mdm,
-        "11111111-1111-4111-8111-111111111111".into(),
+        binding("11111111-1111-4111-8111-111111111111"),
         "write",
         AuditIntent::Management,
     );
@@ -283,7 +278,7 @@ fn replay_request_and_tenant_child_keep_only_explicit_coordinates() {
         serde_json::from_slice(replay.context().payload().as_bytes()).unwrap();
     assert_eq!(payload["operationLocator"]["owner"], "resource");
     assert_eq!(payload["operationLocator"]["actor"], "actor");
-    let child = audit.tenant_fact_copy("33333333-3333-4333-8333-333333333333".into(), "child");
+    let child = audit.tenant_fact_copy(binding("33333333-3333-4333-8333-333333333333"), "child");
     assert_eq!(child.request_coordinate(), audit.request_coordinate());
     let event = Fact::business(&child, O::Resource, "child", 200, "success", None)
         .unwrap()
@@ -309,7 +304,7 @@ fn rejected_nil_operation_does_not_prevent_recording_the_request_attempt() {
     let a = RequestAudit::new(
         Origin::Request,
         StorageProfile::Mdm,
-        "11111111-1111-4111-8111-111111111111".into(),
+        binding("11111111-1111-4111-8111-111111111111"),
         "invalid",
         AuditIntent::Management,
     );
@@ -338,7 +333,7 @@ fn receipt_subject_is_not_the_authenticated_actor_or_a_run_namespace() {
     let audit = RequestAudit::new(
         Origin::Request,
         StorageProfile::Mdm,
-        "f47ac10b-58cc-4372-a567-0e02b2c3d479".into(),
+        binding("f47ac10b-58cc-4372-a567-0e02b2c3d479"),
         "self_service_invoke",
         AuditIntent::Management,
     );

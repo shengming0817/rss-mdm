@@ -119,13 +119,22 @@ impl Material {
                 scep_url: None,
             },
         ])?);
+        let registry = Arc::new(rss_mdm_pki_service::registry::Registry::new(
+            DA,
+            c.access.clone(),
+            c.access_audit.clone(),
+            c.execution(),
+            providers.clone(),
+        ));
         let clock = Arc::new(context::Timer);
         let issuer = Arc::new(registration::certificate_issuance::DeviceIssuer::new(
             DA,
             providers,
             2,
             true,
-            identity,
+            pki::Purpose::DaDevice,
+            registry,
+            Uuid::parse_str(&c.inputs.installation.instance_id)?,
             clock.clone(),
         )?);
         Ok(Arc::new(registration::agent::da::RegistrationService::new(
@@ -134,7 +143,7 @@ impl Material {
                     ring::hmac::HMAC_SHA256,
                     &[5; 32],
                 )),
-                tenant: c.tenant,
+                probe: c.execution(),
                 store: Arc::new(registration::Store::for_device_access(c.access.clone())),
                 audit: c.access_audit.clone(),
                 issuer,
@@ -209,7 +218,6 @@ pub fn state(
     m: &Material,
 ) -> Result<rss_mdm_device_access_http::Services> {
     let trust = Arc::new(rss_mdm_task_trust::Service::for_configurations(
-        c.tenant,
         signing,
         m.protection.clone(),
         c.access_audit.clone(),
@@ -232,27 +240,11 @@ pub fn state(
         requests: Arc::new(tokio::sync::Semaphore::new(16)),
     })
 }
-pub async fn load(c: &Context, m: &Material, revision: u64) -> Result<Arc<Signing>> {
-    let mut tx = c.access.begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(c.tenant.to_string())
-        .execute(&mut *tx)
-        .await?;
-    let loaded = rss_mdm_task_trust::trust::load(
-        DA,
-        Use::DaConfiguration,
-        &mut tx,
-        c.tenant,
-        revision,
-        &m.protection,
-    )
-    .await?;
-    tx.commit().await?;
+pub fn signing(m: &Material) -> Result<Arc<Signing>> {
     Ok(Arc::new(Signing::new(
         DA,
         Use::DaConfiguration,
-        c.tenant,
-        Some(loaded),
+        m.protection.clone(),
     )?))
 }
 pub async fn success<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T> {
@@ -355,7 +347,7 @@ async fn administrator_for(
     tx.commit().await?;
     // This SDK future is nested inside the complete protocol proof; keep its state on the heap.
     let issued = Box::pin(c.authority.login_local_bearer(
-        c.sessions.binding(),
+        c.execution(),
         LoginKey::parse(&login)?,
         Password::new(password.into())?,
         rss_identity_postgres::AttemptSource::parse("da-foundation")?,
@@ -367,4 +359,13 @@ async fn administrator_for(
     kdf.close();
     kdf.wait_closed().await;
     Ok(issued.secret().expose().into())
+}
+
+pub fn management_base(device_base: &str, tenant: rss_request_context::TenantId) -> String {
+    format!(
+        "{}/api/v1/tenants/{tenant}/da",
+        device_base
+            .strip_suffix("/api/v1/da")
+            .expect("DA device base")
+    )
 }

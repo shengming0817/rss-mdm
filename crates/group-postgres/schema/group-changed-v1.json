@@ -14,7 +14,8 @@
     "added",
     "removed",
     "ruleVersion",
-    "authorityVersion"
+    "authorityVersion",
+    "executionEpoch"
   ],
   "properties": {
     "v": {
@@ -71,6 +72,10 @@
     "authorityVersion": {
       "type": "integer",
       "minimum": 0
+    },
+    "executionEpoch": {
+      "type": "integer",
+      "minimum": 1
     }
   }
 }

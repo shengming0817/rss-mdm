@@ -99,6 +99,8 @@ struct Options {
     quotas: Usage,
 }
 async fn options(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
 ) -> Result<Json<Options>, Error> {
@@ -108,6 +110,8 @@ async fn options(
     }))
 }
 async fn me(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
 ) -> Result<Json<Usage>, Error> {
@@ -119,6 +123,8 @@ async fn me(
         .map_err(Into::into)
 }
 async fn defaults(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
 ) -> Result<Json<Configuration>, Error> {
@@ -132,7 +138,7 @@ async fn defaults(
 async fn overrides(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-    Path((instance, principal)): Path<(Uuid, Uuid)>,
+    Path((_tenant, instance, principal)): Path<(uuid::Uuid, Uuid, Uuid)>,
 ) -> Result<Json<Configuration>, Error> {
     app.service
         .quotas()
@@ -144,7 +150,7 @@ async fn overrides(
 async fn usage(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-    Path((instance, principal)): Path<(Uuid, Uuid)>,
+    Path((_tenant, instance, principal)): Path<(uuid::Uuid, Uuid, Uuid)>,
 ) -> Result<Json<Usage>, Error> {
     app.service
         .quotas()
@@ -154,6 +160,8 @@ async fn usage(
         .map_err(Into::into)
 }
 async fn defaults_write(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -174,7 +182,7 @@ async fn overrides_write(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     headers: crate::api::WriteHeaders,
-    Path((instance, principal)): Path<(Uuid, Uuid)>,
+    Path((_tenant, instance, principal)): Path<(uuid::Uuid, Uuid, Uuid)>,
     input: Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Configuration>, Error> {
     let key = write_key(&headers, &audit, "registration_quota_change")?;
@@ -193,6 +201,8 @@ async fn overrides_write(
         .map_err(Into::into)
 }
 async fn create_self(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,

@@ -228,7 +228,7 @@ use access::directory::view;
 async fn list(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Directory<ListQuery>,
     >,
@@ -256,7 +256,7 @@ async fn list(
 async fn binding(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
+    Path((_tenant, device, id)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId, Uuid)>,
 ) -> Result<Json<access::directory::BindingView>, Error> {
     s.registration
         .device_access_binding(&auth, &device, id)
@@ -267,7 +267,7 @@ async fn binding(
 async fn enterprise_detail(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<String>,
+    Path((_tenant, id)): Path<(uuid::Uuid, String)>,
 ) -> Result<Json<rss_mdm_device_access_postgres::enterprise::directory::RecordView>, Error> {
     s.registration
         .enterprise_configuration_record(&auth, &id)
@@ -279,14 +279,14 @@ async fn change(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
+    Path((_tenant, device, id)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId, Uuid)>,
     OperationProofHeaders(headers): OperationProofHeaders,
     body: Result<Json<ChangeInput>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<access::directory::BindingView>, Error> {
     let input = body.map_err(Error::from)?.0;
     let input = input.into_change();
     let proof = operation_proof(&headers)?;
-    let idp_fingerprints = offboarding_providers(&s, &input);
+    let idp_fingerprints = offboarding_providers(&s, auth.proof.binding(), &input);
     Ok(Json(view(
         s.registration
             .change_device_access(
@@ -305,7 +305,7 @@ async fn change(
 async fn operation(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
+    Path((_tenant, device, id)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId, Uuid)>,
 ) -> Result<Json<access::directory::BindingView>, Error> {
     Ok(Json(view(
         s.registration
@@ -390,19 +390,23 @@ pub(crate) fn operation_proof(
 async fn step_up(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
+    Path((_tenant, device, id)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId, Uuid)>,
     crate::identity::CeremonyHeaders(headers): crate::identity::CeremonyHeaders,
     body: Result<Json<ChangeInput>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::identity_contract::TimedChallenge>, Error> {
     let input = body.map_err(Error::from)?.0.into_change();
-    let context =
-        input.step_up_context(&auth.proof, &device, id, &offboarding_providers(&s, &input))?;
+    let context = input.step_up_context(
+        &auth.proof,
+        &device,
+        id,
+        &offboarding_providers(&s, auth.proof.binding(), &input),
+    )?;
     let challenge = s
         .identity
         .webauthn
         .begin_authentication(
             s.identity
-                .ceremony_actor(&headers, auth.remaining()?)
+                .ceremony_actor(auth.proof.binding(), &headers, auth.remaining()?)
                 .await?,
             s.identity.rp_generation,
             context,
@@ -416,7 +420,7 @@ async fn step_up(
 async fn offboarding(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
+    Path((_tenant, device, id)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId, Uuid)>,
 ) -> Result<Json<access::lifecycle::Progress>, Error> {
     s.registration
         .offboarding_progress(&auth.proof, &device, id)
@@ -452,7 +456,7 @@ async fn offboarding_identity(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
+    Path((_tenant, device, id)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId, Uuid)>,
     IdentityOffboardingHeaders(headers): IdentityOffboardingHeaders,
     body: Result<Json<IdentityDisposition>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<OffboardingIdentity>, Error> {
@@ -477,7 +481,7 @@ async fn offboarding_identity(
         IdentityDisposition::Reconcile {} => {
             let actor = s
                 .identity
-                .ceremony_actor(&headers, auth.remaining()?)
+                .ceremony_actor(auth.proof.binding(), &headers, auth.remaining()?)
                 .await?;
             let account = s
                 .identity
@@ -485,7 +489,7 @@ async fn offboarding_identity(
                 .read_account(
                     actor,
                     rss_identity_core::account::AccountKey {
-                        tenant: s.identity.tenant,
+                        tenant: auth.proof.binding().tenant(),
                         principal,
                     },
                     deadline()?,
@@ -519,7 +523,7 @@ async fn offboarding_identity(
             }
             let actor = s
                 .identity
-                .ceremony_actor(&headers, auth.remaining()?)
+                .ceremony_actor(auth.proof.binding(), &headers, auth.remaining()?)
                 .await?;
             let Some(attempt) = s
                 .registration
@@ -531,7 +535,7 @@ async fn offboarding_identity(
                 }));
             };
             let target = rss_identity_core::account::AccountKey {
-                tenant: s.identity.tenant,
+                tenant: auth.proof.binding().tenant(),
                 principal,
             };
             let outcome = s
@@ -569,6 +573,7 @@ async fn offboarding_identity(
 }
 
 async fn enterprise_list(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     query: rss_mdm_http_contract::query::OwnedQuery<
@@ -599,6 +604,7 @@ async fn enterprise_list(
 }
 fn enterprise_target(
     s: &Services,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     input: &rss_mdm_device_access_postgres::enterprise::Change,
 ) -> Result<Option<String>, Error> {
     match &input.configuration {
@@ -608,6 +614,9 @@ fn enterprise_target(
                 .enterprise_clients
                 .get(id)
                 .ok_or(Error::Malformed)?;
+            if target.tenant() != execution.tenant() {
+                return Err(Error::Forbidden);
+            }
             Ok(Some(target.fingerprint().to_owned()))
         }
         rss_mdm_device_access_postgres::enterprise::Configuration::Subject { .. }
@@ -615,6 +624,7 @@ fn enterprise_target(
     }
 }
 async fn enterprise_step_up(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     crate::identity::CeremonyHeaders(headers): crate::identity::CeremonyHeaders,
@@ -624,11 +634,11 @@ async fn enterprise_step_up(
     >,
 ) -> Result<Json<crate::identity_contract::Challenge>, Error> {
     let input = body.map_err(Error::from)?.0;
-    let target = enterprise_target(&s, &input)?;
+    let target = enterprise_target(&s, auth.proof.binding(), &input)?;
     let context = input.context(&auth.proof, target.as_deref())?;
     let actor = s
         .identity
-        .ceremony_actor(&headers, auth.remaining()?)
+        .ceremony_actor(auth.proof.binding(), &headers, auth.remaining()?)
         .await?;
     let started = s
         .identity
@@ -642,6 +652,7 @@ async fn enterprise_step_up(
     }))
 }
 async fn enterprise_change(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -652,7 +663,7 @@ async fn enterprise_change(
     >,
 ) -> Result<Json<rss_mdm_device_access_postgres::enterprise::Record>, Error> {
     let input = body.map_err(Error::from)?.0;
-    let target = enterprise_target(&s, &input)?;
+    let target = enterprise_target(&s, auth.proof.binding(), &input)?;
     let proof = operation_proof(&headers)?;
     s.registration
         .change_enterprise_configuration(
@@ -669,12 +680,14 @@ async fn enterprise_change(
 
 fn offboarding_providers(
     s: &Services,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     input: &access::Change,
 ) -> std::collections::BTreeMap<Uuid, String> {
     if matches!(input.action, access::Action::Offboard { .. }) {
         s.identity
             .enterprise_administrators
             .iter()
+            .filter(|(_, admin)| admin.tenant.to_string() == execution.tenant().to_string())
             .map(|(id, admin)| (*id, admin.fingerprint().to_owned()))
             .collect()
     } else {
@@ -697,7 +710,7 @@ async fn offboarding_idp(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
+    Path((_tenant, device, id)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId, Uuid)>,
     body: Result<Json<IdpDisposition>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<access::lifecycle::Progress>, Error> {
     use access::lifecycle::{ExternalComponent as C, ExternalPhase as P, IdpAction as A};
@@ -722,7 +735,9 @@ async fn offboarding_idp(
         .enterprise_administrators
         .get(&target.identity.provider)
         .ok_or(Error::Unsupported)?;
-    if admin.fingerprint() != target.fingerprint {
+    if admin.tenant.to_string() != auth.proof.tenant_id()
+        || admin.fingerprint() != target.fingerprint
+    {
         return Err(Error::Conflict);
     }
     match input {
@@ -817,7 +832,12 @@ struct MaterialRequest {
 async fn material_step_up(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((device, id, version)): Path<(rss_mdm_agent_wire::DeviceId, Uuid, i64)>,
+    Path((_tenant, device, id, version)): Path<(
+        uuid::Uuid,
+        rss_mdm_agent_wire::DeviceId,
+        Uuid,
+        i64,
+    )>,
     crate::identity::CeremonyHeaders(headers): crate::identity::CeremonyHeaders,
     Json(input): Json<MaterialRequest>,
 ) -> Result<Json<crate::identity_contract::Challenge>, Error> {
@@ -829,7 +849,7 @@ async fn material_step_up(
     let context = input.context(&auth.proof, &device, id, version)?;
     let actor = s
         .identity
-        .ceremony_actor(&headers, auth.remaining()?)
+        .ceremony_actor(auth.proof.binding(), &headers, auth.remaining()?)
         .await?;
     let started = s
         .identity
@@ -846,7 +866,12 @@ async fn material_disclose(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id, version)): Path<(rss_mdm_agent_wire::DeviceId, Uuid, i64)>,
+    Path((_tenant, device, id, version)): Path<(
+        uuid::Uuid,
+        rss_mdm_agent_wire::DeviceId,
+        Uuid,
+        i64,
+    )>,
     OperationProofHeaders(headers): OperationProofHeaders,
     Json(input): Json<MaterialRequest>,
 ) -> Result<Json<rss_mdm_recovery_credentials::Disclosure>, Error> {

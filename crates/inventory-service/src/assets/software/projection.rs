@@ -68,7 +68,7 @@ impl AssetService {
         {
             return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let object = progress.object.object;
         let admitted = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query("INSERT INTO mdm_assets.software_buckets(tenant_id,run,id,standard,identity) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT DO NOTHING")
@@ -105,7 +105,7 @@ impl AssetService {
         if bytes > 16 * 1024 * 1024 {
             return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let key = object;
         let admitted = tx.with_connection(move |c| Box::pin(async move {
             let added = sqlx::query("INSERT INTO mdm_assets.software_objects(tenant_id,run,object_kind,object_id,document) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT DO NOTHING")
@@ -117,7 +117,7 @@ impl AssetService {
         if !admitted {
             return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let key = object;
         let after = progress.published_after.clone();
         let rows = tx.with_connection(move |c| Box::pin(async move {
@@ -138,7 +138,7 @@ impl AssetService {
             members.push(serde_json::json!({"bucket":bucket,"selected":row.try_get::<bool,_>("selected")?,"compliance":compliance}));
             progress.published_after = Some(bucket);
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| Box::pin(async move {
             sqlx::query("INSERT INTO mdm_assets.software_members(tenant_id,run,bucket,object_kind,object_id,selected,compliance) SELECT $1::uuid,$2,x.bucket,$3,$4,x.selected,x.compliance FROM jsonb_to_recordset($5) AS x(bucket text,selected boolean,compliance text) ON CONFLICT(tenant_id,run,bucket,object_kind,object_id) DO NOTHING")
                 .bind(tenant).bind(task).bind(object.kind()).bind(object.uuid()).bind(serde_json::json!(members)).execute(c).await?; Ok(())
@@ -146,7 +146,7 @@ impl AssetService {
         if more {
             return Ok(false);
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let matched = i64::from(progress.matched);
         let unknown = i64::from(progress.unknown);
         let uncertain = i64::from(progress.coverage_unknown);

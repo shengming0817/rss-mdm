@@ -23,12 +23,12 @@ pub(super) async fn seed(
     sqlx::query("UPDATE mdm_access.user_groups SET document=jsonb_set(document,'{members}',$3) WHERE tenant_id=$1 AND id=$2").bind(tenant).bind(group).bind(json!([user])).execute(&mut *tx).await?;
     let rule:Uuid=sqlx::query_scalar("SELECT id FROM mdm_access.authorization_rules WHERE tenant_id=$1 AND instance=$2::uuid AND document->'subject'->'user'->>'principalId'=$3 LIMIT 1").bind(tenant).bind(p.instance_id()).bind(p.principal_id()).fetch_one(&mut *tx).await?;
     cases.push((
-        "/api/v1/authorization/rules".into(),
+        "/authorization/rules".into(),
         format!("id=={rule};deleted==false"),
         json!(rule),
     ));
     cases.push((
-        format!("/api/v1/authorization/user-groups/{group}/members"),
+        format!("/authorization/user-groups/{group}/members"),
         format!("principalId=={};tenantId=={tenant}", p.principal_id()),
         json!(p.principal_id()),
     ));
@@ -80,17 +80,17 @@ pub(super) async fn seed(
         deliveries.push((event.clone(), subscription.clone(), operation));
         if index == 1 {
             cases.push((
-                format!("/api/v1/devices/{device}/policy-event-batches"),
+                format!("/devices/{device}/policy-event-batches"),
                 "event==directory-target;createdAt==1700000000;admission.expired==1".into(),
                 json!(id),
             ));
             cases.push((
-                format!("/api/v1/devices/{device}/policy-event-batches/{id}/members"),
+                format!("/devices/{device}/policy-event-batches/{id}/members"),
                 format!("policyId=={policy};decision.state==expired"),
                 json!(id),
             ));
             cases.push((
-                "/api/v1/webhooks/deliveries".into(),
+                "/webhooks/deliveries".into(),
                 format!(
                     "subscriptionId=={};eventId=={}",
                     subscription.id, event.event_id
@@ -103,7 +103,7 @@ pub(super) async fn seed(
     for (event, subscription, operation) in deliveries {
         c.runtime
             .local_tx(
-                c.audit.binding(),
+                c.execution(),
                 rss_mdm_inventory_service::transaction::deadline(),
                 move |tx| {
                     Box::pin(async move {

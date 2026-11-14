@@ -40,13 +40,11 @@ struct Dispatch {
     browser: Router,
     routes: Arc<Vec<(ChannelKind, ChannelRouter)>>,
     product_origin: String,
-    agent: Option<Arc<rss_mdm_registration_service::agent::Service>>,
 }
 pub(crate) fn router(
     browser: Router,
     routes: Vec<(ChannelKind, ChannelRouter)>,
     product_origin: String,
-    agent: Option<Arc<rss_mdm_registration_service::agent::Service>>,
 ) -> Router {
     let routes = routes
         .into_iter()
@@ -63,7 +61,6 @@ pub(crate) fn router(
         browser,
         routes: Arc::new(routes),
         product_origin,
-        agent,
     })
 }
 fn single<'a>(request: &'a Request, name: &str) -> Result<Option<&'a str>, ()> {
@@ -210,28 +207,13 @@ async fn dispatch(State(state): State<Dispatch>, mut request: Request) -> Respon
         selected = Some(ChannelKind::WindowsManagement);
     }
     let router = if let Some(selected) = selected {
-        let Some((_, route)) = state.routes.iter().find(|(k, r)| {
-            *k == selected && (*k == ChannelKind::Agent || r.origins.contains(&origin))
-        }) else {
+        let Some((_, route)) = state
+            .routes
+            .iter()
+            .find(|(k, r)| *k == selected && r.origins.contains(&origin))
+        else {
             return StatusCode::NOT_FOUND.into_response();
         };
-        if selected == ChannelKind::Agent {
-            let Some(agent) = &state.agent else {
-                return rejected();
-            };
-            let allowed = match agent.connection_configuration().await {
-                Ok(value) => value.configuration.origins.contains(&origin),
-                Err(error)
-                    if error.code == rss_mdm_agent_wire::enroll::ErrorCode::OperationConflict =>
-                {
-                    route.origins.contains(&origin)
-                }
-                Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
-            };
-            if !allowed {
-                return rejected();
-            }
-        }
         let Some(gate) = route.admission.gate(source) else {
             return super::admission::limited(std::time::Duration::from_secs(1));
         };

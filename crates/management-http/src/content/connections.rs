@@ -110,6 +110,8 @@ pub(crate) fn register(
     }
 }
 async fn read(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(service): State<Arc<Authority>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -121,6 +123,8 @@ async fn read(
     Ok(Json(service.read(&auth.proof, &audit).await?))
 }
 async fn create(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(service): State<Arc<Authority>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -140,7 +144,7 @@ async fn operation(
     State(service): State<Arc<Authority>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<uuid::Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, uuid::Uuid)>,
 ) -> Result<Json<Receipt>, Error> {
     audit.set_action(
         "storage_read",
@@ -150,6 +154,8 @@ async fn operation(
 }
 
 async fn history(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(service): State<Arc<Authority>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -178,6 +184,8 @@ impl rss_mdm_http_contract::query::WindowOwner for HistoryQuery {
 }
 
 async fn create_migration(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(service): State<Arc<Authority>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -205,7 +213,7 @@ async fn migration_operation(
     State(service): State<Arc<Authority>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<uuid::Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, uuid::Uuid)>,
 ) -> Result<Json<rss_mdm_content_service::migration::Receipt>, Error> {
     audit.set_action(
         "storage_migration_read",
@@ -220,7 +228,7 @@ async fn cancel_migration(
     State(service): State<Arc<Authority>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<uuid::Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, uuid::Uuid)>,
 ) -> Result<Json<rss_mdm_content_service::migration::Receipt>, Error> {
     Ok(Json(
         service.cancel_migration(&auth.proof, &audit, id).await?,
@@ -228,6 +236,8 @@ async fn cancel_migration(
 }
 
 async fn migrations(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(service): State<Arc<Authority>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,

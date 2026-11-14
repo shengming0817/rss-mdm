@@ -30,9 +30,9 @@ impl Catalog {
                 tx,
                 audit,
                 &[
-                    event::partition(self.tenant, &key)?,
-                    event::partition(self.tenant, "source/private-upload/1")?,
-                    resources.partition(id)?,
+                    event::partition(tx.tenant_id(), &key)?,
+                    event::partition(tx.tenant_id(), "source/private-upload/1")?,
+                    resources.partition(tx.tenant_id(), id)?,
                 ],
             )
             .await?;
@@ -95,7 +95,7 @@ impl Catalog {
         .map_err(|_| Error::Input)?;
         let resource = r::Id::new(id).map_err(|_| Error::Input)?;
         let frozen = r::Version::new(
-            self.tenant,
+            tx.tenant_id(),
             resource.clone(),
             r::Id::new("v1").map_err(|_| Error::Input)?,
             r::Kind::Software,
@@ -125,7 +125,6 @@ impl Reader {
         operation: uuid::Uuid,
         hash: &[u8],
     ) -> Result<Option<Value>> {
-        self.tenant(tx)?;
         storage::replay(tx, operation, hash).await
     }
     pub(crate) async fn save_operation_in(
@@ -135,7 +134,6 @@ impl Reader {
         hash: &[u8],
         value: &Value,
     ) -> Result<()> {
-        self.tenant(tx)?;
         storage::receipt(tx, operation, hash, value).await
     }
 }

@@ -2,7 +2,7 @@ WITH expected(name) AS (VALUES ('mdm_inventory.collection_tasks'),('mdm_inventor
 SELECT (SELECT count(*) FROM tables)=5 AND NOT EXISTS(
  SELECT FROM tables t WHERE t.relkind<>'r' OR t.relpersistence<>'p' OR NOT t.relrowsecurity OR NOT t.relforcerowsecurity
  OR t.relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
- OR (SELECT count(*) FROM pg_policy p WHERE p.polrelid=t.oid)<>1
+ OR (SELECT count(*) FROM pg_policy p WHERE p.polrelid=t.oid AND polroles && (ARRAY[0::oid] || ARRAY(SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER'))))<>1
  OR NOT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=t.oid AND p.polname='tenant'
  AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid]
  AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'

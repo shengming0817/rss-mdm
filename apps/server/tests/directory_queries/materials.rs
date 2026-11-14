@@ -18,12 +18,12 @@ pub(super) async fn seed(c: &Context, cases: &mut Vec<(String, String, Value)>) 
     let target = format!("directory-{}", c.tenant);
     super::super::reference_blockers_t2::publication::withdrawn(c, &support, &target).await?;
     cases.push((
-        "/api/v1/software/publications".into(),
+        "/software/publications".into(),
         "id==retained-publication;withdrawn==true".into(),
         json!("retained-publication"),
     ));
     cases.push((
-        "/api/v1/software/publication-targets".into(),
+        "/software/publication-targets".into(),
         format!("id=={target};protocol==winget"),
         json!(target),
     ));
@@ -60,7 +60,7 @@ pub(super) async fn seed(c: &Context, cases: &mut Vec<(String, String, Value)>) 
     sqlx::query("INSERT INTO mdm_agent_packages.releases(tenant_id,id,document,binding,state) VALUES($1::uuid,$2,$3,$4,'published')").bind(c.tenant.to_string()).bind(package).bind(serde_json::to_value(document)?).bind(binding).execute(&mut *tx).await?;
     tx.commit().await?;
     cases.push((
-        "/api/v1/agent-packages".into(),
+        "/agent-packages".into(),
         "state==published;filename==directory-agent.msi;target.platform==windows".into(),
         json!(package),
     ));
@@ -75,7 +75,7 @@ pub(super) async fn seed(c: &Context, cases: &mut Vec<(String, String, Value)>) 
     .await?;
     tx.rollback().await?;
     cases.push((
-        "/api/v1/device-associations".into(),
+        "/device-associations".into(),
         format!("id=={association};confirmedAt=gt=0;association.evidence==operator-verified"),
         json!(association),
     ));
@@ -116,7 +116,7 @@ pub(super) async fn seed(c: &Context, cases: &mut Vec<(String, String, Value)>) 
     .await?;
     tx.commit().await?;
     cases.push((
-        format!("/api/v1/devices/{device}/recovery-credentials"),
+        format!("/devices/{device}/recovery-credentials"),
         format!(
             "id=={};escrowed==true;binding.subject.kind==local_administrator",
             coordinate.material

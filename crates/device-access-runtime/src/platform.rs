@@ -22,7 +22,6 @@ impl PlatformSso {
     pub fn load(
         &self,
         origin: &str,
-        tenant: rss_request_context::TenantId,
         authorities: &rss_mdm_device_access_postgres::evidence::Authorities,
     ) -> Result<std::sync::Arc<rss_mdm_device_access_postgres::platform_sso::Runtime>, Error> {
         let mut keys = std::collections::BTreeMap::new();
@@ -43,8 +42,6 @@ impl PlatformSso {
                     .map_err(|_| Error::Configuration)?,
             );
         }
-        let tenant =
-            uuid::Uuid::parse_str(&tenant.to_string()).map_err(|_| Error::Configuration)?;
         let mut providers = Vec::new();
         for config in &self.password_providers {
             let bytes =
@@ -75,7 +72,6 @@ impl PlatformSso {
             rss_mdm_device_access_postgres::platform_sso::Runtime::new(
                 self.configuration.clone(),
                 origin,
-                tenant,
                 self.active_key.clone(),
                 keys,
             )

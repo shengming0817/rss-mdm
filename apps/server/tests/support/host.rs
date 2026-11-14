@@ -1,20 +1,23 @@
 //! Shared real App configuration for lifecycle and HTTP consumer proofs.
 use crate::authority_t2_support::Inputs;
 use anyhow::Result;
-use rss_request_context::TenantId;
 use serde_json::{Value, json};
 use uuid::Uuid;
-pub(crate) fn configuration(
+pub(crate) async fn configuration(
     inputs: &Inputs,
     profile: &str,
-    tenant: TenantId,
     address: std::net::SocketAddr,
     host: Uuid,
 ) -> Result<Value> {
     let mut configuration: Value =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))?;
     configuration["listen"] = json!(address.to_string());
-    configuration["identity"]["tenant_id"] = json!(tenant.to_string());
+    let management = crate::identity::management_tenant(
+        &inputs.database(profile, "mdm_identity_runtime"),
+        rss_identity_core::InstanceId::parse(&inputs.installation.instance_id)?,
+    )
+    .await?;
+    configuration["identity"]["management_tenant"] = json!(management.to_string());
     configuration["identity"]["database"] =
         serde_json::to_value(inputs.database(profile, "mdm_identity_runtime"))?;
     configuration["access_database"] =

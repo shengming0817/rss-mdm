@@ -12,32 +12,28 @@ impl Services {
         read_pool: sqlx::PgPool,
         runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-        tenant: rss_request_context::TenantId,
+        probe: rss_transactional_messaging::fence::ExecutionBinding,
         key: &[u8],
         clock: Arc<dyn crate::clock::Clock>,
     ) -> Result<Self, Error> {
         runtime
-            .local_tx(
-                audit_store.binding(),
-                crate::identity::deadline(),
-                move |tx| {
-                    Box::pin(async move {
-                        tx.with_connection(move |c| {
-                            Box::pin(async move {
-                                rss_mdm_inventory_service::admit_storage_in(
-                                    rss_mdm_install_support::StorageProfile::Mdm,
-                                    c,
-                                    tenant,
-                                )
-                                .await?;
-                                rss_mdm_compliance_service::admit_storage_in(c, tenant).await?;
-                                Ok(())
-                            })
+            .local_tx(probe, crate::identity::deadline(), move |tx| {
+                Box::pin(async move {
+                    tx.with_connection(move |c| {
+                        Box::pin(async move {
+                            rss_mdm_inventory_service::admit_storage_in(
+                                rss_mdm_install_support::StorageProfile::Mdm,
+                                c,
+                                probe.tenant(),
+                            )
+                            .await?;
+                            rss_mdm_compliance_service::admit_storage_in(c, probe.tenant()).await?;
+                            Ok(())
                         })
-                        .await
                     })
-                },
-            )
+                    .await
+                })
+            })
             .await
             .fold(
                 Ok,
@@ -49,7 +45,7 @@ impl Services {
             )?;
         let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            audit_store.binding(),
+            probe,
             rss_mdm_inventory_service::transaction::deadline(),
         ))
         .await
@@ -57,7 +53,7 @@ impl Services {
         let groups = Arc::new(
             rss_mdm_group_postgres::GroupStore::new(
                 runtime.clone(),
-                audit_store.binding(),
+                probe,
                 rss_mdm_inventory_service::transaction::deadline(),
             )
             .await
@@ -65,10 +61,10 @@ impl Services {
         );
         let group_service = Arc::new(
             rss_mdm_group_service::Groups::new(rss_mdm_group_service::Dependencies {
-                read_pool,
+                read_pool: read_pool.clone(),
                 reconcile_messaging: messaging.clone(),
                 objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
-                tenant,
+                probe,
                 groups: groups.clone(),
                 cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key),
                 audit_store: audit_store.clone(),
@@ -81,10 +77,11 @@ impl Services {
             groups: group_service,
             assets: Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
                 rss_mdm_inventory_service::assets::AssetDependencies {
+                    read_pool: read_pool.clone(),
                     inventory,
                     audit_store: audit_store.clone(),
                     runtime: runtime.clone(),
-                    tenant,
+                    probe,
                     clock: Arc::new(crate::clock::InventoryClock(clock.clone())),
                     cursor_key: key.to_vec(),
                     reconcile_messaging: messaging.clone(),
@@ -96,9 +93,10 @@ impl Services {
             )),
             compliance: Arc::new(rss_mdm_compliance_service::Compliance::new(
                 rss_mdm_compliance_service::Dependencies {
+                    read_pool,
                     audit_store,
                     runtime,
-                    tenant,
+                    probe,
                     clock: Arc::new(crate::clock::InventoryClock(clock)),
                     groups,
                     reconcile_messaging: messaging,

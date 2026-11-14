@@ -38,14 +38,17 @@ impl Authority for PolicyAuthority<'_> {
     }
 }
 impl Service {
-    pub(crate) async fn retain(self: &Arc<Self>) -> Result<(), Error> {
+    pub(crate) async fn retain(
+        self: &Arc<Self>,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<(), Error> {
         let service = self.clone();
         self.runtime
-            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
+            .local_tx(execution, crate::deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
-                            step(&service, c).await.map_err(|_| {
+                            step(execution, &service, c).await.map_err(|_| {
                                 sqlx::Error::Protocol("retention step unconfirmed".into())
                             })
                         })
@@ -64,8 +67,13 @@ impl Service {
             )
     }
 }
-async fn step(service: &Service, c: &mut PgConnection) -> Result<(), Error> {
-    let tenant = service.tenant;
+async fn step(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    service: &Service,
+    c: &mut PgConnection,
+) -> Result<(), Error> {
+    let backend = service.backend_on(c, execution.tenant()).await?;
+    let tenant = execution.tenant();
     let now: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp())*1000000)::bigint")
             .fetch_one(&mut *c)
@@ -179,7 +187,7 @@ async fn step(service: &Service, c: &mut PgConnection) -> Result<(), Error> {
             std::time::Duration::from_secs(6),
         )
         .map_err(|_| Error::Storage)?;
-        match service.backend.maintain(&authorized, None, cutoff).await {
+        match backend.maintain(&authorized, None, cutoff).await {
             Err(_) | Ok(Outcome::Unknown) => json!({"state":"unknown"}),
             Ok(Outcome::Accepted(progress) | Outcome::Replay(progress)) => match progress {
                 MaintenanceProgress::Blocked { reason } => {

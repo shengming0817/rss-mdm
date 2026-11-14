@@ -53,9 +53,7 @@ impl Inputs {
         version: &str,
     ) -> Result<r::Version> {
         self.validate_in(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::Conflict.into());
-        }
+
         let (version, state) = checked(
             rss_mdm_resource_postgres::lock_reference_in(
                 tx,

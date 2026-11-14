@@ -18,8 +18,9 @@ impl Service {
         request: &rss_mdm_authorization_service::context::RequestAuth,
         id: &str,
     ) -> Result<RecordView, Error> {
+        let execution = request.proof.binding();
         let p = request.proof.as_ref();
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != execution.tenant().to_string() {
             return Err(Error::Forbidden);
         }
         if id.len() > 256 || id.chars().any(char::is_control) {
@@ -58,9 +59,10 @@ impl Service {
         q: &Query,
         codec: &CursorCodec,
     ) -> Result<Page<rss_mdm_query::directory::Projection<RecordView>>, Error> {
+        let execution = request.proof.binding();
         let p = request.proof.as_ref();
         q.require_schema(&SCHEMA).map_err(error)?;
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != execution.tenant().to_string() {
             return Err(Error::Forbidden);
         }
         let mut tx = self.store.snapshot(p.tenant_id()).await?;

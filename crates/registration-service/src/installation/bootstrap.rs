@@ -137,7 +137,7 @@ impl Transactions {
         audit: &RequestAudit,
     ) -> Result<()> {
         self.validate_in(tx)?;
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         let reader = self.materials.installations.clone();
         let frozen = tx
             .with_connection(move |c| {

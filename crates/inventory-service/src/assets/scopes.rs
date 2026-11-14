@@ -37,7 +37,7 @@ impl AssetService {
         {
             return Err(Error::Forbidden.into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let target = device.to_owned();
         if !tx
             .with_connection(move |c| {
@@ -53,7 +53,7 @@ impl AssetService {
             return Err(Error::NotFound.into());
         }
         let current = candidate.clone();
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let targets = vec![device.to_owned()];
         let sources = tx
             .with_connection(move |c| {
@@ -82,7 +82,7 @@ impl AssetService {
                 }))
             })
             .collect::<Result<Vec<_>>>()?;
-        let catalog = catalog_at_in(tx, self.tenant, candidate).await?;
+        let catalog = catalog_at_in(tx, tx.tenant_id(), candidate).await?;
         let visible = catalog
             .fields()
             .filter(|f| f.sensitivity != rss_mdm_inventory::Sensitivity::Secret)
@@ -90,19 +90,19 @@ impl AssetService {
             .collect::<Vec<_>>();
         let authority = digest(&(access, &sources, &visible))?;
         let (cut, after) = if let Some(token) = token {
-            let cursor = self.scope_cursor(token, device, &authority)?;
+            let cursor = self.scope_cursor(tx.tenant_id(), token, device, &authority)?;
             (cursor.asset_cut, cursor.after)
         } else {
             (candidate.clone(), String::new())
         };
-        let catalog = catalog_at_in(tx, self.tenant, &cut).await?;
+        let catalog = catalog_at_in(tx, tx.tenant_id(), &cut).await?;
         let fields = catalog
             .fields()
             .filter(|f| visible.iter().any(|key| key == f.key.as_str()))
             .map(|f| f.key.as_str().to_owned())
             .collect::<Vec<_>>();
-        let tenant = self.tenant.to_string();
-        let projection = rss_mdm_inventory_postgres::projection_scope(self.tenant);
+        let tenant = tx.tenant_id().to_string();
+        let projection = rss_mdm_inventory_postgres::projection_scope(tx.tenant_id());
         let page_cut = cut.clone();
         let rows = tx
             .with_connection(move |c| {
@@ -126,7 +126,7 @@ impl AssetService {
         let next_cursor = if more {
             let cursor = Cursor {
                 kind: "inventory-scopes-v1".into(),
-                tenant: self.tenant.to_string(),
+                tenant: tx.tenant_id().to_string(),
                 device: *device,
                 authority,
                 asset_cut: cut.clone(),
@@ -161,6 +161,7 @@ impl AssetService {
 
     fn scope_cursor(
         &self,
+        tenant: rss_request_context::TenantId,
         token: &str,
         device: &rss_mdm_agent_wire::DeviceId,
         authority: &str,
@@ -169,10 +170,10 @@ impl AssetService {
             .decode_bounded(token, "inventory-scopes", windows::MAX_CURSOR_BYTES)
             .map_err(|_| Error::Conflict)?;
         if cursor.kind != "inventory-scopes-v1"
-            || cursor.tenant != self.tenant.to_string()
+            || cursor.tenant != tenant.to_string()
             || cursor.device != *device
             || cursor.authority != authority
-            || cursor.asset_cut.tenant().to_string() != self.tenant.to_string()
+            || cursor.asset_cut.tenant().to_string() != tenant.to_string()
         {
             return Err(Error::Conflict.into());
         }

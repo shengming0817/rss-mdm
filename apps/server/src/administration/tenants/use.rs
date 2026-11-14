@@ -1,5 +1,5 @@
 use super::*;
-/// Commit a permanent first-use claim before any initialization or host startup work.
+/// Commit the explicit tenant first-use claim before authorized initialization.
 pub(crate) async fn claim_use(
     conn: &mut PgConnection,
     installation: &Installation,
@@ -86,33 +86,4 @@ pub(crate) async fn verify_read_profile(conn: &mut PgConnection) -> std::result:
         return Err(Error::Unavailable(Failure::AccessAdmission));
     }
     Ok(())
-}
-pub(crate) async fn claim_database_use(
-    database: &config::Database,
-    installation: &Installation,
-    tenant: &str,
-    epoch: i64,
-) -> std::result::Result<(), Error> {
-    let mut conn = tokio::time::timeout(
-        Duration::from_secs(5),
-        PgConnection::connect_with(&database.options()?),
-    )
-    .await
-    .map_err(|_| Error::Unavailable(Failure::Database))?
-    .map_err(|_| Error::Unavailable(Failure::Database))?;
-    let result = tokio::time::timeout(
-        Duration::from_secs(5),
-        claim_use(&mut conn, installation, tenant, epoch),
-    )
-    .await
-    .unwrap_or(Err(Error::Unavailable(Failure::Database)));
-    let closed = matches!(
-        tokio::time::timeout(Duration::from_secs(5), conn.close()).await,
-        Ok(Ok(()))
-    );
-    match result {
-        Err(error) => Err(error),
-        Ok(()) if closed => Ok(()),
-        Ok(()) => Err(Error::Unavailable(Failure::Database)),
-    }
 }

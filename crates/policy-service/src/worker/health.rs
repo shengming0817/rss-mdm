@@ -3,11 +3,12 @@ impl Application {
     /// A missing configuration participant has no suspended native input checkpoint.
     pub async fn configuration_input_suspended(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         cutoff: std::time::Instant,
     ) -> std::result::Result<bool, HealthFailure> {
         configuration_input_suspended(
             &self.runtime,
-            self.audit_store.binding(),
+            binding,
             self.configuration.as_deref(),
             cutoff,
         )
@@ -16,12 +17,13 @@ impl Application {
     /// Counts describe retained product job states, not managed task health or device effects.
     pub async fn queue_health(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         cutoff: std::time::Instant,
     ) -> std::result::Result<[u64; 5], HealthFailure> {
         queue_health(
             self.profile(),
             &self.runtime,
-            self.audit_store.binding(),
+            binding,
             self.configuration.as_deref(),
             cutoff,
         )

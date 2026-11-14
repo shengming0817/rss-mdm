@@ -4,7 +4,7 @@ use super::directory;
 use super::provisioning::Provision;
 use super::service::{Read, ReadReply, Service};
 use super::*;
-use crate::installation::model::Phase;
+use crate::administration::baseline::Phase;
 use axum::{
     Extension, Json,
     extract::{Path, State},
@@ -278,7 +278,7 @@ pub(super) async fn create(
 pub(super) struct ProvisioningResponse(Receipt);
 impl ProvisioningResponse {
     fn status(&self) -> u16 {
-        if matches!(&self.0.result,ReceiptResult::Provisioning(p) if p.phase==Phase::Enabled) {
+        if matches!(&self.0.result,ReceiptResult::Provisioning(p) if p.phase==Phase::Configured) {
             200
         } else {
             202

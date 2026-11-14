@@ -23,7 +23,7 @@ impl Groups {
         root: Uuid,
         request: PageRequest,
     ) -> Result<Page> {
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let relation = match request.relation.as_str() {
             "all" => None,
             "direct" => Some(0),

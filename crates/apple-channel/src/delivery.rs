@@ -3,7 +3,6 @@ use crate::protocol_types::Apple as _;
 use crate::{Apple, Error, Failure, participants::Business, protocol_types::*};
 use rss_mdm_audit_integration::{AuditStore, RequestAudit};
 use rss_mdm_registration_service::DevicePrincipal;
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgError, PgRuntime, PgTransaction};
 use std::{
     sync::{Arc, Mutex},
@@ -12,7 +11,6 @@ use std::{
 use uuid::Uuid;
 pub struct Delivery {
     pub runtime: Arc<PgRuntime>,
-    pub tenant: TenantId,
     pub audit: Arc<AuditStore>,
     pub business: Arc<dyn Business>,
     pub facts: Arc<crate::flow_store::Store>,
@@ -159,7 +157,12 @@ impl Delivery {
                             .await?;
                     }
                     match self
-                        .assets(tx, &admission.command.request, &admission.command.target)
+                        .assets(
+                            p.binding(),
+                            tx,
+                            &admission.command.request,
+                            &admission.command.target,
+                        )
                         .await
                     {
                         Ok(assets) => admission.command.assets = assets,
@@ -233,7 +236,12 @@ impl Delivery {
         let mut authorized = Vec::new();
         for admission in self.business.declarations(tx, p, user, ids).await? {
             match self
-                .assets(tx, &admission.command.request, &admission.command.target)
+                .assets(
+                    p.binding(),
+                    tx,
+                    &admission.command.request,
+                    &admission.command.target,
+                )
                 .await
             {
                 Ok(_) => authorized.push(admission.command.operation),
@@ -313,7 +321,7 @@ impl Delivery {
                 Box::pin(async move {
                     let (s, p, id, reader, audit) = ctx;
                     let (request, target) = s.business.asset_authority(tx, p, *id).await?;
-                    let current = s.assets(tx, &request, &target).await?;
+                    let current = s.assets(p.binding(), tx, &request, &target).await?;
                     let principal = (*p).clone();
                     let reader = reader.take().ok_or(Error::Conflict)?;
                     let selected = tx
@@ -326,8 +334,11 @@ impl Delivery {
                     let expected = serde_json::to_vec(&selected).map_err(|_| Error::Malformed)?;
                     for binding in current {
                         if serde_json::to_vec(&binding).map_err(|_| Error::Malformed)? == expected {
-                            let verified =
-                                s.business.artifact(tx, &selected.selection).await?.verified;
+                            let verified = s
+                                .business
+                                .artifact(p.binding(), tx, &selected.selection)
+                                .await?
+                                .verified;
                             audit.require_final_request();
                             return Ok((selected, verified));
                         }
@@ -351,7 +362,7 @@ impl Delivery {
         let attempt = self
             .runtime
             .local_tx_with_context(
-                self.audit.binding(),
+                audit.binding()?,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     Duration::from_secs(6),
                 ),
@@ -396,6 +407,7 @@ impl Delivery {
     }
     async fn assets(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         request: &rss_mdm_apple_mdm::native::request::Request,
         target: &Target,
@@ -417,7 +429,7 @@ impl Delivery {
             if !ids.insert(&asset.identifier) {
                 return Err(Error::Malformed);
             }
-            let supplied = self.business.artifact(tx, asset).await?;
+            let supplied = self.business.artifact(execution, tx, asset).await?;
             let artifact = supplied.artifact;
             let verified = supplied.verified;
             if artifact.length() == 0 || artifact.length() > 16 * 1024 * 1024 {

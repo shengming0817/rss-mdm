@@ -18,7 +18,7 @@ async fn read_main(
     State(s): State<Arc<Policies>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(policy): Path<Uuid>,
+    Path((_tenant, policy)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<wire::ScopeRead>, Error> {
     Ok(Json(
         s.scope_read(
@@ -36,7 +36,7 @@ async fn preview_main(
     State(s): State<Arc<Policies>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(policy): Path<Uuid>,
+    Path((_tenant, policy)): Path<(uuid::Uuid, Uuid)>,
     body: Body<Preview>,
 ) -> Result<Json<rss_mdm_scope_service::preview::Response>, Error> {
     let Json(body) = body.map_err(Error::from)?;
@@ -57,7 +57,7 @@ async fn recompute_main(
     State(s): State<Arc<Policies>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(policy): Path<Uuid>,
+    Path((_tenant, policy)): Path<(uuid::Uuid, Uuid)>,
     body: Body<Recompute>,
 ) -> Result<Json<wire::ScopeReceipt>, Error> {
     let Json(body) = body.map_err(Error::from)?;
@@ -78,7 +78,7 @@ async fn task_main(
     State(s): State<Arc<Policies>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((policy, task)): Path<(Uuid, Uuid)>,
+    Path((_tenant, policy, task)): Path<(uuid::Uuid, Uuid, Uuid)>,
 ) -> Result<Json<rss_mdm_inventory_service::tasks::TaskRead>, Error> {
     Ok(Json(
         s.scope_task(
@@ -97,7 +97,7 @@ async fn page_main(
     State(s): State<Arc<Policies>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((policy, result, kind)): Path<(Uuid, Uuid, pages::ScopePageKind)>,
+    Path((_tenant, policy, result, kind)): Path<(uuid::Uuid, Uuid, Uuid, pages::ScopePageKind)>,
     query: rss_mdm_http_contract::query::OwnedQuery<ScopeResultQuery>,
 ) -> Result<rss_mdm_http_contract::CollectionResponse<Json<pages::ScopePage>>, Error> {
     let query = query.parse().map_err(|_| Error::Malformed)?;
@@ -120,7 +120,7 @@ async fn read_stage(
     State(s): State<Arc<Policies>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((policy, stage)): Path<(Uuid, Uuid)>,
+    Path((_tenant, policy, stage)): Path<(uuid::Uuid, Uuid, Uuid)>,
 ) -> Result<Json<wire::ScopeRead>, Error> {
     Ok(Json(
         s.scope_read(
@@ -138,7 +138,7 @@ async fn preview_stage(
     State(s): State<Arc<Policies>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((policy, stage)): Path<(Uuid, Uuid)>,
+    Path((_tenant, policy, stage)): Path<(uuid::Uuid, Uuid, Uuid)>,
     body: Body<Preview>,
 ) -> Result<Json<rss_mdm_scope_service::preview::Response>, Error> {
     let Json(body) = body.map_err(Error::from)?;
@@ -159,7 +159,7 @@ async fn recompute_stage(
     State(s): State<Arc<Policies>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((policy, stage)): Path<(Uuid, Uuid)>,
+    Path((_tenant, policy, stage)): Path<(uuid::Uuid, Uuid, Uuid)>,
     body: Body<Recompute>,
 ) -> Result<Json<wire::ScopeReceipt>, Error> {
     let Json(body) = body.map_err(Error::from)?;
@@ -180,7 +180,7 @@ async fn task_stage(
     State(s): State<Arc<Policies>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((policy, stage, task)): Path<(Uuid, Uuid, Uuid)>,
+    Path((_tenant, policy, stage, task)): Path<(uuid::Uuid, Uuid, Uuid, Uuid)>,
 ) -> Result<Json<rss_mdm_inventory_service::tasks::TaskRead>, Error> {
     Ok(Json(
         s.scope_task(
@@ -199,7 +199,13 @@ async fn page_stage(
     State(s): State<Arc<Policies>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((policy, stage, result, kind)): Path<(Uuid, Uuid, Uuid, pages::ScopePageKind)>,
+    Path((_tenant, policy, stage, result, kind)): Path<(
+        uuid::Uuid,
+        Uuid,
+        Uuid,
+        Uuid,
+        pages::ScopePageKind,
+    )>,
     query: rss_mdm_http_contract::query::OwnedQuery<ScopeResultQuery>,
 ) -> Result<rss_mdm_http_contract::CollectionResponse<Json<pages::ScopePage>>, Error> {
     let query = query.parse().map_err(|_| Error::Malformed)?;

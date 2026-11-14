@@ -31,26 +31,6 @@ fn content_budget_reserves_all_three_physical_pools() {
     assert!(config.background.compile(&config).is_ok());
 }
 
-#[test]
-fn background_budget_includes_each_tenant_host_and_rejects_overflow() {
-    let mut config: Config =
-        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
-    assert!(config.background.compile(&config).is_ok());
-    config.background.database_host_instances = 2;
-    assert!(config.background.compile(&config).is_err());
-    config.background.database_connection_budget = 256;
-    assert!(config.background.compile(&config).is_ok());
-    config.background.database_host_instances = u32::MAX;
-    assert!(config.background.compile(&config).is_err());
-    config.background.database_host_instances = 0;
-    assert!(config.background.compile(&config).is_err());
-    config.background.database_host_instances = 1;
-    for concurrency in [0, usize::MAX] {
-        config.background.device_concurrency = concurrency;
-        assert!(config.background.compile(&config).is_err());
-    }
-}
-
 fn independent_secrets(value: &mut serde_json::Value) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let root = std::env::temp_dir().join(format!("identity-config-{}", uuid::Uuid::new_v4()));
@@ -161,11 +141,6 @@ fn startup_configuration_diagnostics_identify_safe_fields() {
             "/identity/database/user",
             serde_json::json!("postgres"),
             "IdentityDatabase",
-        ),
-        (
-            "/identity/tenant_id",
-            serde_json::json!("synthetic-secret"),
-            "Tenant",
         ),
         (
             "/native_protocols/windows/enrollment/origin",
@@ -284,33 +259,6 @@ fn standard_agent_lifetime_rejects_extra_fields() {
         )
         .is_ok()
     );
-}
-
-#[test]
-fn optional_signing_is_admitted_by_consumers_not_core_configuration() {
-    let mut value: serde_json::Value =
-        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
-    let root = independent_secrets(&mut value);
-    let endpoint = serde_json::json!({"origin":"https://agent.example.test"});
-    for enabled in [false, true] {
-        for signed in [false, true] {
-            value["agent_pki"] = if enabled {
-                serde_json::json!({"mode":"step_ca","endpoint":endpoint,"trust_file":"unused.json"})
-            } else {
-                serde_json::json!({"mode":"disabled"})
-            };
-            value["task_signing"] = if signed {
-                serde_json::json!({"revision":1})
-            } else {
-                serde_json::Value::Null
-            };
-            let result = serde_json::from_value::<Config>(value.clone())
-                .unwrap()
-                .compile();
-            assert!(result.is_ok(), "enabled={enabled}, signed={signed}");
-        }
-    }
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

@@ -14,7 +14,7 @@ impl GroupStore {
         build: &MemberBuild,
         previous: Option<OperationId>,
     ) -> InTransaction<DifferenceStep> {
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let after = build.difference_cursor;
         let rows=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query("SELECT object_kind,object_id,matched FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND ($3::smallint IS NULL OR (object_kind,object_id)>($3,$4::uuid)) ORDER BY object_kind,object_id LIMIT 1000").bind(tenant).bind(id.to_string()).bind(after.map(|o|o.kind())).bind(after.map(|o|o.uuid())).fetch_all(c).await
@@ -48,7 +48,7 @@ impl GroupStore {
         }
         let added = values.iter().filter(|v| **v).count() as i64;
         let removed = values.len() as i64 - added;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let group = build.request.group.to_string();
         let revision = build.request.base_calculation + 1;
         let last = devices.last().cloned();
@@ -70,7 +70,7 @@ impl GroupStore {
         let Some(devices) = build.request.changed_objects.clone() else {
             return Ok(Ok(()));
         };
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let rows=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query("SELECT k AS object_kind,d AS object_id FROM unnest($3::smallint[],$4::uuid[]) s(k,d) WHERE NOT EXISTS(SELECT FROM mdm_group.member_rows r WHERE r.tenant_id=$1::uuid AND r.run_id=$2::uuid AND (r.object_kind,r.object_id)=(s.k,s.d)) ORDER BY k,d")
                 .bind(tenant).bind(id.to_string()).bind(devices.iter().map(|o|o.kind()).collect::<Vec<_>>()).bind(devices.iter().map(|o|o.uuid()).collect::<Vec<_>>()).fetch_all(c).await
@@ -110,7 +110,7 @@ impl GroupStore {
             .iter()
             .map(|v| crate::storage::digest(v))
             .collect::<Vec<_>>();
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         tx.with_connection(move|c|Box::pin(async move {
             sqlx::query("INSERT INTO mdm_group.member_rows(tenant_id,run_id,object_kind,object_id,matched,evidence,evidence_digest) SELECT $1::uuid,$2::uuid,k,d,false,e,h FROM unnest($3::smallint[],$4::uuid[],$5::bytea[],$6::bytea[]) a(k,d,e,h)").bind(&tenant).bind(id.to_string()).bind(missing.iter().map(|o|o.kind()).collect::<Vec<_>>()).bind(missing.iter().map(|o|o.uuid()).collect::<Vec<_>>()).bind(evidence).bind(hashes).execute(&mut *c).await?;
             sqlx::query("UPDATE mdm_group.member_runs SET object_count=object_count+$3,member_count=member_count-$4,processed_count=processed_count+$5 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id.to_string()).bind(new_objects).bind(prior_matches).bind(count).execute(c).await?;Ok(())

@@ -11,7 +11,6 @@ use crate::{
 use rss_mdm_inventory::ReportSource;
 use rss_mdm_registration_service::windows_receipts::{self, Operation};
 use rss_mdm_windows_mdm::provisioning::EnrollmentType;
-use rss_request_context::TenantId;
 use sqlx::Row;
 use tokio_rustls::rustls::pki_types::CertificateDer;
 use uuid::Uuid;
@@ -158,6 +157,7 @@ pub(crate) async fn issuance_for_device(
     now: i64,
 ) -> Result<Intent, Error> {
     issue_intent(
+        proof.binding(),
         audit_store,
         database,
         windows,
@@ -169,6 +169,7 @@ pub(crate) async fn issuance_for_device(
     .await
 }
 pub(crate) async fn issue_intent(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     audit_store: &rss_mdm_audit_integration::AuditStore,
     _database: &crate::Store,
     windows: &Windows,
@@ -177,10 +178,12 @@ pub(crate) async fn issue_intent(
     protocol_device: Option<&str>,
     now: i64,
 ) -> Result<Intent, Error> {
-    let tenant = TenantId::parse(&authority.coordinates().tenant).map_err(|_| Error::Malformed)?;
+    if authority.coordinates().tenant != execution.tenant().to_string() {
+        return Err(Error::Unauthorized);
+    }
     prepare_transaction(
         audit_store,
-        tenant,
+        execution,
         (windows, authority, input, protocol_device, now),
         |ctx, c| {
             Box::pin(async move {
@@ -488,7 +491,7 @@ pub(crate) async fn complete(
         &[CertificateDer::from(certificate)],
         now,
     )?;
-    let credential = mount.credential(checked.fingerprint())?;
+    let credential = mount.credential(audit.binding()?, checked.fingerprint())?;
     let digest =
         crate::enrollment::digest(&("enrollment_issue", d.id, &intent.csr, &intent.configuration));
     let operation = match authority {
@@ -498,7 +501,7 @@ pub(crate) async fn complete(
     let budget = rss_mdm_audit_integration::budget::AuditBudget::retirement(None);
     let attempt = store
         .write(
-            TenantId::parse(&d.tenant).map_err(|_| Error::Malformed)?,
+            audit.binding()?,
             &budget.source_control(),
             (
                 store,
@@ -681,6 +684,7 @@ fn current(
     if auth.source != rss_mdm_inventory::ReportSource::MdmWindows
         || row.try_get::<String, _>("state").map_err(db)? == "cancelled"
         || row.try_get::<bool, _>("self_service").map_err(db)? != auth.self_service
+        || row.try_get::<i64, _>("expected_epoch").map_err(db)? != auth.expected_epoch
         || row.try_get::<i64, _>("password_version").map_err(db)? != auth.version
         || uuid(row, "credential_ref")? != auth.credential_ref
         || !row.try_get::<bool, _>("live").map_err(db)?
@@ -790,11 +794,12 @@ pub(crate) async fn authorize_profile(
 /// Dispatch once after the authorization owner has committed the immutable profile.
 pub async fn sign(
     app: &HttpState,
-    tenant: &str,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    windows: &crate::Windows,
     intent: &Intent,
     now: i64,
 ) -> Result<Vec<u8>, Error> {
-    let w = app.windows()?;
+    let w = windows;
     let profile = certificate::IssuanceProfile::decode(&intent.profile)?;
     if profile.device != intent.device
         || profile.issuer != sha2::Sha256::digest(&intent.issuer).as_slice()
@@ -804,7 +809,8 @@ pub async fn sign(
     }
     sign_profile(
         app,
-        tenant,
+        execution,
+        windows,
         intent.signing_attempt,
         &intent.csr,
         &profile,
@@ -814,13 +820,14 @@ pub async fn sign(
 }
 pub(crate) async fn sign_profile(
     app: &HttpState,
-    tenant: &str,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    windows: &crate::Windows,
     attempt: Uuid,
     bytes: &[u8],
     profile: &certificate::IssuanceProfile,
     now: i64,
 ) -> Result<Vec<u8>, Error> {
-    let w = app.windows()?;
+    let w = windows;
     let csr = Csr::verify(bytes)?;
     let pem = csr.pem()?;
     let subject = profile.device.to_string();
@@ -839,7 +846,7 @@ pub(crate) async fn sign_profile(
         app.audit_store.clone(),
     )
     .issue(
-        Uuid::parse_str(tenant).map_err(|_| Error::Malformed)?,
+        execution,
         ("windows", &issuer),
         provider,
         rss_mdm_pki_service::Sign {
@@ -874,7 +881,7 @@ use sha2::Digest;
 /// Prepare on the existing Audit transaction owner. Only replacement creates a fact.
 pub(crate) async fn prepare_transaction<C: Send, R: Send>(
     store: &rss_mdm_audit_integration::AuditStore,
-    tenant: TenantId,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     context: C,
     run: impl for<'a> FnOnce(
         &'a mut C,
@@ -891,7 +898,7 @@ pub(crate) async fn prepare_transaction<C: Send, R: Send>(
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        tenant.to_string(),
+        binding,
         "windows_signing_prepare",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -900,7 +907,7 @@ pub(crate) async fn prepare_transaction<C: Send, R: Send>(
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
     let outcome = store
         .write(
-            tenant,
+            binding,
             &budget.source_control(),
             (context, Some(run), store, &audit),
             |ctx, tx| {

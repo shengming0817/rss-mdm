@@ -19,7 +19,7 @@ impl Groups {
                 if op.expected_revision != 0 {
                     return Err(Error::Conflict.into());
                 }
-                let tenant = self.tenant.to_string();
+                let tenant = tx.tenant_id().to_string();
                 let exists: bool = tx.with_connection(move |c| Box::pin(async move {
                     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2::uuid)")
                         .bind(tenant).bind(id.to_string()).fetch_one(c).await
@@ -41,8 +41,13 @@ impl Groups {
             _ => return Err(Error::Malformed.into()),
         };
         condition.validate()?;
-        let catalog = assets::catalog_in(tx, self.tenant).await?;
-        let rule = criteria::rule(self.tenant, op.operation_id, &condition.criteria, &catalog)?;
+        let catalog = assets::catalog_in(tx, tx.tenant_id()).await?;
+        let rule = criteria::rule(
+            tx.tenant_id(),
+            op.operation_id,
+            &condition.criteria,
+            &catalog,
+        )?;
         assets::filter::require_visible_rule(&catalog, &rule)?;
         let references = rule
             .groups()
@@ -72,7 +77,7 @@ impl Groups {
         };
         let rule =
             group_checked(self.groups.rule_in(tx, gid, &version).await?)?.ok_or(Error::Conflict)?;
-        let catalog = assets::catalog_in(tx, self.tenant).await?;
+        let catalog = assets::catalog_in(tx, tx.tenant_id()).await?;
         assets::filter::require_visible_rule(&catalog, &rule)?;
         rule.groups()
             .iter()

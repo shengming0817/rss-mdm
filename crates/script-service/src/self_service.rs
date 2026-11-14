@@ -167,7 +167,7 @@ impl ScriptService {
             return Err(Error::Forbidden.into());
         }
         let basis = access::select(config, proof)?.ok_or(Error::Forbidden)?;
-        let subject = access::qualify_in(service, tx, config, &basis)
+        let subject = access::qualify_in(p.binding(), service, tx, config, &basis)
             .await?
             .ok_or(Error::Forbidden)?;
         let actor = actor(p, &subject);
@@ -255,6 +255,7 @@ impl ScriptService {
             pending_scope,
         };
         production::queue_run_in(
+            p.binding(),
             &service.transactions,
             tx,
             &plan,

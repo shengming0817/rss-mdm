@@ -47,7 +47,7 @@ async fn rollout(
     State(app): State<Arc<StateServices>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<rss_mdm_software_service::deployment::queries::records::Rollout>, Error> {
     audit.operation(
         id,
@@ -65,7 +65,7 @@ async fn runs(
     State(app): State<Arc<StateServices>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<RunsQuery>,
     >,
@@ -94,7 +94,7 @@ async fn run(
     State(app): State<Arc<StateServices>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, task)): Path<(Uuid, Uuid)>,
+    Path((_tenant, id, task)): Path<(uuid::Uuid, Uuid, Uuid)>,
 ) -> Result<Json<crate::execution::task_reads::RunDetail>, Error> {
     audit.operation(
         task,

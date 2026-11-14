@@ -15,6 +15,7 @@ use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
 struct Http {
+    tenant: rss_request_context::TenantId,
     client: reqwest::Client,
     address: std::net::SocketAddr,
     cookie: String,
@@ -24,7 +25,10 @@ impl Http {
     async fn get(&self, path: &str, query: &[(&str, &str)]) -> Result<(u16, Value)> {
         let response = self
             .client
-            .get(format!("http://{}{path}", self.address))
+            .get(format!(
+                "http://{}/api/v1/tenants/{}{path}",
+                self.address, self.tenant
+            ))
             .query(query)
             .header("host", "mdm.example.test")
             .header("x-rss-public-origin", "https://mdm.example.test")
@@ -43,7 +47,10 @@ impl Http {
     async fn put(&self, path: &str, body: Value) -> Result<(u16, Value)> {
         let response = self
             .client
-            .put(format!("http://{}{path}", self.address))
+            .put(format!(
+                "http://{}/api/v1/tenants/{}{path}",
+                self.address, self.tenant
+            ))
             .header("host", "mdm.example.test")
             .header("x-rss-public-origin", "https://mdm.example.test")
             .header("x-forwarded-for", "127.0.0.1")
@@ -66,7 +73,7 @@ impl Http {
         anyhow::ensure!(items.len() == 1, "{path} must match a real object: {body}");
         let row = items[0].clone();
         // Even a singleton owner must prove that a valid unmatched predicate reaches SQL.
-        let key = if path == "/api/v1/device-views" {
+        let key = if path == "/device-views" {
             "reference.id"
         } else {
             [
@@ -154,13 +161,8 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
     let diagnostic_reader = c.account(&[P::RuntimeDiagnosticsRead]).await?;
     let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = reservation.local_addr()?;
-    let mut config = crate::host_t2_support::configuration(
-        &c.inputs,
-        "shared",
-        c.tenant,
-        address,
-        Uuid::new_v4(),
-    )?;
+    let mut config =
+        crate::host_t2_support::configuration(&c.inputs, "shared", address, Uuid::new_v4()).await?;
     config["agent_pki"] = pki["agent_pki"].clone();
     config["device_pki"] = pki["device_pki"].clone();
     config["recovery_credentials"] = recovery;
@@ -171,12 +173,13 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
     std::fs::create_dir(&content)?;
     config["content"] = json!({"storage":{"kind":"volume","directory":content},"imports":{},"max_artifact_bytes":1048576,"max_temporary_bytes":4194304,"max_uploads":2,"transfer_seconds":30,"retention_seconds":60,"max_bundle_entries":16,"max_expansion_ratio":10});
     let target = format!("directory-{}", c.tenant);
-    config["publication"]["sources"] = json!([{"name":target,"credentials":{},"target":{"Winget":{"base":format!("https://mdm.example.test/api/v1/software/native/sources/{target}/"),"artifacts_base":format!("https://mdm.example.test/api/v1/software/native/sources/{target}/artifacts/")}}}]);
+    config["publication"]["sources"] = json!([{"name":target,"credentials":{},"target":{"Winget":{"base":format!("https://mdm.example.test/api/v1/tenants/{{tenant}}/software/native/sources/{target}/"),"artifacts_base":format!("https://mdm.example.test/api/v1/tenants/{{tenant}}/software/native/sources/{target}/artifacts/")}}}]);
     let config = serde_json::from_value(config)?;
     let access::credential::RequestCredential::Cookie(cookie) = manager.credential()? else {
         anyhow::bail!("cookie fixture required")
     };
     let http = Http {
+        tenant: c.tenant,
         client: reqwest::Client::builder()
             .no_proxy()
             .timeout(Duration::from_secs(15))
@@ -214,7 +217,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         })
         .await.with_context(|| format!("directory App readiness: {readiness:?}"))??;
         // Real HTTP contracts expose each owner and retain first-use permission boundaries.
-        let (status, diagnostics) = http.get("/api/v1/runtime/diagnostics", &[]).await?;
+        let (status, diagnostics) = http.get("/runtime/diagnostics", &[]).await?;
         assert_eq!(status, 200, "{diagnostics}");
         let names = diagnostics["components"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect::<std::collections::BTreeSet<_>>();
         assert_eq!(names.len(), 21);
@@ -223,8 +226,8 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         assert_eq!(diagnostics["firstUse"]["access"], "available");
         assert!(diagnostics["firstUse"]["summary"].get("saved").is_none());
         let access::credential::RequestCredential::Cookie(secret) = diagnostic_reader.credential()? else { anyhow::bail!("cookie fixture") };
-        let restricted = Http { client: http.client.clone(), address: http.address, cookie: format!("__Host-identity-session={}", secret.expose()), csrf: secret.csrf() };
-        let (status, restricted_body) = restricted.get("/api/v1/runtime/diagnostics", &[]).await?;
+        let restricted = Http { tenant: c.tenant, client: http.client.clone(), address: http.address, cookie: format!("__Host-identity-session={}", secret.expose()), csrf: secret.csrf() };
+        let (status, restricted_body) = restricted.get("/runtime/diagnostics", &[]).await?;
         assert_eq!(status, 200, "{restricted_body}");
         assert_eq!(restricted_body["firstUse"]["access"], "forbidden");
         assert!(restricted_body["firstUse"].get("summary").is_none());
@@ -232,10 +235,10 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         // Reading the original configuration operation must work in its read-only snapshot.
         let operation: Uuid = sqlx::query_scalar("SELECT operation_id FROM mdm_access.agent_configurations WHERE tenant_id=$1::uuid AND id=$2")
             .bind(c.tenant.to_string()).bind(Uuid::from_u128(7000)).fetch_one(&c.operator).await?;
-        let (status, receipt) = http.get(&format!("/api/v1/agent-configuration-operations/{operation}"), &[]).await?;
+        let (status, receipt) = http.get(&format!("/agent-configuration-operations/{operation}"), &[]).await?;
         assert_eq!(status, 200, "{receipt}");
         assert_eq!(receipt["configuration"]["configurationId"], Uuid::from_u128(7000).to_string());
-        let (status, absent) = http.get(&format!("/api/v1/agent-configuration-operations/{}", Uuid::new_v4()), &[]).await?;
+        let (status, absent) = http.get(&format!("/agent-configuration-operations/{}", Uuid::new_v4()), &[]).await?;
         assert_eq!(status, 200);
         assert!(absent.is_null());
         let mut failures = Vec::new();
@@ -252,43 +255,43 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
             failures.join("\n")
         );
         let access::credential::RequestCredential::Cookie(secret)=ordinary.credential()? else {anyhow::bail!("cookie fixture")};
-        let ordinary_http=Http{client:http.client.clone(),address:http.address,cookie:format!("__Host-identity-session={}",secret.expose()),csrf:secret.csrf()};
-        assert_eq!(ordinary_http.get("/api/v1/runtime/diagnostics", &[]).await?.0, 403);
-        let (status,body)=ordinary_http.get("/api/v1/device-views",&[("filter","search=icontains=éclair")]).await?;
+        let ordinary_http=Http{tenant: c.tenant,client:http.client.clone(),address:http.address,cookie:format!("__Host-identity-session={}",secret.expose()),csrf:secret.csrf()};
+        assert_eq!(ordinary_http.get("/runtime/diagnostics", &[]).await?.0, 403);
+        let (status,body)=ordinary_http.get("/device-views",&[("filter","search=icontains=éclair")]).await?;
         assert_eq!(status,200,"{body}");
         assert_eq!(body["items"],json!([]));
         for (path, filter, expected) in &fixtures.cases {
-            if path == "/api/v1/device-views" && !filter.contains("éclair") {
+            if path == "/device-views" && !filter.contains("éclair") {
                 assert_eq!(ordinary_http.selected(path,filter).await?["reference"]["id"],*expected);
             }
         }
-        let (status,cross_target)=http.get("/api/v1/agent-configurations",&[("filter","createdBy==DirectoryTarget;platform==windows;architecture==aarch64")]).await?;
+        let (status,cross_target)=http.get("/agent-configurations",&[("filter","createdBy==DirectoryTarget;platform==windows;architecture==aarch64")]).await?;
         assert_eq!(status,200,"{cross_target}");assert_eq!(cross_target["items"],json!([]));
         history::exercise(&c,&http,&ordinary_http,&history).await?;
         coverage::check(&fixtures.cases)?;
         let mut tx=crate::command_runtime_t2_support::seed_transaction(&c).await?;
         sqlx::query("UPDATE mdm_software_release.aggregates SET directory=jsonb_set(directory,'{outcome}','\"corrupt\"') WHERE tenant_id=$1::uuid AND id='retained-publication'").bind(c.tenant.to_string()).execute(&mut *tx).await?;tx.commit().await?;
-        let (status,_)=http.get("/api/v1/software/publications",&[("filter","id==retained-publication")]).await?;
+        let (status,_)=http.get("/software/publications",&[("filter","id==retained-publication")]).await?;
         assert!(status>=500,"a corrupt publication projection cannot be returned");
         let mut tx=crate::command_runtime_t2_support::seed_transaction(&c).await?;
         sqlx::query("UPDATE mdm_software_release.aggregates SET directory=jsonb_set(directory,'{outcome}','\"pending\"') WHERE tenant_id=$1::uuid AND id='retained-publication'").bind(c.tenant.to_string()).execute(&mut *tx).await?;tx.commit().await?;
         bounded_sort_pages(&http).await?;
         text_range_boundaries(&http).await?;
         for filter in ["presentation.name=icontains=σ", "presentation.name=icontains=ς", "presentation.name=icontains='.'", "presentation.name=icontains='[*]'", "id=icontains='/'"] {
-            assert_eq!(http.selected("/api/v1/resources",filter).await?["id"],"scripts/install");
+            assert_eq!(http.selected("/resources",filter).await?["id"],"scripts/install");
         }
-        assert_eq!(http.selected("/api/v1/resources",r#"id==scripts/install;presentation.name=icontains='O\'Reilly'"#).await?["id"],"scripts/install");
-        assert_eq!(http.selected("/api/v1/resources",r#"presentation.name=icontains='\\工具'"#).await?["id"],"z-directory-agent_collection");
+        assert_eq!(http.selected("/resources",r#"id==scripts/install;presentation.name=icontains='O\'Reilly'"#).await?["id"],"scripts/install");
+        assert_eq!(http.selected("/resources",r#"presentation.name=icontains='\\工具'"#).await?["id"],"z-directory-agent_collection");
         for filter in ["presentation.name=icontains='.*'", "presentation.name=icontains='(?q)'", "presentation.name=icontains='Σx'"] {
-            let (status,body)=http.get("/api/v1/resources",&[("filter",filter)]).await?;
+            let (status,body)=http.get("/resources",&[("filter",filter)]).await?;
             assert_eq!(status,200,"{body}");
             assert_eq!(body["items"],json!([]));
         }
-        assert_eq!(http.selected("/api/v1/resources","kind==script;id=gt=z-directory-configuration").await?["id"],"z-directory-script");
-        assert_eq!(http.selected("/api/v1/certificate-archive/entries",&format!("id=gt={}",Uuid::from_u128(1001))).await?["id"],Uuid::from_u128(1002).to_string());
+        assert_eq!(http.selected("/resources","kind==script;id=gt=z-directory-configuration").await?["id"],"z-directory-script");
+        assert_eq!(http.selected("/certificate-archive/entries",&format!("id=gt={}",Uuid::from_u128(1001))).await?["id"],Uuid::from_u128(1002).to_string());
         // The target is outside the original page, yet query filtering is not confined to that page.
         let (status, raw) = http
-            .get("/api/v1/resources", &[("sort", "id"), ("limit", "1")])
+            .get("/resources", &[("sort", "id"), ("limit", "1")])
             .await?;
         assert_eq!(status, 200, "{raw}");
         assert_ne!(raw["items"][0]["id"], fixtures.resource);
@@ -305,7 +308,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
             if let Some(token) = cursor.as_deref() {
                 query.push(("cursor", token));
             }
-            let (status, body) = http.get("/api/v1/resources", &query).await?;
+            let (status, body) = http.get("/resources", &query).await?;
             assert_eq!(status, 200, "{body}");
             for row in body["items"].as_array().unwrap() {
                 assert!(seen.insert(row["id"].as_str().unwrap().to_owned()));
@@ -315,7 +318,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
             if let Some(token) = &next {
                 assert_eq!(
                     http.get(
-                        "/api/v1/resources",
+                        "/resources",
                         &[("filter", "active==true"), ("cursor", token)]
                     )
                     .await?
@@ -324,7 +327,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
                 );
                 assert_eq!(
                     http.get(
-                        "/api/v1/resources",
+                        "/resources",
                         &[("filter", filter), ("sort", "-id"), ("cursor", token)]
                     )
                     .await?
@@ -340,14 +343,14 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         assert!(cursor.is_none());
         assert_eq!(seen.len(), 6);
         assert_eq!(ordered, ["z-directory-software","z-directory-agent_collection","z-directory-configuration","z-directory-native_collection","z-directory-script","z-directory-telemetry_profile"]);
-        let (_,mixed)=http.get("/api/v1/resources",&[("filter","(kind==software,kind==script);presentation.category==Tools")]).await?;
+        let (_,mixed)=http.get("/resources",&[("filter","(kind==software,kind==script);presentation.category==Tools")]).await?;
         assert_eq!(mixed["items"].as_array().unwrap().iter().map(|v|v["id"].as_str().unwrap()).collect::<Vec<_>>(),["z-directory-script","z-directory-software"]);
         let mut certificate_cursor=None;
         let mut certificates=Vec::new();
         loop {
             let mut query=vec![("sort","-latest.metadata.name"),("limit","1")];
             if let Some(cursor)=certificate_cursor.as_deref(){query.push(("cursor",cursor));}
-            let (status,result)=http.get("/api/v1/certificate-archive/entries",&query).await?;
+            let (status,result)=http.get("/certificate-archive/entries",&query).await?;
             assert_eq!(status,200,"{result}");
             certificates.extend(result["items"].as_array().unwrap().iter().map(|v|v["id"].as_str().unwrap().to_owned()));
             certificate_cursor=result["nextCursor"].as_str().map(str::to_owned);
@@ -360,19 +363,19 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
             "presentation.name=icontains='_'",
             "presentation.name=icontains='工具'",
         ] {
-            assert_eq!(http.selected("/api/v1/resources",filter).await?["id"],"z-directory-agent_collection");
+            assert_eq!(http.selected("/resources",filter).await?["id"],"z-directory-agent_collection");
         }
         for (path, filter) in [
-            ("/api/v1/resources", "presentation.unknown==x"),
-            ("/api/v1/webhooks/subscriptions", "settings.secret==x"),
-            ("/api/v1/api-keys", "secretDigest==x"),
+            ("/resources", "presentation.unknown==x"),
+            ("/webhooks/subscriptions", "settings.secret==x"),
+            ("/api-keys", "secretDigest==x"),
             (
-                "/api/v1/certificate-archive/entries",
+                "/certificate-archive/entries",
                 "latest.facts.certificates.subject==x",
             ),
-            ("/api/v1/resources", "revision==wrong"),
-            ("/api/v1/resources", "activeVersion=gt=1"),
-            ("/api/v1/policies", "definition.action.packages.linux_x86_64==00000000-0000-0000-0000-000000000001"),
+            ("/resources", "revision==wrong"),
+            ("/resources", "activeVersion=gt=1"),
+            ("/policies", "definition.action.packages.linux_x86_64==00000000-0000-0000-0000-000000000001"),
         ] {
             assert_eq!(
                 http.get(path, &[("filter", filter)]).await?.0,
@@ -382,16 +385,16 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         }
         unicode_bidirectional(&c, &http).await?;
         seed::corrupt_resource(&c,true).await?;
-        let (status,body)=http.get("/api/v1/resources",&[("filter","id=in=(a-directory-script,b-directory-script)"),("limit","1")]).await?;
+        let (status,body)=http.get("/resources",&[("filter","id=in=(a-directory-script,b-directory-script)"),("limit","1")]).await?;
         seed::corrupt_resource(&c,false).await?;
         assert!(status>=500,"corrupt lookahead accepted: {body}");
         assert!(body.get("nextCursor").is_none());
         seed::corrupt_saved(&c,true).await?;
-        let (status,body)=http.get("/api/v1/saved-queries",&[("filter",&format!("id=={}",Uuid::from_u128(1000)))]).await?;
+        let (status,body)=http.get("/saved-queries",&[("filter",&format!("id=={}",Uuid::from_u128(1000)))]).await?;
         seed::corrupt_saved(&c,false).await?;
         assert!(status>=500,"mismatched AST/text accepted: {body}");
         let saved = Uuid::from_u128(1002);
-        let path = format!("/api/v1/saved-queries/{saved}");
+        let path = format!("/saved-queries/{saved}");
         let write = |revision,filter:&str| json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"action":"put","definition":{"name":"updated directory","query":{"filter":filter,"fields":["device.name"]}}}});
         let (status,body)=http.put(&path,write(1,"device.name=='updated'")).await?;
         assert_eq!(status,200,"{body}");
@@ -401,27 +404,27 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         let (status,body)=http.put(&path,json!({"operationId":Uuid::new_v4(),"expectedRevision":2,"input":{"action":"delete"}})).await?;
         assert_eq!(status,200,"{body}");
         seed::saved_projection(&c,saved,None,3).await?;
-        let (_,nulls)=http.get("/api/v1/resources", &[("filter","activeVersion=isnull=true"),("limit","100")]).await?;
+        let (_,nulls)=http.get("/resources", &[("filter","activeVersion=isnull=true"),("limit","100")]).await?;
         assert_eq!(nulls["items"].as_array().unwrap().len(),20);
         assert!(nulls["items"].as_array().unwrap().iter().all(|v|v["activeVersion"].is_null()));
         assert!(nulls["items"].as_array().unwrap().iter().any(|v|v["id"]=="a-directory-script"));
-        assert_eq!(http.get("/api/v1/resources",&[("sort","presentation.description")]).await?.0,400);
-        assert_eq!(http.get("/api/v1/api-keys",&[("filter","createdBy.principalId==bogus")]).await?.0,400);
-        let (_,exact)=http.get("/api/v1/resources", &[("filter","presentation.name=='Zulu éclair %_ O\\'Reilly\\\\工具'")]).await?;
+        assert_eq!(http.get("/resources",&[("sort","presentation.description")]).await?.0,400);
+        assert_eq!(http.get("/api-keys",&[("filter","createdBy.principalId==bogus")]).await?.0,400);
+        let (_,exact)=http.get("/resources", &[("filter","presentation.name=='Zulu éclair %_ O\\'Reilly\\\\工具'")]).await?;
         assert_eq!(exact["items"],json!([]));
-        let (status,body)=http.get("/api/v1/policies",&[("filter","definition.action.packages.windows_x86_64==00000000-0000-0000-0000-000000000001")]).await?;
+        let (status,body)=http.get("/policies",&[("filter","definition.action.packages.windows_x86_64==00000000-0000-0000-0000-000000000001")]).await?;
         assert_eq!(status,200,"{body}");
         assert_eq!(body["items"],json!([]));
         seed::collection_semantics(&c).await?;
         seed::execution_plans(&c).await?;
-        assert_eq!(http.selected("/api/v1/resources", "kind==software;presentation.name=icontains=éclair").await?["id"], fixtures.resource);
-        let (_, first) = http.get("/api/v1/resources", &[("filter","presentation.category==Tools"),("limit","1")]).await?;
+        assert_eq!(http.selected("/resources", "kind==software;presentation.name=icontains=éclair").await?["id"], fixtures.resource);
+        let (_, first) = http.get("/resources", &[("filter","presentation.category==Tools"),("limit","1")]).await?;
         let token = first["nextCursor"].as_str().context("authority cursor")?;
         let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
         sqlx::query("UPDATE mdm_access.authorization_rules SET revision=revision+1 WHERE tenant_id=$1::uuid AND instance=$2::uuid AND id=$3")
             .bind(c.tenant.to_string()).bind(proof.instance_id()).bind(manager.rule).execute(&mut *tx).await?;
         tx.commit().await?;
-        assert_eq!(http.get("/api/v1/resources", &[("filter","presentation.category==Tools"),("cursor",token)]).await?.0,409);
+        assert_eq!(http.get("/resources", &[("filter","presentation.category==Tools"),("cursor",token)]).await?.0,409);
 
         Ok::<_, anyhow::Error>(())
     }
@@ -445,10 +448,10 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
 
 async fn bounded_sort_pages(http: &Http) -> Result<()> {
     for path in [
-        "/api/v1/saved-queries",
-        "/api/v1/compliance-rules",
-        "/api/v1/authorization/user-groups",
-        "/api/v1/api-keys",
+        "/saved-queries",
+        "/compliance-rules",
+        "/authorization/user-groups",
+        "/api-keys",
     ] {
         for (sort, expected) in [("name", [1000, 1001, 1002]), ("-name", [1002, 1000, 1001])] {
             let mut cursor = None;
@@ -482,7 +485,7 @@ async fn bounded_sort_pages(http: &Http) -> Result<()> {
     }
     for sort in ["toolName", "alias", "customEvent", "resource", "category"] {
         let (status, body) = http
-            .get("/api/v1/policies", &[("sort", sort), ("limit", "1")])
+            .get("/policies", &[("sort", sort), ("limit", "1")])
             .await?;
         assert_eq!(status, 200, "{body}");
         let token = body["nextCursor"]
@@ -490,7 +493,7 @@ async fn bounded_sort_pages(http: &Http) -> Result<()> {
             .context("Policy sorting must page")?;
         let (status, next) = http
             .get(
-                "/api/v1/policies",
+                "/policies",
                 &[("sort", sort), ("limit", "1"), ("cursor", token)],
             )
             .await?;
@@ -501,7 +504,7 @@ async fn bounded_sort_pages(http: &Http) -> Result<()> {
 }
 
 async fn text_range_boundaries(http: &Http) -> Result<()> {
-    let (status, all) = http.get("/api/v1/policies", &[("sort", "id")]).await?;
+    let (status, all) = http.get("/policies", &[("sort", "id")]).await?;
     assert_eq!(status, 200, "{all}");
     for boundary in [
         "policy_".to_owned(),
@@ -510,7 +513,7 @@ async fn text_range_boundaries(http: &Http) -> Result<()> {
     ] {
         let (status, result) = http
             .get(
-                "/api/v1/policies",
+                "/policies",
                 &[
                     ("filter", &format!("toolName=gt={boundary}")),
                     ("sort", "id"),
@@ -553,7 +556,7 @@ async fn unicode_bidirectional(c: &Context, http: &Http) -> Result<()> {
             for needle in *class {
                 assert_eq!(
                     http.selected(
-                        "/api/v1/resources",
+                        "/resources",
                         &format!("id==scripts/install;presentation.name=icontains={needle}")
                     )
                     .await?["id"],
@@ -566,7 +569,7 @@ async fn unicode_bidirectional(c: &Context, http: &Http) -> Result<()> {
     seed::literal_name(c, "ß", revision).await?;
     let (status, body) = http
         .get(
-            "/api/v1/resources",
+            "/resources",
             &[(
                 "filter",
                 "id==scripts/install;presentation.name=icontains=ss",

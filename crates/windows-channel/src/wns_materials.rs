@@ -282,11 +282,11 @@ pub fn mount(
     use rss_mdm_http_contract::routing::get;
     {
  rss_mdm_http_contract::route_module! { struct MountModule1 for [Browser] { get_history, get_read, post_create, post_revoke_http, get_operation } }
- MountModule1 { get_history: rss_mdm_http_contract::module::Route::new("/api/v1/windows/wns/versions", get(history, &contracts::WNS_VERSIONS, &[RouteOperation::List])),
-get_read: rss_mdm_http_contract::module::Route::new("/api/v1/windows/wns", rss_mdm_http_contract::routing::get(read, &contracts::WNS, &[RouteOperation::Get])),
-post_create: rss_mdm_http_contract::module::Route::new("/api/v1/windows/wns", rss_mdm_http_contract::routing::post(create, &contracts::WNS, &[RouteOperation::Update])),
-post_revoke_http: rss_mdm_http_contract::module::Route::new("/api/v1/windows/wns/revoke", rss_mdm_http_contract::routing::post(revoke_http, &contracts::WNS, &[RouteOperation::Update])),
-get_operation: rss_mdm_http_contract::module::Route::new("/api/v1/windows/wns/operations/{id}", get(operation, &contracts::WNS, &[RouteOperation::Get])) }.assemble()
+ MountModule1 { get_history: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/windows/wns/versions", get(history, &contracts::WNS_VERSIONS, &[RouteOperation::List])),
+get_read: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/windows/wns", rss_mdm_http_contract::routing::get(read, &contracts::WNS, &[RouteOperation::Get])),
+post_create: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/windows/wns", rss_mdm_http_contract::routing::post(create, &contracts::WNS, &[RouteOperation::Update])),
+post_revoke_http: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/windows/wns/revoke", rss_mdm_http_contract::routing::post(revoke_http, &contracts::WNS, &[RouteOperation::Update])),
+get_operation: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/windows/wns/operations/{id}", get(operation, &contracts::WNS, &[RouteOperation::Get])) }.assemble()
 }
         .layer(axum::extract::DefaultBodyLimit::max(16384))
         .bind_with(state.as_ref(), Clone::clone)
@@ -297,7 +297,7 @@ fn proof<'a>(
     write: bool,
 ) -> Result<&'a rss_mdm_authorization_service::context::AuthorizedPrincipal, Error> {
     let p = &auth.proof;
-    if p.tenant_id() != app.identity.tenant().to_string() {
+    if p.tenant_id() != p.binding().tenant().to_string() {
         return Err(Error::Forbidden);
     }
     p.require(
@@ -320,6 +320,8 @@ fn proof<'a>(
     Ok(p)
 }
 async fn read(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     axum::extract::State(app): axum::extract::State<std::sync::Arc<crate::HttpState>>,
     axum::Extension(auth): axum::Extension<rss_mdm_authorization_service::context::RequestAuth>,
 ) -> Result<axum::Json<Directory>, Error> {
@@ -333,7 +335,7 @@ async fn read(
 async fn operation(
     axum::extract::State(app): axum::extract::State<std::sync::Arc<crate::HttpState>>,
     axum::Extension(auth): axum::Extension<rss_mdm_authorization_service::context::RequestAuth>,
-    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    axum::extract::Path((_tenant, id)): axum::extract::Path<(uuid::Uuid, Uuid)>,
 ) -> Result<axum::Json<Operation>, Error> {
     operation_receipt(&app, &auth.proof, id)
         .await
@@ -345,7 +347,7 @@ pub async fn operation_receipt(
     p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
     id: Uuid,
 ) -> Result<Operation, Error> {
-    if p.tenant_id() != app.identity.tenant().to_string() {
+    if p.tenant_id() != p.binding().tenant().to_string() {
         return Err(Error::Forbidden);
     }
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
@@ -393,6 +395,8 @@ pub async fn operation_receipt(
     Ok(value)
 }
 async fn create(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     axum::extract::State(app): axum::extract::State<std::sync::Arc<crate::HttpState>>,
     axum::Extension(auth): axum::Extension<rss_mdm_authorization_service::context::RequestAuth>,
     axum::Extension(audit): axum::Extension<rss_mdm_audit_integration::RequestAudit>,
@@ -402,6 +406,8 @@ async fn create(
     mutate(app, auth, audit, headers, Change::Import(input)).await
 }
 async fn revoke_http(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     axum::extract::State(app): axum::extract::State<std::sync::Arc<crate::HttpState>>,
     axum::Extension(auth): axum::Extension<rss_mdm_authorization_service::context::RequestAuth>,
     axum::Extension(audit): axum::Extension<rss_mdm_audit_integration::RequestAudit>,
@@ -438,7 +444,8 @@ async fn mutate(
     audit.require_final_request();
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(8));
-    let result=app.audit_store.write(app.identity.tenant(),&budget.source_control(),(&app,p,&audit,id,&input),|ctx,tx|Box::pin(async move {
+    let result=app.audit_store.write(
+            auth.proof.binding(),&budget.source_control(),(&app,p,&audit,id,&input),|ctx,tx|Box::pin(async move {
         let (app,p,audit,id,input)=ctx;
         let mut context=(*app,*p,*id,*input);
         let (value,replayed)=tx.with_connection_context(&mut context,|(app,p,id,input),c|Box::pin(async move {
@@ -622,6 +629,8 @@ pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schem
     context: &[],
 };
 async fn history(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     axum::extract::State(app): axum::extract::State<std::sync::Arc<crate::HttpState>>,
     axum::Extension(auth): axum::Extension<rss_mdm_authorization_service::context::RequestAuth>,
     query: rss_mdm_http_contract::query::OwnedQuery<

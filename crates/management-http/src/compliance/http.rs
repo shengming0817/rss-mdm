@@ -117,6 +117,8 @@ pub fn routes() -> Router<Arc<Compliance>, impl rss_mdm_http_contract::module::D
     }
 }
 async fn list(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<Compliance>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -151,7 +153,7 @@ async fn remove(
     State(s): State<Arc<Compliance>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     body: std::result::Result<
         Json<rss_mdm_compliance_service::operation::Operation<Empty>>,
         axum::extract::rejection::JsonRejection,
@@ -174,7 +176,7 @@ async fn read(
     State(s): State<Arc<Compliance>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> std::result::Result<Json<RuleView>, Error> {
     run(&s, &a, &audit, Command::Read { id })
         .await
@@ -185,7 +187,7 @@ async fn put(
     State(s): State<Arc<Compliance>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     body: std::result::Result<
         Json<rss_mdm_compliance_service::operation::Operation<Definition>>,
         axum::extract::rejection::JsonRejection,
@@ -208,7 +210,7 @@ async fn recompute(
     State(s): State<Arc<Compliance>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     body: std::result::Result<
         Json<rss_mdm_compliance_service::operation::Operation<Empty>>,
         axum::extract::rejection::JsonRejection,
@@ -231,7 +233,7 @@ async fn task(
     State(s): State<Arc<Compliance>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, task)): Path<(Uuid, Uuid)>,
+    Path((_tenant, id, task)): Path<(uuid::Uuid, Uuid, Uuid)>,
 ) -> std::result::Result<Json<TaskView>, Error> {
     run(&s, &a, &audit, Command::Task { id, task })
         .await
@@ -242,7 +244,7 @@ async fn current(
     State(s): State<Arc<Compliance>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
 ) -> std::result::Result<Json<CurrentView>, Error> {
     run(&s, &a, &audit, Command::Current { device })
         .await
@@ -253,7 +255,7 @@ async fn history(
     State(s): State<Arc<Compliance>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
     params: rss_mdm_http_contract::query::OwnedQuery<ComplianceHistoryQuery>,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Json<History>>, Error> {
     (async {
@@ -279,7 +281,7 @@ async fn version(
     State(s): State<Arc<Compliance>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, revision)): Path<(Uuid, i64)>,
+    Path((_tenant, id, revision)): Path<(uuid::Uuid, Uuid, i64)>,
 ) -> std::result::Result<Json<RuleView>, Error> {
     run(&s, &a, &audit, Command::Version { id, revision })
         .await

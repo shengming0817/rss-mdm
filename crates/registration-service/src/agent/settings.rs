@@ -135,7 +135,7 @@ impl Service {
         let profile = self.profile();
 
         p.manage(Permission::AgentEnrollmentRead)?;
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != p.binding().tenant().to_string() {
             return Err(Error::Forbidden.into());
         }
         let mut tx = self.store.begin(p.tenant_id()).await?;
@@ -165,7 +165,7 @@ impl Service {
         let d = digest(&(input.expected_revision, &input.values))?;
         self.write(a, (self, p, input, a, d), |ctx, c| {
             Box::pin(async move {
-                let (service, p, input, a, d) = ctx;
+                let (_, p, input, a, d) = ctx;
                 authorize_on(profile, c, p, Permission::AgentEnrollmentWrite).await?;
                 let op = crate::operations::Operation {
                     actor: crate::operations::Actor::from_authorized(p),
@@ -173,12 +173,12 @@ impl Service {
                     digest: d,
                 };
                 sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2674))")
-                    .bind(service.tenant.to_string())
+                    .bind(a.binding()?.tenant().to_string())
                     .execute(&mut *c)
                     .await
                     .map_err(db)?;
                 sqlx::query(crate::storage_profile::sql(profile).agent_settings_update_settings_1)
-                    .bind(service.tenant.to_string())
+                    .bind(a.binding()?.tenant().to_string())
                     .fetch_one(&mut *c)
                     .await
                     .map_err(db)?;

@@ -51,6 +51,7 @@ GRANT SELECT ON rss_da.windows_sources TO da_access,da_identity_runtime;
 GRANT INSERT ON rss_da.windows_sources TO da_identity_runtime;
 GRANT UPDATE(version,document) ON rss_da.windows_sources TO da_identity_runtime;
 CREATE TABLE rss_da.brokers (
+ expected_epoch bigint NOT NULL DEFAULT current_setting('rss.execution_epoch')::bigint CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL,id uuid NOT NULL,document jsonb NOT NULL CHECK(octet_length(document::text)<=65536),
  sealed bytea CHECK(octet_length(sealed)<=65536),expires_at bigint NOT NULL,
  phase text NOT NULL CHECK(phase IN('preparing','awaiting_proof','completing','unknown','ready','consumed','cancelled','expired','failed')),

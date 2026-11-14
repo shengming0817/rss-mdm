@@ -6,15 +6,16 @@ use super::{
 use crate::catalog::{Catalog, Operation, SourceChange, VersionChange};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use serde_json::Value;
 use std::sync::Arc;
 pub struct Access<C: ManagementContentPort> {
+    pub storage: rss_transactional_messaging::fence::StorageIdentity,
+    pub expected_epoch: rss_transactional_messaging::fence::Epoch,
     pub runtime: Arc<PgRuntime>,
     pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub tenant: TenantId,
+
     pub catalog: Catalog,
     pub resources: Arc<rss_mdm_resource_postgres::ResourceStore>,
     pub resource_writer: Arc<dyn super::resource::ResourceWriter>,
@@ -56,7 +57,7 @@ pub async fn read_source<C: ManagementContentPort>(
     audit.target(&id);
     transaction::inspect(
         &app.runtime,
-        app.audit.binding(),
+        auth.binding(),
         (&app, &auth, &id, &revision),
         |ctx, tx| {
             Box::pin(async move {
@@ -103,7 +104,7 @@ pub async fn write_source<C: ManagementContentPort>(
     transaction::run(
         &app.audit,
         &app.runtime,
-        app.audit.binding(),
+        auth.binding(),
         audit,
         (&app, &auth, &id, &revision, &op, &audit),
         |ctx, tx| {
@@ -136,7 +137,7 @@ pub async fn read_version<C: ManagementContentPort>(
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, &id);
     transaction::inspect(
         &app.runtime,
-        app.audit.binding(),
+        auth.binding(),
         (&app, &auth, &id, &version),
         |ctx, tx| {
             Box::pin(async move {
@@ -194,7 +195,7 @@ pub async fn write_version<C: ManagementContentPort>(
     let verified = if matches!(op.input, VersionChange::Enable) {
         let resource = transaction::inspect(
             &app.runtime,
-            app.audit.binding(),
+            auth.binding(),
             (&app, &auth, &id, &version, &op, &audit),
             |ctx, tx| {
                 Box::pin(async move {
@@ -223,7 +224,7 @@ pub async fn write_version<C: ManagementContentPort>(
                     .as_ref()
                     .ok_or(Error::Unsupported)?
                     .as_ref()
-                    .verify(&resource)
+                    .verify(auth.binding(), &resource)
                     .await
                     .map_err(|_| Error::Malformed)?,
             )
@@ -236,7 +237,7 @@ pub async fn write_version<C: ManagementContentPort>(
     transaction::run(
         &app.audit,
         &app.runtime,
-        app.audit.binding(),
+        auth.binding(),
         audit,
         (&app, &auth, &id, &version, &op, audit, verified.as_deref()),
         |ctx, tx| {
@@ -256,12 +257,13 @@ pub async fn write_version<C: ManagementContentPort>(
                     .await?;
                 if matches!(op.input, VersionChange::Withdraw) {
                     crate::publication::withdraw_version_in(
+                        proof.binding(),
                         tx,
                         &records,
                         value["lifecycle"]["at"].as_i64().ok_or(Error::Conflict)?,
                         app.audit.as_ref(),
                         &rss_mdm_software_release::ActorId::new(
-                            app.tenant,
+                            proof.binding().tenant(),
                             serde_json::json!([proof.instance_id(), proof.principal_id()])
                                 .to_string(),
                         )
@@ -295,7 +297,7 @@ pub async fn download<C: ManagementContentPort>(
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, &id);
     let frozen = transaction::inspect(
         &app.runtime,
-        app.audit.binding(),
+        auth.binding(),
         (&app, &auth, &id, &version, &selection),
         |ctx, tx| {
             Box::pin(async move {
@@ -338,11 +340,11 @@ pub async fn download<C: ManagementContentPort>(
         .content
         .as_ref()
         .ok_or(Error::Unsupported)?
-        .verify_artifact(&artifact)
+        .verify_artifact(auth.binding(), &artifact)
         .await?;
     transaction::inspect(
         &app.runtime,
-        app.audit.binding(),
+        auth.binding(),
         (&app, &auth, &frozen),
         |ctx, tx| {
             Box::pin(async move {
@@ -386,7 +388,7 @@ pub async fn import<C: ManagementContentPort>(
     audit.require_final_request();
     let source = transaction::inspect(
         &app.runtime,
-        app.audit.binding(),
+        auth.binding(),
         (app, auth, audit, &op),
         |ctx, tx| {
             Box::pin(async move {
@@ -421,13 +423,13 @@ pub async fn import<C: ManagementContentPort>(
         .map_err(|_| Error::Malformed)?;
         let documents = tokio::time::timeout(
             std::time::Duration::from_secs(app.imports.transfer_seconds.min(30)),
-            imports::fetch::fetch(app.tenant, &reader, &source, &op.input),
+            imports::fetch::fetch(auth.binding().tenant(), &reader, &source, &op.input),
         )
         .await
         .map_err(|_| Error::Unavailable(Failure::ContentDeadline))?
         .map_err(import_failure)?;
-        let prepared =
-            imports::prepare(app.tenant, &source, &op.input, &documents).map_err(import_failure)?;
+        let prepared = imports::prepare(auth.binding().tenant(), &source, &op.input, &documents)
+            .map_err(import_failure)?;
         let actor = format!("{}:{}", auth.instance_id(), auth.principal_id());
         let mut staged = Vec::new();
         for (artifact, bytes) in &prepared.originals {
@@ -443,21 +445,24 @@ pub async fn import<C: ManagementContentPort>(
             let upload = uuid::Uuid::from_bytes(hash[..16].try_into().expect("digest prefix"));
             staged.push(
                 content
-                    .stage_import(StageImport {
-                        upload,
-                        actor: &actor,
-                        version: &prepared.version,
-                        variant: &op.input.variant,
-                        platform: op.input.platform,
-                        architecture: op.input.architecture,
-                        source: &op.input.source,
-                        artifact,
-                        bytes,
-                    })
+                    .stage_import(
+                        auth.binding(),
+                        StageImport {
+                            upload,
+                            actor: &actor,
+                            version: &prepared.version,
+                            variant: &op.input.variant,
+                            platform: op.input.platform,
+                            architecture: op.input.architecture,
+                            source: &op.input.source,
+                            artifact,
+                            bytes,
+                        },
+                    )
                     .await?,
             );
         }
-        retained = Some(content.pin_imports(staged).await?);
+        retained = Some(content.pin_imports(auth.binding(), staged).await?);
         Some(prepared)
     } else {
         None
@@ -465,7 +470,7 @@ pub async fn import<C: ManagementContentPort>(
     let result = transaction::run(
         &app.audit,
         &app.runtime,
-        app.audit.binding(),
+        auth.binding(),
         audit,
         (app, auth, audit, &op, prepared.as_ref(), &retained),
         |ctx, tx| {

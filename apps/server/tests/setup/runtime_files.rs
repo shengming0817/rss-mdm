@@ -52,7 +52,6 @@ fn previous() -> Applied {
         revision: 4,
         material_digest: "a".repeat(64),
         process_generation: uuid::Uuid::new_v4(),
-        tenant_id: uuid::Uuid::new_v4().to_string(),
         instance_id: uuid::Uuid::new_v4().to_string(),
     }
 }
@@ -68,27 +67,12 @@ fn binding(value: &Applied) -> Binding {
 fn health_requires_the_exact_input_and_a_real_process_generation() {
     let mut value = previous();
     let expected = binding(&value);
-    assert!(matches(
-        &value,
-        &expected,
-        &value.tenant_id,
-        &value.instance_id
-    ));
+    assert!(matches(&value, &expected, &value.instance_id));
     value.process_generation = uuid::Uuid::nil();
-    assert!(!matches(
-        &value,
-        &expected,
-        &value.tenant_id,
-        &value.instance_id
-    ));
+    assert!(!matches(&value, &expected, &value.instance_id));
     value.process_generation = uuid::Uuid::new_v4();
     value.revision += 1;
-    assert!(!matches(
-        &value,
-        &expected,
-        &value.tenant_id,
-        &value.instance_id
-    ));
+    assert!(!matches(&value, &expected, &value.instance_id));
 }
 #[test]
 fn candidate_freezes_material_bytes_before_application_digest() {
@@ -168,121 +152,6 @@ fn gateway_rotation_freezes_matching_material_and_rejects_a_foreign_key() {
         std::fs::read(frozen.private_key_file).unwrap(),
         key.private_key_to_pem_pkcs8().unwrap()
     );
-}
-
-#[test]
-fn additional_host_content_and_cold_snapshot_follow_its_own_deployment() {
-    use super::super::model::Phase;
-    use super::super::tenant_hosts::{Slot, additional_runtime};
-    use uuid::Uuid;
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    let primary = Config {
-        gateway_directory: root.join("gateway"),
-        directory: root.join("primary-runtime"),
-        content_volume: Some(root.join("primary-content")),
-        probe_address: None,
-        probe_addresses: BTreeMap::new(),
-        certificate_file: root.join("server.crt"),
-        private_key_file: root.join("server.key"),
-        trust_file: root.join("ca.crt"),
-    };
-    let mut runtime: Value =
-        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
-    runtime["content"] =
-        serde_json::json!({"storage":primary.prepare_content_storage().unwrap(),"max_uploads":8});
-    std::fs::write(primary.content_directory().join("artifact"), b"primary").unwrap();
-    let mut disabled = runtime.clone();
-    disabled["content"] = Value::Null;
-    assert_eq!(
-        primary.content_snapshot(&disabled).unwrap(),
-        primary.content_directory()
-    );
-
-    let progress = super::super::model::Provisioning {
-        operation_id: Uuid::new_v4(),
-        tenant_id: Uuid::new_v4(),
-        administrator_id: Some(Uuid::new_v4()),
-        host_id: Uuid::new_v4(),
-        revision: 1,
-        phase: Phase::HostPending,
-        blocked: None,
-        origin: None,
-        application: None,
-    };
-    for explicit in [true, false] {
-        let installation = root.join(if explicit {
-            "explicit-installation"
-        } else {
-            "default-installation"
-        });
-        let slot = Slot {
-            origin: "https://secondary.example.test".into(),
-            listen: "127.0.0.1:8082".parse().unwrap(),
-            deployment: Config {
-                gateway_directory: root.join("gateway"),
-                directory: root.join(if explicit {
-                    "explicit-runtime"
-                } else {
-                    "default-runtime"
-                }),
-                content_volume: explicit.then(|| root.join("secondary-content")),
-                ..primary.clone()
-            },
-        };
-        let mut deferred = runtime.clone();
-        deferred["content"] = Value::Null;
-        let waiting = additional_runtime(&installation, &deferred, &slot, &progress).unwrap();
-        let decoded: crate::config::Config = serde_json::from_value(waiting.clone()).unwrap();
-        assert!(decoded.content.is_none());
-        let candidate = additional_runtime(&installation, &runtime, &slot, &progress).unwrap();
-        let volume = slot.deployment.content_snapshot(&candidate).unwrap();
-        assert_ne!(volume, primary.content_directory());
-        assert_eq!(candidate["content"]["max_uploads"], 8);
-        assert!(matches!(
-            slot.deployment.content_snapshot(&runtime),
-            Err(Error::Conflict)
-        ));
-        std::fs::write(volume.join("artifact"), b"secondary").unwrap();
-        let journal = Journal::open(&root.join(if explicit {
-            "explicit-backup"
-        } else {
-            "default-backup"
-        }))
-        .unwrap();
-        super::super::snapshot_tree::capture(&journal, "volume", &volume).unwrap();
-        std::fs::remove_dir_all(&volume).unwrap();
-        super::super::snapshot_tree::restore(&journal, "volume").unwrap();
-        assert_eq!(
-            std::fs::read(volume.join("artifact")).unwrap(),
-            b"secondary"
-        );
-        assert_eq!(
-            std::fs::read(primary.content_directory().join("artifact")).unwrap(),
-            b"primary"
-        );
-        // Domain reconciliation has exported S3 while this host is still pending.
-        // A restart/retry must observe that exact application, not reset to revision 1.
-        let mut prepared = waiting;
-        prepared["content"] = json!({"storage":{"kind":"s3","revision":1,"max_concurrent":8,"connect_seconds":5},"imports":{},"max_artifact_bytes":1073741824u64,"max_temporary_bytes":2147483648u64,"max_uploads":8,"transfer_seconds":60,"retention_seconds":86400,"max_bundle_entries":4096,"max_expansion_ratio":100});
-        prepared["runtime_binding"] = json!({"host_id":progress.host_id,"operation_id":Uuid::new_v4(),"revision":2,"material_digest":super::super::application::fingerprint(&prepared).unwrap()});
-        {
-            let owner =
-                Journal::open(&installation.join(format!("rss-mdm-{}", progress.host_id.simple())))
-                    .unwrap();
-            owner.save("requested-runtime.json", &prepared).unwrap();
-        }
-        assert_eq!(
-            additional_runtime(&installation, &deferred, &slot, &progress).unwrap(),
-            prepared
-        );
-        let mut shared = slot;
-        shared.deployment.content_volume = primary.content_volume.clone();
-        assert_eq!(
-            shared.deployment.content_snapshot(&runtime).unwrap(),
-            primary.content_snapshot(&runtime).unwrap()
-        );
-    }
 }
 
 #[test]

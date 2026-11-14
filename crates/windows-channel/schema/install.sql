@@ -3,6 +3,16 @@ BEGIN;
 SET LOCAL check_function_bodies = false;
 
 CREATE SCHEMA mdm_windows;
+CREATE TABLE mdm_windows.enrollment_configuration (
+ tenant_id uuid PRIMARY KEY,provider_id text NOT NULL CHECK(length(provider_id) BETWEEN 1 AND 128),poll jsonb NOT NULL,lifetime jsonb NOT NULL,entra_provider uuid,entra_token jsonb,entra_callbacks text[] NOT NULL,
+ CHECK((entra_provider IS NULL AND entra_token IS NULL AND cardinality(entra_callbacks)=0) OR (entra_provider IS NOT NULL AND entra_token IS NOT NULL AND cardinality(entra_callbacks) BETWEEN 1 AND 16))
+);
+ALTER TABLE mdm_windows.enrollment_configuration ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_windows.enrollment_configuration FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_windows.enrollment_configuration USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_windows.enrollment_configuration FROM PUBLIC;
+GRANT SELECT,INSERT ON mdm_windows.enrollment_configuration TO mdm_access;
+GRANT UPDATE(provider_id,poll,lifetime,entra_provider,entra_token,entra_callbacks) ON mdm_windows.enrollment_configuration TO mdm_access;
 CREATE TABLE mdm_windows.linked_enrollments (
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
@@ -72,6 +82,7 @@ ALTER TABLE mdm_windows.push_queries FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_windows.push_queries USING (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 
 CREATE TABLE mdm_windows.renewals (
+    expected_epoch bigint NOT NULL DEFAULT current_setting('rss.execution_epoch')::bigint CHECK(expected_epoch>0),
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
   , device uuid NOT NULL
@@ -101,6 +112,7 @@ CREATE TABLE mdm_access.enrollment_certificates (
 ALTER TABLE ONLY mdm_access.enrollment_certificates FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_access.enrollment_intents (
+    expected_epoch bigint NOT NULL DEFAULT current_setting('rss.execution_epoch')::bigint CHECK(expected_epoch>0),
     signing_attempt uuid NOT NULL
   , protocol_device text CHECK (length(protocol_device) BETWEEN 1 AND 256)
   , tenant_id uuid NOT NULL
@@ -144,6 +156,7 @@ CREATE TABLE mdm_access.management_messages (
 ALTER TABLE ONLY mdm_access.management_messages FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_access.management_sessions (
+    expected_epoch bigint NOT NULL DEFAULT current_setting('rss.execution_epoch')::bigint CHECK(expected_epoch>0),
     protocol_epoch uuid NOT NULL,
     tenant_id uuid NOT NULL
   , device uuid NOT NULL
@@ -356,3 +369,32 @@ ALTER TABLE mdm_windows.attempt_frames FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY tenant ON mdm_windows.attempt_frames USING (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 COMMIT;
+
+CREATE INDEX ON mdm_windows.renewals(fingerprint);
+CREATE POLICY material_locator ON mdm_windows.renewals FOR SELECT TO mdm_owner USING(true);
+CREATE FUNCTION mdm_windows.renewal_certificate_tenants(p_fingerprint bytea) RETURNS TABLE(tenant_id uuid)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$ SELECT DISTINCT tenant_id FROM mdm_windows.renewals WHERE fingerprint=p_fingerprint ORDER BY tenant_id LIMIT 2 $$;
+ALTER FUNCTION mdm_windows.renewal_certificate_tenants(bytea) OWNER TO mdm_owner;
+REVOKE ALL ON FUNCTION mdm_windows.renewal_certificate_tenants(bytea) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_windows.renewal_certificate_tenants(bytea) TO mdm_access;
+
+CREATE POLICY entra_locator ON mdm_windows.enrollment_configuration FOR SELECT TO mdm_owner USING(true);
+CREATE INDEX ON mdm_windows.enrollment_configuration((entra_token->>'tenant'),(entra_token->>'app_id'));
+CREATE FUNCTION mdm_windows.entra_profile_tenants(external_tenant uuid,audience text) RETURNS TABLE(tenant_id uuid) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT tenant_id FROM mdm_windows.enrollment_configuration WHERE entra_provider IS NOT NULL AND entra_token->>'tenant'=external_tenant::text AND entra_token->>'app_id'=audience ORDER BY tenant_id LIMIT 2
+$$;
+REVOKE ALL ON FUNCTION mdm_windows.entra_profile_tenants(uuid,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_windows.entra_profile_tenants(uuid,text) TO mdm_access;
+
+CREATE POLICY push_discovery ON mdm_windows.push_channels FOR SELECT TO mdm_owner USING(true);
+CREATE FUNCTION mdm_windows.push_work_page(after_tenant uuid,after_device uuid) RETURNS TABLE(tenant_id uuid,device uuid) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT tenant_id,device FROM mdm_windows.push_channels WHERE after_tenant IS NULL OR (tenant_id,device)>(after_tenant,after_device) ORDER BY tenant_id,device LIMIT 32
+$$;
+REVOKE ALL ON FUNCTION mdm_windows.push_work_page(uuid,uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_windows.push_work_page(uuid,uuid) TO mdm_access;
+CREATE POLICY retention_discovery ON mdm_access.management_sessions FOR SELECT TO mdm_owner USING(true);
+CREATE FUNCTION mdm_windows.retention_scopes(after_tenant uuid,after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT DISTINCT tenant_id,expected_epoch FROM mdm_access.management_sessions WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32
+$$;
+REVOKE ALL ON FUNCTION mdm_windows.retention_scopes(uuid,bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_windows.retention_scopes(uuid,bigint) TO mdm_access;

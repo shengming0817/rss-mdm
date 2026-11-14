@@ -158,7 +158,7 @@ mod tests {
         let audit = RequestAudit::new(
             crate::Origin::Request,
             crate::StorageProfile::Mdm,
-            "tenant".into(),
+            crate::test_binding("11111111-1111-4111-8111-111111111111"),
             "read",
             crate::AuditIntent::Routine,
         );
@@ -185,7 +185,7 @@ mod tests {
         let audit = RequestAudit::new(
             crate::Origin::Request,
             crate::StorageProfile::Mdm,
-            "tenant".into(),
+            crate::test_binding("11111111-1111-4111-8111-111111111111"),
             "secret",
             I::Sensitive(S::CredentialReveal),
         );
@@ -238,7 +238,7 @@ mod tests {
         let audit = RequestAudit::new(
             crate::Origin::Request,
             crate::StorageProfile::Mdm,
-            "11111111-1111-4111-8111-111111111111".into(),
+            crate::test_binding("11111111-1111-4111-8111-111111111111"),
             "command_read",
             crate::AuditIntent::Routine,
         );

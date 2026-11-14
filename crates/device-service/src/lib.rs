@@ -47,7 +47,7 @@ pub struct Associations {
     worker_failures:
         std::sync::Mutex<std::collections::BTreeMap<String, Arc<rss_reconcile::ErrorKind>>>,
     audit: Arc<AuditStore>,
-    tenant: TenantId,
+
     key: ring::hmac::Key,
 }
 pub struct WorkerHealth {
@@ -101,7 +101,7 @@ impl Associations {
             && health.task == Some(rss_runtime::TaskState::Running)
             && health.failure.is_none()
     }
-    pub fn new(audit: Arc<AuditStore>, tenant: TenantId, secret: &[u8]) -> Result<Self> {
+    pub fn new(audit: Arc<AuditStore>, secret: &[u8]) -> Result<Self> {
         if secret.len() != 32 {
             return Err(Error::Malformed);
         }
@@ -114,7 +114,7 @@ impl Associations {
             worker_status: Default::default(),
             worker_failures: Default::default(),
             audit,
-            tenant,
+
             key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret.as_ref()),
         })
     }

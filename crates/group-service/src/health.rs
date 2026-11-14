@@ -6,9 +6,10 @@ impl Groups {
     }
     pub async fn queue_health(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         budget: std::time::Duration,
     ) -> std::result::Result<[u64; 5], Error> {
-        self.runtime.local_tx(self.audit_store.binding(),rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),|tx|Box::pin(async move {
+        self.runtime.local_tx(execution,rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),|tx|Box::pin(async move {
             let tenant=tx.tenant_id().to_string();
             tx.with_connection(move |c|Box::pin(async move {
                 let row:(i64,i64,i64,i64,i64)=sqlx::query_as("SELECT
@@ -128,9 +129,10 @@ impl crate::Groups {
     /// Read the retained owner outcome without discovering or waking business work.
     pub async fn input_failed(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         budget: std::time::Duration,
     ) -> std::result::Result<bool, crate::Error> {
-        let failed: bool=self.runtime.local_tx_with_context(self.audit_store.binding(),
+        let failed: bool=self.runtime.local_tx_with_context(execution,
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget), self,
             |_,tx| Box::pin(async move { let tenant=tx.tenant_id().to_string();
                     tx.with_connection(move |c|Box::pin(async move {sqlx::query_scalar("SELECT coalesce((SELECT input_failed FROM mdm_assets.group_dispatch WHERE tenant_id=$1::uuid),false)").bind(tenant).fetch_one(c).await})).await })).await.fold(Ok,

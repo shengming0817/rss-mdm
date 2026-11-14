@@ -4,22 +4,29 @@ use rss_mdm_registration_service::device::endpoints::DaRegistration;
 use sqlx::PgConnection;
 use uuid::Uuid;
 pub async fn ready(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+
     app: &Context,
     c: &mut PgConnection,
     object: &DaRegistration,
     now: i64,
 ) -> Result<(), Error> {
-    store::current_object(app, c, object).await?;
-    let login = configuration_for_object(c, app.tenant, object).await?;
+    store::current_object(execution, c, object).await?;
+    let login = configuration_for_object(c, execution.tenant(), object).await?;
     let rt = app.runtime()?;
     rt.evidence
         .current_on(
             c,
-            app.tenant,
+            execution.tenant(),
             app.installation,
             object,
             &rt.qualification_configuration()?,
-            rt.profile(&login)?.uuid,
+            rt.profile(
+                uuid::Uuid::parse_str(&execution.tenant().to_string())
+                    .map_err(|_| Error::Malformed)?,
+                &login,
+            )?
+            .uuid,
             now,
         )
         .await?;

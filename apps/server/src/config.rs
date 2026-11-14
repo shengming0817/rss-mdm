@@ -106,7 +106,7 @@ impl AuditReadConfig {
 pub struct Identity {
     pub runtime: crate::identity::policy::RuntimePolicy,
     pub instance_id: String,
-    pub tenant_id: String,
+    pub management_tenant: String,
     pub database: Database,
     pub oidc: Option<crate::identity::OidcConfig>,
     pub enterprise: Option<crate::identity::EnterpriseDeployment>,
@@ -158,7 +158,7 @@ pub struct Config {
     pub http: http::Http,
     pub device_access: Option<crate::assembly::device_access::config::Config>,
     pub background: crate::background::BackgroundConfig,
-    pub telemetry: Option<crate::telemetry::Config>,
+    pub telemetry: Vec<crate::telemetry::Config>,
     pub runtime_binding: crate::installation::host::Binding,
     #[serde(default)]
     pub apple_material_roots: Vec<PathBuf>,
@@ -184,7 +184,6 @@ pub struct Config {
     pub asset_input_database: Database,
     pub command_database: Database,
     pub(crate) content: Option<rss_mdm_content_service::Config>,
-    pub(crate) task_signing: Option<crate::task_signing::Config>,
     pub(crate) storage_binding: crate::owner_storage::StorageBinding,
     pub(crate) business_databases: crate::owner_storage::Databases,
     pub(crate) publication: crate::publication_config::Config,
@@ -245,13 +244,6 @@ impl Config {
             return Err(Error::Configuration(ConfigIssue::Budget));
         }
         self.runtime_binding.validate()?;
-        if self
-            .task_signing
-            .as_ref()
-            .is_some_and(|s| s.revision == 0 || s.revision > i64::MAX as u64)
-        {
-            return Err(Error::Configuration(ConfigIssue::AgentPki));
-        }
         if self.apple_material_roots.len() > 16 {
             return Err(Error::Configuration(ConfigIssue::AppleProfileSigner));
         }
@@ -287,9 +279,9 @@ impl Config {
             return Err(Error::Configuration(ConfigIssue::IdentityDatabase));
         }
         self.native_protector()?;
-        let tenant = uuid::Uuid::parse_str(&self.identity.tenant_id)
+        let tenant = uuid::Uuid::parse_str(&self.identity.management_tenant)
             .map_err(|_| Error::Configuration(ConfigIssue::Tenant))?;
-        if tenant.is_nil() || tenant.to_string() != self.identity.tenant_id {
+        if tenant.is_nil() || tenant.to_string() != self.identity.management_tenant {
             return Err(Error::Configuration(ConfigIssue::Tenant));
         }
         if self.command_database.user != "mdm_command_runtime"
@@ -308,11 +300,15 @@ impl Config {
         {
             return Err(Error::Configuration(ConfigIssue::Publication));
         }
-        if let Some(telemetry) = &self.telemetry {
-            telemetry.validate(
-                rss_request_context::TenantId::parse(&self.identity.tenant_id)
-                    .map_err(|_| Error::Malformed)?,
-            )?;
+        if self
+            .telemetry
+            .first()
+            .is_some_and(|c| !matches!(c.backend, crate::telemetry::Storage::Postgres { .. }))
+        {
+            return Err(Error::Malformed);
+        }
+        for telemetry in &self.telemetry {
+            telemetry.validate()?;
             let database = telemetry.database();
             if database.host == self.access_database.host
                 && database.port == self.access_database.port
@@ -450,5 +446,22 @@ impl InventoryRuntimeConfig {
             self.projection_events,
         )
         .map_err(Error::from)
+    }
+}
+
+impl Config {
+    /// The installation's management scope is only an admission probe for shared resources.
+    pub(crate) fn management_binding(
+        &self,
+    ) -> Result<rss_transactional_messaging::fence::ExecutionBinding, Error> {
+        Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage_binding.identity()?,
+            rss_request_context::TenantId::parse(&self.identity.management_tenant)
+                .map_err(|_| Error::Malformed)?,
+            rss_transactional_messaging::fence::Epoch::new(
+                rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH,
+            )
+            .map_err(|_| Error::Malformed)?,
+        ))
     }
 }

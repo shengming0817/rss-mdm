@@ -53,12 +53,7 @@ pub fn task_router<
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<Q>> {
     boundary::wrap(tasks::routes::<Q>().with_state(state), envelope)
 }
-pub fn installation_router(
-    execution: Arc<dyn crate::participants::Installation>,
-    envelope: boundary::Envelope,
-) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
-    boundary::wrap_enroll(tasks::installation_routes().with_state(execution), envelope)
-}
+
 pub use tasks::TaskState;
 
 /// Real services supplied by App. Offline projection never constructs this value.
@@ -131,7 +126,7 @@ pub fn enrollment_routes(
         EnrollmentRoutesModule101 {
             base: enroll::mount(service),
             tasks_installation_routes: tasks::installation_routes()
-                .bind_with(runtime, |r| r.tasks.installation.clone()),
+                .bind_with(runtime, |r| r.tasks.clone()),
         }
         .assemble()
     };
@@ -256,6 +251,7 @@ pub fn ingress_error(code: wire::ErrorCode) -> Response {
 }
 
 async fn report(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
@@ -266,6 +262,7 @@ async fn report(
     json_content_type(&headers)?;
     let body = body.map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
     report_inner(
+        &origin,
         &control,
         &app,
         &audit,
@@ -276,6 +273,7 @@ async fn report(
     .await
 }
 async fn report_inner(
+    origin: &rss_mdm_certificate::GatewayOrigin,
     control: &rss_axum::RequestControl,
     app: &HttpState,
     audit: &RequestAudit,
@@ -284,7 +282,7 @@ async fn report_inner(
     body: contract::Buffered<ReportDecoder>,
 ) -> Result<WithStatus<202, Json<wire::ReportAck>>, AgentError> {
     let input = body.decode(headers, wire::MAX_REPORT_BYTES)?.value;
-    let principal = authenticate(&app.enrollment, headers, peer).await?;
+    let principal = authenticate(origin, &app.enrollment, headers, peer).await?;
     let scope = device::scope(
         principal.profile(),
         principal.tenant(),
@@ -297,6 +295,7 @@ async fn report_inner(
         "agent_report",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
+    audit.bind_scope(principal.binding()).map_err(Error::from)?;
     audit.identify_device(principal.device());
     audit.target_device(principal.device());
     let scope = crate::device::scope_dataset(
@@ -310,7 +309,8 @@ async fn report_inner(
     .map_err(Error::from)?;
     let batch = report_batch(&input)?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::until(control.deadline());
-    let attempt = app.audit_store.write(principal.tenant(),
+    let attempt = app.audit_store.write(
+            audit.binding().map_err(Error::from)?,
             &budget.source_control(),
         (&app.audit_store, &principal, &scope, &input, &batch, audit),
         |(store, principal, scope, input, batch, audit), tx| Box::pin(async move {
@@ -331,6 +331,7 @@ async fn report_inner(
 }
 
 async fn status(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     Extension(control): Extension<rss_axum::RequestControl>,
@@ -341,6 +342,7 @@ async fn status(
     let id =
         Uuid::parse_str(&id).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
     status_inner(
+        &origin,
         &app,
         &audit,
         &headers,
@@ -351,6 +353,7 @@ async fn status(
     .await
 }
 async fn status_inner(
+    origin: &rss_mdm_certificate::GatewayOrigin,
     app: &HttpState,
     audit: &RequestAudit,
     headers: &HeaderMap,
@@ -361,7 +364,7 @@ async fn status_inner(
     if id.is_nil() {
         return Err(Error::Malformed.into());
     }
-    let principal = authenticate(&app.enrollment, headers, peer).await?;
+    let principal = authenticate(origin, &app.enrollment, headers, peer).await?;
     let scope = device::scope(
         principal.profile(),
         principal.tenant(),
@@ -374,6 +377,7 @@ async fn status_inner(
         "agent_report_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
+    audit.bind_scope(principal.binding()).map_err(Error::from)?;
     audit.identify_device(principal.device());
     audit.target_device(principal.device());
     let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
@@ -396,6 +400,7 @@ async fn status_inner(
     let delivery = app
         .inventory
         .inspect_report(
+            principal.tenant(),
             report.scope(),
             report.batch(),
             control.deadline(),
@@ -466,6 +471,7 @@ fn parse_report(body: &[u8]) -> Result<wire::ReportRequest, AgentError> {
     serde_json::from_value(value).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))
 }
 pub(crate) async fn authenticate(
+    origin: &rss_mdm_certificate::GatewayOrigin,
     service: &rss_mdm_registration_service::agent::Service,
     headers: &HeaderMap,
     peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,
@@ -473,10 +479,15 @@ pub(crate) async fn authenticate(
     if headers.contains_key(header::AUTHORIZATION) {
         return Err(Error::Unauthorized.into());
     }
-    service
+    let principal = service
         .authenticate(peer.ok_or(Error::Unauthorized)?)
         .await
-        .map_err(|e| AgentError::Enrollment(e.code))
+        .map_err(|e| AgentError::Enrollment(e.code))?;
+    service
+        .require_connection_origin(principal.binding(), origin)
+        .await
+        .map_err(|e| AgentError::Enrollment(e.code))?;
+    Ok(principal)
 }
 /// Convert validated wire observations; authentication and durable admission remain separate.
 pub fn report_batch(input: &wire::ReportRequest) -> Result<Batch, Error> {

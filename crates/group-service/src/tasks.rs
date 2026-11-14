@@ -45,9 +45,6 @@ pub struct TaskState {
 impl Groups {
     pub(crate) fn check_task_transaction(&self, tx: &PgTransaction<'_>) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::Forbidden.into());
-        }
         Ok(())
     }
 
@@ -57,7 +54,7 @@ impl Groups {
         id: Uuid,
     ) -> Result<TaskState> {
         self.check_task_transaction(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let row = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query("SELECT input,kind,target,completed,failure,cursor,definition_progress FROM mdm_assets.group_tasks WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(tenant).bind(id).fetch_optional(c).await
@@ -84,10 +81,15 @@ impl Groups {
 
     pub(crate) async fn enqueue_task_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         input: &TaskInput,
     ) -> Result<crate::tasks::JobAccepted> {
+        if binding.tenant() != tx.tenant_id() || binding.storage() != self.storage {
+            return Err(Error::Forbidden.into());
+        }
+
         self.check_task_transaction(tx)?;
         if id.is_nil() || input.target().is_nil() {
             return Err(Error::Malformed.into());
@@ -96,21 +98,37 @@ impl Groups {
         if document.len() > 1_048_576 {
             return Err(Error::Malformed.into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
+        let epoch = binding.epoch().get();
         let kind = input.kind();
         let target = input.target();
         tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_assets.group_tasks(tenant_id,id,kind,target,input) VALUES($1::uuid,$2,$3,$4,$5::jsonb)")
-                .bind(tenant).bind(id).bind(kind).bind(target).bind(document).execute(c).await?;
+            sqlx::query("INSERT INTO mdm_assets.group_tasks(tenant_id,id,kind,target,input,expected_epoch) VALUES($1::uuid,$2,$3,$4,$5::jsonb,$6)")
+                .bind(tenant).bind(id).bind(kind).bind(target).bind(document).bind(epoch).execute(c).await?;
             Ok(())
         })).await?;
-        let target = self::target(self.tenant, id);
-        self.reconcile_messaging.wake_in(tx, &target, &rss_reconcile::ResourceSet::empty(target.scope().tenant()), (), |_, tx| Box::pin(async move {
-            tx.with_connection(move |c| Box::pin(async move {
-                sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'groups')").execute(c).await?;
-                Ok(())
-            })).await
-        })).await?;
+        let target = self::target(tx.tenant_id(), id);
+        self.reconcile_messaging
+            .wake_in(
+                tx,
+                &target,
+                &rss_reconcile::ResourceSet::empty(target.scope().tenant()),
+                (),
+                |_, tx| {
+                    Box::pin(async move {
+                        tx.with_connection(move |c| {
+                            Box::pin(async move {
+                                sqlx::query("SELECT pg_notify('mdm_work','groups')")
+                                    .execute(c)
+                                    .await?;
+                                Ok(())
+                            })
+                        })
+                        .await
+                    })
+                },
+            )
+            .await?;
         Ok(accepted(id, input))
     }
 
@@ -121,7 +139,7 @@ impl Groups {
         new: Uuid,
     ) -> Result<()> {
         self.check_task_transaction(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| Box::pin(async move {
             sqlx::query("UPDATE mdm_assets.group_tasks SET replacement_task=$3 WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(tenant).bind(old).bind(new).execute(c).await?;
@@ -151,12 +169,13 @@ pub fn target(tenant: TenantId, id: Uuid) -> rss_reconcile::Target {
 impl Groups {
     pub(crate) async fn finish_task_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         failure: Option<&str>,
     ) -> Result<()> {
         self.check_task_transaction(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let failure_owned = failure.map(str::to_owned);
         let changed = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_scalar::<_, Uuid>("UPDATE mdm_assets.group_tasks SET completed=true,failure=$3 WHERE tenant_id=$1::uuid AND id=$2 AND NOT completed RETURNING target")
@@ -177,7 +196,7 @@ impl Groups {
             let audit = rss_mdm_audit_integration::RequestAudit::new(
                 rss_mdm_audit_integration::Origin::Background,
                 rss_mdm_audit_integration::StorageProfile::Mdm,
-                self.tenant.to_string(),
+                binding,
                 action,
                 rss_mdm_audit_integration::AuditIntent::Management,
             );
@@ -247,7 +266,7 @@ impl Groups {
             } else {
                 (0, 0)
             };
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let replacement_task = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_scalar::<_, Option<Uuid>>("SELECT replacement_task FROM mdm_assets.group_tasks WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(tenant).bind(id).fetch_one(c).await
@@ -303,7 +322,7 @@ impl Groups {
             return Err(Error::Forbidden.into());
         }
         for required in input.authority() {
-            if required.evidence.actor().tenant_id() != self.tenant.to_string() {
+            if required.evidence.actor().tenant_id() != tx.tenant_id().to_string() {
                 return Err(Error::Forbidden.into());
             }
             let required = required.clone();
@@ -374,36 +393,31 @@ impl Groups {
         id: Uuid,
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
-        crate::transaction::inspect(
-            &self.runtime,
-            self.audit_store.binding(),
-            (self, p),
-            |(s, p), tx| {
-                Box::pin(async move {
-                    let grant = crate::transaction::query_authority(tx, p).await?;
-                    grant.require(
-                        p,
-                        rss_mdm_authorization_service::Permission::GroupRead,
-                        None,
-                    )?;
-                    grant.require_all_devices(
-                        p,
-                        rss_mdm_authorization_service::Permission::InventoryRead,
-                    )?;
-                    let state = s.read_task_in(tx, id).await?;
-                    let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
-                    value.object = Some(state.input.target().to_string());
-                    value.accepted = Some(true);
-                    value.executions.push(id);
-                    let detail = s
-                        .task_read_in(tx, id, &state.input.target().to_string())
-                        .await?;
-                    value.state = Some(detail["status"].as_str().ok_or(Error::Conflict)?.into());
-                    p.check_live()?;
-                    Ok(Some(value))
-                })
-            },
-        )
+        crate::transaction::inspect(&self.runtime, p.binding(), (self, p), |(s, p), tx| {
+            Box::pin(async move {
+                let grant = crate::transaction::query_authority(tx, p).await?;
+                grant.require(
+                    p,
+                    rss_mdm_authorization_service::Permission::GroupRead,
+                    None,
+                )?;
+                grant.require_all_devices(
+                    p,
+                    rss_mdm_authorization_service::Permission::InventoryRead,
+                )?;
+                let state = s.read_task_in(tx, id).await?;
+                let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                value.object = Some(state.input.target().to_string());
+                value.accepted = Some(true);
+                value.executions.push(id);
+                let detail = s
+                    .task_read_in(tx, id, &state.input.target().to_string())
+                    .await?;
+                value.state = Some(detail["status"].as_str().ok_or(Error::Conflict)?.into());
+                p.check_live()?;
+                Ok(Some(value))
+            })
+        })
         .await
     }
 }

@@ -250,62 +250,37 @@ pub enum WakeHealth {
     Healthy,
     Configuration,
 }
-#[derive(Default)]
-struct Health {
-    failures: u8,
-    configuration: bool,
-}
-impl Health {
-    fn observe(&mut self, result: &Result<WakeHealth, Error>) -> (bool, Duration) {
-        match result {
-            Ok(value) => {
-                self.failures = 0;
-                match value {
-                    WakeHealth::Healthy => self.configuration = false,
-                    WakeHealth::Configuration => self.configuration = true,
-                    WakeHealth::Idle => {}
-                }
-            }
-            Err(_) => self.failures = self.failures.saturating_add(1),
-        }
-        (
-            !self.configuration && self.failures < 3,
-            Duration::from_secs(1 << self.failures.min(5)),
-        )
-    }
-}
+
 pub fn registration(
-    apple: std::sync::Arc<super::Apple>,
-    delivery: std::sync::Arc<crate::delivery::Delivery>,
-    access: std::sync::Arc<crate::Store>,
-    audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
-    tenant: String,
+    app: std::sync::Arc<crate::HttpState>,
     notify: std::sync::Arc<tokio::sync::Notify>,
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) = rss_runtime::ManagedTask::prepare("apple-apns", Duration::from_secs(8));
-    task.into_registration(move |token| async move {
-        let mut certificate_levels = [None; 3];
-        let mut account_certificate_levels = std::collections::BTreeMap::new();
-        let mut health = Health::default();
-        loop {
-            if let Some(now) = apple.push.clock.unix_seconds() { apple.report_certificate_health(now, &mut certificate_levels, &mut account_certificate_levels); }
-            let result = tokio::select! { biased; ()=token.cancelled()=>return Ok(()), result=cycle(&apple, &delivery, &access, &audit_store, &tenant)=>result };
-            let health_result = result.as_ref().map(|(_, wake, _)| *wake).map_err(|_| Error::Unavailable(Failure::AppleStorage));
-            let (ready, delay) = health.observe(&health_result);
-            let changed = apple.push_ready.swap(ready, std::sync::atomic::Ordering::Relaxed) != ready;
-            if result.is_err() || changed { eprintln!("{}",serde_json::json!({"event":"apple_push_health","ready":ready,"consecutive_internal_failures":health.failures,"configuration_failure":health.configuration})); }
-            match result {
-                Ok((progress, wake, _)) if progress > 0 || !matches!(wake, WakeHealth::Idle) => continue,
-                Ok((_, _, nearest)) => {
-                    crate::wait(&notify, &token, nearest).await;
+    task.into_registration(move|stop|async move{
+        let mut after=None;let mut nearest=Some(Duration::from_secs(60));
+        loop{
+            if stop.is_cancelled(){return Ok(())}
+            let scopes=match app.access.push_work_scopes(after).await{Ok(page)=>page,Err(_)=>{eprintln!("apple_push_discovery_failed");nearest=Some(Duration::from_secs(5));Vec::new()}};
+            if scopes.is_empty(){after=None;crate::wait(&notify,&stop,nearest).await;nearest=Some(Duration::from_secs(60));continue}
+            for tenant in scopes{
+                after=Some(tenant);if stop.is_cancelled(){return Ok(())}
+                let tenant=rss_request_context::TenantId::parse(&tenant.to_string()).map_err(rss_runtime::ShutdownError::new)?;
+                let execution=app.execution(tenant);
+                let result=async{let apple=app.apple(execution).await?;cycle(execution,&apple,&app.delivery,&app.access,&app.audit_store).await}.await;
+                match result{
+                    Ok((progress,wake,next))=>{let delay=if progress>0||!matches!(wake,WakeHealth::Idle){Duration::from_millis(100)}else{next.unwrap_or(Duration::from_secs(60))};nearest=Some(nearest.map_or(delay,|old|old.min(delay)));},
+                    Err(_)=>{eprintln!("{}",serde_json::json!({"event":"apple_push_failure","tenant":tenant.to_string()}));nearest=Some(Duration::from_secs(5));},
                 }
-                Err(_) => { tokio::select! { biased; ()=token.cancelled()=>return Ok(()), ()=tokio::time::sleep(delay)=>{} } }
             }
         }
     })
 }
-pub async fn wake(push: &Push, delivery: &crate::delivery::Delivery) -> Result<WakeHealth, Error> {
-    let Some(wake) = delivery.wake(&push.configuration).await? else {
+pub async fn wake(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    push: &Push,
+    delivery: &crate::delivery::Delivery,
+) -> Result<WakeHealth, Error> {
+    let Some(wake) = delivery.wake(execution, &push.configuration).await? else {
         return Ok(WakeHealth::Idle);
     };
     let now = push
@@ -345,22 +320,23 @@ pub async fn wake(push: &Push, delivery: &crate::delivery::Delivery) -> Result<W
 }
 
 pub async fn cycle(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     apple: &super::Apple,
     delivery: &crate::delivery::Delivery,
     access: &crate::Store,
     audit_store: &rss_mdm_audit_integration::AuditStore,
-    tenant: &str,
 ) -> Result<(usize, WakeHealth, Option<Duration>), Error> {
     let now = apple
         .push
         .clock
         .unix_seconds()
         .ok_or(Error::Unavailable(Failure::Clock))?;
-    apple.check_materials(access, tenant, now).await?;
-    let progress = super::renewal::maintain(apple, access, audit_store, tenant, now).await?;
-    let wake = wake(&apple.push, delivery).await?;
+    let tenant = execution.tenant().to_string();
+    apple.check_materials(access, &tenant, now).await?;
+    let progress = super::renewal::maintain(execution, apple, audit_store, now).await?;
+    let wake = wake(execution, &apple.push, delivery).await?;
     let nearest = if progress == 0 && matches!(wake, WakeHealth::Idle) {
-        super::renewal::next_maintenance(access, tenant).await?
+        super::renewal::next_maintenance(access, &tenant).await?
     } else {
         None
     };

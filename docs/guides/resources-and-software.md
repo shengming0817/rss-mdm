@@ -27,7 +27,7 @@ EXE 固定安装/升级/卸载调用、完整离线文件布局和独立检测�
 
 ### JSON 来源快照
 
-来源目录数据通过 `POST /api/v1/software/source-snapshots/{source}` 一次性导入，完整请求上限
+来源目录数据通过 `POST /api/v1/tenants/{tenant}/software/source-snapshots/{source}` 一次性导入，完整请求上限
 64 MiB、记录数上限 100,000，派生索引编码预算为 64 MiB。请求沿用 `operationId`、`expectedRevision`；首次导入的
 `expectedRevision` 为 0，替换时使用当前快照的 revision。所有时间为 UTC Unix 秒。
 
@@ -49,7 +49,7 @@ EXE 固定安装/升级/卸载调用、完整离线文件布局和独立检测�
 记录位置省略或未命中时使用整个文档，选中的值是数组时逐项保存，否则保存为一条记录。查询字段仅提取不超过 4096 字节的非空字符串，
 未命中或类型不符时为空；原数据不裁剪。非法或含 NUL 的 Pointer 配置明确拒绝，不执行表达式或脚本。
 
-来源列表为 `GET /api/v1/software/source-snapshots`；同一路径下的 `/{source}` 返回当前
+来源列表为 `GET /api/v1/tenants/{tenant}/software/source-snapshots`；同一路径下的 `/{source}` 返回当前
 快照及完整 JSON，`/{source}/entries` 分页查询提取字段，
 `/{source}/entries/{entryId}` 返回选定记录的完整数据。列表沿用统一过滤、排序、投影和
 游标，默认 20 条、最多 100 条。记录游标绑定当前快照，替换后须从第一页重新读取。
@@ -60,7 +60,7 @@ EXE 固定安装/升级/卸载调用、完整离线文件布局和独立检测�
 新快照原子替换旧快照与记录索引，不修改已导入或发布的软件，不提供历史快照或回滚。
 
 导入与读取分别要求 `software_write` 和 `software_read`。写入结果未知时通过
-`GET /api/v1/software/source-snapshots/{source}/operations/{operationId}` 查询原操作，
+`GET /api/v1/tenants/{tenant}/software/source-snapshots/{source}/operations/{operationId}` 查询原操作，
 或显式重提完全相同的请求；回执只向原操作主体提供。原操作重放不会恢复已被替换的快照。
 导入失败保留原数据；revision 或原操作请求内容冲突须由调用方重新核实，不自动覆盖。
 
@@ -72,7 +72,7 @@ Brew 使用完整消费的受限静态解析，不执行 Ruby。只接受固定 
 
 `content.imports` 按来源 ID 配置受控 `{base, addresses, private_ca}`：固定解析地址、证书与主机名验证、无代理/重定向/凭据转发。注册来源本身不扩大网络白名单。产物声明 origin 后可调用既有 `/content/mirror`，逐个镜像完整对象，提交前重新核对当前生命周期。
 
-以下内容路径位于 `/api/v1/resources/{id}`，写入需要 ResourceWrite：
+以下内容路径位于 `/api/v1/tenants/{tenant}/resources/{id}`，写入需要 ResourceWrite：
 
 - `POST /content?version=...&variant=...&platform=...&architecture=...&operation=<UUID>` 完整流式上传；多材料使用 `artifact=<reference>`。
 - `POST /uploads/{uploadId}` 建立同样绑定；`GET /uploads/{uploadId}` 查询 offset。
@@ -99,7 +99,7 @@ Resource 状态不代替软件准入/撤回判定，详情和执行仍由原 own
 
 单目标撤回只阻止该发布的新消费，并原子登记下架意图。版本全局撤回在目录生命周期事务内登记全部对应发布的下架意图；后台复用原 worker 推进，不自动卸载。已发生的成功和未知结果保留，其他目标的独立撤回互不影响。目标摘要仅绑定本目标配置，增加另一目标不会修改既有发布身份。
 
-WinGet 由 rss-mdm 公开只读托管，挂载 `/api/v1/software/native/sources/{source}/`：information、manifestSearch、精确 packageManifests，以及 `/exports/{publication}/` 冻结来源。仅启用并发布的内容可读取，响应 no-store。发布/撤回直接更新本地事务和投影，不 HTTP 调用自己。没有 Entra、代理或认证占位；WinGet 配置的 credentials 必须为空。
+WinGet 由 rss-mdm 公开只读托管，挂载 `/api/v1/tenants/{tenant}/software/native/sources/{source}/`：information、manifestSearch、精确 packageManifests，以及 `/exports/{publication}/` 冻结来源。仅启用并发布的内容可读取，响应 no-store。发布/撤回直接更新本地事务和投影，不 HTTP 调用自己。没有 Entra、代理或认证占位；WinGet 配置的 credentials 必须为空。
 
 Brew 将专用系统 Git bare 仓库固定映射到实际来源，生成无父提交的不可变 Tap，保留 bottle/token/依赖布局，Formula 的 source install 明确拒绝。`/exports/{publication}.git` 只提供固定 namespace 的 upload-pack，不提供 receive-pack、任意 SHA want 或通用 Git 服务。只有 Brew 使用来源范围只读 credential_reference；秘密来自宿主配置，wire 只包含引用。撤回移除该快照的读取权，不影响其他版本或包。
 
@@ -118,7 +118,7 @@ Native Policy 明确 `delivery: {kind: native, target}`，直接材料则为 `de
 单目标配置示例（位于 publication.sources，导入来源仍独立配置）：
 
 ```json
-[{"name":"internal","credentials":{},"target":{"Winget":{"base":"https://mdm.example/api/v1/software/native/sources/internal/","artifacts_base":"https://mdm.example/api/v1/software/native/sources/internal/artifacts/"}}}]
+[{"name":"internal","credentials":{},"target":{"Winget":{"base":"https://mdm.example/api/v1/tenants/{tenant}/software/native/sources/internal/","artifacts_base":"https://mdm.example/api/v1/tenants/{tenant}/software/native/sources/internal/artifacts/"}}}]
 ```
 
 ## 来源与证据边界
@@ -129,7 +129,7 @@ Brew 派生只接受能保留冻结行为的子集：PKG/DMG 的 system scope、
 
 ## 管理员下载脚本原文
 
-`GET /api/v1/resources/{id}/versions/{version}/script?platform=macos&architecture=aarch64&variant=default`
+`GET /api/v1/tenants/{tenant}/resources/{id}/versions/{version}/script?platform=macos&architecture=aarch64&variant=default`
 以当前 ResourceRead 权限读取精确不可变 Script 产物。错误资源类型、归档版本、失效引用或越权均拒绝；下载前校验完整摘要与长度。
 返回附件原始字节，支持既有 Range/ETag，并禁止共享缓存。上传者身份不是读取授权，脚本内容不会写入审计。
 

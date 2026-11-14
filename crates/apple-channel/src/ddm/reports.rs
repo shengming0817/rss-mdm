@@ -162,7 +162,7 @@ impl Exchange {
                         .map_err(|_| Error::Malformed)?,
                 );
             }
-            facts = rss_mdm_inventory_service::collection::declarative::receive(c,
+            facts = rss_mdm_inventory_service::collection::declarative::receive(p.binding(), c,
                 rss_mdm_inventory_service::collection::declarative::Report {
                     target: rss_mdm_inventory_service::collection::native::Target {
                         tenant:p.tenant(),device:*p.device(),

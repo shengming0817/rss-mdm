@@ -7,6 +7,7 @@ use rss_mdm_inventory::{ArrayState, CollectionScope, Platform, Scalar, State};
 impl AssetService {
     pub(super) async fn software_search(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         access: &Access,
         change: &crate::operation::Operation<Query>,
@@ -30,10 +31,10 @@ impl AssetService {
         if let Some(text) = &input.software.filter {
             filter::compile(text)?;
         }
-        self.admit_software_result(tx).await?;
+        self.admit_software_result(binding, tx).await?;
         let configuration = self.software_configuration(tx).await?;
         let reader = &self.software_sources.objects;
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         let before = tx
             .with_connection_context(&mut (reader,), move |(reader,), c| {
                 Box::pin(async move { reader.relation_revision(c, tenant).await })
@@ -60,9 +61,9 @@ impl AssetService {
         if before != association_revision {
             return Err(Error::Conflict.into());
         }
-        let catalog = assets::catalog_at_in(tx, self.tenant, &asset_cut).await?;
+        let catalog = assets::catalog_at_in(tx, tx.tenant_id(), &asset_cut).await?;
         let device_query = input.devices.compile(&catalog)?;
-        self.validate_query(&device_query, &catalog)?;
+        self.validate_query(tx.tenant_id(), &device_query, &catalog)?;
         if let Some(condition) = &device_query.criteria {
             assets::filter::require_visible(&catalog, &condition.criteria)?;
         }
@@ -152,6 +153,7 @@ impl AssetService {
         };
         let task = change.operation_id;
         self.enqueue_query_in(
+            binding,
             tx,
             task,
             &assets::tasks::QueryInput {
@@ -163,7 +165,7 @@ impl AssetService {
             },
         )
         .await?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| Box::pin(async move {
             sqlx::query("INSERT INTO mdm_assets.software_progress(tenant_id,run,document) VALUES($1::uuid,$2,NULL)").bind(tenant).bind(task).execute(c).await?; Ok(())
         })).await?;
@@ -236,7 +238,7 @@ impl AssetService {
         }
         if job.query.context == AssetContext::AssociatedDevice {
             let reader = &self.software_sources.objects;
-            let tenant = self.tenant;
+            let tenant = tx.tenant_id();
             let revision = tx
                 .with_connection_context(&mut (reader,), move |(reader,), c| {
                     Box::pin(async move { reader.relation_revision(c, tenant).await })
@@ -251,6 +253,7 @@ impl AssetService {
 
     pub(in crate::assets) async fn advance_software_query(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         input: &assets::tasks::QueryInput,
@@ -258,7 +261,7 @@ impl AssetService {
         after: Option<rss_mdm_agent_wire::ObjectRef>,
     ) -> Result<()> {
         self.software_current(tx, job).await?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let raw: Option<serde_json::Value> = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_scalar("SELECT document FROM mdm_assets.software_progress WHERE tenant_id=$1::uuid AND run=$2 FOR UPDATE").bind(tenant).bind(task).fetch_one(c).await
         })).await?;
@@ -266,7 +269,7 @@ impl AssetService {
             stored(serde_json::from_value::<ObjectProgress>(raw))?
         } else {
             let reader = &self.software_sources.objects;
-            let tenant = self.tenant;
+            let tenant = tx.tenant_id();
             let object = if let Some(snapshot) = &job.objects {
                 let snapshot_id = snapshot.id;
                 tx.with_connection_context(&mut (reader,), move |(reader,), c| {
@@ -280,21 +283,20 @@ impl AssetService {
                 })
                 .await?
             } else {
-                let page =
-                    SnapshotReader::bind(StorageProfile::Mdm, self.runtime.clone(), self.tenant)
-                        .asset_page_in(
-                            tx,
-                            &input.asset_cut,
-                            after
-                                .map(|o| match o {
-                                    rss_mdm_agent_wire::ObjectRef::Endpoint(id) => Ok(id),
-                                    _ => Err(Error::Unavailable(Failure::AssetsStorage)),
-                                })
-                                .transpose()?,
-                            1,
-                            &input.scope,
-                        )
-                        .await?;
+                let page = SnapshotReader::bind(StorageProfile::Mdm, self.runtime.clone())
+                    .asset_page_in(
+                        tx,
+                        &input.asset_cut,
+                        after
+                            .map(|o| match o {
+                                rss_mdm_agent_wire::ObjectRef::Endpoint(id) => Ok(id),
+                                _ => Err(Error::Unavailable(Failure::AssetsStorage)),
+                            })
+                            .transpose()?,
+                        1,
+                        &input.scope,
+                    )
+                    .await?;
                 if let Some(device) = page.devices.first() {
                     let device = device.scalars.device;
                     let cut = &input.asset_cut;
@@ -311,7 +313,7 @@ impl AssetService {
                 }
             };
             let Some(object) = object else {
-                return self.finish_query_in(tx, task, None).await;
+                return self.finish_query_in(binding, tx, task, None).await;
             };
             let Some(progress) = self
                 .prepare_software_object(tx, task, input, job, object)
@@ -322,7 +324,7 @@ impl AssetService {
             progress
         };
         if let Some(array) = progress.arrays.get(progress.array).cloned() {
-            let tenant = self.tenant;
+            let tenant = tx.tenant_id();
             let scan = match progress.scan.take() {
                 Some(scan) => scan,
                 None => {
@@ -405,8 +407,8 @@ impl AssetService {
         job: &Job,
         object: crate::objects::DeviceObject,
     ) -> Result<Option<ObjectProgress>> {
-        let reader = SnapshotReader::bind(StorageProfile::Mdm, self.runtime.clone(), self.tenant);
-        let catalog = assets::catalog_at_in(tx, self.tenant, &input.asset_cut).await?;
+        let reader = SnapshotReader::bind(StorageProfile::Mdm, self.runtime.clone());
+        let catalog = assets::catalog_at_in(tx, tx.tenant_id(), &input.asset_cut).await?;
         let ids: Vec<_> = object
             .members
             .iter()
@@ -421,7 +423,7 @@ impl AssetService {
         let mut unknown = !object.verified;
         let mut coverage_unknown = !object.verified;
         if let Some(condition) = &input.query.criteria {
-            let rule = assets::rule(self.tenant, Uuid::nil(), &condition.criteria, &catalog)?;
+            let rule = assets::rule(tx.tenant_id(), Uuid::nil(), &condition.criteria, &catalog)?;
             let saved = self.evaluation(tx, task).await?;
             let evaluation = reader
                 .condition_inputs_in(
@@ -451,7 +453,7 @@ impl AssetService {
             };
             let result = checked_input(rule.evaluate_page(
                 &rss_mdm_group::PageInput {
-                    tenant: self.tenant,
+                    tenant: tx.tenant_id(),
                     id: "software-assets",
                     version: &input.asset_cut.input_version(),
                     dictionary_version: rss_mdm_inventory::DICTIONARY,
@@ -579,7 +581,7 @@ impl AssetService {
                 .map(|mapping| mapping.source)
                 .collect();
             for scope in scopes {
-                let tenant = self.tenant;
+                let tenant = tx.tenant_id();
                 let cut = &input.asset_cut;
                 let selected = vec![*endpoint];
                 let reader = &reader;
@@ -591,7 +593,9 @@ impl AssetService {
                         move |(reader, cut, catalog, scope), c| {
                             Box::pin(async move {
                                 reader
-                                    .scoped_summary_devices_on(c, cut, &selected, catalog, scope)
+                                    .scoped_summary_devices_on(
+                                        tenant, c, cut, &selected, catalog, scope,
+                                    )
                                     .await
                                     .map_err(|_| {
                                         sqlx::Error::Protocol(format!("software snapshot {tenant}"))
@@ -715,7 +719,7 @@ impl AssetService {
         {
             return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| Box::pin(async move { sqlx::query("UPDATE mdm_assets.software_progress SET document=$3 WHERE tenant_id=$1::uuid AND run=$2").bind(tenant).bind(task).bind(document).execute(c).await?; Ok(()) })).await?;
         Ok(())
     }

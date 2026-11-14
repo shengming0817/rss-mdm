@@ -27,18 +27,15 @@ pub fn mount(
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
  rss_mdm_http_contract::route_module! { struct MountModule1 for [Browser] { get_list, get_read, get_operations, get_operation } }
- MountModule1 { get_list: rss_mdm_http_contract::module::Route::new("/api/v1/devices/{device}/windows-certificate-requests", get(list, &contracts::WINDOWS_CERTIFICATE_REQUESTS,&[RouteOperation::List])),
-get_read: rss_mdm_http_contract::module::Route::new("/api/v1/devices/{device}/windows-certificate-requests/{attempt}", get(read, &contracts::WINDOWS_CERTIFICATE_REQUESTS,&[RouteOperation::Get])),
-get_operations: rss_mdm_http_contract::module::Route::new("/api/v1/devices/{device}/windows-certificate-requests/{attempt}/recovery-operations", get(operations, &contracts::WINDOWS_SIGNING_RECOVERY_OPERATIONS,&[RouteOperation::List])),
-get_operation: rss_mdm_http_contract::module::Route::new("/api/v1/devices/{device}/windows-certificate-requests/{attempt}/recovery-operations/{operation}", get(operation, &contracts::WINDOWS_SIGNING_RECOVERY_OPERATION,&[RouteOperation::Get])) }.assemble()
+ MountModule1 { get_list: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/devices/{device}/windows-certificate-requests", get(list, &contracts::WINDOWS_CERTIFICATE_REQUESTS,&[RouteOperation::List])),
+get_read: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/devices/{device}/windows-certificate-requests/{attempt}", get(read, &contracts::WINDOWS_CERTIFICATE_REQUESTS,&[RouteOperation::Get])),
+get_operations: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/devices/{device}/windows-certificate-requests/{attempt}/recovery-operations", get(operations, &contracts::WINDOWS_SIGNING_RECOVERY_OPERATIONS,&[RouteOperation::List])),
+get_operation: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/devices/{device}/windows-certificate-requests/{attempt}/recovery-operations/{operation}", get(operation, &contracts::WINDOWS_SIGNING_RECOVERY_OPERATION,&[RouteOperation::Get])) }.assemble()
 }
         .bind_with(state.as_ref(),Clone::clone)
 }
-fn proof<'a>(
-    app: &crate::HttpState,
-    auth: &'a RequestAuth,
-) -> Result<&'a AuthorizedPrincipal, Error> {
-    if auth.proof.tenant_id() != app.identity.tenant().to_string() {
+fn proof<'a>(auth: &'a RequestAuth) -> Result<&'a AuthorizedPrincipal, Error> {
+    if auth.proof.tenant_id() != auth.proof.binding().tenant().to_string() {
         return Err(Error::Forbidden);
     }
     auth.proof.check_live()?;
@@ -47,10 +44,10 @@ fn proof<'a>(
 async fn list(
     State(app): State<Arc<crate::HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
     query: OwnedQuery<Directory<Requests>>,
 ) -> Result<CollectionResponse<Json<Page<Projection<Request>>>>, Error> {
-    let p = proof(&app, &auth)?;
+    let p = proof(&auth)?;
     let now = app
         .clock
         .unix_seconds()
@@ -65,9 +62,9 @@ async fn list(
 async fn read(
     State(app): State<Arc<crate::HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((device, attempt)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
+    Path((_tenant, device, attempt)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId, Uuid)>,
 ) -> Result<Json<Request>, Error> {
-    let p = proof(&app, &auth)?;
+    let p = proof(&auth)?;
     let now = app
         .clock
         .unix_seconds()
@@ -80,10 +77,10 @@ async fn read(
 async fn operations(
     State(app): State<Arc<crate::HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((device, attempt)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
+    Path((_tenant, device, attempt)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId, Uuid)>,
     query: OwnedQuery<Directory<Operations>>,
 ) -> Result<CollectionResponse<Json<Page<Projection<pki::Operation>>>>, Error> {
-    let p = proof(&app, &auth)?;
+    let p = proof(&auth)?;
     let q = query.parse().map_err(|_| Error::Malformed)?;
     app.access
         .certificate_recovery_operations(p, &device, attempt, &q, &app.query_cursor)
@@ -94,11 +91,16 @@ async fn operations(
 async fn operation(
     State(app): State<Arc<crate::HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((device, attempt, operation)): Path<(rss_mdm_agent_wire::DeviceId, Uuid, Uuid)>,
+    Path((_tenant, device, attempt, operation)): Path<(
+        uuid::Uuid,
+        rss_mdm_agent_wire::DeviceId,
+        Uuid,
+        Uuid,
+    )>,
     identity: Result<HttpQuery<pki::ReceiptIdentity>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<Option<rss_mdm_pki_service::recovery::Receipt>>, Error> {
     let HttpQuery(identity) = identity.map_err(|_| Error::Malformed)?;
-    let p = proof(&app, &auth)?;
+    let p = proof(&auth)?;
     app.access
         .certificate_recovery_operation(p, &device, attempt, operation, &identity)
         .await

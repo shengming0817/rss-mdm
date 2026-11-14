@@ -26,6 +26,7 @@ pub enum TriggerInput {
     reason = "Enrollment acceptance borrows the original transaction and distinct authority and signing facts"
 )]
 pub async fn accept_for_device(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
@@ -154,6 +155,7 @@ pub async fn accept_for_device(
         return Ok(());
     }
     queue_run_in(
+        binding,
         profile,
         service,
         tx,
@@ -187,6 +189,7 @@ pub struct RunInput<'a> {
     pub now: i64,
 }
 pub async fn queue_run_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
@@ -280,6 +283,7 @@ pub async fn queue_run_in(
             .bind(evidence)
             .bind(origin)
             .bind(invocation)
+            .bind(binding.epoch().get())
             .execute(c)
             .await?;
             Ok(())
@@ -287,7 +291,15 @@ pub async fn queue_run_in(
     })
     .await?;
     crate::enrollment::tasks::wake::run_in(profile, &service.reconcile_messaging, tx, id).await?;
-    tx.with_connection(|c|Box::pin(async move {sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'command_relay')").execute(c).await?;Ok(())})).await?;
+    tx.with_connection(|c| {
+        Box::pin(async move {
+            sqlx::query("SELECT pg_notify('mdm_work','command_relay')")
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await?;
     let audit = input
         .request
         .map(|a| a.fact_copy("enrollment_accept"))
@@ -295,7 +307,7 @@ pub async fn queue_run_in(
             RequestAudit::new(
                 rss_mdm_audit_integration::Origin::Background,
                 profile,
-                tx.tenant_id().to_string(),
+                binding,
                 "enrollment_accept",
                 rss_mdm_audit_integration::AuditIntent::Management,
             )

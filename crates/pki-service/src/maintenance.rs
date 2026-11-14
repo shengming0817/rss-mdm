@@ -8,7 +8,6 @@ use crate::{
 use rss_mdm_agent_wire::pki::{Purpose, Trust};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_device_trust::{DeviceTrust, crl, decode};
-use rss_request_context::TenantId;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -46,12 +45,14 @@ struct Job {
     failures: i32,
 }
 impl Registry {
-    pub async fn health(&self) -> Result<Vec<Health>, Error> {
+    pub async fn health(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<Vec<Health>, Error> {
         let profile = self.profile();
 
         let mut result = Vec::new();
-        for binding in self.bindings() {
-            let trust = binding.public().map_err(|_| Error::Storage)?;
+        for trust in self.trusts(execution).await? {
             let mut tx = self.begin(&trust.tenant.to_string()).await?;
             for g in trust.issuers {
                 let certificate = Certificate::from_der(
@@ -118,7 +119,12 @@ impl Registry {
         p.bind_audit(a).map_err(|_| Error::Forbidden)?;
         if p.profile() != self.profile()
             || input.operation.is_nil()
-            || self.trust(input.purpose)?.tenant.to_string() != p.tenant_id()
+            || self
+                .trust(p.binding(), input.purpose)
+                .await?
+                .tenant
+                .to_string()
+                != p.tenant_id()
         {
             return Err(Error::Forbidden);
         }
@@ -129,6 +135,7 @@ impl Registry {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         self.publish_set(
+            p.binding(),
             &input.publications,
             input.purpose,
             input.operation,
@@ -140,6 +147,7 @@ impl Registry {
     }
     async fn publish_set(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         inputs: &[Publication],
         requested_purpose: Purpose,
         operation: Uuid,
@@ -152,7 +160,7 @@ impl Registry {
         if inputs.is_empty() || inputs.len() > 16 || operation.is_nil() {
             return Err(Error::Request);
         }
-        let mut next = self.trust(requested_purpose)?;
+        let mut next = self.trust(execution, requested_purpose).await?;
         let mut publications = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         let mut roots = std::collections::BTreeMap::new();
@@ -189,7 +197,7 @@ impl Registry {
             publications.push((input.issuer.clone(), published));
         }
         DeviceTrust::new(next.clone(), requested_purpose, now).map_err(|_| Error::Request)?;
-        let tenant = next.tenant;
+
         let mut canonical = inputs.iter().collect::<Vec<_>>();
         canonical.sort_by(|a, b| a.issuer.cmp(&b.issuer));
         let fingerprint = Sha256::digest(
@@ -204,7 +212,7 @@ impl Registry {
         .to_vec();
         let result = self
             .mutation(
-                TenantId::parse(&tenant.to_string()).map_err(|_| Error::Request)?,
+                execution,
                 a,
                 (
                     principal,
@@ -322,22 +330,16 @@ impl Registry {
                 },
             )
             .await;
-        if matches!(result, Ok(true)) {
-            self.binding(requested_purpose)?
-                .update(next, now)
-                .map_err(|_| Error::Storage)?;
-        }
         result.map(|_| ())
     }
     /// Refresh all generations of a purpose together, so a CA outage can recover without restart.
     pub async fn sweep(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         clock: impl Fn() -> Result<i64, Error> + Send + Sync,
     ) -> Result<(), Error> {
-        self.synchronize(clock()?).await?;
         let mut failed = false;
-        for binding in self.bindings() {
-            let trust = binding.public().map_err(|_| Error::Storage)?;
+        for trust in self.trusts(execution).await? {
             let mut inputs = Vec::new();
             let mut unavailable = false;
             for g in &trust.issuers {
@@ -378,7 +380,7 @@ impl Registry {
             let a = RequestAudit::new(
                 rss_mdm_audit_integration::Origin::Background,
                 self.profile(),
-                trust.tenant.to_string(),
+                execution,
                 "device_pki_crl_publish",
                 rss_mdm_audit_integration::AuditIntent::Management,
             );
@@ -390,7 +392,15 @@ impl Registry {
                 rss_mdm_audit_integration::AuditIntent::Management,
             );
             let result = self
-                .publish_set(&inputs, trust.purpose, operation, &a, None, publication_now)
+                .publish_set(
+                    execution,
+                    &inputs,
+                    trust.purpose,
+                    operation,
+                    &a,
+                    None,
+                    publication_now,
+                )
                 .await;
             a.finalize(
                 result
@@ -406,7 +416,7 @@ impl Registry {
                 p.purpose == trust.purpose && trust.issuers.iter().any(|g| g.digest == p.issuer)
             }) {
                 for _ in 0..8 {
-                    let Some(job) = self.claim(&trust, provider, clock()?).await? else {
+                    let Some(job) = self.claim(execution, &trust, provider, clock()?).await? else {
                         break;
                     };
                     let acknowledged = provider
@@ -415,7 +425,7 @@ impl Registry {
                         .await
                         .is_ok();
                     if acknowledged {
-                        self.submitted(&trust, provider, &job).await?;
+                        self.submitted(execution, &trust, provider, &job).await?;
                     }
                 }
             }
@@ -424,6 +434,7 @@ impl Registry {
     }
     async fn claim(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         trust: &Trust,
         provider: &crate::providers::Provider,
         now: i64,
@@ -433,64 +444,57 @@ impl Registry {
         let a = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             self.profile(),
-            trust.tenant.to_string(),
+            execution,
             "device_pki_revoke_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         a.identify_service("service:device-pki");
         let result = self
-            .mutation(
-                TenantId::parse(&trust.tenant.to_string()).map_err(|_| Error::Request)?,
-                &a,
-                (trust, provider, now, &a),
-                |ctx, c| {
-                    Box::pin(async move {
-                        let (trust, provider, now, a) = ctx;
-                        let row =
-                            sqlx::query(crate::storage_profile::sql(profile).maintenance_claim_1)
-                                .bind(trust.tenant)
-                                .bind(purpose(provider.purpose))
-                                .bind(&provider.issuer)
-                                .fetch_optional(&mut *c)
-                                .await
-                                .map_err(|_| Error::Storage)?;
-                        let Some(row) = row else {
-                            return Ok(Change {
-                                value: None,
-                                replay: true,
-                                key: String::new(),
-                            });
-                        };
-                        let job = Job {
-                            attempt: row.try_get("attempt").map_err(|_| Error::Storage)?,
-                            serial: row.try_get("serial").map_err(|_| Error::Storage)?,
-                            failures: row.try_get("failures").map_err(|_| Error::Storage)?,
-                        };
-                        a.owned_operation(
-                            rss_mdm_audit_integration::operation::OperationOwner::PkiRevocation,
-                            job.attempt,
-                            "device_pki_revoke_dispatch",
-                            rss_mdm_audit_integration::AuditIntent::Management,
-                        );
-                        let seconds =
-                            (60_i64.saturating_mul(1_i64 << job.failures.min(9))).min(21600);
-                        sqlx::query(crate::storage_profile::sql(profile).maintenance_claim_2)
-                            .bind(trust.tenant)
-                            .bind(purpose(provider.purpose))
-                            .bind(job.attempt)
-                            .bind(seconds as f64)
-                            .execute(c)
-                            .await
-                            .map_err(|_| Error::Storage)?;
+            .mutation(execution, &a, (trust, provider, now, &a), |ctx, c| {
+                Box::pin(async move {
+                    let (trust, provider, now, a) = ctx;
+                    let row = sqlx::query(crate::storage_profile::sql(profile).maintenance_claim_1)
+                        .bind(trust.tenant)
+                        .bind(purpose(provider.purpose))
+                        .bind(&provider.issuer)
+                        .fetch_optional(&mut *c)
+                        .await
+                        .map_err(|_| Error::Storage)?;
+                    let Some(row) = row else {
+                        return Ok(Change {
+                            value: None,
+                            replay: true,
+                            key: String::new(),
+                        });
+                    };
+                    let job = Job {
+                        attempt: row.try_get("attempt").map_err(|_| Error::Storage)?,
+                        serial: row.try_get("serial").map_err(|_| Error::Storage)?,
+                        failures: row.try_get("failures").map_err(|_| Error::Storage)?,
+                    };
+                    a.owned_operation(
+                        rss_mdm_audit_integration::operation::OperationOwner::PkiRevocation,
+                        job.attempt,
+                        "device_pki_revoke_dispatch",
+                        rss_mdm_audit_integration::AuditIntent::Management,
+                    );
+                    let seconds = (60_i64.saturating_mul(1_i64 << job.failures.min(9))).min(21600);
+                    sqlx::query(crate::storage_profile::sql(profile).maintenance_claim_2)
+                        .bind(trust.tenant)
+                        .bind(purpose(provider.purpose))
+                        .bind(job.attempt)
+                        .bind(seconds as f64)
+                        .execute(c)
+                        .await
+                        .map_err(|_| Error::Storage)?;
 
-                        Ok(Change {
-                            key: format!("pki:{}:dispatch:{now}", job.attempt),
-                            value: Some(job),
-                            replay: false,
-                        })
+                    Ok(Change {
+                        key: format!("pki:{}:dispatch:{now}", job.attempt),
+                        value: Some(job),
+                        replay: false,
                     })
-                },
-            )
+                })
+            })
             .await;
         a.finalize(
             result
@@ -502,6 +506,7 @@ impl Registry {
     }
     async fn submitted(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         trust: &Trust,
         provider: &crate::providers::Provider,
         job: &Job,
@@ -511,7 +516,7 @@ impl Registry {
         let a = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             self.profile(),
-            trust.tenant.to_string(),
+            execution,
             "device_pki_revoke_submit",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -523,35 +528,29 @@ impl Registry {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let result = self
-            .mutation(
-                TenantId::parse(&trust.tenant.to_string()).map_err(|_| Error::Request)?,
-                &a,
-                (trust, provider, job),
-                |ctx, c| {
-                    Box::pin(async move {
-                        let (trust, provider, job) = ctx;
-                        let changed = sqlx::query(
-                            crate::storage_profile::sql(profile).maintenance_submitted_1,
-                        )
-                        .bind(trust.tenant)
-                        .bind(purpose(provider.purpose))
-                        .bind(job.attempt)
-                        .execute(c)
-                        .await
-                        .map_err(|_| Error::Storage)?
-                        .rows_affected();
-                        Ok(Change {
-                            value: (),
-                            replay: changed == 0,
-                            key: if changed == 0 {
-                                String::new()
-                            } else {
-                                format!("pki:{}:submitted", job.attempt)
-                            },
-                        })
+            .mutation(execution, &a, (trust, provider, job), |ctx, c| {
+                Box::pin(async move {
+                    let (trust, provider, job) = ctx;
+                    let changed =
+                        sqlx::query(crate::storage_profile::sql(profile).maintenance_submitted_1)
+                            .bind(trust.tenant)
+                            .bind(purpose(provider.purpose))
+                            .bind(job.attempt)
+                            .execute(c)
+                            .await
+                            .map_err(|_| Error::Storage)?
+                            .rows_affected();
+                    Ok(Change {
+                        value: (),
+                        replay: changed == 0,
+                        key: if changed == 0 {
+                            String::new()
+                        } else {
+                            format!("pki:{}:submitted", job.attempt)
+                        },
                     })
-                },
-            )
+                })
+            })
             .await;
         a.finalize(
             result

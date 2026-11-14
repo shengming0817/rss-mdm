@@ -24,17 +24,16 @@ fn budget(bytes: u64) -> Result<rss_mdm_content_s3::Budget> {
 async fn capture_generation(
     c: &mut PgConnection,
     journal: &crate::installation::local::Journal,
-    host: Uuid,
+    tenant_id: Uuid,
     generation: Uuid,
     runtime: &Value,
 ) -> Result<()> {
     if runtime["content"]["storage"]["kind"] != "s3" {
         return Ok(());
     }
-    let (store, protection) = load_connection(c, runtime).await?;
-    let tenant = runtime["identity"]["tenant_id"]
-        .as_str()
-        .ok_or(Error::Input)?;
+    let (store, protection) = load_connection(c, tenant_id, runtime).await?;
+    let tenant_text = tenant_id.to_string();
+    let tenant = tenant_text.as_str();
     let id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Input)?;
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
@@ -46,7 +45,11 @@ async fn capture_generation(
         .await
         .map_err(|_| Error::Corrupt)?;
     tx.rollback().await.map_err(|_| Error::Storage)?;
-    let root = journal.path(&format!("s3-{}-{}", host.simple(), generation.simple()))?;
+    let root = journal.path(&format!(
+        "s3-{}-{}",
+        tenant_id.simple(),
+        generation.simple()
+    ))?;
     let objects = crate::installation::local::Journal::open(&root)?;
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
@@ -69,19 +72,22 @@ async fn capture_generation(
 async fn restore_generation(
     c: &mut PgConnection,
     journal: &crate::installation::local::Journal,
-    host: Uuid,
+    tenant_id: Uuid,
     generation: Uuid,
     runtime: &Value,
 ) -> Result<()> {
     if runtime["content"]["storage"]["kind"] != "s3" {
         return Ok(());
     }
-    let (store, protection) = load_connection(c, runtime).await?;
-    let tenant = runtime["identity"]["tenant_id"]
-        .as_str()
-        .ok_or(Error::Input)?;
+    let (store, protection) = load_connection(c, tenant_id, runtime).await?;
+    let tenant_text = tenant_id.to_string();
+    let tenant = tenant_text.as_str();
     let id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Input)?;
-    let root = journal.path(&format!("s3-{}-{}", host.simple(), generation.simple()))?;
+    let root = journal.path(&format!(
+        "s3-{}-{}",
+        tenant_id.simple(),
+        generation.simple()
+    ))?;
     let objects = crate::installation::local::Journal::open(&root)?;
     let mut names = Vec::new();
     for entry in std::fs::read_dir(&root).map_err(|_| Error::Storage)? {
@@ -115,13 +121,14 @@ async fn restore_generation(
 
 async fn load_connection(
     c: &mut PgConnection,
+    tenant_id: Uuid,
     runtime: &Value,
 ) -> Result<(rss_mdm_content_s3::Store, std::sync::Arc<Protector>)> {
     let config: crate::config::Config =
         serde_json::from_value(runtime.clone()).map_err(|_| Error::Input)?;
     let protection = config.native_protector().map_err(|_| Error::Corrupt)?;
-    let tenant = rss_request_context::TenantId::parse(&config.identity.tenant_id)
-        .map_err(|_| Error::Input)?;
+    let tenant =
+        rss_request_context::TenantId::parse(&tenant_id.to_string()).map_err(|_| Error::Input)?;
     let revision = runtime["content"]["storage"]["revision"]
         .as_u64()
         .ok_or(Error::Input)?;
@@ -373,30 +380,30 @@ async fn restore_object(
 pub(in crate::installation) async fn capture(
     c: &mut PgConnection,
     journal: &crate::installation::local::Journal,
-    host: Uuid,
+    tenant_id: Uuid,
     runtime: &Value,
 ) -> Result<()> {
-    generation_snapshots(c, journal, host, runtime, false).await
+    generation_snapshots(c, journal, tenant_id, runtime, false).await
 }
 pub(in crate::installation) async fn restore(
     c: &mut PgConnection,
     journal: &crate::installation::local::Journal,
-    host: Uuid,
+    tenant_id: Uuid,
     runtime: &Value,
 ) -> Result<()> {
-    generation_snapshots(c, journal, host, runtime, true).await
+    generation_snapshots(c, journal, tenant_id, runtime, true).await
 }
 async fn generation_snapshots(
     c: &mut PgConnection,
     journal: &crate::installation::local::Journal,
-    host: Uuid,
+    tenant_id: Uuid,
     runtime: &Value,
     restore: bool,
 ) -> Result<()> {
     let config: crate::config::Config =
         serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
-    let tenant = rss_request_context::TenantId::parse(&config.identity.tenant_id)
-        .map_err(|_| Error::Corrupt)?;
+    let tenant =
+        rss_request_context::TenantId::parse(&tenant_id.to_string()).map_err(|_| Error::Corrupt)?;
     let protection = config.native_protector().map_err(|_| Error::Corrupt)?;
     let mut after = None;
     loop {
@@ -423,9 +430,9 @@ async fn generation_snapshots(
             material["content"]["storage"] =
                 serde_json::to_value(storage).map_err(|_| Error::Corrupt)?;
             if restore {
-                restore_generation(c, journal, host, id, &material).await?;
+                restore_generation(c, journal, tenant_id, id, &material).await?;
             } else {
-                capture_generation(c, journal, host, id, &material).await?;
+                capture_generation(c, journal, tenant_id, id, &material).await?;
             }
         }
     }

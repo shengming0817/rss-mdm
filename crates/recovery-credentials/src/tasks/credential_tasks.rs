@@ -121,7 +121,13 @@ pub(crate) async fn task(
     issue: actions::storage::TaskIssue,
 ) -> Result<wire::TaskPayload> {
     let protection = service.recovery_credentials.as_ref();
-    let recipient = protection.active_recipient();
+    let tenant = Uuid::parse_str(&tx.tenant_id().to_string()).map_err(|_| Error::Malformed)?;
+    let recipient_id = tx
+        .with_connection(move |c| {
+            Box::pin(async move { Ok(crate::Protection::selected_id_on(profile, c, tenant).await) })
+        })
+        .await??;
+    let recipient = protection.recipient(&recipient_id)?;
     recipient
         .require_current(crate::tasks::storage::now(tx).await?)
         .map_err(Error::from)?;

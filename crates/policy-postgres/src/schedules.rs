@@ -67,10 +67,6 @@ pub async fn scan_cursor_in(
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            sqlx::query(crate::storage_profile::sql(profile).schedules_scan_cursor_in_1)
-                .bind(&tenant)
-                .execute(&mut *c)
-                .await?;
             sqlx::query_scalar(crate::storage_profile::sql(profile).schedules_scan_cursor_in_2)
                 .bind(tenant)
                 .fetch_one(c)
@@ -93,6 +89,26 @@ pub async fn complete_scan_in(
                 .bind(tenant)
                 .bind(after)
                 .bind(next)
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// Register lifecycle scans in the original accepted Policy transaction.
+pub async fn accept_scan_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
+    tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+) -> Result<(), rss_transactional_messaging_postgres::PgError> {
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query(crate::storage_profile::sql(profile).schedules_scan_cursor_in_1)
+                .bind(tenant)
+                .bind(binding.epoch().get())
                 .execute(c)
                 .await?;
             Ok(())

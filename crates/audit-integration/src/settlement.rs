@@ -52,7 +52,7 @@ mod tests {
             let audit = RequestAudit::new(
                 crate::Origin::Request,
                 crate::StorageProfile::Mdm,
-                "tenant".into(),
+                crate::test_binding("11111111-1111-4111-8111-111111111111"),
                 "recovery",
                 AuditIntent::Management,
             );

@@ -94,7 +94,7 @@ async fn seed(
         Id::new(format!("{device}:agent.native"))?,
         Id::new(epoch.to_string())?,
     );
-    let store = f.store(c).await?;
+    let store = f.store().await?;
     let authority = SeedAuthority(c.tenant);
     let register = Authorized::<DefinitionMutation>::verify(
         &authority,

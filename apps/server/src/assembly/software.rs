@@ -1,6 +1,5 @@
 //! Software owner assembly; participants bind to the caller's runtime.
 use rss_mdm_software_service::deployment as owner;
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgOutboxStore, PgRuntime};
 use std::{sync::Arc, time::Duration};
 #[derive(Clone)]
@@ -13,10 +12,11 @@ pub(crate) struct Assembly {
 }
 #[expect(clippy::too_many_arguments, reason = "explicit host capabilities")]
 pub(crate) async fn assemble(
+    discovery_pool: sqlx::PgPool,
     config: &crate::config::Config,
     background: &crate::background::Compiled,
     runtime: Arc<PgRuntime>,
-    tenant: TenantId,
+    probe: rss_transactional_messaging::fence::ExecutionBinding,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
     protection: Arc<rss_mdm_native_protection::Protector>,
     source: Arc<super::software_sources::Source>,
@@ -26,7 +26,6 @@ pub(crate) async fn assemble(
     authority: Arc<owner::managed_registration::AuthorityReader>,
     registration: Arc<rss_mdm_registration_service::installation::Materials>,
     channels: Arc<crate::channel_status::Channels>,
-    signed: bool,
     sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
     read_pool: sqlx::PgPool,
     reconcile: rss_reconcile_postgres::PgStore,
@@ -38,12 +37,10 @@ pub(crate) async fn assemble(
         protection: protection.clone(),
         software,
         bootstrap_configured: registration.endpoints.is_some(),
-        signing_enabled: signed,
         agent_installation: channels,
     });
     let inputs = Arc::new(owner::Inputs::bind(
         runtime.clone(),
-        tenant,
         input_materials.clone(),
     ));
     let agent = Arc::new(super::software_agent_facts::AgentFacts);
@@ -87,17 +84,14 @@ pub(crate) async fn assemble(
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 runtime.clone(),
-                tenant,
             ),
             runtime: runtime.clone(),
-            binding: audit.binding(),
             inputs,
-            signed,
             content_available: config.content.is_some(),
         },
     ));
     let transactions = Arc::new(
-        owner::Transactions::bind(runtime.clone(), tenant, audit, materials.clone())
+        owner::Transactions::bind(runtime.clone(), probe, audit, materials.clone())
             .await
             .map_err(super::owner_errors::software)?,
     );
@@ -113,6 +107,8 @@ pub(crate) async fn assemble(
             .map_err(|_| crate::Error::Unavailable(crate::Failure::CommandStorage))?,
     );
     let service = Arc::new(owner::SoftwareService::new(
+        discovery_pool.clone(),
+        probe.storage(),
         transactions.clone(),
         sessions,
         outbox,
@@ -161,7 +157,14 @@ impl rss_mdm_management_http::software_content::Packages for Downloads {
                 .software_installation_artifact(id, token, audit)
                 .await
                 .map_err(super::owner_errors::software_http)?;
-            let verified = store.verify(&artifact).await?;
+            let verified = store
+                .verify(
+                    audit
+                        .binding()
+                        .map_err(|e| rss_mdm_management_http::Error::from(&e))?,
+                    &artifact,
+                )
+                .await?;
             self.software
                 .revalidate_software_download(id, token, &artifact, audit)
                 .await
@@ -173,8 +176,9 @@ impl rss_mdm_management_http::software_content::Packages for Downloads {
 
 use crate::{Error, Failure, owner_storage::OwnerRuntime};
 pub(crate) async fn catalog(
+    expected_epoch: rss_transactional_messaging::fence::Epoch,
     owner: &OwnerRuntime,
-    tenant: TenantId,
+    probe: rss_transactional_messaging::fence::ExecutionBinding,
     key: &[u8],
     clock: Arc<dyn crate::clock::Clock>,
     content: Option<Arc<rss_mdm_content_service::Store>>,
@@ -188,50 +192,46 @@ pub(crate) async fn catalog(
 > {
     owner
         .runtime
-        .local_tx(
-            owner.audit.binding(),
-            crate::identity::deadline(),
-            move |tx| {
-                Box::pin(async move {
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            if !sqlx::query_scalar::<_, bool>(
-                                rss_mdm_software_service::catalog::ADMISSION_SQL,
-                            )
-                            .fetch_one(&mut *c)
-                            .await?
-                            {
-                                return Err(sqlx::Error::Protocol(
-                                    "owner storage admission rejected".into(),
-                                ));
-                            }
-                            if !sqlx::query_scalar::<_, bool>(
-                                rss_mdm_software_service::agent_packages::ADMISSION_SQL,
-                            )
-                            .fetch_one(&mut *c)
-                            .await?
-                            {
-                                return Err(sqlx::Error::Protocol(
-                                    "Agent package storage admission rejected".into(),
-                                ));
-                            }
-                            if !sqlx::query_scalar::<_, bool>(
-                                rss_mdm_software_service::source_snapshots::ADMISSION_SQL,
-                            )
-                            .fetch_one(&mut *c)
-                            .await?
-                            {
-                                return Err(sqlx::Error::Protocol(
-                                    "Software source snapshot admission rejected".into(),
-                                ));
-                            }
-                            Ok(())
-                        })
+        .local_tx(probe, crate::identity::deadline(), move |tx| {
+            Box::pin(async move {
+                tx.with_connection(move |c| {
+                    Box::pin(async move {
+                        if !sqlx::query_scalar::<_, bool>(
+                            rss_mdm_software_service::catalog::ADMISSION_SQL,
+                        )
+                        .fetch_one(&mut *c)
+                        .await?
+                        {
+                            return Err(sqlx::Error::Protocol(
+                                "owner storage admission rejected".into(),
+                            ));
+                        }
+                        if !sqlx::query_scalar::<_, bool>(
+                            rss_mdm_software_service::agent_packages::ADMISSION_SQL,
+                        )
+                        .fetch_one(&mut *c)
+                        .await?
+                        {
+                            return Err(sqlx::Error::Protocol(
+                                "Agent package storage admission rejected".into(),
+                            ));
+                        }
+                        if !sqlx::query_scalar::<_, bool>(
+                            rss_mdm_software_service::source_snapshots::ADMISSION_SQL,
+                        )
+                        .fetch_one(&mut *c)
+                        .await?
+                        {
+                            return Err(sqlx::Error::Protocol(
+                                "Software source snapshot admission rejected".into(),
+                            ));
+                        }
+                        Ok(())
                     })
-                    .await
                 })
-            },
-        )
+                .await
+            })
+        })
         .await
         .fold(
             Ok,
@@ -244,7 +244,7 @@ pub(crate) async fn catalog(
     let resources = Arc::new(
         rss_mdm_resource_postgres::ResourceStore::new(
             owner.runtime.clone(),
-            owner.audit.binding(),
+            probe,
             rss_mdm_resource_service::transaction::deadline(),
         )
         .await
@@ -257,6 +257,8 @@ pub(crate) async fn catalog(
 
     Ok(Arc::new(
         rss_mdm_software_service::management::catalog::Access {
+            storage: probe.storage(),
+            expected_epoch,
             cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
                 ring::hmac::HMAC_SHA256,
                 key,
@@ -268,10 +270,8 @@ pub(crate) async fn catalog(
             clock: Arc::new(crate::clock::ContentClock(clock.clone())),
             runtime: owner.runtime.clone(),
             audit: owner.audit.clone(),
-            tenant,
             catalog: rss_mdm_software_service::catalog::Catalog::new(
                 owner.runtime.clone(),
-                tenant,
                 owner.audit.clone(),
             ),
             content: content.as_ref().map(|store| {

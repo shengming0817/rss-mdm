@@ -22,20 +22,20 @@ fn policy() -> Result<rss_reconcile::Policy> {
 pub(super) async fn wake(h: &Harness, collection: bool, policy: Uuid) -> Result<()> {
     let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         h.a.resources.storage.runtime.clone(),
-        h.c.audit.binding(),
+        h.c.execution(),
         script::transaction::deadline(),
     ))
     .await?;
     script::transaction::inspect(
         &h.a.resources.storage.runtime,
-        h.c.audit.binding(),
-        (messaging, collection, policy),
+        h.c.execution(),
+        (messaging, collection, policy, h.c.execution()),
         |ctx, tx| {
             Box::pin(async move {
                 if ctx.1 {
-                    collection::wake::policy_in(&ctx.0, tx, ctx.2).await?;
+                    collection::wake::policy_in(ctx.3, &ctx.0, tx, ctx.2).await?;
                 } else {
-                    script::wake::policy_in(&ctx.0, tx, ctx.2).await?;
+                    script::wake::policy_in(ctx.3, &ctx.0, tx, ctx.2).await?;
                 }
                 Ok(())
             })
@@ -75,7 +75,7 @@ async fn seed_runs(h: &Harness, collection: bool) -> Result<(Uuid, Vec<Uuid>)> {
     cancelled.cancel();
     let mut tx = command::seed_transaction(&h.c).await?;
     sqlx::query(if collection {"UPDATE mdm_inventory.collection_tasks SET agent_state=$3 WHERE tenant_id=$1::uuid AND id=$2"} else {"UPDATE mdm_script.runs SET state=$3 WHERE tenant_id=$1::uuid AND id=$2"}).bind(h.c.tenant.to_string()).bind(first).bind(serde_json::to_value(cancelled)?).execute(&mut *tx).await?;
-    sqlx::query(if collection {"INSERT INTO mdm_inventory.collection_tasks (tenant_id, id, occurrence, policy_version, channel, origin, source_objects, device, created_at, available_at, deadline, agent_state, dispatch_fingerprint) SELECT tenant_id, gen_random_uuid(), 'page:' || n, policy_version, channel, origin, source_objects, device, created_at, available_at, deadline, agent_state, dispatch_fingerprint FROM mdm_inventory.collection_tasks CROSS JOIN generate_series(1, 32) AS n WHERE tenant_id = CAST($1 AS uuid) AND id = $2"} else {"INSERT INTO mdm_script.runs (tenant_id, id, occurrence, policy_version, resource_id, origin, source_objects, device, created_at, available_at, deadline, state, dispatch_fingerprint) SELECT tenant_id, gen_random_uuid(), 'page:' || n, policy_version, resource_id, origin, source_objects, device, created_at, available_at, deadline, state, dispatch_fingerprint FROM mdm_script.runs CROSS JOIN generate_series(1, 32) AS n WHERE tenant_id = CAST($1 AS uuid) AND id = $2"}).bind(h.c.tenant.to_string()).bind(first).execute(&mut *tx).await?;
+    sqlx::query(if collection {"INSERT INTO mdm_inventory.collection_tasks (expected_epoch,tenant_id, id, occurrence, policy_version, channel, origin, source_objects, device, created_at, available_at, deadline, agent_state, dispatch_fingerprint) SELECT expected_epoch,tenant_id, gen_random_uuid(), 'page:' || n, policy_version, channel, origin, source_objects, device, created_at, available_at, deadline, agent_state, dispatch_fingerprint FROM mdm_inventory.collection_tasks CROSS JOIN generate_series(1, 32) AS n WHERE tenant_id = CAST($1 AS uuid) AND id = $2"} else {"INSERT INTO mdm_script.runs (expected_epoch,tenant_id, id, occurrence, policy_version, resource_id, origin, source_objects, device, created_at, available_at, deadline, state, dispatch_fingerprint) SELECT expected_epoch,tenant_id, gen_random_uuid(), 'page:' || n, policy_version, resource_id, origin, source_objects, device, created_at, available_at, deadline, state, dispatch_fingerprint FROM mdm_script.runs CROSS JOIN generate_series(1, 32) AS n WHERE tenant_id = CAST($1 AS uuid) AND id = $2"}).bind(h.c.tenant.to_string()).bind(first).execute(&mut *tx).await?;
     tx.commit().await?;
     let ids: Vec<Uuid> = sqlx::query_scalar(if collection {
         "SELECT id FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid ORDER BY id"
@@ -203,7 +203,7 @@ async fn checkpoint_restart(collection: bool) -> Result<()> {
     let (policy, ids) = seed_runs(&h, collection).await?;
     wake(&h, collection, policy).await?;
     let scope = first_page(&h, collection, policy, &ids).await?;
-    let a = Fixture::open(&h.c, true).await?;
+    let a = Fixture::open(&h.c).await?;
     let (audit, delivery) = super::delivery(&h.c, &a).await?;
     drop(std::mem::replace(&mut h.delivery, delivery));
     drop(std::mem::replace(&mut h.audit, audit));
@@ -272,6 +272,7 @@ async fn drain_native(h: &Harness, task: Uuid) -> Result<()> {
 #[ignore = "T2: an independently timed-out native report emits its terminal event atomically and recovery converges"]
 async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result<()> {
     let h = Harness::open().await?;
+    let execution_binding = h.c.execution();
     let (_, task, _) = super::retirement::native(&h, None).await?;
     let mut tx = command::seed_transaction(&h.c).await?;
     sqlx::query("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=(SELECT collection_run FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2)")
@@ -280,7 +281,7 @@ async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result
     script::transaction::run(
         &h.audit,
         &h.a.resources.storage.runtime,
-        h.c.audit.binding(),
+        h.c.execution(),
         &request(&h.c),
         &h.audit,
         |audit, tx| {
@@ -291,6 +292,7 @@ async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result
                         Box::pin(async move {
                             let mut facts = Vec::new();
                             let count = rss_mdm_inventory_service::collection::store::expire_timed(
+                                execution_binding,
                                 rss_mdm_install_support::StorageProfile::Mdm,
                                 c,
                                 &mut facts,
@@ -313,12 +315,12 @@ async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result
     let failed: std::result::Result<(), _> = script::transaction::run(
         &h.audit,
         &h.a.resources.storage.runtime,
-        h.c.audit.binding(),
+        h.c.execution(),
         &request(&h.c),
-        &h.a.collections,
-        |collections, tx| {
+        (&h.a.collections, h.c.execution()),
+        |(collections, execution), tx| {
             Box::pin(async move {
-                collection::recovery::recover_one(collections, tx, task).await?;
+                collection::recovery::recover_one(*execution, collections, tx, task).await?;
                 Err(script::Error::Conflict.into())
             })
         },
@@ -355,6 +357,8 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
     let store = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
     let worker = script::worker::Worker::new(
+        h.c.database.archive_pool(),
+        h.c.execution().storage(),
         h.a.scripts.clone(),
         store,
         Arc::new(tokio::sync::Semaphore::new(1)),

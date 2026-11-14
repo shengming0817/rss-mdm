@@ -342,9 +342,9 @@ async fn positive_facts_and_associated_cut_share_formal_evaluation() -> Result<(
     // an object in AssociatedDevice context; no association workflow is under test.
     let snapshot = Uuid::new_v4();
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
-    sqlx::query("INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through) VALUES($1::uuid,$2,$3,1)").bind(c.tenant.to_string()).bind(snapshot).bind(preview.asset_cut.to_json()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.object_cuts(expected_epoch,tenant_id,id,asset_cut,through) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,1)").bind(c.tenant.to_string()).bind(snapshot).bind(preview.asset_cut.to_json()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object_kind,object_id,revision,input,devices) VALUES($1::uuid,$2,$3,1,$4,$5)").bind(c.tenant.to_string()).bind(object.object.kind()).bind(object.object.uuid()).bind(serde_json::to_value(&object)?).bind(vec![object.members[0].device.into_uuid()]).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_devices.checkpoints(tenant_id,from_cut,rebuilding,object_revision,current_cut) VALUES($1::uuid,$2,false,1,$3)").bind(c.tenant.to_string()).bind(preview.asset_cut.to_json()).bind(snapshot).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.checkpoints(expected_epoch,tenant_id,from_cut,rebuilding,object_revision,current_cut) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,false,1,$3)").bind(c.tenant.to_string()).bind(preview.asset_cut.to_json()).bind(snapshot).execute(&mut *tx).await?;
     tx.commit().await?;
     input.asset_context = AssetContext::AssociatedDevice;
     let before = business_state(&c).await?;

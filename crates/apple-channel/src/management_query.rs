@@ -68,17 +68,14 @@ impl Collection {
         }
     }
 }
-fn configured(app: &HttpState, value: &mut Value, now: i64) {
-    if value.is_null() {
-        return;
+fn configured(keys: &[String], value: &mut Value) {
+    if !value.is_null() {
+        value["signingKeyConfigured"] = json!(
+            value["signingKey"]
+                .as_str()
+                .is_some_and(|key| keys.iter().any(|k| k == key))
+        );
     }
-    let key = value["signingKey"].as_str().unwrap_or("");
-    let configured = app
-        .apple
-        .as_ref()
-        .and_then(|a| a.account_keys.get(key))
-        .is_some_and(|s| s.expires() > now as u64);
-    value["signingKeyConfigured"] = json!(configured);
 }
 pub(crate) async fn page<Q: rss_mdm_http_contract::query::DirectoryOwner>(
     app: &HttpState,
@@ -86,9 +83,6 @@ pub(crate) async fn page<Q: rss_mdm_http_contract::query::DirectoryOwner>(
     kind: Collection,
     query: rss_mdm_http_contract::query::OwnedQuery<rss_mdm_http_contract::query::Directory<Q>>,
 ) -> Result<Pages, Error> {
-    if p.tenant_id() != app.identity.tenant().to_string() {
-        return Err(Error::Forbidden);
-    }
     p.manage(Permission::RegistrationConfigurationRead)?;
     let q = query.parse().map_err(error)?;
     q.require_schema(kind.schema()).map_err(error)?;
@@ -118,17 +112,9 @@ pub(crate) async fn page<Q: rss_mdm_http_contract::query::DirectoryOwner>(
         .clock
         .unix_seconds()
         .ok_or(Error::Unavailable(crate::Failure::Clock))?;
-    let configured_keys = app
-        .apple
-        .as_ref()
-        .map(|a| {
-            a.account_keys
-                .iter()
-                .filter(|(_, s)| s.expires() > now as u64)
-                .map(|(k, _)| k.clone())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let configured_keys =
+        super::runtime_materials::runtime::account_keys_on(app, &mut tx, p.tenant_id(), now)
+            .await?;
     let binding = q
         .binding(&(
             p.tenant_id(),
@@ -145,7 +131,7 @@ pub(crate) async fn page<Q: rss_mdm_http_contract::query::DirectoryOwner>(
  Collection::Devices(_)=>"SELECT jsonb_build_object('serial',serial,'deleted',deleted,'profileUuid',remote_profile,'observedAt',observed_at,'registration','not_implied') row FROM mdm_apple.ade_devices WHERE tenant_id=".into(),
  Collection::Profiles(_)=>"SELECT jsonb_build_object('id',id,'revision',revision,'configuration',configuration,'remoteUuid',remote_uuid) row FROM mdm_apple.ade_profiles WHERE tenant_id=".into()};
     let mut sql = sqlx::QueryBuilder::new("WITH configured AS (SELECT ");
-    sql.push_bind(configured_keys)
+    sql.push_bind(&configured_keys)
         .push("::text[] AS keys) SELECT row FROM (")
         .push(source);
     sql.push_bind(p.tenant_id().to_owned()).push("::uuid");
@@ -161,7 +147,7 @@ pub(crate) async fn page<Q: rss_mdm_http_contract::query::DirectoryOwner>(
         .map_err(db)?;
     if matches!(kind, Collection::Organizations) {
         for row in &mut rows {
-            configured(app, &mut row["accountEnrollment"], now);
+            configured(&configured_keys, &mut row["accountEnrollment"]);
         }
     }
     tx.rollback().await.map_err(db)?;
@@ -191,9 +177,6 @@ pub(crate) async fn detail(
     id: Uuid,
     account: Option<&str>,
 ) -> Result<Detail, Error> {
-    if p.tenant_id() != app.identity.tenant().to_string() {
-        return Err(Error::Forbidden);
-    }
     p.manage(Permission::RegistrationConfigurationRead)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     rss_mdm_authorization_service::lock_on(
@@ -235,13 +218,16 @@ pub(crate) async fn detail(
         .map_err(db)?
         .ok_or(Error::NotFound)?;
     if account.is_none() {
-        configured(
+        let keys = super::runtime_materials::runtime::account_keys_on(
             app,
-            &mut value,
+            &mut tx,
+            p.tenant_id(),
             app.clock
                 .unix_seconds()
                 .ok_or(Error::Unavailable(crate::Failure::Clock))?,
-        );
+        )
+        .await?;
+        configured(&keys, &mut value);
     }
     tx.rollback().await.map_err(db)?;
     p.check_live()?;

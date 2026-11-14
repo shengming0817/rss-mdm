@@ -13,6 +13,7 @@ impl Diagnostics {
             .identity
             .browser()
             .authenticate_request(
+                l.auth.proof.binding(),
                 l.headers,
                 rss_identity_http_axum::SessionActivity::Passive,
                 &da.authorization,
@@ -62,7 +63,7 @@ impl Diagnostics {
         let attempt = da
             .audit
             .read(
-                self.state.identity.tenant,
+                p.binding().tenant(),
                 &budget.control(),
                 (p, locator),
                 |ctx, tx| {

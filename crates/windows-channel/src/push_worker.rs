@@ -34,11 +34,15 @@ struct Wake {
     revision: i64,
     uri: zeroize::Zeroizing<String>,
 }
-fn audit(tenant: &str, id: Uuid, device: &rss_mdm_agent_wire::DeviceId) -> RequestAudit {
+fn audit(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    id: Uuid,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> RequestAudit {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        tenant.into(),
+        execution,
         "windows_push",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -53,68 +57,59 @@ fn audit(tenant: &str, id: Uuid, device: &rss_mdm_agent_wire::DeviceId) -> Reque
     audit
 }
 pub async fn cycle(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     w: &Windows,
     eligibility: &dyn WakeDemand,
     key: &Protector,
     dbase: &Store,
     store: &AuditStore,
-    tenant: &str,
+    candidates: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<WakeScan, Error> {
-    let mut scan = WakeScan::default();
+    let mut scan = WakeScan {
+        candidates: candidates.len(),
+        ..Default::default()
+    };
     let Some(push) = &w.push else { return Ok(scan) };
-    let mut after = None;
-    loop {
-        let mut read = dbase.begin_read(tenant).await?;
-        let candidates = eligibility.candidates(&mut read, after).await?;
-        let count = candidates.len();
-        scan.candidates += count;
-        let Some(last) = candidates.last().cloned() else {
-            read.rollback().await.map_err(db)?;
-            return Ok(scan);
-        };
-        // Always advance by the raw work page, including absent or disabled routes.
-        after = Some(last);
-        if let Some(revision) = push.material_revision
-            && !crate::wns_materials::is_selected(&mut read, tenant, revision).await?
-        {
-            return Err(Error::Conflict);
-        }
-        let rows = sqlx::query("SELECT p.device, p.revision, CAST(EXTRACT(EPOCH FROM GREATEST(p.next_push, COALESCE(p.lease_until, p.next_push)) - clock_timestamp()) AS double precision) AS wait_seconds FROM mdm_windows.push_channels AS p INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (p.tenant_id, p.device) WHERE p.tenant_id = CAST($1 AS uuid) AND p.device = ANY($2) AND p.configuration = $3 AND p.attempt_until > clock_timestamp() AND (p.outcome IS NULL OR p.outcome IN ('accepted', 'retryable', 'unknown')) AND r.state = 'active' ORDER BY p.device")
+    let tenant_string = execution.tenant().to_string();
+    let tenant = tenant_string.as_str();
+    let mut read = dbase.begin_read(tenant).await?;
+    if let Some(revision) = push.material_revision
+        && !crate::wns_materials::is_selected(&mut read, tenant, revision).await?
+    {
+        return Err(Error::Conflict);
+    }
+    let rows = sqlx::query("SELECT p.device, p.revision, CAST(EXTRACT(EPOCH FROM GREATEST(p.next_push, COALESCE(p.lease_until, p.next_push)) - clock_timestamp()) AS double precision) AS wait_seconds FROM mdm_windows.push_channels AS p INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (p.tenant_id, p.device) WHERE p.tenant_id = CAST($1 AS uuid) AND p.device = ANY($2) AND p.configuration = $3 AND p.attempt_until > clock_timestamp() AND (p.outcome IS NULL OR p.outcome IN ('accepted', 'retryable', 'unknown')) AND r.state = 'active' ORDER BY p.device")
             .bind(tenant).bind(candidates.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).bind(push.configuration.as_slice()).fetch_all(&mut *read).await.map_err(db)?;
-        read.rollback().await.map_err(db)?;
-        for row in rows {
-            let seconds: f64 = row.try_get("wait_seconds").map_err(db)?;
-            if seconds > 0.0 {
-                scan.due(
-                    push.now() + Duration::from_secs_f64(seconds.min(RECONCILE.as_secs_f64())),
-                );
-                continue;
-            }
-            scan.transactions += 1;
-            match attempt(w, eligibility, key, store, tenant, row).await {
-                Ok(Some(delay)) => {
-                    scan.sent += 1;
-                    scan.due(push.now() + delay);
-                }
-                Ok(None) => (),
-                Err(error) => {
-                    if matches!(
-                        error,
-                        Error::Unavailable(Failure::Database) | Error::RollbackFailed
-                    ) {
-                        return Err(error);
-                    }
-                    scan.failures += 1;
-                    scan.due(push.now() + FAILURE_RETRY);
-                }
-            }
+    read.rollback().await.map_err(db)?;
+    for row in rows {
+        let seconds: f64 = row.try_get("wait_seconds").map_err(db)?;
+        if seconds > 0.0 {
+            scan.due(push.now() + Duration::from_secs_f64(seconds.min(RECONCILE.as_secs_f64())));
+            continue;
         }
-        if count < 32 {
-            return Ok(scan);
+        scan.transactions += 1;
+        match attempt(execution, w, eligibility, key, store, tenant, row).await {
+            Ok(Some(delay)) => {
+                scan.sent += 1;
+                scan.due(push.now() + delay);
+            }
+            Ok(None) => (),
+            Err(error) => {
+                if matches!(
+                    error,
+                    Error::Unavailable(Failure::Database) | Error::RollbackFailed
+                ) {
+                    return Err(error);
+                }
+                scan.failures += 1;
+                scan.due(push.now() + FAILURE_RETRY);
+            }
         }
     }
+    Ok(scan)
 }
 async fn attempt(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     w: &Windows,
     eligibility: &dyn WakeDemand,
     key: &Protector,
@@ -131,13 +126,14 @@ async fn attempt(
         })
         .map_err(db)?;
     let id = Uuid::new_v4();
-    let audit = audit(tenant, id, &device);
+    let audit = audit(execution, id, &device);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(3));
-    let outcome=store.write(TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
+    let outcome=store.write(
+            audit.binding()?,
             &budget.source_control(),(store,&audit,eligibility,tenant,&device,revision,id,push.configuration,push.material_revision),|inputs,tx|Box::pin(async move {
                 let (store,audit,eligibility,tenant,device,revision,id,configuration,material_revision)=*inputs;
-                let sealed=tx.with_connection_context(&mut (eligibility,tenant,device,revision,id,configuration,material_revision),|(eligibility,tenant,device,revision,id,configuration,material_revision),c|Box::pin(async move {
-                    if !eligibility.pending(c, device).await? { return Ok::<_,Error>(None) }
+                let sealed=tx.with_connection_context(&mut (audit.binding()?,eligibility,tenant,device,revision,id,configuration,material_revision),|(execution,eligibility,tenant,device,revision,id,configuration,material_revision),c|Box::pin(async move {
+                    if !eligibility.pending(*execution, c, device).await? { return Ok::<_,Error>(None) }
                     sqlx::query_scalar::<_,Vec<u8>>("UPDATE mdm_windows.push_channels SET lease_id = $5, lease_until = clock_timestamp() + CAST('30 seconds' AS interval), settled_id = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND revision = $3 AND configuration = $4 AND attempt_until > clock_timestamp() AND next_push <= clock_timestamp() AND (lease_until IS NULL OR lease_until <= clock_timestamp()) AND (outcome IS NULL OR outcome IN ('accepted', 'retryable', 'unknown')) AND (CAST($6 AS bigint) IS NULL OR EXISTS (SELECT 1 FROM mdm_wns.versions AS w WHERE w.tenant_id = CAST($1 AS uuid) AND w.revision = $6 AND w.selected AND NOT w.revoked AND w.qualified_at IS NOT NULL)) RETURNING uri")
                         .bind(*tenant).bind(device.into_uuid()).bind(*revision).bind(configuration.as_slice()).bind(*id).bind(*material_revision).fetch_optional(c).await.map_err(db)
                 })).await?;
@@ -182,9 +178,12 @@ async fn attempt(
         outcome: PushOutcome::Unknown,
         retry_after: None,
     });
-    settle(store, key, tenant, &wake, receipt).await.map(Some)
+    settle(execution, store, key, tenant, &wake, receipt)
+        .await
+        .map(Some)
 }
 async fn settle(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     store: &AuditStore,
     key: &Protector,
     tenant: &str,
@@ -194,9 +193,10 @@ async fn settle(
     let status = receipt.status;
     let outcome = receipt.outcome;
     let retry_after = receipt.retry_after;
-    let audit = audit(tenant, wake.id, &wake.device);
+    let audit = audit(execution, wake.id, &wake.device);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(3));
-    let result=store.write(TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
+    let result=store.write(
+            audit.binding()?,
             &budget.source_control(),(store,&audit,key,tenant,wake,status,outcome,retry_after),|inputs,tx|Box::pin(async move {
         let (store,audit,key,tenant,wake,status,outcome,retry_after)=*inputs;
         let changed=tx.with_connection_context(&mut (key,tenant,wake,status,outcome,retry_after),|(key,tenant,wake,status,outcome,retry_after),c|Box::pin(async move {
@@ -257,40 +257,28 @@ async fn settle(
     result
 }
 pub fn registration(
-    w: Arc<Windows>,
+    app: Arc<crate::HttpState>,
     eligibility: Arc<dyn WakeDemand>,
-    key: Arc<Protector>,
-    database: Arc<Store>,
-    store: Arc<AuditStore>,
-    tenant: String,
     notify: Arc<tokio::sync::Notify>,
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) = rss_runtime::ManagedTask::prepare("windows-wns", Duration::from_secs(8));
-    task.into_registration(move |stop| async move {
-        let Some(push) = &w.push else { return Ok(()) };
-        let mut reconcile = tokio::time::interval_at(push.now() + RECONCILE, RECONCILE);
+    task.into_registration(move|stop|async move{
+        #[allow(clippy::disallowed_methods,reason="process-owned monotonic worker clock")]
+        let mut reconcile=tokio::time::interval_at(Instant::now()+RECONCILE,RECONCILE);
         reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut failures = 0u64;
-        loop {
-            let result = tokio::select! { biased;
-                () = stop.cancelled() => return Ok(()),
-                result = cycle(&w, eligibility.as_ref(), &key, &database, &store, &tenant) => result,
-            };
-            let next = match result {
-                Ok(scan) => {
-                    if scan.failures == 0 { failures = 0; } else { failures = failures.saturating_add(1); }
-                    scan.next
-                }
-                Err(_) => {
-                    failures = failures.saturating_add(1);
-                    Some(push.now() + FAILURE_RETRY)
-                }
-            };
-            if failures.is_power_of_two() {
-                eprintln!("{}", serde_json::json!({"event":"windows_push_unavailable","consecutive_failures":failures}));
+        let mut after=None;let mut next=None;
+        loop{
+            if stop.is_cancelled(){return Ok(())}
+            let page=match app.access.push_work_page(after).await{Ok(page)=>page,Err(_)=>{eprintln!("windows_push_discovery_failed");Vec::new()}};
+            if page.is_empty(){after=None;wait(&notify,&stop,&mut reconcile,next).await;next=None;continue}
+            let mut groups=std::collections::BTreeMap::<Uuid,Vec<rss_mdm_agent_wire::DeviceId>>::new();
+            for(tenant,device)in page {after=Some((tenant,device));groups.entry(tenant).or_default().push(rss_mdm_agent_wire::DeviceId::try_from(device).map_err(rss_runtime::ShutdownError::new)?);}
+            for(tenant,devices)in groups{
+                if stop.is_cancelled(){return Ok(())}
+                let tenant=TenantId::parse(&tenant.to_string()).map_err(rss_runtime::ShutdownError::new)?;let execution=app.execution(tenant);
+                let result=async{let windows=app.windows(execution).await?;cycle(execution,&windows,eligibility.as_ref(),&app.protection,&app.access,&app.audit_store,&devices).await}.await;
+                match result {Ok(scan)=>{if let Some(at)=scan.next{next=Some(next.map_or(at,|old:Instant|old.min(at)));}},Err(_)=>{eprintln!("{}",serde_json::json!({"event":"windows_push_unavailable","tenant":tenant.to_string()}));}}
             }
-            wait(&notify, &stop, &mut reconcile, next).await;
-
         }
     })
 }

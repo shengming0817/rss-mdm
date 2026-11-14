@@ -56,31 +56,31 @@ fn register() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Decla
         rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { post_initialize, post_begin, post_complete, get_status, post_cancel, post_consume, get_current } }
         RegisterModule1 {
             post_initialize: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/device-access/broker/browser",
+                "/api/v1/tenants/{tenant}/device-access/broker/browser",
                 post(initialize, &catalog::DEVICE_ACCESS, &[Operation::Action]),
             ),
             post_begin: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/device-access/broker",
+                "/api/v1/tenants/{tenant}/device-access/broker",
                 post(begin, &catalog::DEVICE_ACCESS, &[Operation::Action]),
             ),
             post_complete: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/device-access/broker/complete",
+                "/api/v1/tenants/{tenant}/device-access/broker/complete",
                 post(complete, &catalog::DEVICE_ACCESS, &[Operation::Action]),
             ),
             get_status: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/device-access/broker/{id}",
+                "/api/v1/tenants/{tenant}/device-access/broker/{id}",
                 get(status, &catalog::DEVICE_ACCESS, &[Operation::Action]),
             ),
             post_cancel: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/device-access/broker/{id}/cancel",
+                "/api/v1/tenants/{tenant}/device-access/broker/{id}/cancel",
                 post(cancel, &catalog::DEVICE_ACCESS, &[Operation::Action]),
             ),
             post_consume: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/device-access/relying-parties/{rp}/consume",
+                "/api/v1/tenants/{tenant}/device-access/relying-parties/{rp}/consume",
                 post(consume, &catalog::DEVICE_ACCESS, &[Operation::Action]),
             ),
             get_current: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/device-access/relying-parties/{rp}/sessions/{id}",
+                "/api/v1/tenants/{tenant}/device-access/relying-parties/{rp}/sessions/{id}",
                 get(current, &catalog::DEVICE_ACCESS, &[Operation::Action]),
             ),
         }
@@ -135,14 +135,24 @@ fn browser(
         _ => Err(Error::Unauthorized),
     }
 }
-fn client<'a>(s: &'a Services, rp: &str) -> Result<&'a dyn Client, Error> {
+fn client<'a>(
+    s: &'a Services,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    rp: &str,
+) -> Result<&'a dyn Client, Error> {
     s.identity
         .enterprise_clients
         .get(rp)
+        .filter(|c| c.tenant() == execution.tenant())
         .map(|c| c.as_ref())
         .ok_or(Error::Forbidden)
 }
-fn backend<'a>(s: &'a Services, rp: &str, h: &HeaderMap) -> Result<&'a dyn Client, Error> {
+fn backend<'a>(
+    s: &'a Services,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    rp: &str,
+    h: &HeaderMap,
+) -> Result<&'a dyn Client, Error> {
     if h.get_all("authorization").iter().count() != 1 || h.contains_key("cookie") {
         return Err(Error::Unauthorized);
     }
@@ -151,13 +161,15 @@ fn backend<'a>(s: &'a Services, rp: &str, h: &HeaderMap) -> Result<&'a dyn Clien
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or(Error::Unauthorized)?;
-    let c = client(s, rp)?;
+    let c = client(s, execution, rp)?;
     if !c.authenticate(credential) {
         return Err(Error::Unauthorized);
     }
     Ok(c)
 }
 async fn begin(
+    Path(_tenant): Path<Uuid>,
+    Extension(execution): Extension<rss_transactional_messaging::fence::ExecutionBinding>,
     Extension(control): Extension<rss_axum::RequestControl>,
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
@@ -165,7 +177,7 @@ async fn begin(
     Json(input): Json<wire::Begin>,
 ) -> Result<BrowserResponse<wire::Challenge>, Error> {
     let browser = browser(&s, &h, false, true)?;
-    let client = client(&s, &input.relying_party)?;
+    let client = client(&s, execution, &input.relying_party)?;
     let (context, created) = s
         .registration
         .broker_prepare(&input, &browser, client, s.admission.as_ref(), &a)
@@ -175,7 +187,7 @@ async fn begin(
             .identity
             .authority
             .begin_platform_login(
-                s.identity.binding,
+                execution,
                 input.binding_id,
                 rss_identity_postgres::platform::PlatformPurpose::EnterpriseRp(input.relying_party),
                 browser.expose().to_owned(),
@@ -203,6 +215,8 @@ async fn begin(
 }
 
 async fn complete(
+    Path(_tenant): Path<Uuid>,
+    Extension(execution): Extension<rss_transactional_messaging::fence::ExecutionBinding>,
     Extension(control): Extension<rss_axum::RequestControl>,
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
@@ -216,7 +230,7 @@ async fn complete(
         .await?;
     let attempt = context.attempt.ok_or(Error::Conflict)?;
     let result = async {
-        let client = client(&s, &context.relying_party.id)?;
+        let client = client(&s, execution, &context.relying_party.id)?;
         if client.fingerprint() != context.relying_party.target_fingerprint {
             return Err(Error::Forbidden);
         }
@@ -227,7 +241,7 @@ async fn complete(
             .identity
             .authority
             .complete_platform_login(
-                s.identity.binding,
+                execution,
                 input.challenge_id,
                 input.nonce,
                 browser.expose().to_owned(),
@@ -247,7 +261,7 @@ async fn complete(
         let actor = s
             .identity
             .authority
-            .inspect_session(s.identity.binding, session, deadline(&control))
+            .inspect_session(execution, session, deadline(&control))
             .await
             .map_err(failure)?;
         let token = client
@@ -284,20 +298,22 @@ async fn complete(
     }
 }
 async fn status(
+    Extension(execution): Extension<rss_transactional_messaging::fence::ExecutionBinding>,
     State(s): State<Arc<Services>>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(Uuid, Uuid)>,
     BrowserStatusHeaders(h): BrowserStatusHeaders,
 ) -> Result<Json<wire::Status>, Error> {
     let browser = browser(&s, &h, false, false)?;
     Ok(Json(
         s.registration
-            .broker_status(id, &browser, s.admission.as_ref())
+            .broker_status(execution, id, &browser, s.admission.as_ref())
             .await?,
     ))
 }
 async fn cancel(
+    Extension(_execution): Extension<rss_transactional_messaging::fence::ExecutionBinding>,
     State(s): State<Arc<Services>>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(Uuid, Uuid)>,
     Extension(a): Extension<RequestAudit>,
     BrowserWriteHeaders(h): BrowserWriteHeaders,
 ) -> Result<Json<Cancelled>, Error> {
@@ -313,17 +329,19 @@ struct Consume {
     continuation: Secret,
 }
 async fn consume(
+    Extension(execution): Extension<rss_transactional_messaging::fence::ExecutionBinding>,
     Extension(control): Extension<rss_axum::RequestControl>,
     State(s): State<Arc<Services>>,
-    Path(rp): Path<String>,
+    Path((_tenant, rp)): Path<(Uuid, String)>,
     Extension(a): Extension<RequestAudit>,
     BackendHeaders(h): BackendHeaders,
     Json(input): Json<Consume>,
 ) -> Result<Json<rss_mdm_device_access_postgres::enterprise::broker::Consumed>, Error> {
-    let client = backend(&s, &rp, &h)?;
+    let client = backend(&s, execution, &rp, &h)?;
     let reference = s
         .registration
         .broker_reference(
+            execution,
             client,
             input.session,
             Some(&input.continuation),
@@ -333,7 +351,7 @@ async fn consume(
     let facts = s
         .identity
         .authority
-        .recheck_session_reference(s.identity.binding, &reference, deadline(&control))
+        .recheck_session_reference(execution, &reference, deadline(&control))
         .await
         .map_err(failure)?;
     s.registration
@@ -350,6 +368,7 @@ async fn consume(
     Ok(Json(
         s.registration
             .broker_release(
+                execution,
                 &s.identity.authority,
                 client,
                 input.session,
@@ -364,15 +383,17 @@ async fn consume(
 }
 
 async fn current(
+    Extension(execution): Extension<rss_transactional_messaging::fence::ExecutionBinding>,
     Extension(control): Extension<rss_axum::RequestControl>,
     State(s): State<Arc<Services>>,
-    Path((rp, id)): Path<(String, Uuid)>,
+    Path((_tenant, rp, id)): Path<(Uuid, String, Uuid)>,
     BackendHeaders(h): BackendHeaders,
 ) -> Result<Json<CurrentSession>, Error> {
-    let client = backend(&s, &rp, &h)?;
+    let client = backend(&s, execution, &rp, &h)?;
     let principal = s
         .registration
         .broker_current(
+            execution,
             &s.identity.authority,
             client,
             id,
@@ -389,6 +410,8 @@ async fn current(
 }
 
 async fn initialize(
+    Path(_tenant): Path<Uuid>,
+    Extension(_execution): Extension<rss_transactional_messaging::fence::ExecutionBinding>,
     State(s): State<Arc<Services>>,
     InitializeHeaders(h): InitializeHeaders,
 ) -> Result<BrowserResponse<Ready>, Error> {

@@ -18,13 +18,12 @@ pub(crate) struct Service {
     pub(super) pool: PgPool,
     pub(super) source_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(super) audit: AuditStore,
-    pub(super) config: Config,
-    pub(super) identity_policy: rss_identity_postgres::AuthorityConfig,
+    pub(super) provisioning_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    pub(super) provisioner: rss_identity_postgres::AccountProvisioner,
+    pub(super) provisioning_audit: AuditStore,
+    pub(super) execution_epoch: i64,
     pub(super) installation: Installation,
     pub(super) management: TenantId,
-    pub(super) kdf: Arc<rss_identity_core::account::PasswordKdf>,
-    pub(super) policy:
-        Arc<rss_mdm_authorization_service::identity_management::IdentityManagementPolicy>,
     pub(super) fingerprint: ring::hmac::Key,
     pub(super) provisioning_slots: tokio::sync::Semaphore,
 }
@@ -79,6 +78,21 @@ impl Service {
                 return Err(error);
             }
         };
+        let provisioning_runtime = match crate::identity::open_runtime(
+            &options.provisioning_database,
+            &installation.target,
+            &installation.lineage,
+            crate::background::PROVISIONING_SLOTS * crate::background::PROVISIONING_CONNECTIONS,
+        )
+        .await
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                source_runtime.close().await;
+                pool.close().await;
+                return Err(error);
+            }
+        };
         let service = async {
             let mut connection = pool.acquire().await.map_err(|_| invalid("registry acquire"))?;
             migration::verify_current_manifest(&mut connection).await.map_err(|_| invalid("manifest"))?;
@@ -95,17 +109,21 @@ impl Service {
             drop(connection);
             let budget = AuditBudget::new(Duration::from_secs(5));
             let audit = AuditStore::new(pool.clone(), config.audit.integrity()?, source_runtime.clone(), installation.execution(management, rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH).map_err(|_| invalid("execution"))?, &budget.control()).await.map_err(|_| invalid("audit"))?;
-            let this = Self { pool: pool.clone(), source_runtime: source_runtime.clone(), audit, config: options.clone(), identity_policy, installation, management, kdf, policy,
+            let probe = installation.execution(management, rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH).map_err(|_| invalid("probe"))?;
+            let provisioning_audit = audit.on_runtime(provisioning_runtime.clone(), probe, &budget.control()).await?;
+            let provisioner = rss_identity_postgres::AccountProvisioner::connect(
+                provisioning_runtime.clone(), kdf, identity_policy, probe, management, policy,
+                rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff, &crate::lifecycle::RuntimeTimer),
+            ).await.map_err(crate::identity::failure)?;
+            let this = Self { pool: pool.clone(), source_runtime: source_runtime.clone(), audit,
+                provisioning_runtime: provisioning_runtime.clone(), provisioner, provisioning_audit,
+                execution_epoch: config.storage_binding.epoch, installation, management,
                 fingerprint: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
                 provisioning_slots: tokio::sync::Semaphore::new(crate::background::PROVISIONING_SLOTS as usize) };
-            let target = TenantId::parse(&config.identity.tenant_id).map_err(|_| invalid("configuration"))?;
-            let slot = this.provisioning_slots.try_acquire().map_err(|_| invalid("provisioning budget"))?;
-            let (runtime, _, _) = this.provisioner(target, config.storage_binding.epoch, &slot, cutoff).await?;
-            runtime.close().await;
-            drop(slot);
             Ok(Arc::new(this))
         }.await;
         if service.is_err() {
+            provisioning_runtime.close().await;
             source_runtime.close().await;
             pool.close().await;
         }
@@ -166,7 +184,9 @@ impl Service {
                         if operation.is_nil() {
                             return Err(Reason::Invalid);
                         }
-                        let receipt = receipt_on(c, *operation).await?.ok_or(Reason::NotFound)?.0;
+                        let mut receipt =
+                            receipt_on(c, *operation).await?.ok_or(Reason::NotFound)?.0;
+                        service.project_initialization(c, &mut receipt).await?;
                         Ok(ReadReply::Receipt(receipt))
                     }
                     Read::Provisionings(q) => directory::page(service, c, proof, q, true).await,
@@ -186,11 +206,10 @@ impl Service {
     pub(crate) async fn summary(
         &self,
         proof: &AuthorizedPrincipal,
-        hosts: bool,
     ) -> std::result::Result<serde_json::Value, Error> {
-        self.registry_read((self,proof,hosts),|(service,proof,hosts),c|Box::pin(async move{
+        self.registry_read((self,proof),|(service,proof),c|Box::pin(async move{
             service.authorize(c,proof,Permission::TenantRead).await?;
-            let result=if *hosts {sqlx::query_scalar("SELECT jsonb_build_object('count',count(*),'blocked',coalesce(bool_or(o.receipt->'result'->'blocked'<>'null'::jsonb),false),'pending',coalesce(bool_or(o.receipt->'result'->>'phase'<>'enabled'),false)) FROM public.mdm_tenant_operations o JOIN public.mdm_tenants t USING(tenant_id) WHERE o.action='provision' AND NOT t.deleted").fetch_one(c).await}else{sqlx::query_scalar("SELECT jsonb_build_object('count',count(*),'blocked',false,'pending',false) FROM public.mdm_tenants WHERE NOT deleted").fetch_one(c).await}.map_err(|_|Reason::Storage)?;
+            let result=sqlx::query_scalar("SELECT jsonb_build_object('count',count(*)) FROM public.mdm_tenants WHERE NOT deleted").fetch_one(c).await.map_err(|_|Reason::Storage)?;
             proof.check_live().map_err(|_|Reason::Forbidden)?;Ok(result)
         })).await
     }
@@ -278,7 +297,8 @@ impl Service {
         )
         .map_err(|_| Error::Malformed)?;
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let outcome = self.audit.write(self.management, &budget.source_control(), (self, proof, audit, input, fact), move |(service, proof, audit, input, fact), tx| Box::pin(async move {
+        let outcome = self.audit.write(
+            proof.binding(), &budget.source_control(), (self, proof, audit, input, fact), move |(service, proof, audit, input, fact), tx| Box::pin(async move {
             let mut context = (&**service, *proof, &*input);
             let result = tx.with_connection_context(&mut context, |(service, proof, input), c| Box::pin(async move { async {
                 sqlx::query("SELECT pg_advisory_xact_lock(2346)").execute(&mut *c).await.map_err(|_| Reason::Storage)?;
@@ -327,7 +347,7 @@ pub(super) fn project(reason: Reason) -> Error {
         Reason::Invalid => Error::Malformed,
         Reason::Forbidden | Reason::Reserved | Reason::Binding => Error::Forbidden,
         Reason::NotFound => Error::NotFound,
-        Reason::Conflict | Reason::InUse | Reason::Capacity => Error::Conflict,
+        Reason::Conflict | Reason::InUse => Error::Conflict,
         Reason::CommitUnknown | Reason::Deadline => Error::CommitUnknown,
         Reason::Cleanup => Error::RollbackFailed,
         Reason::Storage => Error::Unavailable(Failure::Database),
@@ -390,6 +410,7 @@ impl ReadReply {
 
 impl Service {
     pub(crate) async fn close(&self) {
+        self.provisioning_runtime.close().await;
         self.source_runtime.close().await;
         self.pool.close().await;
     }

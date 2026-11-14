@@ -573,13 +573,14 @@ impl Business for AppleBusiness {
     }
     fn artifact<'a>(
         &'a self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &'a mut PgTransaction<'_>,
         asset: &'a rss_mdm_apple_mdm::native::ddm::AssetInput,
     ) -> Pending<'a, ConfigurationArtifact> {
         Box::pin(async move {
             let a = self
                 .1
-                .apple_configuration_artifact_in(tx, asset)
+                .apple_configuration_artifact_in(execution, tx, asset)
                 .await
                 .map_err(policy_fault)?;
             Ok(ConfigurationArtifact {

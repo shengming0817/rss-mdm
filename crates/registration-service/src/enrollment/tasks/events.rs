@@ -8,6 +8,7 @@ use uuid::Uuid;
 impl crate::enrollment::tasks::Transactions {
     pub async fn accept_event_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         version: Uuid,
         target: &crate::enrollment::tasks::Target,
@@ -38,6 +39,7 @@ impl crate::enrollment::tasks::Transactions {
             });
         }
         crate::enrollment::tasks::admission::accept_for_device(
+            binding,
             profile,
             self,
             tx,

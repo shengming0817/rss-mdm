@@ -51,12 +51,22 @@
       "description": "Caller-generated secret, delivered in protected bootstrap material.",
       "pattern": "^[A-Za-z0-9_-]{43}$"
     },
+    "tenantId": {
+      "description": "Explicit organization from the enrollment configuration; approval still requires its live session.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
     "wireVersion": {
       "const": 1,
       "description": "Enrollment API version."
     }
   },
   "required": [
+    "tenantId",
     "wireVersion",
     "operationId",
     "secret",

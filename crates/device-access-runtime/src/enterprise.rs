@@ -20,6 +20,7 @@ use zeroize::Zeroizing;
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Configuration {
+    pub tenant: uuid::Uuid,
     pub target: EnterpriseTarget,
     pub provider: uuid::Uuid,
     pub issuer: String,
@@ -42,20 +43,19 @@ pub struct Backend {
 impl Backend {
     pub fn load(
         input: &Configuration,
-        tenant: TenantId,
         policy: rss_identity_oidc::TransportPolicy,
     ) -> Result<Self, Error> {
-        Self::load_using(input, tenant, |access| {
+        Self::load_using(input, |access| {
             rss_identity_oidc::HttpOidc::new(vec![], access, policy).map_err(|_| invalid())
         })
     }
     fn load_using(
         input: &Configuration,
-        tenant: TenantId,
         transport: impl FnOnce(
             Vec<rss_identity_oidc::PrivateProviderAccess>,
         ) -> Result<rss_identity_oidc::HttpOidc, Error>,
     ) -> Result<Self, Error> {
+        let tenant = TenantId::parse(&input.tenant.to_string()).map_err(|_| invalid())?;
         input.target.validate().map_err(|_| invalid())?;
         if input.provider.is_nil()
             || input.target.scopes.contains("offline_access")
@@ -127,6 +127,7 @@ impl Backend {
             "{:x}",
             Sha256::digest(
                 serde_json::to_vec(&(
+                    input.tenant,
                     &input.target,
                     input.provider,
                     &input.issuer,
@@ -150,6 +151,9 @@ impl Backend {
 }
 
 impl Client for Backend {
+    fn tenant(&self) -> TenantId {
+        self.tenant
+    }
     fn target(&self) -> &EnterpriseTarget {
         &self.target
     }

@@ -8,7 +8,7 @@ use rss_contract::Timepoint;
 use rss_mdm_audit_integration::{ManagementResult as Effect, RequestAudit};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_software_release as rel;
-use rss_request_context::{Deadline, TenantId};
+use rss_request_context::Deadline;
 use rss_transactional_messaging_postgres::PgRuntime;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
@@ -63,19 +63,25 @@ pub async fn read(
     );
     audit.target(&id);
     authorize(authorization, proof, Permission::ReleaseRead).await?;
-    let view = read_view(directory, id).await?;
+    let view = read_view(directory, proof.binding(), id).await?;
     authorize(authorization, proof, Permission::ReleaseRead).await?;
     Ok(view)
 }
 async fn read_view(
     directory: &PublicationDirectory,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     id: String,
 ) -> Result<wire::Publication, Error> {
-    let (target, resource, version) = directory.coordinate(&id).await?;
-    let service = directory.services.get(&target).ok_or(Error::Publication(
-        super::error::PublicationError::MissingSource,
-    ))?;
-    let key = rel::PublicationKey::new(directory.tenant, &id).map_err(|_| Error::Malformed)?;
+    let (target, resource, version) = directory.coordinate(execution, &id).await?;
+    let service = directory
+        .services
+        .get(&target)
+        .ok_or(Error::Publication(
+            super::error::PublicationError::MissingSource,
+        ))?
+        .operation(execution)
+        .map_err(failure)?;
+    let key = rel::PublicationKey::new(execution.tenant(), &id).map_err(|_| Error::Malformed)?;
     let record = service
         .record(&key, cutoff())
         .await
@@ -184,17 +190,23 @@ pub async fn write(
         }
         (Change::Publish { .. }, _) => return Err(Error::Malformed),
         (_, Some(id)) => {
-            let (target, _, _) = directory.coordinate(&id).await?;
+            let (target, _, _) = directory.coordinate(proof.binding(), &id).await?;
             (id, target)
         }
         _ => return Err(Error::Malformed),
     };
-    let service = directory.services.get(&target).ok_or(Error::Publication(
-        super::error::PublicationError::MissingSource,
-    ))?;
-    let key = rel::PublicationKey::new(directory.tenant, &id).map_err(|_| Error::Malformed)?;
+    let service = directory
+        .services
+        .get(&target)
+        .ok_or(Error::Publication(
+            super::error::PublicationError::MissingSource,
+        ))?
+        .operation(proof.binding())
+        .map_err(failure)?;
+    let key =
+        rel::PublicationKey::new(proof.binding().tenant(), &id).map_err(|_| Error::Malformed)?;
     let actor = rel::ActorId::new(
-        directory.tenant,
+        proof.binding().tenant(),
         json!([proof.instance_id(), proof.principal_id()]).to_string(),
     )
     .map_err(|_| Error::Malformed)?;
@@ -223,7 +235,7 @@ pub async fn write(
         .map_err(|_| Error::Conflict)?;
     let call = service::ServiceRequest {
         actor: actor.clone(),
-        id: rel::RequestId::new(directory.tenant, request.operation_id.to_string())
+        id: rel::RequestId::new(proof.binding().tenant(), request.operation_id.to_string())
             .map_err(|_| Error::Malformed)?,
         expected_revision: request.expected_revision,
         as_of: at,
@@ -373,12 +385,14 @@ pub async fn write(
         }
     }
     authorize(authorization, proof, permission).await?;
-    read_view(directory, id).await
+    read_view(directory, proof.binding(), id).await
 }
 pub struct PublicationDirectory {
+    pub storage: rss_transactional_messaging::fence::StorageIdentity,
+    pub discovery_pool: sqlx::PgPool,
     pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub services: std::collections::BTreeMap<String, Arc<service::PublicationService>>,
-    pub tenant: TenantId,
+
     pub runtime: Arc<PgRuntime>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub clock: Arc<dyn crate::management::Clock>,
@@ -395,7 +409,7 @@ impl PublicationDirectory {
     ) -> std::result::Result<(Value, bool), Error> {
         proof.manage(permission)?;
         crate::management::transaction::run(
-            &self.audit_store, &self.runtime, self.audit_store.binding(), audit,
+            &self.audit_store, &self.runtime, audit.binding()?, audit,
             (self, source, id, request, audit, proof),
             |ctx, tx| Box::pin(async move {
                 let (s, source, id, request, audit, proof) = *ctx;
@@ -414,7 +428,7 @@ impl PublicationDirectory {
                 }
                 let mut value = json!({"record": id, "as_of": s.clock.unix_seconds().ok_or(Error::Unavailable(Failure::Clock))?});
                 if matches!(request.input, Change::Recover) {
-                    let key = rel::PublicationKey::new(s.tenant, id).map_err(|_| Error::Malformed)?;
+                    let key = rel::PublicationKey::new(proof.binding().tenant(), id).map_err(|_| Error::Malformed)?;
                     let record = rss_mdm_software_release_postgres::lock_publication_reference_in(tx, &key)
                         .await?.map_err(|_| Error::Conflict)?;
                     let snapshot = record.snapshot();
@@ -434,9 +448,13 @@ impl PublicationDirectory {
 }
 
 impl PublicationDirectory {
-    async fn coordinate(&self, id: &str) -> Result<(String, String, String), Error> {
-        let key = rel::PublicationKey::new(self.tenant, id).map_err(|_| Error::Malformed)?;
-        crate::management::transaction::inspect(&self.runtime,self.audit_store.binding(),key,|key,tx|Box::pin(async move {
+    async fn coordinate(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        id: &str,
+    ) -> Result<(String, String, String), Error> {
+        let key = rel::PublicationKey::new(binding.tenant(), id).map_err(|_| Error::Malformed)?;
+        crate::management::transaction::inspect(&self.runtime,binding,key,|key,tx|Box::pin(async move {
             let tenant=tx.tenant_id().to_string();let key=key.value().to_owned();
             let row=tx.with_connection(move|c|Box::pin(async move {
                 sqlx::query_as::<_,(String,String,String)>("SELECT convert_from(document,'UTF8')::jsonb->>'target',resource,version FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND record=$2")
@@ -456,7 +474,7 @@ impl PublicationDirectory {
         id: uuid::Uuid,
     ) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
         p.manage(Permission::ReleaseRead)?;
-        crate::management::transaction::inspect(&self.runtime,self.audit_store.binding(),(self,p),|(_,p),tx|Box::pin(async move{
+        crate::management::transaction::inspect(&self.runtime,p.binding(),(self,p),|(_,p),tx|Box::pin(async move{
             crate::management::transaction::current(tx,p).await?.require(p,Permission::ReleaseRead,None)?;
             let tenant=p.tenant_id().to_owned();let actor=p.principal_id().to_owned();let instance=p.instance_id().to_owned();
             let raw:Option<Value>=tx.with_connection(move|c|Box::pin(async move{

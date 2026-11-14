@@ -223,6 +223,7 @@ pub async fn receive(
         {
             facts.extend(
                 channel::abandon_in(
+                    p.binding(),
                     rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &p.tenant().to_string(),

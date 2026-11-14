@@ -29,7 +29,7 @@ fn request(c: &Context) -> RequestAudit {
     RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        c.tenant.to_string(),
+        c.execution(),
         "agent_task_event",
         AuditIntent::Management,
     )
@@ -51,7 +51,7 @@ async fn delivery(
         c.audit
             .on_runtime(
                 a.resources.storage.runtime.clone(),
-                c.audit.binding(),
+                c.execution(),
                 &rss_mdm_audit_integration::budget::AuditBudget::new(
                     std::time::Duration::from_secs(5),
                 )
@@ -63,7 +63,7 @@ async fn delivery(
         audit.clone(),
         rss_mdm_agent_channel::delivery::Delivery {
             runtime: a.resources.storage.runtime.clone(),
-            tenant: c.tenant,
+
             audit,
             signing: a.resources.signing.clone(),
             tasks: Arc::new(super::agent_tasks::AgentTasks {
@@ -108,7 +108,7 @@ impl Harness {
             json!({"object":{"kind":"endpoint","id":device},"associationVersion":null,"verified":true,"members":[{"device":device,"channel":"agent"}]}),
         )?;
         let scope = planning::published(&c, &object).await?.scope;
-        let a = Fixture::open(&c, true).await?;
+        let a = Fixture::open(&c).await?;
         let (audit, delivery) = delivery(&c, &a).await?;
         Ok(Self {
             c,
@@ -187,7 +187,7 @@ impl Harness {
     async fn run(&self, version: Uuid, resource: &str, deadline: i64) -> Result<Uuid> {
         let id = Uuid::new_v4();
         let mut tx = command::seed_transaction(&self.c).await?;
-        sqlx::query("INSERT INTO mdm_script.runs (tenant_id, id, policy_version, resource_id, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint, source_objects, origin, gateway_accepted) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, '\"policy\"', TRUE)").bind(self.c.tenant.to_string()).bind(id).bind(version).bind(resource).bind(self.p.device().into_uuid()).bind(id.to_string()).bind(now()).bind(deadline).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(deadline,now())?)?).bind(vec![0u8;32]).bind(json!([self.object])).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_script.runs (expected_epoch,tenant_id, id, policy_version, resource_id, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint, source_objects, origin, gateway_accepted) VALUES (current_setting('rss.execution_epoch')::bigint,CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, '\"policy\"', TRUE)").bind(self.c.tenant.to_string()).bind(id).bind(version).bind(resource).bind(self.p.device().into_uuid()).bind(id.to_string()).bind(now()).bind(deadline).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(deadline,now())?)?).bind(vec![0u8;32]).bind(json!([self.object])).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(id)
     }
@@ -217,7 +217,7 @@ impl Harness {
     async fn admit(&self, version: Uuid, id: Uuid) -> Result<w::PolicyEventDecision> {
         let transactions = script::Transactions::bind(
             self.a.resources.storage.runtime.clone(),
-            self.c.tenant,
+            self.c.execution(),
             self.audit.clone(),
             Arc::new(script::Materials {
                 agent_store: Arc::new(super::agent_facts::AgentFacts),
@@ -236,13 +236,14 @@ impl Harness {
         Ok(script::transaction::run(
             &self.audit,
             &self.a.resources.storage.runtime,
-            self.c.audit.binding(),
+            self.c.execution(),
             &request(&self.c),
-            (transactions, target),
+            (transactions, target, self.c.execution()),
             move |ctx, tx| {
                 Box::pin(async move {
                     ctx.0
                         .accept_event_in(
+                            ctx.2,
                             tx,
                             version,
                             &ctx.1,

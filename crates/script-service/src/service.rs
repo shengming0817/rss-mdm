@@ -1,6 +1,5 @@
 //! Script materials bind to the initiating runtime, including Policy participants.
 use crate::{Error, agent_facts};
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use std::sync::Arc;
 
@@ -22,7 +21,7 @@ pub struct Materials {
 }
 pub struct Transactions {
     pub(crate) runtime: Arc<PgRuntime>,
-    pub(crate) tenant: TenantId,
+
     pub(crate) instance: String,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) agent_store: Arc<dyn agent_facts::Store>,
@@ -34,13 +33,13 @@ pub struct Transactions {
 impl Transactions {
     pub async fn bind(
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
+        probe: rss_transactional_messaging::fence::ExecutionBinding,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         materials: Arc<Materials>,
     ) -> std::result::Result<Self, Error> {
         let reconcile_messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            audit_store.binding(),
+            probe,
             crate::transaction::deadline(),
         ))
         .await
@@ -49,10 +48,9 @@ impl Transactions {
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 runtime.clone(),
-                tenant,
             ),
             runtime,
-            tenant,
+
             audit_store,
             reconcile_messaging,
             instance: materials.instance.clone(),
@@ -63,9 +61,7 @@ impl Transactions {
     }
     pub fn validate_in(&self, tx: &PgTransaction<'_>) -> crate::Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::Forbidden.into());
-        }
+
         Ok(())
     }
 }

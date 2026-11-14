@@ -12,6 +12,7 @@ pub async fn concurrent_export(
     principal: &AuthorizedPrincipal,
     export: &da::Export,
 ) -> Result<()> {
+    let management = material::management_base(base, c.tenant);
     let mut tx = c.seed().await?;
     rss_mdm_authorization_service::lock_on(
         principal.authority_profile(),
@@ -26,7 +27,7 @@ pub async fn concurrent_export(
     let mut request = export.clone();
     request.operation_id = Uuid::new_v4();
     let request = client
-        .post(format!("{base}/configurations"))
+        .post(format!("{management}/configurations"))
         .bearer_auth(token)
         .json(&request);
     let export = tokio::spawn(async move { request.send().await });
@@ -56,7 +57,7 @@ pub async fn concurrent_export(
     material::success::<da::SignedConfiguration>(export.await??).await?;
     let directory = material::success::<serde_json::Value>(
         client
-            .get(format!("{base}/admin/configurations"))
+            .get(format!("{management}/admin/configurations"))
             .query(&[("filter", "enabled==true;configuration.windows.kind==whfb")])
             .bearer_auth(token)
             .send()
@@ -78,7 +79,7 @@ pub async fn concurrent_export(
     );
     let missing = material::success::<serde_json::Value>(
         client
-            .get(format!("{base}/admin/configurations"))
+            .get(format!("{management}/admin/configurations"))
             .query(&[("filter", "enabled==false")])
             .bearer_auth(token)
             .send()
@@ -103,6 +104,7 @@ pub async fn reject_account_change(
     let actor = c
         .sessions
         .authenticate(
+            c.execution(),
             &c.authorization,
             rss_mdm_authorization_service::credential::RequestCredential::Bearer(
                 rss_identity_core::session::BearerSecret::parse(token)?,
@@ -148,7 +150,7 @@ pub async fn publish_protected(
     let principal = c
         .authority
         .inspect_bearer(
-            c.sessions.binding(),
+            c.execution(),
             rss_identity_core::session::BearerSecret::parse(token)?,
             platform::deadline(),
         )
@@ -207,13 +209,14 @@ pub async fn verify_sources(
     observation: &mut rss_mdm_device_access::deployment::Observation,
     ordinary: &da::SignedConfiguration,
 ) -> Result<()> {
+    let management = material::management_base(base, c.tenant);
     use rss_mdm_agent_wire::runtime::AccessWindowsConfiguration;
     use rss_mdm_device_access::deployment::ConfigurationDeployment;
     use rss_mdm_device_access_postgres::configuration::Change;
     let url = format!("{base}/deployment-evidence");
     let managed = observation.configuration.clone();
     let original = publication.configuration.clone();
-    let initial = diagnostic(client, base, token, &observation.device).await?;
+    let initial = diagnostic(client, &management, token, &observation.device).await?;
     assert_eq!(initial["evidence"], "verified");
     assert_eq!(
         initial["resolution"]["fields"][0]["source"],
@@ -240,7 +243,7 @@ pub async fn verify_sources(
                 .await?,
         )
         .await?;
-        let value = diagnostic(client, base, token, &observation.device).await?;
+        let value = diagnostic(client, &management, token, &observation.device).await?;
         assert_eq!(
             value["resolution"]["blocked"], "read_failed",
             "new snapshots cannot silently clear mandatory source history"
@@ -276,7 +279,7 @@ pub async fn verify_sources(
     .await?;
     let broader: da::SignedConfiguration = material::success(
         client
-            .post(format!("{base}/configurations"))
+            .post(format!("{management}/configurations"))
             .bearer_auth(token)
             .json(&da::Export {
                 operation_id: Uuid::new_v4(),
@@ -307,7 +310,7 @@ pub async fn verify_sources(
             .await?,
     )
     .await?;
-    let locked = diagnostic(client, base, token, &observation.device).await?;
+    let locked = diagnostic(client, &management, token, &observation.device).await?;
     assert_eq!(locked["resolution"]["fields"][1]["locked"], true);
     for candidate in [managed.clone(), None] {
         observation.configuration = candidate;
@@ -320,7 +323,7 @@ pub async fn verify_sources(
                 .await?,
         )
         .await?;
-        let blocked = diagnostic(client, base, token, &observation.device).await?;
+        let blocked = diagnostic(client, &management, token, &observation.device).await?;
         assert!(!blocked["resolution"]["blocked"].is_null());
         assert!(
             blocked["resolution"]["configuration"].is_null(),
@@ -350,7 +353,7 @@ pub async fn verify_sources(
             .await?,
     )
     .await?;
-    let released = diagnostic(client, base, token, &observation.device).await?;
+    let released = diagnostic(client, &management, token, &observation.device).await?;
     assert!(released["resolution"]["blocked"].is_null());
     assert_eq!(released["resolution"]["fields"][1]["locked"], false);
     // Ordinary V2 changes differ in both groups. The managed Mac V1 stays locked while
@@ -372,7 +375,7 @@ pub async fn verify_sources(
             &business::audit(c),
         )
         .await?;
-    let value = diagnostic(client, base, token, &observation.device).await?;
+    let value = diagnostic(client, &management, token, &observation.device).await?;
     assert_eq!(value["evidence"], "verified");
     assert!(value["resolution"]["blocked"].is_null());
     assert_eq!(
@@ -426,7 +429,7 @@ pub async fn verify_sources(
             .await?,
     )
     .await?;
-    let released = diagnostic(client, base, token, &observation.device).await?;
+    let released = diagnostic(client, &management, token, &observation.device).await?;
     assert!(released["resolution"]["blocked"].is_null());
     assert_eq!(released["resolution"]["fields"][0]["locked"], false);
 
@@ -456,7 +459,7 @@ pub async fn verify_sources(
             .await?,
     )
     .await?;
-    let restored = diagnostic(client, base, token, &observation.device).await?;
+    let restored = diagnostic(client, &management, token, &observation.device).await?;
     assert_eq!(restored["evidence"], "verified");
     assert_eq!(restored["resolution"]["fields"][0]["locked"], true);
     Ok(())

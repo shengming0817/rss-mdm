@@ -11,6 +11,7 @@ CREATE TABLE mdm_planning.configuration_claims (
 );
 
 CREATE TABLE mdm_planning.configuration_devices (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     tenant_id uuid NOT NULL,
     device uuid NOT NULL,
     input_revision bigint DEFAULT 1 NOT NULL,
@@ -60,6 +61,7 @@ REVOKE ALL ON FUNCTION mdm_planning.configuration_device_key(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_planning.configuration_device_key(uuid) TO mdm_access,mdm_policy_runtime,mdm_command_runtime;
 CREATE INDEX configuration_device_recovery ON mdm_planning.configuration_devices(tenant_id,mdm_planning.configuration_device_key(device));
 CREATE TABLE mdm_planning.configuration_operations (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
   , command_id text GENERATED ALWAYS AS (CAST(id AS text)) STORED

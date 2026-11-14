@@ -8,9 +8,8 @@ use rss_mdm_resource as r;
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use std::sync::Arc;
 pub struct Inputs {
-    execution: rss_transactional_messaging::fence::ExecutionBinding,
     runtime: Arc<PgRuntime>,
-    pub(crate) tenant: rss_request_context::TenantId,
+
     content: Option<Arc<Store>>,
     pub(crate) native: Arc<dyn NativeDelivery>,
 }
@@ -24,23 +23,17 @@ pub struct Publication<'a> {
 impl Inputs {
     pub fn bind(
         runtime: Arc<PgRuntime>,
-        execution: rss_transactional_messaging::fence::ExecutionBinding,
         content: Option<Arc<Store>>,
         native: Arc<dyn NativeDelivery>,
     ) -> Self {
         Self {
             runtime,
-            tenant: execution.tenant(),
-            execution,
             content,
             native,
         }
     }
     fn validate_in(&self, tx: &PgTransaction<'_>) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::Forbidden.into());
-        }
         Ok(())
     }
     async fn version_in(
@@ -65,12 +58,13 @@ impl Inputs {
     }
     pub async fn prepare_resource(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         binding: &ExactResourceBinding,
         channel: Channel,
     ) -> std::result::Result<Verified, Error> {
         let artifact = inspect(
             &self.runtime,
-            self.execution,
+            execution,
             (self, binding),
             |ctx, tx| {
                 Box::pin(async move {
@@ -91,7 +85,7 @@ impl Inputs {
             .map_err(content_error)?
             .operation_deadline();
         content
-            .verify_class(&artifact, StorageClass::Artifact, deadline)
+            .verify_class(execution, &artifact, StorageClass::Artifact, deadline)
             .await
             .map_err(content_error)
     }
@@ -132,7 +126,7 @@ impl Inputs {
                 }
                 let fields = crate::collection::preparation::prepare_agent_fields(
                     tx,
-                    self.tenant,
+                    tx.tenant_id(),
                     selected,
                     definition,
                 )
@@ -175,7 +169,7 @@ impl Inputs {
                 };
                 let collection = crate::collection::preparation::freeze_collection(
                     tx,
-                    self.tenant,
+                    tx.tenant_id(),
                     &version,
                     selected,
                     source,

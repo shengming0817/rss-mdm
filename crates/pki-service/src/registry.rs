@@ -73,10 +73,11 @@ pub struct Receipt {
     pub state: RotationState,
 }
 pub struct Registry {
+    storage: rss_transactional_messaging::fence::StorageIdentity,
+    maintenance_epoch: rss_transactional_messaging::fence::Epoch,
     profile: rss_mdm_install_support::StorageProfile,
     pub(crate) pool: PgPool,
     pub(crate) audit: Arc<AuditStore>,
-    bindings: Vec<DeviceTrust>,
     pub(crate) providers: Arc<crate::providers::Providers>,
 }
 impl Registry {
@@ -87,257 +88,216 @@ impl Registry {
         profile: rss_mdm_install_support::StorageProfile,
         pool: PgPool,
         audit: Arc<AuditStore>,
-        bindings: Vec<DeviceTrust>,
+        probe: rss_transactional_messaging::fence::ExecutionBinding,
         providers: Arc<crate::providers::Providers>,
     ) -> Self {
         Self {
+            storage: probe.storage(),
+            maintenance_epoch: probe.epoch(),
             profile,
             pool,
             audit,
-            bindings,
             providers,
         }
     }
-    pub fn bindings(&self) -> &[DeviceTrust] {
-        &self.bindings
-    }
-    pub(crate) fn binding(&self, purpose: Purpose) -> Result<&DeviceTrust, Error> {
-        if self.profile() == rss_mdm_install_support::StorageProfile::Da
-            && !matches!(
-                purpose,
-                Purpose::Agent | Purpose::AgentBootstrap | Purpose::DaDevice
-            )
-        {
-            return Err(Error::Configuration);
-        }
-        self.bindings
-            .iter()
-            .find(|b| b.public().is_ok_and(|t| t.purpose == purpose))
-            .ok_or(Error::Configuration)
-    }
-    /// Bootstrap is audited. Durable revisions win over deployment files after rotation.
-    pub async fn admit(&self, tenant: TenantId, now: i64) -> Result<(), Error> {
-        self.admit_selected(tenant, now, None).await
-    }
-    /// Isolate admission by purpose while keeping the same durable trust/rollback checks.
-    pub async fn admit_purpose(
-        &self,
-        tenant: TenantId,
-        now: i64,
-        purpose: Purpose,
-    ) -> Result<(), Error> {
-        self.admit_selected(tenant, now, Some(purpose)).await
-    }
-    async fn admit_selected(
-        &self,
-        tenant: TenantId,
-        now: i64,
-        selected_purpose: Option<Purpose>,
-    ) -> Result<(), Error> {
-        let profile = self.profile();
 
-        if self.profile() == rss_mdm_install_support::StorageProfile::Da
-            && self.bindings.iter().any(|b| {
-                b.public().map_or(true, |t| {
-                    !matches!(
-                        t.purpose,
-                        Purpose::Agent | Purpose::AgentBootstrap | Purpose::DaDevice
-                    )
-                })
-            })
-        {
-            return Err(Error::Configuration);
+    /// Bootstrap is audited. Durable revisions win over deployment files after rotation.
+
+    /// Isolate admission by purpose while keeping the same durable trust/rollback checks.
+
+    pub async fn admit(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        configured: Trust,
+        now: i64,
+    ) -> Result<(), Error> {
+        let tenant = execution.tenant();
+        let profile = self.profile();
+        self.check_purpose(configured.purpose)?;
+        DeviceTrust::new(configured.clone(), configured.purpose, now)
+            .map_err(|_| Error::Configuration)?;
+        if configured.tenant.to_string() != tenant.to_string() {
+            return Err(Error::Forbidden);
         }
-        for binding in &self.bindings {
-            if selected_purpose.is_some_and(|p| binding.public().is_ok_and(|t| t.purpose != p)) {
-                continue;
-            }
-            let configured = binding.public().map_err(|_| Error::Configuration)?;
-            if configured.tenant.to_string() != tenant.to_string() {
-                return Err(Error::Forbidden);
-            }
-            let mut read = self.begin(&tenant.to_string()).await?;
-            let stored = sqlx::query_scalar::<_, Vec<u8>>(
-                crate::storage_profile::sql(profile).registry_admit_selected_1,
-            )
-            .bind(tenant.to_string())
-            .bind(purpose(configured.purpose))
-            .fetch_optional(&mut *read)
-            .await
-            .map_err(|_| Error::Storage)?;
-            let archived: Vec<Vec<u8>> =
-                sqlx::query_scalar(crate::storage_profile::sql(profile).registry_admit_selected_2)
-                    .bind(tenant.to_string())
-                    .bind(purpose(configured.purpose))
-                    .fetch_all(&mut *read)
-                    .await
-                    .map_err(|_| Error::Storage)?;
-            let archived = archived
-                .into_iter()
-                .map(|bytes| {
-                    serde_json::from_slice::<rss_mdm_agent_wire::pki::Issuer>(&bytes)
-                        .map_err(|_| Error::Storage)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            read.rollback().await.map_err(|_| Error::Storage)?;
-            let mut next = match stored.as_ref() {
-                Some(bytes) => {
-                    let mut stored: Trust =
-                        serde_json::from_slice(bytes).map_err(|_| Error::Storage)?;
-                    if configured.service_id != stored.service_id
-                        || (configured.origin != stored.origin
-                            && !matches!(
-                                configured.purpose,
-                                Purpose::Agent | Purpose::AgentBootstrap | Purpose::DaDevice
-                            ))
-                        || configured.issuers.iter().any(|g| {
-                            !stored.issuers.iter().chain(archived.iter()).any(|s| {
-                                s.digest == g.digest
-                                    && s.certificate == g.certificate
-                                    && s.root == g.root
-                                    && s.provisioner == g.provisioner
-                                    && s.kid == g.kid
-                            })
+        let mut read = self.begin(&tenant.to_string()).await?;
+        let stored = sqlx::query_scalar::<_, Vec<u8>>(
+            crate::storage_profile::sql(profile).registry_admit_selected_1,
+        )
+        .bind(tenant.to_string())
+        .bind(purpose(configured.purpose))
+        .fetch_optional(&mut *read)
+        .await
+        .map_err(|_| Error::Storage)?;
+        let archived: Vec<Vec<u8>> =
+            sqlx::query_scalar(crate::storage_profile::sql(profile).registry_admit_selected_2)
+                .bind(tenant.to_string())
+                .bind(purpose(configured.purpose))
+                .fetch_all(&mut *read)
+                .await
+                .map_err(|_| Error::Storage)?;
+        let archived = archived
+            .into_iter()
+            .map(|bytes| {
+                serde_json::from_slice::<rss_mdm_agent_wire::pki::Issuer>(&bytes)
+                    .map_err(|_| Error::Storage)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        read.rollback().await.map_err(|_| Error::Storage)?;
+        let mut next = match stored.as_ref() {
+            Some(bytes) => {
+                let mut stored: Trust =
+                    serde_json::from_slice(bytes).map_err(|_| Error::Storage)?;
+                if configured.service_id != stored.service_id
+                    || (configured.origin != stored.origin
+                        && !matches!(
+                            configured.purpose,
+                            Purpose::Agent | Purpose::AgentBootstrap | Purpose::DaDevice
+                        ))
+                    || configured.issuers.iter().any(|g| {
+                        !stored.issuers.iter().chain(archived.iter()).any(|s| {
+                            s.digest == g.digest
+                                && s.certificate == g.certificate
+                                && s.root == g.root
+                                && s.provisioner == g.provisioner
+                                && s.kid == g.kid
                         })
-                    {
-                        return Err(Error::Conflict);
-                    }
-                    for g in &mut stored.issuers {
-                        if let Some(c) = configured.issuers.iter().find(|c| c.digest == g.digest) {
-                            let root = x509_cert::Certificate::from_der(
-                                &decode(&g.root, 32768).map_err(|_| Error::Storage)?,
-                            )
-                            .map_err(|_| Error::Storage)?;
-                            let previous = rss_mdm_device_trust::crl(
-                                &decode(&g.root_crl, 16 * 1024 * 1024)
-                                    .map_err(|_| Error::Storage)?,
-                                &root,
-                                crate::maintenance::publication_time(
-                                    &serde_json::from_slice(bytes).map_err(|_| Error::Storage)?,
-                                )?,
-                            )
-                            .map_err(|_| Error::Storage)?;
-                            if let Ok(replacement) = rss_mdm_device_trust::crl(
-                                &decode(&c.root_crl, 16 * 1024 * 1024)
-                                    .map_err(|_| Error::Configuration)?,
-                                &root,
-                                now,
-                            ) && (replacement.number > previous.number
-                                || (replacement.number == previous.number
-                                    && replacement.der == previous.der))
-                            {
-                                g.root_crl = c.root_crl.clone();
-                            }
+                    })
+                {
+                    return Err(Error::Conflict);
+                }
+                for g in &mut stored.issuers {
+                    if let Some(c) = configured.issuers.iter().find(|c| c.digest == g.digest) {
+                        let root = x509_cert::Certificate::from_der(
+                            &decode(&g.root, 32768).map_err(|_| Error::Storage)?,
+                        )
+                        .map_err(|_| Error::Storage)?;
+                        let previous = rss_mdm_device_trust::crl(
+                            &decode(&g.root_crl, 16 * 1024 * 1024).map_err(|_| Error::Storage)?,
+                            &root,
+                            crate::maintenance::publication_time(
+                                &serde_json::from_slice(bytes).map_err(|_| Error::Storage)?,
+                            )?,
+                        )
+                        .map_err(|_| Error::Storage)?;
+                        if let Ok(replacement) = rss_mdm_device_trust::crl(
+                            &decode(&c.root_crl, 16 * 1024 * 1024)
+                                .map_err(|_| Error::Configuration)?,
+                            &root,
+                            now,
+                        ) && (replacement.number > previous.number
+                            || (replacement.number == previous.number
+                                && replacement.der == previous.der))
+                        {
+                            g.root_crl = c.root_crl.clone();
                         }
                     }
-                    stored
                 }
-                None => configured.clone(),
-            };
-            // Fresh online CRLs are fetched before entering the Audit/business transaction.
-            for g in &mut next.issuers {
-                if let Ok(provider) = self.providers.get(next.purpose, &g.digest) {
-                    g.crl = base64::Engine::encode(
-                        &base64::engine::general_purpose::STANDARD,
-                        provider.published_crl().await?,
-                    );
-                } else if g.mode != Mode::VerifyOnly || !g.provisioner.is_empty() {
-                    return Err(Error::Configuration);
-                }
+                stored
             }
-            DeviceTrust::new(next.clone(), next.purpose, now).map_err(|_| Error::Configuration)?;
-            if let Some(bytes) = &stored {
-                let old: Trust = serde_json::from_slice(bytes).map_err(|_| Error::Storage)?;
-                let previous = DeviceTrust::new(
-                    old.clone(),
-                    old.purpose,
-                    crate::maintenance::publication_time(&old)?,
-                )
-                .map_err(|_| Error::Storage)?;
-                previous
-                    .update(next.clone(), now)
-                    .map_err(|_| Error::Conflict)?;
+            None => configured.clone(),
+        };
+        // Fresh online CRLs are fetched before entering the Audit/business transaction.
+        for g in &mut next.issuers {
+            if let Ok(provider) = self.providers.get(next.purpose, &g.digest) {
+                g.crl = base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    provider.published_crl().await?,
+                );
+            } else if g.mode != Mode::VerifyOnly || !g.provisioner.is_empty() {
+                return Err(Error::Configuration);
             }
-            let hash =
-                sha2::Sha256::digest(serde_json::to_vec(&next).map_err(|_| Error::Configuration)?)
-                    .to_vec();
-            let id = Uuid::from_bytes(hash[..16].try_into().map_err(|_| Error::Storage)?);
-            let a = RequestAudit::new(
-                rss_mdm_audit_integration::Origin::Background,
-                self.profile(),
-                tenant.to_string(),
-                "device_pki_admit",
-                rss_mdm_audit_integration::AuditIntent::Management,
-            );
-            a.identify_service("service:device-pki");
-            a.owned_operation(
-                rss_mdm_audit_integration::operation::OperationOwner::Pki,
-                id,
-                "device_pki_admit",
-                rss_mdm_audit_integration::AuditIntent::Management,
-            );
-            let result = self
-                .mutation(tenant, &a, (next.clone(), stored, hash, id), |ctx, c| {
-                    Box::pin(async move {
-                        let (next, observed, hash, id) = ctx;
-                        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))")
-                            .bind(next.tenant.to_string())
-                            .execute(&mut *c)
-                            .await
-                            .map_err(|_| Error::Storage)?;
-                        let current = sqlx::query_scalar::<_, Vec<u8>>(
-                            crate::storage_profile::sql(profile).registry_admit_selected_3,
-                        )
-                        .bind(next.tenant)
-                        .bind(purpose(next.purpose))
-                        .fetch_optional(&mut *c)
+        }
+        DeviceTrust::new(next.clone(), next.purpose, now).map_err(|_| Error::Configuration)?;
+        if let Some(bytes) = &stored {
+            let old: Trust = serde_json::from_slice(bytes).map_err(|_| Error::Storage)?;
+            let previous = DeviceTrust::new(
+                old.clone(),
+                old.purpose,
+                crate::maintenance::publication_time(&old)?,
+            )
+            .map_err(|_| Error::Storage)?;
+            previous
+                .update(next.clone(), now)
+                .map_err(|_| Error::Conflict)?;
+        }
+        let hash =
+            sha2::Sha256::digest(serde_json::to_vec(&next).map_err(|_| Error::Configuration)?)
+                .to_vec();
+        let id = Uuid::from_bytes(hash[..16].try_into().map_err(|_| Error::Storage)?);
+        let a = RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
+            self.profile(),
+            execution,
+            "device_pki_admit",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        a.identify_service("service:device-pki");
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Pki,
+            id,
+            "device_pki_admit",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        let result = self
+            .mutation(execution, &a, (next.clone(), stored, hash, id), |ctx, c| {
+                Box::pin(async move {
+                    let (next, observed, hash, id) = ctx;
+                    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))")
+                        .bind(next.tenant.to_string())
+                        .execute(&mut *c)
                         .await
                         .map_err(|_| Error::Storage)?;
-                        if current != *observed {
-                            return Err(Error::Conflict);
-                        }
-                        let replay = crate::mutation::replay(
+                    let current = sqlx::query_scalar::<_, Vec<u8>>(
+                        crate::storage_profile::sql(profile).registry_admit_selected_3,
+                    )
+                    .bind(next.tenant)
+                    .bind(purpose(next.purpose))
+                    .fetch_optional(&mut *c)
+                    .await
+                    .map_err(|_| Error::Storage)?;
+                    if current != *observed {
+                        return Err(Error::Conflict);
+                    }
+                    let replay = crate::mutation::replay(
+                        profile,
+                        c,
+                        &next.tenant.to_string(),
+                        "service:device-pki",
+                        "",
+                        *id,
+                        "admit",
+                        hash,
+                    )
+                    .await?
+                    .is_some();
+                    persist(profile, c, next).await?;
+                    if !replay {
+                        crate::mutation::save(
                             profile,
                             c,
-                            &next.tenant.to_string(),
-                            "service:device-pki",
-                            "",
+                            (&next.tenant.to_string(), "service:device-pki", ""),
                             *id,
                             "admit",
                             hash,
+                            b"null",
                         )
-                        .await?
-                        .is_some();
-                        persist(profile, c, next).await?;
-                        if !replay {
-                            crate::mutation::save(
-                                profile,
-                                c,
-                                (&next.tenant.to_string(), "service:device-pki", ""),
-                                *id,
-                                "admit",
-                                hash,
-                                b"null",
-                            )
-                            .await?;
-                        }
-                        Ok(crate::mutation::Change {
-                            value: (),
-                            replay,
-                            key: format!("pki:{id}:admit"),
-                        })
+                        .await?;
+                    }
+                    Ok(crate::mutation::Change {
+                        value: (),
+                        replay,
+                        key: format!("pki:{id}:admit"),
                     })
                 })
-                .await;
-            a.finalize(
-                result
-                    .as_ref()
-                    .err()
-                    .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
-            );
-            result?;
-            binding.update(next, now).map_err(|_| Error::Conflict)?;
-        }
+            })
+            .await;
+        a.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
+        result?;
         Ok(())
     }
     pub async fn begin(
@@ -350,47 +310,7 @@ impl Registry {
         Ok(tx)
     }
     /// Durable approval and publications are shared across app processes.
-    pub async fn synchronize(&self, now: i64) -> Result<(), Error> {
-        let profile = self.profile();
 
-        if self.profile() == rss_mdm_install_support::StorageProfile::Da
-            && self.bindings.iter().any(|b| {
-                b.public().map_or(true, |t| {
-                    !matches!(
-                        t.purpose,
-                        Purpose::Agent | Purpose::AgentBootstrap | Purpose::DaDevice
-                    )
-                })
-            })
-        {
-            return Err(Error::Configuration);
-        }
-        for binding in &self.bindings {
-            let current = binding.public().map_err(|_| Error::Storage)?;
-            let mut tx = self.begin(&current.tenant.to_string()).await?;
-            let bytes: Vec<u8> =
-                sqlx::query_scalar(crate::storage_profile::sql(profile).registry_synchronize_1)
-                    .bind(current.tenant)
-                    .bind(purpose(current.purpose))
-                    .fetch_one(&mut *tx)
-                    .await
-                    .map_err(|_| Error::Storage)?;
-            tx.rollback().await.map_err(|_| Error::Storage)?;
-            let stored: Trust = serde_json::from_slice(&bytes).map_err(|_| Error::Storage)?;
-            DeviceTrust::restore(stored.clone(), stored.purpose, now)
-                .map_err(|_| Error::Storage)?;
-            binding
-                .update(
-                    stored.clone(),
-                    crate::maintenance::publication_time(&stored)?,
-                )
-                .map_err(|_| Error::Conflict)?;
-        }
-        Ok(())
-    }
-    pub fn trust(&self, purpose: Purpose) -> Result<Trust, Error> {
-        self.binding(purpose)?.public().map_err(|_| Error::Storage)
-    }
     pub async fn prepare(
         &self,
         p: &AuthorizedPrincipal,
@@ -404,7 +324,6 @@ impl Registry {
 
         p.require_all_devices(Permission::Credentials)
             .map_err(|_| Error::Forbidden)?;
-        self.synchronize(now).await?;
         let request =
             sha2::Sha256::digest(serde_json::to_vec(input).map_err(|_| Error::Request)?).to_vec();
         if let Some(old) = self
@@ -413,7 +332,7 @@ impl Registry {
         {
             return Ok(old);
         }
-        let old = self.trust(input.purpose)?;
+        let old = self.trust(p.binding(), input.purpose).await?;
         if input.id.is_nil()
             || old.tenant.to_string() != p.tenant_id()
             || input.expected_revision != old.revision
@@ -481,9 +400,6 @@ impl Registry {
                 &request,
             )
             .await?;
-        self.binding(input.purpose)?
-            .update(candidate_trust, now)
-            .map_err(|_| Error::Storage)?;
         Ok(receipt)
     }
     pub async fn transition(
@@ -502,7 +418,6 @@ impl Registry {
 
         p.require_all_devices(Permission::Credentials)
             .map_err(|_| Error::Forbidden)?;
-        self.synchronize(now).await?;
         let state = match input.action {
             Action::Activate => RotationState::Activated,
             Action::Retire => RotationState::Retired,
@@ -517,7 +432,7 @@ impl Registry {
         {
             return Ok(old);
         }
-        let mut trust = self.trust(purpose_value)?;
+        let mut trust = self.trust(p.binding(), purpose_value).await?;
         if trust.tenant.to_string() != p.tenant_id() || trust.revision != input.expected_revision {
             return Err(Error::Conflict);
         }
@@ -564,9 +479,6 @@ impl Registry {
                 &request,
             )
             .await?;
-        self.binding(purpose_value)?
-            .update(trust, now)
-            .map_err(|_| Error::Storage)?;
         Ok(receipt)
     }
     pub async fn acknowledge_in(
@@ -655,35 +567,30 @@ impl Registry {
             "device_pki_rotation",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        self.mutation(
-            TenantId::parse(p.tenant_id()).map_err(|_| Error::Request)?,
-            a,
-            (p, id, phase, hash),
-            |ctx, c| {
-                Box::pin(async move {
-                    let (p, id, phase, hash) = ctx;
-                    live(profile, c, p).await?;
-                    let bytes = crate::mutation::replay(
-                        profile,
-                        c,
-                        p.tenant_id(),
-                        p.principal_id(),
-                        p.instance_id(),
-                        *id,
-                        phase,
-                        hash,
-                    )
-                    .await?
-                    .ok_or(Error::Conflict)?;
-                    let receipt = serde_json::from_slice(&bytes).map_err(|_| Error::Storage)?;
-                    Ok(crate::mutation::Change {
-                        value: Some(receipt),
-                        replay: true,
-                        key: format!("pki:{id}:{phase}"),
-                    })
+        self.mutation(p.binding(), a, (p, id, phase, hash), |ctx, c| {
+            Box::pin(async move {
+                let (p, id, phase, hash) = ctx;
+                live(profile, c, p).await?;
+                let bytes = crate::mutation::replay(
+                    profile,
+                    c,
+                    p.tenant_id(),
+                    p.principal_id(),
+                    p.instance_id(),
+                    *id,
+                    phase,
+                    hash,
+                )
+                .await?
+                .ok_or(Error::Conflict)?;
+                let receipt = serde_json::from_slice(&bytes).map_err(|_| Error::Storage)?;
+                Ok(crate::mutation::Change {
+                    value: Some(receipt),
+                    replay: true,
+                    key: format!("pki:{id}:{phase}"),
                 })
-            },
-        )
+            })
+        })
         .await
     }
     async fn write(
@@ -711,7 +618,7 @@ impl Registry {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         self.mutation(
-            TenantId::parse(p.tenant_id()).map_err(|_| Error::Request)?,
+            p.binding(),
             a,
             (p, id, expected, trust, state, added, now, hash),
             |ctx, c| {
@@ -1280,5 +1187,161 @@ impl Registry {
         p.check_live().map_err(|_| Error::Forbidden)?;
         tx.rollback().await.map_err(|_| Error::Storage)?;
         value
+    }
+}
+
+impl Registry {
+    fn check_purpose(&self, purpose: Purpose) -> Result<(), Error> {
+        if self.profile() == rss_mdm_install_support::StorageProfile::Da
+            && !matches!(
+                purpose,
+                Purpose::Agent | Purpose::AgentBootstrap | Purpose::DaDevice
+            )
+        {
+            return Err(Error::Configuration);
+        }
+        Ok(())
+    }
+    pub async fn current_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        purpose: Purpose,
+        now: i64,
+    ) -> Result<DeviceTrust, Error> {
+        self.check_purpose(purpose)?;
+        let trust = trust_on(self.profile(), c, execution.tenant(), purpose).await?;
+        DeviceTrust::restore(trust, purpose, now).map_err(|_| Error::Storage)
+    }
+    pub async fn current(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        purpose: Purpose,
+        now: i64,
+    ) -> Result<DeviceTrust, Error> {
+        let trust = self.trust(execution, purpose).await?;
+        DeviceTrust::restore(trust, purpose, now).map_err(|_| Error::Storage)
+    }
+    pub async fn trust(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        purpose: Purpose,
+    ) -> Result<Trust, Error> {
+        self.check_purpose(purpose)?;
+        let profile = self.profile();
+        let budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
+        self.audit
+            .write(execution, &budget.source_control(), (), |_, tx| {
+                Box::pin(async move {
+                    tx.with_connection(move |c| {
+                        Box::pin(
+                            async move { trust_on(profile, c, execution.tenant(), purpose).await },
+                        )
+                    })
+                    .await
+                    .map_err(Error::from)
+                })
+            })
+            .await
+            .fold(
+                Ok,
+                |e| Err(crate::mutation::error(e)),
+                |e| Err(crate::mutation::error(e)),
+                |_| {
+                    Err(Error::Audit(
+                        rss_mdm_audit_integration::Error::RollbackFailed,
+                    ))
+                },
+                |_| {
+                    Err(Error::Audit(
+                        rss_mdm_audit_integration::Error::CommitUnknown,
+                    ))
+                },
+                |e| Err(crate::mutation::error(e)),
+            )
+    }
+    pub async fn trusts(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<Vec<Trust>, Error> {
+        let profile = self.profile();
+        let budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
+        self.audit
+            .write(execution, &budget.source_control(), (), |_, tx| {
+                Box::pin(async move {
+                    let rows: Vec<Vec<u8>> = tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                sqlx::query_scalar(
+                                    crate::storage_profile::sql(profile).registry_trusts,
+                                )
+                                .bind(execution.tenant().to_string())
+                                .fetch_all(c)
+                                .await
+                                .map_err(|_| Error::Storage)
+                            })
+                        })
+                        .await?;
+                    rows.into_iter()
+                        .map(|body| {
+                            let trust: Trust =
+                                serde_json::from_slice(&body).map_err(|_| Error::Storage)?;
+                            if trust.tenant.as_bytes() != &execution.tenant().octets() {
+                                return Err(Error::Forbidden);
+                            }
+                            trust.validate().map_err(|_| Error::Storage)?;
+                            Ok(trust)
+                        })
+                        .collect()
+                })
+            })
+            .await
+            .fold(
+                Ok,
+                |e| Err(crate::mutation::error(e)),
+                |e| Err(crate::mutation::error(e)),
+                |_| {
+                    Err(Error::Audit(
+                        rss_mdm_audit_integration::Error::RollbackFailed,
+                    ))
+                },
+                |_| {
+                    Err(Error::Audit(
+                        rss_mdm_audit_integration::Error::CommitUnknown,
+                    ))
+                },
+                |e| Err(crate::mutation::error(e)),
+            )
+    }
+}
+
+impl Registry {
+    /// Fresh CRL refresh uses the installed generation; queued revocations keep their source epoch.
+    pub async fn work_scopes(
+        &self,
+        after: Option<(Uuid, i64)>,
+    ) -> Result<Vec<rss_transactional_messaging::fence::ExecutionBinding>, Error> {
+        let rows: Vec<(Uuid, i64)> =
+            sqlx::query_as(crate::storage_profile::sql(self.profile()).maintenance_scopes)
+                .bind(after.map(|v| v.0))
+                .bind(after.map(|v| v.1))
+                .bind(self.maintenance_epoch.get())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|_| Error::Storage)?;
+        rows.into_iter()
+            .map(|(tenant, epoch)| {
+                let tenant = TenantId::parse(&tenant.to_string()).map_err(|_| Error::Storage)?;
+                let epoch = rss_transactional_messaging::fence::Epoch::new(epoch)
+                    .map_err(|_| Error::Storage)?;
+                Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+                    self.storage,
+                    tenant,
+                    epoch,
+                ))
+            })
+            .collect()
     }
 }

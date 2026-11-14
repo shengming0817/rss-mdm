@@ -58,6 +58,7 @@ fn digest(value: &(impl serde::Serialize + ?Sized)) -> Result<String> {
 impl AssetService {
     async fn dispatch(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         command: &Command,
         at: Timepoint,
@@ -69,7 +70,10 @@ impl AssetService {
     ) -> Result<AssetEnvelope> {
         let response = match command {
             Command::Software { command, access } => {
-                match self.software_dispatch(tx, command, access, cut).await? {
+                match self
+                    .software_dispatch(binding, tx, command, access, cut)
+                    .await?
+                {
                     software::Response::Mutation {
                         receipt: software::MutationReceipt::Accepted { task, status_url },
                     } => Response::Accepted { task, status_url },
@@ -101,7 +105,7 @@ impl AssetService {
                 if change.expected_revision.checked_add(1) != Some(change.input.revision) {
                     return Err(Error::Conflict.into());
                 }
-                let tenant = self.tenant;
+                let tenant = tx.tenant_id();
                 let policy = change.input.clone();
                 let changed = tx
                     .with_connection(move |c| {
@@ -127,7 +131,7 @@ impl AssetService {
                 if *revision == 0 || *revision > i64::MAX as u64 {
                     return Err(Error::Malformed.into());
                 }
-                let tenant = self.tenant;
+                let tenant = tx.tenant_id();
                 let key = key.clone();
                 let revision = *revision;
                 let policy = tx
@@ -209,6 +213,7 @@ impl AssetService {
                     return Err(Error::Malformed.into());
                 }
                 self.asset_query(
+                    binding,
                     tx,
                     request.operation_id,
                     scope,
@@ -268,6 +273,7 @@ impl AssetService {
                 }
                 let definition = saved.definition.ok_or(Error::NotFound)?;
                 self.asset_query(
+                    binding,
                     tx,
                     *operation,
                     scope,
@@ -279,7 +285,7 @@ impl AssetService {
             }
         };
         Ok(AssetEnvelope {
-            tenant_id: self.tenant.to_string(),
+            tenant_id: tx.tenant_id().to_string(),
             asset: response,
         })
     }
@@ -297,10 +303,11 @@ mod tests;
 
 /// Asset algorithms and resources, independently constructible from planning workflows.
 pub struct AssetDependencies {
+    pub read_pool: sqlx::PgPool,
     pub inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    pub tenant: TenantId,
+    pub probe: rss_transactional_messaging::fence::ExecutionBinding,
     pub clock: Arc<dyn crate::clock::Clock>,
     pub cursor_key: Vec<u8>,
     pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
@@ -308,6 +315,8 @@ pub struct AssetDependencies {
 }
 
 pub struct AssetService {
+    storage: rss_transactional_messaging::fence::StorageIdentity,
+    read_pool: sqlx::PgPool,
     software_sources: software::Sources,
     worker_health: std::sync::Mutex<crate::worker_health::ObservationState>,
     task_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
@@ -315,23 +324,27 @@ pub struct AssetService {
     reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    tenant: TenantId,
+
     clock: Arc<dyn crate::clock::Clock>,
     asset_cursor_key: ring::hmac::Key,
 }
 impl AssetService {
     pub fn new(dependencies: AssetDependencies) -> Self {
         let AssetDependencies {
+            read_pool,
             inventory,
             audit_store,
             runtime,
-            tenant,
+            probe,
             clock,
             cursor_key,
             reconcile_messaging,
             software_sources,
         } = dependencies;
+
         Self {
+            storage: probe.storage(),
+            read_pool,
             software_sources,
             task_status: Default::default(),
             worker_health: Default::default(),
@@ -339,7 +352,7 @@ impl AssetService {
             reconcile_messaging,
             audit_store,
             runtime,
-            tenant,
+
             clock,
             asset_cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &cursor_key),
         }
@@ -424,14 +437,14 @@ impl AssetService {
                 | Command::Search { .. }
                 | Command::SavedExecute { .. }
         ) {
-            Some(cut::capture(&self.audit_store, self.tenant, &budget).await?)
+            Some(cut::capture(&self.audit_store, audit.binding()?.tenant(), &budget).await?)
         } else {
             None
         };
         crate::transaction::run_budget(
             &self.audit_store,
             &self.runtime,
-            self.audit_store.binding(),
+            audit.binding()?,
             audit,
             &(
                 self,
@@ -574,6 +587,7 @@ impl AssetService {
             .ok_or(Error::Unavailable(Failure::Clock))?;
         let value = self
             .dispatch(
+                audit.binding()?,
                 tx,
                 command,
                 checked_input(Timepoint::try_from(at))?,
@@ -682,9 +696,10 @@ impl AssetService {
     }
     pub async fn queue_health(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         budget: std::time::Duration,
     ) -> std::result::Result<[u64; 5], Error> {
-        self.runtime.local_tx(self.audit_store.binding(),rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),|tx|Box::pin(async move{
+        self.runtime.local_tx(execution,rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),|tx|Box::pin(async move{
             let t=tx.tenant_id().to_string();
             tx.with_connection(move|c|Box::pin(async move{
                 let row:(i64,i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM (SELECT 1 FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND NOT completed AND NOT started LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND NOT completed AND started LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND completed AND failure IS NULL LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND failure IS NOT NULL AND failure<>'superseded' LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND failure='superseded' LIMIT 1001) p)").bind(t).fetch_one(c).await?;
@@ -705,7 +720,7 @@ impl AssetService {
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
         use rss_mdm_authorization_service::Permission;
-        crate::transaction::inspect(&self.runtime,self.audit_store.binding(),(self,p),|(service,p),tx|Box::pin(async move{
+        crate::transaction::inspect(&self.runtime,p.binding(),(self,p),|(service,p),tx|Box::pin(async move{
             let grant=crate::transaction::query_authority(tx,p).await?;
             let tenant=p.tenant_id().to_owned();let actor=p.principal_id().to_owned();let instance=p.instance_id().to_owned();
             let raw:Option<Value>=tx.with_connection(move|c|Box::pin(async move{

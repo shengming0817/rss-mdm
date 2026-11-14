@@ -33,13 +33,24 @@ impl FromRequestParts<Arc<Services>> for Administrator {
             .extensions
             .get::<rss_axum::RequestControl>()
             .ok_or(Error::Unavailable)?;
+        let cutoff = control.deadline();
+        let axum::extract::Path(path) = axum::extract::Path::<
+            std::collections::HashMap<String, String>,
+        >::from_request_parts(parts, s)
+        .await
+        .map_err(|_| Error::Malformed)?;
+        let tenant =
+            rss_request_context::TenantId::parse(path.get("tenant").ok_or(Error::Malformed)?)
+                .map_err(|_| Error::Malformed)?;
+        let execution = s.registrations.execution(tenant);
         let p = s
             .sessions
             .authenticate(
+                execution,
                 &s.authorization,
                 RequestCredential::Bearer(secret),
                 rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-                    control.deadline(),
+                    cutoff,
                     &rss_mdm_audit_integration::budget::RuntimeTimer,
                 ),
             )
@@ -63,10 +74,9 @@ impl rss_mdm_http_contract::signature::Input for Administrator {
     }
 }
 pub async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: Next) -> Response {
-    let a = RequestAudit::new(
+    let a = RequestAudit::unresolved(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_install_support::StorageProfile::Da,
-        s.sessions.tenant().to_string(),
         "da_http",
         AuditIntent::Routine,
     );

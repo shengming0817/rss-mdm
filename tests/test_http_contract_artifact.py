@@ -123,18 +123,18 @@ class HttpArtifactTests(unittest.TestCase):
             'Shared': {'type': 'string'}, 'Unrelated': {'type': 'boolean'}}}
         document['schemas'][identity] = root
         document['endpoints'] = []
-        for method, path in [('POST', '/api/v1/resources/{id}'),
-                             ('PUT', '/api/v1/asset-fields/{field}'),
-                             ('GET', '/api/v1/asset-fields/{field}'),
-                             ('GET', '/api/v1/asset-fields/{field}/references'),
-                             ('GET', '/api/v1/resources/{id}/versions/{version}/references'),
-                             ('GET', '/api/v1/groups/{id}/references'),
-                             ('POST', '/api/v1/policies/{policy}'),
-                             ('GET', '/api/v1/policies/{policy}'),
-                             ('GET', '/api/v1/policies/{policy}/scope'),
-                             ('POST', '/api/v1/policies/{policy}/scope/previews'),
-                             ('POST', '/api/v1/policies/{policy}/scope/recomputations'),
-                             ('GET', '/api/v1/groups/{id}/impacts')]:
+        for method, path in [('POST', '/api/v1/tenants/{tenant}/resources/{id}'),
+                             ('PUT', '/api/v1/tenants/{tenant}/asset-fields/{field}'),
+                             ('GET', '/api/v1/tenants/{tenant}/asset-fields/{field}'),
+                             ('GET', '/api/v1/tenants/{tenant}/asset-fields/{field}/references'),
+                             ('GET', '/api/v1/tenants/{tenant}/resources/{id}/versions/{version}/references'),
+                             ('GET', '/api/v1/tenants/{tenant}/groups/{id}/references'),
+                             ('POST', '/api/v1/tenants/{tenant}/policies/{policy}'),
+                             ('GET', '/api/v1/tenants/{tenant}/policies/{policy}'),
+                             ('GET', '/api/v1/tenants/{tenant}/policies/{policy}/scope'),
+                             ('POST', '/api/v1/tenants/{tenant}/policies/{policy}/scope/previews'),
+                             ('POST', '/api/v1/tenants/{tenant}/policies/{policy}/scope/recomputations'),
+                             ('GET', '/api/v1/tenants/{tenant}/groups/{id}/impacts')]:
             endpoint = copy.deepcopy(self.document['endpoints'][0])
             endpoint.update(listener='browser', method=method, path=path)
             endpoint['request'].update(body={'schema': {'schemaId': identity}},

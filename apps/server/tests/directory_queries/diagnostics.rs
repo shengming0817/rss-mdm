@@ -57,7 +57,7 @@ async fn revocation(c: &Context, manager: &Account, reader: &Account, http: &Htt
         blocker.rollback().await?;
         result
     };
-    let (response, revoked) = tokio::join!(http.get("/api/v1/runtime/diagnostics", &[]), revoke);
+    let (response, revoked) = tokio::join!(http.get("/runtime/diagnostics", &[]), revoke);
     revoked?;
     let (status, body) = response?;
     assert_eq!(
@@ -65,7 +65,7 @@ async fn revocation(c: &Context, manager: &Account, reader: &Account, http: &Htt
         "committed authority changes invalidate the collected snapshot: {body}"
     );
     assert!(body.get("components").is_none());
-    assert_eq!(http.get("/api/v1/runtime/diagnostics", &[]).await?.0, 403);
+    assert_eq!(http.get("/runtime/diagnostics", &[]).await?.0, 403);
 
     Ok(())
 }
@@ -81,7 +81,7 @@ async fn deadline(c: &Context, authorized: &Http) -> Result<()> {
     .await?;
     let response = tokio::time::timeout(
         Duration::from_secs(11),
-        authorized.get("/api/v1/runtime/diagnostics", &[]),
+        authorized.get("/runtime/diagnostics", &[]),
     )
     .await;
     blocker.rollback().await?;
@@ -92,9 +92,6 @@ async fn deadline(c: &Context, authorized: &Http) -> Result<()> {
     );
     assert_eq!(body["code"], "service_unavailable");
     assert!(body.get("components").is_none());
-    assert_eq!(
-        authorized.get("/api/v1/runtime/diagnostics", &[]).await?.0,
-        200
-    );
+    assert_eq!(authorized.get("/runtime/diagnostics", &[]).await?.0, 200);
     Ok(())
 }

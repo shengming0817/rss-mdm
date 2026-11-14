@@ -1,6 +1,6 @@
 # 企业脚本、采集模板与任务
 
-Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理入口为 `/api/v1/resources/{id}`，Agent 使用 `/api/v1/agent/runtime` 的签名任务协议。本页描述服务端接线；生产 Agent 消费归 #2564，受控 PG/HTTP 测试不构成真机证明。
+Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理入口为 `/api/v1/tenants/{tenant}/resources/{id}`，Agent 使用 `/api/v1/agent/runtime` 的签名任务协议。本页描述服务端接线；生产 Agent 消费归 #2564，受控 PG/HTTP 测试不构成真机证明。
 
 ## 配置与内容
 
@@ -28,19 +28,19 @@ Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理
 
 `storage` 必须显式选择后端；卷模式的 `directory` 必须预先存在。内容以逻辑 SHA-256 和长度寻址，物理对象使用独立不可变身份，由 PostgreSQL 清单绑定。脚本与原生配置自身仍限制为 16MiB。`max_uploads` 限定活跃上传数量，并作为当前实例内容校验/传输并发上限；临时额度由 PostgreSQL 在同租户多实例间共享，配额不足拒绝，不建立无界等待队列。`transfer_seconds` 限制单次内容操作的绝对总预算，覆盖资源检查、传输、校验、完成及绑定提交；业务阶段共享截止时间，其中预留 `min(6秒, 总预算/4)` 的结算窗口；实际后台工作退出后的租约清理另有最多六秒上限，可能晚于操作截止时间。流式上传、完成与显式元数据解析由内容服务持有此预算，普通管理请求及只查询已存结果的 GET 维持 8 秒预算。取消只停止等待，文件和额度随实际后台工作退出后按原 epoch 释放；完整上传的完成校验和解析不会按过期时间接管或被 GC 清掉计费。异常退出或清理未确认时预留保守保留，不能仅以期限已过认定资源释放，也不表示业务回滚成功。`retention_seconds` 限制上传恢复窗口。单个软件产物硬上限为 1TiB，实际部署必须显式选择更小或相等的预算；网关正文上限与之配套。
 
-同一 actor/上传 ID 的元数据由 PostgreSQL 持久化已确认 offset。续传从已确认清单恢复，未确认对象由登记意图保留并参与额度计算；多实例的 epoch 防止旧写者推进新 frontier。`POST /api/v1/software/content/cleanup` 需要 ResourceWrite，每轮有界检查过期且无有效引用、无活跃读写的候选。清理查询 ResourceStore 的全部产物引用索引，包括复用已有摘要但未重新上传的资源。归档不抹去批准、发布或执行证据；仍被引用的内容不会清理。删除屏障与新 Resource 引用串行，S3/卷 I/O 在事务外执行。不得手工删除内容控制状态或正在使用的物理对象。
+同一 actor/上传 ID 的元数据由 PostgreSQL 持久化已确认 offset。续传从已确认清单恢复，未确认对象由登记意图保留并参与额度计算；多实例的 epoch 防止旧写者推进新 frontier。`POST /api/v1/tenants/{tenant}/software/content/cleanup` 需要 ResourceWrite，每轮有界检查过期且无有效引用、无活跃读写的候选。清理查询 ResourceStore 的全部产物引用索引，包括复用已有摘要但未重新上传的资源。归档不抹去批准、发布或执行证据；仍被引用的内容不会清理。删除屏障与新 Resource 引用串行，S3/卷 I/O 在事务外执行。不得手工删除内容控制状态或正在使用的物理对象。
 
 密钥为 Ed25519 PKCS#8，按其他 secret 文件的权限要求部署；活动私钥必须匹配配置中的可信公钥。Agent 公钥集合通过受信任部署提供，不能信任任务自行携带的 keyId 或公钥。签名覆盖 keyId、tenant/device、task/attempt、平台与架构、用途、期限及精确资源输入；脚本包含解释器、参数和预算，软件包含定义、生命周期绑定、安装意图与全部产物摘要。消费方调用 `SignedTask::verify` 时提供本地身份及预期 task/attempt/permit。
 
 Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）、`runAs`（system、logged_in_user）、`encoding: utf8`、参数 Schema 与 `bindings`、输出 Schema、`purpose`、timeoutSeconds/outputBytes/maxRows。参数仅支持字符串、整数、布尔，必须显式提供。脚本使用 bindings，SQL 模板使用 sql 中声明的命名参数并保持 bindings 为空；参数作为字面量绑定，不拼接 shell 命令或 SQL 语法。Schema 采用有界闭合子集，拒绝引用、组合器、正则与未知关键字。
 
 先创建 Resource、加入完整 version，再使用固定 operation UUID 通过
-`POST /api/v1/resources/{id}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation=<UUID>`
+`POST /api/v1/tenants/{tenant}/resources/{id}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation=<UUID>`
 上传原始字节，最后 activate。上传需 ResourceWrite，精确长度与 SHA-256 必须匹配声明，同一摘要不可覆盖。osquery 模板的内容是与声明 sql 完全一致的 UTF-8 SQL 字节，固定版本、摘要和合法参数；仅允许受控 SELECT、表/列/函数及平台，必须使用 system 和 collection purpose。`SELECT version FROM osquery_info` 是普通模板示例，可通过 `/0/version` 映射字段；输出为空与失败分别表达。服务端和 Agent 共同消费 SQL 校验与参数绑定规则，周期采集和按需刷新只引用已发布版本，不接受临时 SQL。
 
 ## Policy 分配与权限
 
-在 `POST /api/v1/policies/{id}` 发送 `operationId`、`expectedRevision` 和 `input`。`input.action` 为 `put`、`enable` 或 `disable`。执行型定义示例：
+在 `POST /api/v1/tenants/{tenant}/policies/{id}` 发送 `operationId`、`expectedRevision` 和 `input`。`input.action` 为 `put`、`enable` 或 `disable`。执行型定义示例：
 
 ```json
 {
@@ -59,13 +59,13 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 
 `frequency` 为 `once_per_version`、`once_per_entry` 或 `every_trigger`。可选 `schedule` 包含 trigger、notBefore、until、jitterSeconds、window 和 misfire。trigger 支持 manual、once(at)、interval(anchor,seconds)、weekly(zone,weekday,minute)、registration、check_in(minimumSeconds)。`until` 可省略。misfire 为 `{"kind":"coalesce_one"}`（默认）或 `{"kind":"skip","maxLatenessSeconds":30}`；窗口可跨午夜，星期按开始日计算，DST gap 跳过、fold 取较早时刻。
 
-`POST /api/v1/policies/{id}/reruns` 使用 `operationId`、当前 `expectedRevision`、`input:{"deadline":...}` 请求显式重执行；只保存一个有期限触发，设备签入时才受理。此入口用于支持显式重执行的脚本与运维动作；标准 native_collection/agent_collection 只按固定周期执行，不接受 rerun。已启动而结果未知的脚本不自动重跑。关闭分配阻止新执行并请求取消既有任务，取消不证明副作用回滚。
+`POST /api/v1/tenants/{tenant}/policies/{id}/reruns` 使用 `operationId`、当前 `expectedRevision`、`input:{"deadline":...}` 请求显式重执行；只保存一个有期限触发，设备签入时才受理。此入口用于支持显式重执行的脚本与运维动作；标准 native_collection/agent_collection 只按固定周期执行，不接受 rerun。已启动而结果未知的脚本不自动重跑。关闭分配阻止新执行并请求取消既有任务，取消不证明副作用回滚。
 
-`GET /api/v1/policies` 使用 `filter/sort/fields/limit/cursor`，将响应 `nextCursor` 原样传给 `cursor`，见[统一目录查询](groups-scopes-policies.md)；`/{id}` 返回定义、编辑 revision 和执行 version；`/{id}/assignments` 用 `limit/cursor` 分页返回当前分配资格、诊断及原生 Operation 关联。执行历史 `/{id}/runs` 用 `limit/cursor` 分页，默认和上限均为 1000，`nextCursor` 为不透明字符串，摘要不含输出；`/{id}/runs/{taskId}` 返回完整执行证据并检查 OperationRead；采集结果另需 InventoryRead，冻结映射含敏感字段时还需 InventorySensitiveRead。
+`GET /api/v1/tenants/{tenant}/policies` 使用 `filter/sort/fields/limit/cursor`，将响应 `nextCursor` 原样传给 `cursor`，见[统一目录查询](groups-scopes-policies.md)；`/{id}` 返回定义、编辑 revision 和执行 version；`/{id}/assignments` 用 `limit/cursor` 分页返回当前分配资格、诊断及原生 Operation 关联。执行历史 `/{id}/runs` 用 `limit/cursor` 分页，默认和上限均为 1000，`nextCursor` 为不透明字符串，摘要不含输出；`/{id}/runs/{taskId}` 返回完整执行证据并检查 OperationRead；采集结果另需 InventoryRead，冻结映射含敏感字段时还需 InventorySensitiveRead。
 
 ## 设备动作与退出边界
 
-[#2623](https://dev.azure.com/shengming0923/rss/_workitems/edit/2623) 已退出 Remote 创建和资源分发：`POST /api/v1/remote-operations` 不再存在，不保留 execute、collect_native、apply_configuration 或软件动作，也不转换成临时 Policy。脚本、原生采集、配置和软件由各自的 Resource/Policy/Scope 生命周期提供。
+[#2623](https://dev.azure.com/shengming0923/rss/_workitems/edit/2623) 已退出 Remote 创建和资源分发：`POST /api/v1/tenants/{tenant}/remote-operations` 不再存在，不保留 execute、collect_native、apply_configuration 或软件动作，也不转换成临时 Policy。脚本、原生采集、配置和软件由各自的 Resource/Policy/Scope 生命周期提供。
 
 #2755 已确认不存在旧 Remote / 通用 direct 部署与升级义务，历史读取、撤销、结算、存储和诊断下载链路完整退出。不改写旧记录或转换为 Policy；旧安装账本不属于当前 fresh install 支持范围。
 
@@ -93,7 +93,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 
 Agent 只收到单次可执行任务与服务端授权坐标，不消费 Policy 定义、Scope、灰度或企业批准模型。后端在发布分配时验证固定依赖可在目标平台解析，并在签发时按依赖优先顺序生成 `steps`；每一步是闭合的本机动作、检测规则、任务产物与必要的包管理器 export identity。任务不携带依赖图或来源准入模型。`definitionDigest` 绑定完整步骤序列；内容键为 `{步骤下标}/{该步骤产物键}`，下载时作为 URL 编码的 `artifact` 查询参数。已受理的软件任务不再携带第二套 startMode 许可。确认由调用入口按 riskLevel 完成一次；Received 后材料准备不受 Offer 短期限约束，Start permit 才能执行。软件分配使用执行版本下稳定的期望身份；核实成功后不因签入重复安装，明确失败总共至多三次尝试并逐次退避，未启动的自选 Offer 到期后可以重新领取。Agent 软件计划决定本机安装动作并做独立检测；服务端分别保存 installer exit、检测状态、版本与证据摘要。核实成功、明确失败、等待重启、未知效果分开记录；未知或等待重启不盲目重试，设备重新注册也不解除未知阻断。来源 Published、下载成功、exit 0 和任务回执均不能替代核实成功。
 
-`GET /api/v1/policies/{id}/software/rollout` 返回每阶段当前总目标、已回报、等待用户、未知、等待重启、明确失败、核实成功和无可用软件能力设备数，以及暂停、时间与可选门槛。自选任务被领取且尚未启动、Offer 仍有效时，逐 Run 的 `userAction` 与灰度统计显示 `waiting_user`。阶段历史按稳定 Scope 身份归属，重排阶段不会复用其他 Scope 的结果。Policy 预览和设备页另外返回服务端计算的闭合 `taskAdmission` 原因，不把单纯 Scope 命中称为可执行。最新通道 snapshot 已封存但尚未投影时返回 `projection_pending`：等待期间不准入新安装、不创建替代 Run，也不把暂缺投影视为资格撤回；真实撤权、注册失效和期限仍生效。读取要求 PolicyRead 与全设备 OperationRead；这些是当前动态目标的统计，历史任务证据不被重算。真实设备身份、可信用户交互和软件执行适配由 #2564 消费本协议，平台 T3 由 #2480/#2481 验收。
+`GET /api/v1/tenants/{tenant}/policies/{id}/software/rollout` 返回每阶段当前总目标、已回报、等待用户、未知、等待重启、明确失败、核实成功和无可用软件能力设备数，以及暂停、时间与可选门槛。自选任务被领取且尚未启动、Offer 仍有效时，逐 Run 的 `userAction` 与灰度统计显示 `waiting_user`。阶段历史按稳定 Scope 身份归属，重排阶段不会复用其他 Scope 的结果。Policy 预览和设备页另外返回服务端计算的闭合 `taskAdmission` 原因，不把单纯 Scope 命中称为可执行。最新通道 snapshot 已封存但尚未投影时返回 `projection_pending`：等待期间不准入新安装、不创建替代 Run，也不把暂缺投影视为资格撤回；真实撤权、注册失效和期限仍生效。读取要求 PolicyRead 与全设备 OperationRead；这些是当前动态目标的统计，历史任务证据不被重算。真实设备身份、可信用户交互和软件执行适配由 #2564 消费本协议，平台 T3 由 #2480/#2481 验收。
 
 ## 通道接入策略
 
@@ -146,7 +146,7 @@ Resource.Script 持有参数 schema，Policy 使用 Fixed/Input 选择来源。�
 
 - `GET /self-service?source=human|ai`（支持 filter/sort/fields/limit/cursor） 返回当前可调用的有界目录。每项含 Policy 坐标、自助描述及 tagged script/software/enrollment 接口。目录复用 Scope、注册身份、平台、能力、资源批准、频率、窗口、容量及 pending/Unknown 判断；未知事实不授予执行。
 - `POST /self-service/invocations` 针对当前设备接受 operationId、policyId、source、confirmed、parameters；不接受客户端配置/执行版本前置条件，返回 202 的 requestId/runId。精确重试返回原 Run；变化正文返回冲突。AvailableInstall 在显式请求前不创建 Run/Offer，不能自行 Start；安装按确切资源版本、检测意图及稳定 Device/SID/UID 效果目标在用户和 Policy 之间排除重复，Unknown 不允许盲重试。
-- `POST /self-service/resolve` 接受 source 与 selector：`{"kind":"id","id":"…"}`、`{"kind":"tool_name","name":"policy_…"}` 或 `{"kind":"alias","alias":"repair"}`，直接定位后检查当前资格。管理端 `POST /api/v1/policies/resolve` 接受同一 selector，仅授予当前管理读取能力。
+- `POST /self-service/resolve` 接受 source 与 selector：`{"kind":"id","id":"…"}`、`{"kind":"tool_name","name":"policy_…"}` 或 `{"kind":"alias","alias":"repair"}`，直接定位后检查当前资格。管理端 `POST /api/v1/tenants/{tenant}/policies/resolve` 接受同一 selector，仅授予当前管理读取能力。
 - 稳定工具名为 `policy_<无连字符 Policy UUID>`；`definition.alias` 经去首尾空白和 ASCII 小写规范化后在租户内唯一，使用 Policy 原 CAS/审计更新。停用或取消发布保留名称，清空、改名或归档释放；显示名可重复。目录默认/最大检查 64 个候选，空 items 仍可能有 nextCursor，精确解析不扫描目录页。
 - 首次受理使用当前配置，已受理任务保存原执行内容；改名、配置修订或换版不自动取消任务。重放返回原 Run，执行前仍检查当前权限与设备资格。软件步骤以 producer 的 stepId 与冻结定义关联，序号仅表达执行顺序；管理运行详情的 nodes 来自当前 attempt 的冻结材料。
 - `GET /self-service/invocations/{requestId}` 返回本主体、注册及世代对应的执行状态。原始脚本结果另外要求 InventoryRead，敏感采集还要求 InventorySensitiveRead；缺少读取权限时 result 为 null，状态仍可读。软件只返回闭合检测 outcome，原生证据与诊断继续由管理接口持有。
@@ -163,7 +163,7 @@ Run 保存服务端选择的访问依据，用户模式只保存 Identity 签发
 
 ## 软件 Policy 的显式投递通道
 
-软件 `action.channel` 只接受 `agent`、`mdm`；省略时输入边界保存为 `agent`。主机 `software_distribution.mdm_enabled` 默认 false，修改配置后重启生效；`GET /api/v1/policies/capabilities` 在 PolicyRead 授权下返回默认通道和开关。开关不改写策略。关闭时启用 MDM 软件返回 `mdm_software_disabled`，已排队但未开始原生执行的任务停止投递；已发出的副作用继续按原任务回收，不声称已撤销安装。
+软件 `action.channel` 只接受 `agent`、`mdm`；省略时输入边界保存为 `agent`。主机 `software_distribution.mdm_enabled` 默认 false，修改配置后重启生效；`GET /api/v1/tenants/{tenant}/policies/capabilities` 在 PolicyRead 授权下返回默认通道和开关。开关不改写策略。关闭时启用 MDM 软件返回 `mdm_software_disabled`，已排队但未开始原生执行的任务停止投递；已发出的副作用继续按原任务回收，不声称已撤销安装。
 
 MDM v1 仅支持系统 MSI、签名单包 MSIX 的 device provisioning、签名 PKG。每个安装包的 `signatures[].evidence` 指向不可变报告 artifact；报告 JSON 持有 `sha256`、`mechanism`、`publisher`、`verified:true`，由平台打包/验证流程产生，经现有 Catalog 启用审批校验和固定。服务端验证报告与材料匹配，不执行平台签名工具。自定义环境/参数、依赖包、EXE、DMG、Bundle、用户安装、MDM 自助和卸载均不准入。MDM 仅接受 `reboot:report`、`downgrade:deny` 和标准退出码（success 为 `[0]`、reboot 为空）；MSI timeout 必须为整分钟且不超过 255 分钟。Agent 原有能力独立保留。
 

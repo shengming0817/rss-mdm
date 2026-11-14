@@ -12,9 +12,6 @@ impl super::Groups {
             self.runtime
                 .validate_transaction(tx)
                 .map_err(|_| InventoryError::Unavailable(InventoryFailure::Runtime))?;
-            if tx.tenant_id() != self.tenant {
-                return Err(InventoryError::Forbidden);
-            }
             let tenant = tx.tenant_id().to_string();
             tx.with_connection(move|c|Box::pin(async move {
                 let binding:Option<String>=sqlx::query_scalar("SELECT binding FROM mdm_assets.group_evaluations WHERE tenant_id=$1::uuid AND task=$2")
@@ -37,9 +34,6 @@ impl super::Groups {
             self.runtime
                 .validate_transaction(tx)
                 .map_err(|_| InventoryError::Unavailable(InventoryFailure::Runtime))?;
-            if tx.tenant_id() != self.tenant {
-                return Err(InventoryError::Forbidden);
-            }
             let tenant = tx.tenant_id().to_string();
             let binding = progress.binding.clone();
             let arrays = progress
@@ -69,9 +63,6 @@ impl super::Groups {
             self.runtime
                 .validate_transaction(tx)
                 .map_err(|_| InventoryError::Unavailable(InventoryFailure::Runtime))?;
-            if tx.tenant_id() != self.tenant {
-                return Err(InventoryError::Forbidden);
-            }
 
             let tenant = tx.tenant_id().to_string();
             tx.with_connection(move|c|Box::pin(async move {

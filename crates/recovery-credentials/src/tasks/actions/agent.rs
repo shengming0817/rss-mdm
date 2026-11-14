@@ -120,6 +120,7 @@ impl Service {
             };
             if crate::tasks::credential_tasks::capable(&binding, policy.frozen.input.architecture) {
                 super::production::accept_for_device(
+                    p.binding(),
                     profile,
                     &service.transactions,
                     tx,
@@ -182,7 +183,7 @@ impl Service {
         {
             run.state.cancel();
         }
-        super::recovery::audit_recovery(service, tx, &run, &previous).await?;
+        super::recovery::audit_recovery(p.binding(), service, tx, &run, &previous).await?;
         if run.state.cancellation == Cancellation::None
             && run.available_at <= now
             && allowed
@@ -411,8 +412,7 @@ impl Service {
                 .await?;
                 if !run.state.trusts_result(now) {
                     run.state.uncertain_result(input.attempt_id())?;
-                    let tenant =
-                        checked_input(Uuid::parse_str(&service.transactions.tenant.to_string()))?;
+                    let tenant = checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?;
                     tx.with_connection(move |c| {
                         Box::pin(async move {
                             Ok(crate::storage::unknown_in(

@@ -4,7 +4,10 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub(crate) struct SourceConfig {
     pub(crate) name: String,
-    pub(crate) credentials: std::collections::BTreeMap<String, std::path::PathBuf>,
+    pub(crate) credentials: std::collections::BTreeMap<
+        uuid::Uuid,
+        std::collections::BTreeMap<String, std::path::PathBuf>,
+    >,
     pub(crate) target: service::SourceConfig,
 }
 #[derive(Deserialize)]
@@ -44,23 +47,29 @@ impl Config {
                         .into_owned(),
                 ),
             };
-            if base != &format!("{origin}/api/v1/software/native/sources/{}/", source.name)
+            if base
+                != &format!(
+                    "{origin}/api/v1/tenants/{{tenant}}/software/native/sources/{}/",
+                    source.name
+                )
                 || artifacts
                     != &format!(
-                        "{origin}/api/v1/software/native/sources/{}/artifacts/",
+                        "{origin}/api/v1/tenants/{{tenant}}/software/native/sources/{}/artifacts/",
                         source.name
                     )
                 || !physical.insert(identity)
             {
                 return Err(invalid());
             }
-            if source
-                .credentials
-                .keys()
-                .collect::<std::collections::BTreeSet<_>>()
-                != reference.into_iter().collect()
-            {
-                return Err(invalid());
+            for (tenant, credentials) in &source.credentials {
+                if tenant.is_nil()
+                    || credentials
+                        .keys()
+                        .collect::<std::collections::BTreeSet<_>>()
+                        != reference.into_iter().collect()
+                {
+                    return Err(invalid());
+                }
             }
         }
         Ok(())

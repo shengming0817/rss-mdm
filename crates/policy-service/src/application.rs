@@ -2,7 +2,6 @@
 
 pub(crate) use crate::{Error, Failure};
 
-pub(crate) use rss_request_context::TenantId;
 pub(crate) use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 pub(crate) use std::sync::Arc;
 pub(crate) use uuid::Uuid;
@@ -17,7 +16,7 @@ pub struct Application {
     pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     pub(crate) cursor_key: ring::hmac::Key,
     pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
-    pub tenant: TenantId,
+
     pub clock: Arc<dyn crate::clock::Clock>,
     pub changes: Arc<dyn crate::inputs::ExecutionChanges>,
     pub configuration: Option<std::sync::Arc<crate::configuration::Transactions>>,
@@ -27,7 +26,7 @@ pub struct Dependencies<'a> {
     pub profile: rss_mdm_install_support::StorageProfile,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub runtime: Arc<PgRuntime>,
-    pub tenant: TenantId,
+    pub probe: rss_transactional_messaging::fence::ExecutionBinding,
     pub clock: Arc<dyn crate::clock::Clock>,
     pub cursor_key: &'a [u8],
     pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
@@ -43,16 +42,17 @@ impl Application {
             profile,
             audit_store,
             runtime,
-            tenant,
+            probe,
             clock,
             cursor_key,
             objects,
             changes,
             configuration,
         } = dependencies;
+
         let reconcile_messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            audit_store.binding(),
+            probe,
             deadline(),
         ))
         .await
@@ -68,7 +68,7 @@ impl Application {
             configuration,
             reconcile_messaging,
             runtime,
-            tenant,
+
             clock,
         })
     }

@@ -38,7 +38,7 @@ impl ConfigurationService {
         write: bool,
     ) -> Result<(), Error> {
         if p.profile() != self.trust.signing.profile
-            || p.tenant_id() != self.trust.tenant.to_string()
+            || p.tenant_id() != p.binding().tenant().to_string()
         {
             return Err(Error::Forbidden);
         }
@@ -84,13 +84,13 @@ impl ConfigurationService {
             return Err(Error::Malformed);
         }
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,3129))")
-            .bind(format!("{}:{}", self.trust.tenant, input.operation_id))
+            .bind(format!("{}:{}", p.binding().tenant(), input.operation_id))
             .execute(&mut *c)
             .await
             .map_err(db)?;
         let sql = crate::storage_profile::sql(self.trust.signing.profile, Use::DaConfiguration);
         let row = sqlx::query(sql.configuration_receipt)
-            .bind(self.trust.tenant.to_string())
+            .bind(p.binding().tenant().to_string())
             .bind(input.operation_id)
             .fetch_optional(&mut *c)
             .await
@@ -130,7 +130,7 @@ impl ConfigurationService {
             return Err(Error::Malformed);
         }
         let profile = self.trust.signing.profile;
-        let tenant = self.trust.tenant;
+        let tenant = p.binding().tenant();
         let current = trust::current(profile, Use::DaConfiguration, c, tenant).await?;
         let now: i64 =
             sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
@@ -145,12 +145,7 @@ impl ConfigurationService {
         config.expires_at = now
             .checked_add(i64::from(input.lifetime_seconds))
             .ok_or(Error::Malformed)?;
-        let signer = self
-            .trust
-            .signing
-            .signer
-            .as_ref()
-            .ok_or(Error::Unsupported)?;
+        let signer = self.trust.signing.load_on(c, tenant).await?;
         trust::require_active_key(profile, Use::DaConfiguration, c, tenant, signer.key_id())
             .await?;
         let signed = signer.sign_configuration(config.clone())?;
@@ -183,6 +178,7 @@ impl ConfigurationService {
     /// Newest unexpired backend artifact for an exact current publication revision.
     pub async fn current_on(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut PgConnection,
         policy: Uuid,
         revision: i64,
@@ -191,7 +187,7 @@ impl ConfigurationService {
             crate::storage_profile::sql(self.trust.signing.profile, Use::DaConfiguration)
                 .configuration_current,
         )
-        .bind(self.trust.tenant.to_string())
+        .bind(execution.tenant().to_string())
         .bind(policy)
         .bind(revision)
         .fetch_optional(c)
@@ -204,6 +200,7 @@ impl ConfigurationService {
     /// Read the original immutable artifact; product authorization is checked by the consumer.
     pub async fn read_on(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut PgConnection,
         operation: Uuid,
     ) -> Result<SignedConfiguration, Error> {
@@ -211,7 +208,7 @@ impl ConfigurationService {
             crate::storage_profile::sql(self.trust.signing.profile, Use::DaConfiguration)
                 .configuration_receipt,
         )
-        .bind(self.trust.tenant.to_string())
+        .bind(execution.tenant().to_string())
         .bind(operation)
         .fetch_optional(c)
         .await
@@ -226,7 +223,7 @@ impl ConfigurationService {
         p: &AuthorizedPrincipal,
         operation: Uuid,
     ) -> Result<SignedConfiguration, Error> {
-        let value = self.read_on(c, operation).await?;
+        let value = self.read_on(p.binding(), c, operation).await?;
         self.authorize(c, p, &value.decode().map_err(|_| Error::Conflict)?, false)
             .await?;
         Ok(value)

@@ -77,8 +77,7 @@ pub struct Receipt {
 /// Tenant-bound immutable Resource versions and lifecycle persistence.
 pub struct ResourceStore {
     runtime: Arc<PgRuntime>,
-    tenant: TenantId,
-    binding: ExecutionBinding,
+
     writer: PgOutboxWriter,
 }
 impl ResourceStore {
@@ -86,11 +85,12 @@ impl ResourceStore {
     /// The outer transaction declares every partition once, before any business locks.
     pub fn partition(
         &self,
+        tenant: TenantId,
         id: &str,
     ) -> Result<rss_transactional_messaging::message::PartitionIdentity, PgError> {
         use rss_transactional_messaging::message::{PartitionIdentity, PartitionKey};
         Ok(PartitionIdentity::new(
-            self.tenant,
+            tenant,
             event::domain(),
             STORAGE.invalid("store::partition", PartitionKey::parse(id))?,
         ))
@@ -103,7 +103,6 @@ impl ResourceStore {
         binding: ExecutionBinding,
         d: OperationDeadline,
     ) -> Result<Self, Error> {
-        let tenant = binding.tenant();
         settle(
             runtime
                 .local_tx(binding, d, |tx| {
@@ -121,18 +120,14 @@ impl ResourceStore {
         Ok(Self {
             writer: PgOutboxWriter::new(runtime.clone(), event::domain()),
             runtime,
-            tenant,
-            binding,
         })
     }
     /// Return the tenant permanently bound to this store.
-    pub fn tenant(&self) -> TenantId {
-        self.tenant
-    }
+
     /// Validate runtime provenance and tenant before any companion effects.
     pub fn validate_transaction(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
         self.writer.validate_transaction(tx)?;
-        Ok(if tx.tenant_id() == self.tenant {
+        Ok(if tx.tenant_id() == tx.tenant_id() {
             Ok(())
         } else {
             Err(Rejection::TenantMismatch)
@@ -141,12 +136,13 @@ impl ResourceStore {
     /// Read and validate the current aggregate for this store tenant. Missing identities return `None`.
     pub async fn get(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         id: &Id,
         d: OperationDeadline,
     ) -> Result<Option<StoredResource>, Error> {
         settle(
             self.runtime
-                .local_tx_with_context(self.binding, d, (self, id), |(s, id), tx| {
+                .local_tx_with_context(binding, d, (self, id), |(s, id), tx| {
                     Box::pin(async move { s.get_in(tx, id).await })
                 })
                 .await,
@@ -160,7 +156,7 @@ impl ResourceStore {
         id: &Id,
     ) -> InTransaction<Option<StoredResource>> {
         input!(self.validate_transaction(tx)?);
-        read_in(tx, self.tenant, id).await
+        read_in(tx, tx.tenant_id(), id).await
     }
 
     /// Lock the resource aggregate and return its immutable version, state and storage revision.
@@ -176,7 +172,7 @@ impl ResourceStore {
         // A host may use SERIALIZABLE while another resource consumer uses READ
         // COMMITTED. The physical row lock detects a version changed since the
         // host snapshot; an advisory lock alone cannot refresh that snapshot.
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let owner = id.as_str().to_owned();
         tx.with_connection(move |connection|Box::pin(async move {
             sqlx::query("SELECT revision FROM mdm_resource.aggregates WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
@@ -191,16 +187,23 @@ impl ResourceStore {
     }
     /// Execute one fixed request atomically with its receipt and necessary RSS Outbox event.
     /// An identical request replays before CAS; on `CommitUnknown`, retain the original request and query its receipt.
-    pub async fn execute(&self, r: &Request, d: OperationDeadline) -> Result<Receipt, Error> {
+    pub async fn execute(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        r: &Request,
+        d: OperationDeadline,
+    ) -> Result<Receipt, Error> {
         if matches!(r.command, Command::Archive { .. }) {
             return Err(Rejection::CompanionRequired.into());
         }
         settle(
             self.runtime
-                .local_tx_with_context(self.binding, d, (self, r), |(s, r), tx| {
+                .local_tx_with_context(binding, d, (self, r), |(s, r), tx| {
                     Box::pin(async move {
-                        tx.prepare_outbox_partitions(&[s.partition(r.resource.as_str())?])
-                            .await?;
+                        tx.prepare_outbox_partitions(&[
+                            s.partition(tx.tenant_id(), r.resource.as_str())?
+                        ])
+                        .await?;
                         s.execute_in(tx, r).await
                     })
                 })
@@ -215,7 +218,7 @@ impl ResourceStore {
         r: &Request,
     ) -> InTransaction<Receipt> {
         input!(self.validate_transaction(tx)?);
-        let request_document = request_document(self.tenant, r)?;
+        let request_document = request_document(tx.tenant_id(), r)?;
         let hash = digest(&request_document);
         STORAGE.lock(tx, "resource", r.resource.as_str()).await?;
         STORAGE.lock(tx, "request", r.id.as_str()).await?;
@@ -240,14 +243,14 @@ impl ResourceStore {
             return Ok(Err(Rejection::Conflict));
         }
         let (mut resource, revision) = if let Command::Create(kind) = r.command {
-            (Resource::new(self.tenant, r.resource.clone(), kind), 0)
+            (Resource::new(tx.tenant_id(), r.resource.clone(), kind), 0)
         } else if let Command::CreateFromBlueprint {
             kind,
             origin,
             presentation,
         } = &r.command
         {
-            let mut resource = Resource::new(self.tenant, r.resource.clone(), *kind);
+            let mut resource = Resource::new(tx.tenant_id(), r.resource.clone(), *kind);
             input!(
                 resource
                     .set_origin(origin.clone())
@@ -279,7 +282,7 @@ impl ResourceStore {
             } => resource.archive(
                 version,
                 &References::new(
-                    self.tenant,
+                    tx.tenant_id(),
                     r.resource.clone(),
                     version.clone(),
                     true,
@@ -328,7 +331,7 @@ impl ResourceStore {
         if changed {
             let record = crate::codec::directory_header(
                 &document,
-                self.tenant,
+                tx.tenant_id(),
                 r.resource.as_str(),
                 STORAGE.integer("resource revision", i64::try_from(next))?,
             )?;
@@ -366,7 +369,7 @@ impl ResourceStore {
             event::append(
                 &self.writer,
                 tx,
-                self.tenant,
+                tx.tenant_id(),
                 r.as_of,
                 r.resource.as_str(),
                 r.id.as_str(),
@@ -392,10 +395,15 @@ impl ResourceStore {
     }
     /// Read the original durable request receipt without changing current aggregate state.
     /// Use this after an unconfirmed commit; absence alone is not permission to invent another request identity.
-    pub async fn operation(&self, id: &Id, d: OperationDeadline) -> Result<Option<Receipt>, Error> {
+    pub async fn operation(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        id: &Id,
+        d: OperationDeadline,
+    ) -> Result<Option<Receipt>, Error> {
         settle(
             self.runtime
-                .local_tx_with_context(self.binding, d, id, |id, tx| {
+                .local_tx_with_context(binding, d, id, |id, tx| {
                     Box::pin(async move {
                         Ok(Ok(STORAGE
                             .receipt(tx, id.as_str())
@@ -410,13 +418,14 @@ impl ResourceStore {
     /// Read one validated immutable version, including historical versions.
     pub async fn version(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         id: &Id,
         label: &Id,
         d: OperationDeadline,
     ) -> Result<Option<Version>, Error> {
         settle(
             self.runtime
-                .local_tx_with_context(self.binding, d, (id, label), |(id, label), tx| {
+                .local_tx_with_context(binding, d, (id, label), |(id, label), tx| {
                     Box::pin(async move {
                         let value = STORAGE
                             .immutable(tx, id.as_str(), "version", label.as_str())

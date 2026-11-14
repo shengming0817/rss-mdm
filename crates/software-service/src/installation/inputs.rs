@@ -4,7 +4,6 @@ use crate::catalog::{Error, Result};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_policy::{SoftwareTarget, schedule::Schedule};
 use rss_mdm_resource as resource;
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::PgRuntime;
 use rss_transactional_messaging_postgres::PgTransaction;
 use std::collections::BTreeMap;
@@ -12,42 +11,52 @@ use std::sync::Arc;
 use uuid::Uuid;
 /// Installation publication consumes readiness, never the registration service itself.
 pub trait Admission: Send + Sync {
-    fn ready_signing_revision(&self, now: i64) -> Option<u64>;
+    fn ready_signing_revision<'a>(
+        &'a self,
+        c: &'a mut sqlx::PgConnection,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        now: i64,
+    ) -> futures::future::BoxFuture<'a, Result<Option<u64>>>;
 }
 pub struct Inputs {
     pub runtime: Arc<PgRuntime>,
-    pub tenant: TenantId,
+
     pub bootstrap_configured: bool,
     pub admission: Arc<dyn Admission>,
 }
 impl Inputs {
     fn validate_in(&self, tx: &PgTransaction<'_>) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::NotAdmitted);
-        }
         Ok(())
     }
 
-    pub async fn admit_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
+    pub async fn admit_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<()> {
         self.validate_in(tx)?;
         if !self.bootstrap_configured {
             return Err(Error::Unsupported);
         }
-        let revision = self
-            .admission
-            .ready_signing_revision(
-                tx.with_connection(|c| {
-                    Box::pin(async move {
-                        sqlx::query_scalar(
-                            "SELECT floor(extract(epoch FROM clock_timestamp()))::bigint",
-                        )
-                        .fetch_one(c)
-                        .await
-                    })
+        if tx.tenant_id() != binding.tenant() {
+            return Err(Error::NotAdmitted);
+        }
+        let revision = tx
+            .with_connection_context(&mut (self,), |(owner,), c| {
+                Box::pin(async move {
+                    let now: i64 = sqlx::query_scalar(
+                        "SELECT floor(extract(epoch FROM clock_timestamp()))::bigint",
+                    )
+                    .fetch_one(&mut *c)
+                    .await?;
+                    Ok(owner
+                        .admission
+                        .ready_signing_revision(c, binding, now)
+                        .await)
                 })
-                .await?,
-            )
+            })
+            .await??
             .ok_or(Error::Unsupported)?;
         let tenant = tx.tenant_id();
         tx.with_connection(move |c| {
@@ -79,7 +88,7 @@ impl Inputs {
         lifetime: u32,
     ) -> Result<FrozenInstall> {
         self.validate_in(tx)?;
-        self.admit_in(tx).await?;
+        self.admit_in(tx, proof.binding()).await?;
         let mut packages = BTreeMap::new();
         for (target, id) in releases {
             let tenant = tx.tenant_id();

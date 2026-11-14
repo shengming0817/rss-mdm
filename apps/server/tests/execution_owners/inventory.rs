@@ -54,7 +54,7 @@ async fn original_attempt_reservation_and_report_are_atomic_and_independent_of_p
     script::transaction::run(
         &h.audit,
         &h.a.resources.storage.runtime,
-        h.audit.binding(),
+        h.c.execution(),
         &request(&h.c),
         definition.clone(),
         move |definition, tx| {
@@ -107,7 +107,7 @@ async fn original_attempt_reservation_and_report_are_atomic_and_independent_of_p
             script::transaction::run(
                 &h.audit,
                 &h.a.resources.storage.runtime,
-                h.audit.binding(),
+                h.c.execution(),
                 &audit,
                 progress,
                 move |progress, tx| {

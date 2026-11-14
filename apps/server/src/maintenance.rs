@@ -60,13 +60,6 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
     if initialize != login.is_some() {
         return Err(invalid());
     }
-    crate::administration::tenants::claim_database_use(
-        &config.database,
-        &config.installation,
-        &config.tenant_id,
-        config.expected_epoch,
-    )
-    .await?;
     let runtime = crate::identity::open_runtime(
         &config.database,
         &config.installation.target,
@@ -76,6 +69,48 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
     .await?;
     let kdf = compiled.kdf.clone();
     let result = async {
+        let execution = config
+            .installation
+            .execution(tenant, config.expected_epoch)
+            .map_err(|_| invalid())?;
+        let claimed = runtime
+            .local_tx_with_context(
+                execution,
+                deadline(),
+                &config.installation,
+                |installation, tx| {
+                    Box::pin(async move {
+                        tx.with_connection_context(installation, move |installation, c| {
+                            Box::pin(async move {
+                                sqlx::query_scalar::<_, bool>(
+                                    "SELECT public.claim_tenant_use($1::uuid,$2,$3::uuid,$4,$5,$6)",
+                                )
+                                .bind(execution.tenant().to_string())
+                                .bind(execution.epoch().get())
+                                .bind(&installation.instance_id)
+                                .bind(&installation.target[..])
+                                .bind(&installation.lineage[..])
+                                .bind(installation.audit_mode.as_str())
+                                .fetch_one(c)
+                                .await
+                            })
+                        })
+                        .await
+                    })
+                },
+            )
+            .await
+            .fold(
+                Ok,
+                |_| Err(invalid()),
+                |_| Err(invalid()),
+                |_| Err(Error::RollbackFailed),
+                |_| Err(Error::CommitUnknown),
+                |_| Err(invalid()),
+            )?;
+        if !claimed {
+            return Err(invalid());
+        }
         let authority = Authority::connect_maintenance(
             runtime.clone(),
             kdf.clone(),

@@ -13,7 +13,6 @@ CREATE FUNCTION public.create_new_tenant(t uuid,e bigint,n text,d text) RETURNS 
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $create$
 BEGIN
  PERFORM pg_advisory_xact_lock(2346);
- IF (SELECT count(*) FROM public.mdm_tenants WHERE NOT deleted AND tenant_id<>(SELECT management_tenant_id FROM public.mdm_installation))>=1024 THEN RAISE EXCEPTION 'tenant capacity'; END IF;
  PERFORM set_config('rss.tenant_id',t::text,true);
  PERFORM set_config('rss.execution_epoch',e::text,true);
  PERFORM set_config('rss.storage_target',(SELECT encode(target,'hex') FROM public.mdm_installation),true);

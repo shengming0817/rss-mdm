@@ -181,7 +181,8 @@ pub(crate) async fn write(
     )
     .map_err(|_| Error::Audit)?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(4));
-    let attempt=audit_store.write(rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_|Error::Integrity)?,
+    let attempt=audit_store.write(
+            p.binding(),
             &budget.source_control(),(p,id,action,digest,mutation,audit,audit_store,fact),|context,tx|Box::pin(async move{
         let (receipt,replayed)=tx.with_connection_context(context,|context,c|Box::pin(async move{
             let (p,id,action,digest,mutation,_,_,_)=context;

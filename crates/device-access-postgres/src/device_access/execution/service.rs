@@ -2,7 +2,6 @@
 use super::*;
 use crate::device_access::participants::{AccessRecovery, PlatformFacts};
 use rss_mdm_registration_service::participants::capacity::DeviceCapacity;
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::PgRuntime;
 pub struct Materials {
     /// Fixed process mode; disabled hosts may only settle existing executions.
@@ -15,7 +14,6 @@ pub struct Materials {
 pub struct Transactions {
     pub(crate) accepting: bool,
     pub(crate) runtime: Arc<PgRuntime>,
-    pub(crate) tenant: TenantId,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) agent_store: Arc<dyn agent_facts::Store>,
     pub(crate) capacity: Arc<dyn DeviceCapacity>,
@@ -29,12 +27,12 @@ impl Transactions {
     }
     pub async fn bind(
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
+        probe: rss_transactional_messaging::fence::ExecutionBinding,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         materials: Arc<Materials>,
     ) -> std::result::Result<Self, Error> {
         runtime
-            .local_tx(audit_store.binding(), transaction::deadline(), |tx| {
+            .local_tx(probe, transaction::deadline(), |tx| {
                 Box::pin(async move {
                     tx.with_connection(|c| {
                         Box::pin(async move {
@@ -61,7 +59,7 @@ impl Transactions {
             )?;
         let reconcile_messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            audit_store.binding(),
+            probe,
             transaction::deadline(),
         ))
         .await
@@ -69,7 +67,6 @@ impl Transactions {
         Ok(Self {
             accepting: materials.accepting,
             runtime,
-            tenant,
             audit_store,
             reconcile_messaging,
             agent_store: materials.agent_store.clone(),
@@ -80,9 +77,6 @@ impl Transactions {
     }
     pub fn validate_in(&self, tx: &PgTransaction<'_>) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::Forbidden.into());
-        }
         Ok(())
     }
 }

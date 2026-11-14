@@ -3,7 +3,8 @@ use super::*;
 use std::sync::Weak;
 #[derive(Clone)]
 pub struct Context {
-    pub tenant: rss_request_context::TenantId,
+    pub storage: rss_transactional_messaging::fence::StorageIdentity,
+    pub expected_epoch: rss_transactional_messaging::fence::Epoch,
     pub instance: rss_identity_core::InstanceId,
     pub installation: uuid::Uuid,
     pub access: Arc<rss_mdm_registration_service::Store>,
@@ -13,6 +14,17 @@ pub struct Context {
     pub platform_sso: Option<Arc<Runtime>>,
 }
 impl Context {
+    pub fn execution(
+        &self,
+        tenant: rss_request_context::TenantId,
+    ) -> rss_transactional_messaging::fence::ExecutionBinding {
+        rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            tenant,
+            self.expected_epoch,
+        )
+    }
+
     pub fn runtime(&self) -> Result<&Runtime, Error> {
         self.platform_sso.as_deref().ok_or(Error::Unsupported)
     }
@@ -26,12 +38,11 @@ impl Context {
         let target = crate::delivery::resolve_on(c, p).await?;
         let b = crate::device_access::storage::locked_in(
             c,
-            uuid::Uuid::parse_str(&self.tenant.to_string()).map_err(|_| Error::Corrupt)?,
+            uuid::Uuid::parse_str(&p.tenant().to_string()).map_err(|_| Error::Corrupt)?,
             id,
         )
         .await?;
         if b.device != *target.device()
-            || b.device != *target.device()
             || b.generation != generation
             || b.state == rss_mdm_device_access::State::Revoked
             || !b.configuration.enabled
@@ -52,11 +63,13 @@ impl Context {
     }
     pub async fn active_binding_on(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut sqlx::PgConnection,
         id: uuid::Uuid,
         generation: i64,
     ) -> Result<crate::device_access::Binding, Error> {
-        let tenant = uuid::Uuid::parse_str(&self.tenant.to_string()).map_err(|_| Error::Corrupt)?;
+        let tenant =
+            uuid::Uuid::parse_str(&execution.tenant().to_string()).map_err(|_| Error::Corrupt)?;
         let b = crate::device_access::storage::require_active_in(c, tenant, id, generation).await?;
         let selection = self
             .access_admission
@@ -69,7 +82,8 @@ impl Context {
     }
 }
 pub struct Binding {
-    tenant: rss_request_context::TenantId,
+    storage: rss_transactional_messaging::fence::StorageIdentity,
+    expected_epoch: rss_transactional_messaging::fence::Epoch,
     instance: rss_identity_core::InstanceId,
     installation: uuid::Uuid,
     access: Arc<rss_mdm_registration_service::Store>,
@@ -81,7 +95,8 @@ pub struct Binding {
 impl Binding {
     pub fn new(c: Context) -> Self {
         Self {
-            tenant: c.tenant,
+            storage: c.storage,
+            expected_epoch: c.expected_epoch,
             instance: c.instance,
             installation: c.installation,
             access: c.access,
@@ -92,7 +107,8 @@ impl Binding {
         }
     }
     pub fn matches(&self, c: &Context) -> bool {
-        self.tenant == c.tenant
+        self.storage == c.storage
+            && self.expected_epoch == c.expected_epoch
             && self.instance == c.instance
             && self.installation == c.installation
             && Arc::ptr_eq(&self.access, &c.access)
@@ -107,7 +123,8 @@ impl Binding {
     }
     pub fn get(&self) -> Option<Context> {
         Some(Context {
-            tenant: self.tenant,
+            storage: self.storage,
+            expected_epoch: self.expected_epoch,
             instance: self.instance,
             installation: self.installation,
             access: self.access.clone(),

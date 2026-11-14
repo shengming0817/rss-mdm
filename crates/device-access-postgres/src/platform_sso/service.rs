@@ -28,12 +28,15 @@ pub enum Action {
     Revoke(Uuid, Revocation),
 }
 pub async fn mutate(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+
     app: &Context,
     principal: Option<&DevicePrincipal>,
     audit: &RequestAudit,
     action: Action,
 ) -> Result<Outcome, Error> {
     app.runtime()?;
+    audit.bind_scope(execution)?;
     let operation = match &action {
         Action::Bootstrap(v) => v.operation_id,
         Action::Register(v) => v.operation_id,
@@ -53,7 +56,7 @@ pub async fn mutate(
     let outcome = app
         .audit_store
         .write(
-            app.tenant,
+            audit.binding()?,
             &budget.source_control(),
             (app, principal, audit, &action, operation),
             |(app, principal, audit, action, operation), tx| {
@@ -62,7 +65,7 @@ pub async fn mutate(
                         .with_connection_context(
                             &mut (*app, *principal, *action),
                             |(app, principal, action), c| {
-                                Box::pin(apply(app, c, *principal, action))
+                                Box::pin(apply(execution, app, c, *principal, action))
                             },
                         )
                         .await?;
@@ -88,7 +91,8 @@ pub async fn mutate(
     crate::service::settle(outcome, audit)
 }
 pub fn subject(
-    app: &Context,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+
     b: &Binding,
     source: Uuid,
     version: i64,
@@ -97,7 +101,7 @@ pub fn subject(
         instance: rss_identity_core::InstanceId::parse(&b.person.instance.to_string())
             .map_err(|_| Error::Unauthorized)?,
         account: rss_identity_core::account::AccountKey {
-            tenant: app.tenant,
+            tenant: execution.tenant(),
             principal: rss_identity_core::PrincipalId::parse(&b.person.principal.to_string())
                 .map_err(|_| Error::Unauthorized)?,
         },
@@ -125,6 +129,8 @@ pub async fn admit(
         })
 }
 async fn apply(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+
     app: &Context,
     c: &mut PgConnection,
     p: Option<&DevicePrincipal>,
@@ -132,23 +138,25 @@ async fn apply(
 ) -> Result<Outcome, Error> {
     let now = store::now(c).await?;
     match a {
-        Action::Bootstrap(v) => bootstrap(app, c, p.ok_or(Error::Unauthorized)?, v, now)
+        Action::Bootstrap(v) => bootstrap(execution, app, c, p.ok_or(Error::Unauthorized)?, v, now)
             .await
             .map(Outcome::Bootstrap),
-        Action::Register(v) => register(app, c, p.ok_or(Error::Unauthorized)?, v, now)
+        Action::Register(v) => register(execution, app, c, p.ok_or(Error::Unauthorized)?, v, now)
             .await
             .map(Outcome::Registration),
         Action::Nonce => {
-            let tenant = app.tenant.to_string();
+            let tenant = execution.tenant().to_string();
             // Serialized bounded capacity; never hold this lock before the Identity guard.
             store::fence(c, &tenant).await?;
-            challenge(app, c, "login", &json!({}), now)
+            challenge(execution, c, "login", &json!({}), now)
                 .await
                 .map(Outcome::Nonce)
         }
-        Action::Login(token) => login(app, c, token, now).await.map(Outcome::Login),
+        Action::Login(token) => login(execution, app, c, token, now)
+            .await
+            .map(Outcome::Login),
         Action::Revoke(id, input) => revoke(
-            app,
+            execution,
             c,
             p.ok_or(Error::Unauthorized)?,
             *id,
@@ -159,13 +167,14 @@ async fn apply(
     }
 }
 async fn challenge(
-    app: &Context,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+
     c: &mut PgConnection,
     purpose: &str,
     context: &Value,
     now: i64,
 ) -> Result<Nonce, Error> {
-    let tenant = app.tenant.to_string();
+    let tenant = execution.tenant().to_string();
     store::cleanup(c, &tenant, now).await?;
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM rss_da.psso_challenges WHERE tenant_id=$1::uuid AND (purpose='login')=$2",
@@ -188,13 +197,15 @@ async fn challenge(
     })
 }
 async fn bootstrap(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+
     app: &Context,
     c: &mut PgConnection,
     p: &DevicePrincipal,
     input: &Bootstrap,
     now: i64,
 ) -> Result<BootstrapResponse, Error> {
-    if p.tenant() != app.tenant {
+    if p.binding() != execution {
         return Err(Error::Unauthorized);
     }
     let tenant = p.tenant().to_string();
@@ -229,7 +240,7 @@ async fn bootstrap(
         .map_or(Ok(1), |s| s.version.checked_add(1).ok_or(Error::Conflict))?;
     let subject = candidate
         .as_ref()
-        .map(|b| subject(app, b, id, version))
+        .map(|b| subject(execution, b, id, version))
         .transpose()?;
     let epochs = if let Some(binding) = &subject {
         Some(
@@ -250,7 +261,7 @@ async fn bootstrap(
     let object = rss_mdm_registration_service::device::endpoints::DaRegistration {
         device: *resolved.device(),
     };
-    super::deployment::ready(app, c, &object, now).await?;
+    super::deployment::ready(execution, app, c, &object, now).await?;
     let device = &object.device;
     let binding = if let Some(b) = candidate {
         let current = app
@@ -301,13 +312,13 @@ async fn bootstrap(
         y: String::new(),
     };
     let login_configuration =
-        super::deployment::configuration_for_object(c, app.tenant, &object).await?;
+        super::deployment::configuration_for_object(c, execution.tenant(), &object).await?;
     let mut password_identity = None;
     let mut password_provider_revision = None;
     let mut password_provider_fingerprint = None;
     if login_configuration.authentication == AuthenticationMode::Password {
         let provider = rt.password_provider(&login_configuration)?;
-        provider.admit_on(c, app.tenant).await?;
+        provider.admit_on(c, execution.tenant()).await?;
         password_provider_revision = Some(provider.configuration.revision);
         password_provider_fingerprint = Some(provider.fingerprint()?);
         if let Some(binding) = &binding {
@@ -322,7 +333,12 @@ async fn bootstrap(
             );
         }
     }
-    let profile_uuid = rt.profile(&login_configuration)?.uuid;
+    let profile_uuid = rt
+        .profile(
+            uuid::Uuid::parse_str(&execution.tenant().to_string()).map_err(|_| Error::Malformed)?,
+            &login_configuration,
+        )?
+        .uuid;
     let source = store::Source {
         login_configuration,
         profile_uuid,
@@ -344,38 +360,42 @@ async fn bootstrap(
         subject,
         subject_version: epochs,
     };
-    store::current_object(app, c, &source.object).await?;
+    store::current_object(execution, c, &source.object).await?;
     let context = serde_json::to_value(Ceremony {
         principal_device: p.device().to_owned(),
         source,
         previous_version: old,
     })
     .map_err(|_| Error::Malformed)?;
-    let challenge = challenge(app, c, input.kind.as_str(), &context, now).await?;
+    let challenge = challenge(execution, c, input.kind.as_str(), &context, now).await?;
     Ok(BootstrapResponse {
         id: challenge.id,
         nonce: challenge.nonce,
         expires_at: challenge.expires_at,
         source_id: id,
         source_version: version,
-        endpoints: rt.endpoints.clone(),
+        endpoints: rt.endpoints(
+            uuid::Uuid::parse_str(&execution.tenant().to_string()).map_err(|_| Error::Malformed)?,
+        )?,
         client_id: rt.configuration.client_id,
         login_user_name: id.to_string(),
     })
 }
 
 async fn register(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+
     app: &Context,
     c: &mut PgConnection,
     p: &DevicePrincipal,
     input: &Registration,
     now: i64,
 ) -> Result<RegistrationReceipt, Error> {
-    if p.tenant() != app.tenant {
+    if p.binding() != execution {
         return Err(Error::Unauthorized);
     }
     let tenant = p.tenant().to_string();
-    let row=sqlx::query("SELECT context,nonce_digest,expires_at,consumed FROM rss_da.psso_challenges WHERE tenant_id=$1::uuid AND id=$2 AND purpose IN('device','user')")
+    let row=sqlx::query("SELECT context,nonce_digest,expires_at,consumed FROM rss_da.psso_challenges WHERE expected_epoch=current_setting('rss.execution_epoch')::bigint AND tenant_id=$1::uuid AND id=$2 AND purpose IN('device','user')")
         .bind(&tenant).bind(input.challenge_id).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     let mut ceremony: Ceremony =
         serde_json::from_value(row.try_get("context").map_err(db)?).map_err(|_| Error::Storage)?;
@@ -394,13 +414,21 @@ async fn register(
         return Err(Error::Unauthorized);
     }
     store::fence(c, &tenant).await?;
-    store::current_object(app, c, &s.object).await?;
-    super::deployment::ready(app, c, &s.object, now).await?;
+    store::current_object(execution, c, &s.object).await?;
+    super::deployment::ready(execution, app, c, &s.object, now).await?;
     let current_login =
-        super::deployment::configuration_for_object(c, app.tenant, &s.object).await?;
+        super::deployment::configuration_for_object(c, execution.tenant(), &s.object).await?;
     if s.configuration != app.runtime()?.fingerprint()?
         || s.login_configuration != current_login
-        || s.profile_uuid != app.runtime()?.profile(&current_login)?.uuid
+        || s.profile_uuid
+            != app
+                .runtime()?
+                .profile(
+                    uuid::Uuid::parse_str(&execution.tenant().to_string())
+                        .map_err(|_| Error::Malformed)?,
+                    &current_login,
+                )?
+                .uuid
     {
         return Err(Error::Unauthorized);
     }
@@ -422,7 +450,7 @@ async fn register(
                 return Err(Error::Unauthorized);
             }
         }
-        if Some(subject(app, &b, s.id, s.version)?) != s.subject {
+        if Some(subject(execution, &b, s.id, s.version)?) != s.subject {
             return Err(Error::Unauthorized);
         }
         let parent = store::source(c, &tenant, s.parent.ok_or(Error::Unauthorized)?).await?;
@@ -460,7 +488,16 @@ async fn register(
     crypto::times(&proof, now)?;
     let proof: RegistrationClaims =
         serde_json::from_value(proof).map_err(|_| Error::Unauthorized)?;
-    if proof.aud != format!("{}/register", app.runtime()?.endpoints.base)
+    if proof.aud
+        != format!(
+            "{}/register",
+            app.runtime()?
+                .endpoints(
+                    uuid::Uuid::parse_str(&execution.tenant().to_string())
+                        .map_err(|_| Error::Malformed)?
+                )?
+                .base
+        )
         || proof.iss != *p.device()
         || proof.challenge_id != input.challenge_id
         || proof.source_id != s.id
@@ -470,7 +507,7 @@ async fn register(
     {
         return Err(Error::Unauthorized);
     }
-    let accepted=sqlx::query("UPDATE rss_da.psso_challenges SET consumed=true WHERE tenant_id=$1::uuid AND id=$2 AND NOT consumed AND expires_at>floor(extract(epoch FROM clock_timestamp()))::bigint").bind(&tenant).bind(input.challenge_id).execute(&mut *c).await.map_err(db)?;
+    let accepted=sqlx::query("UPDATE rss_da.psso_challenges SET consumed=true WHERE expected_epoch=current_setting('rss.execution_epoch')::bigint AND tenant_id=$1::uuid AND id=$2 AND NOT consumed AND expires_at>floor(extract(epoch FROM clock_timestamp()))::bigint").bind(&tenant).bind(input.challenge_id).execute(&mut *c).await.map_err(db)?;
     if accepted.rows_affected() != 1 {
         return Err(Error::Unauthorized);
     }
@@ -498,17 +535,23 @@ async fn register(
         },
     })
 }
-async fn login(app: &Context, c: &mut PgConnection, token: &str, now: i64) -> Result<Value, Error> {
+async fn login(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    app: &Context,
+    c: &mut PgConnection,
+    token: &str,
+    now: i64,
+) -> Result<Value, Error> {
     let (_, untrusted) = crypto::unverified(token)?;
     let (_, inner) = crypto::unverified(crypto::text(&untrusted, "assertion")?)?;
     let id = Uuid::parse_str(crypto::text(&inner, "sub")?).map_err(|_| Error::Unauthorized)?;
     // Read a candidate without locks, acquire Identity first, then recheck all host state.
-    let candidate = store::read(c, &app.tenant.to_string(), id).await?;
+    let candidate = store::read(c, &execution.tenant().to_string(), id).await?;
     admit(app, c, &candidate).await?;
-    let (user, device, binding) = store::current_user(app, c, id, true).await?;
+    let (user, device, binding) = store::current_user(execution, app, c, id, true).await?;
     if user.subject != candidate.subject
         || user.subject_version != candidate.subject_version
-        || Some(subject(app, &binding, user.id, user.version)?) != user.subject
+        || Some(subject(execution, &binding, user.id, user.version)?) != user.subject
     {
         return Err(Error::Unauthorized);
     }
@@ -517,6 +560,7 @@ async fn login(app: &Context, c: &mut PgConnection, token: &str, now: i64) -> Re
         return Err(Error::Unauthorized);
     }
     let (client_nonce, apv) = super::native::verify(
+        uuid::Uuid::parse_str(&execution.tenant().to_string()).map_err(|_| Error::Malformed)?,
         app.runtime()?,
         device.signing.as_ref().ok_or(Error::Unauthorized)?,
         user.signing.as_ref().ok_or(Error::Unauthorized)?,
@@ -525,8 +569,8 @@ async fn login(app: &Context, c: &mut PgConnection, token: &str, now: i64) -> Re
         nonce,
         now,
     )?;
-    let tenant = app.tenant.to_string();
-    let accepted=sqlx::query("UPDATE rss_da.psso_challenges SET consumed=true WHERE tenant_id=$1::uuid AND purpose='login' AND nonce_digest=$2 AND NOT consumed AND expires_at>floor(extract(epoch FROM clock_timestamp()))::bigint")
+    let tenant = execution.tenant().to_string();
+    let accepted=sqlx::query("UPDATE rss_da.psso_challenges SET consumed=true WHERE expected_epoch=current_setting('rss.execution_epoch')::bigint AND tenant_id=$1::uuid AND purpose='login' AND nonce_digest=$2 AND NOT consumed AND expires_at>floor(extract(epoch FROM clock_timestamp()))::bigint")
         .bind(&tenant).bind(crypto::digest(nonce)).execute(&mut *c).await.map_err(db)?;
     if accepted.rows_affected() != 1 {
         return Err(Error::Unauthorized);
@@ -552,7 +596,8 @@ async fn login(app: &Context, c: &mut PgConnection, token: &str, now: i64) -> Re
     )
 }
 async fn revoke(
-    app: &Context,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+
     c: &mut PgConnection,
     p: &DevicePrincipal,
     id: Uuid,
@@ -561,7 +606,7 @@ async fn revoke(
     if expected_version < 1 {
         return Err(Error::Malformed);
     }
-    if p.tenant() != app.tenant {
+    if p.binding() != execution {
         return Err(Error::Unauthorized);
     }
     let tenant = p.tenant().to_string();
@@ -571,7 +616,7 @@ async fn revoke(
     if source.object.device != *resolved.device() {
         return Err(Error::Unauthorized);
     }
-    store::current_object(app, c, &source.object).await?;
+    store::current_object(execution, c, &source.object).await?;
     // The source row is locked by store::source in the same transaction as replacement.
     // Replaying the exact already-completed revocation is allowed; a replacement is not.
     if source.version != expected_version

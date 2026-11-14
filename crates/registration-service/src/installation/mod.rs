@@ -37,6 +37,7 @@ use std::{
 };
 pub use transaction::*;
 use uuid::Uuid;
+pub(super) const DOMAIN: &str = "mdm.registration.installation.v1";
 pub fn messaging_domain() -> rss_transactional_messaging::message::MessagingDomain {
     rss_transactional_messaging::message::MessagingDomain::parse("mdm.registration.installation.v1")
         .expect("fixed Registration domain")
@@ -95,7 +96,7 @@ pub struct Materials {
 }
 pub struct Transactions {
     pub(crate) runtime: Arc<PgRuntime>,
-    pub(crate) tenant: TenantId,
+
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) store: rss_device_command_postgres::PgStore<()>,
     pub(crate) reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
@@ -107,6 +108,9 @@ pub struct Transactions {
     pub(crate) instance: String,
 }
 pub struct Service {
+    pub(crate) read_pool: sqlx::PgPool,
+    pub(crate) storage: rss_transactional_messaging::fence::StorageIdentity,
+    pub(crate) relay_after: Mutex<Option<(Uuid, i64)>>,
     pub(crate) transactions: Transactions,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
     pub(crate) reconcile: rss_reconcile_postgres::PgStore,
@@ -116,18 +120,19 @@ pub struct Service {
 }
 impl Service {
     pub fn new(
+        read_pool: sqlx::PgPool,
+        storage: rss_transactional_messaging::fence::StorageIdentity,
         transactions: Transactions,
         outbox: Arc<PgOutboxStore<()>>,
         reconcile: rss_reconcile_postgres::PgStore,
         worker_budget: Arc<tokio::sync::Semaphore>,
         recovery_batch: rss_device_command::BatchLimit,
     ) -> Self {
-        let readiness = rss_mdm_recovery_observation::Readiness::new(
-            recovery_scope(transactions.tenant),
-            true,
-            false,
-        );
+        let readiness = rss_mdm_recovery_observation::Readiness::new(DOMAIN, true, false);
         Self {
+            read_pool,
+            storage,
+            relay_after: Mutex::new(None),
             transactions,
             outbox,
             reconcile,
@@ -148,7 +153,7 @@ impl Service {
 impl Transactions {
     pub async fn bind(
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
+        probe: rss_transactional_messaging::fence::ExecutionBinding,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         materials: Arc<Materials>,
     ) -> std::result::Result<Self, Error> {
@@ -156,7 +161,7 @@ impl Transactions {
         let caller = runtime.clone();
         let audit = audit_store.clone();
         let store = runtime
-            .local_tx(audit_store.binding(), deadline(), move |tx| {
+            .local_tx(probe, deadline(), move |tx| {
                 Box::pin(async move {
                     audit.bind_in(tx).await.map_err(PgError::from)?;
                     tx.with_connection(|c| {
@@ -195,14 +200,14 @@ impl Transactions {
             )?;
         let reconcile_messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            audit_store.binding(),
+            probe,
             deadline(),
         ))
         .await
         .map_err(|_| Error::Unavailable(Failure::CommandInvariant))?;
         Ok(Self {
             runtime,
-            tenant,
+
             audit_store,
             store,
             reconcile_messaging,
@@ -216,9 +221,7 @@ impl Transactions {
     }
     pub fn validate_in(&self, tx: &PgTransaction<'_>) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::Forbidden.into());
-        }
+
         Ok(())
     }
     pub(crate) async fn required_command(
@@ -244,3 +247,6 @@ pub use protocol::settle_one as settle_windows_receipt_in;
 pub mod retirement;
 
 pub mod queries;
+
+/// Narrow access-role work discovery exported by this owner.
+pub const WORK_ACCESS_CONTRACT: &str = r#"{"tables":[],"functions":[{"name":"mdm_registration_tasks.native_work_scopes","search_path":"search_path=pg_catalog, pg_temp"},{"name":"mdm_registration_tasks.native_work_epoch","search_path":"search_path=pg_catalog, pg_temp"},{"name":"mdm_registration_tasks.native_work_relay_scopes","search_path":"search_path=pg_catalog, pg_temp"}],"external_relations":[],"verified_schemas":[]}"#;

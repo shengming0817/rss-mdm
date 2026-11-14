@@ -1,6 +1,5 @@
 //! Scope is the sole local consumer of the Group event stream.
 use rss_mdm_group_postgres::{GroupChangeKind, GroupChanged};
-use rss_request_context::TenantId;
 use rss_transactional_messaging::{
     message::MessageEnvelope,
     policy::OperationDeadline,
@@ -18,7 +17,7 @@ use std::sync::Arc;
 pub const DOMAIN: &str = "mdm-group";
 pub const CONSUMER: &str = "mdm-scope-group-changes";
 pub struct Validator {
-    pub binding: rss_transactional_messaging::fence::ExecutionBinding,
+    pub storage: rss_transactional_messaging::fence::StorageIdentity,
 }
 impl IngressValidator<Vec<u8>> for Validator {
     fn validate(
@@ -27,9 +26,6 @@ impl IngressValidator<Vec<u8>> for Validator {
     ) -> Result<VerifiedIngress, EnvelopeValidationFailure> {
         let message = challenge.message();
         let contract = message.metadata().contract();
-        if message.metadata().tenant_id() != self.binding.tenant() {
-            return Err(EnvelopeValidationFailure::MalformedIdentity);
-        }
         let digest = format!(
             "sha256:{:x}",
             Sha256::digest(rss_mdm_group_postgres::EVENT_SCHEMA.as_bytes())
@@ -58,10 +54,20 @@ impl IngressValidator<Vec<u8>> for Validator {
         {
             return Err(EnvelopeValidationFailure::MalformedMetadata);
         }
-        Ok(challenge.verified(self.binding))
+        let epoch = rss_transactional_messaging::fence::Epoch::new(event.execution_epoch)
+            .map_err(|_| EnvelopeValidationFailure::MalformedMetadata)?;
+        let tenant = message.metadata().tenant_id();
+        Ok(
+            challenge.verified(rss_transactional_messaging::fence::ExecutionBinding::new(
+                self.storage,
+                tenant,
+                epoch,
+            )),
+        )
     }
 }
 pub struct Receiver {
+    storage: rss_transactional_messaging::fence::StorageIdentity,
     binding: rss_mdm_scope_postgres::ScopeBinding,
     messaging: rss_reconcile_postgres::PgMessagingStore,
 }
@@ -69,12 +75,13 @@ impl Receiver {
     pub fn new(
         profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
+        storage: rss_transactional_messaging::fence::StorageIdentity,
         messaging: rss_reconcile_postgres::PgMessagingStore,
     ) -> Self {
         Self {
+            storage,
             messaging,
-            binding: rss_mdm_scope_postgres::ScopeBinding::new(profile, runtime, tenant),
+            binding: rss_mdm_scope_postgres::ScopeBinding::new(profile, runtime),
         }
     }
 }
@@ -87,6 +94,13 @@ impl PgConsumerEffect<Vec<u8>> for Receiver {
     ) -> Result<TerminalDisposition, PgConsumerEffectFailure> {
         let event: GroupChanged = serde_json::from_slice(message.payload())
             .map_err(PgConsumerEffectFailure::handler_transient)?;
+        let epoch = rss_transactional_messaging::fence::Epoch::new(event.execution_epoch)
+            .map_err(PgConsumerEffectFailure::handler_transient)?;
+        let execution = rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            tx.tenant_id(),
+            epoch,
+        );
         // Presentation changes do not change Scope membership or authorization.
         if !matches!(event.kind, GroupChangeKind::Edited) {
             let group = uuid::Uuid::parse_str(&event.group_id)
@@ -102,7 +116,7 @@ impl PgConsumerEffect<Vec<u8>> for Receiver {
                 })?;
         }
         if !matches!(event.kind, GroupChangeKind::Edited) {
-            crate::tasks::wake_inputs_in(self.binding.profile(), &self.messaging, tx)
+            crate::tasks::wake_inputs_in(self.binding.profile(), &self.messaging, tx, execution)
                 .await
                 .map_err(PgConsumerEffectFailure::infrastructure)?;
         }

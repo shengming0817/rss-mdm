@@ -18,14 +18,11 @@ impl crate::inputs::Inputs {
         proof: &AuthorizedPrincipal,
         grant: &Snapshot,
     ) -> Result<Preview> {
-        if !self.signing_enabled {
-            return Err(Error::Conflict.into());
-        }
         grant.require_all_devices(proof, Permission::ScriptExecute)?;
         let identity = binding.identity();
         let (version, state) = rss_mdm_resource_postgres::version_facts_on(
             c,
-            self.tenant,
+            proof.binding().tenant(),
             &[(identity.id().into(), identity.version().into())],
         )
         .await?
@@ -42,7 +39,7 @@ impl crate::inputs::Inputs {
         }
         rss_mdm_inventory_service::collection::resource_authoring::validate_variant_on(
             c,
-            self.tenant,
+            proof.binding().tenant(),
             selected.variant(),
         )
         .await?;

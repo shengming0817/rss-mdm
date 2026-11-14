@@ -5,7 +5,7 @@ pub struct Dependencies {
     pub supersede_batch: rss_device_command::BatchLimit,
     pub recovery_batch: rss_device_command::BatchLimit,
     pub runtime: Arc<PgRuntime>,
-    pub tenant: TenantId,
+    pub probe: rss_transactional_messaging::fence::ExecutionBinding,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
@@ -19,7 +19,7 @@ impl Transactions {
             supersede_batch,
             recovery_batch,
             runtime,
-            tenant,
+            probe,
             audit_store,
             source,
             protection,
@@ -27,6 +27,7 @@ impl Transactions {
             channels,
             changes,
         } = dependencies;
+
         if source.profile() != rss_mdm_install_support::StorageProfile::Mdm
             || source.objects.is_none()
         {
@@ -37,7 +38,7 @@ impl Transactions {
         let access = channels.clone();
         let fingerprint_id = protection.fingerprint_id().to_owned();
         let (outbox, store) = runtime
-            .local_tx(audit_store.binding(), deadline(), move |tx| {
+            .local_tx(probe, deadline(), move |tx| {
                 Box::pin(async move {
                     audit.bind_in(tx).await.map_err(PgError::from)?;
                     rss_mdm_native_protection::binding::bind_in(
@@ -114,7 +115,7 @@ impl Transactions {
             )?;
         let reconcile_messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            audit_store.binding(),
+            probe,
             deadline(),
         ))
         .await
@@ -125,10 +126,9 @@ impl Transactions {
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 runtime.clone(),
-                tenant,
             ),
             runtime,
-            tenant,
+
             audit_store,
             source,
             protection,

@@ -22,10 +22,14 @@ pub struct Report {
     pub evidence: serde_json::Value,
 }
 pub async fn receive(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     c: &mut PgConnection,
     report: Report,
 ) -> Result<Vec<rss_mdm_audit_integration::Fact>, Error> {
     let p = report.target;
+    if p.tenant != execution.tenant() {
+        return Err(Error::Forbidden);
+    }
     let catalog = rss_mdm_inventory_postgres::catalog_in(c, p.tenant)
         .await
         .map_err(|_| corrupt())?;
@@ -133,6 +137,7 @@ pub async fn receive(
     )
     .await?;
     Ok(store::seal(
+        execution,
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
         &mut run,

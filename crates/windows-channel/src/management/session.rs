@@ -574,6 +574,7 @@ async fn save(
     let incoming = seal(&session.bytes, "windows.management.incoming")?;
     if package == PackageState::Aborted {
         crate::collection::terminate_session(
+            p.binding(),
             c,
             &mut session.facts,
             &tenant,

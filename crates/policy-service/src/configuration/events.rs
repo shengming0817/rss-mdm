@@ -12,6 +12,7 @@ impl Transactions {
         audit: &RequestAudit,
     ) -> Result<wire::PolicyEventDecision> {
         self.runtime.validate_transaction(tx)?;
+        let expected_epoch = audit.binding()?.epoch().get();
         let now = storage::now(tx).await?;
         if now >= deadline {
             return Ok(wire::PolicyEventDecision::Expired);
@@ -25,8 +26,8 @@ impl Transactions {
         }
         let tenant = tx.tenant_id().to_string();
         let device = target.device;
-        tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(tenant).bind(device.into_uuid()).execute(c).await?;Ok(())})).await?;
-        self.wake_devices_in(tx, std::slice::from_ref(&target.device))
+        tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device,expected_epoch) VALUES($1::uuid,$2,$3) ON CONFLICT DO NOTHING").bind(tenant).bind(device.into_uuid()).bind(expected_epoch).execute(c).await?;Ok(())})).await?;
+        self.wake_devices_in(audit.binding()?, tx, std::slice::from_ref(&target.device))
             .await?;
         self.reconcile_configuration_target_in(
             tx,

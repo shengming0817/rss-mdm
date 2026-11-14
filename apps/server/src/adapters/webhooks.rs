@@ -2,9 +2,7 @@
 use rss_mdm_webhook_service::{self as webhooks, events, model::*};
 use rss_request_context::TenantId;
 use uuid::Uuid;
-pub(crate) struct Sources {
-    pub tenant: Uuid,
-}
+pub(crate) struct Sources;
 impl webhooks::management::Sources for Sources {
     fn group_member<'a>(
         &'a self,
@@ -14,9 +12,6 @@ impl webhooks::management::Sources for Sources {
         endpoint: &'a rss_mdm_agent_wire::DeviceId,
     ) -> futures::future::BoxFuture<'a, Result<bool, webhooks::Error>> {
         Box::pin(async move {
-            if tenant.to_string() != self.tenant.to_string() {
-                return Err(webhooks::Error::Denied);
-            }
             rss_mdm_group_postgres::published_endpoint_member_on(c, tenant, groups, endpoint)
                 .await
                 .map_err(|_| webhooks::Error::Storage)?
@@ -36,10 +31,7 @@ impl webhooks::management::Sources for Sources {
         Result<rss_mdm_webhook_service::fanout::ChangePage, rss_mdm_webhook_service::Error>,
     > {
         Box::pin(async move {
-            if source.tenant != self.tenant {
-                return Err(rss_mdm_webhook_service::Error::Denied);
-            }
-            let tenant = TenantId::parse(&self.tenant.to_string())
+            let tenant = TenantId::parse(&source.tenant.to_string())
                 .map_err(|_| rss_mdm_webhook_service::Error::Invalid)?;
             let mut rows =
                 rss_mdm_compliance_postgres::webhook_changes::<rss_mdm_inventory::AssetCut>(

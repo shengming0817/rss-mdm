@@ -105,7 +105,7 @@ impl SoftwareService {
                 })
             })
             .await??;
-        admission(self, op, accepted, dispatch)
+        admission(op, accepted, dispatch)
     }
     pub async fn apple_candidates_in(
         &self,
@@ -149,7 +149,7 @@ impl SoftwareService {
             Settlement::Received => dc::DeviceEvent::Received,
             Settlement::Reported => dc::DeviceEvent::Reported(op.request.digest(
                 &service.transactions.protection,
-                service.transactions.tenant,
+                tx.tenant_id(),
                 &op.device,
             )?),
             Settlement::Rejected => dc::DeviceEvent::Rejected,
@@ -206,6 +206,7 @@ impl SoftwareService {
         if transition.command.status().is_terminal() || withdrawal_received {
             // Logical publication withdrawal can release desired claims without claiming an OS effect.
             crate::deployment::wake::wake_native_in(
+                p.binding(),
                 &service.transactions.reconcile_messaging,
                 service.transactions.source.clone(),
                 tx,
@@ -245,7 +246,7 @@ impl SoftwareService {
             return Err(Error::Malformed.into());
         }
         if eligible(&self.transactions, tx, p, &op).await? {
-            complete_ddm(self, tx, &op).await?;
+            complete_ddm(p.binding(), self, tx, &op).await?;
         }
         Ok(())
     }
@@ -291,18 +292,13 @@ impl SoftwareService {
                 .await?
                 .is_authorized()
             {
-                output.push(admission(self, op, true, false)?);
+                output.push(admission(op, true, false)?);
             }
         }
         Ok(output)
     }
 }
-fn admission(
-    s: &SoftwareService,
-    op: storage::Operation,
-    eligible: bool,
-    dispatch: bool,
-) -> Result<AppleAdmission> {
+fn admission(op: storage::Operation, eligible: bool, dispatch: bool) -> Result<AppleAdmission> {
     let Task::Macos { request } = &op.request.task else {
         return Err(Error::Malformed.into());
     };
@@ -310,7 +306,7 @@ fn admission(
         eligible,
         dispatch,
         target: apple_facts::AppleRegistration {
-            tenant: s.transactions.tenant.to_string(),
+            tenant: op.scope.tenant().to_string(),
             device: op.device,
         },
         command: apple_facts::AppleCommand {
@@ -326,6 +322,7 @@ fn admission(
     })
 }
 async fn complete_ddm(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &SoftwareService,
     tx: &mut PgTransaction<'_>,
     op: &storage::Operation,
@@ -365,7 +362,7 @@ async fn complete_ddm(
                 coordinate: op.coordinate,
                 event: dc::DeviceEvent::Reported(op.request.digest(
                     &service.transactions.protection,
-                    service.transactions.tenant,
+                    tx.tenant_id(),
                     &op.device,
                 )?),
             },
@@ -375,6 +372,7 @@ async fn complete_ddm(
         return Err(Error::Conflict.into());
     }
     crate::deployment::wake::wake_native_in(
+        execution,
         &service.transactions.reconcile_messaging,
         service.transactions.source.clone(),
         tx,

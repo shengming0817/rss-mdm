@@ -116,7 +116,6 @@ def inputs(root, example, deployment_directory, *, database_host="postgres", hos
     native_key.write_bytes(os.urandom(32))
     config=json.loads(example.read_text())
     config["native_protection"]=dict(active_file="/run/mdm/native-data.key",historical_files=[],fingerprint_file="/run/mdm/native-data.key")
-    config["task_signing"]=None
     config["content"]=dict(storage=dict(kind='volume',directory='/var/lib/mdm/content'),imports={},
         max_artifact_bytes=32*1024*1024,max_temporary_bytes=64*1024*1024,max_uploads=4,
         transfer_seconds=60,retention_seconds=3600,
@@ -253,7 +252,7 @@ def verify_candidate(directory):
     require(operator_digest==operator["archive"]["manifest_digest"]
             and operator["image"].endswith("@"+operator_digest)
             and platform(operator_config)==manifest["platform"],"candidate operator image mismatch")
-    require(set(manifest["deployment"]) == set(DEPLOYMENT_FILES), "candidate deployment inputs mismatch")
+    require(set(manifest["deployment"]) == set(DEPLOYMENT_FILES) | {"http-contract.json"}, "candidate deployment inputs mismatch")
     for name, digest in manifest["deployment"].items():
         path = directory / name
         require(not path.is_symlink() and path.is_file() and path.resolve().is_relative_to(directory.resolve())
@@ -341,7 +340,7 @@ class Candidate:
     def prepare_telemetry(self):
         """Prepare the required baseline through the production telemetry installer."""
         from dev_environment import private
-        name='telemetry_'+uuid.UUID(self.tenant).hex
+        name='telemetry_'+uuid.UUID(self.instance).hex
         self.sql('CREATE DATABASE "'+name+'"')
         password=os.urandom(24).hex();cursor=os.urandom(32)
         self.private_values.extend([password,cursor.hex(),base64.b64encode(cursor).decode()])
@@ -352,7 +351,7 @@ class Candidate:
         database=dict(host=self.pg_host,port=5432,name=name,user='postgres',
             password_file='/run/mdm/telemetry-administrator',ca_file='/run/mdm/ca.crt')
         runtime=dict(database,user='r_'+uuid.uuid4().hex,password_file='/run/mdm/telemetry-password')
-        config=dict(backend=dict(kind='postgres',database=runtime),connections=2,
+        config=dict(resource_id=str(uuid.uuid4()),backend=dict(kind='postgres',database=runtime),connections=2,maintenance=dict(rows=4096,buckets=64,step_seconds=6),
             cursor_key_file='/run/mdm/telemetry-cursor',ingress=dict(requestBytes=1048576,pendingBatches=64,
             batchesPerMinute=120,bytesPerMinute=8388608),limits=dict(max_points=4096,max_series=4096,
             max_bytes=1048576,replay_micros=86400000000,cursor_micros=60000000))
@@ -363,7 +362,7 @@ class Candidate:
             startMicros=(day-1)*86400000000,endMicros=(day+2)*86400000000)],clickhouse=None))
         self.copy_runtime()
         self.operator('prepare-telemetry','telemetry-prepare.json',Stage.INITIALIZE)
-        self.config['telemetry']=config
+        self.config['telemetry']=[config]
 
     def copy_runtime(self):
         self.compose("run","--rm","--no-deps","inputs",stage=Stage.RUNTIME_INPUTS)
@@ -394,8 +393,12 @@ class Candidate:
             if isinstance(value,dict):return {key:copy_file(item) if key.endswith('_file') else copy(item) for key,item in value.items()}
             if isinstance(value,list):return [copy(item) for item in value]
             return value
-        self.config['native_protocols']['windows']=copy(json.loads((self.root/'windows.json').read_text()))
+        windows=json.loads((self.root/'windows.json').read_text())
+        self.windows_materials=dict(provider_id=windows['provider_id'],poll=windows['poll'],lifetime=windows.get('lifetime',{'mode':'production'}))
+        self.protocol_trusts=[json.loads(Path(windows['trust_file']).read_text())]
+        self.config['native_protocols']['windows']=copy({key:windows[key] for key in ('enrollment','management','additional_management','protocol_protection')})
         agent=json.loads((self.root/'agent-pki.json').read_text())
+        self.protocol_trusts.append(json.loads(Path(agent.pop('trust_file')).read_text()))
         self.config['agent_pki']=copy(agent)
         providers=json.loads((self.root/'device-pki.json').read_text())
         self.agent_external_origin=next(item['origin'] for item in providers if item['purpose']=='agent')
@@ -411,6 +414,27 @@ class Candidate:
         self.config['device_pki']=copy(providers)
         self.agent_origin=agent_origin
         self.agent_port=self.port
+    def seed_protocol_materials(self):
+        """Configured protocol fixture, not evidence of installation or CA maintenance.
+
+        The ordinary installation journey exercises the production initializer separately.
+        Only public real-CA material and Windows settings form this fixture's initial state.
+        """
+        def text(value):return "'"+str(value).replace("'","''")+"'"
+        def encoded(value):return "decode('"+json.dumps(value,separators=(',',':')).encode().hex()+"','hex')"
+        statements=['BEGIN','SET LOCAL ROLE mdm_owner',"SELECT set_config('rss.tenant_id',"+text(self.tenant)+",true)"]
+        for trust in self.protocol_trusts:
+            tenant=text(str(uuid.UUID(trust['tenant'])));purpose=text(trust['purpose'])
+            statements.append('INSERT INTO mdm_pki.trust(tenant_id,purpose,revision,body) VALUES('+tenant+','+purpose+','+str(trust['revision'])+','+encoded(trust)+')')
+            for issuer in trust['issuers']:
+                certificate=base64.b64decode(issuer['certificate'])
+                result=subprocess.run(['openssl','x509','-inform','DER','-noout','-enddate'],input=certificate,capture_output=True,check=True,timeout=10)
+                expiry=int(ssl.cert_time_to_seconds(result.stdout.decode().strip().split('=',1)[1]))
+                statements.append('INSERT INTO mdm_pki.issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES('+tenant+','+purpose+','+text(issuer['digest'])+','+str(trust['revision'])+','+text(issuer['mode'])+','+encoded(issuer)+",'step_ca',"+str(expiry)+')')
+        materials=self.windows_materials
+        statements.append('INSERT INTO mdm_windows.enrollment_configuration(tenant_id,provider_id,poll,lifetime,entra_callbacks) VALUES('+text(self.tenant)+','+text(materials['provider_id'])+','+text(json.dumps(materials['poll']))+'::jsonb,'+text(json.dumps(materials['lifetime']))+"::jsonb,'{}')")
+        self.sql(';'.join(statements+['COMMIT']))
+
     def __enter__(self):
         try:
             from dev_environment import ROOT, project_name, private
@@ -446,7 +470,7 @@ class Candidate:
             gateway_dir=self.root/'container/gateway';gateway_dir.mkdir()
             self.config=json.loads((self.runtime/'config.json').read_text())
             self.config['product_origin']='https://'+self.host
-            self.config['identity'].update(instance_id=self.instance,tenant_id=self.tenant)
+            self.config['identity'].update(instance_id=self.instance)
             self.compose('up','-d','--no-deps','postgres',stage=Stage.POSTGRES)
             self.pg=self.container('postgres');self.created.append(self.pg)
             wait(lambda:subprocess.run(['docker','exec',self.pg,'pg_isready','-h','127.0.0.1','-U','postgres'],capture_output=True,timeout=5).returncode==0,'PostgreSQL')
@@ -484,6 +508,10 @@ class Candidate:
             self.copy_runtime()
             self.runtime_volume=self.name+'_runtime';self.operator_volume=self.name+'_operator';self.gateway_inputs=self.name+'_gateway'
             for stage in [Stage.MIGRATION,Stage.REPLAY]:self.operator('migrate','migrate.json',stage)
+            self.management_tenant=self.sql('SELECT management_tenant_id FROM public.mdm_installation')
+            self.config['identity']['management_tenant']=self.management_tenant
+            private(self.runtime/'config.json',self.config)
+            self.copy_runtime()
             public=json.loads(self.compose('run','--rm','--no-deps','server','public-host-config','--config','/run/mdm/config.json',stage=Stage.HOST_CONFIGURATION))
             for name in ['ui.json','mdm.json']:private(gateway_dir/name,public[name])
             self.copy_runtime()
@@ -495,7 +523,6 @@ class Candidate:
             self.operator('initialize-authorization','authorization.json',Stage.AUTHORIZATION_INITIALIZE)
             self.operator('initialize-authorization','authorization.json',Stage.AUTHORIZATION_REPLAY)
             # Candidate fixture explicitly bootstraps the reserved tenant through existing commands.
-            self.management_tenant=self.sql('SELECT management_tenant_id FROM public.mdm_installation')
             management_account=json.loads((self.operator_root/'initialize.json').read_text())
             management_account['tenant_id']=self.management_tenant
             private(self.operator_root/'management-initialize.json',management_account)
@@ -508,8 +535,7 @@ class Candidate:
             self.operator('initialize','management-initialize.json',Stage.INITIALIZE)
             self.operator('initialize-authorization','management-authorization.json',Stage.AUTHORIZATION_INITIALIZE)
             self.prepare_telemetry()
-            agent=self.config['agent_pki']
-            self.config['agent_pki']={'mode':'disabled'}
+            self.seed_protocol_materials()
             private(self.runtime/'config.json',self.config)
             self.copy_runtime()
             self.start_server();self.start_gateway()
@@ -520,15 +546,9 @@ class Candidate:
             browser=Browser(self.port,self.root/'ca.crt',host=self.host)
             require(browser.call('POST','/api/v1/identity/tenants/'+self.tenant+'/login',
                                  dict(login='admin',password=(self.operator_root/'account-password').read_text()))[0]==200,'fixture login failed')
-            status,trust=browser.call('POST','/api/v1/task-signing/trust',
+            status,trust=browser.call('POST',f'/api/v1/tenants/{self.tenant}/task-signing/trust',
                 dict(action='prepare',expectedRevision=0),str(uuid.uuid4()))
             require(status==200 and trust['revision']==1,'fixture signing authority failed')
-            self.config['task_signing']={'revision':trust['revision']}
-            self.config['agent_pki']=agent
-            private(self.runtime/'config.json',self.config)
-            self.compose('stop','--timeout','45','server',stage=Stage.STOP)
-            self.copy_runtime()
-            self.start_server()
             self.ready()
             return self
         except BaseException:

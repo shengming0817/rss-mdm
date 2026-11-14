@@ -31,7 +31,7 @@ async fn sensitive_http_body_is_withheld_when_audit_cannot_commit() -> Result<()
     rss_mdm_http_contract::route_module! { struct AuditBoundaryProof for [Browser] { read } }
     let routes = AuditBoundaryProof {
         read: Route::new(
-            "/api/v1/audit-events",
+            "/api/v1/tenants/{tenant}/audit-events",
             get(content, &catalog::AUDIT, &[Operation::List]),
         ),
     }
@@ -48,13 +48,12 @@ async fn sensitive_http_body_is_withheld_when_audit_cannot_commit() -> Result<()
             clock: Arc::new(crate::Monotonic(std::time::Instant::now)),
             audit_store: context.audit.clone(),
             requests: Arc::new(tokio::sync::Semaphore::new(2)),
-            tenant: context.tenant.to_string(),
         },
     )
     .into_axum();
     let request = || {
         axum::http::Request::builder()
-            .uri("/api/v1/audit-events")
+            .uri(format!("/api/v1/tenants/{}/audit-events", context.tenant))
             .header("host", "mdm.example.test")
             .body(axum::body::Body::empty())
             .unwrap()
@@ -116,7 +115,7 @@ async fn large_audit_records_and_complete_query_pages_share_current_capacity() -
                 pool.clone(),
                 integrity,
                 c.runtime.clone(),
-                c.audit.binding(),
+                c.execution(),
                 &budget.control(),
             )
             .await?,
@@ -124,7 +123,7 @@ async fn large_audit_records_and_complete_query_pages_share_current_capacity() -
         let audit = RequestAudit::new(
             Origin::Background,
             rss_mdm_install_support::StorageProfile::Mdm,
-            c.tenant.to_string(),
+            c.execution(),
             "capacity_read",
             AuditIntent::Management,
         );
@@ -145,7 +144,7 @@ async fn large_audit_records_and_complete_query_pages_share_current_capacity() -
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let append = store
             .write(
-                c.tenant,
+                c.execution(),
                 &budget.source_control(),
                 (&store, &facts),
                 |(store, facts), tx| {
@@ -178,7 +177,6 @@ async fn large_audit_records_and_complete_query_pages_share_current_capacity() -
         }
         let full = c.database.timeline(
             store.clone(),
-            c.tenant,
             &[37; 32],
             QueryBudget::new(1024, 8 * 1024 * 1024)?,
         )?;
@@ -201,7 +199,6 @@ async fn large_audit_records_and_complete_query_pages_share_current_capacity() -
             .bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
         let timeline = c.database.timeline(
             store.clone(),
-            c.tenant,
             &[37; 32],
             QueryBudget::new(1024, u64::try_from(one_document)?)?,
         )?;
@@ -230,7 +227,6 @@ async fn large_audit_records_and_complete_query_pages_share_current_capacity() -
             .database
             .timeline(
                 store.clone(),
-                c.tenant,
                 &[37; 32],
                 QueryBudget::new(1024, 8 * 1024 * 1024)?,
             )?
@@ -304,7 +300,7 @@ async fn verify_full_identity_restore(
     let integrity = c.audit.integrity().clone();
     c.runtime
         .local_tx_with_context(
-            c.audit.binding(),
+            c.execution(),
             deadline(),
             (&integrity, &prepared),
             |(integrity, prepared), tx| {

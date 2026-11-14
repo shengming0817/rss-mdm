@@ -19,10 +19,10 @@ async fn original_tenant_result_and_missing_result_have_independent_evidence() -
     let mut config = crate::host_t2_support::configuration(
         &business.inputs,
         "shared",
-        business.tenant,
         "127.0.0.1:1".parse()?,
         Uuid::new_v4(),
-    )?;
+    )
+    .await?;
     config["tenant_administration"] = json!({
         "registry_database":c.inputs.database("shared","mdm_tenant_registry"),
         "provisioning_database":c.inputs.database("shared","mdm_identity_provisioning"),
@@ -60,11 +60,9 @@ async fn original_tenant_result_and_missing_result_have_independent_evidence() -
         audit: c.audit.clone(),
         timeline: c.database.timeline(
             c.audit.clone(),
-            c.tenant,
             &[41; 32],
             rss_mdm_timeline_service::QueryBudget::new(1024, 8 * 1024 * 1024)?,
         )?,
-        tenant: c.tenant,
     };
     let auth = c.read_auth(proof.clone());
     let query = LocatorQuery {
@@ -108,7 +106,7 @@ async fn original_tenant_result_and_missing_result_have_independent_evidence() -
     let server = tokio::spawn(async move { axum::serve(socket, routes).await });
     let verify=async {
         let client=reqwest::Client::new();
-        let response=client.get(format!("{base}/tenants")).query(&[("filter",format!("tenantId=={};name=='original tenant result';revision==2;currentEpoch==1",business.tenant))]).send().await?;
+        let response=client.get(format!("{base}/tenants")).query(&[("filter",format!("tenantId=={};name=='original tenant result';revision==2",business.tenant))]).send().await?;
         assert_eq!(response.status(),200);
         let page:serde_json::Value=response.json().await?;
         assert_eq!(page["items"].as_array().unwrap().len(),1);

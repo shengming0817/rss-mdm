@@ -22,14 +22,25 @@ pub async fn enroll(
     let machine = tokio::task::spawn_blocking(move || verifier.verify(&bytes, now))
         .await
         .map_err(|_| Error::Conflict)??;
-    let tenant = app.identity.tenant().to_string();
+    let execution = app.execution(
+        app.access
+            .locate_ade_server(organization)
+            .await?
+            .ok_or(Error::Unauthorized)?,
+    );
+    let tenant = execution.tenant().to_string();
+    let apple = app.apple(execution).await?;
+    audit
+        .bind_scope(execution)
+        .map_err(|_| Error::Unauthorized)?;
     audit.identify_service("service:apple-ade");
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
-    let result=app.audit_store.write(app.identity.tenant(),&budget.source_control(),(&app,&tenant,organization,profile,&machine,&audit),|ctx,tx|Box::pin(async move{
-        let(app,tenant,organization,profile,machine,audit)=*ctx;
-        let (bytes,id,replayed)=tx.with_connection_context(&mut(app,tenant,organization,profile,machine),|ctx,c|Box::pin(async move{
-            let(app,tenant,organization,profile,machine)=*ctx;
+    let result=app.audit_store.write(
+            audit.binding()?,&budget.source_control(),(&app,&apple,&tenant,organization,profile,&machine,&audit),|ctx,tx|Box::pin(async move{
+        let(app,apple,tenant,organization,profile,machine,audit)=*ctx;
+        let (bytes,id,replayed)=tx.with_connection_context(&mut(app,apple,tenant,organization,profile,machine),|ctx,c|Box::pin(async move{
+            let(app,apple,tenant,organization,profile,machine)=*ctx;
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2673))").bind(format!("ade-identity:{tenant}:{organization}:{}",machine.udid())).execute(&mut *c).await.map_err(db)?;
             let digest=machine.digest().iter().map(|b|format!("{b:02x}")).collect::<String>();
             let old=sqlx::query("SELECT e.* FROM mdm_apple.ade_enrollments e WHERE tenant_id=$1::uuid AND organization=$2 AND udid=$3 AND NOT revoked FOR UPDATE").bind(tenant).bind(organization).bind(machine.udid()).fetch_optional(&mut *c).await.map_err(db)?;
@@ -52,7 +63,6 @@ pub async fn enroll(
             let id=Uuid::new_v4();let challenge=zeroize::Zeroizing::new(rss_mdm_registration_service::enrollment::random());
             let proof=native::issue_organization_in(c,tenant,organization,profile,machine,id,&challenge,authority::authority()).await?;
             let deadline:String=sqlx::query_scalar("SELECT expires_at::text FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(&mut *c).await.map_err(db)?;
-            let apple=app.apple()?;
             let(attempt,_,scep_url,scep_provisioner)=crate::enrollment::prepared(c,apple,proof.coordinates(),tenant,&deadline).await?;
             let setup:management::Setup=serde_json::from_value(config.try_get("configuration").map_err(db)?).map_err(|_|Error::Malformed)?;
             let bytes=apple.signer.sign(&profile::enrollment(&profile::EnrollmentProfile{

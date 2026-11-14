@@ -28,7 +28,7 @@ impl Service {
         crate::enrollment::tasks::transaction::run(
             &self.transactions.audit_store,
             &self.transactions.runtime,
-            self.transactions.audit_store.binding(),
+            audit.binding()?,
             audit,
             (self, p, task, input, audit),
             |ctx, tx| {
@@ -42,7 +42,7 @@ impl Service {
                     let plan = policy::read_in(&s.transactions,tx,run.policy_version).await?;
                     let _now = storage::now(tx).await?;
                     let continued = if run.state.execution==Execution::Running {true} else if run.state.execution==Execution::Failed {false} else {
-                        let tenant=s.transactions.tenant;
+                        let tenant=tx.tenant_id();
                         tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_native_enrollments WHERE tenant_id=$1::uuid AND task=$2)").bind(tenant.to_string()).bind(task).fetch_one(c).await})).await?
                     };
                     if run.state.attempt() != Some(input.attempt_id)
@@ -149,13 +149,12 @@ impl AgentPolicyAuthority for Service {
             if self.profile() != rss_mdm_install_support::StorageProfile::Mdm {
                 return Err(E::Unsupported);
             }
-            if self.transactions.tenant.to_string() != d.tenant {
-                return Err(E::Forbidden);
-            }
+            let tenant =
+                rss_request_context::TenantId::parse(&d.tenant).map_err(|_| E::Malformed)?;
             enrollment::agent_policy::current_source_in(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 c,
-                self.transactions.tenant,
+                tenant,
                 d.id,
             )
             .await?;

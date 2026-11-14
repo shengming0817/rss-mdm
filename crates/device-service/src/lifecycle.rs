@@ -11,6 +11,7 @@ use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
 pub struct Acceptance<'a> {
+    pub execution: rss_transactional_messaging::fence::ExecutionBinding,
     pub origin: rss_mdm_audit_integration::activity::ActivityOrigin,
     pub policy: Uuid,
     pub version: Uuid,
@@ -144,11 +145,11 @@ pub async fn accept_in(
         .await?;
     }
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO mdm_devices.retirements(tenant_id,id,policy,version,object_kind,object_id,occurrence,target,authority,delivery_seconds,created_at,origin) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)")
+    sqlx::query("INSERT INTO mdm_devices.retirements(tenant_id,id,policy,version,object_kind,object_id,occurrence,target,authority,delivery_seconds,created_at,origin,expected_epoch) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)")
         .bind(&tenant).bind(id).bind(input.policy).bind(input.version).bind(input.target.object.kind()).bind(input.target.object.uuid()).bind(input.occurrence)
         .bind(serde_json::to_value(input.target).map_err(|_|Error::Malformed)?)
         .bind(serde_json::to_value(input.actor).map_err(|_|Error::Malformed)?)
-        .bind(input.delivery_seconds as i32).bind(input.now).bind(serde_json::to_value(input.origin).map_err(|_|Error::Malformed)?).execute(&mut *c).await?;
+        .bind(input.delivery_seconds as i32).bind(input.now).bind(serde_json::to_value(input.origin).map_err(|_|Error::Malformed)?).bind(input.execution.epoch().get()).execute(&mut *c).await?;
     for member in members {
         lifecycle::begin_retirement_in(
             rss_mdm_install_support::StorageProfile::Mdm,
@@ -430,6 +431,7 @@ pub async fn observe_in(
 
 /// One final credential settlement, borrowed from the Device owner claim transaction.
 pub(crate) async fn settle_retirement_in(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     c: &mut PgConnection,
     tenant: TenantId,
     operation: Uuid,
@@ -455,6 +457,7 @@ pub(crate) async fn settle_retirement_in(
     let mut facts = Vec::new();
     if active {
         lifecycle::retire(
+            execution,
             rss_mdm_install_support::StorageProfile::Mdm,
             c,
             &mut facts,

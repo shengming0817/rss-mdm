@@ -282,8 +282,10 @@ pub(crate) async fn receive(
                 .and_then(|f| f.with_details(serde_json::json!({"revision":revision})))
                 .map_err(Error::from)?;
                 facts.push(fact);
-                sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'windows_push')")
-                    .execute(c).await.map_err(db)?;
+                sqlx::query("SELECT pg_notify('mdm_work','windows_push')")
+                    .execute(c)
+                    .await
+                    .map_err(db)?;
             }
         }
     }

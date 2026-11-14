@@ -79,10 +79,10 @@ pub(super) async fn seed(
         .await?;
         if i == 1 {
             for (path,filter,expected) in [
-                ("/api/v1/user-attribute-definitions".into(),"displayName==DirectoryTarget;value.source.kind==identity_local;enabled==true".into(),json!(id)),
-                ("/api/v1/agent-configurations".into(),"createdBy==DirectoryTarget;remaining=gt=0;platform==windows;architecture==x86_64".into(),json!(id)),
-                ("/api/v1/software/source-snapshots".into(),format!("source=={source};entryCount==1;extraction.name=='/name'"),json!(source)),
-                (format!("/api/v1/software/source-snapshots/{source}/entries"),"name==DirectoryTarget;version==2.0".into(),json!(id)),
+                ("/user-attribute-definitions".into(),"displayName==DirectoryTarget;value.source.kind==identity_local;enabled==true".into(),json!(id)),
+                ("/agent-configurations".into(),"createdBy==DirectoryTarget;remaining=gt=0;platform==windows;architecture==x86_64".into(),json!(id)),
+                ("/software/source-snapshots".into(),format!("source=={source};entryCount==1;extraction.name=='/name'"),json!(source)),
+                (format!("/software/source-snapshots/{source}/entries"),"name==DirectoryTarget;version==2.0".into(),json!(id)),
             ] {cases.push((path,filter,expected));}
         }
     }
@@ -108,12 +108,12 @@ pub(super) async fn seed(
         sqlx::query("INSERT INTO mdm_apple.ade_devices(tenant_id,organization,serial,operation_date,deleted,seen_run,observed_at) VALUES($1,$2,$3,clock_timestamp(),false,$4,20)").bind(tenant).bind(organization).bind(serial).bind(Uuid::new_v4()).execute(&mut *tx).await?;
     }
     cases.extend([
-        ("/api/v1/apple/organizations".into(),"ade.orgId==directory-test;ade.enabled==false;accountEnrollment.signingKeyConfigured==false".into(),json!(organization)),
-        (format!("/api/v1/apple/organizations/{organization}/account-enrollment/accounts"),"account==directory@example.test;enabled==true;revision==2".into(),json!("directory@example.test")),
-        (format!("/api/v1/apple/organizations/{organization}/ade/devices"),"serial==DIRECTORY-TARGET;deleted==false;observedAt=gt=10".into(),json!("DIRECTORY-TARGET")),
-        ("/api/v1/software/sources".into(),"id==private;state==enabled".into(),json!("private")),
-        ("/api/v1/software/resources/z-directory-software/versions".into(),"version==1;resource==z-directory-software".into(),json!("1")),
-        ("/api/v1/asset-fields".into(),"key==device.name;nullable==false".into(),json!("device.name")),
+        ("/apple/organizations".into(),"ade.orgId==directory-test;ade.enabled==false;accountEnrollment.signingKeyConfigured==false".into(),json!(organization)),
+        (format!("/apple/organizations/{organization}/account-enrollment/accounts"),"account==directory@example.test;enabled==true;revision==2".into(),json!("directory@example.test")),
+        (format!("/apple/organizations/{organization}/ade/devices"),"serial==DIRECTORY-TARGET;deleted==false;observedAt=gt=10".into(),json!("DIRECTORY-TARGET")),
+        ("/software/sources".into(),"id==private;state==enabled".into(),json!("private")),
+        ("/software/resources/z-directory-software/versions".into(),"version==1;resource==z-directory-software".into(),json!("1")),
+        ("/asset-fields".into(),"key==device.name;nullable==false".into(),json!("device.name")),
     ]);
     tx.commit().await?;
     Ok(())

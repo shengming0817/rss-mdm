@@ -48,18 +48,16 @@ async fn same_session_reloads_current_grants_and_durable_authority_expires() -> 
     );
     assert!(
         matches!(
-            access::session::SessionAuthority::new(
-                context.authority.clone(),
-                context.inputs.installation.execution(other, 1)?
-            )
-            .authenticate(
-                &context.access(),
-                reader.credential()?,
-                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                    std::time::Duration::from_secs(8)
+            access::session::SessionAuthority::new(context.authority.clone())
+                .authenticate(
+                    context.execution(),
+                    &context.access(),
+                    reader.credential()?,
+                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                        std::time::Duration::from_secs(8)
+                    )
                 )
-            )
-            .await,
+                .await,
             Err(access::Error::Unauthorized)
         ),
         "a second legally admitted tenant must reject the first tenant's credential"
@@ -189,14 +187,15 @@ async fn embedded_source_is_bound_before_purpose_and_revocation_blocks_reads() -
         let authenticated = c
             .authority
             .inspect_session(
-                c.audit.binding(),
+                c.execution(),
                 secret,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     std::time::Duration::from_secs(3),
                 ),
             )
             .await?;
-        let bound = AuthorizedPrincipal::from_identity(&da, Principal::new(authenticated)?)?;
+        let bound =
+            AuthorizedPrincipal::from_identity(&da, Principal::new(authenticated, c.execution())?)?;
         assert_eq!(bound.profile(), StorageProfile::Da);
         assert_eq!(bound.authority_profile(), StorageProfile::Mdm);
         da.require_tenant_purpose(&bound, false).await?;
@@ -218,7 +217,7 @@ async fn embedded_source_is_bound_before_purpose_and_revocation_blocks_reads() -
         };
         let revoked = c
             .authority
-            .inspect_session(c.audit.binding(), secret, request.remaining()?)
+            .inspect_session(c.execution(), secret, request.remaining()?)
             .await?;
         c.authority
             .revoke_current_session(
@@ -260,12 +259,10 @@ async fn embedded_da_http_binds_authority_before_purpose() -> Result<()> {
         )?;
         let state = Arc::new(AuthenticationState {
             identity: Arc::new(rss_mdm_management_http::identity::Identity {
-                binding: c.audit.binding(),
                 rp_generation: rss_identity_postgres::RpGeneration::new(1)?,
                 authority: c.authority.clone(),
                 webauthn,
                 http: rss_identity_http_axum::HttpConfig::new(origin, Duration::from_secs(8))?,
-                tenant: c.tenant,
             }),
             access: Arc::new(c.access().for_product(StorageProfile::Da)),
             requests: Arc::new(tokio::sync::Semaphore::new(4)),
@@ -349,7 +346,10 @@ async fn embedded_da_http_binds_authority_before_purpose() -> Result<()> {
             .as_array()
             .unwrap()
             .iter()
-            .find(|e| e["method"] == "GET" && e["path"] == "/api/v1/device-views/{kind}/{id}")
+            .find(|e| {
+                e["method"] == "GET"
+                    && e["path"] == "/api/v1/tenants/{tenant}/device-views/{kind}/{id}"
+            })
             .unwrap();
         let responses = endpoint["responses"].as_array().unwrap();
         assert!(
@@ -393,7 +393,7 @@ async fn session_authentication_uses_the_current_execution_binding() -> anyhow::
         rss_mdm_authorization_service::credential::RequestCredential::Cookie(secret) => secret,
         _ => panic!("account fixture must issue a real cookie session"),
     };
-    let binding = c.audit.binding();
+    let binding = c.execution();
     let stale = ExecutionBinding::new(binding.storage(), c.tenant, Epoch::new(2)?);
     assert!(
         c.authority

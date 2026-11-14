@@ -101,12 +101,13 @@ impl Upload {
 impl Store {
     async fn begin_in(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         id: Uuid,
         binding: Binding,
         now: i64,
         budget: UploadBudget,
     ) -> Result<Upload, Error> {
-        let admission = self.admit(crate::gate::Kind::Mutation).await?;
+        let admission = self.admit(execution, crate::gate::Kind::Mutation).await?;
         budget.work(async {
         if id.is_nil()
             || now < 0
@@ -121,7 +122,7 @@ impl Store {
         {
             return Err(Error::Malformed);
         }
-        budget.work(self.clean_orphans(now, admission.clone())).await?;
+        budget.work(self.clean_orphans(execution, now, admission.clone())).await?;
         binding.artifact()?;
         let expires = match &binding.purpose {
             Purpose::Resource(_) | Purpose::Software { .. } => now
@@ -133,11 +134,12 @@ impl Store {
         }
         let reserved = protected::reservation(&binding)?;
         let key = storage_key(&binding.actor, id);
-        let mut tx = self.tx().await?;
-        self.quota(&mut tx, 0).await?;
-        let old:Option<serde_json::Value>=sqlx::query_scalar("SELECT document FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(self.tenant.to_string()).bind(key).fetch_optional(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+        let mut tx = self.tx(execution, ).await?;
+        self.quota(execution, &mut tx, 0).await?;
+        let old:Option<serde_json::Value>=sqlx::query_scalar("SELECT document FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(execution.tenant().to_string()).bind(key).fetch_optional(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         if let Some(old) = old {
-            let saved: journal::Saved = self.unsign(&key.to_string(), old)?;
+            let saved: journal::Saved = self.unsign(execution, &key.to_string(), old)?;
+        if saved.expected_epoch!=execution.epoch().get(){return Err(Error::Conflict)}
             if saved.upload.binding != binding
                 || saved.upload.id != id
                 || saved.upload.expires <= now
@@ -147,7 +149,7 @@ impl Store {
             journal::commit(tx).await?;
             return Ok(saved.upload);
         }
-        self.quota(&mut tx, reserved).await?;
+        self.quota(execution, &mut tx, reserved).await?;
         let count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM mdm_content.uploads WHERE NOT complete AND expires>$1",
         )
@@ -165,20 +167,27 @@ impl Store {
             expires,
             complete: false,
         };
-        let saved = journal::Saved {
+        let saved = journal::Saved { expected_epoch: execution.epoch().get(),
             upload: upload.clone(),
             pieces: vec![],
         };
-        sqlx::query("INSERT INTO mdm_content.uploads(tenant_id,id,document,expires,reserved,complete) VALUES($1::uuid,$2,$3,$4,$5,false)").bind(self.tenant.to_string()).bind(key).bind(self.sign(&key.to_string(),&saved)?).bind(upload.expires).bind(reserved as i64).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+        sqlx::query("INSERT INTO mdm_content.uploads(tenant_id,id,document,expires,reserved,complete) VALUES($1::uuid,$2,$3,$4,$5,false)").bind(execution.tenant().to_string()).bind(key).bind(self.sign(execution, &key.to_string(),&saved)?).bind(upload.expires).bind(reserved as i64).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         journal::commit(tx).await?;
         Ok(upload)
         }).await
     }
-    async fn status_in(&self, actor: &str, id: Uuid, now: i64) -> Result<Upload, Error> {
-        Ok(self.saved(actor, id, now).await?.upload)
+    async fn status_in(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        actor: &str,
+        id: Uuid,
+        now: i64,
+    ) -> Result<Upload, Error> {
+        Ok(self.saved(execution, actor, id, now).await?.upload)
     }
     async fn append_in<R: tokio::io::AsyncRead + Unpin + Send>(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         actor: &str,
         id: Uuid,
         offset: u64,
@@ -186,9 +195,9 @@ impl Store {
         body: R,
         budget: UploadBudget,
     ) -> Result<Upload, Error> {
-        let admission = self.admit(crate::gate::Kind::Mutation).await?;
+        let admission = self.admit(execution, crate::gate::Kind::Mutation).await?;
         budget
-            .work(self.clean_orphans(now, admission.clone()))
+            .work(self.clean_orphans(execution, now, admission.clone()))
             .await?;
         let permit = self
             .transfers
@@ -198,15 +207,16 @@ impl Store {
         let epoch = Uuid::new_v4();
         let key = storage_key(actor, id);
         let lease = Arc::new(crate::budget::UploadLease::new(
-            self, key, epoch, permit, admission,
+            execution, self, key, epoch, permit, admission,
         ));
         let commit_started = std::sync::atomic::AtomicBool::new(false);
         let result = budget
             .work(async {
                 let (saved, epoch) = self
-                    .claim(actor, id, Some(offset), now, epoch, budget)
+                    .claim(execution, actor, id, Some(offset), now, epoch, budget)
                     .await?;
                 self.append_claimed(
+                    execution,
                     saved,
                     (epoch, lease.clone()),
                     body,
@@ -240,6 +250,7 @@ impl Store {
 
     async fn append_claimed<R: tokio::io::AsyncRead + Unpin + Send>(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         mut saved: journal::Saved,
         lease: (Uuid, Arc<crate::budget::UploadLease>),
         mut body: R,
@@ -262,7 +273,7 @@ impl Store {
                 let bytes = self
                     .backend
                     .read(
-                        &self.coordinate(piece).await?,
+                        &self.coordinate(binding, piece).await?,
                         piece.content,
                         0,
                         piece.content.length,
@@ -272,7 +283,7 @@ impl Store {
                     .await?;
                 buffer = protected::plaintext(
                     &self.protection,
-                    self.tenant,
+                    binding.tenant(),
                     &bytes,
                     &artifact,
                     saved.upload.binding.class(),
@@ -290,7 +301,7 @@ impl Store {
                 &self
                     .backend
                     .read(
-                        &self.coordinate(&tail).await?,
+                        &self.coordinate(binding, &tail).await?,
                         tail.content,
                         0,
                         tail.content.length,
@@ -322,6 +333,7 @@ impl Store {
                 let offset = saved.pieces.last().map_or(0, |p| p.offset + p.length);
                 saved.pieces.push(
                     self.put_piece(
+                        binding,
                         (key, epoch, capacity.clone()),
                         offset,
                         journal::CHUNK,
@@ -346,7 +358,7 @@ impl Store {
             let bytes = if native {
                 protected::seal(
                     &self.protection,
-                    self.tenant,
+                    binding.tenant(),
                     &buffer,
                     &artifact,
                     saved.upload.binding.class(),
@@ -356,6 +368,7 @@ impl Store {
             };
             saved.pieces.push(
                 self.put_piece(
+                    binding,
                     (key, epoch, capacity.clone()),
                     offset,
                     length,
@@ -366,33 +379,40 @@ impl Store {
                 .await?,
             );
         }
-        self.save_frontier(&saved, epoch, deadline, commit_started)
+        self.save_frontier(binding, &saved, epoch, deadline, commit_started)
             .await?;
         Ok(saved.upload)
     }
     pub(super) async fn reserve_parse(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         key: Uuid,
         epoch: Uuid,
         length: u64,
     ) -> Result<(), Error> {
-        let mut tx = self.tx().await?;
+        let mut tx = self.tx(binding).await?;
         let old: i64 = sqlx::query_scalar("SELECT reserved FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3 FOR UPDATE")
-            .bind(self.tenant.to_string()).bind(key).bind(epoch).fetch_one(&mut *tx).await.map_err(|_| storage())?;
+            .bind(binding.tenant().to_string()).bind(key).bind(epoch).fetch_one(&mut *tx).await.map_err(|_| storage())?;
         let required = length.checked_mul(2).ok_or(Error::Malformed)?;
-        self.quota(&mut tx, required.saturating_sub(old as u64))
+        self.quota(binding, &mut tx, required.saturating_sub(old as u64))
             .await?;
         let changed = sqlx::query("UPDATE mdm_content.uploads SET reserved=$4 WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3")
-            .bind(self.tenant.to_string()).bind(key).bind(epoch).bind(required as i64).execute(&mut *tx).await.map_err(|_| storage())?.rows_affected();
+            .bind(binding.tenant().to_string()).bind(key).bind(epoch).bind(required as i64).execute(&mut *tx).await.map_err(|_| storage())?.rows_affected();
         if changed != 1 {
             return Err(Error::Conflict);
         }
         journal::commit(tx).await
     }
-    async fn parse_upload_in(&self, actor: &str, id: Uuid, now: i64) -> Result<(), Error> {
-        let admission = self.admit(crate::gate::Kind::Mutation).await?;
+    async fn parse_upload_in(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        actor: &str,
+        id: Uuid,
+        now: i64,
+    ) -> Result<(), Error> {
+        let admission = self.admit(binding, crate::gate::Kind::Mutation).await?;
         let budget = self.upload_budget()?;
-        let old = self.saved(actor, id, now).await?;
+        let old = self.saved(binding, actor, id, now).await?;
         if !old.upload.complete {
             return Err(Error::Conflict);
         }
@@ -403,7 +423,12 @@ impl Store {
             .ok_or(Error::Malformed)?;
         let artifact = old.upload.binding.artifact()?;
         let pin = self
-            .pin_admitted(&artifact, old.upload.binding.class(), admission.clone())
+            .pin_admitted(
+                binding,
+                &artifact,
+                old.upload.binding.class(),
+                admission.clone(),
+            )
             .await?;
         if pin.manifest.inspections.contains_key(&kind) {
             return Ok(());
@@ -411,6 +436,7 @@ impl Store {
         let epoch = Uuid::new_v4();
         let key = storage_key(actor, id);
         let lease = Arc::new(crate::budget::UploadLease::new(
+            binding,
             self,
             key,
             epoch,
@@ -421,24 +447,24 @@ impl Store {
             admission,
         ));
         let result = budget.work(async {
-            self.claim_parse(actor, id, now, epoch, budget, artifact.length()).await?;
-            let (manifest, pin_id) = self.pin(&artifact, old.upload.binding.class(), budget.operation, 0).await?;
-            let reservation = crate::reader::Pinned::new(self.clone(), pin_id, manifest, artifact.clone(), lease.admission());
+            self.claim_parse(binding, actor, id, now, epoch, budget, artifact.length()).await?;
+            let (manifest, pin_id) = self.pin(binding, &artifact, old.upload.binding.class(), budget.operation, 0).await?;
+            let reservation = crate::reader::Pinned::new(binding, self.clone(), pin_id, manifest, artifact.clone(), lease.admission());
             let temporary = tempfile::tempfile().map_err(|_| storage())?;
-            let (_, digest, temporary) = self.check_pieces(&reservation.manifest.pieces, &artifact, old.upload.binding.class(), budget.operation, Some(temporary), lease.clone()).await?;
+            let (_, digest, temporary) = self.check_pieces(binding, &reservation.manifest.pieces, &artifact, old.upload.binding.class(), budget.operation, Some(temporary), lease.clone()).await?;
             let temporary = temporary.ok_or(Error::Storage)?;
             if digest != artifact.digest().bytes() { return Err(Error::Invariant); }
             let result = crate::installer::observe(temporary, kind, self.config.clone(), self.timer.clone(), budget.operation, lease.clone(), Some(reservation)).await;
-            let mut tx = self.tx().await?;
-            let owns: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3)").bind(self.tenant.to_string()).bind(key).bind(epoch).fetch_one(&mut *tx).await.map_err(|_| storage())?;
+            let mut tx = self.tx(binding, ).await?;
+            let owns: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3)").bind(binding.tenant().to_string()).bind(key).bind(epoch).fetch_one(&mut *tx).await.map_err(|_| storage())?;
             if !owns { return Err(Error::Conflict); }
             let class = old.upload.binding.class();
             let document: serde_json::Value = sqlx::query_scalar("SELECT document FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND state='ready' FOR UPDATE")
-                .bind(self.tenant.to_string()).bind(journal::class(class)).bind(artifact.digest().bytes().as_slice()).bind(artifact.length() as i64).fetch_one(&mut *tx).await.map_err(|_| storage())?;
-            let mut current: journal::Manifest = self.unsign(&self.manifest_key(class,&artifact), document)?;
+                .bind(binding.tenant().to_string()).bind(journal::class(class)).bind(artifact.digest().bytes().as_slice()).bind(artifact.length() as i64).fetch_one(&mut *tx).await.map_err(|_| storage())?;
+            let mut current: journal::Manifest = self.unsign(binding, &self.manifest_key(class,&artifact), document)?;
             current.inspections.entry(kind).or_insert(result);
             sqlx::query("UPDATE mdm_content.manifests SET document=$5 WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4")
-                .bind(self.tenant.to_string()).bind(journal::class(class)).bind(artifact.digest().bytes().as_slice()).bind(artifact.length() as i64).bind(self.sign(&self.manifest_key(class,&artifact), &current)?).execute(&mut *tx).await.map_err(|_| storage())?;
+                .bind(binding.tenant().to_string()).bind(journal::class(class)).bind(artifact.digest().bytes().as_slice()).bind(artifact.length() as i64).bind(self.sign(binding, &self.manifest_key(class,&artifact), &current)?).execute(&mut *tx).await.map_err(|_| storage())?;
             journal::commit(tx).await
         }).await;
         if let Ok(lease) = Arc::try_unwrap(lease) {
@@ -448,13 +474,14 @@ impl Store {
     }
     async fn finish_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         actor: &str,
         id: Uuid,
         now: i64,
         budget: UploadBudget,
     ) -> Result<Upload, Error> {
-        let admission = self.admit(crate::gate::Kind::Mutation).await?;
-        let old = budget.work(self.saved(actor, id, now)).await?;
+        let admission = self.admit(binding, crate::gate::Kind::Mutation).await?;
+        let old = budget.work(self.saved(binding, actor, id, now)).await?;
         if old.upload.complete {
             return Ok(old.upload);
         }
@@ -466,7 +493,8 @@ impl Store {
         let deadline = budget.operation;
         let epoch = Uuid::new_v4();
         let key = storage_key(actor, id);
-        let mut lease = crate::budget::UploadLease::new(self, key, epoch, permit, admission);
+        let mut lease =
+            crate::budget::UploadLease::new(binding, self, key, epoch, permit, admission);
         let kind = old.upload.binding.inspection_kind();
         let automatic = crate::installer::automatic(kind, old.upload.binding.length);
         let lease = if automatic {
@@ -477,17 +505,17 @@ impl Store {
         };
         let commit_started = std::sync::atomic::AtomicBool::new(false);
         let result=budget.work(async {
-        let (mut saved, epoch) = self.claim(actor, id, None, now, epoch, budget).await?;
+        let (mut saved, epoch) = self.claim(binding, actor, id, None, now, epoch, budget).await?;
    if saved.upload.offset!=saved.upload.binding.length{return Err(Error::Conflict)}
    let a=saved.upload.binding.artifact()?;let c=saved.upload.binding.class();
    let temporary = if automatic {
-       match self.reserve_parse(key, epoch, a.length()).await {
+       match self.reserve_parse(binding, key, epoch, a.length()).await {
            Ok(()) => tempfile::tempfile().ok(),
            Err(Error::Conflict) => None,
            Err(error) => return Err(error),
        }
    } else { None };
-   let (_,digest,temporary)=self.check_pieces(&saved.pieces,&a,c,deadline,temporary,lease.clone()).await?;
+   let (_,digest,temporary)=self.check_pieces(binding, &saved.pieces,&a,c,deadline,temporary,lease.clone()).await?;
    if digest!=a.digest().bytes(){return Err(Error::Malformed)}
    self.check_deadline(deadline)?;
    let mut inspections = std::collections::BTreeMap::new();
@@ -495,24 +523,24 @@ impl Store {
        let outcome = crate::installer::observe(file, kind, self.config.clone(), self.timer.clone(), deadline, lease.clone(), None).await;
        inspections.insert(kind, outcome);
    }
-   let mut tx = self.tx().await?;
-   let owns: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3 AND NOT complete)").bind(self.tenant.to_string()).bind(key).bind(epoch).fetch_one(&mut *tx).await.map_err(|_| storage())?;
+   let mut tx = self.tx(binding, ).await?;
+   let owns: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3 AND NOT complete)").bind(binding.tenant().to_string()).bind(key).bind(epoch).fetch_one(&mut *tx).await.map_err(|_| storage())?;
    if !owns { return Err(Error::Conflict); }
    let manifest=journal::Manifest{pieces:saved.pieces.clone(), inspections};
    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2886))").bind(self.manifest_key(c,&a)).execute(&mut *tx).await.map_err(|_| storage())?;
    // Preserve the physical identity already in use; merge only observations for identical bytes.
    let previous: Option<serde_json::Value> = sqlx::query_scalar("SELECT document FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND state='ready' FOR UPDATE")
-      .bind(self.tenant.to_string()).bind(journal::class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).fetch_optional(&mut *tx).await.map_err(|_| storage())?;
+      .bind(binding.tenant().to_string()).bind(journal::class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).fetch_optional(&mut *tx).await.map_err(|_| storage())?;
    let manifest = if let Some(document) = previous {
-       let mut existing: journal::Manifest = self.unsign(&self.manifest_key(c,&a), document)?;
+       let mut existing: journal::Manifest = self.unsign(binding, &self.manifest_key(c,&a), document)?;
        for (kind, result) in manifest.inspections { existing.inspections.entry(kind).or_insert(result); }
        existing
    } else { manifest };
    sqlx::query("INSERT INTO mdm_content.manifests(tenant_id,class,sha256,length,document,expires,state) VALUES($1::uuid,$2,$3,$4,$5,$6,'ready') ON CONFLICT(tenant_id,class,sha256,length) DO UPDATE SET expires=EXCLUDED.expires, document=EXCLUDED.document,state='ready' WHERE mdm_content.manifests.state<>'deleting'")
-    .bind(self.tenant.to_string()).bind(journal::class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).bind(self.sign(&self.manifest_key(c,&a),&manifest)?).bind(saved.upload.expires).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
-   let state:String=sqlx::query_scalar("SELECT state FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 FOR UPDATE").bind(self.tenant.to_string()).bind(journal::class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).fetch_one(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+    .bind(binding.tenant().to_string()).bind(journal::class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).bind(self.sign(binding, &self.manifest_key(c,&a),&manifest)?).bind(saved.upload.expires).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+   let state:String=sqlx::query_scalar("SELECT state FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 FOR UPDATE").bind(binding.tenant().to_string()).bind(journal::class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).fetch_one(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
    if state!="ready"{return Err(Error::Conflict)}saved.upload.complete=true;
-   let changed=sqlx::query("UPDATE mdm_content.uploads SET complete=true,document=$4 WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(self.sign(&key.to_string(),&saved)?).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?.rows_affected();if changed!=1{return Err(Error::Conflict)}
+   let changed=sqlx::query("UPDATE mdm_content.uploads SET complete=true,document=$4 WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3").bind(binding.tenant().to_string()).bind(key).bind(epoch).bind(self.sign(binding, &key.to_string(),&saved)?).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?.rows_affected();if changed!=1{return Err(Error::Conflict)}
    self.check_deadline(deadline)?;commit_started.store(true, std::sync::atomic::Ordering::Release);journal::commit(tx).await?;Ok(saved.upload)
   }).await;
         if let Ok(lease) = Arc::try_unwrap(lease) {
@@ -536,21 +564,32 @@ impl Store {
 impl Store {
     pub async fn begin(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         id: Uuid,
         binding: Binding,
         now: i64,
         budget: UploadBudget,
     ) -> Result<Upload, Error> {
-        self.current()
+        self.current(execution)
             .await?
-            .begin_in(id, binding, now, budget)
+            .begin_in(execution, id, binding, now, budget)
             .await
     }
-    pub async fn status(&self, actor: &str, id: Uuid, now: i64) -> Result<Upload, Error> {
-        self.current().await?.status_in(actor, id, now).await
+    pub async fn status(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        actor: &str,
+        id: Uuid,
+        now: i64,
+    ) -> Result<Upload, Error> {
+        self.current(execution)
+            .await?
+            .status_in(execution, actor, id, now)
+            .await
     }
     pub async fn append<R: tokio::io::AsyncRead + Unpin + Send>(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         actor: &str,
         id: Uuid,
         offset: u64,
@@ -558,24 +597,34 @@ impl Store {
         body: R,
         budget: UploadBudget,
     ) -> Result<Upload, Error> {
-        self.current()
+        self.current(execution)
             .await?
-            .append_in(actor, id, offset, now, body, budget)
+            .append_in(execution, actor, id, offset, now, body, budget)
             .await
     }
-    pub async fn parse_upload(&self, actor: &str, id: Uuid, now: i64) -> Result<(), Error> {
-        self.current().await?.parse_upload_in(actor, id, now).await
+    pub async fn parse_upload(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        actor: &str,
+        id: Uuid,
+        now: i64,
+    ) -> Result<(), Error> {
+        self.current(execution)
+            .await?
+            .parse_upload_in(execution, actor, id, now)
+            .await
     }
     pub async fn finish(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         actor: &str,
         id: Uuid,
         now: i64,
         budget: UploadBudget,
     ) -> Result<Upload, Error> {
-        self.current()
+        self.current(execution)
             .await?
-            .finish_in(actor, id, now, budget)
+            .finish_in(execution, actor, id, now, budget)
             .await
     }
 }

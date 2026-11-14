@@ -116,7 +116,6 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     .await?;
     let native = Arc::new(
         rss_mdm_software_service::deployment::managed_registration::AuthorityReader {
-            tenant: h.c.tenant,
             instance: resources.config.identity.instance_id.clone(),
             source: Arc::new(crate::assembly::software_sources::Source(
                 resources.source.clone(),
@@ -134,7 +133,8 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
             native,
             resources.protection.clone(),
             &materials,
-        )?,
+        )
+        .await?,
     );
     // A complete 4096-field projection is one atomic event; the configured pass must
     // cover its SQL work, including settlement, while still bounding lock contention.
@@ -157,7 +157,8 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
         projection.store.clone(),
         h.c.database.inventory(),
         h.c.audit.clone(),
-        h.c.tenant,
+        h.c.execution().storage(),
+        h.c.execution().epoch(),
         clock,
         Arc::new(rt::Readiness::default()),
     ));
@@ -176,7 +177,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
         host: "mdm.example.test".into(),
         clock: Arc::new(crate::Monotonic(std::time::Instant::now)),
         audit_store: h.c.audit.clone(),
-        tenant: h.c.tenant.to_string(),
+
         request_budget: rss_axum::RequestBudget::new(std::time::Duration::from_secs(30))?,
     };
     let mut lifecycle = rss_runtime::ShutdownStack::try_new(
@@ -262,7 +263,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     let delivery = collection::store::Delivery::new(h.c.database.inventory(), h.c.audit.clone());
     let prefix = delivery
         .pending_reports(
-            &h.c.tenant.to_string(),
+            h.c.execution(),
             rss_projection::BatchLimit::new(1024)?,
             charge,
         )
@@ -272,7 +273,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     assert_eq!(
         delivery
             .pending_reports(
-                &h.c.tenant.to_string(),
+                h.c.execution(),
                 rss_projection::BatchLimit::new(1024)?,
                 charge * 2
             )
@@ -283,7 +284,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     assert!(matches!(
         delivery
             .pending_reports(
-                &h.c.tenant.to_string(),
+                h.c.execution(),
                 rss_projection::BatchLimit::new(1024)?,
                 charge - 1
             )
@@ -323,6 +324,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
             assert_eq!(status.current(), rss_runtime::TaskState::Running);
             let status = inventory
                 .inspect_report(
+                    h.c.tenant,
                     &stored.scope,
                     stored.batch().unwrap(),
                     budget.deadline(),

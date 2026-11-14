@@ -52,6 +52,7 @@ use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 use sqlx::Row;
 /// Insert the original work and its commit-delivered notification atomically.
 pub async fn enqueue_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
@@ -62,11 +63,24 @@ pub async fn enqueue_in(
         serde_json::to_value(input).map_err(|_| crate::storage(profile).fault("work.input"))?;
     let kind = input.kind();
     let target = input.target();
-    tx.with_connection(move |c|Box::pin(async move {
-        sqlx::query(crate::storage_profile::sql(profile).work_enqueue_in_1).bind(tenant).bind(id).bind(kind).bind(target).bind(document).execute(&mut *c).await?;
-        sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'policy')").execute(c).await?;
-        Ok(())
-    })).await
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query(crate::storage_profile::sql(profile).work_enqueue_in_1)
+                .bind(tenant)
+                .bind(id)
+                .bind(kind)
+                .bind(target)
+                .bind(document)
+                .bind(binding.epoch().get())
+                .execute(&mut *c)
+                .await?;
+            sqlx::query("SELECT pg_notify('mdm_work','policy')")
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await
 }
 /// Durable work observed by the worker; absence is distinct from completion.
 pub struct Record {

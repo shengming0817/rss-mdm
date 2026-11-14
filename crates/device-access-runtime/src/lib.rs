@@ -20,7 +20,7 @@ pub enum Error {
 }
 pub struct Resources {
     pub report_limits: pg::reports::Limits,
-    pub tenant: rss_request_context::TenantId,
+    pub probe: rss_transactional_messaging::fence::ExecutionBinding,
     pub installation: Uuid,
     pub identity_instance: rss_identity_core::InstanceId,
     pub pool: sqlx::PgPool,
@@ -52,7 +52,6 @@ impl Runtime {
         let business = Arc::new(pg::Service::new(pg::Assembly {
             report_limits: r.report_limits,
             cursor: r.cursor.clone(),
-            tenant: r.tenant,
             instance: r.installation,
             store: store.clone(),
             audit: r.audit.clone(),
@@ -60,7 +59,6 @@ impl Runtime {
             protection: r.protection.clone(),
         })?);
         let admission = Arc::new(pg::configuration::Admission {
-            tenant: r.tenant,
             installation: r.installation,
             platform: r.platform.clone(),
             evidence: r.evidence,
@@ -68,7 +66,8 @@ impl Runtime {
             broker_query: r.broker_query.unwrap_or(pg::broker_release_query!("SELECT NULL::uuid AS tenant_id,NULL::uuid AS installation,NULL::uuid AS device,NULL::uuid AS registration,NULL::bigint AS generation,NULL::text AS platform,NULL::jsonb AS capabilities,NULL::jsonb AS execution_context WHERE false")),
         });
         let platform = Arc::new(pg::platform_sso::Context {
-            tenant: r.tenant,
+            storage: r.probe.storage(),
+            expected_epoch: r.probe.epoch(),
             instance: r.identity_instance,
             installation: r.installation,
             access: store.clone(),
@@ -81,7 +80,7 @@ impl Runtime {
             let service = Arc::new(registration::agent::da::RegistrationService::new(
                 registration::agent::da::Assembly {
                     cursor: r.cursor,
-                    tenant: r.tenant,
+                    probe: r.probe,
                     store,
                     audit: r.audit.clone(),
                     issuer: inputs.issuer,
@@ -90,7 +89,6 @@ impl Runtime {
                 },
             )?);
             let trust = Arc::new(rss_mdm_task_trust::Service::for_configurations(
-                r.tenant,
                 inputs.signing,
                 r.protection,
                 r.audit,

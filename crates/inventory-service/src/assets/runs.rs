@@ -34,10 +34,10 @@ impl AssetService {
         id: Uuid,
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
-        crate::transaction::inspect(&self.runtime,self.audit_store.binding(),(self,p,device),|ctx,tx|Box::pin(async move{
-            let(s,p,device)=*ctx;
+        crate::transaction::inspect(&self.runtime,p.binding(),(self,p,device),|ctx,tx|Box::pin(async move{
+            let(_,p,device)=*ctx;
             query_authority(tx,p).await?.require(p,rss_mdm_authorization_service::Permission::InventoryRead,Some(device))?;
-            let tenant=s.tenant.to_string();let device_key=device.into_uuid();
+            let tenant=p.binding().tenant().to_string();let device_key=device.into_uuid();
             let row=tx.with_connection(move|c|Box::pin(async move{
                 sqlx::query("SELECT c.started_at, c.sealed_at, c.result FROM mdm_access.collection_runs AS c INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (c.tenant_id, c.device) WHERE c.tenant_id = CAST($1 AS uuid) AND c.id = $2 AND r.id = $3")
                     .bind(tenant).bind(id).bind(device_key).fetch_optional(c).await
@@ -67,7 +67,7 @@ impl AssetService {
         {
             return Err(Error::Forbidden.into());
         }
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         let device = device.to_owned();
         let row=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query("SELECT c.device, c.source, c.sequence, c.started_at, c.sealed_at, c.result, c.reason, c.delivery_pending, c.scope, c.batch, c.digest, c.progress_version, CASE WHEN v.metadata_bytes <= 67108864 THEN CAST(v.metadata AS text) END AS metadata FROM mdm_access.collection_runs AS c INNER JOIN mdm_access.collection_versions AS v ON (v.tenant_id, v.version) = (c.tenant_id, c.progress_version) INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (c.tenant_id, c.device) WHERE c.tenant_id = CAST($1 AS uuid) AND c.id = $2 AND r.id = $3")
@@ -120,7 +120,13 @@ impl AssetService {
                 return Err(Error::Unavailable(Failure::CollectionQuery).into());
             }
             self.inventory
-                .inspect_report(&coordinate, &batch, read_control.0, read_control.1)
+                .inspect_report(
+                    tx.tenant_id(),
+                    &coordinate,
+                    &batch,
+                    read_control.0,
+                    read_control.1,
+                )
                 .await?
         } else {
             crate::inventory_runtime::DeliveryStatus {
@@ -211,7 +217,7 @@ impl AssetService {
         let codec = rss_mdm_query::cursor::CursorCodec::from_key(self.asset_cursor_key.clone());
         let binding = digest(&(
             "collection-items",
-            self.tenant.to_string(),
+            tx.tenant_id().to_string(),
             device,
             id,
             field,
@@ -233,7 +239,7 @@ impl AssetService {
         if offset > metadata.item_count {
             return Err(Error::Malformed.into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let field_name = field.as_str().to_owned();
         let rows: Vec<(i64, String, Option<String>)> = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_as("WITH selected AS (

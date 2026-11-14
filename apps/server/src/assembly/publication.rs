@@ -1,7 +1,7 @@
 //! Software publication assembly; only the Software owner interprets publication work.
 use crate::owner_storage::{OwnerRuntime, Resource, StorageBinding};
 use crate::{Error, Failure};
-use rss_request_context::{Deadline, TenantId};
+use rss_request_context::Deadline;
 use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa, PgRuntime};
 use std::{sync::Arc, time::Duration};
 const SOURCE_STARTUP_SECONDS: u64 = 6;
@@ -19,10 +19,11 @@ pub(crate) fn startup_budget(config: &crate::publication_config::Config) -> Dura
     reason = "assembly injects final owner inputs explicitly and immediately registers resources"
 )]
 pub(crate) async fn open(
+    discovery_pool: sqlx::PgPool,
     config: &crate::publication_config::Config,
     binding: &StorageBinding,
     owner: &OwnerRuntime,
-    tenant: TenantId,
+    probe: rss_transactional_messaging::fence::ExecutionBinding,
     key: &[u8],
     clock: Arc<dyn crate::clock::Clock>,
     content: Option<Arc<rss_mdm_content_service::Store>>,
@@ -33,14 +34,11 @@ pub(crate) async fn open(
 > {
     owner
         .runtime
-        .local_tx(
-            owner.audit.binding(),
-            crate::identity::deadline(),
-            move |tx| {
-                Box::pin(async move {
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            if !sqlx::query_scalar::<_, bool>(
+        .local_tx(probe, crate::identity::deadline(), move |tx| {
+            Box::pin(async move {
+                tx.with_connection(move |c| {
+                    Box::pin(async move {
+                        if !sqlx::query_scalar::<_, bool>(
                             rss_mdm_software_service::management::publication::HTTP_ADMISSION_SQL,
                         )
                         .fetch_one(&mut *c)
@@ -50,13 +48,12 @@ pub(crate) async fn open(
                                 "owner storage admission rejected".into(),
                             ));
                         }
-                            Ok(())
-                        })
+                        Ok(())
                     })
-                    .await
                 })
-            },
-        )
+                .await
+            })
+        })
         .await
         .fold(
             Ok,
@@ -70,26 +67,19 @@ pub(crate) async fn open(
         rss_mdm_software_service::management::publication::service::PublicationDirectory {
             cursor: rss_mdm_query::cursor::CursorCodec::new(key).map_err(|_| Error::Malformed)?,
             services: Default::default(),
-            tenant,
+            storage: binding.identity()?,
+            discovery_pool,
             runtime: owner.runtime.clone(),
             audit_store: owner.audit.clone(),
             clock: Arc::new(crate::clock::ContentClock(clock)),
         };
-    open_sources(
-        config,
-        binding,
-        tenant,
-        &mut directory,
-        content,
-        &mut acquire,
-    )
-    .await?;
+    open_sources(config, probe, &mut directory, content, &mut acquire).await?;
     Ok(Arc::new(directory))
 }
 pub(crate) async fn open_sources(
     config: &crate::publication_config::Config,
-    binding: &crate::owner_storage::StorageBinding,
-    tenant: TenantId,
+
+    probe: rss_transactional_messaging::fence::ExecutionBinding,
     directory: &mut rss_mdm_software_service::management::publication::service::PublicationDirectory,
     content: Option<Arc<rss_mdm_content_service::Store>>,
     acquire: &mut impl FnMut(Resource),
@@ -100,7 +90,7 @@ pub(crate) async fn open_sources(
     use rss_mdm_software_service::publication as p;
     let invalid = || Error::Configuration(crate::ConfigIssue::Publication);
     let db = &config.database;
-    let binding = binding.execution(tenant)?;
+    let binding = probe;
     let pg = PgConfig::new(
         &db.host,
         db.port,
@@ -132,7 +122,6 @@ pub(crate) async fn open_sources(
                 runtime: runtime.clone(),
                 audit: publication_audit.clone(),
                 credentials: Arc::new(crate::source_credentials::SourceCredentials::load(
-                    tenant,
                     &source.name,
                     &source.credentials,
                 )?),
@@ -140,10 +129,7 @@ pub(crate) async fn open_sources(
             binding,
             source.name.clone(),
             source.target.clone(),
-            p::ServiceIdentity {
-                backend: rss_mdm_software_release::ActorId::new(tenant, "mdm-software-backend")
-                    .map_err(|_| invalid())?,
-            },
+            "mdm-software-backend".to_owned(),
             Deadline::from_timeout(
                 &crate::lifecycle::RuntimeTimer,
                 Duration::from_secs(SOURCE_STARTUP_SECONDS),

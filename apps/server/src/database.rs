@@ -99,7 +99,6 @@ impl Database {
     pub(crate) fn timeline(
         &self,
         audit: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
-        tenant: rss_request_context::TenantId,
         key: &[u8],
         budget: rss_mdm_timeline_service::QueryBudget,
     ) -> Result<std::sync::Arc<rss_mdm_timeline_service::Timeline>, Error> {
@@ -107,7 +106,6 @@ impl Database {
             rss_mdm_install_support::StorageProfile::Mdm,
             self.pool.clone(),
             audit,
-            tenant,
             key,
             std::sync::Arc::new(crate::assembly::timeline_associations::Producers),
             budget,
@@ -115,33 +113,7 @@ impl Database {
         .map(std::sync::Arc::new)
         .map_err(|_| Error::Unavailable(Failure::Database))
     }
-    pub(crate) async fn claim_tenant_use(
-        &self,
-        config: &crate::config::Config,
-    ) -> Result<(), Error> {
-        let identity = crate::migration::Installation {
-            instance_id: config.identity.instance_id.clone(),
-            target: config.storage_binding.target,
-            lineage: config.storage_binding.lineage,
-            audit_mode: config.audit.mode(),
-        };
-        let mut conn = self.pool.acquire().await.map_err(db)?;
-        let management: String =
-            sqlx::query_scalar("SELECT management_tenant_id::text FROM public.mdm_installation")
-                .fetch_one(&mut *conn)
-                .await
-                .map_err(db)?;
-        if management == config.identity.tenant_id {
-            return Err(Error::Configuration(crate::ConfigIssue::Tenant));
-        }
-        crate::administration::tenants::claim_use(
-            &mut conn,
-            &identity,
-            &config.identity.tenant_id,
-            config.storage_binding.epoch,
-        )
-        .await
-    }
+
     pub async fn close(&self) {
         self.pool.close().await;
     }
@@ -176,6 +148,10 @@ fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
         rss_mdm_task_trust::ACCESS_CONTRACT,
         rss_mdm_inventory_service::ACCESS_CONTRACT,
         rss_mdm_group_service::ACCESS_CONTRACT,
+        rss_mdm_software_service::management::publication::ACCESS_CONTRACT,
+        rss_mdm_compliance_postgres::WORK_ACCESS_CONTRACT,
+        rss_mdm_registration_service::installation::WORK_ACCESS_CONTRACT,
+        rss_mdm_recovery_credentials::native::WORK_ACCESS_CONTRACT,
         rss_mdm_agent_channel::ACCESS_CONTRACT,
         rss_mdm_windows_channel::ACCESS_CONTRACT,
         rss_mdm_pki_service::ACCESS_CONTRACT,

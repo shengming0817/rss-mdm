@@ -21,14 +21,14 @@ impl Kind {
 /// Weak entries never extend a fence beyond its actual operations or I/O owners.
 #[derive(Default)]
 pub(crate) struct Admissions {
-    reads: tokio::sync::Mutex<Weak<Permit>>,
-    mutations: tokio::sync::Mutex<Weak<Permit>>,
+    active: tokio::sync::Mutex<
+        std::collections::BTreeMap<(String, uuid::Uuid, i64, i64), Weak<Permit>>,
+    >,
 }
 
 /// Kept by the actual I/O owner (including blocking work), not only its awaiting future.
 /// Closing this dedicated session releases locks while retaining its pool slot until close.
 pub(crate) struct Permit {
-    generation: uuid::Uuid,
     connection: Option<PoolConnection<Postgres>>,
     cleanup: tokio_util::task::TaskTracker,
 }
@@ -44,19 +44,23 @@ impl Drop for Permit {
     }
 }
 impl Store {
-    pub(crate) async fn admit(&self, kind: Kind) -> Result<Arc<Permit>, Error> {
+    pub(crate) async fn admit(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        kind: Kind,
+    ) -> Result<Arc<Permit>, Error> {
         if !self.backend.available() {
             return Err(Error::Storage);
         }
-        let permit = self.session_fence(kind).await?;
+        let permit = self.session_fence(binding, kind).await?;
         // Every new operation rechecks admission, even when an earlier operation already
         // holds the shared session. Sharing a fence never admits new work while frozen.
-        let mut tx = self.pool.begin().await.map_err(|_| storage())?;
+        let mut tx = self.scope_tx(binding).await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','6000',true)")
-            .bind(self.tenant.to_string()).execute(&mut *tx).await.map_err(|_| storage())?;
+            .bind(binding.tenant().to_string()).execute(&mut *tx).await.map_err(|_| storage())?;
         let (generation, mut phase): (uuid::Uuid, String) = sqlx::query_as(
             "SELECT active_generation,maintenance FROM mdm_content.settings WHERE tenant_id=$1::uuid",
-        ).bind(self.tenant.to_string()).fetch_one(&mut *tx).await.map_err(|_| storage())?;
+        ).bind(binding.tenant().to_string()).fetch_one(&mut *tx).await.map_err(|_| storage())?;
         if generation == self.generation && phase == "switching" {
             let observed: bool = sqlx::query_scalar("SELECT mdm_content.observe_generation($1)")
                 .bind(generation)
@@ -75,30 +79,35 @@ impl Store {
         }
         crate::journal::commit(tx).await?;
         if matches!(kind, Kind::Mutation) {
-            self.verify_marker().await?;
+            self.verify_marker(binding).await?;
         }
         Ok(permit)
     }
-    async fn session_fence(&self, kind: Kind) -> Result<Arc<Permit>, Error> {
+    async fn session_fence(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        kind: Kind,
+    ) -> Result<Arc<Permit>, Error> {
         let timeout = std::time::Duration::from_secs(6);
-        let slot = match kind {
-            Kind::Read => &self.admissions.reads,
-            Kind::Mutation => &self.admissions.mutations,
-        };
-        let mut cached = tokio::time::timeout(timeout, slot.lock())
-            .await
-            .map_err(|_| Error::Deadline)?;
-        if let Some(permit) = cached.upgrade() {
-            if permit.generation != self.generation {
-                return Err(Error::Conflict);
+        let key = (
+            binding.tenant().to_string(),
+            self.generation,
+            binding.epoch().get(),
+            kind.discriminator(),
+        );
+        {
+            let mut cached = tokio::time::timeout(timeout, self.admissions.active.lock())
+                .await
+                .map_err(|_| Error::Deadline)?;
+            cached.retain(|_, permit| permit.strong_count() > 0);
+            if let Some(permit) = cached.get(&key).and_then(Weak::upgrade) {
+                return Ok(permit);
             }
-            return Ok(permit);
         }
         let mut connection = self.admission_pool.acquire().await.map_err(|_| storage())?;
         // Cancellation must close a possibly locked session, retaining its pool slot through close.
         connection.close_on_drop();
         let mut permit = Permit {
-            generation: self.generation,
             connection: Some(connection),
             cleanup: self.cleanup_tasks.clone(),
         };
@@ -106,7 +115,7 @@ impl Store {
         let acquired: bool = tokio::time::timeout(
             timeout,
             sqlx::query_scalar("SELECT pg_try_advisory_lock_shared(hashtextextended($1,$2))")
-                .bind(self.tenant.to_string())
+                .bind(binding.tenant().to_string())
                 .bind(kind.discriminator())
                 .fetch_one(&mut **c),
         )
@@ -117,7 +126,11 @@ impl Store {
             return Err(Error::Conflict);
         }
         let permit = Arc::new(permit);
-        *cached = Arc::downgrade(&permit);
+        let mut cached = self.admissions.active.lock().await;
+        if let Some(active) = cached.get(&key).and_then(Weak::upgrade) {
+            return Ok(active);
+        }
+        cached.insert(key, Arc::downgrade(&permit));
         Ok(permit)
     }
 }
@@ -126,7 +139,6 @@ impl Store {
 impl Permit {
     pub(crate) fn test() -> Arc<Self> {
         Arc::new(Self {
-            generation: uuid::Uuid::nil(),
             connection: None,
             cleanup: tokio_util::task::TaskTracker::new(),
         })

@@ -14,8 +14,8 @@ pub struct Identity {
     pub authority: Authority,
     pub webauthn: rss_identity_postgres::WebauthnAuthority,
     pub http: rss_identity_http_axum::HttpConfig,
-    pub tenant: TenantId,
-    pub binding: rss_transactional_messaging::fence::ExecutionBinding,
+    pub storage: rss_transactional_messaging::fence::StorageIdentity,
+    pub expected_epoch: rss_transactional_messaging::fence::Epoch,
     pub rp_generation: rss_identity_postgres::RpGeneration,
 }
 pub(crate) fn failure(e: AuthorityError) -> Error {
@@ -31,16 +31,27 @@ pub(crate) fn failure(e: AuthorityError) -> Error {
     }
 }
 impl Identity {
+    pub fn execution(
+        &self,
+        tenant: TenantId,
+    ) -> rss_transactional_messaging::fence::ExecutionBinding {
+        rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            tenant,
+            self.expected_epoch,
+        )
+    }
     /// Reborrow a request credential when a component ceremony requires an owned session proof.
     pub(crate) async fn ceremony_actor(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         headers: &HeaderMap,
         deadline: rss_transactional_messaging::policy::OperationDeadline,
     ) -> Result<rss_identity_postgres::AuthenticatedSession, Error> {
         rss_identity_http_axum::authenticate_request(
             &self.authority,
             &self.http,
-            self.binding,
+            binding,
             headers,
             rss_identity_http_axum::SessionActivity::Active,
             deadline,

@@ -53,15 +53,13 @@ pub struct FrozenEnrollment {
 /// Freeze the enrollment entry under the publication caller's current authority.
 pub fn prepare(
     entries: &Entries,
-    signing_enabled: bool,
     proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
     snapshot: &rss_mdm_authorization_service::Snapshot,
     organization: Uuid,
     schedule: &Schedule,
     lifetime: u32,
 ) -> Result<FrozenEnrollment, Error> {
-    if !signing_enabled
-        || organization.to_string() != proof.tenant_id()
+    if organization.to_string() != proof.tenant_id()
         || (entries.windows.is_none() && entries.macos.is_none())
     {
         return Err(Error::Configuration);

@@ -59,6 +59,7 @@ pub struct RunInput<'a> {
     pub now: i64,
 }
 pub(crate) async fn queue_run_in(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &crate::control::transactions::Transactions,
     tx: &mut PgTransaction<'_>,
     input: RunInput<'_>,
@@ -106,15 +107,15 @@ pub(crate) async fn queue_run_in(
     let (kind, version) = source.columns();
     let state = checked_input(serde_json::to_value(RunState::new(deadline, now)?))?;
     tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_devices.unmanage_runs (tenant_id, id, source_kind, policy_version, device, occurrence, available_at, deadline, state, dispatch_fingerprint, created_at, source_objects, origin) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
-            .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device.into_uuid()).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(origin).execute(c).await?;Ok(())
+        sqlx::query("INSERT INTO mdm_devices.unmanage_runs (tenant_id, id, source_kind, policy_version, device, occurrence, available_at, deadline, state, dispatch_fingerprint, created_at, source_objects, origin,expected_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,$14)")
+            .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device.into_uuid()).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(origin).bind(execution.epoch().get()).execute(c).await?;Ok(())
     })).await?;
     super::run_recovery::wake_run(&service.reconcile_messaging, tx, id).await?;
 
     let audit = rss_mdm_audit_integration::RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        tx.tenant_id().to_string(),
+        execution,
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
     );

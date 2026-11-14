@@ -98,7 +98,7 @@ pub(crate) async fn batch(
     if operations.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let tenant = queries.tenant.to_string();
+    let tenant = _proof.tenant_id().to_owned();
     let targets = operations
         .values()
         .map(|o| (o.id, o.device))

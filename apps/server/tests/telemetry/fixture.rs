@@ -42,7 +42,7 @@ impl Fixture {
         runtime.user = roles[1].clone();
         runtime.password_file = directory.path().join("password");
         let config: crate::telemetry::Config = serde_json::from_value(serde_json::json!({
-            "backend":{"kind":"postgres","database":runtime},"connections":2,"cursor_key_file":directory.path().join("cursor"),
+            "resource_id":Uuid::new_v4(),"backend":{"kind":"postgres","database":runtime},"connections":2,"cursor_key_file":directory.path().join("cursor"),
             "maintenance":{"rows":4096,"buckets":64,"step_seconds":6},
             "ingress":{"requestBytes":1048576,"pendingBatches":64,"batchesPerMinute":120,"bytesPerMinute":8388608},
             "limits":{"max_points":128,"max_series":64,"max_bytes":1048576,"replay_micros":86400000000u64,"cursor_micros":60000000}
@@ -89,11 +89,8 @@ impl Fixture {
         }
         Ok(fixture)
     }
-    pub async fn store(
-        &self,
-        c: &Context,
-    ) -> Result<rss_timeseries_postgres::PgStore<SystemClock>> {
-        match self.config.open_backend(c.tenant).await? {
+    pub async fn store(&self) -> Result<rss_timeseries_postgres::PgStore<SystemClock>> {
+        match self.config.open_backend().await? {
             Backend::Postgres(store) => Ok(store),
             Backend::ClickHouse(_) => unreachable!(),
         }
@@ -108,21 +105,23 @@ impl Fixture {
             policies: Arc::new(rss_mdm_policy_service::telemetry::Reader::new(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 self.owner.runtime.clone(),
-                c.tenant,
                 objects.clone(),
             )),
             objects,
         };
         Ok(Arc::new(Service::new(
-            c.tenant,
+            c.execution(),
             self.owner.runtime.clone(),
             dependencies,
-            Backend::Postgres(self.store(c).await?),
+            vec![rss_mdm_telemetry_service::backend::Resource {
+                binding: self.config.configuration_binding()?,
+                tenant: None,
+                backend: Some(Arc::new(Backend::Postgres(self.store().await?))),
+            }],
             Arc::new(rss_mdm_task_trust::Signing::new(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 rss_mdm_task_trust::Use::AgentTask,
-                c.tenant,
-                None,
+                crate::device_material_support::protection(&c)?,
             )?),
             self.config.ingress.clone(),
             self.config.maintenance,

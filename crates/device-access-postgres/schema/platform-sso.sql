@@ -30,6 +30,7 @@ CREATE UNIQUE INDEX psso_device
 CREATE UNIQUE INDEX psso_user ON rss_da.psso_sources(tenant_id,binding) WHERE kind='user';
 CREATE UNIQUE INDEX psso_key ON rss_da.psso_sources(tenant_id,signing_kid) WHERE NOT revoked;
 CREATE TABLE rss_da.psso_challenges (
+ expected_epoch bigint NOT NULL DEFAULT current_setting('rss.execution_epoch')::bigint CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL,
  id uuid NOT NULL,
  purpose text NOT NULL CHECK(purpose IN('device','user','login')),
@@ -73,6 +74,7 @@ CREATE TABLE rss_da.psso_password_providers (
  fingerprint text NOT NULL CHECK(length(fingerprint)=43), PRIMARY KEY(tenant_id,id)
 );
 CREATE TABLE rss_da.psso_password_attempts (
+ expected_epoch bigint NOT NULL DEFAULT current_setting('rss.execution_epoch')::bigint CHECK(expected_epoch>0),
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
   , source uuid NOT NULL

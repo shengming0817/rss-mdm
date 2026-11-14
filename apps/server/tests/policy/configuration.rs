@@ -44,7 +44,7 @@ pub(crate) async fn seed(
     sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'enabled',$4,$5,$6)").bind(c.tenant.to_string()).bind(policy).bind(version).bind(serde_json::to_value(definition)?).bind(serde_json::to_value(actor)?).bind(time::OffsetDateTime::now_utc().unix_timestamp()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,resource,resource_version,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'configuration','configuration-fixture','v1',$4,$5)").bind(c.tenant.to_string()).bind(version).bind(policy).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).execute(&mut *tx).await?;
     sqlx::query(
-        "INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2)",
+        "INSERT INTO mdm_planning.configuration_devices(expected_epoch,tenant_id,device) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2)",
     )
     .bind(c.tenant.to_string())
     .bind(object.members[0].device.into_uuid())
@@ -60,20 +60,21 @@ async fn counts(
     Ok(sqlx::query_as("SELECT input_revision, observed_revision, (SELECT count(*) FROM mdm_planning.configuration_claims AS x WHERE x.tenant_id = d.tenant_id AND x.device = d.device), (SELECT count(*) FROM mdm_planning.configuration_objects AS x WHERE x.tenant_id = d.tenant_id AND x.device = d.device), (SELECT count(*) FROM mdm_planning.configuration_operations AS x WHERE x.tenant_id = d.tenant_id AND x.device = d.device), (SELECT count(*) FROM rss_device_command.commands AS x INNER JOIN mdm_access.command_authorities AS a ON (a.tenant_id, a.command_device) = (x.tenant_id, x.device_id) WHERE a.tenant_id = d.tenant_id AND a.device = d.device), (SELECT count(*) FROM mdm_windows.native_commands AS x INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (x.tenant_id, x.device) WHERE r.tenant_id = d.tenant_id AND r.id = d.device), (SELECT count(*) FROM mdm_planning.configuration_receipts AS r INNER JOIN mdm_planning.configuration_operations AS o ON (o.tenant_id, o.id) = (r.tenant_id, r.id) WHERE o.tenant_id = d.tenant_id AND o.device = d.device) FROM mdm_planning.configuration_devices AS d WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(c.tenant.to_string()).bind(device.into_uuid()).fetch_one(&c.operator).await?)
 }
 async fn wake(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     app: &rss_mdm_policy_service::application::Application,
     device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<()> {
     transaction::inspect(
         &app.runtime,
-        app.audit_store.binding(),
-        (app, vec![device.to_owned()]),
+        execution,
+        (app, vec![device.to_owned()], execution),
         |ctx, tx| {
             Box::pin(async move {
                 ctx.0
                     .configuration
                     .as_ref()
                     .expect("MDM configuration")
-                    .wake_devices_in(tx, &ctx.1)
+                    .wake_devices_in(ctx.2, tx, &ctx.1)
                     .await
             })
         },
@@ -127,7 +128,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     let key = crate::device_material_support::protection(&c)?;
     let policy = seed(&c, published.scope, &object, &key).await?;
     let device = &object.members[0].device;
-    let command = Fixture::open(&c, false)
+    let command = Fixture::open(&c)
         .await
         .map_err(|error| anyhow::anyhow!("configuration command fixture: {error:?}"))?;
     let owner = planning::owner(&c, "mdm_policy_runtime")
@@ -136,7 +137,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     let app = crate::assembly::policy::application(
         &command.resources.background,
         &owner,
-        c.tenant,
+        c.execution(),
         &[7; 32],
         Arc::new(crate::clock::SystemClock),
         key.clone(),
@@ -147,7 +148,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        c.tenant.to_string(),
+        c.execution(),
         "configuration_reconcile",
         AuditIntent::Management,
     );
@@ -156,7 +157,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     let rollback = transaction::run(
         &owner.audit,
         &owner.runtime,
-        c.audit.binding(),
+        c.execution(),
         &audit,
         (&app, device, &audit),
         |ctx, tx| {
@@ -166,7 +167,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
                     .configuration
                     .as_ref()
                     .expect("MDM configuration")
-                    .wake_devices_in(tx, &[ctx.1.to_owned()])
+                    .wake_devices_in(ctx.2.binding()?, tx, &[ctx.1.to_owned()])
                     .await?;
                 ctx.0
                     .configuration
@@ -197,6 +198,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     )
     .await?;
     let events = crate::assembly::policy::events(
+        c.execution(),
         app.clone(),
         command.materials.clone(),
         command.software.materials.clone(),
@@ -205,19 +207,21 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     )
     .await?;
     let worker = rss_mdm_policy_service::worker::PolicyWork::new(
+        c.database.archive_pool(),
+        c.execution().storage(),
         app.clone(),
         events,
         scheduler.store.clone(),
     );
-    wake(&app, device).await?;
+    wake(c.execution(), &app, device).await?;
     step(&worker, c.tenant, device).await?;
     // The production Policy role owns this outbox relay, including claim and settlement.
     let timer = rss_mdm_policy_service::clock::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cancel);
     let configuration = app.configuration.as_ref().expect("MDM configuration");
-    assert_eq!(configuration.relay_once(&control).await?, 1);
-    assert_eq!(configuration.relay_once(&control).await?, 0);
+    assert_eq!(configuration.relay_once(c.execution(), &control).await?, 1);
+    assert_eq!(configuration.relay_once(c.execution(), &control).await?, 0);
     let committed = counts(&c, device).await?;
     assert_eq!(committed, (2, 2, 1, 1, 1, 1, 1, 1));
     let identity:(Uuid,serde_json::Value,String)=sqlx::query_as("SELECT o.id, o.authority, r.actor FROM mdm_planning.configuration_operations AS o INNER JOIN mdm_planning.configuration_receipts AS r USING (tenant_id, id) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2").bind(c.tenant.to_string()).bind(device.into_uuid()).fetch_one(&c.operator).await?;
@@ -229,7 +233,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     let app = crate::assembly::policy::application(
         &command.resources.background,
         &owner,
-        c.tenant,
+        c.execution(),
         &[7; 32],
         Arc::new(crate::clock::SystemClock),
         key.clone(),
@@ -237,6 +241,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     )
     .await?;
     let events = crate::assembly::policy::events(
+        c.execution(),
         app.clone(),
         command.materials.clone(),
         command.software.materials.clone(),
@@ -245,11 +250,13 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     )
     .await?;
     let worker = rss_mdm_policy_service::worker::PolicyWork::new(
+        c.database.archive_pool(),
+        c.execution().storage(),
         app.clone(),
         events,
         scheduler.store.clone(),
     );
-    wake(&app, device).await?;
+    wake(c.execution(), &app, device).await?;
     step(&worker, c.tenant, device).await?;
     let replay = counts(&c, device).await?;
     assert_eq!(replay, (3, 3, 1, 1, 1, 1, 1, 1));
@@ -285,7 +292,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     sqlx::query("INSERT INTO rss_device_command.commands SELECT * FROM jsonb_populate_record(NULL::rss_device_command.commands,$1)").bind(&foreign).execute(&mut *tx).await?;
     tx.commit().await?;
-    wake(&app, device).await?;
+    wake(c.execution(), &app, device).await?;
     step(&worker, c.tenant, device).await?;
     let unchanged:i64=sqlx::query_scalar("SELECT version FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2").bind(c.tenant.to_string()).bind(&foreign_id).fetch_one(&c.operator).await?;
     assert_eq!(unchanged, 2);
@@ -302,7 +309,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    wake(&app, device).await?;
+    wake(c.execution(), &app, device).await?;
     assert!(step(&worker, c.tenant, device).await.is_err());
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     sqlx::query("INSERT INTO rss_device_command.commands SELECT * FROM jsonb_populate_record(NULL::rss_device_command.commands,$1)").bind(&original).execute(&mut *tx).await?;

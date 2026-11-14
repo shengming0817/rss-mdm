@@ -37,76 +37,65 @@ impl Generation {
 
 impl crate::Store {
     /// Resolve current committed storage at operation entry; the returned snapshot never changes.
-    pub(crate) async fn current(&self) -> Result<Self, Error> {
-        let mut tx = self.pool.begin().await.map_err(|_| crate::storage())?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','6000',true)")
-            .bind(self.tenant.to_string()).execute(&mut *tx).await.map_err(|_|crate::storage())?;
-        let (active, revision): (Uuid, i64) = sqlx::query_as(
+    pub(crate) async fn current(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<Self, Error> {
+        let mut tx = self.scope_tx(binding).await?;
+        let active: Option<(Uuid, i64)> = sqlx::query_as(
             "SELECT active_generation,revision FROM mdm_content.settings WHERE tenant_id=$1::uuid",
         )
-        .bind(self.tenant.to_string())
-        .fetch_one(&mut *tx)
+        .bind(binding.tenant().to_string())
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|_| crate::storage())?;
         tx.rollback().await.map_err(|_| crate::storage())?;
-        if active == self.generation
-            && revision == self.storage_revision
-            && self.backend.available()
-        {
-            return Ok(self.clone());
+        if let Some((active, revision)) = active {
+            let cached = self.current_cache.lock().await;
+            if let Some(cached) = &*cached
+                && cached.tenant == binding.tenant()
+                && cached.id == active
+                && cached.revision == revision
+                && cached.backend.available()
+            {
+                return Ok(Self {
+                    generation: active,
+                    storage_revision: revision,
+                    config: cached.config.clone(),
+                    backend: cached.backend.clone(),
+                    ..self.clone()
+                });
+            }
         }
-        let mut cached = self.current_cache.lock().await;
-        if let Some(cached) = &*cached
-            && cached.id == active
-            && cached.revision == revision
-            && cached.backend.available()
-        {
-            return Ok(Self {
-                generation: active,
-                storage_revision: revision,
-                config: cached.config.clone(),
-                backend: cached.backend.clone(),
-                ..self.clone()
-            });
-        }
-        let opened = Self::open(
-            self.protection.clone(),
-            &self.config,
-            &self.tenant.to_string(),
-            self.timer.clone(),
-            self.pool.clone(),
-        )
-        .await?;
+        let opened = self.load_generation(binding).await?;
         if !opened.backend.available() {
             return Err(Error::Storage);
         }
-        let mut tx = opened.tx().await?;
+        let mut tx = opened.tx(binding).await?;
         sqlx::query("SELECT mdm_content.observe_generation($1)")
             .bind(opened.generation)
             .execute(&mut *tx)
             .await
             .map_err(|_| crate::storage())?;
         crate::journal::commit(tx).await?;
-        *cached = Some(CachedGeneration {
+        *self.current_cache.lock().await = Some(CachedGeneration {
+            tenant: binding.tenant(),
             id: opened.generation,
             revision: opened.storage_revision,
             config: opened.config.clone(),
             backend: opened.backend.clone(),
         });
-        Ok(Self {
-            generation: opened.generation,
-            storage_revision: opened.storage_revision,
-            config: opened.config.clone(),
-            backend: opened.backend.clone(),
-            ..self.clone()
-        })
+        Ok(opened)
     }
 }
 
 impl crate::Store {
-    pub async fn active_s3_revision(&self) -> Result<Option<i64>, Error> {
-        let current = self.current().await?;
-        let _admission = current.admit(crate::gate::Kind::Read).await?;
+    pub async fn active_s3_revision(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<Option<i64>, Error> {
+        let current = self.current(binding).await?;
+        let _admission = current.admit(binding, crate::gate::Kind::Read).await?;
         match current.config.storage {
             crate::Storage::S3(value) => Ok(Some(
                 i64::try_from(value.revision).map_err(|_| Error::Invariant)?,
@@ -119,13 +108,16 @@ impl crate::Store {
 impl crate::Store {
     /// A persisted exact marker distinguishes a changed provider behind an unchanged URL.
     /// Only an uninitialized generation may create it; a missing established marker is fatal.
-    pub(crate) async fn verify_marker(&self) -> Result<(), Error> {
+    pub(crate) async fn verify_marker(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<(), Error> {
         use sha2::{Digest, Sha256};
-        let mut tx = self.tx().await?;
+        let mut tx = self.tx(binding).await?;
         let marker: Option<serde_json::Value> = sqlx::query_scalar(
             "SELECT marker FROM mdm_content.generations WHERE tenant_id=$1::uuid AND id=$2",
         )
-        .bind(self.tenant.to_string())
+        .bind(binding.tenant().to_string())
         .bind(self.generation)
         .fetch_one(&mut *tx)
         .await
@@ -133,7 +125,8 @@ impl crate::Store {
         crate::journal::commit(tx).await?;
         let bytes = Sha256::digest(format!(
             "rss-mdm-storage-marker:{}:{}",
-            self.tenant, self.generation
+            binding.tenant(),
+            self.generation
         ))
         .to_vec();
         let content = rss_mdm_content_s3::Content {
@@ -144,7 +137,7 @@ impl crate::Store {
         let mut location = match marker {
             Some(document) => crate::location::Location::open(
                 &self.protection,
-                self.tenant,
+                binding.tenant(),
                 self.generation,
                 id,
                 content,
@@ -189,10 +182,10 @@ impl crate::Store {
             self.backend
                 .read(exact, content, 0, content.length, deadline, ())
                 .await?;
-            let mut tx = self.tx().await?;
+            let mut tx = self.tx(binding).await?;
             sqlx::query("SELECT mdm_content.record_marker($1,$2)")
                 .bind(self.generation)
-                .bind(location.seal(&self.protection, self.tenant)?)
+                .bind(location.seal(&self.protection, binding.tenant())?)
                 .execute(&mut *tx)
                 .await
                 .map_err(|_| crate::storage())?;
@@ -214,6 +207,7 @@ impl crate::Store {
 }
 
 pub(crate) struct CachedGeneration {
+    tenant: TenantId,
     id: Uuid,
     revision: i64,
     config: crate::Config,

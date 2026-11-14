@@ -5,6 +5,7 @@ use rss_mdm_task_state::{Cancellation, Execution};
 use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;
 pub async fn audit_recovery(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     service: &ScriptService,
     tx: &mut PgTransaction<'_>,
     run: &Run,
@@ -15,6 +16,7 @@ pub async fn audit_recovery(
     {
         service
             .abandon_in(
+                binding,
                 tx,
                 attempt,
                 if run.state.cancellation != Cancellation::None {
@@ -29,7 +31,7 @@ pub async fn audit_recovery(
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            tx.tenant_id().to_string(),
+            binding,
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -74,13 +76,14 @@ pub async fn audit_recovery(
 impl ScriptService {
     pub async fn accept_action_dispatch(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         id: Uuid,
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), crate::Error> {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            self.transactions.tenant.to_string(),
+            binding,
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -92,7 +95,7 @@ impl ScriptService {
         );
         audit.target(&id.to_string());
         audit.identify_service("script-dispatch");
-        let result=crate::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.audit_store.binding(),&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
+        let result=crate::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,binding,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
             let (service,id,fingerprint,audit)=ctx;
             crate::transaction::prepare_audit_in(&service.transactions.audit_store,tx,audit,&[]).await?;
             let run=storage::read_run(tx,*id).await?;
@@ -118,6 +121,7 @@ impl ScriptService {
 }
 
 pub async fn recover_one(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     service: &ScriptService,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
@@ -160,5 +164,5 @@ pub async fn recover_one(
         run.state.cancel();
     }
     storage::save_run(&service.transactions, tx, &run).await?;
-    audit_recovery(service, tx, &run, &previous).await
+    audit_recovery(binding, service, tx, &run, &previous).await
 }

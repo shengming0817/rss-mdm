@@ -99,7 +99,8 @@ pub(crate) async fn requested(
         .map_err(|_| Error::Unavailable(crate::Failure::Protocol))?;
     let budget = app.devices.retirement_budget();
     let mut facts = Vec::new();
-    let outcome = app.audit_store.write(principal.tenant(),
+    let outcome = app.audit_store.write(
+            audit.binding()?,
             &budget.source_control(),
         (app, principal, audit, &mut facts, &digest, &sealed, message.header.session_id),
         |(app,p,audit,facts,digest,sealed,session),tx| Box::pin(async move {
@@ -119,7 +120,7 @@ pub(crate) async fn requested(
                             .bind(&tenant).bind(p.device().into_uuid()).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
                     } else {
                         app.departure.departed(c,&tenant,*p.device()).await.map_err(|_|Error::Conflict)?;
-                        rss_mdm_registration_service::retire(rss_mdm_install_support::StorageProfile::Mdm,c,facts,&tenant,p.device(),"revoked",app.devices.retirement()).await?;
+                        rss_mdm_registration_service::retire(p.binding(), rss_mdm_install_support::StorageProfile::Mdm,c,facts,&tenant,p.device(),"revoked",app.devices.retirement()).await?;
                     }
                     sqlx::query("INSERT INTO mdm_windows.unenrollment_receipts (tenant_id, device, credential, session, digest, response, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7)")
                         .bind(&tenant).bind(p.device().into_uuid()).bind(p.credential()).bind(i64::from(*session))
@@ -167,7 +168,7 @@ pub(crate) async fn replay(
     bytes: &[u8],
     audit: &RequestAudit,
 ) -> Result<Option<Vec<u8>>, Error> {
-    let tenant = app.mount.tenant();
+    let tenant = audit.binding()?.tenant();
     let locator = leaf
         .fingerprint()
         .iter()

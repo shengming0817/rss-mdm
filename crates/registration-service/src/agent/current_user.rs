@@ -101,7 +101,11 @@ pub async fn bindings_on(
 }
 
 /// Recheck through the existing Identity authority without renewing idle or inventing presence.
-pub async fn resolve(binding: &Binding, sessions: &SessionAuthority) -> Result<CurrentUser, Error> {
+pub async fn resolve(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    binding: &Binding,
+    sessions: &SessionAuthority,
+) -> Result<CurrentUser, Error> {
     let mut value = CurrentUser {
         revision: binding.revision,
         state: CurrentUserState::Unbound,
@@ -113,6 +117,7 @@ pub async fn resolve(binding: &Binding, sessions: &SessionAuthority) -> Result<C
         if binding.registration_valid {
             match sessions
                 .recheck(
+                    execution,
                     reference,
                     rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                         std::time::Duration::from_secs(10),
@@ -148,20 +153,28 @@ impl Service {
     ) -> Result<CurrentUser, Error> {
         let profile = self.profile();
 
-        if device.tenant() != self.tenant {
-            return Err(Error::Forbidden);
-        }
-        let mut tx = self.store.begin(&self.tenant.to_string()).await?;
+        let execution = device.binding();
+        let mut tx = self.store.begin(&execution.tenant().to_string()).await?;
         crate::device::store::revalidate_management(profile, &mut tx, device).await?;
-        let binding =
-            binding_on(profile, &mut tx, &self.tenant.to_string(), device.device()).await?;
+        let binding = binding_on(
+            profile,
+            &mut tx,
+            &execution.tenant().to_string(),
+            device.device(),
+        )
+        .await?;
         // Await settlement: Drop only queues rollback and cannot fence the next authority call.
         tx.rollback().await.map_err(db)?;
-        let value = resolve(&binding, sessions).await?;
-        let mut tx = self.store.begin(&self.tenant.to_string()).await?;
+        let value = resolve(execution, &binding, sessions).await?;
+        let mut tx = self.store.begin(&execution.tenant().to_string()).await?;
         crate::device::store::revalidate_management(profile, &mut tx, device).await?;
-        let current =
-            binding_on(profile, &mut tx, &self.tenant.to_string(), device.device()).await?;
+        let current = binding_on(
+            profile,
+            &mut tx,
+            &execution.tenant().to_string(),
+            device.device(),
+        )
+        .await?;
         tx.rollback().await.map_err(db)?;
         if current.revision != binding.revision
             || current.reference != binding.reference
@@ -183,12 +196,10 @@ impl Service {
         let profile = self.profile();
 
         input.validate().map_err(|_| Error::Malformed)?;
-        if device.tenant() != self.tenant || audit.tenant() != self.tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
+        audit.bind_scope(device.binding())?;
         let reference = employee
             .map(|p| {
-                if p.tenant_id() != self.tenant.to_string() {
+                if p.binding() != device.binding() {
                     return Err(Error::Forbidden);
                 }
                 p.bind_audit(audit)?;
@@ -278,7 +289,7 @@ impl Service {
                     }
                     write_stage(*request_id, "identity_session_recheck");
                     if let Some(reference) = reference {
-                        sessions.recheck(reference, rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(10))).await?;
+                        sessions.recheck(device.binding(),reference, rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(10))).await?;
                     }
                     if let Some(user) = user {
                         registration_user::initialize_on(profile, c, device.device(), user).await?;

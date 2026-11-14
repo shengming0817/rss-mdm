@@ -67,6 +67,7 @@ pub async fn receive(
     if row.try_get::<bool, _>("expired").map_err(db)? {
         facts.extend(
             channel::abandon_in(
+                p.binding(),
                 rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 &p.tenant().to_string(),
@@ -240,6 +241,7 @@ pub async fn send(
         } else if row.try_get::<bool, _>("expired").map_err(db)? {
             facts.extend(
                 channel::abandon_in(
+                    p.binding(),
                     rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &tenant,

@@ -16,7 +16,7 @@ async fn selected(
 ) -> Result<([u8; 32], r::Artifact), Error> {
     transaction::inspect(
         &app.runtime,
-        app.audit_store.binding(),
+        proof.binding(),
         None,
         (proof, id, version, input),
         |ctx, tx| {
@@ -72,7 +72,7 @@ pub async fn download(
     );
     audit.require_final_request();
     let (digest, artifact) = selected(app, proof, id, version, input).await?;
-    let verified = store(app)?.verify(&artifact).await?;
+    let verified = store(app)?.verify(proof.binding(), &artifact).await?;
     // The original browser session can be revoked while Content verifies the bytes.
     // Reauthenticate within the remaining transfer deadline before the final reference check.
     let (current, reference) = tokio::time::timeout_at(verified.deadline.instant().into(), async {
@@ -80,6 +80,7 @@ pub async fn download(
         let fresh = app
             .sessions
             .authenticate(
+                proof.binding(),
                 &app.authorization,
                 secret,
                 rss_transactional_messaging::policy::OperationDeadline::from_cutoff(

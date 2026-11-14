@@ -332,7 +332,7 @@ impl SoftwareService {
             return Err(Error::Forbidden.into());
         }
         let basis = access::select(config, proof)?.ok_or(Error::Forbidden)?;
-        let subject = access::qualify_in(service, tx, config, &basis)
+        let subject = access::qualify_in(p.binding(), service, tx, config, &basis)
             .await?
             .ok_or(Error::Forbidden)?;
         let actor = actor(p, &subject);
@@ -443,6 +443,7 @@ impl SoftwareService {
             pending_rollout,
         };
         production::queue_run_in(
+            p.binding(),
             &service.transactions,
             tx,
             production::RunInput {
@@ -505,6 +506,7 @@ impl SoftwareService {
             .append_in(tx, &fact)
             .await?;
         crate::deployment::sources::storage::wake_execution_in(
+            p.binding(),
             &service.transactions.reconcile_messaging,
             tx,
             policy.id,

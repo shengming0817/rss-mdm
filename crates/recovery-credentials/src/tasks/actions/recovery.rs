@@ -2,6 +2,7 @@ use crate::tasks::{storage as db, *};
 use rss_mdm_audit_integration::Fact;
 use rss_mdm_task_state::{Cancellation, Execution};
 pub async fn audit_recovery(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     service: &Service,
     tx: &mut PgTransaction<'_>,
     run: &db::Run,
@@ -11,7 +12,7 @@ pub async fn audit_recovery(
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             service.profile(),
-            tx.tenant_id().to_string(),
+            binding,
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -55,6 +56,7 @@ pub async fn audit_recovery(
 impl Service {
     pub async fn accept_action_dispatch(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         id: Uuid,
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), Error> {
@@ -66,7 +68,7 @@ impl Service {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             profile,
-            self.transactions.tenant.to_string(),
+            binding,
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -81,7 +83,7 @@ impl Service {
         let result = transaction::run(
             &self.transactions.audit_store,
             &self.transactions.runtime,
-            self.transactions.audit_store.binding(),
+            binding,
             &audit,
             (self, id, fingerprint, &audit),
             |ctx, tx| {
@@ -184,6 +186,7 @@ pub(super) async fn stale_registration(
 }
 
 pub async fn recover_one(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     service: &Service,
     tx: &mut PgTransaction<'_>,
@@ -213,6 +216,6 @@ pub async fn recover_one(
         run.state.cancel();
     }
     db::save_run(profile, &service.transactions.reconcile_messaging, tx, &run).await?;
-    audit_recovery(service, tx, &run, &previous).await?;
+    audit_recovery(binding, service, tx, &run, &previous).await?;
     Ok(())
 }

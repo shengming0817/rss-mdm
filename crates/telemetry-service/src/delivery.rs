@@ -50,7 +50,7 @@ use rss_transactional_messaging::{
     transport::*,
 };
 use rss_transactional_messaging_postgres::PgOutboxStore;
-use rss_transactional_messaging_runtime::relay::{RelayConfig, RelayWorker};
+use rss_transactional_messaging_runtime::relay::relay_once;
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 struct BatchAuthority<'a>(&'a Batch);
 impl Authority for BatchAuthority<'_> {
@@ -92,13 +92,15 @@ impl Publisher<Vec<u8>> for PublisherService {
                 PublishFailureReason::InvalidMessage,
             ));
         };
-        if input.tenant != self.0.tenant.to_string()
-            || message.metadata().tenant_id() != self.0.tenant
+        let Ok(execution) = input.execution(self.0.storage) else {
+            return uncertain();
+        };
+        if message.metadata().tenant_id() != execution.tenant()
             || input.input.batch_id.to_string() != message.id().as_str()
         {
             return uncertain();
         }
-        match self.0.accepted_context(&input).await {
+        match self.0.accepted_context(execution, &input).await {
             Ok(true) => return PublishOutcome::Confirmed(Published(())),
             Ok(false) => {}
             Err(_) => return uncertain(),
@@ -111,11 +113,11 @@ impl Publisher<Vec<u8>> for PublisherService {
         };
         if history.is_some() {
             for field in &input.fields {
-                match self.0.synchronize(field.clone(), cutoff).await {
+                match self.0.synchronize(execution, field.clone(), cutoff).await {
                     Ok(true) => {}
                     result => {
                         self.0
-                            .observe_delivery_failure(input.input.batch_id, result.err())
+                            .observe_delivery_failure(execution, input.input.batch_id, result.err())
                             .await;
                         return uncertain();
                     }
@@ -129,11 +131,11 @@ impl Publisher<Vec<u8>> for PublisherService {
         let outcome = self
             .0
             .runtime
-            .local_tx(self.0.audit_store.binding(), budget, move |tx| {
+            .local_tx(execution, budget, move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
-                            deliver_on(&service, c, &input, history, cutoff)
+                            deliver_on(execution, &service, c, &input, history, cutoff)
                                 .await
                                 .map_err(|error| {
                                     *rejected.lock().expect("delivery rejection") = Some(error);
@@ -159,20 +161,24 @@ impl Publisher<Vec<u8>> for PublisherService {
             return PublishOutcome::Confirmed(Published(()));
         }
         let error = *failure.lock().expect("delivery rejection");
-        self.0.observe_delivery_failure(batch_id, error).await;
+        self.0
+            .observe_delivery_failure(execution, batch_id, error)
+            .await;
         uncertain()
     }
 }
 async fn deliver_on(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &Service,
     c: &mut PgConnection,
     input: &Accepted,
     history: Option<Batch>,
     cutoff: Deadline,
 ) -> Result<(), Error> {
+    let backend = service.backend_on(c, execution.tenant()).await?;
     use sqlx::Row;
     let row = sqlx::query("SELECT input_digest, context_digest, delivery, device, credential, epoch FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND id = $2 FOR UPDATE")
-        .bind(service.tenant.to_string()).bind(input.input.batch_id).fetch_one(&mut *c).await?;
+        .bind(execution.tenant().to_string()).bind(input.input.batch_id).fetch_one(&mut *c).await?;
     if row.try_get::<Vec<u8>, _>("context_digest")?
         != Sha256::digest(serde_json::to_vec(input)?).to_vec()
         || row.try_get::<Vec<u8>, _>("input_digest")?
@@ -190,21 +196,21 @@ async fn deliver_on(
     }
     if let Some(batch) = history {
         let authorized = Authorized::<Batch>::verify(&BatchAuthority(&batch), batch.clone())?;
-        match service.backend.write(&authorized, cutoff).await? {
+        match backend.write(&authorized, cutoff).await? {
             Outcome::Accepted(_) | Outcome::Replay(_) => {}
             Outcome::Unknown => return Err(Error::Unknown),
         }
     }
     let current_assets =
         if input.profile.spec().projection != rss_mdm_resource::TelemetryProjection::History {
-            crate::current::deliver_on(c, service, input).await?
+            crate::current::deliver_on(execution, c, service, input).await?
         } else {
             false
         };
     sqlx::query(
         "UPDATE mdm_telemetry.batches SET delivery='published',current_assets=$3 WHERE tenant_id=$1::uuid AND id=$2",
     )
-    .bind(service.tenant.to_string())
+    .bind(execution.tenant().to_string())
     .bind(input.input.batch_id).bind(current_assets)
     .execute(c)
     .await?;
@@ -240,7 +246,12 @@ impl rss_transactional_messaging::observability::TransactionalMessagingEmitter f
     }
 }
 impl Service {
-    async fn observe_delivery_failure(&self, batch_id: uuid::Uuid, error: Option<Error>) {
+    async fn observe_delivery_failure(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        batch_id: uuid::Uuid,
+        error: Option<Error>,
+    ) {
         let state = match error {
             Some(Error::Denied | Error::Conflict | Error::Invalid | Error::Unsupported) => {
                 "blocked"
@@ -248,8 +259,8 @@ impl Service {
             _ => "unknown",
         };
         // Derived observation only: RSS owns retry and settlement.
-        let tenant = self.tenant;
-        let _ = self.runtime.local_tx(self.audit_store.binding(),crate::deadline(),move|tx|Box::pin(async move {
+        let tenant = binding.tenant();
+        let _ = self.runtime.local_tx(binding,crate::deadline(),move|tx|Box::pin(async move {
             tx.with_connection(move|c|Box::pin(async move {
                 sqlx::query("UPDATE mdm_telemetry.batches SET delivery=$3 WHERE tenant_id=$1::uuid AND id=$2 AND delivery<>'published'")
                     .bind(tenant.to_string()).bind(batch_id).bind(state).execute(c).await?;
@@ -289,45 +300,87 @@ impl Service {
             )
             .map_err(|_| Error::Storage)?,
         );
-        let worker = RelayWorker::new(
-            store,
-            Arc::new(PublisherService(self.clone())),
-            Arc::new(SystemClock),
-            Arc::new(Diagnostics),
-            RelayConfig::new(
-                Duration::from_millis(500),
-                NonZeroUsize::new(crate::RELAY_CONCURRENCY as usize).expect("positive concurrency"),
-            )
-            .map_err(|_| Error::Invalid)?,
-        );
+        let publisher = PublisherService(self.clone());
         let local = cancel.child_token();
         let relay_cancel = local.clone();
         let maintenance_cancel = local.clone();
         let (relay, maintenance) = tokio::join!(
             async {
-                let result = worker
-                    .run(self.audit_store.binding(), relay_cancel)
-                    .await
-                    .map_err(|_| Error::Storage);
-                local.cancel();
-                result
-            },
-            async {
-                let mut interval = tokio::time::interval(Duration::from_secs(30));
-                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut after = None;
                 loop {
-                    tokio::select! {biased;()=maintenance_cancel.cancelled()=>break, _=interval.tick()=>{}}
-                    if self.prune_gaps().await.is_err() {
-                        eprintln!("telemetry gap maintenance unconfirmed");
+                    if relay_cancel.is_cancelled() {
+                        return Ok::<(), Error>(());
                     }
-                    if self.retain().await.is_err() {
-                        eprintln!("telemetry retention maintenance unconfirmed");
+                    let scopes = match self.work_scopes(after).await {
+                        Ok(scopes) => scopes,
+                        Err(_) => {
+                            eprintln!("telemetry scope discovery unconfirmed");
+                            Vec::new()
+                        }
+                    };
+                    if scopes.is_empty() {
+                        after = None;
+                        tokio::select! {()=relay_cancel.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_millis(500))=>{}}
+                        continue;
                     }
-                    if self.retire_definitions().await.is_err() {
-                        eprintln!("telemetry definition maintenance unconfirmed");
+                    for (tenant, epoch) in scopes {
+                        if relay_cancel.is_cancelled() {
+                            return Ok(());
+                        }
+                        after = Some((tenant, epoch));
+                        let binding = self.work_binding(tenant, epoch)?;
+                        if relay_once(
+                            binding,
+                            store.as_ref(),
+                            &publisher,
+                            &SystemClock,
+                            &Diagnostics,
+                            NonZeroUsize::new(crate::RELAY_CONCURRENCY as usize)
+                                .expect("positive concurrency"),
+                        )
+                        .await
+                        .is_err()
+                        {
+                            eprintln!("telemetry relay unconfirmed");
+                        }
                     }
                 }
-                Ok::<(), Error>(())
+            },
+            async {
+                let mut after = None;
+                loop {
+                    if maintenance_cancel.is_cancelled() {
+                        return Ok::<(), Error>(());
+                    }
+                    let scopes = match self.work_scopes(after).await {
+                        Ok(scopes) => scopes,
+                        Err(_) => {
+                            eprintln!("telemetry maintenance discovery unconfirmed");
+                            Vec::new()
+                        }
+                    };
+                    if scopes.is_empty() {
+                        after = None;
+                        tokio::select! {()=maintenance_cancel.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_secs(30))=>{}}
+                        continue;
+                    }
+                    for (tenant, epoch) in scopes {
+                        if maintenance_cancel.is_cancelled() {
+                            return Ok(());
+                        }
+                        after = Some((tenant, epoch));
+                        let binding = self.work_binding(tenant, epoch)?;
+                        if self.prune_gaps(binding).await.is_err() {
+                            eprintln!("telemetry gap maintenance unconfirmed");
+                        }
+                        if self.retain(binding).await.is_err() {
+                            eprintln!("telemetry retention maintenance unconfirmed");
+                        }
+                        if self.retire_definitions(binding).await.is_err() {
+                            eprintln!("telemetry definition maintenance unconfirmed");
+                        }
+                    }
+                }
             }
         );
         relay.and(maintenance)
@@ -337,11 +390,15 @@ impl Service {
 impl Service {
     /// The sealed registration admission is a durable fact. Policy changes and credential
     /// rotation stop new input; they do not rewrite or strand previously accepted samples.
-    async fn accepted_context(self: &Arc<Self>, input: &Accepted) -> Result<bool, Error> {
-        let tenant = self.tenant;
+    async fn accepted_context(
+        self: &Arc<Self>,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        input: &Accepted,
+    ) -> Result<bool, Error> {
+        let tenant = binding.tenant();
         let id = input.input.batch_id;
         let context = Sha256::digest(serde_json::to_vec(input)?).to_vec();
-        self.runtime.local_tx(self.audit_store.binding(),crate::deadline(),move|tx|Box::pin(async move {
+        self.runtime.local_tx(binding,crate::deadline(),move|tx|Box::pin(async move {
             tx.with_connection(move|c|Box::pin(async move {
                 use sqlx::Row;
                 let row=sqlx::query("SELECT context_digest,delivery FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND id=$2")
@@ -350,5 +407,30 @@ impl Service {
                 Ok(row.try_get::<String,_>("delivery")?=="published")
             })).await
         })).await.fold(Ok,|_|Err(Error::Storage),|_|Err(Error::Storage),|_|Err(Error::Unknown),|_|Err(Error::Unknown),|_|Err(Error::Storage))
+    }
+}
+
+impl Service {
+    async fn work_scopes(
+        &self,
+        after: Option<(uuid::Uuid, i64)>,
+    ) -> Result<Vec<(uuid::Uuid, i64)>, Error> {
+        sqlx::query_as("SELECT tenant_id,expected_epoch FROM mdm_telemetry.work_scopes($1,$2)")
+            .bind(after.map(|x| x.0))
+            .bind(after.map(|x| x.1))
+            .fetch_all(&self.read_pool)
+            .await
+            .map_err(Into::into)
+    }
+    fn work_binding(
+        &self,
+        tenant: uuid::Uuid,
+        epoch: i64,
+    ) -> Result<rss_transactional_messaging::fence::ExecutionBinding, Error> {
+        Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            TenantId::parse(&tenant.to_string()).map_err(|_| Error::Storage)?,
+            rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| Error::Storage)?,
+        ))
     }
 }

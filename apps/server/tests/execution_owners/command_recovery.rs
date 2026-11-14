@@ -121,10 +121,11 @@ async fn native_consumers_never_recover_another_owners_commands() -> Result<()> 
     let resources = &h.a.resources;
     let credentials = super::super::credential_owners_t2::protection(&h.c, "new")?;
     let native = super::super::credential_execution::assemble(
+        h.c.database.archive_pool(),
         &resources.config,
         &resources.background,
         resources.storage.runtime.clone(),
-        h.c.tenant,
+        h.c.execution(),
         resources.storage.audit.clone(),
         resources.protection.clone(),
         credentials,
@@ -193,7 +194,7 @@ async fn legal_candidates_page_across_restart_and_late_orphans() -> Result<()> {
         "the unchanged live first command still occupies one candidate slot"
     );
     assert_eq!(cursor, Some(Uuid::from_u128(64).to_string()));
-    let replacement = Fixture::open(&h.c, true).await?;
+    let replacement = Fixture::open(&h.c).await?;
     Fixture::close(std::mem::replace(&mut h.a, replacement)).await?;
     assert!(control_page(&h, &native.device).await.is_err());
     let still_unobserved:i64=sqlx::query_scalar("SELECT observed_command_version FROM mdm_devices.control_operations WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(last).fetch_one(&h.c.operator).await?;

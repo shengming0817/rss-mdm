@@ -93,26 +93,31 @@ fn source_coordinates(
     }
 }
 pub async fn qualify_in(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     service: &Service,
     tx: &mut PgTransaction<'_>,
     config: &rss_mdm_policy::SelfService,
     basis: &Basis,
 ) -> Result<Option<wire::SelfServiceSubject>> {
-    let tenant = service.transactions.tenant;
+    let tenant = execution.tenant();
     let instance = service.transactions.instance.clone();
     let sessions = service.sessions.clone();
     let config = config.clone();
     let basis = basis.clone();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            Ok(qualify_on(profile, c, &config, &basis, tenant, &instance, &sessions).await)
+            Ok(qualify_on(
+                execution, profile, c, &config, &basis, tenant, &instance, &sessions,
+            )
+            .await)
         })
     })
     .await?
 }
 
 pub(super) async fn qualify_on(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     config: &rss_mdm_policy::SelfService,
@@ -126,6 +131,7 @@ pub(super) async fn qualify_on(
         (Some(Access::AuthenticatedUser | Access::Users { .. }), Basis::User { reference }) => {
             let facts = match sessions
                 .recheck(
+                    execution,
                     reference,
                     rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                         std::time::Duration::from_secs(10),

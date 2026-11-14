@@ -106,7 +106,6 @@ pub enum DocumentPresence {
 /// Explicitly authorized, dedicated bare repository; never clones or pushes.
 pub struct Repository {
     path: PathBuf,
-    tenant: TenantId,
     tap: String,
 }
 impl Repository {
@@ -116,7 +115,7 @@ impl Repository {
     /// return [`Error::PathDenied`]; non-SHA-1 format returns [`Error::Unsupported`].
     /// Does not clone or create a repository. The host must authorize and protect
     /// the canonical directory; path validation alone is not access control.
-    pub async fn open(path: &Path, tenant: TenantId, tap_name: &str) -> Result<Self, Error> {
+    pub async fn open(path: &Path, tap_name: &str) -> Result<Self, Error> {
         tap(tap_name)?;
         if std::fs::symlink_metadata(path)
             .map_err(|_| Error::Git)?
@@ -128,7 +127,6 @@ impl Repository {
         let path = path.canonicalize().map_err(|_| Error::Git)?;
         let r = Self {
             path,
-            tenant,
             tap: tap_name.into(),
         };
         let bare = r
@@ -144,6 +142,32 @@ impl Repository {
             return Err(Error::Unsupported);
         }
         Ok(r)
+    }
+    /// Bind one operation to a tenant without reopening the installed repository.
+    pub fn scope(self: &std::sync::Arc<Self>, tenant: TenantId) -> RepositoryScope {
+        RepositoryScope {
+            repository: self.clone(),
+            tenant,
+        }
+    }
+}
+/// Tenant-qualified view over a process-owned repository; it owns no process or pool.
+pub struct RepositoryScope {
+    repository: std::sync::Arc<Repository>,
+    tenant: TenantId,
+}
+impl std::ops::Deref for RepositoryScope {
+    type Target = Repository;
+    fn deref(&self) -> &Repository {
+        &self.repository
+    }
+}
+impl RepositoryScope {
+    fn branch(&self) -> String {
+        format!("refs/heads/tenants/{}", self.tenant)
+    }
+    fn namespace(&self, target: &CommitId) -> String {
+        format!("{}-{}", self.tenant, target.as_str())
     }
     fn document(&self, doc: &Document) -> Result<(), Error> {
         if doc.key().tenant() != self.tenant {
@@ -245,7 +269,7 @@ impl Repository {
     }
     /// Inspect the exact immutable snapshot reference; no main/history fallback.
     pub async fn snapshot_exists(&self, target: &CommitId) -> Result<bool, Error> {
-        let reference = format!("refs/namespaces/{}/refs/heads/main", target.as_str());
+        let reference = format!("refs/namespaces/{}/refs/heads/main", self.namespace(target));
         match self
             .run(
                 &["rev-parse", "--verify", "--quiet", &reference],
@@ -268,7 +292,7 @@ impl Repository {
         if !self.snapshot_exists(target).await? {
             return Ok(());
         }
-        let reference = format!("refs/namespaces/{}/refs/heads/main", target.as_str());
+        let reference = format!("refs/namespaces/{}/refs/heads/main", self.namespace(target));
         match self
             .run(
                 &[
@@ -404,7 +428,7 @@ impl Repository {
         }
         self.document(&p.document)
     }
-    /// Read the real `refs/heads/main` reference, returning `None` if absent.
+    /// Read the tenant branch, returning `None` if absent.
     /// Rejects symbolic/unexpected references with [`Error::PathDenied`]; provider
     /// failures remain errors. Does not modify the branch or inspect a remote.
     pub async fn head(&self) -> Result<Option<CommitId>, Error> {
@@ -413,7 +437,7 @@ impl Repository {
                 &[
                     "for-each-ref",
                     "--format=%(objectname) %(refname) %(symref)",
-                    "refs/heads/main",
+                    &self.branch(),
                 ],
                 None,
                 None,
@@ -425,7 +449,7 @@ impl Repository {
         } else {
             let line = std::str::from_utf8(&out).map_err(|_| Error::Git)?;
             let fields: Vec<_> = line.trim_end_matches('\n').split(' ').collect();
-            if fields.len() != 3 || fields[1] != "refs/heads/main" || !fields[2].is_empty() {
+            if fields.len() != 3 || fields[1] != self.branch() || !fields[2].is_empty() {
                 return Err(Error::PathDenied);
             }
             CommitId::parse(fields[0]).map(Some)
@@ -475,9 +499,10 @@ impl Repository {
             .map_or("0000000000000000000000000000000000000000", CommitId::as_str);
         if p.snapshot {
             let transaction = format!(
-                "start\nupdate refs/heads/main {} {old}\ncreate refs/namespaces/{}/refs/heads/main {}\nprepare\ncommit\n",
+                "start\nupdate {} {} {old}\ncreate refs/namespaces/{}/refs/heads/main {}\nprepare\ncommit\n",
+                self.branch(),
                 p.target.as_str(),
-                p.target.as_str(),
+                self.namespace(&p.target),
                 p.target.as_str()
             );
             return self
@@ -493,7 +518,7 @@ impl Repository {
             &[
                 "update-ref",
                 "--no-deref",
-                "refs/heads/main",
+                &self.branch(),
                 p.target.as_str(),
                 old,
             ],
@@ -625,9 +650,17 @@ impl Repository {
             args.push("--advertise-refs");
         }
         args.push(path);
-        self.run_bounded(&args, Some(input), None, None, Some((snapshot, v2)))
-            .await
+        self.run_bounded(
+            &args,
+            Some(input),
+            None,
+            None,
+            Some((self.namespace(snapshot).as_str(), v2)),
+        )
+        .await
     }
+}
+impl Repository {
     async fn run(
         &self,
         args: &[&str],
@@ -643,7 +676,7 @@ impl Repository {
         input: Option<&[u8]>,
         index: Option<&Path>,
         at: Option<Timepoint>,
-        namespace: Option<(&CommitId, bool)>,
+        namespace: Option<(&str, bool)>,
     ) -> Result<Vec<u8>, Error> {
         let stage = match args.first().copied() {
             Some("read-tree") => GitStage::ReadTree,
@@ -706,7 +739,7 @@ impl Repository {
         };
         if let Some((snapshot, v2)) = namespace {
             command
-                .env("GIT_NAMESPACE", snapshot.as_str())
+                .env("GIT_NAMESPACE", snapshot)
                 .env("GIT_PROTOCOL", if v2 { "version=2" } else { "version=1" });
         }
         if let Some(index) = index {

@@ -6,19 +6,21 @@ impl SoftwareService {
     /// The caller advances by the last returned device even when no channel is usable.
     pub async fn windows_wake_candidates_in(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut sqlx::PgConnection,
         after: Option<rss_mdm_agent_wire::DeviceId>,
     ) -> std::result::Result<Vec<rss_mdm_agent_wire::DeviceId>, Error> {
         sqlx::query_scalar("SELECT device FROM mdm_software_deployment.windows_wake_candidates($1) WHERE current_setting('rss.tenant_id')::uuid=$2::uuid ORDER BY device")
-            .bind(after.map(|id| id.into_uuid())).bind(self.transactions.tenant.to_string()).fetch_all(c).await.and_then(crate::deployment::database::device_ids).map_err(database::db)
+            .bind(after.map(|id| id.into_uuid())).bind(execution.tenant().to_string()).fetch_all(c).await.and_then(crate::deployment::database::device_ids).map_err(database::db)
     }
 
     pub async fn windows_wake_pending_in(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut sqlx::PgConnection,
         device: &rss_mdm_agent_wire::DeviceId,
     ) -> std::result::Result<bool, Error> {
-        let tenant = self.transactions.tenant.to_string();
+        let tenant = execution.tenant().to_string();
         crate::deployment::authorization::lock_shared_on(
             rss_mdm_install_support::StorageProfile::Mdm,
             c,
@@ -62,7 +64,7 @@ impl SoftwareService {
                 after = row.try_get("id").map_err(database::db)?;
                 let input = input_storage::open_row(
                     &self.transactions.protection,
-                    self.transactions.tenant,
+                    execution.tenant(),
                     after,
                     &row,
                     "request",

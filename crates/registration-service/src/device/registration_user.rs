@@ -29,9 +29,6 @@ impl DeviceService {
     ) -> Result<RegistrationUser, Error> {
         let profile = self.profile();
 
-        if p.tenant_id() != self.tenant {
-            return Err(Error::Forbidden);
-        }
         p.enrollment(device)?;
         let mut tx = self.access.begin(p.tenant_id()).await?;
         target_on(profile, &mut tx, p, device).await?;
@@ -47,9 +44,6 @@ impl DeviceService {
     ) -> Result<RegistrationUser, Error> {
         let profile = self.profile();
 
-        if p.tenant_id() != self.tenant {
-            return Err(Error::Forbidden);
-        }
         p.enrollment(device)?;
 
         if key.is_nil() || change.expected_revision >= i64::MAX as u64 {
@@ -79,7 +73,8 @@ impl DeviceService {
             digest: &digest,
         };
         let budget = AuditBudget::new(std::time::Duration::from_secs(6));
-        let result = self.audit_store.write(rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_| Error::Malformed)?,
+        let result = self.audit_store.write(
+            p.binding(),
             &budget.source_control(),(&self.audit_store,p,device,change,&op,audit), |ctx,tx| Box::pin(async move {
             let (store,p,device,change,op,audit) = *ctx;
             let (value,replayed) = tx.with_connection_context(&mut (p,device,change,op,audit), |ctx,c| Box::pin(async move {

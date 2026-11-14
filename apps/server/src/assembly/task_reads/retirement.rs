@@ -9,6 +9,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 async fn objects_on(
+    tenant: rss_request_context::TenantId,
     s: &Reads,
     c: &mut PgConnection,
     scope: Uuid,
@@ -16,7 +17,7 @@ async fn objects_on(
     limit: usize,
 ) -> Result<Vec<DeviceAssignment>> {
     s.source
-        .lifecycle_objects_on(c, s.tenant, scope, after, limit)
+        .lifecycle_objects_on(c, tenant, scope, after, limit)
         .await
         .map_err(source)
 }
@@ -30,6 +31,7 @@ fn item(input: &DeviceAssignment, enabled: bool) -> Value {
         "sources":[input.object],"scopeResult":input.scope_result,"taskAdmission":null,"execution":{"kind":"operations","operationIds":[]}})
 }
 pub async fn assignments_on(
+    tenant: rss_request_context::TenantId,
     s: &Reads,
     c: &mut PgConnection,
     p: &Policy,
@@ -38,14 +40,14 @@ pub async fn assignments_on(
     codec: &rss_mdm_query::cursor::CursorCodec,
     binding: &str,
 ) -> Result<records::AssignmentPage> {
-    let objects = objects_on(s, c, p.definition.scope, after, limit).await?;
+    let objects = objects_on(tenant, s, c, p.definition.scope, after, limit).await?;
     let mut rows = objects
         .iter()
         .map(|o| (o.cursor, item(o, p.state.is_enabled())))
         .collect::<Vec<_>>();
     let retained = rss_mdm_device_service::lifecycle::retained_targets_on(
         c,
-        s.tenant,
+        tenant,
         p.id,
         after.as_ref(),
         limit,
@@ -67,7 +69,6 @@ pub async fn assignments_on(
     let next = if more { rows.last().map(|r| r.0) } else { None };
     let mut items = Vec::new();
     for (_, mut value) in rows {
-        let tenant = s.tenant;
         let policy = p.id;
         let object: rss_mdm_agent_wire::ObjectRef =
             serde_json::from_value(value["object"].clone()).map_err(|_| Error::Malformed)?;
@@ -85,6 +86,7 @@ pub async fn assignments_on(
 }
 
 pub async fn preview_on(
+    tenant: rss_request_context::TenantId,
     s: &Reads,
     c: &mut PgConnection,
     input: &rss_mdm_policy::pages::Preview,
@@ -93,8 +95,8 @@ pub async fn preview_on(
     codec: &rss_mdm_query::cursor::CursorCodec,
     binding: &str,
 ) -> Result<records::Preview> {
-    let mut objects = objects_on(s, c, input.definition.scope, after, limit).await?;
-    let tenant = s.tenant.to_string();
+    let mut objects = objects_on(tenant, s, c, input.definition.scope, after, limit).await?;
+    let tenant = tenant.to_string();
     let scope = input.definition.scope;
     let result:Option<Uuid>=sqlx::query_scalar("SELECT resolution FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted")
             .bind(tenant).bind(scope).fetch_optional(&mut *c).await.map(Option::flatten).map_err(sql)?;

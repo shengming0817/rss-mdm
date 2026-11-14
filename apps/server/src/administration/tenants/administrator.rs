@@ -2,14 +2,12 @@
 use super::service::{Service, project};
 use super::*;
 use rss_identity_core::account::{LoginKey, Password};
-use rss_identity_postgres::{AccountProvisioner, ProvisioningError};
-use rss_mdm_audit_integration::AuditStore;
-use rss_mdm_audit_integration::{Fact, RequestAudit, budget::AuditBudget};
+use rss_identity_postgres::ProvisioningError;
+use rss_mdm_audit_integration::{Fact, RequestAudit};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_request_context::TenantId;
-use rss_transactional_messaging_postgres::{PgError, PgRuntime};
+use rss_transactional_messaging_postgres::PgError;
 use serde::Deserialize;
-use std::sync::Arc;
 
 #[derive(schemars::JsonSchema, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -24,56 +22,6 @@ impl Drop for AdministratorInput {
     }
 }
 impl Service {
-    pub(super) async fn provisioner(
-        &self,
-        target: TenantId,
-        epoch: i64,
-        _slot: &tokio::sync::SemaphorePermit<'_>,
-        cutoff: rss_request_context::Deadline,
-    ) -> std::result::Result<(Arc<PgRuntime>, AccountProvisioner, AuditStore), Error> {
-        let runtime = crate::identity::open_runtime(
-            &self.config.provisioning_database,
-            &self.installation.target,
-            &self.installation.lineage,
-            crate::background::PROVISIONING_CONNECTIONS,
-        )
-        .await?;
-        let binding = self
-            .installation
-            .execution(target, epoch)
-            .map_err(|_| Error::Malformed)?;
-        let provisioner = async {
-            let budget = AuditBudget::until(cutoff);
-            let audit = self
-                .audit
-                .on_runtime(runtime.clone(), binding, &budget.control())
-                .await?;
-            let provisioner = AccountProvisioner::connect(
-                runtime.clone(),
-                self.kdf.clone(),
-                self.identity_policy.clone(),
-                binding,
-                self.management,
-                self.policy.clone(),
-                rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-                    cutoff,
-                    &crate::lifecycle::RuntimeTimer,
-                ),
-            )
-            .await
-            .map_err(crate::identity::failure)?;
-            Ok::<_, Error>((provisioner, audit))
-        }
-        .await;
-        let (provisioner, audit) = match provisioner {
-            Ok(provisioner) => provisioner,
-            Err(error) => {
-                runtime.close().await;
-                return Err(error);
-            }
-        };
-        Ok((runtime, provisioner, audit))
-    }
     pub(super) async fn create_administrator(
         &self,
         proof: &AuthorizedPrincipal,
@@ -101,32 +49,70 @@ impl Service {
             .map(|byte| format!("{byte:02x}"))
             .collect();
         let request = serde_json::json!({"action":"administrator_create","tenantId":tenant,"login":login.as_str(),"fingerprint":digest});
-        let target = self
-            .registry_read((self, proof, tenant), |(service, proof, tenant), c| {
-                Box::pin(async move {
-                    service
-                        .authorize(c, proof, Permission::TenantAdministratorCreate)
-                        .await?;
-                    tenant_on(c, tenant, false).await
-                })
+        self.registry_read((self, proof, tenant), |(service, proof, tenant), c| {
+            Box::pin(async move {
+                service
+                    .authorize(c, proof, Permission::TenantAdministratorCreate)
+                    .await?;
+                tenant_on(c, tenant, false).await
             })
-            .await?;
+        })
+        .await?;
         let slot = self
             .provisioning_slots
             .try_acquire()
             .map_err(|_| Error::Unavailable(Failure::Database))?;
-        // Permanent claim precedes provisioning, including failed attempts; deletion can no longer race.
-        claim_database_use(
-            &self.config.provisioning_database,
-            &self.installation,
-            tenant,
-            target.current_epoch,
-        )
-        .await?;
+        // The original first-use fact is committed on the shared runtime before account work.
         let target_id = TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
-        let (runtime, provisioner, source) = self
-            .provisioner(target_id, target.current_epoch, &slot, cutoff)
-            .await?;
+        let target_binding = self
+            .installation
+            .execution(target_id, self.execution_epoch)
+            .map_err(|_| Error::Malformed)?;
+        let runtime = &self.provisioning_runtime;
+        let installation = &self.installation;
+        let claimed = runtime
+            .local_tx_with_context(
+                target_binding,
+                rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                    cutoff,
+                    &crate::lifecycle::RuntimeTimer,
+                ),
+                installation,
+                |installation, tx| {
+                    Box::pin(async move {
+                        tx.with_connection_context(installation, move |installation, c| {
+                            Box::pin(async move {
+                                sqlx::query_scalar::<_, bool>(
+                                    "SELECT public.claim_tenant_use($1::uuid,$2,$3::uuid,$4,$5,$6)",
+                                )
+                                .bind(target_binding.tenant().to_string())
+                                .bind(target_binding.epoch().get())
+                                .bind(&installation.instance_id)
+                                .bind(&installation.target[..])
+                                .bind(&installation.lineage[..])
+                                .bind(installation.audit_mode.as_str())
+                                .fetch_one(c)
+                                .await
+                            })
+                        })
+                        .await
+                    })
+                },
+            )
+            .await
+            .fold(
+                Ok,
+                |e| Err(pg_error(e)),
+                |e| Err(pg_error(e)),
+                |_| Err(Error::RollbackFailed),
+                |_| Err(Error::CommitUnknown),
+                |e| Err(pg_error(e)),
+            )?;
+        if !claimed {
+            return Err(Error::Forbidden);
+        }
+        let provisioner = &self.provisioner;
+        let source = &self.provisioning_audit;
         let result = async {
         let prepared = provisioner
             .prepare_local_account(login, password, rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff, &crate::lifecycle::RuntimeTimer))
@@ -141,7 +127,7 @@ impl Service {
         );
         audit.target(tenant);
         audit.require_final_request();
-        let target_audit = audit.tenant_fact_copy(tenant.into(),"tenant_administrator_create");
+        let target_audit = audit.tenant_fact_copy(target_binding,"tenant_administrator_create");
         // This context only supplies target fact coordinates; the source request owns settlement.
         target_audit.finalize(None);
         target_audit.set_principal(proof.principal_id(), proof.instance_id());
@@ -160,7 +146,7 @@ impl Service {
         .and_then(|fact| fact.with_details(serde_json::json!({"operator":operator})))
         .map_err(|_| Error::Malformed)?;
         let saved_error = std::sync::OnceLock::new();
-        let outcome = runtime.local_tx_with_context(source.binding(),rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff, &crate::lifecycle::RuntimeTimer),
+        let outcome = runtime.local_tx_with_context(target_binding,rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff, &crate::lifecycle::RuntimeTimer),
             (self, &provisioner, actor, Some(prepared), request, operator, fact, audit, &saved_error, &source, &target_audit),
             |(service,provisioner,actor,prepared,request,operator,fact,audit,saved_error,source,target_audit),tx| Box::pin(async move {
                 let result = async {
@@ -190,7 +176,7 @@ impl Service {
                     let targets=crate::administration::baseline::manifest::build(uuid::Uuid::parse_str(&user.tenant_id).map_err(|_|Error::Malformed)?)?.targets();
                     tx.with_connection(move |c| Box::pin(async move {
                         Ok(async {
-                            let (_,authority)=rss_mdm_authorization_service::baseline::grant_administrator_on(rss_mdm_install_support::StorageProfile::Mdm, c,user,rule_id,targets).await?;
+                            let (_,authority)=rss_mdm_authorization_service::baseline::grant_administrator_on(target_binding, rss_mdm_install_support::StorageProfile::Mdm, c,user,rule_id,targets).await?;
                             crate::administration::baseline::reserve_on(c,&authority).await
                         }.await)
                     })).await.map_err(pg_error)??;
@@ -234,11 +220,11 @@ impl Service {
             |error| Err(pg_error(error)),
         )
         }.await;
-        runtime.close().await;
+        drop(slot);
         result
     }
 }
-fn pg_error(error: PgError) -> Error {
+pub(super) fn pg_error(error: PgError) -> Error {
     match error.kind() {
         rss_transactional_messaging::error::MessagingErrorKind::Conflict => Error::Conflict,
         rss_transactional_messaging::error::MessagingErrorKind::OwnershipLost => Error::Forbidden,

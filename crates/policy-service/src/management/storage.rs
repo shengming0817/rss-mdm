@@ -34,6 +34,7 @@ pub(super) async fn write_in(
     Ok(())
 }
 pub async fn enqueue_change_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
     changes: &dyn crate::inputs::ExecutionChanges,
@@ -42,6 +43,7 @@ pub async fn enqueue_change_in(
     old: Option<&Policy>,
 ) -> Result<()> {
     crate::worker::jobs::enqueue_job_in(
+        binding,
         profile,
         reconcile,
         tx,
@@ -49,6 +51,6 @@ pub async fn enqueue_change_in(
         &crate::worker::Work::PolicyReconcile { policy: policy.id },
     )
     .await?;
-    changes.policy_changed_in(tx, policy, old).await?;
+    changes.policy_changed_in(binding, tx, policy, old).await?;
     Ok(())
 }

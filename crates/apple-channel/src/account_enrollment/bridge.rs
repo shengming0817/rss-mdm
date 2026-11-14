@@ -66,8 +66,12 @@ pub(super) async fn start(
     Extension(audit): Extension<RequestAudit>,
 ) -> Result<BridgePage, Error> {
     let name = account_name(&input.user_identifier)?;
-    let tenant = app.identity.tenant().to_string();
+    let execution = app.account_flow_binding(id).await?;
+    let tenant = execution.tenant().to_string();
     let secret = rss_mdm_registration_service::enrollment::random();
+    audit
+        .bind_scope(execution)
+        .map_err(|_| Error::Unauthorized)?;
     audit.identify_service("service:apple-account-browser");
     let previous = cookie(&headers).ok();
     let budget =
@@ -75,7 +79,7 @@ pub(super) async fn start(
     let outcome = app
         .audit_store
         .write(
-            app.identity.tenant(),
+            audit.binding()?,
             &budget.source_control(),
             (&app, &tenant, id, &name, &secret, &previous, &audit),
             |(app, tenant, id, name, secret, previous, audit), tx| {
@@ -124,7 +128,7 @@ pub(super) async fn start(
         )
         .await;
     let replayed = crate::operations::settle(outcome, &audit)?;
-    let mut response = page(&app, &name)?;
+    let mut response = page(execution, &name)?;
     if !replayed {
         response.cookie = Some(
             HeaderValue::from_str(&format!(
@@ -140,7 +144,8 @@ pub(super) async fn resume(
     ResumeHeaders(headers): ResumeHeaders,
 ) -> Result<BridgePage, Error> {
     let (id, secret) = cookie(&headers)?;
-    let tenant = app.identity.tenant().to_string();
+    let execution = app.account_flow_binding(id).await?;
+    let tenant = execution.tenant().to_string();
     let mut tx = app.access.begin(&tenant).await?;
     let row = store::flow(&mut tx, &tenant, id).await?;
     check_cookie(&row, &tenant, id, &secret)?;
@@ -157,16 +162,19 @@ pub(super) async fn resume(
     {
         return Err(Error::Unauthorized);
     }
-    page(&app, &name)
+    page(execution, &name)
 }
-fn page(app: &HttpState, name: &str) -> Result<BridgePage, Error> {
+fn page(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    name: &str,
+) -> Result<BridgePage, Error> {
     let name = name
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;");
-    let tenant = app.identity.tenant().to_string();
+    let tenant = execution.tenant().to_string();
     let html = format!(
         "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>注册工作设备</title><body data-tenant=\"{tenant}\"><h1>注册工作设备</h1><p>组织账户：{name}</p><p>请使用与该组织账户关联的 RSS 账户登录。</p><form id=\"login\"><label>RSS 登录名 <input name=\"login\" autocomplete=\"username\" required></label><label>密码 <input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button>登录</button></form><div id=\"providers\"></div><form id=\"finish\" method=\"post\" action=\"/api/v1/apple/account-enrollment/finish\" hidden><input name=\"csrf\" type=\"hidden\"><button>继续注册</button></form><p id=\"message\" role=\"status\"></p><script src=\"/api/v1/apple/account-enrollment/bridge.js\" defer></script></body></html>"
     );
@@ -203,7 +211,8 @@ pub(super) async fn finish(
         HeaderValue::from_str(&input.csrf).map_err(|_| Error::Forbidden)?,
     );
     headers.insert("x-identity-request", HeaderValue::from_static("1"));
-    let proof = authenticate(&app, &headers, true, control.deadline()).await?;
+    let execution = app.account_flow_binding(id).await?;
+    let proof = authenticate(&app, execution, &headers, true, control.deadline()).await?;
     proof.bind_audit(&audit)?;
     audit.owned_operation(
         rss_mdm_audit_integration::operation::OperationOwner::AppleAccountEnrollment,
@@ -217,7 +226,7 @@ pub(super) async fn finish(
     let outcome = app
         .audit_store
         .write(
-            app.identity.tenant(),
+            audit.binding()?,
             &budget.source_control(),
             (&app, &proof, &tenant, id, &secret, &audit),
             |(app, proof, tenant, id, secret, audit), tx| {

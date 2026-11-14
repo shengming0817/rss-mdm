@@ -87,7 +87,7 @@ async fn change(
     State(service): State<Arc<Policies>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     input: std::result::Result<
         Json<rss_mdm_policy_service::operation::Operation<Change>>,
         axum::extract::rejection::JsonRejection,
@@ -114,7 +114,7 @@ async fn read(
     State(service): State<Arc<Policies>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> std::result::Result<Json<rss_mdm_policy_service::management::View>, Error> {
     super::read::read(&service, &auth.proof, &audit, id)
         .await
@@ -122,6 +122,8 @@ async fn read(
         .map_err(Error::from)
 }
 async fn list(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(service): State<Arc<Policies>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -153,7 +155,7 @@ async fn rerun(
     State(service): State<Arc<Policies>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     input: std::result::Result<
         Json<rss_mdm_policy_service::operation::Operation<super::rerun::Rerun>>,
         axum::extract::rejection::JsonRejection,
@@ -181,7 +183,7 @@ async fn assignments(
     State(service): State<Arc<dyn crate::execution::task_reads::Reads>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<AssignmentsQuery>,
     >,
@@ -211,7 +213,7 @@ async fn delete(
     State(service): State<Arc<Policies>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     body: Result<Json<Delete>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<rss_mdm_policy_service::management::View>, Error> {
     let Json(body) = body.map_err(Error::from)?;
@@ -242,6 +244,8 @@ async fn delete(
 }
 
 async fn capabilities(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(service): State<Arc<Policies>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -254,6 +258,8 @@ async fn capabilities(
 }
 
 async fn resolve(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(service): State<Arc<Policies>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,

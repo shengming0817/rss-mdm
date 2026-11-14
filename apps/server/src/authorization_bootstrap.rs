@@ -67,7 +67,13 @@ pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         config.profile,
-        config.user.tenant_id.clone(),
+        config
+            .installation
+            .execution(
+                TenantId::parse(&config.user.tenant_id).map_err(|_| Error::Malformed)?,
+                config.expected_epoch,
+            )
+            .map_err(|_| Error::Malformed)?,
         "authorization_initialize",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -152,13 +158,6 @@ async fn initialize_owned(
     let login = LoginKey::parse(&config.login).map_err(|_| invalid())?;
     let password =
         Password::new(config::secret(&config.password_file)?.to_string()).map_err(|_| invalid())?;
-    crate::administration::tenants::claim_database_use(
-        &config.identity_database,
-        &config.installation,
-        &config.user.tenant_id,
-        config.expected_epoch,
-    )
-    .await?;
     owned.runtime = Some(
         identity::open_runtime(
             &config.identity_database,
@@ -211,6 +210,16 @@ async fn initialize_owned(
         .as_ref()
         .ok_or(Error::Unavailable(Failure::Database))?;
     admit(database, &config).await?;
+    {
+        let mut c = database.acquire().await.map_err(crate::database::db)?;
+        crate::administration::tenants::claim_use(
+            &mut c,
+            &config.installation,
+            &config.user.tenant_id,
+            config.expected_epoch,
+        )
+        .await?;
+    }
     let source_runtime = identity::open_runtime(
         &config.database,
         &config.installation.target,
@@ -300,7 +309,11 @@ mod tests {
         let audit = super::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            uuid::Uuid::new_v4().to_string(),
+            rss_transactional_messaging::fence::ExecutionBinding::new(
+                rss_transactional_messaging::fence::StorageIdentity::new([1; 16], [2; 16]).unwrap(),
+                rss_request_context::TenantId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
+                rss_transactional_messaging::fence::Epoch::new(1).unwrap(),
+            ),
             "authorization_initialize",
             rss_mdm_audit_integration::AuditIntent::Management,
         );

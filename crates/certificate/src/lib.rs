@@ -4,7 +4,7 @@ pub mod bootstrap;
 pub mod device_identity;
 mod peer;
 pub mod windows;
-pub use peer::{ClientCertificateEvidence, GatewayConnection, GatewayOrigin};
+pub use peer::{ClientCertificateEvidence, GatewayConnection, GatewayOrigin, possession_verifier};
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 pub enum Error {

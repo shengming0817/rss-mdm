@@ -224,6 +224,18 @@
       "name": "rss_reconcile.mark_applied",
       "search_path": "search_path=pg_catalog, rss_reconcile",
       "security_definer": true
+    },
+    {
+      "name": "mdm_devices.association_work_scopes",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_devices.association_work_epoch",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_devices.asset_delivery_scopes",
+      "search_path": "search_path=pg_catalog"
     }
   ],
   "external_relations": [

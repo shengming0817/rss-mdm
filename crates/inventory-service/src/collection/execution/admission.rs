@@ -28,6 +28,7 @@ pub enum TriggerInput {
     },
 }
 pub async fn accept_for_device(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
     policy: &CollectionPolicy,
@@ -89,6 +90,7 @@ pub async fn accept_for_device(
         return Ok(());
     }
     queue_run_in(
+        binding,
         service,
         tx,
         policy,
@@ -231,6 +233,7 @@ pub struct RunInput<'a> {
     pub now: i64,
 }
 pub async fn queue_run_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
     policy: &CollectionPolicy,
@@ -298,17 +301,25 @@ pub async fn queue_run_in(
     let id = input.id;
     let now = input.now;
     tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_inventory.collection_tasks (tenant_id, id, policy_version, channel, device, occurrence, available_at, deadline, agent_state, dispatch_fingerprint, created_at, source_objects, origin, native_delivery, triggered_at) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)")
+        sqlx::query("INSERT INTO mdm_inventory.collection_tasks (tenant_id, id, policy_version, channel, device, occurrence, available_at, deadline, agent_state, dispatch_fingerprint, created_at, source_objects, origin, native_delivery, triggered_at, expected_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)")
             .bind(tenant).bind(id).bind(version).bind(channel).bind(target.device.into_uuid()).bind(input.occurrence).bind(input.available).bind(input.deadline)
             .bind(state).bind(fingerprint).bind(now).bind(evidence).bind(origin).bind(delivery).bind(input.triggered_at).execute(c).await?;
         Ok(())
     })).await?;
     super::wake::run_in(&service.reconcile_messaging, tx, id).await?;
-    tx.with_connection(|c|Box::pin(async move {sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'command_relay')").execute(c).await?;Ok(())})).await?;
+    tx.with_connection(|c| {
+        Box::pin(async move {
+            sqlx::query("SELECT pg_notify('mdm_work','command_relay')")
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await?;
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        tx.tenant_id().to_string(),
+        binding,
         "collection_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
     );

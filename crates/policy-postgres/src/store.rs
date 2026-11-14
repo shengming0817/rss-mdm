@@ -13,8 +13,7 @@ use uuid::Uuid;
 /// Tenant/runtime-bound Policy mutations. The caller owns commit and companion audit.
 pub struct PolicyStore {
     profile: rss_mdm_install_support::StorageProfile,
-    tenant: TenantId,
-    binding: ExecutionBinding,
+
     runtime: Arc<PgRuntime>,
     reader: PolicyReader,
 }
@@ -56,7 +55,6 @@ impl PolicyStore {
         binding: ExecutionBinding,
         deadline: OperationDeadline,
     ) -> Result<Self, Error> {
-        let tenant = binding.tenant();
         settle(
             runtime
                 .local_tx(binding, deadline, |tx| {
@@ -71,11 +69,10 @@ impl PolicyStore {
                 })
                 .await,
         )?;
-        let reader = PolicyReader::bind(profile, runtime.clone(), tenant);
+        let reader = PolicyReader::bind(profile, runtime.clone());
         Ok(Self {
             profile,
-            tenant,
-            binding,
+
             runtime,
             reader,
         })
@@ -101,7 +98,7 @@ impl PolicyStore {
         crate::storage(profile)
             .lock(tx, "policy", &id.to_string())
             .await?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| {
             Box::pin(async move {
                 sqlx::query(crate::storage_profile::sql(profile).store_read_for_update_in_1)
@@ -158,7 +155,7 @@ impl PolicyStore {
         {
             return Ok(Err(Rejection::InvalidInput));
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let p = p.clone();
         let frozen = input.frozen.clone();
         let author = input.author.clone();
@@ -221,7 +218,7 @@ impl PolicyStore {
         id: Uuid,
     ) -> InTransaction<Option<Value>> {
         input!(self.check(tx)?);
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let sql = crate::storage_profile::sql(self.profile()).store_replay_in_1;
         let row = tx
             .with_connection(move |c| {
@@ -249,7 +246,7 @@ impl PolicyStore {
         crate::storage(profile)
             .lock(tx, "request", &id.to_string())
             .await?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let row = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -280,7 +277,7 @@ impl PolicyStore {
         let profile = self.profile();
 
         input!(self.check(tx)?);
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let fingerprint = fingerprint.to_vec();
         let value = value.clone();
         tx.with_connection(move |c| {
@@ -328,7 +325,7 @@ impl PolicyStore {
         {
             return Ok(Err(Rejection::Conflict));
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| {
             Box::pin(async move {
                 sqlx::query(crate::storage_profile::sql(profile).store_trigger_in_1)
@@ -348,12 +345,13 @@ impl PolicyStore {
     /// Read the current aggregate through the store's own tenant/runtime fence.
     pub async fn get(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         id: Uuid,
         deadline: OperationDeadline,
     ) -> Result<Option<Policy>, Error> {
         settle(
             self.runtime
-                .local_tx_with_context(self.binding, deadline, self, move |s, tx| {
+                .local_tx_with_context(binding, deadline, self, move |s, tx| {
                     Box::pin(async move {
                         input!(s.check(tx)?);
                         s.reader.read_in(tx, id).await
@@ -455,7 +453,7 @@ async fn version_snapshot_on(
 /// binding neither opens a connection nor grants database privileges.
 pub struct PolicyReader {
     profile: rss_mdm_install_support::StorageProfile,
-    tenant: TenantId,
+
     binding: PgOutboxWriter,
 }
 impl PolicyReader {
@@ -463,17 +461,15 @@ impl PolicyReader {
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
         self.profile
     }
-    async fn check_on(&self, c: &mut sqlx::PgConnection) -> Result<(), PgError> {
+    async fn check_on(&self, c: &mut sqlx::PgConnection) -> Result<TenantId, PgError> {
         let profile = self.profile();
 
         let tenant: Option<String> =
             sqlx::query_scalar("SELECT current_setting('rss.tenant_id',true)")
                 .fetch_one(c)
                 .await?;
-        if tenant.as_deref() != Some(self.tenant.to_string().as_str()) {
-            return Err(crate::storage(profile).fault("reader tenant"));
-        }
-        Ok(())
+        TenantId::parse(tenant.as_deref().unwrap_or_default())
+            .map_err(|_| crate::storage(profile).fault("reader tenant"))
     }
     /// Borrow the page's admitted read-only connection; retain this capability's tenant.
     pub async fn read_on(
@@ -483,8 +479,8 @@ impl PolicyReader {
     ) -> InTransaction<Option<Policy>> {
         let profile = self.profile();
 
-        self.check_on(c).await?;
-        Ok(Ok(read_snapshot_on(profile, c, self.tenant, id).await?))
+        let tenant = self.check_on(c).await?;
+        Ok(Ok(read_snapshot_on(profile, c, tenant, id).await?))
     }
     /// Read an exact immutable version in the caller's tenant-bound page snapshot.
     pub async fn version_on(
@@ -494,8 +490,8 @@ impl PolicyReader {
     ) -> InTransaction<Option<Version>> {
         let profile = self.profile();
 
-        self.check_on(c).await?;
-        Ok(Ok(version_snapshot_on(profile, c, self.tenant, id).await?))
+        let tenant = self.check_on(c).await?;
+        Ok(Ok(version_snapshot_on(profile, c, tenant, id).await?))
     }
 
     /// Count every immutable Policy version referencing this resource, including
@@ -510,7 +506,7 @@ impl PolicyReader {
         let profile = self.profile();
 
         input!(self.check(tx)?);
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let resource = resource.to_owned();
         let version = version.to_owned();
         let count: i64 = tx
@@ -546,7 +542,7 @@ impl PolicyReader {
         let rss_mdm_agent_wire::runtime::CapabilitySelector::Alias { alias } = selector else {
             unreachable!()
         };
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let alias = alias.as_str().to_owned();
         let id = tx
             .with_connection(move |c| {
@@ -562,14 +558,10 @@ impl PolicyReader {
         Ok(Ok(id))
     }
     /// Bind a host-admitted runtime. Command readers retain their SELECT-only role.
-    pub fn bind(
-        profile: rss_mdm_install_support::StorageProfile,
-        runtime: Arc<PgRuntime>,
-        tenant: TenantId,
-    ) -> Self {
+    pub fn bind(profile: rss_mdm_install_support::StorageProfile, runtime: Arc<PgRuntime>) -> Self {
         Self {
             profile,
-            tenant,
+
             binding: PgOutboxWriter::new(
                 runtime,
                 MessagingDomain::parse(match profile {
@@ -582,11 +574,7 @@ impl PolicyReader {
     }
     fn check(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
         self.binding.validate_transaction(tx)?;
-        Ok(if tx.tenant_id() == self.tenant {
-            Ok(())
-        } else {
-            Err(Rejection::TenantMismatch)
-        })
+        Ok(Ok(()))
     }
     /// Fence a current source read using the shared Policy reader lock.
     pub async fn locked_in(
@@ -629,7 +617,7 @@ impl PolicyReader {
         let profile = self.profile();
 
         input!(self.check(tx)?);
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let values: Vec<String> = tx
             .with_connection(move |c| {
                 Box::pin(async move {

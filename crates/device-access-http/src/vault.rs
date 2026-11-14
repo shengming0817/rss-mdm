@@ -22,11 +22,11 @@ pub fn routes(
     rss_mdm_http_contract::route_module! {struct VaultRoutes for [Browser]{prepare,execute}}
     VaultRoutes {
         prepare: Route::new(
-            "/api/v1/da/vault/challenges",
+            "/api/v1/tenants/{tenant}/da/vault/challenges",
             post(prepare, &RESOURCE, &[Operation::Action]),
         ),
         execute: Route::new(
-            "/api/v1/da/vault/execute",
+            "/api/v1/tenants/{tenant}/da/vault/execute",
             post(execute, &RESOURCE, &[Operation::Action]),
         ),
     }
@@ -34,6 +34,7 @@ pub fn routes(
     .bind_with(state.as_ref(), Arc::clone)
 }
 async fn prepare(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
     State(s): State<Arc<rss_mdm_vault_sync::Service>>,
     Extension(p): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
@@ -45,6 +46,7 @@ async fn prepare(
         .map_err(map)
 }
 async fn execute(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
     State(s): State<Arc<rss_mdm_vault_sync::Service>>,
     Extension(p): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,

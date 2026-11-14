@@ -44,7 +44,7 @@ impl Queries {
             > + Send,
     {
         proof.check_live()?;
-        if proof.tenant_id() != self.tenant.to_string() {
+        if proof.tenant_id() != proof.binding().tenant().to_string() {
             return Err(Error::Forbidden);
         }
         let started = self.clock.now();
@@ -61,7 +61,7 @@ impl Queries {
             let mut tx = connection.begin().await?;
             sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY").execute(&mut *tx).await?;
             let timeout = remaining().as_millis().max(1).to_string();
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.tenant.to_string()).bind(timeout).execute(&mut *tx).await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(proof.binding().tenant().to_string()).bind(timeout).execute(&mut *tx).await?;
             let grant = authorization::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx, proof.tenant_id(), proof.instance_id()).await?;
             let binding = grant.query_binding(proof)?;
             let now = sqlx::query_scalar("SELECT floor(extract(epoch FROM transaction_timestamp()))::bigint").fetch_one(&mut *tx).await?;
@@ -90,7 +90,7 @@ impl Queries {
         }
         crate::deployment::transaction::inspect_budget(
             &self.runtime,
-            self.binding,
+            proof.binding(),
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(remaining()),
             (proof, binding, registration),
             |state, tx| {

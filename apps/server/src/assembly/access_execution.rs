@@ -7,8 +7,9 @@ pub(crate) struct Assembly {
     pub worker: Arc<access::worker::Worker>,
 }
 pub(crate) async fn assemble(
+    discovery_pool: sqlx::PgPool,
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    tenant: rss_request_context::TenantId,
+    probe: rss_transactional_messaging::fence::ExecutionBinding,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
     recovery: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     reconcile: rss_reconcile_postgres::PgStore,
@@ -39,13 +40,19 @@ pub(crate) async fn assemble(
         platform: Arc::new(rss_mdm_device_access_postgres::platform_sso::Observation),
     });
     let service = Arc::new(access::Service::new(
-        access::Transactions::bind(runtime, tenant, audit, materials.clone())
+        access::Transactions::bind(runtime, probe, audit, materials.clone())
             .await
             .map_err(super::owner_errors::access)?,
     ));
     let worker = Arc::new(
-        access::worker::Worker::new(service.clone(), reconcile, budget)
-            .map_err(super::owner_errors::access)?,
+        access::worker::Worker::new(
+            discovery_pool.clone(),
+            probe.storage(),
+            service.clone(),
+            reconcile,
+            budget,
+        )
+        .map_err(super::owner_errors::access)?,
     );
     Ok(Assembly { service, worker })
 }

@@ -81,15 +81,15 @@ pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Dec
             get(current, &crate::PROTOCOL, &[Operation::Action]),
         ),
         list: Route::new(
-            "/api/v1/da/admin/configurations",
+            "/api/v1/tenants/{tenant}/da/admin/configurations",
             get(list, &catalog::DA_CONFIGURATIONS, &[Operation::List]),
         ),
         detail: Route::new(
-            "/api/v1/da/admin/configurations/{id}",
+            "/api/v1/tenants/{tenant}/da/admin/configurations/{id}",
             get(detail, &catalog::DA_CONFIGURATIONS, &[Operation::Get]),
         ),
         versions: Route::new(
-            "/api/v1/da/admin/configurations/{id}/versions",
+            "/api/v1/tenants/{tenant}/da/admin/configurations/{id}/versions",
             get(
                 versions,
                 &catalog::DA_CONFIGURATION_HISTORY,
@@ -97,7 +97,7 @@ pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Dec
             ),
         ),
         publication_operation: Route::new(
-            "/api/v1/da/admin/configuration-operations/{id}",
+            "/api/v1/tenants/{tenant}/da/admin/configuration-operations/{id}",
             get(
                 publication_operation,
                 &catalog::DA_PUBLICATION_OPERATIONS,
@@ -105,7 +105,7 @@ pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Dec
             ),
         ),
         diagnostics: Route::new(
-            "/api/v1/da/admin/devices/{device}/configuration",
+            "/api/v1/tenants/{tenant}/da/admin/devices/{device}/configuration",
             get(
                 diagnostics,
                 &catalog::DA_CONFIGURATION_DIAGNOSTICS,
@@ -113,11 +113,11 @@ pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Dec
             ),
         ),
         latest: Route::new(
-            "/api/v1/da/admin/devices/{device}/status",
+            "/api/v1/tenants/{tenant}/da/admin/devices/{device}/status",
             get(latest, &catalog::DA_STATUS, &[Operation::Get]),
         ),
         history: Route::new(
-            "/api/v1/da/admin/devices/{device}/reports",
+            "/api/v1/tenants/{tenant}/da/admin/devices/{device}/reports",
             get(history, &catalog::DA_REPORT_HISTORY, &[Operation::List]),
         ),
     }
@@ -169,6 +169,7 @@ async fn current(
     ))
 }
 async fn list(
+    Path(_tenant): Path<Uuid>,
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
     q: OwnedQuery<Directory>,
@@ -202,14 +203,14 @@ async fn list(
 async fn detail(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<rss_mdm_policy_postgres::device_access::Publication>, BusinessError> {
     Ok(Json(service(&s)?.service.configuration(&p, id).await?))
 }
 async fn versions(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(Uuid, Uuid)>,
     q: OwnedQuery<Window<Versions>>,
 ) -> Result<CollectionResponse<Json<config::ConfigurationPage>>, BusinessError> {
     let (q, _) = q.parse()?;
@@ -230,7 +231,7 @@ async fn versions(
 async fn latest(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(Uuid, rss_mdm_agent_wire::DeviceId)>,
 ) -> Result<Json<Option<reports::View>>, BusinessError> {
     Ok(Json(
         service(&s)?
@@ -242,7 +243,7 @@ async fn latest(
 async fn history(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(Uuid, rss_mdm_agent_wire::DeviceId)>,
     q: OwnedQuery<Window<Reports>>,
 ) -> Result<CollectionResponse<Json<reports::Page>>, BusinessError> {
     let (q, extra) = q.parse()?;
@@ -270,7 +271,7 @@ async fn history(
 async fn diagnostics(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(Uuid, rss_mdm_agent_wire::DeviceId)>,
 ) -> Result<Json<config::Diagnostics>, BusinessError> {
     let b = service(&s)?;
     Ok(Json(
@@ -283,7 +284,7 @@ async fn diagnostics(
 async fn publication_operation(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<rss_mdm_policy_postgres::device_access::Publication>, BusinessError> {
     Ok(Json(
         service(&s)?.service.publication_operation(&p, id).await?,

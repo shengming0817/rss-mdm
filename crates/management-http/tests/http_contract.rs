@@ -31,24 +31,36 @@ fn directory_capabilities_come_from_the_real_nested_model_and_execution_owner() 
     let document =
         rss_mdm_http_contract::artifact::document([("browser", routes.into_endpoints())]).unwrap();
     for (path, selector) in [
-        ("/api/v1/resources", "presentation.name"),
+        ("/api/v1/tenants/{tenant}/resources", "presentation.name"),
         (
-            "/api/v1/certificate-archive/entries",
+            "/api/v1/tenants/{tenant}/certificate-archive/entries",
             "latest.metadata.labels",
         ),
         (
-            "/api/v1/webhooks/subscriptions",
+            "/api/v1/tenants/{tenant}/webhooks/subscriptions",
             "settings.presentation.name",
         ),
-        ("/api/v1/groups", "presentation.description"),
         (
-            "/api/v1/policies",
+            "/api/v1/tenants/{tenant}/groups",
+            "presentation.description",
+        ),
+        (
+            "/api/v1/tenants/{tenant}/policies",
             "definition.action.schedule.trigger.kind",
         ),
-        ("/api/v1/compliance-rules", "definition.target.ids"),
-        ("/api/v1/saved-queries", "definition.query.filter"),
-        ("/api/v1/authorization/user-groups", "value.name"),
-        ("/api/v1/api-keys", "createdBy.principalId"),
+        (
+            "/api/v1/tenants/{tenant}/compliance-rules",
+            "definition.target.ids",
+        ),
+        (
+            "/api/v1/tenants/{tenant}/saved-queries",
+            "definition.query.filter",
+        ),
+        (
+            "/api/v1/tenants/{tenant}/authorization/user-groups",
+            "value.name",
+        ),
+        ("/api/v1/tenants/{tenant}/api-keys", "createdBy.principalId"),
     ] {
         let endpoint = document["endpoints"]
             .as_array()
@@ -79,11 +91,10 @@ fn disabled_conditions_remove_only_their_actual_mounts() {
         application_routes(),
     );
     let endpoints = routes.endpoints();
-    assert!(
-        !endpoints
-            .iter()
-            .any(|e| e.path.starts_with("/api/v1/device-access/broker"))
-    );
+    assert!(!endpoints.iter().any(|e| {
+        e.path
+            .starts_with("/api/v1/tenants/{tenant}/device-access/broker")
+    }));
     assert!(
         !endpoints
             .iter()
@@ -91,9 +102,9 @@ fn disabled_conditions_remove_only_their_actual_mounts() {
     );
     // These intentionally remain registered and report unavailable at runtime.
     for path in [
-        "/api/v1/agent-connections",
-        "/api/v1/windows/entra-policy",
-        "/api/v1/telemetry/history",
+        "/api/v1/tenants/{tenant}/agent-connections",
+        "/api/v1/tenants/{tenant}/windows/entra-policy",
+        "/api/v1/tenants/{tenant}/telemetry/history",
     ] {
         assert!(
             endpoints.iter().any(|e| e.path == path),
@@ -122,7 +133,7 @@ fn authentication_owner_resolves_final_paths_and_cookie_activity() {
             .unwrap()
             .clone()
     };
-    let devices = endpoint("GET", "/api/v1/devices");
+    let devices = endpoint("GET", "/api/v1/tenants/{tenant}/devices");
     let auth = &devices["authentication"];
     assert_eq!(auth["alternatives"].as_array().unwrap().len(), 3);
     assert_eq!(
@@ -134,7 +145,7 @@ fn authentication_owner_resolves_final_paths_and_cookie_activity() {
         auth["conditional_response_headers"][1]["request_headers_absent"],
         serde_json::json!(["authorization"])
     );
-    let quota = endpoint("GET", "/api/v1/registration-quotas/me");
+    let quota = endpoint("GET", "/api/v1/tenants/{tenant}/registration-quotas/me");
     assert_eq!(
         quota["authentication"]["alternatives"]
             .as_array()
@@ -201,17 +212,19 @@ fn each_presence_switch_changes_only_its_declared_module() {
         let has = |path: &str| routes.endpoints().iter().any(|e| e.path == path);
 
         assert_eq!(
-            has("/api/v1/devices/{device}/recovery-credentials/filevault/configuration"),
+            has(
+                "/api/v1/tenants/{tenant}/devices/{device}/recovery-credentials/filevault/configuration"
+            ),
             filevault
         );
         assert_eq!(
-            has("/api/v1/devices/{device}/recovery-credentials"),
+            has("/api/v1/tenants/{tenant}/devices/{device}/recovery-credentials"),
             recovery
         );
         assert!(
-            has("/api/v1/agent-connections")
-                && has("/api/v1/windows/entra-policy")
-                && has("/api/v1/telemetry/history")
+            has("/api/v1/tenants/{tenant}/agent-connections")
+                && has("/api/v1/tenants/{tenant}/windows/entra-policy")
+                && has("/api/v1/tenants/{tenant}/telemetry/history")
         );
     }
 }

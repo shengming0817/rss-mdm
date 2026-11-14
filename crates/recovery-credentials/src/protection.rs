@@ -12,15 +12,10 @@ use zeroize::Zeroizing;
 /// One product configuration shared by execution, ingress and management readers.
 pub struct Protection {
     pub keys: std::sync::Arc<KeyRing>,
-    active_recipient: String,
     recipients: BTreeMap<String, Recipient>,
 }
 impl Protection {
-    pub fn new(
-        keys: KeyRing,
-        active_recipient: String,
-        recipients: Vec<Recipient>,
-    ) -> Result<Self, Error> {
+    pub fn new(keys: KeyRing, recipients: Vec<Recipient>) -> Result<Self, Error> {
         if recipients.is_empty() || recipients.len() > 32 {
             return Err(Error::Configuration);
         }
@@ -33,17 +28,44 @@ impl Protection {
                 return Err(Error::Configuration);
             }
         }
-        if !values.contains_key(&active_recipient) {
-            return Err(Error::Configuration);
-        }
         Ok(Self {
             keys: std::sync::Arc::new(keys),
-            active_recipient,
             recipients: values,
         })
     }
-    pub fn active_recipient(&self) -> &Recipient {
-        &self.recipients[&self.active_recipient]
+    /// Read the current tenant selection under the initiating transaction's material lock.
+    pub async fn selected_on(
+        &self,
+        profile: rss_mdm_install_support::StorageProfile,
+        c: &mut sqlx::PgConnection,
+        tenant: uuid::Uuid,
+    ) -> Result<&Recipient, Error> {
+        self.recipient(&Self::selected_id_on(profile, c, tenant).await?)
+    }
+    pub async fn selected_id_on(
+        profile: rss_mdm_install_support::StorageProfile,
+        c: &mut sqlx::PgConnection,
+        tenant: uuid::Uuid,
+    ) -> Result<String, Error> {
+        sqlx::query_scalar(crate::storage_profile::sql(profile).recipient_selected)
+            .bind(tenant)
+            .fetch_optional(c)
+            .await?
+            .ok_or(Error::Configuration)
+    }
+    /// Existing maintenance owns the transaction and checks the installed recipient material.
+    pub async fn select_on(
+        profile: rss_mdm_install_support::StorageProfile,
+        c: &mut sqlx::PgConnection,
+        tenant: uuid::Uuid,
+        recipient: &str,
+    ) -> Result<(), Error> {
+        sqlx::query(crate::storage_profile::sql(profile).recipient_select)
+            .bind(tenant)
+            .bind(recipient)
+            .execute(c)
+            .await?;
+        Ok(())
     }
     pub fn recipient(&self, id: &str) -> Result<&Recipient, Error> {
         self.recipients.get(id).ok_or(Error::Integrity)

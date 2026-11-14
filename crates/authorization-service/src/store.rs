@@ -134,8 +134,7 @@ async fn change_authorization<T: serde::Serialize + Sync>(
     };
     let attempt = store
         .write(
-            rss_request_context::TenantId::parse(proof.tenant_id())
-                .map_err(|_| Error::Malformed)?,
+            proof.binding(),
             &budget.source_control(),
             (store, context, fact),
             |(store, context, fact), tx| {
@@ -524,7 +523,7 @@ pub(crate) async fn initialize_verified_user(
     .map_err(Error::from)?;
     let attempt = store
         .write(
-            rss_request_context::TenantId::parse(&user.tenant_id).map_err(|_| Error::Malformed)?,
+            audit.binding()?,
             &budget.source_control(),
             (store, &user, &operation, audit, fact),
             |(store, user, operation, audit, fact), tx| {

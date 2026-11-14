@@ -27,6 +27,7 @@ CREATE TABLE mdm_software_composition.slots (
 );
 CREATE TABLE mdm_software_composition.targets (
  tenant_id uuid NOT NULL,
+ expected_epoch bigint NOT NULL DEFAULT current_setting('rss.execution_epoch')::bigint CHECK(expected_epoch>0),
  id text NOT NULL CHECK(octet_length(id) BETWEEN 1 AND 128),
  record text NOT NULL,
  document bytea NOT NULL CHECK(octet_length(document) BETWEEN 1 AND 1048576),
@@ -42,6 +43,7 @@ CREATE TABLE mdm_software_composition.targets (
 
 );
 CREATE TABLE mdm_software_composition.withdrawals (
+ expected_epoch bigint NOT NULL DEFAULT current_setting('rss.execution_epoch')::bigint CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL, id text NOT NULL CHECK(octet_length(id) BETWEEN 1 AND 128), record text NOT NULL,
  document bytea NOT NULL CHECK(octet_length(document) BETWEEN 1 AND 1048576), digest bytea NOT NULL CHECK(octet_length(digest)=32),
  complete boolean NOT NULL DEFAULT false,
@@ -76,3 +78,29 @@ GRANT SELECT ON mdm_software_composition.subjects,mdm_software_composition.targe
 GRANT SELECT,INSERT ON mdm_software_composition.withdrawals TO mdm_software_runtime;
 GRANT SELECT ON mdm_software_composition.withdrawals TO mdm_command_runtime;
 COMMIT;
+
+CREATE INDEX publication_work_scope ON mdm_software_composition.targets(tenant_id,expected_epoch,id COLLATE "C");
+CREATE INDEX withdrawal_work_scope ON mdm_software_composition.withdrawals(tenant_id,expected_epoch,id COLLATE "C") WHERE NOT complete;
+CREATE POLICY work_discovery ON mdm_software_composition.targets FOR SELECT TO mdm_owner USING(true);
+CREATE POLICY work_discovery ON mdm_software_composition.withdrawals FOR SELECT TO mdm_owner USING(true);
+CREATE POLICY work_discovery ON mdm_software_composition.subjects FOR SELECT TO mdm_owner USING(true);
+CREATE POLICY work_discovery ON mdm_software_composition.projections FOR SELECT TO mdm_owner USING(true);
+CREATE FUNCTION mdm_software_composition.work_scopes(after_tenant uuid, after_epoch bigint, after_id text)
+RETURNS TABLE(tenant_id uuid, expected_epoch bigint, id text, source text)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ WITH work AS (
+  (SELECT t.tenant_id,t.expected_epoch,t.id,t.record FROM mdm_software_composition.targets t
+   WHERE left(t.id,2)='p:' AND (after_tenant IS NULL OR (t.tenant_id,t.expected_epoch,t.id COLLATE "C")>(after_tenant,after_epoch,after_id COLLATE "C"))
+    AND NOT EXISTS(SELECT 1 FROM mdm_software_composition.projections p WHERE p.tenant_id=t.tenant_id AND encode(p.publication,'hex')=substring(t.id,3,64))
+   ORDER BY t.tenant_id,t.expected_epoch,t.id COLLATE "C" LIMIT 32)
+  UNION ALL
+  (SELECT w.tenant_id,w.expected_epoch,w.id,w.record FROM mdm_software_composition.withdrawals w WHERE NOT w.complete
+   AND (after_tenant IS NULL OR (w.tenant_id,w.expected_epoch,w.id COLLATE "C")>(after_tenant,after_epoch,after_id COLLATE "C"))
+   ORDER BY w.tenant_id,w.expected_epoch,w.id COLLATE "C" LIMIT 32)
+ ) SELECT w.tenant_id,w.expected_epoch,w.id,convert_from(s.document,'UTF8')::jsonb->>'target'
+ FROM work w JOIN mdm_software_composition.subjects s ON(s.tenant_id,s.record)=(w.tenant_id,w.record)
+ ORDER BY w.tenant_id,w.expected_epoch,w.id COLLATE "C" LIMIT 32
+$$;
+ALTER FUNCTION mdm_software_composition.work_scopes(uuid,bigint,text) OWNER TO mdm_owner;
+REVOKE ALL ON FUNCTION mdm_software_composition.work_scopes(uuid,bigint,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_software_composition.work_scopes(uuid,bigint,text) TO mdm_access;

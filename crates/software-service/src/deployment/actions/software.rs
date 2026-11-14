@@ -10,6 +10,7 @@ use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;
 
 pub(crate) async fn accept_for_device(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &crate::deployment::transactions::Transactions,
     tx: &mut PgTransaction<'_>,
     policy: &crate::deployment::sources::software::SoftwareExecutionPolicy,
@@ -25,6 +26,7 @@ pub(crate) async fn accept_for_device(
         return Ok(());
     };
     queue_run_in(
+        execution,
         service,
         tx,
         RunInput {

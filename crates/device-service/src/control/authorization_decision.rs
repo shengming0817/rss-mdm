@@ -138,7 +138,7 @@ pub(crate) async fn batch(
     if operations.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let tenant = queries.tenant.to_string();
+    let tenant = proof.binding().tenant().to_string();
     let targets = operations
         .values()
         .map(|o| (o.id, o.device))
@@ -225,7 +225,7 @@ pub(crate) async fn batch(
     } else {
         device_control::applicability_on(
             c,
-            queries.tenant,
+            proof.binding().tenant(),
             queries.apple_results.clone(),
             queries.windows_results.clone(),
             &controls

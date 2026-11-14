@@ -18,7 +18,7 @@ pub(super) async fn seed(
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     sqlx::query("UPDATE mdm_scope.tasks SET completed=true,failure='superseded' WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(scope_task).execute(&mut *tx).await?;
     let group = Uuid::new_v4();
-    sqlx::query("INSERT INTO mdm_assets.group_tasks(tenant_id,id,target,kind,input,completed,failure) VALUES($1::uuid,$2,$3,'group',$4,true,'superseded')")
+    sqlx::query("INSERT INTO mdm_assets.group_tasks(expected_epoch,tenant_id,id,target,kind,input,completed,failure) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,'group',$4,true,'superseded')")
         .bind(c.tenant.to_string()).bind(id).bind(group).bind(json!({"kind":"calculation","authority":[],"group":group,"base_revision":1,"asset_cut":cut,"automatic":true,"covered_inputs":0})).execute(&mut *tx).await?;
     let rule = Uuid::new_v4();
     let definition: rss_mdm_compliance_service::Definition = serde_json::from_value(
@@ -35,11 +35,11 @@ pub(super) async fn seed(
     input.validate()?;
     sqlx::query("INSERT INTO mdm_compliance.rules(tenant_id,id,revision,enabled) VALUES($1::uuid,$2,1,true)").bind(c.tenant.to_string()).bind(rule).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_compliance.versions(tenant_id,rule_id,revision,definition) VALUES($1::uuid,$2,1,$3)").bind(c.tenant.to_string()).bind(rule).bind(serde_json::to_value(definition)?).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_compliance.runs(tenant_id,id,rule_id,rule_revision,input,completed,failure) VALUES($1::uuid,$2,$3,1,$4,true,'superseded')").bind(c.tenant.to_string()).bind(id).bind(rule).bind(serde_json::to_value(input)?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_compliance.runs(expected_epoch,tenant_id,id,rule_id,rule_revision,input,completed,failure) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,1,$4,true,'superseded')").bind(c.tenant.to_string()).bind(id).bind(rule).bind(serde_json::to_value(input)?).execute(&mut *tx).await?;
     let scope = rss_mdm_inventory_service::assets::ReadScope::from_proof(p)?;
-    sqlx::query("INSERT INTO mdm_assets.asset_query_runs(tenant_id,id,input,completed) VALUES($1::uuid,$2,$3,true)").bind(c.tenant.to_string()).bind(id)
+    sqlx::query("INSERT INTO mdm_assets.asset_query_runs(expected_epoch,tenant_id,id,input,completed) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,true)").bind(c.tenant.to_string()).bind(id)
         .bind(json!({"query":{},"scope":scope,"asset_cut":cut,"as_of":1700000000})).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_devices.retirements(tenant_id,id,origin,policy,version,object_kind,object_id,occurrence,target,authority,delivery_seconds,created_at) VALUES($1::uuid,$2,'\"policy\"',$3,$4,$5,$6,'manual',$7,$8,300,1700000000)")
+    sqlx::query("INSERT INTO mdm_devices.retirements(expected_epoch,tenant_id,id,origin,policy,version,object_kind,object_id,occurrence,target,authority,delivery_seconds,created_at) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,'\"policy\"',$3,$4,$5,$6,'manual',$7,$8,300,1700000000)")
         .bind(c.tenant.to_string()).bind(id).bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind(endpoint.object.kind()).bind(endpoint.object.uuid())
         .bind(serde_json::to_value(&endpoint)?).bind(serde_json::to_value(p.actor())?).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_devices.retirement_channels (tenant_id, operation, device, channel, stage, effect, blocking_execution, reason) VALUES (CAST($1 AS uuid), $2, $3, 'mdm', 'cleanup', 'blocked', $4, 'cleanup_waiting')")
@@ -61,7 +61,7 @@ pub(super) async fn seed(
         .bind(organization)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO mdm_apple.ade_operations(tenant_id,organization,id,kind,digest,actor,instance,server_revision,token_revision,request,state,receipt,created_at) VALUES($1::uuid,$2,$3,'configuration',$4,$5,$6,1,0,'{}','succeeded',$7,1700000000)")
+    sqlx::query("INSERT INTO mdm_apple.ade_operations(expected_epoch,tenant_id,organization,id,kind,digest,actor,instance,server_revision,token_revision,request,state,receipt,created_at) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,'configuration',$4,$5,$6,1,0,'{}','succeeded',$7,1700000000)")
         .bind(c.tenant.to_string()).bind(organization).bind(id).bind("a".repeat(64)).bind(p.principal_id()).bind(p.instance_id()).bind(json!({"revision":17})).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_apple_runtime.operations(tenant_id,operation_id,fingerprint_key,fingerprint,receipt) VALUES($1::uuid,$2,'original-key',$3,$4)").bind(c.tenant.to_string()).bind(id).bind(vec![17_u8;32]).bind(json!({"state":"revoked","operationId":id,"revision":18,"materialRevision":1})).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_wns.heads(tenant_id,revision) VALUES($1::uuid,19)")

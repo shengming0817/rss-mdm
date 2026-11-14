@@ -28,10 +28,9 @@ async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
     let installation = Uuid::new_v4();
     let bootstrap = Uuid::new_v4();
     let materials = support::materials(&c, &n, installation, bootstrap).await?;
-    let resources = command::Prepared::open(&c, false, |_| {}).await?;
+    let resources = command::Prepared::open(&c, |_| {}).await?;
     let authority = Arc::new(
         rss_mdm_software_service::deployment::managed_registration::AuthorityReader {
-            tenant: c.tenant,
             instance: resources.config.identity.instance_id.clone(),
             source: Arc::new(crate::assembly::software_sources::Source(
                 resources.source.clone(),
@@ -57,12 +56,14 @@ async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
         authority.clone(),
         resources.protection.clone(),
         &materials,
-    )?;
+    )
+    .await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let _client = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
     let (server, _) = listener.accept().await?;
     let gateway =
         rss_mdm_certificate::GatewayConnection::from_stream(&server, "127.0.0.1".parse()?)?;
+    let origin = gateway.request_origin("https://localhost".into());
     let peer = gateway.client_certificate(&std::fs::read_to_string(
         materials.directory.join("bootstrap.pem"),
     )?)?;
@@ -78,7 +79,7 @@ async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
     input.installation_operation = Uuid::new_v4();
     let before = support::bootstrap(&c, bootstrap).await?;
     let failure = service
-        .native_grant(&peer, &input, &request)
+        .native_grant(&peer, &input, &request, &origin)
         .await
         .expect_err("wrong binding denied");
     assert!(matches!(failure.code, wire::ErrorCode::PermissionDenied));
@@ -98,7 +99,7 @@ async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
     tx.commit().await?;
     let before = support::bootstrap(&c, bootstrap).await?;
     let failure = service
-        .native_grant(&peer, &input, &request)
+        .native_grant(&peer, &input, &request, &origin)
         .await
         .expect_err("wrong binding denied");
     assert!(matches!(failure.code, wire::ErrorCode::PermissionDenied));
@@ -115,8 +116,8 @@ async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
     .await?;
     tx.commit().await?;
     let (first, replay) = tokio::join!(
-        service.native_grant(&peer, &input, &request),
-        service.native_grant(&peer, &input, &request)
+        service.native_grant(&peer, &input, &request, &origin),
+        service.native_grant(&peer, &input, &request, &origin)
     );
     let first = first?;
     assert_eq!(
@@ -175,6 +176,54 @@ async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
     snapshot.rollback().await?;
     pool.close().await;
     activation::prove(&c, &n, &service, &input).await?;
+    // A published tenant policy retires the old origin even while the gateway still hosts it.
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    let private = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+        .map_err(|_| anyhow::anyhow!("connection signing key"))?;
+    let key = Ed25519KeyPair::from_pkcs8(private.as_ref())
+        .map_err(|_| anyhow::anyhow!("connection signing key"))?;
+    let key_id = Uuid::new_v4().to_string();
+    let connection = rss_mdm_agent_wire::connections::Configuration {
+        wire_version: 1,
+        service_id: Uuid::parse_str(&c.inputs.installation.instance_id)?,
+        tenant_id: Uuid::parse_str(&c.tenant.to_string())?,
+        revision: 1,
+        preferred_origin: "https://next.example.test".into(),
+        origins: vec!["https://next.example.test".into()],
+        key_id: key_id.clone(),
+    };
+    let signed = rss_mdm_agent_wire::connections::SignedConfiguration {
+        signature: URL_SAFE_NO_PAD.encode(key.sign(&connection.signing_bytes()?).as_ref()),
+        configuration: connection,
+    };
+    let aad = rss_mdm_native_protection::ProtectionContext::new(
+        c.tenant,
+        &key_id,
+        "agent-configuration.private-key",
+        1,
+    )?
+    .derive();
+    let sealed = resources.protection.seal_bytes(private.as_ref(), &aad)?;
+    let mut tx = command::seed_transaction(&c).await?;
+    sqlx::query("INSERT INTO mdm_access.agent_configuration_keys(tenant_id,key_id,public_key,private_key) VALUES($1::uuid,$2,$3,$4)")
+        .bind(c.tenant.to_string()).bind(key_id).bind(URL_SAFE_NO_PAD.encode(key.public_key().as_ref())).bind(sealed).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.agent_connection_drafts(tenant_id,revision,document) VALUES($1::uuid,1,$2)")
+        .bind(c.tenant.to_string()).bind(serde_json::to_value(&signed)?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.agent_connection_versions(tenant_id,revision,document) VALUES($1::uuid,1,$2)")
+        .bind(c.tenant.to_string()).bind(serde_json::to_value(&signed)?).execute(&mut *tx).await?;
+    tx.commit().await?;
+    let before = support::counts(&c).await?;
+    let denied = service
+        .native_grant(&peer, &input, &audit(&c), &origin)
+        .await
+        .unwrap_err();
+    assert!(matches!(denied.code, wire::ErrorCode::InvalidIdentity));
+    let next_origin = gateway.request_origin("https://next.example.test".into());
+    service
+        .require_connection_origin(c.execution(), &next_origin)
+        .await?;
+    assert_eq!(support::counts(&c).await?, before);
+
     resources.close().await?;
     c.close().await;
     Ok(())

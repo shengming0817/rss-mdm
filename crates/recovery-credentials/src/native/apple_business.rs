@@ -59,7 +59,7 @@ impl Service {
         self.transactions.runtime.validate_transaction(tx)?;
         let op = storage::load(tx, &self.transactions.protection, id).await?;
         let accepted = eligible(&self.transactions, tx, p, &op).await?;
-        admission(self, op, accepted, accepted)
+        admission(op, accepted, accepted)
     }
     pub async fn apple_candidates_in(
         &self,
@@ -103,7 +103,7 @@ impl Service {
             Settlement::Received => dc::DeviceEvent::Received,
             Settlement::Reported => dc::DeviceEvent::Reported(op.request.digest(
                 &service.transactions.protection,
-                service.transactions.tenant,
+                p.binding().tenant(),
                 &op.device,
             )?),
             Settlement::Rejected => dc::DeviceEvent::Rejected,
@@ -187,18 +187,13 @@ impl Service {
         Ok(())
     }
 }
-fn admission(
-    s: &Service,
-    op: storage::Operation,
-    eligible: bool,
-    dispatch: bool,
-) -> Result<AppleAdmission> {
+fn admission(op: storage::Operation, eligible: bool, dispatch: bool) -> Result<AppleAdmission> {
     let Task::Macos { request } = &op.request.task;
     Ok(AppleAdmission {
         eligible,
         dispatch,
         target: apple_facts::AppleRegistration {
-            tenant: s.transactions.tenant.to_string(),
+            tenant: op.scope.tenant().to_string(),
             device: op.device,
         },
         command: apple_facts::AppleCommand {

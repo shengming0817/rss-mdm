@@ -122,6 +122,10 @@
       "items": {
         "type": "string"
       }
+    },
+    "executionEpoch": {
+      "type": "integer",
+      "minimum": 1
     }
   },
   "required": [
@@ -131,6 +135,7 @@
     "historyEpoch",
     "kind",
     "identity",
-    "fields"
+    "fields",
+    "executionEpoch"
   ]
 }

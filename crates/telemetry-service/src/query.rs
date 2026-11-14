@@ -144,7 +144,7 @@ impl Service {
         audit: &RequestAudit,
     ) -> Result<Reply, Error> {
         proof.check_live().map_err(|_| Error::Denied)?;
-        if proof.tenant_id() != self.tenant.to_string()
+        if proof.tenant_id() != proof.binding().tenant().to_string()
             || input.max_points.get() > self.storage_budget.points.get()
         {
             return Err(Error::Denied);
@@ -157,7 +157,7 @@ impl Service {
         let rejected = failure.clone();
         let settled = self
             .runtime
-            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
+            .local_tx(proof.binding(), crate::deadline(), move |tx| {
                 Box::pin(async move {
                     service
                         .audit_store
@@ -206,6 +206,7 @@ async fn read_on(
     kind: &ReadKind,
     _audit: &RequestAudit,
 ) -> Result<Reply, Error> {
+    let backend = service.backend_on(c, proof.binding().tenant()).await?;
     rss_mdm_authorization_service::lock_on(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
@@ -226,10 +227,11 @@ async fn read_on(
         .require(proof, Permission::InventoryRead, Some(&input.device))
         .map_err(|_| Error::Denied)?;
     let key = rss_mdm_inventory::FieldKey::parse(&input.field).map_err(|_| Error::Invalid)?;
-    let (field, retired) = rss_mdm_inventory_postgres::historical_field_in(c, service.tenant, key)
-        .await
-        .map_err(|_| Error::Storage)?
-        .ok_or(Error::Invalid)?;
+    let (field, retired) =
+        rss_mdm_inventory_postgres::historical_field_in(c, proof.binding().tenant(), key)
+            .await
+            .map_err(|_| Error::Storage)?
+            .ok_or(Error::Invalid)?;
     if field.sensitivity == rss_mdm_inventory::Sensitivity::Secret {
         return Err(Error::Denied);
     }
@@ -237,13 +239,13 @@ async fn read_on(
         return Err(Error::Invalid);
     }
     if let ReadKind::Aggregate(aggregate) = kind {
-        let result = aggregate_on(service, c, input, aggregate).await?;
+        let result = aggregate_on(proof.binding(), service, c, input, aggregate).await?;
         proof.check_live().map_err(|_| Error::Denied)?;
         return Ok(Reply::Aggregate(result));
     }
     if let ReadKind::Resources = kind {
         let mut resources:Vec<String>=sqlx::query_scalar("SELECT resource FROM mdm_telemetry.resources WHERE tenant_id=$1::uuid AND device=$2 AND field=$3 AND ($4::text IS NULL OR resource>$4) ORDER BY resource LIMIT $5")
-            .bind(service.tenant.to_string()).bind(input.device.into_uuid()).bind(&input.field).bind(&input.after).bind(i64::from(input.max_points.get())+1).fetch_all(c).await?;
+            .bind(proof.binding().tenant().to_string()).bind(input.device.into_uuid()).bind(&input.field).bind(&input.after).bind(i64::from(input.max_points.get())+1).fetch_all(c).await?;
         let more = resources.len() > input.max_points.get() as usize;
         resources.truncate(input.max_points.get() as usize);
         let next = if more {
@@ -260,7 +262,7 @@ async fn read_on(
     }
     if let ReadKind::Health = kind {
         let mut rows=sqlx::query("SELECT id,received_at,first_observed,last_observed,delivery,quality->$3 AS quality FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND device=$2 AND $3=ANY(fields) AND received_at>=$4 AND received_at<$5 ORDER BY received_at DESC,id DESC LIMIT $6")
-            .bind(service.tenant.to_string()).bind(input.device.into_uuid()).bind(&input.field).bind(input.start_micros).bind(input.end_micros).bind(i64::from(input.max_points.get())+1).fetch_all(&mut *c).await?;
+            .bind(proof.binding().tenant().to_string()).bind(input.device.into_uuid()).bind(&input.field).bind(input.start_micros).bind(input.end_micros).bind(i64::from(input.max_points.get())+1).fetch_all(&mut *c).await?;
         let batches_truncated = rows.len() > input.max_points.get() as usize;
         rows.truncate(input.max_points.get() as usize);
         use sqlx::Row;
@@ -279,7 +281,7 @@ async fn read_on(
             })
             .collect::<Result<Vec<_>, Error>>()?;
         let mut retention=sqlx::query("SELECT resource,version,due_at,phase,result FROM mdm_telemetry.retention_targets WHERE tenant_id=$1::uuid AND device=$2 AND field=$3 ORDER BY due_at,id LIMIT $4")
-            .bind(service.tenant.to_string()).bind(input.device.into_uuid()).bind(&input.field).bind(i64::from(input.max_points.get())+1).fetch_all(c).await?;
+            .bind(proof.binding().tenant().to_string()).bind(input.device.into_uuid()).bind(&input.field).bind(i64::from(input.max_points.get())+1).fetch_all(c).await?;
         let retention_truncated = retention.len() > input.max_points.get() as usize;
         retention.truncate(input.max_points.get() as usize);
         let retention = retention
@@ -313,7 +315,7 @@ async fn read_on(
     }
     let query = Query::new(
         Selection::Resource {
-            scope: Scope::new(service.tenant, Id::new("mdm.telemetry")?),
+            scope: Scope::new(proof.binding().tenant(), Id::new("mdm.telemetry")?),
             subject: Id::new(input.device.to_string())?,
             resource: Id::new(&input.resource)?,
             keys: [Id::new(&input.field)?].into(),
@@ -342,7 +344,7 @@ async fn read_on(
     let live = rss_mdm_registration_service::device::store::live_collection_streams_on(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
-        service.tenant,
+        proof.binding().tenant(),
         &input.device,
     )
     .await
@@ -353,19 +355,13 @@ async fn read_on(
         std::time::Duration::from_secs(6),
     )
     .map_err(|_| Error::Invalid)?;
-    let mut page = service
-        .backend
-        .query(&authorized, cursor.as_ref(), cutoff)
-        .await?;
+    let mut page = backend.query(&authorized, cursor.as_ref(), cutoff).await?;
     let mut candidates = std::mem::take(&mut page.rows);
     if input.mode == QueryMode::Latest {
         // Never resolve source priority from an incomplete page. A bounded exact resource read
         // either sees all candidates or fails explicitly; history retains provider pagination.
         while let Some(next) = page.next.take() {
-            let part = service
-                .backend
-                .query(&authorized, Some(&next), cutoff)
-                .await?;
+            let part = backend.query(&authorized, Some(&next), cutoff).await?;
             if candidates.len().saturating_add(part.rows.len())
                 > service.storage_budget.series.get() as usize
             {
@@ -458,16 +454,18 @@ impl Authority for AggregateAuthority<'_> {
     }
 }
 async fn aggregate_on(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &Service,
     c: &mut sqlx::PgConnection,
     input: &HistoryRequest,
     request: &AggregateRequest,
 ) -> Result<Aggregate, Error> {
+    let backend = service.backend_on(c, execution.tenant()).await?;
     if request.definition_version.get() > i64::MAX as u64 || request.dimensions.len() > 1024 {
         return Err(Error::Invalid);
     }
     let raw:Option<String>=sqlx::query_scalar("SELECT definition::text FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field=$2 AND version=$3 AND definition IS NOT NULL")
-        .bind(service.tenant.to_string()).bind(&input.field).bind(request.definition_version.get() as i64).fetch_optional(c).await?;
+        .bind(execution.tenant().to_string()).bind(&input.field).bind(request.definition_version.get() as i64).fetch_optional(c).await?;
     let field: rss_mdm_inventory::FieldDefinition =
         serde_json::from_str(&raw.ok_or(Error::Invalid)?)?;
     field.validate().map_err(|_| Error::Invalid)?;
@@ -493,7 +491,7 @@ async fn aggregate_on(
     {
         return Err(Error::Denied);
     }
-    let scope = Scope::new(service.tenant, Id::new("mdm.telemetry")?);
+    let scope = Scope::new(execution.tenant(), Id::new("mdm.telemetry")?);
     let stream = Stream::new(
         scope.clone(),
         Id::new(format!("{}:{}", input.device, request.source.as_str()))?,
@@ -544,8 +542,7 @@ async fn aggregate_on(
         std::time::Duration::from_secs(6),
     )
     .map_err(|_| Error::Invalid)?;
-    let page = service
-        .backend
+    let page = backend
         .aggregate(&authorized, cursor.as_ref(), deadline)
         .await?;
     let unavailable = page

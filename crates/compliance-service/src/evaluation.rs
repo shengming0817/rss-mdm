@@ -12,7 +12,7 @@ impl Compliance {
         r: &Rule,
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<Input> {
-        let t = self.tenant();
+        let t = tx.tenant_id();
         let definition: Definition = r.definition.clone();
         let mut groups = Vec::new();
         let mut ids = definition.groups();
@@ -91,16 +91,17 @@ impl Compliance {
     }
     pub(crate) async fn enqueue(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         r: &Rule,
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<Uuid> {
         let input = self.capture(tx, r, candidate).await?;
         let task = Uuid::new_v4();
-        let t = self.tenant();
+        let t = tx.tenant_id();
         let id = r.id;
         let revision = r.revision;
-        self.enqueue_task_in(tx, task, &input).await?;
+        self.enqueue_task_in(binding, tx, task, &input).await?;
         if !tx
             .with_connection(move |c| {
                 Box::pin(async move { pg::desired(c, t, id, revision, task).await })
@@ -127,13 +128,14 @@ impl Compliance {
     }
     pub async fn advance(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         input: &Input,
         cursor: Option<rss_mdm_agent_wire::DeviceId>,
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<()> {
-        let tenant = self.tenant();
+        let tenant = tx.tenant_id();
         let id = input.rule;
         self.lock_rule(tx, id).await?;
         let r = tx
@@ -148,7 +150,7 @@ impl Compliance {
             .await?
             .ok_or(Error::NotFound)?;
         if r.desired != Some(task) || !self.fresh(tx, &r, input).await? {
-            return self.supersede(tx, task, &r, candidate).await;
+            return self.supersede(binding, tx, task, &r, candidate).await;
         }
         let mut limit = 32;
         let (page, rule, facts) = loop {
@@ -163,7 +165,7 @@ impl Compliance {
                 )
                 .await?;
             let rule = rss_mdm_inventory_service::assets::rule(
-                self.tenant(),
+                tx.tenant_id(),
                 input.rule,
                 &input.definition.criteria.criteria,
                 &page.catalog,
@@ -216,14 +218,14 @@ impl Compliance {
             .as_ref()
             .map(|s| {
                 stored(rss_mdm_group::ObjectKey::new(
-                    self.tenant(),
+                    tx.tenant_id(),
                     rss_mdm_agent_wire::ObjectRef::Endpoint(*s),
                 ))
             })
             .transpose()?;
         let evaluated = stored(rule.evaluate_page(
             &rss_mdm_group::PageInput {
-                tenant: self.tenant(),
+                tenant: tx.tenant_id(),
                 id: &id,
                 version: &version,
                 dictionary_version: rss_mdm_inventory::DICTIONARY,
@@ -250,7 +252,7 @@ impl Compliance {
                     .cloned()
                     .unwrap_or_default(),
             )?;
-            let t = self.tenant();
+            let t = tx.tenant_id();
             let name = device.scalars.device;
             tx.with_connection(move |c| {
                 Box::pin(async move { pg::result(c, t, task, &name, &document).await })
@@ -264,7 +266,7 @@ impl Compliance {
         if !self.fresh(tx, &r, input).await? {
             return Err(Error::Conflict.into());
         }
-        let t = self.tenant();
+        let t = tx.tenant_id();
         let id = r.id;
         let revision = r.revision;
         if !tx
@@ -287,7 +289,7 @@ impl Compliance {
         rss_mdm_webhook_service::events::compliance_in(tx, source)
             .await
             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-        self.finish_task_in(tx, task, None).await
+        self.finish_task_in(binding, tx, task, None).await
     }
 }
 
@@ -298,7 +300,7 @@ impl Compliance {
         input: &Input,
         devices: &[rss_mdm_inventory_service::assets::DeviceSummary],
     ) -> Result<BTreeMap<rss_mdm_agent_wire::DeviceId, Vec<SourceReference>>> {
-        let t = self.tenant();
+        let t = tx.tenant_id();
         let ids: Vec<_> = devices.iter().map(|d| d.scalars.device).collect();
         let at = input.asset_cut.clone();
         let sources = tx
@@ -536,6 +538,7 @@ fn merge_targets(
 impl Compliance {
     async fn supersede(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         r: &Rule,
@@ -549,11 +552,15 @@ impl Compliance {
                     .await?;
                 // This frozen input can never become publishable. Group mutation/publication
                 // invalidates the rule and wakes the shared dispatcher to create a new run.
-                return self.finish_task_in(tx, task, Some("superseded")).await;
+                return self
+                    .finish_task_in(binding, tx, task, Some("superseded"))
+                    .await;
             }
-            self.enqueue(tx, r, candidate).await?;
+            self.enqueue(binding, tx, r, candidate).await?;
         }
-        return self.finish_task_in(tx, task, Some("superseded")).await;
+        return self
+            .finish_task_in(binding, tx, task, Some("superseded"))
+            .await;
     }
 }
 

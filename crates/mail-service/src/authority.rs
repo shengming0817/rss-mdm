@@ -3,11 +3,9 @@ use crate::store::{self, Directory, Receipt, Request};
 use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit, budget::AuditBudget};
 use rss_mdm_authorization_service::{Error, Permission, context::AuthorizedPrincipal};
 use rss_mdm_native_protection::Protector;
-use rss_request_context::TenantId;
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 pub struct Authority {
-    pub tenant: TenantId,
     pub protection: Arc<Protector>,
     pub audit: Arc<AuditStore>,
 }
@@ -65,7 +63,7 @@ impl Authority {
         audit: &RequestAudit,
         write: bool,
     ) -> Result<(), Error> {
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != p.binding().tenant().to_string() {
             return Err(Error::Forbidden);
         }
         p.require(
@@ -88,7 +86,7 @@ impl Authority {
         let budget = AuditBudget::new(Duration::from_secs(6));
         let value = self
             .audit
-            .read(self.tenant, &budget.control(), p, |p, tx| {
+            .read(p.binding().tenant(), &budget.control(), p, |p, tx| {
                 Box::pin(async move {
                     let tenant = p.tenant_id().to_owned();
                     let value = tx
@@ -115,7 +113,7 @@ impl Authority {
         let budget = AuditBudget::new(Duration::from_secs(6));
         let value = self
             .audit
-            .read(self.tenant, &budget.control(), p, |p, tx| {
+            .read(p.binding().tenant(), &budget.control(), p, |p, tx| {
                 Box::pin(async move {
                     let tenant = p.tenant_id().to_owned();
                     let value = tx
@@ -149,7 +147,8 @@ impl Authority {
         );
         audit.require_final_request();
         let budget = AuditBudget::new(Duration::from_secs(8));
-        let result=self.audit.write(self.tenant,&budget.source_control(),(self,p,audit,id,input),|ctx,tx|Box::pin(async move {
+        let result=self.audit.write(
+            p.binding(),&budget.source_control(),(self,p,audit,id,input),|ctx,tx|Box::pin(async move {
             let (service,p,audit,id,input)=ctx;
             let mut context=(*service,*p,*id,*input);
             let (value,replayed)=tx.with_connection_context(&mut context,|(service,p,id,input),c|Box::pin(async move {
@@ -192,13 +191,13 @@ impl Authority {
         codec: &rss_mdm_query::cursor::CursorCodec,
     ) -> Result<rss_mdm_query::Page<Receipt>, Error> {
         q.require_schema(&HISTORY).map_err(|_| Error::Malformed)?;
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != p.binding().tenant().to_string() {
             return Err(Error::Forbidden);
         }
         p.require(Permission::RegistrationConfigurationRead, None)?;
         p.bind_audit(audit)?;
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let result=self.audit.read(self.tenant,&budget.control(),(p,q,codec),|ctx,tx|Box::pin(async move{
+        let result=self.audit.read(p.binding().tenant(),&budget.control(),(p,q,codec),|ctx,tx|Box::pin(async move{
    tx.with_connection_context(ctx,|(p,q,codec),c|Box::pin(async move{
     rss_mdm_authorization_service::lock_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
     let current=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;

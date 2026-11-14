@@ -16,7 +16,6 @@ pub(crate) struct Backend {
     pub source_page_size: u16,
     pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub identity: rss_identity_postgres::Authority,
-    pub tenant: rss_request_context::TenantId,
     pub instance: rss_identity_core::InstanceId,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
 }
@@ -48,8 +47,7 @@ fn deadline(
 impl Backend {
     fn authorize(&self, p: &AuthorizedPrincipal, audit: &RequestAudit) -> Result<(), Error> {
         p.check_live()?;
-        if p.tenant_id() != self.tenant.to_string() || p.instance_id() != self.instance.to_string()
-        {
+        if p.instance_id() != self.instance.to_string() {
             return Err(Error::Forbidden);
         }
         p.bind_audit(audit)?;
@@ -170,7 +168,7 @@ impl Backend {
             p.require(permission, None)?;
         }
         let account = rss_identity_core::account::AccountKey {
-            tenant: self.tenant,
+            tenant: p.binding().tenant(),
             principal: target,
         };
         let mut views = vec![];

@@ -91,6 +91,7 @@ impl CollectionService {
         for version in versions {
             let plan = policy::read_in(&self.transactions, tx, version).await?;
             super::admission::accept_for_device(
+                p.binding(),
                 &self.transactions,
                 tx,
                 &plan,
@@ -127,7 +128,7 @@ impl CollectionService {
         if !plan.active {
             run.state.cancel();
         }
-        super::recovery::audit_recovery(self, tx, &run, &previous).await?;
+        super::recovery::audit_recovery(p.binding(), self, tx, &run, &previous).await?;
         let offer = if run.state.cancellation == Cancellation::None
             && run.available_at <= now
             && plan
@@ -137,7 +138,7 @@ impl CollectionService {
             let previous_attempt = run.state.attempt();
             if run.state.claim(attempt, now).is_ok() {
                 if let Some(old) = previous_attempt {
-                    self.abandon_in(tx, old, "superseded").await?;
+                    self.abandon_in(p.binding(), tx, old, "superseded").await?;
                 }
                 let payload = plan
                     .task(
@@ -303,7 +304,8 @@ impl CollectionService {
             wire::TaskEvent::Cancelled => {
                 run.state.cancel();
                 run.state.cancelled(input.attempt_id())?;
-                self.abandon_in(tx, input.attempt_id(), "revoked").await?;
+                self.abandon_in(p.binding(), tx, input.attempt_id(), "revoked")
+                    .await?;
             }
             wire::TaskEvent::CollectionResult(result) => {
                 super::agent_result::finish(
@@ -361,6 +363,7 @@ impl CollectionService {
     }
     pub(crate) async fn abandon_in(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         attempt: Uuid,
         reason: &'static str,
@@ -369,7 +372,7 @@ impl CollectionService {
         let fact = tx
             .with_connection(move |c| {
                 Box::pin(crate::collection::enterprise::abandon_in(
-                    c, tenant, attempt, reason,
+                    execution, c, tenant, attempt, reason,
                 ))
             })
             .await?;

@@ -71,12 +71,12 @@ impl Associations {
         if !(1..=1024).contains(&limit) {
             return Err(Error::Malformed);
         }
-        if proof.tenant_id() != self.tenant.to_string() {
+        if proof.tenant_id() != proof.binding().tenant().to_string() {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(15));
         let subject = personnel.revalidate(proof).await?;
-        let (page,grant,cursor)=self.audit.read(self.tenant,&budget.control(),(self,proof,reference,field,token,subject.as_ref()),|ctx,tx|Box::pin(async move {
+        let (page,grant,cursor)=self.audit.read(proof.binding().tenant(),&budget.control(),(self,proof,reference,field,token,subject.as_ref()),|ctx,tx|Box::pin(async move {
             tx.with_connection_context(ctx,|ctx,c|Box::pin(async move{
                 let (s,p,reference,field,token,subject)=*ctx;
                 let current=read::authorization(c,p).await?;
@@ -86,9 +86,9 @@ impl Associations {
                 let binding=binding(p,&grant)?;
                 let cursor:ArrayCursor=codec.decode(&rss_contract::PageCursor::parse(token).map_err(|_|Error::Malformed)?,&binding).map_err(|_|Error::CursorInvalidated)?;
                 if &cursor.reference!=reference||cursor.field!=field{return Err(Error::CursorInvalidated);}
-                validate(c,s.tenant,p,&current,&cursor).await?;
+                validate(c,p.binding().tenant(),p,&current,&cursor).await?;
                 let version=cursor.version.as_ref().ok_or(Error::ResultUnavailable)?;
-                let page=rss_mdm_inventory_postgres::arrays::page(c,s.tenant,version,cursor.offset,limit,16*1024*1024).await.map_err(|error|page_error(error.as_ref()))?;
+                let page=rss_mdm_inventory_postgres::arrays::page(c,p.binding().tenant(),version,cursor.offset,limit,16*1024*1024).await.map_err(|error|page_error(error.as_ref()))?;
                 if page.metadata.field!=field{return Err(Error::ResultUnavailable);}
                 let next=page.next.map(|offset|codec.encode(&binding,&ArrayCursor{offset,..cursor.clone()})).transpose().map_err(|_|Error::Storage)?.map(|c|c.as_str().to_owned());
                 p.check_live()?;
@@ -98,7 +98,7 @@ impl Associations {
         let subject = personnel.revalidate(proof).await?;
         self.audit
             .write(
-                self.tenant,
+                proof.binding(),
                 &budget.source_control(),
                 (proof, grant, subject.as_ref(), cursor),
                 |ctx, tx| {
@@ -115,7 +115,8 @@ impl Associations {
                                 if binding != *grant {
                                     return Err(Error::ReadConflict);
                                 }
-                                validate(c, self.tenant, proof, &current, cursor).await?;
+                                validate(c, proof.binding().tenant(), proof, &current, cursor)
+                                    .await?;
                                 proof.check_live()?;
                                 Ok(())
                             })
@@ -203,7 +204,7 @@ async fn validate(
         if cursor.evidence.device_id.as_ref() != Some(&cursor.endpoint) {
             return Err(Error::CursorInvalidated);
         }
-        let live:bool=sqlx::query_scalar("SELECT EXISTS (SELECT FROM mdm_access.devices AS r INNER JOIN mdm_access.report_sources AS s ON (s.tenant_id, s.device) = (r.tenant_id, r.id) WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2 AND r.state = 'active' AND s.source = $3 AND CAST(s.epoch AS text) = $4 AND s.enabled AND EXISTS (SELECT FROM mdm_access.credentials AS k WHERE (k.tenant_id, k.device) = (r.tenant_id, r.id) AND k.state = 'active'))")
+        let live:bool=sqlx::query_scalar("SELECT EXISTS (SELECT FROM mdm_access.devices AS r INNER JOIN mdm_access.report_sources AS s ON (p.binding().tenant()_id, s.device) = (r.tenant_id, r.id) WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2 AND r.state = 'active' AND s.source = $3 AND CAST(s.epoch AS text) = $4 AND s.enabled AND EXISTS (SELECT FROM mdm_access.credentials AS k WHERE (k.tenant_id, k.device) = (r.tenant_id, r.id) AND k.state = 'active'))")
             .bind(proof.tenant_id()).bind(cursor.endpoint.into_uuid()).bind(cursor.evidence.source.as_str()).bind(&cursor.evidence.epoch).fetch_one(c).await?;
         if !live {
             return Err(Error::CursorInvalidated);

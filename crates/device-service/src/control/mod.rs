@@ -62,6 +62,9 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 }
 
 pub struct Service {
+    pub(crate) read_pool: sqlx::PgPool,
+    pub(crate) storage: rss_transactional_messaging::fence::StorageIdentity,
+    pub(crate) relay_after: Mutex<Option<(Uuid, i64)>>,
     pub(crate) worker_budget: Arc<tokio::sync::Semaphore>,
     pub(crate) recovery_batch: rss_device_command::BatchLimit,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
@@ -72,6 +75,7 @@ pub struct Service {
 }
 pub mod capacity;
 pub struct Dependencies {
+    pub read_pool: sqlx::PgPool,
     pub retirement: Arc<dyn rss_mdm_registration_service::Retirement>,
     pub worker_budget: Arc<tokio::sync::Semaphore>,
     pub capacity: Arc<dyn capacity::DeviceCapacity>,
@@ -92,7 +96,7 @@ pub struct Dependencies {
     pub store: rss_device_command_postgres::PgStore<()>,
     pub reconcile: rss_reconcile_postgres::PgStore,
     pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
-    pub tenant: TenantId,
+    pub probe: rss_transactional_messaging::fence::ExecutionBinding,
     pub instance: String,
 }
 impl Service {
@@ -105,6 +109,9 @@ impl Service {
 
     pub fn new(dependencies: Dependencies) -> Self {
         Self {
+            read_pool: dependencies.read_pool,
+            storage: dependencies.probe.storage(),
+            relay_after: Mutex::new(None),
             transactions: transactions::Transactions {
                 retirement: dependencies.retirement,
                 capacity: dependencies.capacity,
@@ -123,16 +130,11 @@ impl Service {
                 runtime: dependencies.runtime,
                 store: dependencies.store,
                 reconcile_messaging: dependencies.reconcile_messaging,
-                tenant: dependencies.tenant,
                 instance: dependencies.instance,
             },
             recovery_batch: dependencies.recovery_batch,
             worker_budget: dependencies.worker_budget,
-            readiness: rss_mdm_recovery_observation::Readiness::new(
-                recovery_scope(dependencies.tenant),
-                true,
-                true,
-            ),
+            readiness: rss_mdm_recovery_observation::Readiness::new(DOMAIN, true, true),
 
             outbox: dependencies.outbox,
             reconcile: dependencies.reconcile,

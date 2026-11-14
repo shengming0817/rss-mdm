@@ -103,9 +103,6 @@ impl Port for Reads {
                 Action::AgentCollection { .. } => {
                     grant.require_all_devices(proof, Permission::InventoryCollect)?;
                     grant.require(proof, Permission::InventorySensitiveRead, None)?;
-                    if !self.signing_enabled {
-                        return Err(Error::Conflict);
-                    }
                 }
                 Action::NativeCollection { .. } => {
                     grant.require_all_devices(proof, Permission::InventoryCollect)?
@@ -120,6 +117,7 @@ impl Port for Reads {
                 } => self
                     .scripts
                     .prepare_resource(
+                        request.proof.binding(),
                         resource,
                         rss_mdm_script_service::Parameters::Sources(parameters),
                     )
@@ -127,7 +125,9 @@ impl Port for Reads {
                     .map_err(script)?,
                 Action::AgentCollection { resource, .. }
                 | Action::NativeCollection { resource, .. } => {
-                    self.collections.prepare_resource(resource, channel).await?
+                    self.collections
+                        .prepare_resource(request.proof.binding(), resource, channel)
+                        .await?
                 }
                 _ => unreachable!(),
             };
@@ -144,8 +144,8 @@ impl Port for Reads {
                 let binding=rss_mdm_scope_service::window::binding_on(&s.source,c,proof,&authority,rss_mdm_policy::pages::PREVIEW_SCHEMA.id,scope,&json!([input.definition,input.scope_result])).await.map_err(window)?;
                 let after=rss_mdm_scope_service::window::after(codec,query,&binding).map_err(window)?;
                 let limit=query.limit();
-                let mut objects=s.source.assignment_objects_on(c,s.tenant,scope,channel,after,limit).await.map_err(source)?;
-                let result=s.source.preview_scope_on(c,s.tenant,scope,channel,None).await.map_err(source)?.result;
+                let mut objects=s.source.assignment_objects_on(c,proof.binding().tenant(),scope,channel,after,limit).await.map_err(source)?;
+                let result=s.source.preview_scope_on(c,proof.binding().tenant(),scope,channel,None).await.map_err(source)?.result;
                 if input.scope_result.is_some_and(|r|r!=result) {return Err(Error::Conflict);}
                 let more=objects.len()>limit;objects.truncate(limit);
                 let next=if more{objects.last().map(|o|o.object)}else{None};
@@ -154,14 +154,14 @@ impl Port for Reads {
                     let admission=if let Some(target)=&object.target {
                         let state=if let Some(preview)=&script_preview {
                             let target=rss_mdm_script_service::Target{device:target.device,};
-                            match preview.eligibility_on(c,s.tenant,Arc::new(super::super::agent_facts::AgentFacts),&target).await.map_err(script_fault)? {
+                            match preview.eligibility_on(c,proof.binding().tenant(),Arc::new(super::super::agent_facts::AgentFacts),&target).await.map_err(script_fault)? {
                                 rss_mdm_script_service::eligibility::Eligibility::Eligible=>"eligible",
                                 rss_mdm_script_service::eligibility::Eligibility::Ineligible=>"unsupported_capability",
                                 rss_mdm_script_service::eligibility::Eligibility::Unknown=>"channel_unknown",
                             }
                         }else if let Some(preview)=&collection_preview {
                             let target=rss_mdm_inventory_service::collection::execution::model::Target{device:target.device,};
-                            if s.collections.eligible_on(c,preview,Arc::new(super::super::agent_facts::AgentFacts),&target).await? {"eligible"}else{"unsupported_capability"}
+                            if s.collections.eligible_on(proof.binding().tenant(), c,preview,Arc::new(super::super::agent_facts::AgentFacts),&target).await? {"eligible"}else{"unsupported_capability"}
                         }else{unreachable!()};
                         if state!="eligible" {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some("target_unavailable".into());}
                         Some(json!({"state":state,"stage":null}))
@@ -212,7 +212,6 @@ async fn enrollment(
                 };
                 let frozen = rss_mdm_registration_service::enrollment::task::prepare(
                     &s.entries,
-                    s.signing_enabled,
                     proof,
                     grant,
                     *organization,
@@ -238,12 +237,19 @@ async fn enrollment(
                 let limit = query.limit();
                 let mut objects = s
                     .source
-                    .assignment_objects_on(c, s.tenant, scope, channel, after, limit)
+                    .assignment_objects_on(
+                        c,
+                        proof.binding().tenant(),
+                        scope,
+                        channel,
+                        after,
+                        limit,
+                    )
                     .await
                     .map_err(source)?;
                 let result = s
                     .source
-                    .preview_scope_on(c, s.tenant, scope, channel, None)
+                    .preview_scope_on(c, proof.binding().tenant(), scope, channel, None)
                     .await
                     .map_err(source)?
                     .result;
@@ -264,7 +270,7 @@ async fn enrollment(
                             rss_mdm_registration_service::enrollment::tasks::queries::state_on(
                                 rss_mdm_install_support::StorageProfile::Mdm,
                                 c,
-                                s.tenant,
+                                proof.binding().tenant(),
                                 &s.enrollment,
                                 &target.device,
                                 &frozen,
@@ -333,7 +339,6 @@ async fn access_credentials(
                 grant.require(proof, Permission::PolicyRead, None)?;
                 grant.require(proof, Permission::PolicyRead, None)?;
                 grant.require_all_devices(proof, Permission::InventoryRead)?;
-                if !s.signing_enabled{return Err(Error::Unsupported)}
                 let permission=match &input.definition.action {Action::DeviceAccess{..}=>Permission::AccountWrite,Action::Credential{operation,..}=>{if !s.recovery_enabled{return Err(Error::Unsupported)}rss_mdm_recovery_credentials::tasks::credential_tasks::permission(operation)},_=>return Err(Error::Malformed)};
                 grant.require_all_devices(proof,permission)?;
                 let authority = grant.query_binding(proof)?;
@@ -355,12 +360,12 @@ async fn access_credentials(
                 let limit = query.limit();
                 let mut objects = s
                     .source
-                    .assignment_objects_on(c, s.tenant, scope, channel, after, limit)
+                    .assignment_objects_on(c, proof.binding().tenant(), scope, channel, after, limit)
                     .await
                     .map_err(source)?;
                 let result = s
                     .source
-                    .preview_scope_on(c, s.tenant, scope, channel, None)
+                    .preview_scope_on(c, proof.binding().tenant(), scope, channel, None)
                     .await
                     .map_err(source)?
                     .result;
@@ -377,7 +382,7 @@ async fn access_credentials(
                 let mut items = Vec::new();
                 for mut object in objects {
                     let admission = if let Some(target) = &object.target {
-                        let binding=s.enrollment.agent_store.binding(c,s.tenant.to_string(),target.device).await.map_err(|_|Error::Unavailable(Failure::Database))?;
+                        let binding=s.enrollment.agent_store.binding(c,proof.binding().tenant().to_string(),target.device).await.map_err(|_|Error::Unavailable(Failure::Database))?;
                         let allowed=binding.is_some_and(|b|match &input.definition.action {
                             Action::DeviceAccess{windows,..}=>rss_mdm_device_access_postgres::device_access::execution::admission::capable(&b,windows),
                             Action::Credential{architecture,..}=>rss_mdm_recovery_credentials::tasks::credential_tasks::capable(&b,*architecture),_=>false
@@ -462,8 +467,17 @@ async fn retirement(
                 .map_err(window)?;
                 let after =
                     rss_mdm_scope_service::window::after(codec, query, &binding).map_err(window)?;
-                super::retirement::preview_on(s, c, input, after, query.limit(), codec, &binding)
-                    .await
+                super::retirement::preview_on(
+                    proof.binding().tenant(),
+                    s,
+                    c,
+                    input,
+                    after,
+                    query.limit(),
+                    codec,
+                    &binding,
+                )
+                .await
             })
         },
     )

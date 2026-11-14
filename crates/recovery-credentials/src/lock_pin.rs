@@ -45,6 +45,12 @@ impl LockPins {
             pin.as_bytes(),
         )
         .await?;
+        let recipient = self
+            .protection
+            .selected_on(rss_mdm_install_support::StorageProfile::Mdm, c, tenant)
+            .await?
+            .id()
+            .to_owned();
         storage::link_native_in(
             crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
             c,
@@ -55,7 +61,7 @@ impl LockPins {
                 reconciles: None,
                 action: "lock_pin".into(),
                 coordinates: Some(coordinates),
-                recipient: self.protection.active_recipient().id().into(),
+                recipient: recipient,
             },
         )
         .await

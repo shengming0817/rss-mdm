@@ -47,11 +47,14 @@ async fn registration_read_preserves_grant_and_tenant_authority() -> Result<()> 
         assert!(
             !endpoints
                 .iter()
-                .any(|e| e["path"] == "/api/v1/devices/{device}/registrations")
+                .any(|e| e["path"] == "/api/v1/tenants/{tenant}/devices/{device}/registrations")
         );
         let endpoint = endpoints
             .iter()
-            .find(|e| e["method"] == "GET" && e["path"] == "/api/v1/devices/{device}/registration")
+            .find(|e| {
+                e["method"] == "GET"
+                    && e["path"] == "/api/v1/tenants/{tenant}/devices/{device}/registration"
+            })
             .unwrap();
         let response = endpoint["responses"]
             .as_array()

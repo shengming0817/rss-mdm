@@ -7,6 +7,7 @@ impl rss_mdm_registration_service::Retirement for Bridge {
     }
     fn retire<'a>(
         &'a self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &'a mut sqlx::PgConnection,
         facts: &'a mut Vec<rss_mdm_audit_integration::Fact>,
         tenant: &'a str,
@@ -28,10 +29,11 @@ impl rss_mdm_registration_service::Retirement for Bridge {
             )
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
-            rss_mdm_device_service::control::retire_in(tx, facts, tenant, *registration)
+            rss_mdm_device_service::control::retire_in(execution, tx, facts, tenant, *registration)
                 .await
                 .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_software_service::deployment::retirement::retire_in(
+                execution,
                 tx,
                 facts,
                 tenant,
@@ -40,6 +42,7 @@ impl rss_mdm_registration_service::Retirement for Bridge {
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_registration_service::installation::retirement::retire_in(
+                execution,
                 tx,
                 facts,
                 tenant,
@@ -48,6 +51,7 @@ impl rss_mdm_registration_service::Retirement for Bridge {
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_registration_service::enrollment::tasks::retirement::retire_in(
+                execution,
                 rss_mdm_install_support::StorageProfile::Mdm,
                 tx,
                 facts,
@@ -56,10 +60,17 @@ impl rss_mdm_registration_service::Retirement for Bridge {
             )
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
-            rss_mdm_script_service::retirement::retire_in(tx, facts, tenant, *registration)
-                .await
-                .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
+            rss_mdm_script_service::retirement::retire_in(
+                execution,
+                tx,
+                facts,
+                tenant,
+                *registration,
+            )
+            .await
+            .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_inventory_service::collection::execution::retirement::retire_in(
+                execution,
                 tx,
                 facts,
                 tenant,
@@ -68,6 +79,7 @@ impl rss_mdm_registration_service::Retirement for Bridge {
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_device_access_postgres::device_access::execution::retirement::retire_in(
+                execution,
                 tx,
                 facts,
                 tenant,
@@ -76,6 +88,7 @@ impl rss_mdm_registration_service::Retirement for Bridge {
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_recovery_credentials::tasks::retirement::retire_in(
+                execution,
                 rss_mdm_install_support::StorageProfile::Mdm,
                 tx,
                 facts,
@@ -85,6 +98,7 @@ impl rss_mdm_registration_service::Retirement for Bridge {
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_recovery_credentials::native::retirement::retire_in(
+                execution,
                 tx,
                 facts,
                 tenant,
@@ -110,6 +124,7 @@ impl rss_mdm_registration_service::Retirement for Bridge {
                 .await
                 .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             crate::collection::terminate(
+                execution,
                 rss_mdm_install_support::StorageProfile::Mdm,
                 tx,
                 facts,

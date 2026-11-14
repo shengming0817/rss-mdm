@@ -17,10 +17,8 @@ pub struct Registration {
     pub origin: String,
     pub certificate_file: PathBuf,
     pub private_key_file: PathBuf,
-    pub trust_file: PathBuf,
     pub providers: Vec<rss_mdm_pki_service::configuration::Provider>,
     pub certificate_days: u16,
-    pub configuration_revision: Option<u64>,
     pub configuration_lifetime: std::num::NonZeroU32,
 }
 #[derive(serde::Serialize, Deserialize)]

@@ -61,16 +61,14 @@ impl Registry {
                 .map_err(|_| Error::Storage)?;
         tx.rollback().await.map_err(|_| Error::Storage)?;
         let frozen: Frozen = serde_json::from_slice(&binding).map_err(|_| Error::Storage)?;
+        if frozen.expected_epoch != p.binding().epoch().get() {
+            return Err(Error::Conflict);
+        }
         let purpose = match frozen.purpose.as_str() {
             "windows" => Purpose::Windows,
             _ => return Err(Error::Request),
         };
-        let trust = self.trust(purpose)?;
-        if trust.tenant.to_string() != p.tenant_id() {
-            return Err(Error::Forbidden);
-        }
-        self.synchronize(now).await?;
-        let trust = self.binding(purpose)?;
+        let trust = self.current(p.binding(), purpose, now).await?;
         let chain = input
             .chain
             .iter()
@@ -117,7 +115,7 @@ impl Registry {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         self.mutation(
-            rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_| Error::Request)?,
+            p.binding(),
             a,
             (p, input, binding, request, bytes, receipt),
             |ctx, c| {

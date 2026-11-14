@@ -54,7 +54,7 @@ impl Observation {
         }
     }
 }
-impl PublicationService {
+impl PublicationOperation<'_> {
     #[tracing::instrument(skip_all, fields(tenant = %self.tenant(), publication = %hex(&id.digest().bytes()), attempt))]
     pub async fn publish(
         &self,
@@ -65,7 +65,7 @@ impl PublicationService {
     ) -> Result<rel::PublicationOutcome> {
         let key = format!("p:{}:{attempt}", hex(&id.digest().bytes()));
         let call = self.load_call(Table::Publish, &key, cutoff).await?;
-        let record = rel::PublicationKey::new(self.tenant(), &call.target.record)
+        let record = rel::PublicationKey::new(self.binding.tenant(), &call.target.record)
             .map_err(|cause| Error::Identity.context("driver::publish", cause))?;
         let (c, subject, prepared) = self.context(&record, cutoff).await?;
         let p = db::core_publication(&c, &call.target)?;
@@ -122,7 +122,7 @@ impl PublicationService {
                 cutoff,
             )
             .await?;
-        let record = rel::PublicationKey::new(self.tenant(), &call.target.record)
+        let record = rel::PublicationKey::new(self.binding.tenant(), &call.target.record)
             .map_err(|cause| Error::Identity.context("driver::reconcile", cause))?;
         let (c, subject, _) = self.context(&record, cutoff).await?;
         let p = db::core_publication(&c, &call.target)?;
@@ -152,7 +152,7 @@ impl PublicationService {
             Ok(Err(_)) => false,
             Err(_) => {
                 tracing::warn!(
-                    tenant = %self.tenant(),
+                    tenant = %self.binding.tenant(),
                     publication = %hex(&call.target.publication),
                     attempt = call.target.attempt,
 
@@ -219,7 +219,9 @@ impl PublicationService {
                                 .await
                                 .map_err(|_| Error::Content)
                         );
-                        tx.prepare_outbox_partitions(&[s.releases.partition(&t.record)?])
+                        tx.prepare_outbox_partitions(&[s
+                            .releases
+                            .partition(s.binding.tenant(), &t.record)?])
                             .await?;
                         let id = db::required(
                             "recover_result",
@@ -295,6 +297,9 @@ impl PublicationService {
                 })
                 .await,
         )?;
+        if !call.complete && call.expected_epoch != self.binding.epoch().get() {
+            return Err(Error::Conflict);
+        }
         let t = &call.target;
         if t.binding != self.sources.binding().identity
             || if matches!(table, Table::Publish) {
@@ -397,7 +402,7 @@ impl PublicationService {
                             }
                             db::mark(tx, table, &key, false, false).await?;
                             let fact = db::fact(
-                                tx.tenant_id(),
+                                s.binding,
                                 &s.actors.backend,
                                 &t.record,
                                 "software_call",
@@ -446,7 +451,7 @@ impl PublicationService {
                             }
                             db::mark(tx, table, &key, true, false).await?;
                             let fact = db::fact(
-                                tx.tenant_id(),
+                                s.binding,
                                 &s.actors.backend,
                                 &t.record,
                                 "software_call",
@@ -484,7 +489,7 @@ impl PublicationService {
     }
     async fn write_brew(
         &self,
-        repo: &brew::Repository,
+        repo: &brew::RepositoryScope,
         tap: &str,
         t: &Target,
         s: &db::Subject,
@@ -511,14 +516,14 @@ impl PublicationService {
         let prepared = repo
             .prepare_snapshot(
                 base,
-                recipe.documents(self.tenant(), tap)?,
+                recipe.documents(self.binding.tenant(), tap)?,
                 &operation(t),
                 at,
             )
             .await
             .map_err(|reason| {
                 tracing::warn!(
-                        tenant = %self.tenant(),
+                        tenant = %self.binding.tenant(),
                         publication = %hex(&t.publication),
                         attempt = t.attempt,
 
@@ -535,7 +540,7 @@ impl PublicationService {
         let result = repo.apply(&prepared).await;
         if let Err(reason) = &result {
             tracing::warn!(
-                    tenant = %self.tenant(),
+                    tenant = %self.binding.tenant(),
                     publication = %hex(&t.publication),
                     attempt = t.attempt,
 
@@ -570,7 +575,7 @@ impl PublicationService {
                 if !present {
                     return Ok(false);
                 }
-                for document in recipe.documents(self.tenant(), tap)? {
+                for document in recipe.documents(self.binding.tenant(), tap)? {
                     if repo
                         .presence(&target, &document)
                         .await
@@ -610,7 +615,9 @@ impl PublicationService {
                                     .await
                                     .map_err(|_| Error::Content)
                             );
-                            tx.prepare_outbox_partitions(&[s.releases.partition(&t.record)?])
+                            tx.prepare_outbox_partitions(&[s
+                                .releases
+                                .partition(s.binding.tenant(), &t.record)?])
                                 .await?;
                             db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
                                 .await?;
@@ -687,7 +694,7 @@ impl PublicationService {
                                 db::release_slot(tx, t, &t.key(), t.commit.clone()).await?;
                             }
                             let fact = db::fact(
-                                tx.tenant_id(),
+                                s.binding,
                                 &s.actors.backend,
                                 &t.record,
                                 "software_result",
@@ -714,7 +721,7 @@ impl PublicationService {
         cutoff: Deadline,
     ) -> Result<WithdrawalExecution> {
         let r = request.core(&request.actor, rel::Operation::Withdraw);
-        let (publish, replayed) = settle(
+        let (publish, replayed, pending) = settle(
             self.runtime
                 .local_tx_with_context(
                     self.binding,
@@ -726,7 +733,9 @@ impl PublicationService {
                                 .bind_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            tx.prepare_outbox_partitions(&[s.releases.partition(id.value())?])
+                            tx.prepare_outbox_partitions(&[s
+                                .releases
+                                .partition(s.binding.tenant(), id.value())?])
                                 .await?;
                             input!(access.check(tx).await);
                             input!(
@@ -750,6 +759,25 @@ impl PublicationService {
                             )
                             .await?
                             .ok_or_else(db::fault)?;
+                            if publish.expected_epoch != s.binding.epoch().get()
+                                && !matches!(
+                                    p.outcome,
+                                    rel::PublicationOutcome::Reported(
+                                        rel::PublicationResult::Applied(_)
+                                            | rel::PublicationResult::NotApplied(_)
+                                    )
+                                )
+                            {
+                                return Ok(Err(Error::Conflict));
+                            }
+                            if let Some(old) =
+                                db::call(tx, Table::Withdraw, &publish.target.withdrawal_key())
+                                    .await?
+                                && !old.complete
+                                && old.expected_epoch != s.binding.epoch().get()
+                            {
+                                return Ok(Err(Error::Conflict));
+                            }
                             let result = input!(
                                 s.releases
                                     .transition_in(tx, id, r)
@@ -762,7 +790,7 @@ impl PublicationService {
                             intent.commit_at = r.as_of.unix_seconds();
                             s.queue_withdrawal_in(tx, &intent).await?;
                             let fact = db::fact(
-                                tx.tenant_id(),
+                                s.binding,
                                 &r.actor,
                                 id.value(),
                                 "software_withdraw",
@@ -776,13 +804,17 @@ impl PublicationService {
                             })
                             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             db::required("withdraw authorization", access.check(tx).await)?;
-                            Ok(Ok((publish, replayed)))
+                            Ok(Ok((
+                                publish,
+                                replayed,
+                                matches!(p.outcome, rel::PublicationOutcome::Pending),
+                            )))
                         })
                     },
                 )
                 .await,
         )?;
-        if !publish.attempted {
+        if pending && !publish.attempted {
             self.cancel_unstarted(&publish.target, request.as_of, cutoff)
                 .await?;
         }
@@ -862,7 +894,14 @@ impl PublicationService {
         tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
         t: &Target,
     ) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
-        db::queue_withdrawal_in(tx, self.audit_store.as_ref(), &self.actors.backend, t).await
+        db::queue_withdrawal_in(
+            self.binding,
+            tx,
+            self.audit_store.as_ref(),
+            &self.actors.backend,
+            t,
+        )
+        .await
     }
     async fn cancel_unstarted(&self, t: &Target, at: Timepoint, cutoff: Deadline) -> Result<()> {
         settle(
@@ -884,13 +923,18 @@ impl PublicationService {
                                     .await
                                     .map_err(|_| Error::Content)
                             );
-                            tx.prepare_outbox_partitions(&[s.releases.partition(&t.record)?])
+                            tx.prepare_outbox_partitions(&[s
+                                .releases
+                                .partition(s.binding.tenant(), &t.record)?])
                                 .await?;
                             db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
                                 .await?;
                             let call = db::call(tx, Table::Publish, &t.key())
                                 .await?
                                 .ok_or_else(db::fault)?;
+                            if call.expected_epoch != s.binding.epoch().get() {
+                                return Ok(Err(Error::Conflict));
+                            }
                             if call.attempted {
                                 return Ok(Ok(()));
                             }
@@ -928,7 +972,7 @@ impl PublicationService {
                                 )?;
                                 db::release_slot(tx, t, &t.key(), None).await?;
                                 let fact = db::fact(
-                                    tx.tenant_id(),
+                                    s.binding,
                                     &s.actors.backend,
                                     &t.record,
                                     "software_result",
@@ -1007,7 +1051,7 @@ impl PublicationService {
             let at = Timepoint::try_from(call.target.commit_at).map_err(|_| Error::Content)?;
             if !publish.attempted {
                 self.cancel_unstarted(&publish.target, at, cutoff).await?;
-                let id = rel::PublicationKey::new(self.tenant(), &call.target.record)
+                let id = rel::PublicationKey::new(self.binding.tenant(), &call.target.record)
                     .map_err(|_| Error::Identity)?;
                 let (record, _, _) = self.context(&id, cutoff).await?;
                 return Ok(db::core_publication(&record, &call.target)?.outcome);
@@ -1035,7 +1079,7 @@ impl PublicationService {
         if call.complete {
             return Ok(Withdrawal::Complete);
         }
-        let record = rel::PublicationKey::new(self.tenant(), &call.target.record)
+        let record = rel::PublicationKey::new(self.binding.tenant(), &call.target.record)
             .map_err(|cause| Error::Identity.context("driver::drive_withdrawal", cause))?;
         self.close_for_intent(&call.target, cutoff).await?;
         let (c, subject, _) = self.context(&record, cutoff).await?;
@@ -1092,7 +1136,9 @@ impl PublicationService {
                                 .await
                                 .map_err(|_| Error::Content)
                         );
-                        tx.prepare_outbox_partitions(&[s.releases.partition(&t.record)?])
+                        tx.prepare_outbox_partitions(&[s
+                            .releases
+                            .partition(s.binding.tenant(), &t.record)?])
                             .await?;
                         let id = input!(
                             rel::PublicationKey::new(s.tenant(), &t.record)
@@ -1136,7 +1182,7 @@ impl PublicationService {
                                 .map_err(|_| Error::Conflict)
                         );
                         let fact = db::fact(
-                            tx.tenant_id(),
+                            s.binding,
                             &r.actor,
                             &t.record,
                             "software_withdraw",
@@ -1177,7 +1223,7 @@ impl PublicationService {
 
                         db::complete_noop(tx, key).await?;
                         let fact = db::fact(
-                            tx.tenant_id(),
+                            s.binding,
                             &s.actors.backend,
                             &call.target.record,
                             "software_withdraw",
@@ -1215,7 +1261,7 @@ impl PublicationService {
                 self.acknowledge(Table::Withdraw, target, cutoff).await?
             }
             _ => tracing::warn!(
-                    tenant = %self.tenant(),
+                    tenant = %self.binding.tenant(),
                     publication = %hex(&target.publication),
                     attempt = target.attempt,
 
@@ -1276,7 +1322,7 @@ impl PublicationService {
         .await
         .map_err(|reason| {
             tracing::warn!(
-                    tenant = %self.tenant(),
+                    tenant = %self.binding.tenant(),
                     publication = %hex(&t.publication),
                     attempt = t.attempt,
 
@@ -1333,7 +1379,7 @@ impl PublicationService {
                                 .ok_or_else(db::fault)?;
                             db::complete_noop(tx, &t.withdrawal_key()).await?;
                             let fact = db::fact(
-                                tx.tenant_id(),
+                                s.binding,
                                 &s.actors.backend,
                                 &t.record,
                                 "software_withdraw",
@@ -1450,7 +1496,7 @@ impl PublicationService {
                         db::project(tx, t, true).await?;
                         db::release_slot(tx, t, &t.withdrawal_key(), t.commit.clone()).await?;
                         let fact = db::fact(
-                            tx.tenant_id(),
+                            s.binding,
                             &s.actors.backend,
                             &t.record,
                             "software_withdraw",

@@ -107,7 +107,7 @@ fn fail(readiness: &Readiness, target: &Target) {
 #[tokio::test]
 async fn only_same_scope_scan_and_confirmed_target_finish_recover_health() {
     let scope = scope("software");
-    let health = Readiness::new(scope.clone(), true, false);
+    let health = Readiness::new(scope.reconciler(), true, false);
     let provider = Provider::default();
     let store = ObservedStore::new(&provider, &health);
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -187,12 +187,8 @@ async fn only_same_scope_scan_and_confirmed_target_finish_recover_health() {
 #[tokio::test]
 async fn failures_are_owner_scoped_and_overflow_requires_a_new_process_window() {
     let scope = scope("script");
-    let health = Readiness::new(scope.clone(), false, false);
-    let other = Readiness::new(
-        Scope::new(scope.tenant(), "enrollment").unwrap(),
-        false,
-        false,
-    );
+    let health = Readiness::new(scope.reconciler(), false, false);
+    let other = Readiness::new("enrollment", false, false);
     let provider = Provider::default();
     let store = ObservedStore::new(&provider, &health);
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -221,21 +217,21 @@ async fn failures_are_owner_scoped_and_overflow_requires_a_new_process_window() 
         health.health().recovery,
         Phase::Failed(ErrorKind::Invariant)
     );
-    let restarted = Readiness::new(scope, false, false);
+    let restarted = Readiness::new(scope.reconciler(), false, false);
     assert_eq!(restarted.health().recovery, Phase::Initializing);
 }
 
 #[test]
 fn durable_input_recovery_clears_only_its_own_attempt_failure() {
     let scope = scope("execution");
-    let health = Readiness::new(scope.clone(), false, true);
+    let health = Readiness::new(scope.reconciler(), false, true);
     let inputs = Target::new(scope.clone(), "inputs").unwrap();
     let operation = Target::new(scope, "operation").unwrap();
     fail(&health, &inputs);
     fail(&health, &operation);
-    health.inputs(Err(ErrorKind::Permanent));
+    health.inputs(inputs.scope(), Err(ErrorKind::Permanent));
     assert_eq!(health.health().unresolved_attempts, 2);
-    health.inputs(Ok(()));
+    health.inputs(inputs.scope(), Ok(()));
     assert_eq!(health.health().inputs, Some(Phase::Healthy));
     assert_eq!(health.health().unresolved_attempts, 1);
     assert_eq!(
@@ -247,7 +243,7 @@ fn durable_input_recovery_clears_only_its_own_attempt_failure() {
 #[tokio::test]
 async fn scan_budget_reaches_the_provider_without_losing_empty_scan_observation() {
     let scope = scope("capacity");
-    let health = Readiness::new(scope.clone(), false, false);
+    let health = Readiness::new(scope.reconciler(), false, false);
     let provider = Provider::default();
     let store = ObservedStore::new(&provider, &health);
     let cancel = tokio_util::sync::CancellationToken::new();

@@ -61,7 +61,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         let scheduled = if matches!(completion, Completion::Reobserve(_)) {
             let pending = crate::native::transaction::inspect(
                 &self.0.transactions.runtime,
-                self.0.transactions.audit_store.binding(),
+                self.0.binding_for(claim, &settlement).await?,
                 claim.target().entity(),
                 |entity, tx| {
                     Box::pin(async move { crate::native::recovery::backlog_in(tx, entity).await })

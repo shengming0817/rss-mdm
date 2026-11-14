@@ -4,7 +4,7 @@ Inventory 是唯一字段目录和来源解析 owner，应用把解析结果送�
 
 ## 字段与状态
 
-字段目录、类型及可用操作以 `/api/v1/asset-fields` 为准；值不隐式转换。Manual 可显式置空。UUID、SN、manufacturer 与通道维护字段受保护；其它标准字段与 custom 字段共享目录生命周期，人工写入须由字段的 manual/source 明确允许。租户创建事务一次性写入标准定义；读取只读数据库，初始化不覆盖租户修改，也不复活已退役字段。
+字段目录、类型及可用操作以 `/api/v1/tenants/{tenant}/asset-fields` 为准；值不隐式转换。Manual 可显式置空。UUID、SN、manufacturer 与通道维护字段受保护；其它标准字段与 custom 字段共享目录生命周期，人工写入须由字段的 manual/source 明确允许。租户创建事务一次性写入标准定义；读取只读数据库，初始化不覆盖租户修改，也不复活已退役字段。
 
 known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源相同值合并证据，不同值返回 conflict；一条来源删除不删除另一条来源。来源必须绑定当前有效注册及 epoch。Partial 应用独立成功字段，缺失或失败字段保留此前可信事实；Failed 不清空事实，最新 CollectionRun 质量另行呈现。带 itemKey 的清单按条目身份比较，相同内容的不同返回顺序不产生冲突。
 
@@ -120,7 +120,7 @@ AND/OR 为 `{kind:"and|or",children:[…]}`；in/not_in 使用同类型 `values`
 
 ## 共享扩展字段分组
 
-`GET /api/v1/asset-field-layout` 返回 `asset.kind=field_layout`、`revision`、`editable` 和有序 `groups`。
+`GET /api/v1/tenants/{tenant}/asset-field-layout` 返回 `asset.kind=field_layout`、`revision`、`editable` 和有序 `groups`。
 每组包含稳定 UUID `id`、`name` 和有序真实字段键 `fields`。无配置为 revision 0、空分组。
 具有租户 `inventory_fields_write` 时读取完整有效映射元数据；普通资产读者只取得当前权限允许的映射，
 过滤后无字段的组不返回。管理员能编辑敏感字段引用，不因此获得敏感资产值读取权限。
@@ -197,9 +197,9 @@ severity 为 low/medium/high/critical，仅用于解释；platform 为 all/windo
 
 每个原生 mapping 的键为字段身份，值为 `{query,mapping:{pointer,conversion,columns}}`。脚本 purpose 的 mappings 直接使用 `{pointer,conversion,columns}`。conversion 为 identity、integer、number、enum、scale 或 bitmask；未知枚举、未知位、溢出与不能整除的单位换算均为 invalid。columns 递归声明列表属性，不复制未声明属性。模板的 canonical JSON 是上传 artifact 的原文，发布时校验字段、来源、平台和结构。脚本与 SQL 使用已有 `script` Resource，SQL profile 为 `osquery`，执行只接受固定版本模板及声明参数。
 
-`GET /api/v1/collection-blueprints` 返回六类目录及实际可实例化的官方蓝图。Windows 六类均提供版本 2 原生模板，macOS identity/hardware 保留版本 1；Windows 支持范围、来源和样本见 [Windows 管理](windows-management.md#原生资产采集)。
+`GET /api/v1/tenants/{tenant}/collection-blueprints` 返回六类目录及实际可实例化的官方蓝图。Windows 六类均提供版本 2 原生模板，macOS identity/hardware 保留版本 1；Windows 支持范围、来源和样本见 [Windows 管理](windows-management.md#原生资产采集)。
 
-使用 `POST /api/v1/resources/{id}`，请求 `{"operationId":"<uuid>","expectedRevision":0,"input":{"action":"instantiate","blueprint":"macos.hardware","version":"1"}}`，创建普通租户 Resource 并写入 canonical 内容。初始版本为 `builtin.macos.hardware.1`，revision 为 2、状态 frozen；用正常 activate 操作启用，再绑定 Policy。版本含 x86_64/aarch64 variants。管理员直接修改该 Resource 并发布新版本；官方蓝图只读，升级需创建新候选 Resource，明确调整 Policy，不能自动覆盖或合并租户内容。重复相同 operationId 可恢复实例化/上传，不接受移动的 latest 版本。
+使用 `POST /api/v1/tenants/{tenant}/resources/{id}`，请求 `{"operationId":"<uuid>","expectedRevision":0,"input":{"action":"instantiate","blueprint":"macos.hardware","version":"1"}}`，创建普通租户 Resource 并写入 canonical 内容。初始版本为 `builtin.macos.hardware.1`，revision 为 2、状态 frozen；用正常 activate 操作启用，再绑定 Policy。版本含 x86_64/aarch64 variants。管理员直接修改该 Resource 并发布新版本；官方蓝图只读，升级需创建新候选 Resource，明确调整 Policy，不能自动覆盖或合并租户内容。重复相同 operationId 可恢复实例化/上传，不接受移动的 latest 版本。
 
 冻结 CollectionDefinition 的每个字段必须包含 `{definition,scope}`，不再接受顶层 scope 或隐式继承。Device 为默认读取范围；Apple user 使用规范 UUID，macOS 应用根与 Brew 使用下述独立命名空间。完整快照只删除当前模板选中的字段，保留同来源同范围中未选字段及其它来源值；禁用 Policy 不删除最近可信事实。
 
@@ -209,11 +209,11 @@ Windows Firewall CSP 状态与 WSC health 使用不同字段；BitLocker convers
 
 标准采集使用 Policy action `native_collection` 或 `agent_collection`，绑定精确 Resource 版本。每个包使用可调整的 interval 周期，默认为一小时；Frequency 固定为 every_trigger，misfire 固定为 coalesce_one，离线恢复只处理最近到期周期。启用持续采集，停用停止新增运行并保留可信事实；不接受手动触发或 rerun。页面刷新只读取已有资产和运行状态。符合既有授权与冻结定义的 Agent 主动报告继续由原报告入口接收。脚本/SQL 仍使用现有 execution action，一次性运维执行使用原 remote-operation `execute`；不改变其执行语义。管理员需要 inventory_collect、resource_write、policy_write 等对应权限，无新增审批状态。发布 Resource 新版本不会自动改动 Policy 的精确绑定。Agent 注册只冻结通道维护采集，Windows 会话不再自动采集固定 model/OS，Apple 旧 collection-runs 创建入口已删除；注册认证与通道维护仍由原 owner 执行。
 
-`GET /api/v1/devices/{id}/collections/{run}` 返回统一进度、来源、模板版本和逐字段质量。列表字段另有 itemCount/invalidItems，终态 run 可通过 `GET /api/v1/devices/{id}/collections/{run}/fields/{field}/items?limit=100&cursor=…` 分页读取逐条质量，最多1000条。无效列表保留旧可信值，质量页不回传不可信原文。
+`GET /api/v1/tenants/{tenant}/devices/{id}/collections/{run}` 返回统一进度、来源、模板版本和逐字段质量。列表字段另有 itemCount/invalidItems，终态 run 可通过 `GET /api/v1/tenants/{tenant}/devices/{id}/collections/{run}/fields/{field}/items?limit=100&cursor=…` 分页读取逐条质量，最多1000条。无效列表保留旧可信值，质量页不回传不可信原文。
 
-资产详情中的 lists 只返回摘要，各来源摘要自带独立游标，冲突时仍可分页检查每份来源清单。使用 `GET /api/v1/devices/{id}/inventory-lists/{field}?limit=100&cursor=…` 读取选值后的列表。游标绑定字段、设备、租户、授权范围及资产切面；后续变更不混入旧分页。完整空列表与未执行、失败、部分输出分别表达。字段和清单没有 TTL。
+资产详情中的 lists 只返回摘要，各来源摘要自带独立游标，冲突时仍可分页检查每份来源清单。使用 `GET /api/v1/tenants/{tenant}/devices/{id}/inventory-lists/{field}?limit=100&cursor=…` 读取选值后的列表。游标绑定字段、设备、租户、授权范围及资产切面；后续变更不混入旧分页。完整空列表与未执行、失败、部分输出分别表达。字段和清单没有 TTL。
 
-本地 `rss-mdm-fixture ingest-fixture` 只接受示例发布的 typed-fields-v1 collector 数据；显式设置 `MDM_COLLECTION_URL` 为有采集结果写权限的数据库身份。示例先提交冻结定义与结果，再用 `DATABASE_URL` 对应的投影运行身份提交 Observation 引用。两者不共享隐式提权或旧格式读取。
+`MDM_SCOPE_FILE` 包含 `scope` 及安装材料固定的 `target`、`lineage`、`epoch`；投影按原执行代际验证，不从数据库重新读取 epoch。本地 `rss-mdm-fixture ingest-fixture` 只接受示例发布的 typed-fields-v1 collector 数据；显式设置 `MDM_COLLECTION_URL` 为有采集结果写权限的数据库身份。示例先提交冻结定义与结果，再用 `DATABASE_URL` 对应的投影运行身份提交 Observation 引用。两者不共享隐式提权或旧格式读取。
 
 ## 用已安装软件事实安排软件策略
 
@@ -273,7 +273,7 @@ APFS container 原始证据与卷关联保留在受限运行详情中，共享�
 
 字段 scope 支持 `device`、`apple_user`、`macos_applications`、`macos_brew`。应用 scope 包含 root（local/system/user）和 uid（仅 user 非空）；Brew 包含 uid、prefix、package（formula/cask）、taps。dataset 绑定 Resource/variant/实际用户及稳定 GeneratedUID（适用时），不包含版本、会话或预算；变更某字段 root/prefix/taps 只创建该字段的新范围，不自动删除旧范围。
 
-设备已有的非 Device 范围通过 `GET /api/v1/devices/{id}/inventory-scopes?limit&cursor` 发现，响应为资产 envelope 的 `inventory_scopes {device,assetCut,items:[{scope}],nextCursor}`。目录仅列当前有效来源的冻结采集尝试或保留事实，先按当前敏感字段权限过滤，再按固定切面和不透明游标分页；运行清理不隐藏仍保留的可信事实。权限、来源或注册身份变化使旧游标冲突，应从第一页重取。空目录不证明设备没有其它真实用户；Device 范围独立读取。
+设备已有的非 Device 范围通过 `GET /api/v1/tenants/{tenant}/devices/{id}/inventory-scopes?limit&cursor` 发现，响应为资产 envelope 的 `inventory_scopes {device,assetCut,items:[{scope}],nextCursor}`。目录仅列当前有效来源的冻结采集尝试或保留事实，先按当前敏感字段权限过滤，再按固定切面和不透明游标分页；运行清理不隐藏仍保留的可信事实。权限、来源或注册身份变化使旧游标冲突，应从第一页重取。空目录不证明设备没有其它真实用户；Device 范围独立读取。
 
 详情、清单和运行详情通过 `scope=<URL 编码的 scope JSON>` 显式选择范围，省略则 Device。运行详情提供 frozen fingerprint/coverage、逐字段 scope/reason、完整性，以及实时 Observation receipt/projection 状态。固定切面质量记录不会被实时状态改写；quality.runId 是最近尝试，sources.evidence.snapshotId 是当前可信事实的原始 run，lastKnown 继续保留原始证据。失败和部分尝试不清空此前 Known；显式 Unknown 不通过规则。
 
@@ -320,9 +320,9 @@ Mean 保留精确 `sum/count`，Rate 保留 `increase/duration_micros`，消费�
 当前 V1 直接替换；配置、health、maintenance 和 Agent 上传仍遵循各自合同。正式 schema 从实际 HTTP DTO 生成，
 固定源码制品的生成和前端独立 pin 流程见 [HTTP 契约指南](http-contract.md#从选定源码提交消费)。
 
-先用 `POST /api/v1/asset-retention-policies` 发布保留策略，再在字段定义的
+先用 `POST /api/v1/tenants/{tenant}/asset-retention-policies` 发布保留策略，再在字段定义的
 `timeSeries` 中引用精确 key/revision。发布请求沿用 `Operation`，`expectedRevision`
-为前一版本；`GET /api/v1/asset-retention-policies/{key}/{revision}` 读取该历史版本。
+为前一版本；`GET /api/v1/tenants/{tenant}/asset-retention-policies/{key}/{revision}` 读取该历史版本。
 策略的原始数据、汇总及删除恢复时长互相约束，已发布版本不可原位改写。资产当前值仍无 TTL。
 字段类型、单位、Counter 含义变化须使用新字段身份。引用阻断覆盖所有未归档的采集模板与遥测
 Profile 版本，包括 frozen、active、deprecated；归档版本不再阻止字段退役。
@@ -351,11 +351,11 @@ Agent 在现有 mTLS runtime 边界读取
 
 | 接口 | 用途 |
 | --- | --- |
-| GET /api/v1/devices/{device}/telemetry-configurations | 当前主 Agent 可下发配置摘要及采集能力，不代表设备已接收 |
-| POST /api/v1/telemetry/history | 精确设备、字段、资源的历史或 latest；历史续页重新授权 |
-| POST /api/v1/telemetry/aggregate | 精确字段历史版本、来源代际、维度及窗口的聚合 |
-| POST /api/v1/telemetry/health | 接收时间窗口内的批次状态及 valid/missing/failed 计数 |
-| POST /api/v1/telemetry/maintenance | 原身份下执行有界重算、保留边界、清理、删除或恢复步骤 |
+| GET /api/v1/tenants/{tenant}/devices/{device}/telemetry-configurations | 当前主 Agent 可下发配置摘要及采集能力，不代表设备已接收 |
+| POST /api/v1/tenants/{tenant}/telemetry/history | 精确设备、字段、资源的历史或 latest；历史续页重新授权 |
+| POST /api/v1/tenants/{tenant}/telemetry/aggregate | 精确字段历史版本、来源代际、维度及窗口的聚合 |
+| POST /api/v1/tenants/{tenant}/telemetry/health | 接收时间窗口内的批次状态及 valid/missing/failed 计数 |
+| POST /api/v1/tenants/{tenant}/telemetry/maintenance | 原身份下执行有界重算、保留边界、清理、删除或恢复步骤 |
 
 配置摘要要求当前设备的 `inventory_read` 和租户 `policy_read`、`resource_read`，不要求全部设备读取权限。
 摘要与 Agent 目录复用当前发布者授权、Scope、注册来源、字段准入和能力判定，不返回脚本、参数、签名或采样值。
@@ -390,23 +390,23 @@ Agent 可向 runtime 的 `POST /telemetry/gaps` 提交固定 `TelemetryGapReport
 收到 durable receipt 后仅清除该快照；新缺口不能被旧回执清掉。原注册失效后不能将其缺口归入新注册。
 这类诊断不携带 Policy/field，也不证明连续缺失或真实覆盖率；时间跨度只给出首末观测界限。
 接收/幂等期限及容量见 [telemetry owner](../../crates/telemetry-service/README.md)。
-管理端 `POST /api/v1/telemetry/gaps/query` 接收 device、receivedFrom/receivedUntil（UTC 微秒）、limit（1–256）、
+管理端 `POST /api/v1/tenants/{tenant}/telemetry/gaps/query` 接收 device、receivedFrom/receivedUntil（UTC 微秒）、limit（1–256）、
 after（上一页 next 或 null），返回 reports 与 next；每页按当前 `inventory_read` 设备范围授权。
 诊断查询不暴露采样值，也不替代 `/telemetry/health` 的批次质量统计。
 
-合规规则的停用与删除分别表达。`DELETE /api/v1/compliance-rules/{id}` 接受
+合规规则的停用与删除分别表达。`DELETE /api/v1/tenants/{tenant}/compliance-rules/{id}` 接受
 `{operationId,expectedRevision,input:{}}`，退出当前评估、释放当前组/字段引用及规则配额；
 同操作重试返回原回执，在途旧任务结算为 superseded。删除后普通 Get 为 404，原 ID 不可重建；
 历史版本和设备评估仍可读取，`filter=deleted==true` 可发现规则墓碑。只支持当前 V1 全新安装，不提供旧库升级。
 
 ## 通用字段映射与发布
 
-自定义字段先经 `/api/v1/asset-fields/{field}` 定义；采集 Resource 通过原 `/api/v1/resources/{id}`
+自定义字段先经 `/api/v1/tenants/{tenant}/asset-fields/{field}` 定义；采集 Resource 通过原 `/api/v1/tenants/{tenant}/resources/{id}`
 版本接口声明该字段的映射，Policy 冻结当前已批准版本。类型、来源、平台、查询引用或预算不合法时拒绝发布。
 纯手工字段不要求采集映射；新增字段不会自动创建默认 Policy 或扩大本地 Agent 能力。
 未知展示扩展仍按原产品规则保存，不参与可信字段解释。
 
-`GET /api/v1/asset-fields/{field}/references` 仅接受 `limit/cursor`，直接返回 `items/nextCursor`。
+`GET /api/v1/tenants/{tenant}/asset-fields/{field}/references` 仅接受 `limit/cursor`，直接返回 `items/nextCursor`。
 每项包含 `source`、引用角色 `role` 和解除方式 `release`；来源覆盖 Group、未归档 Resource 版本、
 当前合规规则及未删除的保存查询。来源身份包含相应 id、revision 或 version；保存查询包含完整的
 instance/owner/id，即使属于同租户其他用户，也只返回最小身份，不返回名称、定义或内容。

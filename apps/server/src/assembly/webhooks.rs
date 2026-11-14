@@ -3,7 +3,6 @@ use rss_mdm_webhook_service::{
     self as webhooks,
     management::{Dependencies, Service},
 };
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{
     PgConfig, PgPassword, PgPrivateCa, PgRecoveryStore, PgRuntime,
 };
@@ -12,15 +11,13 @@ use std::{sync::Arc, time::Duration};
 pub(crate) async fn open(
     config: crate::config::webhooks::Config,
     runtime: Arc<PgRuntime>,
-    tenant: TenantId,
+    discovery_pool: sqlx::PgPool,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
     clock: Arc<dyn crate::clock::Clock>,
     protection: Arc<rss_mdm_native_protection::Protector>,
     binding: rss_transactional_messaging::fence::ExecutionBinding,
     cursor: rss_mdm_query::cursor::CursorCodec,
 ) -> Result<Arc<Service>, crate::Error> {
-    let source_tenant =
-        uuid::Uuid::parse_str(&tenant.to_string()).map_err(|_| crate::Error::Malformed)?;
     let policies = config.compile().map_err(crate::Error::from)?;
     let db = &config.recovery_database;
     let pg = PgConfig::new(
@@ -46,16 +43,15 @@ pub(crate) async fn open(
     let result = Service::open(
         Dependencies {
             runtime,
-            tenant,
+            probe: binding,
+            discovery_pool,
             audit,
             clock: Arc::new(Clock(clock)),
             protection,
             cursor,
             recovery: recovery.clone(),
             policies,
-            sources: Arc::new(crate::adapters::webhooks::Sources {
-                tenant: source_tenant,
-            }),
+            sources: Arc::new(crate::adapters::webhooks::Sources),
         },
         crate::lifecycle::RuntimeTimer,
     )

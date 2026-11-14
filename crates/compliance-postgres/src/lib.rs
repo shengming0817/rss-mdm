@@ -364,12 +364,27 @@ pub async fn group_changed_in(
             "inputs",
         )
         .expect("constant target");
-        store.wake_in(tx, &target, &rss_reconcile::ResourceSet::empty(tenant), (), |_, tx| Box::pin(async move {
-            tx.with_connection(|c| Box::pin(async move {
-                sqlx::query("SELECT pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'compliance')").execute(c).await?;
-                Ok(())
-            })).await
-        })).await?;
+        store
+            .wake_in(
+                tx,
+                &target,
+                &rss_reconcile::ResourceSet::empty(tenant),
+                (),
+                |_, tx| {
+                    Box::pin(async move {
+                        tx.with_connection(|c| {
+                            Box::pin(async move {
+                                sqlx::query("SELECT pg_notify('mdm_work','compliance')")
+                                    .execute(c)
+                                    .await?;
+                                Ok(())
+                            })
+                        })
+                        .await
+                    })
+                },
+            )
+            .await?;
     }
     Ok(())
 }
@@ -396,3 +411,6 @@ pub async fn affected_rules<C: DeserializeOwned>(
     sqlx::query("SELECT r.id::text,r.revision,r.enabled,r.desired::text,r.current_run::text,v.definition::text FROM mdm_compliance.rules r JOIN mdm_compliance.versions v ON (v.tenant_id,v.rule_id,v.revision)=(r.tenant_id,r.id,r.revision) WHERE r.tenant_id=$1::uuid AND r.enabled AND NOT r.deleted AND ($2::uuid IS NULL OR r.id>$2) AND ($4 OR EXISTS(SELECT FROM mdm_compliance.fields f WHERE(f.tenant_id,f.rule_id)=(r.tenant_id,r.id) AND f.field=ANY($3))) ORDER BY r.id LIMIT 2")
         .bind(t.to_string()).bind(after).bind(fields).bind(authority).fetch_all(c).await?.into_iter().map(decode::<C>).collect()
 }
+
+/// Narrow access-role work discovery exported by this owner.
+pub const WORK_ACCESS_CONTRACT: &str = r#"{"tables":[],"functions":[{"name":"mdm_compliance.compliance_work_scopes","search_path":"search_path=pg_catalog, pg_temp"},{"name":"mdm_compliance.compliance_work_epoch","search_path":"search_path=pg_catalog, pg_temp"}],"external_relations":[],"verified_schemas":[]}"#;

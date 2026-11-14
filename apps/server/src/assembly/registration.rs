@@ -1,6 +1,5 @@
 //! Enrollment and bootstrap share Registration ownership, with separate durable work scopes.
 use rss_mdm_registration_service::{enrollment::tasks, installation as native};
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgOutboxStore, PgRuntime};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 #[derive(Clone)]
@@ -13,10 +12,11 @@ pub(crate) struct Assembly {
 }
 #[expect(clippy::too_many_arguments, reason = "explicit host capabilities")]
 pub(crate) async fn assemble(
+    discovery_pool: sqlx::PgPool,
     config: &crate::config::Config,
     background: &crate::background::Compiled,
     runtime: Arc<PgRuntime>,
-    tenant: TenantId,
+    probe: rss_transactional_messaging::fence::ExecutionBinding,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
     protection: Arc<rss_mdm_native_protection::Protector>,
     source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
@@ -60,7 +60,7 @@ pub(crate) async fn assemble(
         tasks::Transactions::bind(
             rss_mdm_install_support::StorageProfile::Mdm,
             runtime.clone(),
-            tenant,
+            probe,
             audit.clone(),
             materials.clone(),
         )
@@ -70,6 +70,8 @@ pub(crate) async fn assemble(
     ));
     let worker = Arc::new(
         tasks::worker::Worker::new(
+            discovery_pool.clone(),
+            probe.storage(),
             rss_mdm_install_support::StorageProfile::Mdm,
             enrollment.clone(),
             reconcile.clone(),
@@ -78,7 +80,7 @@ pub(crate) async fn assemble(
         .map_err(super::owner_errors::enrollment)?,
     );
     let transactions =
-        native::Transactions::bind(runtime.clone(), tenant, audit, native_materials.clone())
+        native::Transactions::bind(runtime.clone(), probe, audit, native_materials.clone())
             .await
             .map_err(super::owner_errors::installation)?;
     let delivery = rss_transactional_messaging::policy::DeliveryBudget::new(
@@ -93,6 +95,8 @@ pub(crate) async fn assemble(
             .map_err(|_| crate::Error::Unavailable(crate::Failure::CommandStorage))?,
     );
     let native = Arc::new(native::Service::new(
+        discovery_pool.clone(),
+        probe.storage(),
         transactions,
         outbox,
         reconcile,

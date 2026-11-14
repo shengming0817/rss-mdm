@@ -9,6 +9,7 @@ use rss_transactional_messaging_postgres::PgTransaction;
     reason = "native software receipt and effect transitions retain one original transaction"
 )]
 pub async fn advance_run(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &SoftwareService,
     tx: &mut PgTransaction<'_>,
     run: &mut db::Run,
@@ -116,14 +117,10 @@ pub async fn advance_run(
                             .native_packages
                             .values()
                             .find(|p| {
-                                p.task(
-                                    run.id,
-                                    &service.transactions.protection,
-                                    service.transactions.tenant,
-                                )
-                                .ok()
-                                .and_then(|t| serde_json::to_value(t).ok())
-                                .as_ref()
+                                p.task(run.id, &service.transactions.protection, execution.tenant())
+                                    .ok()
+                                    .and_then(|t| serde_json::to_value(t).ok())
+                                    .as_ref()
                                     == Some(&actual)
                             })
                             .is_some_and(|p| match &p.identity {
@@ -151,7 +148,7 @@ pub async fn advance_run(
                             event: crate::deployment::dc::DeviceEvent::Reported(
                                 op.request.digest(
                                     &service.transactions.protection,
-                                    service.transactions.tenant,
+                                    execution.tenant(),
                                     &op.device,
                                 )?,
                             ),
@@ -258,11 +255,7 @@ pub async fn advance_run(
         operation_id: run.id,
         input_version: policy.id.to_string(),
         target: crate::deployment::NativeTarget::Device,
-        task: package.task(
-            run.id,
-            &service.transactions.protection,
-            service.transactions.tenant,
-        )?,
+        task: package.task(run.id, &service.transactions.protection, execution.tenant())?,
         deadline: run.deadline,
     };
     let authority = crate::deployment::authority::Authority::Software {
@@ -278,7 +271,7 @@ pub async fn advance_run(
     let audit = rss_mdm_audit_integration::RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        tx.tenant_id().to_string(),
+        execution,
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -292,7 +285,7 @@ pub async fn advance_run(
     audit.target_device(&run.target.device);
     let fingerprint = crate::deployment::protection::fingerprint(
         &service.transactions.protection,
-        service.transactions.tenant,
+        execution.tenant(),
         &run.target.device,
         "software-install-command/v1",
         &(&input, policy.id),

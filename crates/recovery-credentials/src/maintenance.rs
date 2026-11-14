@@ -13,7 +13,10 @@ use uuid::Uuid;
 pub struct Maintenance {
     profile: rss_mdm_install_support::StorageProfile,
     runtime: Arc<PgRuntime>,
-    tenant: TenantId,
+    read_pool: sqlx::PgPool,
+    storage: rss_transactional_messaging::fence::StorageIdentity,
+    epoch: rss_transactional_messaging::fence::Epoch,
+
     audit_store: Arc<AuditStore>,
     protection: Arc<Protection>,
     copies: Option<Arc<dyn InputCopies>>,
@@ -31,7 +34,9 @@ impl Maintenance {
     pub fn new(
         profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
+        read_pool: sqlx::PgPool,
+        storage: rss_transactional_messaging::fence::StorageIdentity,
+        epoch: rss_transactional_messaging::fence::Epoch,
         audit_store: Arc<AuditStore>,
         protection: Arc<Protection>,
         copies: Option<Arc<dyn InputCopies>>,
@@ -41,7 +46,10 @@ impl Maintenance {
         Self {
             profile,
             runtime,
-            tenant,
+            read_pool,
+            storage,
+            epoch,
+
             audit_store,
             protection,
             copies,
@@ -49,13 +57,17 @@ impl Maintenance {
             retention,
         }
     }
-    pub async fn validate_keys(&self) -> Result<(), Error> {
+    pub async fn validate_keys(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<(), Error> {
         let profile = self.profile();
 
-        let tenant = Uuid::parse_str(&self.tenant.to_string()).map_err(|_| Error::Malformed)?;
+        let tenant =
+            Uuid::parse_str(&binding.tenant().to_string()).map_err(|_| Error::Malformed)?;
         transaction::inspect(
             &self.runtime,
-            self.audit_store.binding(),
+            binding,
             self.protection.clone(),
             |protection, tx| {
                 Box::pin(async move {
@@ -88,20 +100,45 @@ impl Maintenance {
             },
             Duration::from_secs(8),
         );
-        task.into_registration(move|stop|async move{
-   loop {if stop.is_cancelled(){break}
-    if let Ok(_permit)=self.budget.try_acquire() && let Err(error)=self.run_once().await {eprintln!("{}",serde_json::json!({"event":"recovery_credential_maintenance_failed","reason":error.to_string()}));}
-    tokio::select!{()=stop.cancelled()=>break,()=tokio::time::sleep(Duration::from_secs(60))=>{}}
-   }Ok(())
-  })
+        task.into_registration(move |stop| async move {
+            let mut after = None;
+            loop {
+                if stop.is_cancelled() { return Ok(()); }
+                let scopes: Vec<Uuid> = match sqlx::query_scalar(crate::storage_profile::sql(self.profile).maintenance_scopes)
+                    .bind(after).fetch_all(&self.read_pool).await {
+                    Ok(scopes) => scopes,
+                    Err(_) => {eprintln!("recovery_maintenance_discovery_failed");Vec::new()}
+                };
+                if scopes.is_empty() {
+                    after=None;
+                    tokio::select!{()=stop.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_secs(60))=>{}}
+                    continue;
+                }
+                for tenant in scopes {
+                    if stop.is_cancelled(){return Ok(())}
+                    after=Some(tenant);
+                    let tenant=TenantId::parse(&tenant.to_string()).map_err(rss_runtime::ShutdownError::new)?;
+                    // Expiry and key maintenance are new operations over existing material;
+                    // unfinished delivery work keeps its separately persisted original epoch.
+                    let execution=rss_transactional_messaging::fence::ExecutionBinding::new(self.storage,tenant,self.epoch);
+                    if let Ok(_permit)=self.budget.try_acquire() && let Err(error)=self.run_once(execution).await {
+                        eprintln!("{}",serde_json::json!({"event":"recovery_credential_maintenance_failed","reason":error.to_string()}));
+                    }
+                }
+            }
+        })
     }
-    pub async fn run_once(&self) -> Result<(), Error> {
+
+    pub async fn run_once(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<(), Error> {
         let profile = self.profile();
 
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             self.profile(),
-            self.tenant.to_string(),
+            binding,
             "recovery_credential_maintenance",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -109,13 +146,13 @@ impl Maintenance {
         let result = transaction::run(
             &self.audit_store,
             &self.runtime,
-            self.audit_store.binding(),
+            binding,
             &audit,
             (self, &audit),
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, audit) = *ctx;
-                    let tenant = checked_input(Uuid::parse_str(&service.tenant.to_string()))?;
+                    let tenant = checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?;
                     let mut expired = tx
                         .with_connection(move |c| {
                             Box::pin(async move {

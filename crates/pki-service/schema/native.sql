@@ -1,5 +1,6 @@
 BEGIN;
 CREATE TABLE mdm_windows.renewal_intents (
+    expected_epoch bigint NOT NULL DEFAULT current_setting('rss.execution_epoch')::bigint CHECK(expected_epoch>0),
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
   , signing_attempt uuid NOT NULL

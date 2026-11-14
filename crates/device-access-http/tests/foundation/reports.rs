@@ -10,6 +10,7 @@ pub async fn verify(
     registration: &da::Registration,
     signed: &da::SignedConfiguration,
 ) -> Result<()> {
+    let management = material::management_base(base, c.tenant);
     let identity = da::ReportIdentity {
         service_id: registration.service_id,
         tenant: registration.tenant,
@@ -83,7 +84,7 @@ pub async fn verify(
     let diagnostic: serde_json::Value = material::success(
         client
             .get(format!(
-                "{base}/admin/devices/{}/configuration",
+                "{management}/admin/devices/{}/configuration",
                 registration.device
             ))
             .bearer_auth(token)
@@ -104,7 +105,7 @@ pub async fn verify(
         409,
         "history pruning cannot reset sequence high-water"
     );
-    let history = format!("{base}/admin/devices/{}/reports", registration.device);
+    let history = format!("{management}/admin/devices/{}/reports", registration.device);
     let page: serde_json::Value = material::success(
         client
             .get(&history)
@@ -167,7 +168,7 @@ pub async fn verify(
     let stale: serde_json::Value = material::success(
         client
             .get(format!(
-                "{base}/admin/devices/{}/status",
+                "{management}/admin/devices/{}/status",
                 registration.device
             ))
             .bearer_auth(token)

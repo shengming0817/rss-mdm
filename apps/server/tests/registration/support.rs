@@ -48,7 +48,7 @@ impl agent_pki::Clock for Clock {
         Ok(now())
     }
 }
-pub fn service(
+pub async fn service(
     c: &Context,
     n: &Native,
     authority: Arc<rss_mdm_software_service::deployment::managed_registration::AuthorityReader>,
@@ -84,35 +84,51 @@ pub fn service(
         client,
         scep_url: None,
     }])?);
+    let registry = Arc::new(rss_mdm_pki_service::registry::Registry::new(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c.database.archive_pool(),
+        c.audit.clone(),
+        c.execution(),
+        providers.clone(),
+    ));
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
+    for purpose in [Purpose::Agent, Purpose::AgentBootstrap] {
+        let mut public = trust.trust.public()?;
+        public.purpose = purpose;
+        rss_mdm_device_trust::DeviceTrust::new(public.clone(), purpose, now())?;
+        let name = rss_mdm_pki_service::registry::purpose(purpose);
+        sqlx::query("INSERT INTO mdm_pki.trust(tenant_id,purpose,revision,body) VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).bind(name).bind(public.revision as i64).bind(serde_json::to_vec(&public)?).execute(&mut *tx).await?;
+        for issuer in &public.issuers {
+            sqlx::query("INSERT INTO mdm_pki.issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES($1::uuid,$2,$3,$4,$5,$6,'step_ca',$7) ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).bind(name).bind(&issuer.digest).bind(public.revision as i64).bind(serde_json::to_value(issuer.mode)?.as_str().unwrap()).bind(serde_json::to_vec(issuer)?).bind(trust.expires()).execute(&mut *tx).await?;
+        }
+    }
+    tx.commit().await?;
     let clock = Arc::new(Clock);
     let issuer = Arc::new(agent_pki::DeviceIssuer::new(
         rss_mdm_install_support::StorageProfile::Mdm,
         providers,
         2,
         true,
-        trust,
+        Purpose::Agent,
+        registry,
+        Uuid::parse_str(&c.inputs.installation.instance_id)?,
         clock.clone(),
     )?);
-    let mut trust = n.trust.clone();
-    trust.purpose = Purpose::AgentBootstrap;
-    let bootstrap = agent::bootstrap::Configuration {
-        trust: rss_mdm_device_trust::DeviceTrust::new(trust, Purpose::AgentBootstrap, now())?,
-        webhooks: rss_mdm_pki_service::scep::Verifier::new(vec![
-            rss_mdm_pki_service::scep::Credentials {
-                issuer: digest,
-                challenge_id: "challenge".into(),
-                notify_id: "notify".into(),
-                challenge_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &[7; 32]),
-                notify_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &[8; 32]),
-            },
-        ])?,
-    };
+    let bootstrap = Arc::new(rss_mdm_pki_service::scep::Verifier::new(vec![
+        rss_mdm_pki_service::scep::Credentials {
+            issuer: digest,
+            challenge_id: "challenge".into(),
+            notify_id: "notify".into(),
+            challenge_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &[7; 32]),
+            notify_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &[8; 32]),
+        },
+    ])?);
     Ok(agent::Service::new(agent::Assembly {
         cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
             ring::hmac::HMAC_SHA256,
             &[9; 32],
         )),
-        tenant: c.tenant,
+        probe: c.execution(),
         store: c.database.registration(),
         audit: c.audit.clone(),
         issuer,
@@ -121,7 +137,7 @@ pub fn service(
             rss_mdm_install_support::StorageProfile::Mdm,
         )),
         native: Some(authority),
-        bootstrap: Some(Arc::new(bootstrap)),
+        bootstrap: Some(bootstrap),
         protection,
         installations: Some(Arc::new(crate::agent_configurations::Installations)),
     })?)
@@ -282,7 +298,7 @@ pub async fn installation(
     sqlx::query("INSERT INTO rss_device_command.authorities(tenant_id,device_id,generation,authority_epoch) VALUES($1::uuid,$2,1,1)").bind(c.tenant.to_string()).bind(command_device).execute(&mut *tx).await?;
     let fingerprint = input.digest(key, c.tenant, &n.device)?.as_bytes().to_vec();
     sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,version) VALUES($1::uuid,$2,$3,1,1,$4,$5,$6,'mdm.software.deployment.v1',$2,$4,'published',$6,2)").bind(c.tenant.to_string()).bind(id.to_string()).bind(command_device).bind(&fingerprint).bind(deadline*1_000_000).bind(now()*1_000_000).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_software_deployment.operations (tenant_id, id, device, request, input_context, fingerprint, generation, epoch, authority, dispatch_fingerprint, gateway_accepted, policy_version, observed_command_version) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 1, 1, $7, $6, TRUE, $8, 2)").bind(c.tenant.to_string()).bind(id).bind(n.device.into_uuid()).bind(sealed).bind(serde_json::to_value(metadata)?).bind(&fingerprint).bind(serde_json::to_value(authority)?).bind(version).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_software_deployment.operations (expected_epoch,tenant_id, id, device, request, input_context, fingerprint, generation, epoch, authority, dispatch_fingerprint, gateway_accepted, policy_version, observed_command_version) VALUES (current_setting('rss.execution_epoch')::bigint,CAST($1 AS uuid), $2, $3, $4, $5, $6, 1, 1, $7, $6, TRUE, $8, 2)").bind(c.tenant.to_string()).bind(id).bind(n.device.into_uuid()).bind(sealed).bind(serde_json::to_value(metadata)?).bind(&fingerprint).bind(serde_json::to_value(authority)?).bind(version).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_windows.native_commands (tenant_id, id, device) VALUES (CAST($1 AS uuid), $2, $3)").bind(c.tenant.to_string()).bind(id).bind(n.device.into_uuid()).execute(&mut *tx).await?;
     let attempt = Uuid::new_v4();
     let owner::Task::Windows {
@@ -321,8 +337,7 @@ pub async fn installation(
     sqlx::query("INSERT INTO mdm_windows.attempts (tenant_id, id, operation, device, ordinal, credential, session, message, phase, request, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, 1, $5, 1, 1, 'execute', $6, $7)").bind(c.tenant.to_string()).bind(attempt).bind(id).bind(n.device.into_uuid()).bind(n.credential).bind(request).bind(n.epoch).execute(&mut *tx).await?;
     let digest = format!("{:x}", Sha256::digest(&n.root));
     let body = serde_json::to_vec(&n.trust)?;
-    sqlx::query("INSERT INTO mdm_pki.issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES($1::uuid,'windows',$2,1,'active',$3,'step_ca',$4)").bind(c.tenant.to_string()).bind(&digest).bind(&n.root).bind(now()+86400).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_pki.trust(tenant_id,purpose,revision,body) VALUES($1::uuid,'windows',1,$2)").bind(c.tenant.to_string()).bind(&body).execute(&mut *tx).await?;
+
     sqlx::query("INSERT INTO mdm_pki.certificates (tenant_id, purpose, fingerprint, issuer, serial, device, not_after, certificate, verification_version, verification_trust) VALUES (CAST($1 AS uuid), 'windows', $2, $3, $4, $5, $6, $7, 1, $8)").bind(c.tenant.to_string()).bind(Sha256::digest(&n.certificate).to_vec()).bind(&digest).bind(&m.serial).bind(n.device.into_uuid()).bind(now()+3600).bind(&n.certificate).bind(Sha256::digest(&body).to_vec()).execute(&mut *tx).await?;
     let facts = rss_mdm_registration_service::installation::Installation {
         id,

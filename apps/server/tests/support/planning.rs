@@ -12,12 +12,7 @@ pub async fn owner(c: &Context, role: &str) -> Result<crate::owner_storage::Owne
     if role == "mdm_policy_runtime" {
         return Ok(crate::owner_storage::OwnerRuntime::open(
             crate::owner_storage::Messaging::Runtime(&c.inputs.database("shared", role)),
-            &crate::owner_storage::StorageBinding {
-                target: c.inputs.installation.target,
-                lineage: c.inputs.installation.lineage,
-                epoch: 1,
-            },
-            c.tenant,
+            c.execution(),
             4,
             c.audit.clone(),
             "policy-runtime-t2",
@@ -36,7 +31,7 @@ pub async fn owner(c: &Context, role: &str) -> Result<crate::owner_storage::Owne
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
     let audit = Arc::new(
         c.audit
-            .on_runtime(runtime.clone(), c.audit.binding(), &budget.control())
+            .on_runtime(runtime.clone(), c.execution(), &budget.control())
             .await?,
     );
     Ok(crate::owner_storage::OwnerRuntime { runtime, audit })

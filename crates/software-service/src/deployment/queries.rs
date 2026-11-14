@@ -24,11 +24,9 @@ pub struct Queries {
     pub(crate) apple_results: Arc<dyn apple_facts::AppleResults>,
     pub(crate) policy_reader: rss_mdm_policy_postgres::PolicyReader,
     pub(crate) runtime: Arc<PgRuntime>,
-    pub(crate) tenant: TenantId,
-    pub(crate) binding: rss_transactional_messaging::fence::ExecutionBinding,
+
     pub(crate) inputs: Arc<Inputs>,
     pub(crate) admission: Admission,
-    pub(crate) signed: bool,
     pub(crate) content_available: bool,
 }
 pub struct Dependencies {
@@ -42,9 +40,8 @@ pub struct Dependencies {
     pub apple_results: Arc<dyn apple_facts::AppleResults>,
     pub policy_reader: rss_mdm_policy_postgres::PolicyReader,
     pub runtime: Arc<PgRuntime>,
-    pub binding: rss_transactional_messaging::fence::ExecutionBinding,
+
     pub inputs: Arc<Inputs>,
-    pub signed: bool,
     pub content_available: bool,
 }
 impl Queries {
@@ -70,10 +67,8 @@ impl Queries {
             apple_results: dependencies.apple_results,
             policy_reader: dependencies.policy_reader,
             runtime: dependencies.runtime,
-            tenant: dependencies.binding.tenant(),
-            binding: dependencies.binding,
+
             inputs: dependencies.inputs,
-            signed: dependencies.signed,
             content_available: dependencies.content_available,
         }
     }
@@ -85,7 +80,7 @@ impl Queries {
         op: &storage::Operation,
     ) -> Result<dc::Status> {
         let status = sqlx::query_scalar::<_, String>("SELECT status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2")
-            .bind(self.tenant.to_string()).bind(op.id.to_string()).fetch_optional(c).await?
+            .bind(op.scope.tenant().to_string()).bind(op.id.to_string()).fetch_optional(c).await?
             .ok_or(Error::Unavailable(Failure::CommandInvariant))?;
         stored(dc::Status::restore(&status))
     }
@@ -111,7 +106,7 @@ impl Queries {
     ) -> crate::deployment::Result<records::CommandDetail> {
         grant.require(proof, Permission::OperationRead, Some(device))?;
         let service = self;
-        let op = storage::load_on(c, service.tenant, &service.protection, id).await?;
+        let op = storage::load_on(c, proof.binding().tenant(), &service.protection, id).await?;
         if op.device != *device {
             return Err(Error::Forbidden.into());
         }
@@ -133,7 +128,7 @@ impl Queries {
         let native_values = !redacted && service.native_values(grant, proof, device, &op)?;
         let observation = protocol::observation_on(
             c,
-            service.tenant,
+            proof.binding().tenant(),
             service.windows_results.clone(),
             service.apple_results.clone(),
             &op,
@@ -146,7 +141,7 @@ impl Queries {
                 super::native_installation::installation_observation_on(
                     service.inventory.clone(),
                     c,
-                    service.tenant,
+                    proof.binding().tenant(),
                     service.windows_results.clone(),
                     service.apple_results.clone(),
                     service.agent_store.clone(),
@@ -241,7 +236,8 @@ impl Queries {
         std::collections::BTreeMap<Uuid, crate::deployment::authorization_decision::Decision>,
     > {
         let selected = ids;
-        let operations = storage::load_many_on(c, self.tenant, &self.protection, selected).await?;
+        let operations =
+            storage::load_many_on(c, proof.binding().tenant(), &self.protection, selected).await?;
         let mut statuses = std::collections::BTreeMap::new();
         for op in operations.values() {
             statuses.insert(op.id, self.command_status_on(c, op).await?);

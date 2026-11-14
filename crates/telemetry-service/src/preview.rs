@@ -18,7 +18,7 @@ impl Service {
         query
             .require_schema(&rss_mdm_policy::pages::PREVIEW_SCHEMA)
             .map_err(|_| Error::Invalid)?;
-        if proof.tenant_id() != self.tenant.to_string() {
+        if proof.tenant_id() != proof.binding().tenant().to_string() {
             return Err(Error::Denied);
         }
         input.definition.validate().map_err(|_| Error::Invalid)?;
@@ -35,7 +35,7 @@ impl Service {
         let rejected = rejection.clone();
         let (frozen, profile_digest) = self
             .runtime
-            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
+            .local_tx(proof.binding(), crate::deadline(), move |tx| {
                 Box::pin(async move {
                     let input = prepared_input;
                     let proof = prepared_actor;
@@ -194,7 +194,7 @@ impl Service {
                         let template = &frozen.profile.spec().template;
                         let facts = rss_mdm_resource_postgres::version_facts_on(
                             c,
-                            service.tenant,
+                            proof.binding().tenant(),
                             &[
                                 (resource.id.clone(), resource.version.clone()),
                                 (template.resource.clone(), template.version.clone()),
@@ -216,7 +216,7 @@ impl Service {
                         }
                         let fields = crate::profile_validation::validate_on(
                             c,
-                            service.tenant,
+                            proof.binding().tenant(),
                             &template,
                             &frozen.profile,
                         )
@@ -230,7 +230,7 @@ impl Service {
                         let coordinate = rss_mdm_scope_service::channels::query_coordinate_on(
                             rss_mdm_install_support::StorageProfile::Mdm,
                             c,
-                            service.tenant,
+                            proof.binding().tenant(),
                             input.definition.scope,
                         )
                         .await
@@ -251,7 +251,7 @@ impl Service {
                             rss_mdm_install_support::StorageProfile::Mdm,
                             Some(service.objects.as_ref()),
                             c,
-                            service.tenant,
+                            proof.binding().tenant(),
                             input.definition.scope,
                             rss_mdm_inventory::Channel::Agent,
                             after,
@@ -262,7 +262,7 @@ impl Service {
                         let result = rss_mdm_scope_service::channels::targets::devices_on(
                             rss_mdm_install_support::StorageProfile::Mdm,
                             c,
-                            service.tenant,
+                            proof.binding().tenant(),
                             input.definition.scope,
                             rss_mdm_inventory::Channel::Agent,
                             None,
@@ -286,7 +286,7 @@ impl Service {
                                 match crate::admission::capable_on(
                                     service.agent_facts.as_ref(),
                                     c,
-                                    service.tenant,
+                                    proof.binding().tenant(),
                                     device.device,
                                     frozen,
                                 )

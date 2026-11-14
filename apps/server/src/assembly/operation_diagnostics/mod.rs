@@ -67,8 +67,13 @@ impl Diagnostics {
         let (audit_evidence, request_evidence) =
             rss_mdm_management_http::operation_diagnostics::split_requests(audit_evidence);
         p.check_live()?;
-        let (original_result_url, current_resource_url) =
-            links::urls(l.owner, l.operation, l.query, &original_result);
+        let (original_result_url, current_resource_url) = links::urls(
+            p.tenant_id(),
+            l.owner,
+            l.operation,
+            l.query,
+            &original_result,
+        );
         Ok(Detail {
             operation,
             original_result,
@@ -85,14 +90,13 @@ impl Diagnostics {
         if background && l.query.instance.is_some() {
             return Err(Error::Malformed);
         }
-        if p.tenant_id() != self.state.identity.tenant.to_string()
-            || actor_bound(l.owner)
-                && !background
-                && !matches!(l.owner, O::RegistrationRecovery | O::Pki)
-                && l.query
-                    .actor
-                    .as_deref()
-                    .is_some_and(|v| v != p.principal_id())
+        if actor_bound(l.owner)
+            && !background
+            && !matches!(l.owner, O::RegistrationRecovery | O::Pki)
+            && l.query
+                .actor
+                .as_deref()
+                .is_some_and(|v| v != p.principal_id())
             || actor_bound(l.owner)
                 && !background
                 && !matches!(l.owner, O::RegistrationRecovery | O::Pki)
@@ -564,7 +568,6 @@ impl Diagnostics {
             }
             O::StorageConnection | O::StorageMigration => {
                 let authority = rss_mdm_content_service::connections::authority::Authority {
-                    tenant: s.identity.tenant,
                     protection: s.protection.clone(),
                     audit: s.audit_store.clone(),
                     content: s.content_writer.clone(),
@@ -589,7 +592,7 @@ impl Diagnostics {
                 );
                 let result = s
                     .audit_store
-                    .read(s.identity.tenant, &budget.control(), p, |p, tx| {
+                    .read(p.binding().tenant(), &budget.control(), p, |p, tx| {
                         Box::pin(async move {
                             tx.with_connection_context(p, |p, c| {
                                 Box::pin(async move {

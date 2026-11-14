@@ -15,3 +15,8 @@ CREATE POLICY tenant ON mdm_initialization.baselines USING(tenant_id=nullif(curr
 GRANT USAGE ON SCHEMA mdm_initialization TO mdm_access,mdm_identity_provisioning;
 GRANT SELECT,INSERT ON mdm_initialization.baselines TO mdm_access,mdm_identity_provisioning;
 GRANT UPDATE(completed,phase,blocked) ON mdm_initialization.baselines TO mdm_access;
+
+-- Installation management can discover progress, never read initialization authority or mutate steps.
+GRANT USAGE ON SCHEMA mdm_initialization TO mdm_tenant_registry;
+GRANT SELECT(tenant_id,phase,blocked) ON mdm_initialization.baselines TO mdm_tenant_registry;
+CREATE POLICY registry_progress ON mdm_initialization.baselines TO mdm_tenant_registry USING(true);

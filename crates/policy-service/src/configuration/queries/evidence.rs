@@ -2,6 +2,7 @@ use super::*;
 impl Transactions {
     pub(crate) async fn observations_on(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut PgConnection,
         ops: &[(&storage::Operation, dc::Status)],
         values: bool,
@@ -19,7 +20,7 @@ impl Transactions {
             .collect();
         Ok(self
             .channels
-            .observations(c, self.tenant, reads, values)
+            .observations(c, binding.tenant(), reads, values)
             .await?)
     }
 }

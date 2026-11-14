@@ -2,7 +2,6 @@
 use crate::{Error, database::db};
 use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
-use rss_request_context::TenantId;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, Row};
 use std::{sync::Arc, time::Duration};
@@ -107,19 +106,14 @@ pub async fn settings_in(
 pub struct Management {
     store: Arc<crate::Store>,
     audit: Arc<AuditStore>,
-    tenant: TenantId,
 }
 impl Management {
-    pub fn new(store: Arc<crate::Store>, audit: Arc<AuditStore>, tenant: TenantId) -> Self {
-        Self {
-            store,
-            audit,
-            tenant,
-        }
+    pub fn new(store: Arc<crate::Store>, audit: Arc<AuditStore>) -> Self {
+        Self { store, audit }
     }
     pub async fn settings(&self, p: &AuthorizedPrincipal) -> Result<Settings, Error> {
         p.manage(Permission::RegistrationConfigurationRead)?;
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != p.binding().tenant().to_string() {
             return Err(Error::Forbidden);
         }
         let mut tx = self.store.begin(p.tenant_id()).await?;
@@ -138,7 +132,7 @@ impl Management {
         a: &RequestAudit,
     ) -> Result<Revision, Error> {
         p.manage(Permission::RegistrationConfigurationWrite)?;
-        if p.tenant_id() != self.tenant.to_string()
+        if p.tenant_id() != p.binding().tenant().to_string()
             || input.operation_id.is_nil()
             || input.expected_revision < 0
             || input.expected_revision == i64::MAX
@@ -155,7 +149,8 @@ impl Management {
         );
         let digest = crate::enrollment::digest(input);
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
-        let result=self.audit.write(self.tenant,
+        let result=self.audit.write(
+            a.binding()?,
             &budget.source_control(),(self,p,input,a,&digest),|(this,p,input,a,digest),tx|Box::pin(async move {
             let (this,p,input,a,digest)=(*this,*p,*input,*a,*digest);
             let (value,replayed)=tx.with_connection_context(&mut (p,input,digest),|(p,input,digest),c|Box::pin(async move {

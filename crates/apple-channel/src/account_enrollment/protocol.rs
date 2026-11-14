@@ -25,12 +25,19 @@ pub(super) async fn discover(
     }
     let name = account_name(&input.user_identifier)?;
     let host = name.rsplit_once('@').ok_or(Error::Malformed)?.1;
-    let tenant = app.identity.tenant().to_string();
+    let execution = app.execution(
+        app.access
+            .locate_account_domain(host)
+            .await?
+            .ok_or(Error::NotFound)?,
+    );
+    let tenant = execution.tenant().to_string();
+    let apple = app.apple(execution).await?;
     let mut tx = app.access.begin_read(&tenant).await?;
     let row=sqlx::query("SELECT id,signing_key FROM mdm_apple.account_configuration WHERE tenant_id=$1::uuid AND domain=$2 AND enabled")
         .bind(&tenant).bind(host).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::NotFound)?;
     let key: String = row.try_get("signing_key").map_err(db)?;
-    let signer = app.apple()?.account_keys.get(&key).ok_or(Error::Conflict)?;
+    let signer = apple.account_keys.get(&key).ok_or(Error::Conflict)?;
     if signer.expires()
         <= app
             .clock
@@ -90,6 +97,16 @@ pub(super) async fn enroll(
         .unix_seconds()
         .ok_or(Error::Unavailable(Failure::Clock))?;
     let request = rss_mdm_certificate::apple::enrollment_request(&bytes, now)?;
+    let execution = app.execution(
+        app.access
+            .locate_account_configuration(organization)
+            .await?
+            .ok_or(Error::Unauthorized)?,
+    );
+    audit
+        .bind_scope(execution)
+        .map_err(|_| Error::Unauthorized)?;
+    let apple = app.apple(execution).await?;
     let body = rss_mdm_apple_mdm::protocol::decode(&request.payload)?;
     validate_platform(&body)?;
     let digest = rss_mdm_registration_service::enrollment::digest(&(
@@ -110,23 +127,24 @@ pub(super) async fn enroll(
     }
     audit.identify_service("service:apple-account-bootstrap");
     let flow = Uuid::new_v4();
-    let tenant = app.identity.tenant().to_string();
+    let tenant = audit.binding()?.tenant().to_string();
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let outcome = app
         .audit_store
         .write(
-            app.identity.tenant(),
+            audit.binding()?,
             &budget.source_control(),
-            (&app, &tenant, organization, flow, &digest, &audit),
-            |(app, tenant, organization, flow, digest, audit), tx| {
+            (&app, &apple, &tenant, organization, flow, &digest, &audit),
+            |(app, apple, tenant, organization, flow, digest, audit), tx| {
                 Box::pin(async move {
                     tx.with_connection_context(
-                        &mut (*app, *tenant, *organization, *flow, *digest),
-                        |(app, tenant, organization, flow, digest), c| {
+                        &mut (*app, *apple, *tenant, *organization, *flow, *digest),
+                        |(app, apple, tenant, organization, flow, digest), c| {
                             Box::pin(bootstrap_on(
                                 c,
                                 Bootstrap {
+                                    apple,
                                     app,
                                     tenant,
                                     organization: *organization,
@@ -166,9 +184,13 @@ async fn profile(
     audit: &RequestAudit,
     cutoff: rss_request_context::Deadline,
 ) -> Result<Response, Error> {
-    let tenant = app.identity.tenant().to_string();
+    let tenant = audit.binding()?.tenant().to_string();
     let mut read = app.access.begin(&tenant).await?;
     let flow = store::token(&mut read, &tenant, token).await?;
+    if flow.try_get::<i64, _>("expected_epoch").map_err(db)? != audit.binding()?.epoch().get() {
+        return Err(Error::Unauthorized);
+    }
+    let apple = app.apple(audit.binding()?).await?;
     if flow.try_get::<Uuid, _>("organization").map_err(db)? != organization
         || flow.try_get::<String, _>("request_digest").map_err(db)? != digest
     {
@@ -178,6 +200,7 @@ async fn profile(
     let flow_id: Uuid = flow.try_get("id").map_err(db)?;
     read.rollback().await.map_err(db)?;
     let admission = rss_mdm_registration_service::enrollment::native::account(
+        audit.binding()?,
         &app.access.registration(),
         &app.identity,
         id,
@@ -196,18 +219,19 @@ async fn profile(
     let outcome = app
         .audit_store
         .write(
-            app.identity.tenant(),
+            audit.binding()?,
             &budget.source_control(),
-            (app, &tenant, token, digest, &admission, flow_id, audit),
-            |(app, tenant, token, digest, admission, flow_id, audit), tx| {
+            (app, &apple, &tenant, token, digest, &admission, flow_id, audit),
+            |(app, apple, tenant, token, digest, admission, flow_id, audit), tx| {
                 Box::pin(async move {
                     let (bytes, replayed) = tx
                         .with_connection_context(
-                            &mut (*app, *tenant, *token, *digest, *admission, *flow_id),
-                            |(app, tenant, token, digest, admission, flow_id), c| {
+                            &mut (*app, *apple, *tenant, *token, *digest, *admission, *flow_id),
+                            |(app, apple, tenant, token, digest, admission, flow_id), c| {
                                 Box::pin(profile_on(
                                     c,
                                     Profile {
+                                        apple,
                                         app,
                                         tenant,
                                         token,
@@ -256,6 +280,7 @@ async fn profile(
 }
 
 struct Bootstrap<'a> {
+    apple: &'a crate::Apple,
     app: &'a HttpState,
     tenant: &'a String,
     organization: Uuid,
@@ -264,6 +289,7 @@ struct Bootstrap<'a> {
 }
 async fn bootstrap_on(c: &mut sqlx::PgConnection, input: Bootstrap<'_>) -> Result<(), Error> {
     let Bootstrap {
+        apple,
         app,
         tenant,
         organization,
@@ -272,7 +298,7 @@ async fn bootstrap_on(c: &mut sqlx::PgConnection, input: Bootstrap<'_>) -> Resul
     } = input;
     let row=sqlx::query("SELECT revision,signing_key FROM mdm_apple.account_configuration WHERE tenant_id=$1::uuid AND id=$2 AND enabled FOR SHARE").bind(tenant).bind(organization).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     let key: String = row.try_get("signing_key").map_err(db)?;
-    if !app.apple()?.account_keys.get(&key).is_some_and(|s| {
+    if !apple.account_keys.get(&key).is_some_and(|s| {
         app.clock
             .unix_seconds()
             .is_some_and(|now| s.expires() > now as u64)
@@ -295,6 +321,7 @@ async fn bootstrap_on(c: &mut sqlx::PgConnection, input: Bootstrap<'_>) -> Resul
 }
 
 struct Profile<'a> {
+    apple: &'a crate::Apple,
     app: &'a HttpState,
     tenant: &'a String,
     token: &'a str,
@@ -307,6 +334,7 @@ async fn profile_on(
     input: Profile<'_>,
 ) -> Result<(Vec<u8>, bool), Error> {
     let Profile {
+        apple,
         app,
         tenant,
         token,
@@ -347,7 +375,6 @@ async fn profile_on(
         .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
     let material: Material = serde_json::from_slice(plain.expose())
         .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
-    let apple = app.apple()?;
     sqlx::query("UPDATE mdm_apple.scep_attempts SET state='superseded' WHERE tenant_id=$1::uuid AND enrollment=$2 AND authorization_version<>$3 AND state<>'superseded'").bind(tenant).bind(admission.coordinates().id).bind(admission.coordinates().version).execute(&mut *c).await.map_err(db)?;
     let (attempt, _, scep_url, scep_provisioner) = crate::enrollment::prepared(
         c,

@@ -28,7 +28,6 @@ pub async fn advance_in(
     tx.with_connection(|c| Box::pin(verify_storage(c))).await?;
     let tenant = tx.tenant_id().to_string();
     let row=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_devices.control_source_dispatch(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING").bind(&tenant).execute(&mut *c).await?;
         sqlx::query("SELECT from_cut,to_cut,event_after,page_through,cursor FROM mdm_devices.control_source_dispatch WHERE tenant_id=$1::uuid FOR UPDATE").bind(tenant).fetch_one(c).await
     })).await?;
     let from: Option<serde_json::Value> = row.try_get("from_cut")?;
@@ -96,18 +95,19 @@ pub async fn clear_failure_in(tx: &mut PgTransaction<'_>) -> Result<()> {
     Ok(())
 }
 pub async fn fail_in(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     tx: &mut PgTransaction<'_>,
     audit_store: &rss_mdm_audit_integration::AuditStore,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let generation=tx.with_connection(move |c|Box::pin(async move {
-        sqlx::query_scalar::<_,i64>("INSERT INTO mdm_devices.control_source_dispatch(tenant_id,failure,failure_generation) VALUES($1::uuid,'automation_suspended',1) ON CONFLICT(tenant_id) DO UPDATE SET failure=excluded.failure,failure_generation=control_source_dispatch.failure_generation+1 WHERE control_source_dispatch.failure IS NULL RETURNING failure_generation").bind(tenant).fetch_optional(c).await
+        sqlx::query_scalar::<_,i64>("UPDATE mdm_devices.control_source_dispatch SET failure='automation_suspended',failure_generation=failure_generation+1 WHERE tenant_id=$1::uuid AND failure IS NULL RETURNING failure_generation").bind(tenant).fetch_optional(c).await
     })).await?;
     if let Some(generation) = generation {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            tx.tenant_id().to_string(),
+            execution,
             "automation_failed",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -203,26 +203,23 @@ pub struct IngressHealth {
 impl crate::control::Service {
     pub async fn ingress_health(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         cutoff: std::time::Instant,
     ) -> std::result::Result<IngressHealth, crate::control::Error> {
         self.transactions
             .runtime
-            .local_tx(
-                self.transactions.audit_store.binding(),
-                health_deadline(cutoff),
-                |tx| {
-                    Box::pin(async move {
-                        health_in(tx)
-                            .await
-                            .map(|(event_after, window_open, suspended)| IngressHealth {
-                                event_after,
-                                window_open,
-                                suspended,
-                            })
-                            .map_err(input_fault)
-                    })
-                },
-            )
+            .local_tx(execution, health_deadline(cutoff), |tx| {
+                Box::pin(async move {
+                    health_in(tx)
+                        .await
+                        .map(|(event_after, window_open, suspended)| IngressHealth {
+                            event_after,
+                            window_open,
+                            suspended,
+                        })
+                        .map_err(input_fault)
+                })
+            })
             .await
             .fold(
                 Ok,
@@ -243,9 +240,10 @@ impl crate::control::Service {
     }
     pub async fn input_pending_count(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         cutoff: std::time::Instant,
     ) -> std::result::Result<u64, crate::control::Error> {
-        self.transactions.runtime.local_tx(self.transactions.audit_store.binding(), health_deadline(cutoff), |tx| Box::pin(async move {
+        self.transactions.runtime.local_tx(execution, health_deadline(cutoff), |tx| Box::pin(async move {
             let tenant=tx.tenant_id().to_string();
             tx.with_connection(move |c| Box::pin(async move {
                 sqlx::query_scalar::<_, i64>("WITH input_cut AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context((SELECT from_cut FROM mdm_devices.control_source_dispatch WHERE tenant_id=$1::uuid))) SELECT count(*) FROM (SELECT 1 FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM input_cut),false) LIMIT 1001) q").bind(tenant).fetch_one(c).await
@@ -254,10 +252,11 @@ impl crate::control::Service {
     }
     pub(crate) async fn apply_inputs<T: rss_reconcile::Timer>(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<rss_reconcile::ReconcileStep<()>, rss_reconcile::Error> {
-        if claim.target() != &target(self.transactions.tenant) {
+        if claim.target() != &target(execution.tenant()) {
             return Err(rss_reconcile::Error::new(
                 rss_reconcile::ErrorKind::Invariant,
             ));
@@ -266,7 +265,7 @@ impl crate::control::Service {
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(control.remaining());
         let candidate = rss_mdm_inventory_service::assets::cut::capture(
             &self.transactions.audit_store,
-            self.transactions.tenant,
+            execution.tenant(),
             &budget,
         )
         .await
@@ -276,7 +275,7 @@ impl crate::control::Service {
         self.transactions
             .runtime
             .local_tx_with_context(
-                self.transactions.audit_store.binding(),
+                execution,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -330,6 +329,7 @@ impl crate::control::Service {
     }
     pub(crate) async fn settle_inputs<T: rss_reconcile::Timer>(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         claim: &rss_reconcile_postgres::PgClaim,
         completion: rss_reconcile::Completion,
         control: &rss_reconcile::Control<'_, T>,
@@ -343,7 +343,7 @@ impl crate::control::Service {
         self.transactions
             .runtime
             .local_tx_with_context(
-                self.transactions.audit_store.binding(),
+                execution,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -365,7 +365,7 @@ impl crate::control::Service {
                                             .map(rss_reconcile_postgres::ProtectedStep::Ready)
                                             .map_err(input_fault)
                                     } else {
-                                        fail_in(tx, &s.transactions.audit_store)
+                                        fail_in(execution, tx, &s.transactions.audit_store)
                                             .await
                                             .map(rss_reconcile_postgres::ProtectedStep::Ready)
                                             .map_err(input_fault)
@@ -429,9 +429,18 @@ fn health_deadline(
 
 /// Durable lifecycle input; notification is only a post-commit latency hint.
 pub async fn wake_in(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     store: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
 ) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query("INSERT INTO mdm_devices.control_source_dispatch(tenant_id,expected_epoch) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&tenant).bind(execution.epoch().get()).execute(&mut *c).await?;
+        let expected:i64=sqlx::query_scalar("SELECT expected_epoch FROM mdm_devices.control_source_dispatch WHERE tenant_id=$1::uuid").bind(tenant).fetch_one(c).await?;
+        if expected!=execution.epoch().get(){return Err(sqlx::Error::Protocol("source input epoch mismatch".into()))}
+        Ok(())
+    })).await?;
+
     store
         .wake_in(
             tx,

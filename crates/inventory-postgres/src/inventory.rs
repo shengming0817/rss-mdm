@@ -42,12 +42,16 @@ pub fn definition() -> DefinitionIdentity {
 /// ```
 pub struct Inventory<C: rss_observation::Clock> {
     source: Arc<PgSource<C>>,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
 }
 impl<C: rss_observation::Clock> Inventory<C> {
     /// Bind the caller-owned Observation source without I/O or spawning tasks.
     /// The host must supply its correctly configured runtime, schema and admission checks.
-    pub fn new(source: Arc<PgSource<C>>) -> Self {
-        Self { source }
+    pub fn new(
+        source: Arc<PgSource<C>>,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Self {
+        Self { source, binding }
     }
 }
 impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
@@ -57,12 +61,23 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
         projection: &ProjectionScope,
         event: &Event,
     ) -> Result<PgEffectOutcome, PgOperationError> {
-        if projection != &projection_scope(projection.source().tenant()) {
+        if projection != &projection_scope(self.binding.tenant())
+            || tx.tenant() != self.binding.tenant()
+        {
             return Err(rejected(
                 event.position(),
                 rss_projection::ErrorKind::ScopeMismatch,
             ));
         }
+        let binding = self.binding;
+        tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query("SELECT set_config('rss.storage_target',$1,true),set_config('rss.storage_lineage',$2,true),set_config('rss.execution_epoch',$3,true)")
+                .bind(uuid::Uuid::from_bytes(binding.storage().target()).simple().to_string())
+                .bind(uuid::Uuid::from_bytes(binding.storage().lineage()).simple().to_string())
+                .bind(binding.epoch().get().to_string()).execute(&mut *c).await?;
+            sqlx::query("SELECT rss_transactional_messaging.check_execution()").execute(&mut *c).await?;
+            Ok(())
+        })).await?;
         let applicable = self
             .source
             .resolve_in_transaction(tx, event)

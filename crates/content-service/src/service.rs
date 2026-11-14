@@ -7,7 +7,6 @@ pub use error::Error;
 use futures::TryStreamExt;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_resource as r;
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -17,7 +16,7 @@ pub struct Access {
     pub authorization: Arc<rss_mdm_authorization_service::Store>,
     pub runtime: Arc<PgRuntime>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub tenant: TenantId,
+
     pub content: Option<Arc<Store>>,
     pub clock: Arc<dyn Clock>,
     pub catalog: Arc<rss_mdm_software_service::catalog::Reader>,
@@ -72,6 +71,7 @@ impl<'a> UploadAuthority<'a> {
                     .map_err(|_| Error::Forbidden)?;
                 app.sessions
                     .authenticate(
+                        self.proof.binding(),
                         &app.authorization,
                         secret,
                         rss_transactional_messaging::policy::OperationDeadline::from_remaining(
@@ -283,7 +283,7 @@ pub async fn resolve(
     proof.require(Permission::ResourceWrite, None)?;
     transaction::inspect(
         &app.runtime,
-        app.audit_store.binding(),
+        proof.binding(),
         Some(budget),
         (proof, id, input),
         |ctx, tx| {
@@ -310,6 +310,7 @@ pub async fn current(
     proof.require(Permission::ResourceWrite, None)?;
     let value = budget
         .work(store(app)?.status(
+            proof.binding(),
             &format!("{}:{}", proof.instance_id(), proof.principal_id()),
             upload,
             app.clock.unix_seconds().ok_or(Error::Clock)?,
@@ -323,7 +324,7 @@ pub async fn current(
     if matches!(value.binding.purpose, crate::Purpose::Software { .. }) {
         transaction::inspect(
             &app.runtime,
-            app.audit_store.binding(),
+            proof.binding(),
             Some(budget),
             proof,
             |proof, tx| {
@@ -367,7 +368,11 @@ pub async fn record(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     let verified = budget
-        .work(store(app)?.pin_ready(&upload.binding.artifact()?, upload.binding.class()))
+        .work(store(app)?.pin_ready(
+            audit.binding()?,
+            &upload.binding.artifact()?,
+            upload.binding.class(),
+        ))
         .await?;
     let fresh = session.refresh(app, budget).await?;
     let proof = &fresh;
@@ -375,7 +380,7 @@ pub async fn record(
         return transaction::run(
             &app.audit_store,
             &app.runtime,
-            app.audit_store.binding(),
+            audit.binding()?,
             audit,
             &[],
             Some(budget),
@@ -400,16 +405,16 @@ pub async fn record(
     transaction::run(
         &app.audit_store,
         &app.runtime,
-        app.audit_store.binding(),
+        audit.binding()?,
         audit,
-        &[
-            crate::event::partition(app.tenant, &upload.binding.resource()?.resource).map_err(
-                |error| match error {
-                    crate::bindings::Error::Content(error) => Error::Content(error),
-                    _ => Error::Invariant,
-                },
-            )?,
-        ],
+        &[crate::event::partition(
+            proof.binding().tenant(),
+            &upload.binding.resource()?.resource,
+        )
+        .map_err(|error| match error {
+            crate::bindings::Error::Content(error) => Error::Content(error),
+            _ => Error::Invariant,
+        })?],
         Some(budget),
         (app, proof, audit, upload, &verified, source_catalog),
         |ctx, tx| {
@@ -506,13 +511,16 @@ pub async fn cleanup(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     let candidates = store(app)?
-        .garbage(app.clock.unix_seconds().ok_or(Error::Clock)?)
+        .garbage(
+            proof.binding(),
+            app.clock.unix_seconds().ok_or(Error::Clock)?,
+        )
         .await?;
     let mut removed = 0usize;
     for candidate in candidates {
         let deleted = transaction::inspect(
             &app.runtime,
-            app.audit_store.binding(),
+            proof.binding(),
             None,
             (proof, &candidate),
             |ctx, tx| {
@@ -564,7 +572,7 @@ pub async fn mirror(
     let catalog = app.catalog.as_ref();
     transaction::inspect(
         &app.runtime,
-        app.audit_store.binding(),
+        audit.binding()?,
         Some(budget),
         (catalog, source),
         |ctx, tx| {
@@ -591,7 +599,7 @@ pub async fn mirror(
     .map_err(|_| Error::Malformed)?;
     let now = app.clock.unix_seconds().ok_or(Error::Clock)?;
     let staged = content
-        .begin(operation, binding.clone(), now, budget)
+        .begin(proof.binding(), operation, binding.clone(), now, budget)
         .await?;
     if !staged.complete {
         if staged.offset != 0 {
@@ -616,11 +624,20 @@ pub async fn mirror(
             response.bytes_stream().map_err(std::io::Error::other),
         );
         content
-            .append(&staged.binding.actor, operation, 0, now, stream, budget)
+            .append(
+                proof.binding(),
+                &staged.binding.actor,
+                operation,
+                0,
+                now,
+                stream,
+                budget,
+            )
             .await?;
     }
     let result = content
         .finish(
+            proof.binding(),
             &staged.binding.actor,
             operation,
             app.clock.unix_seconds().ok_or(Error::Clock)?,
@@ -645,7 +662,7 @@ pub async fn receipt(
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, id);
     transaction::inspect(
         &app.runtime,
-        app.audit_store.binding(),
+        proof.binding(),
         None,
         (proof, audit, &id, operation),
         |ctx, tx| {
@@ -694,6 +711,7 @@ pub async fn begin_upload(
     let binding = resolve(app, proof, id, input, budget).await?;
     Ok(store(app)?
         .begin(
+            proof.binding(),
             upload,
             binding,
             app.clock.unix_seconds().ok_or(Error::Clock)?,
@@ -729,6 +747,7 @@ pub async fn append_upload<R: tokio::io::AsyncRead + Unpin + Send>(
     }
     let result = store(app)?
         .append(
+            audit.binding()?,
             &old.binding.actor,
             upload,
             offset,
@@ -760,6 +779,7 @@ pub async fn complete_upload(
     let old = current(app, proof, audit, id, upload, budget).await?;
     let result = store(app)?
         .finish(
+            audit.binding()?,
             &old.binding.actor,
             upload,
             app.clock.unix_seconds().ok_or(Error::Clock)?,
@@ -798,6 +818,7 @@ pub async fn upload<R: tokio::io::AsyncRead + Unpin + Send>(
             }
             let written = store(app)?
                 .append(
+                    audit.binding()?,
                     &staged.binding.actor,
                     operation,
                     staged.offset,
@@ -812,6 +833,7 @@ pub async fn upload<R: tokio::io::AsyncRead + Unpin + Send>(
         }
         let complete = store(app)?
             .finish(
+                audit.binding()?,
                 &staged.binding.actor,
                 operation,
                 app.clock.unix_seconds().ok_or(Error::Clock)?,

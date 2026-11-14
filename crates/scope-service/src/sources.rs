@@ -54,6 +54,7 @@ pub struct ResultDetail {
 pub trait ScopeDependents: Send + Sync {
     fn publication_recorded_in<'a>(
         &'a self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &'a mut PgTransaction<'_>,
         owner: rss_mdm_scope_postgres::ScopeOwner,
         run: uuid::Uuid,

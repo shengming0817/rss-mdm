@@ -88,7 +88,6 @@ pub(crate) async fn admit(
     if p.profile() != StorageProfile::Da
         || p.kind() != RegistrationKind::DaDevice
         || p.installation() != service.service_id()?
-        || p.tenant() != service.tenant
     {
         return Err(Error::Forbidden);
     }
@@ -152,7 +151,7 @@ impl Service {
                         replay: true,
                     });
                 }
-                let artifact = signing.read_on(c, input.artifact).await?;
+                let artifact = signing.read_on(p.binding(), c, input.artifact).await?;
                 if artifact.digest != input.digest {
                     return Err(Error::Conflict);
                 }
@@ -164,7 +163,7 @@ impl Service {
                 // Publication/time/key-ACK admission belongs to distribution and trusted application,
                 // and cannot be inferred from received/validated/applied labels supplied by a device.
                 for source in &input.sources {
-                    let value = signing.read_on(c, source.artifact).await?;
+                    let value = signing.read_on(p.binding(), c, source.artifact).await?;
                     if value.digest != source.digest {
                         return Err(Error::Conflict);
                     }

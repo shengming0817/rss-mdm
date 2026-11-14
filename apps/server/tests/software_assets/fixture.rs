@@ -27,28 +27,30 @@ impl Fixture {
             projection.store.clone(),
             c.database.inventory(),
             c.audit.clone(),
-            c.tenant,
+            c.execution().storage(),
+            c.execution().epoch(),
             clock,
             Arc::new(rt::Readiness::default()),
         ));
         let owner = planning::owner(c, "mdm_inventory_runtime").await?;
         let groups = rss_mdm_group_postgres::GroupStore::new(
             owner.runtime.clone(),
-            c.audit.binding(),
+            c.execution(),
             rss_mdm_inventory_service::transaction::deadline(),
         )
         .await?;
         let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             owner.runtime.clone(),
-            c.audit.binding(),
+            c.execution(),
             rss_mdm_inventory_service::transaction::deadline(),
         ))
         .await?;
+
         let tenant = c.tenant;
         owner
             .runtime
             .local_tx(
-                c.audit.binding(),
+                c.execution(),
                 rss_mdm_inventory_service::transaction::deadline(),
                 |tx| {
                     Box::pin(async move {
@@ -77,10 +79,11 @@ impl Fixture {
             )?;
         Ok(Self {
             assets: Arc::new(a::AssetService::new(a::AssetDependencies {
+                read_pool: c.database.archive_pool(),
                 inventory,
                 audit_store: owner.audit,
                 runtime: owner.runtime,
-                tenant: c.tenant,
+                probe: c.execution(),
                 clock: Arc::new(crate::clock::SystemClock),
                 cursor_key: vec![7; 32],
                 reconcile_messaging: messaging,
@@ -153,11 +156,8 @@ impl Http {
         fixture: &Fixture,
         proof: Arc<rss_mdm_authorization_service::context::AuthorizedPrincipal>,
     ) -> Result<Self> {
-        let tenant = c.tenant.to_string();
-        let sessions = rss_mdm_authorization_service::session::SessionAuthority::new(
-            c.authority.clone(),
-            c.audit.binding(),
-        );
+        let sessions =
+            rss_mdm_authorization_service::session::SessionAuthority::new(c.authority.clone());
         let router = rss_mdm_management_http::assets::routes()
             .into_axum()
             .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
@@ -166,7 +166,7 @@ impl Http {
             .layer(axum::middleware::from_fn(
                 move |mut request: axum::extract::Request, next: axum::middleware::Next| {
                     let proof = proof.clone();
-                    let tenant = tenant.clone();
+
                     let auth = {
                         let request_budget =
                             Arc::new(rss_mdm_audit_integration::budget::AuditBudget::new(
@@ -183,7 +183,7 @@ impl Http {
                         let audit = rss_mdm_audit_integration::RequestAudit::new(
                             rss_mdm_audit_integration::Origin::Request,
                             rss_mdm_install_support::StorageProfile::Mdm,
-                            tenant,
+                            proof.binding(),
                             "software-assets-t2",
                             rss_mdm_audit_integration::AuditIntent::Management,
                         );

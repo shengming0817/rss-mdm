@@ -23,16 +23,17 @@ pub struct Settings {
 pub struct Request {
     pub installation: install::Input,
     pub settings: Settings,
-    /// Omit for the initial business tenant; later tenants retain their own host binding.
-    pub host_id: Option<Uuid>,
+    pub tenant: Uuid,
 }
 
 pub async fn run(request: Request) -> Result<configure::Receipt> {
     let root = Journal::open(&request.installation.directory)?;
-    let saved: Value = root.load("installation.json")?.ok_or(Error::Corrupt)?;
-    let host = request.host_id.unwrap_or(
-        serde_json::from_value(saved["receipt"]["hostId"].clone()).map_err(|_| Error::Corrupt)?,
-    );
+    if request.tenant.is_nil() {
+        return Err(Error::Input);
+    }
+    let base: Value = root.load("runtime.json")?.ok_or(Error::Corrupt)?;
+    let host: Uuid = serde_json::from_value(base["runtime_binding"]["host_id"].clone())
+        .map_err(|_| Error::Corrupt)?;
     let owner = Journal::open(
         &request
             .installation
@@ -58,12 +59,7 @@ pub async fn run(request: Request) -> Result<configure::Receipt> {
     }
     let current_profile = profile(&request.settings).await?;
     let client = client::Client::new(&current_profile, clock()?)?;
-    let renewal = renewal_targets(
-        &client,
-        &runtime,
-        saved["receipt"]["tenantId"] == runtime["identity"]["tenant_id"],
-    )
-    .await?;
+    let renewal = renewal_targets(&client, &runtime).await?;
     // Public CRL refresh creates one new configuration; administrator renewal does not change device identity.
     let settings = serde_json::to_vec(&request.settings).map_err(|_| Error::Input)?;
     let crl = crate::config::read(&request.settings.root_crl_file, 16 * 1024 * 1024, false)
@@ -72,7 +68,7 @@ pub async fn run(request: Request) -> Result<configure::Receipt> {
     let digest = rss_mdm_device_trust::digest(
         &[settings.as_slice(), crl.as_slice(), intent.as_slice()].concat(),
     );
-    let name = format!("step-ca-{}-{}", host.simple(), &digest[..16]);
+    let name = format!("step-ca-{}-{}", request.tenant.simple(), &digest[..16]);
     let journal = Journal::open(&request.installation.directory.join(name))?;
     journal.secret("settings.json", &settings)?;
     let mut saved = journal.load::<Operation>("operation.json")?;
@@ -84,7 +80,7 @@ pub async fn run(request: Request) -> Result<configure::Receipt> {
                 .join(format!("configuration-{}", previous.id)),
         )?
         .load::<configure::Receipt>("receipt.json")?
-        .is_some_and(|r| r.applied.is_some());
+        .is_some_and(|r| !r.deployment_required || r.applied.is_some());
         if completed && !renewal.is_empty() && previous.renewal != renewal {
             saved = None;
         }
@@ -111,7 +107,7 @@ pub async fn run(request: Request) -> Result<configure::Receipt> {
     let result = configure::run(configure::Request {
         installation: request.installation,
         operation_id: operation,
-        host_id: host,
+        tenant: Some(request.tenant),
         expected_revision: revision,
         change: configure::Change::StepCa {
             settings: Box::new(request.settings),
@@ -127,8 +123,18 @@ pub async fn run(request: Request) -> Result<configure::Receipt> {
         let runtime: Value = owner
             .load("requested-runtime.json")?
             .ok_or(Error::Corrupt)?;
-        verify_latest(&root, &journal, &runtime, &settings).await?;
-        root.save(&format!("ca-settings-{host}.json"), &settings)?;
+        verify_latest(
+            &root,
+            &journal,
+            &runtime,
+            request.tenant.ok_or(Error::Input)?,
+            &settings,
+        )
+        .await?;
+        root.save(
+            &format!("ca-settings-{}.json", request.tenant.ok_or(Error::Input)?),
+            &settings,
+        )?;
     }
     Ok(result)
 }
@@ -181,6 +187,7 @@ pub(in crate::installation) async fn prepare(
     journal: &Journal,
     connection: &mut PgConnection,
     runtime: &mut Value,
+    tenant: Uuid,
     settings: &Settings,
 ) -> Result<()> {
     let profile = profile(settings).await?;
@@ -198,20 +205,12 @@ pub(in crate::installation) async fn prepare(
         .or_else(|_| openssl::x509::X509Crl::from_der(&root_crl))
         .and_then(|c| c.to_der())
         .map_err(|_| Error::Input)?;
-    let tenant: Uuid = serde_json::from_value(runtime["identity"]["tenant_id"].clone())
-        .map_err(|_| Error::Corrupt)?;
-    let saved: Value = root.load("installation.json")?.ok_or(Error::Corrupt)?;
-    let primary = saved["receipt"]["tenantId"] == json!(tenant);
     let product = runtime["product_origin"]
         .as_str()
         .ok_or(Error::Corrupt)?
         .to_owned();
     let public = settings.public_scep_origin.as_deref().unwrap_or(&product);
-    let host = runtime["runtime_binding"]["host_id"]
-        .as_str()
-        .ok_or(Error::Corrupt)?
-        .to_owned();
-    let prior = root.load::<Value>(&format!("ca-bindings-{host}.json"))?;
+    let mut admitted = Vec::new();
     let mut decrypter = None;
     let mut bindings = serde_json::Map::new();
     for purpose in [
@@ -235,7 +234,7 @@ pub(in crate::installation) async fn prepare(
             .as_ref()
             .and_then(|p| p["provisioner"].as_str())
             .map(str::to_owned)
-            .unwrap_or_else(|| resource_name(names(purpose).0, primary, tenant));
+            .unwrap_or_else(|| names(purpose).0.to_owned());
         // Agent's published client contract uses one named provisioner; tenant identity remains in the signed SAN.
         let shared = if purpose == Purpose::Agent {
             Some(Journal::open(
@@ -297,7 +296,7 @@ pub(in crate::installation) async fn prepare(
                 .and_then(|p| p["scep_url"].as_str())
                 .and_then(|url| url.rsplit('/').next())
                 .map(str::to_owned)
-                .unwrap_or_else(|| resource_name(base, primary, tenant))
+                .unwrap_or_else(|| base.to_owned())
         });
         let previous = current_trust(connection, tenant, purpose).await?;
         let callbacks = if let Some(name) = &scep_name {
@@ -310,11 +309,10 @@ pub(in crate::installation) async fn prepare(
                         callback: &callback_origin(runtime, purpose)?,
                         issuer_der: &issuer_der,
                         crl: &crl,
-                        previous: prior
-                            .as_ref()
-                            .map(|p| &p[purpose_name(purpose)]["callbacks"])
-                            .filter(|p| {
-                                p.is_object() && p["issuer"] == issuer_digest && previous.is_none()
+                        previous: channel(runtime, purpose)
+                            .and_then(|channel| channel["webhooks"].as_array())
+                            .and_then(|hooks| {
+                                hooks.iter().find(|hook| hook["issuer"] == issuer_digest)
                             }),
                     },
                     &client,
@@ -343,7 +341,7 @@ pub(in crate::installation) async fn prepare(
                 kid.clone()
             },
         };
-        let (trust, active_before) = prepared_trust(
+        let (trust, _active_before) = prepared_trust(
             previous,
             candidate,
             tenant,
@@ -370,27 +368,16 @@ pub(in crate::installation) async fn prepare(
                 &serde_json::to_vec(callbacks).map_err(|_| Error::Corrupt)?,
             )?;
         }
-        let attach_trust = !active_before
-            || trust
-                .issuers
-                .iter()
-                .any(|g| g.digest == issuer_digest && g.mode == Mode::Active);
-        bind_runtime(
-            runtime,
-            purpose,
-            &issuer_digest,
-            provider,
-            callbacks,
-            &trust_file,
-            attach_trust,
-        )?;
+        bind_runtime(runtime, purpose, &issuer_digest, provider, callbacks)?;
+        admitted.push(owner.load::<Trust>("trust.json")?.ok_or(Error::Corrupt)?);
     }
     bindings.insert(
         "_directory".into(),
         json!(journal.path("issuer.pem")?.parent().ok_or(Error::Corrupt)?),
     );
-    root.save(&format!("ca-bindings-{host}.json"), &bindings)?;
-    root.save(&format!("ca-settings-{host}.json"), settings)?;
+    admit_trusts(runtime, tenant, admitted).await?;
+    root.save(&format!("ca-bindings-{tenant}.json"), &bindings)?;
+    root.save(&format!("ca-settings-{tenant}.json"), settings)?;
     Ok(())
 }
 
@@ -403,22 +390,15 @@ fn purpose_name(p: Purpose) -> &'static str {
         Purpose::AgentBootstrap => "agent-bootstrap",
     }
 }
-fn resource_name(base: &str, primary: bool, tenant: Uuid) -> String {
-    if primary || base == "rss-agent" {
-        base.into()
-    } else {
-        format!("{base}-{}", tenant.simple())
-    }
-}
 fn channel(runtime: &Value, purpose: Purpose) -> Option<&Value> {
     runtime
         .pointer(channel_path(purpose)?)
-        .filter(|v| v.get("trust_file").is_some())
+        .filter(|v| v.is_object() && v.get("mode").and_then(Value::as_str) != Some("disabled"))
 }
 fn channel_mut(runtime: &mut Value, purpose: Purpose) -> Option<&mut Value> {
     runtime
         .pointer_mut(channel_path(purpose)?)
-        .filter(|v| v.get("trust_file").is_some())
+        .filter(|v| v.is_object() && v.get("mode").and_then(Value::as_str) != Some("disabled"))
 }
 fn channel_path(p: Purpose) -> Option<&'static str> {
     match p {
@@ -586,12 +566,10 @@ pub(in crate::installation) async fn attach(
     journal: &Journal,
     connection: &mut PgConnection,
     runtime: &mut Value,
+    tenant: Uuid,
 ) -> Result<()> {
-    let host = runtime["runtime_binding"]["host_id"]
-        .as_str()
-        .ok_or(Error::Corrupt)?;
-    if let Some(settings) = root.load::<Settings>(&format!("ca-settings-{host}.json"))? {
-        return prepare(root, journal, connection, runtime, &settings).await;
+    if let Some(settings) = root.load::<Settings>(&format!("ca-settings-{tenant}.json"))? {
+        prepare(root, journal, connection, runtime, tenant, &settings).await?;
     }
     Ok(())
 }
@@ -599,13 +577,11 @@ async fn verify_latest(
     root: &Journal,
     journal: &Journal,
     runtime: &Value,
+    tenant: Uuid,
     settings: &Settings,
 ) -> Result<()> {
-    let host = runtime["runtime_binding"]["host_id"]
-        .as_str()
-        .ok_or(Error::Corrupt)?;
     let directory = root
-        .load::<Value>(&format!("ca-bindings-{host}.json"))?
+        .load::<Value>(&format!("ca-bindings-{tenant}.json"))?
         .and_then(|v| v["_directory"].as_str().map(PathBuf::from));
     if let Some(directory) = directory
         && directory.join("issuer.pem") != journal.path("issuer.pem")?
@@ -703,19 +679,13 @@ fn scep_needs_renewal(remote: &wire::Provisioner) -> Result<bool> {
         openssl::asn1::Asn1Time::from_unix(clock()? + 30 * 86400).map_err(|_| Error::Input)?;
     Ok(cert.not_after() <= threshold.as_ref())
 }
-async fn renewal_targets(
-    client: &client::Client,
-    runtime: &Value,
-    primary: bool,
-) -> Result<Vec<String>> {
-    let tenant: Uuid = serde_json::from_value(runtime["identity"]["tenant_id"].clone())
-        .map_err(|_| Error::Corrupt)?;
+async fn renewal_targets(client: &client::Client, runtime: &Value) -> Result<Vec<String>> {
     let mut result = Vec::new();
     for purpose in [Purpose::Apple, Purpose::AgentBootstrap] {
         if channel(runtime, purpose).is_none() {
             continue;
         }
-        let name = resource_name(names(purpose).1.ok_or(Error::Input)?, primary, tenant);
+        let name = names(purpose).1.ok_or(Error::Input)?.to_owned();
         if let Some(remote) = client.get::<wire::Provisioner>(&name, clock()?).await?
             && scep_needs_renewal(&remote)?
         {
@@ -939,8 +909,6 @@ fn bind_runtime(
     issuer: &str,
     provider: Value,
     callbacks: Option<Value>,
-    trust_file: &std::path::Path,
-    attach_trust: bool,
 ) -> Result<()> {
     let providers = runtime["device_pki"].as_array_mut().ok_or(Error::Corrupt)?;
     if let Some(p) = providers
@@ -962,9 +930,6 @@ fn bind_runtime(
             hooks.push(callbacks);
         }
     }
-    if attach_trust && let Some(channel) = channel_mut(runtime, purpose) {
-        channel["trust_file"] = json!(trust_file);
-    }
     Ok(())
 }
 
@@ -977,4 +942,64 @@ fn freeze_trust(owner: &Journal, trust: &Trust) -> Result<PathBuf> {
     } else {
         owner.path("trust.json")
     }
+}
+
+async fn admit_trusts(runtime: &Value, tenant: Uuid, trusts: Vec<Trust>) -> Result<()> {
+    let config: crate::config::Config =
+        serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
+    let target =
+        rss_request_context::TenantId::parse(&tenant.to_string()).map_err(|_| Error::Input)?;
+    let binding = config
+        .storage_binding
+        .execution(target)
+        .map_err(|_| Error::Input)?;
+    let providers = rss_mdm_pki_service::configuration::providers(&config.device_pki)
+        .map_err(|_| Error::Input)?;
+    let database = crate::Database::connect(
+        config.access_options().map_err(|_| Error::Input)?,
+        &config.audit,
+    )
+    .await
+    .map_err(|_| Error::Storage)?;
+    let process = match crate::identity::open_runtime(
+        &config.access_database,
+        &config.storage_binding.target,
+        &config.storage_binding.lineage,
+        crate::background::AUXILIARY_CONNECTIONS,
+    )
+    .await
+    {
+        Ok(process) => process,
+        Err(_) => {
+            database.close().await;
+            return Err(Error::Storage);
+        }
+    };
+    let result = async {
+        let audit = database
+            .audit_store(
+                &config.audit,
+                process.clone(),
+                config.management_binding().map_err(|_| Error::Input)?,
+            )
+            .await
+            .map_err(|_| Error::Storage)?;
+        let registry = rss_mdm_pki_service::registry::Registry::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            database.archive_pool(),
+            audit,
+            binding,
+            providers,
+        );
+        for trust in trusts {
+            registry
+                .admit(binding, trust, clock()?)
+                .await
+                .map_err(|_| Error::Conflict)?;
+        }
+        Ok(())
+    }
+    .await;
+    tokio::join!(process.close(), database.close());
+    result
 }

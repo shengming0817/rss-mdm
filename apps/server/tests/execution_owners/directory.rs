@@ -57,7 +57,7 @@ async fn native_directory_serializes_the_actual_owner_and_respects_projection() 
             .as_array()
             .unwrap()
             .iter()
-            .find(|e| e["method"] == "GET" && e["path"] == "/api/v1/operations")
+            .find(|e| e["method"] == "GET" && e["path"] == "/api/v1/tenants/{tenant}/operations")
             .unwrap();
         let response = endpoint["responses"]
             .as_array()
@@ -200,7 +200,7 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
                 assert!(row["evidence"].get("native").is_none());
                 if id==native{assert_eq!(row["status"],"expired");assert_eq!(row["evidence"]["report"]["reason"],"timeout");}
                 let policy=if id==script{policy}else if id==collection{collection_policy}else{native_policy};
-                assert_eq!(row["detailUrl"],format!("/api/v1/policies/{policy}/runs/{id}"));
+                assert_eq!(row["detailUrl"],format!("/api/v1/tenants/{}/policies/{policy}/runs/{id}", h.c.tenant));
                 cursor=value["nextCursor"].as_str().map(str::to_owned);
                 if cursor.is_none(){break;}
                 assert!(ids.len()<4);
@@ -296,7 +296,7 @@ async fn request_snapshot_is_stable_and_revalidates_identity() -> Result<()> {
         let after: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.devices WHERE tenant_id=$1::uuid").bind(&tenant).fetch_one(&h.c.operator).await?;
         assert_eq!(after, before + 1);
         let rss_mdm_authorization_service::credential::RequestCredential::Cookie(secret) = account.credential()? else { unreachable!() };
-        let session = h.c.authority.inspect_session(h.c.audit.binding(), secret, request.remaining()?).await?;
+        let session = h.c.authority.inspect_session(h.c.execution(), secret, request.remaining()?).await?;
         let mut revoked = false;
         let rejected = h.a.task_reads.snapshot(&request, (&h.c.authority, Some(session), &mut revoked), |state, _, _, _| Box::pin(async move {
             state.0.revoke_current_session(state.1.take().unwrap(), rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(3))).await.expect("Identity revocation must commit before testing the response tail");
@@ -338,11 +338,7 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
         assert_eq!(rss_mdm_inventory_postgres::assign_in(&mut seed,h.c.tenant,&manual,field,0,&rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("manual".into())),&evidence).await?,Some(1));
         seed.commit().await?;
         let expected=std::collections::BTreeMap::from([(device,true),(manual,true),(empty,false)]);
-        let devices = Arc::new(rss_mdm_registration_service::DeviceService::new(
-            h.c.database.registration(),
-            h.c.tenant.to_string(),
-            h.c.audit.clone(),
-        ));
+        let devices = Arc::new(rss_mdm_registration_service::DeviceService::new(h.c.database.registration(), h.c.audit.clone()));
         let reads = Arc::new(crate::assembly::device_reads::Devices {
             tasks: h.a.task_reads.clone(),
             devices: devices.clone(),
@@ -435,11 +431,11 @@ async fn activity_read_correlates_native_cancellation_with_only_coordinate_privi
         let change = Uuid::new_v4();
         let revision: i64 = sqlx::query_scalar("SELECT revision FROM mdm_devices.control_operations WHERE tenant_id=$1::uuid AND id=$2")
             .bind(h.c.tenant.to_string()).bind(operation).fetch_one(&h.c.operator).await?;
-        let audit = RequestAudit::new(rss_mdm_audit_integration::Origin::Request, rss_mdm_install_support::StorageProfile::Mdm, h.c.tenant.to_string(), "command_cancel", AuditIntent::Management);
+        let audit = RequestAudit::new(rss_mdm_audit_integration::Origin::Request, rss_mdm_install_support::StorageProfile::Mdm, h.c.execution(), "command_cancel", AuditIntent::Management);
         proof.bind_audit(&audit)?;
         audit.operation(change, "command_cancel", AuditIntent::Management);
         h.a.service.change(&proof, &native.device, operation, &rss_mdm_device_service::control::Change { request_id: change, expected_revision: revision }, None, &audit).await?;
-        let timeline = h.c.database.timeline(h.c.audit.clone(), h.c.tenant, &[7;32], rss_mdm_timeline_service::QueryBudget::new(1024, 8 * 1024 * 1024)?)?;
+        let timeline = h.c.database.timeline(h.c.audit.clone(), &[7;32], rss_mdm_timeline_service::QueryBudget::new(1024, 8 * 1024 * 1024)?)?;
         let reader = Reader::Management { proof: &proof, device: &native.device };
         let query = Query { operation: Some(operation), ..Default::default() };
         let mut found = None;

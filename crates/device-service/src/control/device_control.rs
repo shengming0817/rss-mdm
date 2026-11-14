@@ -365,12 +365,13 @@ impl crate::control::queries::Queries {
     /// Borrow the caller's authorized, tenant-bound read-only snapshot.
     pub async fn control_applicability_on(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut sqlx::PgConnection,
         checks: &[Check],
     ) -> crate::control::Result<Vec<Applicability>> {
         applicability_on(
             c,
-            self.tenant,
+            binding.tenant(),
             self.apple_results.clone(),
             self.windows_results.clone(),
             checks,

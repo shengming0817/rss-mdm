@@ -24,6 +24,7 @@ pub async fn pending_in(
     })).await?)
 }
 pub async fn advance_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     tx: &mut PgTransaction<'_>,
     service: &super::Transactions,
     source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
@@ -32,7 +33,6 @@ pub async fn advance_in(
     tx.with_connection(|c| Box::pin(verify_storage(c))).await?;
     let tenant = tx.tenant_id().to_string();
     let row=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_planning.configuration_source_dispatch(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING").bind(&tenant).execute(&mut *c).await?;
         sqlx::query("SELECT from_cut,to_cut,event_after,page_through,cursor FROM mdm_planning.configuration_source_dispatch WHERE tenant_id=$1::uuid FOR UPDATE").bind(tenant).fetch_one(c).await
     })).await?;
     let from: Option<serde_json::Value> = row.try_get("from_cut")?;
@@ -58,7 +58,7 @@ pub async fn advance_in(
         tx.with_connection(move|c|Box::pin(async move {
             sqlx::query("UPDATE mdm_planning.configuration_source_dispatch SET from_cut=$2,to_cut=NULL,event_after=0,page_through=NULL,cursor=NULL WHERE tenant_id=$1::uuid").bind(tenant).bind(to).execute(c).await?;Ok(())
         })).await?;
-        return relation_page_in(tx, service, source).await;
+        return relation_page_in(binding, tx, service, source).await;
     };
     let tenant = tx.tenant_id().to_string();
     let frozen = to.clone();
@@ -75,7 +75,7 @@ pub async fn advance_in(
             .bind(tenant).bind(from).bind(to).bind(after).bind(through).bind(cursor).fetch_all(c).await.and_then(crate::configuration::device_ids)
     })).await?;
     service
-        .wake_devices_in(tx, &devices[..devices.len().min(32)])
+        .wake_devices_in(binding, tx, &devices[..devices.len().min(32)])
         .await?;
     let more = devices.len() > 32;
     let next = more.then(|| devices[31]);
@@ -84,7 +84,7 @@ pub async fn advance_in(
         sqlx::query("UPDATE mdm_planning.configuration_source_dispatch SET event_after=$2,page_through=$3,cursor=$4 WHERE tenant_id=$1::uuid")
             .bind(tenant).bind(if more {after}else{through}).bind(more.then_some(through)).bind(next.map(|id|id.into_uuid())).execute(c).await?;Ok(())
     })).await?;
-    relation_page_in(tx, service, source).await
+    relation_page_in(binding, tx, service, source).await
 }
 pub async fn clear_failure_in(tx: &mut PgTransaction<'_>) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
@@ -92,18 +92,19 @@ pub async fn clear_failure_in(tx: &mut PgTransaction<'_>) -> Result<()> {
     Ok(())
 }
 pub async fn fail_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     tx: &mut PgTransaction<'_>,
     audit_store: &rss_mdm_audit_integration::AuditStore,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let generation=tx.with_connection(move |c|Box::pin(async move {
-        sqlx::query_scalar::<_,i64>("INSERT INTO mdm_planning.configuration_source_dispatch(tenant_id,failure,failure_generation) VALUES($1::uuid,'automation_suspended',1) ON CONFLICT(tenant_id) DO UPDATE SET failure=excluded.failure,failure_generation=configuration_source_dispatch.failure_generation+1 WHERE configuration_source_dispatch.failure IS NULL RETURNING failure_generation").bind(tenant).fetch_optional(c).await
+        sqlx::query_scalar::<_,i64>("UPDATE mdm_planning.configuration_source_dispatch SET failure='automation_suspended',failure_generation=failure_generation+1 WHERE tenant_id=$1::uuid AND failure IS NULL RETURNING failure_generation").bind(tenant).fetch_optional(c).await
     })).await?;
     if let Some(generation) = generation {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            tx.tenant_id().to_string(),
+            binding,
             "automation_failed",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -135,6 +136,7 @@ pub async fn verify_storage(c: &mut sqlx::PgConnection) -> std::result::Result<(
 }
 
 async fn relation_page_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     tx: &mut PgTransaction<'_>,
     service: &super::Transactions,
     source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
@@ -180,7 +182,7 @@ async fn relation_page_in(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    service.wake_devices_in(tx, &devices).await?;
+    service.wake_devices_in(binding, tx, &devices).await?;
     let t = tenant.to_string();
     tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("UPDATE mdm_planning.configuration_source_dispatch SET relation_consumed=$2,relation_watermark=$3,relation_cursor=$4 WHERE tenant_id=$1::uuid").bind(t).bind(if finished{watermark}else{consumed}).bind(watermark).bind((!finished).then_some(position)).execute(c).await?;Ok(())

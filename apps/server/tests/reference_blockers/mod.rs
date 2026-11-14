@@ -38,7 +38,6 @@ impl Http {
                     proof: p,
                     sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
                         c.authority.clone(),
-                        c.audit.binding(),
                     ),
                     deadline: request_budget.deadline().instant(),
                     cancellation: request_budget,
@@ -91,7 +90,7 @@ async fn catalog(
     let service = super::resource::catalog(
         owner.audit.clone(),
         owner.runtime.clone(),
-        c.tenant,
+        c.execution(),
         Arc::new(crate::clock::SystemClock),
         vec![7; 32],
     )
@@ -102,7 +101,7 @@ async fn version(c: &Context, v: r::Version) -> Result<()> {
     let owner = planning::owner(c, "mdm_resource_runtime").await?;
     let store = rss_mdm_resource_postgres::ResourceStore::new(
         owner.runtime.clone(),
-        c.audit.binding(),
+        c.execution(),
         crate::authority_t2_support::deadline(),
     )
     .await?;
@@ -112,6 +111,7 @@ async fn version(c: &Context, v: r::Version) -> Result<()> {
     ] {
         store
             .execute(
+                c.execution(),
                 &rss_mdm_resource_postgres::Request {
                     id: r::Id::new(Uuid::new_v4().to_string())?,
                     resource: v.resource().clone(),

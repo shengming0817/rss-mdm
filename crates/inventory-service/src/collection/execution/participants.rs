@@ -55,7 +55,7 @@ pub trait NativeDelivery: Send + Sync {
     fn prepare_on<'a>(
         &'a self,
         c: &'a mut PgConnection,
-        tenant: TenantId,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         id: Uuid,
         platform: rss_mdm_policy::Platform,
     ) -> Pending<'a, Vec<rss_mdm_audit_integration::Fact>>;

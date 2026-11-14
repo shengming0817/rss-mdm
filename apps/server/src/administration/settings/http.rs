@@ -49,6 +49,8 @@ pub(crate) fn register() -> rss_mdm_http_contract::Router<
     }
 }
 pub(crate) async fn tenant(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     axum::extract::State(source): axum::extract::State<Arc<Directory>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,

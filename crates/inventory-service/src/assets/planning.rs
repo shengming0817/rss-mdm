@@ -11,7 +11,6 @@ pub struct AssetPage {
 #[derive(Clone)]
 pub struct SnapshotReader {
     pub(super) profile: rss_mdm_install_support::StorageProfile,
-    pub(super) tenant: TenantId,
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
 }
 impl SnapshotReader {
@@ -21,17 +20,12 @@ impl SnapshotReader {
     pub fn bind(
         profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-        tenant: TenantId,
     ) -> Self {
-        Self {
-            profile,
-            runtime,
-            tenant,
-        }
+        Self { profile, runtime }
     }
     fn check_in(&self, tx: &PgTransaction<'_>, cut: &rss_mdm_inventory::AssetCut) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant || cut.tenant() != Uuid::from_bytes(self.tenant.octets()) {
+        if cut.tenant() != Uuid::from_bytes(tx.tenant_id().octets()) {
             return Err(Error::Forbidden.into());
         }
         Ok(())
@@ -49,7 +43,7 @@ impl SnapshotReader {
         if devices.len() > 1024 {
             return Err(Error::Unavailable(Failure::AssetsStorage).into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let devices = devices.to_vec();
         let rows: Vec<rss_mdm_agent_wire::DeviceId> = tx
             .with_connection_context(&mut (cut,), move |(cut,), c| {
@@ -74,7 +68,7 @@ impl SnapshotReader {
         if !(1..=1024).contains(&limit) {
             return Err(Error::Unavailable(Failure::AssetsStorage).into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let all = scope.devices.is_none();
         let allowed: Vec<_> = scope
             .devices
@@ -102,7 +96,7 @@ impl SnapshotReader {
         let more = ids.len() > limit;
         ids.truncate(limit);
         let next = more.then(|| *ids.last().expect("nonempty lookahead page"));
-        let catalog = catalog_at_in(tx, self.tenant, cut).await?;
+        let catalog = catalog_at_in(tx, tx.tenant_id(), cut).await?;
         let mut devices = self
             .summary_devices_at_in(tx, cut, &ids, &catalog, &scope.collection_scope)
             .await?;
@@ -125,6 +119,7 @@ impl SnapshotReader {
         collection_scope: &rss_mdm_inventory::CollectionScope,
     ) -> Result<Vec<DeviceSummary>> {
         self.check_in(tx, cut)?;
+        let tenant = tx.tenant_id();
         let reader = self.clone();
         let ids = ids.to_vec();
         let catalog = catalog.clone();
@@ -132,7 +127,7 @@ impl SnapshotReader {
         tx.with_connection_context(&mut (cut,), move |(cut,), c| {
             Box::pin(async move {
                 Ok(reader
-                    .scoped_summary_devices_on(c, cut, &ids, &catalog, &collection_scope)
+                    .scoped_summary_devices_on(tenant, c, cut, &ids, &catalog, &collection_scope)
                     .await)
             })
         })
@@ -207,7 +202,7 @@ impl SnapshotReader {
                 ScopeSelector::Device => vec![S::Device],
                 ScopeSelector::Exact { scope } => vec![scope.as_ref().clone()],
                 ScopeSelector::LocalUser { .. } | ScopeSelector::AllAuthorized => {
-                    let tenant = self.tenant.to_string();
+                    let tenant = tx.tenant_id().to_string();
                     let selected = ids.clone();
                     let (identity, platform) = match selection.selector {
                         ScopeSelector::LocalUser { platform, identity } => (
@@ -289,7 +284,7 @@ impl SnapshotReader {
             .map(|key| {
                 Ok(g::ObjectSnapshot {
                     memberships: BTreeMap::new(),
-                    key: checked_input(g::ObjectKey::new(self.tenant, *key))?,
+                    key: checked_input(g::ObjectKey::new(tx.tenant_id(), *key))?,
                     quantifier,
                     complete: true,
                     contexts: BTreeMap::new(),
@@ -312,7 +307,7 @@ impl SnapshotReader {
         }
         let binding = digest(&(
             "inventory-evaluation-v1",
-            self.tenant.to_string(),
+            tx.tenant_id().to_string(),
             cut,
             &ids,
             selection,
@@ -328,7 +323,7 @@ impl SnapshotReader {
             return Err(Error::Conflict.into());
         }
         let wanted = evaluation::operands(rule)?;
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         let read_catalog = catalog.clone();
         let (ready, progress) = tx
             .with_connection(move |c| {
@@ -355,9 +350,9 @@ impl SnapshotReader {
         let mut contexts = BTreeMap::new();
         for (scope, scoped) in scopes.into_iter().zip(prepared) {
             let facts = if let Some(inputs) = associated {
-                filter::associated_page(self.tenant, inputs, &scoped, catalog, rule, &progress)?
+                filter::associated_page(tx.tenant_id(), inputs, &scoped, catalog, rule, &progress)?
             } else {
-                filter::page(self.tenant, &scoped, catalog, rule, &progress)?
+                filter::page(tx.tenant_id(), &scoped, catalog, rule, &progress)?
             };
             for (index, (object, input)) in objects.iter_mut().zip(facts.objects).enumerate() {
                 // Multi-scope universes contain only namespaces observed for this endpoint.
@@ -426,16 +421,17 @@ impl SnapshotReader {
         if after < 0 || !(1..=1024).contains(&limit) || through.is_some_and(|v| v < after) {
             return Err(Error::Malformed.into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let from = from.map(AssetCut::to_json);
         let to = to.to_json();
         let rows = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT tenant_id,revision,source_epoch,kind,identity,fields FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM asset_cut_2),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM asset_cut_3),false) AND revision>$4 AND ($5::bigint IS NULL OR revision<=$5) ORDER BY revision LIMIT $6")
+            sqlx::query("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT tenant_id,revision,source_epoch,kind,identity,fields,expected_epoch FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM asset_cut_2),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM asset_cut_3),false) AND revision>$4 AND ($5::bigint IS NULL OR revision<=$5) ORDER BY revision LIMIT $6")
                 .bind(tenant).bind(from).bind(to).bind(after).bind(through).bind(limit as i64).fetch_all(c).await
         })).await?;
         rows.into_iter()
             .map(|r| {
                 let event = rss_mdm_inventory::AssetChanged {
+                    execution_epoch: r.try_get("expected_epoch")?,
                     v: 1,
                     tenant: r.try_get("tenant_id")?,
                     revision: r.try_get("revision")?,
@@ -457,13 +453,10 @@ impl SnapshotReader {
         to: Option<&AssetCut>,
     ) -> Result<bool> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::Forbidden.into());
-        }
         for cut in [from, to].into_iter().flatten() {
             self.check_in(tx, cut)?;
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let from = from.map(AssetCut::to_json);
         let to = to.map(AssetCut::to_json);
         Ok(tx.with_connection(move |c| Box::pin(async move {

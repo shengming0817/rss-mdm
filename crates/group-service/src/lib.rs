@@ -20,7 +20,7 @@ pub use model::{DefinitionEdit, Freshness, GroupChange, GroupStart, RequiredAuth
 pub struct Dependencies {
     pub read_pool: sqlx::PgPool,
     pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
-    pub tenant: TenantId,
+    pub probe: rss_transactional_messaging::fence::ExecutionBinding,
     pub groups: Arc<rss_mdm_group_postgres::GroupStore>,
     pub cursor_key: ring::hmac::Key,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -32,8 +32,9 @@ pub struct Groups {
     read_pool: sqlx::PgPool,
     pub(crate) task_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
     runner_health: std::sync::Mutex<health::RunnerObservation>,
+    pub(crate) storage: rss_transactional_messaging::fence::StorageIdentity,
     pub(crate) objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
-    pub(crate) tenant: TenantId,
+
     pub(crate) groups: Arc<rss_mdm_group_postgres::GroupStore>,
     pub(crate) cursor_key: ring::hmac::Key,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -136,7 +137,6 @@ impl Groups {
         assets::planning::SnapshotReader::bind(
             rss_mdm_install_support::StorageProfile::Mdm,
             self.runtime.clone(),
-            self.tenant,
         )
     }
 }
@@ -144,10 +144,16 @@ impl Groups {
 mod sources;
 
 impl Groups {
-    async fn define_in(&self, tx: &mut PgTransaction<'_>, edit: DefinitionEdit) -> Result<Value> {
+    async fn define_in(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        tx: &mut PgTransaction<'_>,
+        edit: DefinitionEdit,
+    ) -> Result<Value> {
         json(
             &self
                 .enqueue_task_in(
+                    binding,
                     tx,
                     edit.change.operation_id,
                     &tasks::TaskInput::Definition {
@@ -173,7 +179,7 @@ impl Groups {
         let Dependencies {
             read_pool,
             objects,
-            tenant,
+            probe,
             groups,
             cursor_key,
             audit_store,
@@ -181,12 +187,13 @@ impl Groups {
             reconcile_messaging,
             clock,
         } = dependencies;
+
         let service = Self {
             read_pool,
             task_status: Default::default(),
             runner_health: Default::default(),
             objects,
-            tenant,
+            storage: probe.storage(),
             groups,
             cursor_key,
             audit_store,
@@ -196,26 +203,21 @@ impl Groups {
         };
         let valid = service
             .runtime
-            .local_tx_with_context(
-                service.audit_store.binding(),
-                deadline(),
-                &service,
-                |s, tx| {
-                    Box::pin(async move {
-                        if s.groups.graph_revision_in(tx).await?.is_err() {
-                            return Ok(false);
-                        }
-                        tx.with_connection(|c| {
-                            Box::pin(async move {
-                                sqlx::query_scalar::<_, bool>(include_str!("admission.sql"))
-                                    .fetch_one(c)
-                                    .await
-                            })
+            .local_tx_with_context(probe, deadline(), &service, |s, tx| {
+                Box::pin(async move {
+                    if s.groups.graph_revision_in(tx).await?.is_err() {
+                        return Ok(false);
+                    }
+                    tx.with_connection(|c| {
+                        Box::pin(async move {
+                            sqlx::query_scalar::<_, bool>(include_str!("admission.sql"))
+                                .fetch_one(c)
+                                .await
                         })
-                        .await
                     })
-                },
-            )
+                    .await
+                })
+            })
             .await
             .fold(
                 Ok,

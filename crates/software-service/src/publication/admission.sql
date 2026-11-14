@@ -10,7 +10,7 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='mdm_software_composition' AND c.relkind NOT IN('r','i'))
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
- WHERE n.nspname='mdm_software_composition')
+ WHERE n.nspname='mdm_software_composition' AND p.proname<>'work_scopes')
  AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication
  OR oid IN (SELECT relowner FROM tables) OR has_schema_privilege(oid,'mdm_software_composition','CREATE'))
  AND has_schema_privilege(current_user,'mdm_software_composition','USAGE')
@@ -19,7 +19,7 @@ SELECT
  OR NOT has_table_privilege(current_user,t.oid,'INSERT')
  OR has_table_privilege(current_user,t.oid,'TRUNCATE,REFERENCES,TRIGGER,UPDATE')
  OR has_table_privilege(current_user,t.oid,'DELETE')<>(t.relname='projections')
- OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>1
+ OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid AND (polroles=ARRAY[0::oid] OR EXISTS(SELECT 1 FROM unnest(polroles) r WHERE pg_has_role(current_user,r,'MEMBER'))))<>1
  OR NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=t.oid AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
  AND lower(replace(regexp_replace(pg_get_expr(polqual,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
  AND lower(replace(regexp_replace(pg_get_expr(polwithcheck,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'))

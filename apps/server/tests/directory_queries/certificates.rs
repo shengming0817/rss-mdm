@@ -96,7 +96,7 @@ pub(super) async fn seed(
     sqlx::query("INSERT INTO mdm_access.registration_operations(tenant_id,actor,operation_id,digest,result,instance,agent_issuance_recovery,action,device,self_enrollment) VALUES($1::uuid,$2,$3,repeat('a',64),$4,$5,$6,'device_certificate_result',$7,false)").bind(c.tenant.to_string()).bind(p.principal_id()).bind(recovery).bind(serde_json::to_string(&issuance)?).bind(p.instance_id()).bind(issuance).bind(device.into_uuid()).execute(&mut *tx).await?;
     cases.extend([
         (
-            format!("/api/v1/devices/{}/windows-certificate-requests", n.device),
+            format!("/devices/{}/windows-certificate-requests", n.device),
             format!(
                 "attempt=={};kind==enrollment;enrollmentId=={}",
                 n.attempt, n.request
@@ -105,24 +105,24 @@ pub(super) async fn seed(
         ),
         (
             format!(
-                "/api/v1/devices/{}/windows-certificate-requests/{}/recovery-operations",
+                "/devices/{}/windows-certificate-requests/{}/recovery-operations",
                 n.device, n.attempt
             ),
             format!("operationId=={operation};instance=={}", p.instance_id()),
             json!(operation),
         ),
         (
-            format!("/api/v1/pki/windows/rotations/{rotation}/blockers"),
+            format!("/pki/windows/rotations/{rotation}/blockers"),
             format!("kind==unresolved_signing;id=={}", n.attempt),
             json!(n.attempt),
         ),
         (
-            format!("/api/v1/devices/{device}/agent-requests"),
+            format!("/devices/{device}/agent-requests"),
             format!("device=={device};issuanceState==issued;activated==true"),
             json!(grant),
         ),
         (
-            format!("/api/v1/agent-issuances/{issuance}/recovery-operations"),
+            format!("/agent-issuances/{issuance}/recovery-operations"),
             format!("operationId=={recovery};instance=={}", p.instance_id()),
             json!(recovery),
         ),

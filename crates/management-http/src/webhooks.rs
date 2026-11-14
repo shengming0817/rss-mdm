@@ -159,6 +159,8 @@ async fn call(s: Arc<Service>, a: RequestAuth, audit: RequestAudit, c: Command) 
 }
 
 async fn materials(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -172,8 +174,10 @@ async fn material_operation(
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    path: Result<Path<Uuid>, axum::extract::rejection::PathRejection>,
+    path: Result<Path<(uuid::Uuid, Uuid)>, axum::extract::rejection::PathRejection>,
 ) -> Result<Json<MaterialOperation>, Error> {
+    let path = path.map(|axum::extract::Path((_tenant, value))| axum::extract::Path(value));
+
     call(
         s,
         a,
@@ -185,6 +189,8 @@ async fn material_operation(
     .map(Json)
 }
 async fn prepare_material(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -208,6 +214,8 @@ async fn prepare_material(
     .map(Json)
 }
 async fn transition_material(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -231,6 +239,8 @@ async fn transition_material(
     .map(Json)
 }
 async fn types(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -245,6 +255,8 @@ async fn types(
     .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn subscriptions(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -268,7 +280,7 @@ async fn subscription(
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<rss_mdm_webhook_service::model::Subscription>, Error> {
     call(s, a, audit, Command::Subscription(id))
         .await
@@ -279,7 +291,7 @@ async fn change(
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     body: Result<Json<Mutation>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<rss_mdm_webhook_service::model::Subscription>, Error> {
     call(
@@ -296,7 +308,7 @@ async fn test(
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     body: Result<Json<Test>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<DeliveryReceipt>, Error> {
     let v = body.map_err(Error::from)?.0;
@@ -315,6 +327,8 @@ async fn test(
     .map(Json)
 }
 async fn deliveries(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -338,7 +352,7 @@ async fn delivery(
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<Deliveries>, Error> {
     call(s, a, audit, Command::Delivery(id))
         .await
@@ -349,7 +363,7 @@ async fn replay(
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     body: Result<Json<Replay>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<ReplayReceipt>, Error> {
     call(
@@ -369,7 +383,7 @@ async fn redrive(
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     body: Result<Json<Redrive>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<RedriveReceipt>, Error> {
     let v = body.map_err(Error::from)?.0;
@@ -389,6 +403,8 @@ async fn redrive(
 }
 
 async fn health(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,

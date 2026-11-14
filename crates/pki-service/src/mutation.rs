@@ -1,7 +1,6 @@
 //! Business mutation under the existing product Audit owner, with exact durable replay.
 use crate::{Error, registry::Registry};
 use rss_mdm_audit_integration::{Fact, RequestAudit, budget::AuditBudget};
-use rss_request_context::TenantId;
 use sqlx::{PgConnection, Row};
 use std::{future::Future, pin::Pin, time::Duration};
 use uuid::Uuid;
@@ -15,31 +14,31 @@ pub(crate) struct Change<R> {
 impl Registry {
     pub(crate) async fn mutation<C: Send, R: Send>(
         &self,
-        tenant: TenantId,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         a: &RequestAudit,
         ctx: C,
         f: impl for<'a> FnOnce(&'a mut C, &'a mut PgConnection) -> Pending<'a, R> + Send,
     ) -> Result<R, Error> {
         let profile = self.profile();
 
-        run(profile, &self.audit, tenant, a, ctx, f).await
+        run(profile, &self.audit, execution, a, ctx, f).await
     }
 }
 pub(crate) async fn run<C: Send, R: Send>(
     profile: rss_mdm_install_support::StorageProfile,
     store: &rss_mdm_audit_integration::AuditStore,
-    tenant: TenantId,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     a: &RequestAudit,
     ctx: C,
     f: impl for<'a> FnOnce(&'a mut C, &'a mut PgConnection) -> Pending<'a, R> + Send,
 ) -> Result<R, Error> {
-    if a.profile() != profile || a.tenant() != tenant.to_string() {
+    if a.profile() != profile || a.binding()? != execution {
         return Err(Error::Forbidden);
     }
     let budget = AuditBudget::new(Duration::from_secs(5));
     let outcome = store
         .write(
-            tenant,
+            execution,
             &budget.source_control(),
             (store, a, ctx, Some(f)),
             |ctx, tx| {
@@ -108,7 +107,7 @@ pub(crate) async fn run<C: Send, R: Send>(
     result
 }
 
-fn error(e: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
+pub(crate) fn error(e: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
     match e {
         rss_mdm_audit_integration::TransactionError::Operation(e) => e,
         rss_mdm_audit_integration::TransactionError::Storage(e) => Error::Audit(e),

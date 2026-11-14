@@ -4,7 +4,11 @@ fn asset_fingerprint_binds_explicit_collection_scope() {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        "11111111-1111-4111-8111-111111111111".into(),
+        rss_transactional_messaging::fence::ExecutionBinding::new(
+            rss_transactional_messaging::fence::StorageIdentity::new([1; 16], [2; 16]).unwrap(),
+            rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap(),
+            rss_transactional_messaging::fence::Epoch::new(1).unwrap(),
+        ),
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
     );

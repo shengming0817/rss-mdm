@@ -2,6 +2,7 @@
 CREATE SCHEMA mdm_telemetry;
 REVOKE ALL ON SCHEMA mdm_telemetry FROM PUBLIC;
 CREATE TABLE mdm_telemetry.batches (
+    expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
   , device uuid NOT NULL
@@ -106,7 +107,7 @@ GRANT SELECT,INSERT ON mdm_telemetry.observation_receipts TO mdm_telemetry_runti
 
 -- App-owned fixed installation/admission identity, shared by every tenant replica.
 CREATE TABLE mdm_telemetry.storage_binding (
- tenant_id uuid PRIMARY KEY,binding bytea NOT NULL CHECK(octet_length(binding)=32)
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),tenant_id uuid PRIMARY KEY,binding bytea NOT NULL CHECK(octet_length(binding)=32)
 );
 ALTER TABLE mdm_telemetry.storage_binding ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_telemetry.storage_binding FORCE ROW LEVEL SECURITY;
@@ -139,3 +140,16 @@ GRANT SELECT,INSERT,DELETE ON mdm_telemetry.gap_reports TO mdm_telemetry_runtime
 -- Retained maintenance evidence is readable without enabling a telemetry backend.
 GRANT USAGE ON SCHEMA mdm_telemetry TO mdm_access;
 GRANT SELECT ON mdm_telemetry.maintenance TO mdm_access;
+
+CREATE POLICY work_discovery ON mdm_telemetry.batches FOR SELECT TO mdm_owner USING(true);
+CREATE POLICY work_discovery ON mdm_telemetry.storage_binding FOR SELECT TO mdm_owner USING(true);
+CREATE FUNCTION mdm_telemetry.work_scopes(after_tenant uuid,after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT tenant_id,expected_epoch FROM (
+  (SELECT DISTINCT tenant_id,expected_epoch FROM mdm_telemetry.batches WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32)
+  UNION (SELECT tenant_id,expected_epoch FROM mdm_telemetry.storage_binding WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32)
+ ) work ORDER BY tenant_id,expected_epoch LIMIT 32
+$$;
+ALTER FUNCTION mdm_telemetry.work_scopes(uuid,bigint) OWNER TO mdm_owner;
+REVOKE ALL ON FUNCTION mdm_telemetry.work_scopes(uuid,bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_telemetry.work_scopes(uuid,bigint) TO mdm_access;

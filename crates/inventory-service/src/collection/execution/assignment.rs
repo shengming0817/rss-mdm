@@ -12,6 +12,7 @@ impl super::inputs::Inputs {
     )]
     pub async fn assignment_state_on(
         &self,
+        tenant: rss_request_context::TenantId,
         c: &mut sqlx::PgConnection,
         policy: &CollectionPolicy,
         scope: super::participants::Admission,
@@ -22,7 +23,7 @@ impl super::inputs::Inputs {
     ) -> Result<(TaskAdmission, CurrentRecord)> {
         let waiting = |state| (TaskAdmission::new(state, None), CurrentRecord::Unknown);
         let entry = match policy
-            .entry_on(c, self.tenant, scope, &target.device, now)
+            .entry_on(c, tenant, scope, &target.device, now)
             .await?
         {
             Ok(entry) => entry,
@@ -30,12 +31,12 @@ impl super::inputs::Inputs {
         };
         let eligible = match &policy.frozen {
             Published::AgentCollection { action, .. } => {
-                if !super::policy::agent_source_on(c, self.tenant, target).await? {
+                if !super::policy::agent_source_on(c, tenant, target).await? {
                     return Ok(waiting(S::ReportSourceUnavailable));
                 }
                 let assessment = super::eligibility::assessment_on(
                     c,
-                    self.tenant,
+                    tenant,
                     store,
                     target,
                     action.input.platform,
@@ -53,7 +54,7 @@ impl super::inputs::Inputs {
             }
             Published::NativeCollection { action, .. } => {
                 self.native
-                    .eligible_on(c, self.tenant, target, &action.definition)
+                    .eligible_on(c, tenant, target, &action.definition)
                     .await?
             }
         };
@@ -61,13 +62,13 @@ impl super::inputs::Inputs {
             return Ok(waiting(S::UnsupportedCapability));
         }
         let (pending, last) =
-            storage::pending_on(c, self.tenant, policy.owner, policy.id, target, now).await?;
+            storage::pending_on(c, tenant, policy.owner, policy.id, target, now).await?;
         if pending.is_some() {
             return Ok(waiting(S::ExecutionPending));
         }
         let explicit =
-            admission::explicit_on(c, self.tenant, policy.id, &target.device, now, true).await?;
-        let started = storage::last_started_on(c, self.tenant, policy.id, target).await?;
+            admission::explicit_on(c, tenant, policy.id, &target.device, now, true).await?;
+        let started = storage::last_started_on(c, tenant, policy.id, target).await?;
         let schedule = &policy.frozen.input().schedule;
         if let Some(observed) = interval_without_trigger(
             schedule,
@@ -84,7 +85,7 @@ impl super::inputs::Inputs {
         {
             if let Some(task_id) = admission::occurrence_on(
                 c,
-                self.tenant,
+                tenant,
                 policy.id,
                 &target.device,
                 &candidate.occurrence,

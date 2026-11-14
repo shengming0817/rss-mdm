@@ -4,6 +4,7 @@ BEGIN;
 
 
 CREATE TABLE rss_da.access_runs (
+    expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
   , policy_version uuid NOT NULL
@@ -34,6 +35,7 @@ CREATE POLICY tenant ON rss_da.access_runs
  WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 
 CREATE TABLE rss_da.access_policy_recovery (
+    expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     tenant_id uuid NOT NULL,
     policy uuid NOT NULL,
     input_revision bigint NOT NULL DEFAULT 1,
@@ -92,3 +94,26 @@ $$;
 REVOKE ALL ON FUNCTION rss_da.save_retired_access_run(uuid,uuid,jsonb,jsonb) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rss_da.save_retired_access_run(uuid,uuid,jsonb,jsonb) TO da_access,da_command_runtime;
 COMMIT;
+
+CREATE POLICY work_discovery ON rss_da.access_runs FOR SELECT TO da_owner USING(true);
+CREATE POLICY work_discovery ON rss_da.access_policy_recovery FOR SELECT TO da_owner USING(true);
+CREATE FUNCTION rss_da.access_runs_work_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT tenant_id FROM (SELECT tenant_id FROM rss_da.access_runs UNION SELECT tenant_id FROM rss_da.access_policy_recovery) work
+ WHERE after_tenant IS NULL OR tenant_id>after_tenant ORDER BY tenant_id LIMIT 32
+$$;
+CREATE FUNCTION rss_da.access_runs_work_epoch(t uuid, entity text) RETURNS bigint
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT expected_epoch FROM rss_da.access_runs WHERE tenant_id=t AND 'run:'||id::text=entity
+ UNION ALL SELECT expected_epoch FROM rss_da.access_policy_recovery WHERE tenant_id=t AND 'policy:'||policy::text=entity
+$$;
+CREATE FUNCTION rss_da.access_runs_work_relay_scopes(after_tenant uuid, after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT DISTINCT tenant_id,expected_epoch FROM rss_da.access_runs
+ WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32
+$$;
+ALTER FUNCTION rss_da.access_runs_work_scopes(uuid) OWNER TO da_owner;
+ALTER FUNCTION rss_da.access_runs_work_epoch(uuid,text) OWNER TO da_owner;
+ALTER FUNCTION rss_da.access_runs_work_relay_scopes(uuid,bigint) OWNER TO da_owner;
+REVOKE ALL ON FUNCTION rss_da.access_runs_work_scopes(uuid),rss_da.access_runs_work_epoch(uuid,text),rss_da.access_runs_work_relay_scopes(uuid,bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rss_da.access_runs_work_scopes(uuid),rss_da.access_runs_work_epoch(uuid,text),rss_da.access_runs_work_relay_scopes(uuid,bigint) TO da_access;

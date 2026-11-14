@@ -3,6 +3,7 @@ use super::host_storage::Storage;
 use crate::Error;
 use std::sync::Arc;
 pub(crate) async fn assemble(
+    probe: rss_transactional_messaging::fence::ExecutionBinding,
     storage: &Storage,
     source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     protection: Arc<rss_mdm_native_protection::Protector>,
@@ -17,7 +18,7 @@ pub(crate) async fn assemble(
         rss_mdm_inventory_service::collection::execution::CollectionService::new(
             rss_mdm_inventory_service::collection::execution::Transactions::bind(
                 storage.runtime.clone(),
-                storage.tenant,
+                probe,
                 storage.audit.clone(),
                 Arc::new(
                     rss_mdm_inventory_service::collection::execution::Materials {
@@ -35,6 +36,8 @@ pub(crate) async fn assemble(
     );
     let collection_work = Arc::new(
         rss_mdm_inventory_service::collection::execution::worker::Worker::new(
+            storage.discovery_pool.clone(),
+            storage.storage,
             collections.clone(),
             storage.reconcile.clone(),
             storage.worker_budget.clone(),

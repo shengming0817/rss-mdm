@@ -34,7 +34,9 @@ pub(crate) mod software;
 pub(crate) mod task_trust;
 pub(crate) mod webhooks;
 pub(crate) struct Assembly {
-    pub(crate) management_audit: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub(crate) providers: Arc<rss_mdm_pki_service::providers::Providers>,
+    pub(crate) credential_receipts:
+        Option<Arc<rss_mdm_recovery_credentials::native_receipts::NativeReceipts>>,
     pub(crate) request_budget: rss_axum::RequestBudget,
     pub(crate) da: Option<Arc<device_access::Assembly>>,
     pub(crate) script_work: Arc<rss_mdm_script_service::worker::Worker>,
@@ -104,7 +106,6 @@ pub(crate) struct Assembly {
 }
 
 pub(crate) struct AssemblyDependencies {
-    pub(crate) management_audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) da: Option<Arc<device_access::Assembly>>,
     pub(crate) script_work: Arc<rss_mdm_script_service::worker::Worker>,
     pub(crate) collection_work:
@@ -126,8 +127,7 @@ pub(crate) struct AssemblyDependencies {
     pub(crate) task_trust: Arc<rss_mdm_task_trust::Service>,
     pub(crate) channels: Arc<crate::channel_status::Channels>,
     pub(crate) providers: Arc<rss_mdm_pki_service::providers::Providers>,
-    pub(crate) bootstrap:
-        Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>,
+    pub(crate) bootstrap: Option<Arc<rss_mdm_pki_service::scep::Verifier>>,
     pub(crate) control: Arc<rss_mdm_device_service::control::Service>,
     pub(crate) self_service: Arc<self_service::Requests>,
     pub(crate) scripts: Arc<rss_mdm_script_service::ScriptService>,
@@ -179,7 +179,6 @@ pub(crate) async fn from_compiled(
     } = compiled;
     let identity_runtime_policy = config.identity.runtime.clone();
     let AssemblyDependencies {
-        management_audit,
         da,
         script_work,
         collection_work,
@@ -234,7 +233,6 @@ pub(crate) async fn from_compiled(
             publications: Arc::new(
                 rss_mdm_policy_service::configuration::publication::Publications {
                     runtime: policy_application.runtime.clone(),
-                    execution: policy_application.audit_store.binding(),
                     content: content_writer.clone(),
                     protection: protection.clone(),
                 },
@@ -243,12 +241,11 @@ pub(crate) async fn from_compiled(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 Some(Arc::new(rss_mdm_device_service::planning::PlanningObjects)),
             )),
-            read_pool,
+            read_pool: read_pool.clone(),
             clock: Arc::new(crate::lifecycle::RuntimeTimer),
         });
     let devices = Arc::new(crate::device::DeviceService::new(
         access.registration(),
-        config.identity.tenant_id.clone(),
         audit_store.clone(),
     ));
     let host = config
@@ -256,81 +253,26 @@ pub(crate) async fn from_compiled(
         .strip_prefix("https://")
         .ok_or(Error::Configuration(ConfigIssue::ProductOrigin))?
         .to_owned();
-    use crate::channel_status::{ChannelName, ChannelState, Reason};
-    let windows_push =
-        match load_windows_push(&config, identity.tenant, &protection, monotonic.clone()).await {
-            Ok(push) => {
-                if push.is_some() {
-                    channels.set(ChannelName::WindowsPush, ChannelState::Ready, None)?;
-                }
-                push
-            }
-            Err(Error::Windows(rss_mdm_windows_channel::Error::Conflict)) => {
-                channels.set(
-                    ChannelName::WindowsPush,
-                    ChannelState::Waiting,
-                    Some(Reason::MaterialNotSelected),
-                )?;
-                None
-            }
-            Err(error) => return Err(error),
-        };
-    let mut windows = channels
-        .material(
-            ChannelName::Windows,
-            config
-                .native_protocols
-                .windows
-                .map(|config| {
-                    let entra = config
-                        .entra
-                        .clone()
-                        .map(|binding| {
-                            let verifier = rss_identity_oidc::entra::HttpEntra::new(
-                                identity_policy.transport,
-                                identity_runtime_policy.jwks.max_token_bytes,
-                                identity_policy.jwks,
-                            )
-                            .map_err(|_| {
-                                Error::Configuration(ConfigIssue::IdentityConfiguration)
-                            })?;
-                            let provider = rss_identity_core::federation::ProviderId::parse(
-                                &binding.provider_id.to_string(),
-                            )
-                            .map_err(|_| {
-                                Error::Configuration(ConfigIssue::IdentityConfiguration)
-                            })?;
-                            let authority = rss_identity_postgres::EntraAuthority::new(
-                                identity.authority.clone(),
-                                Arc::new(verifier),
-                                identity.tenant,
-                                provider,
-                                binding.token.clone(),
-                            )
-                            .map_err(crate::identity::failure)?;
-                            rss_mdm_windows_channel::entra::Entra::new(
-                                authority,
-                                identity.binding,
-                                binding,
-                            )
-                            .map(Arc::new)
-                            .map_err(Error::from)
-                        })
-                        .transpose()?;
-                    let mut windows = crate::windows::Windows::load(
-                        config,
-                        clock.unix_seconds()?,
-                        providers.clone(),
-                        windows_push,
-                    )?;
-                    Arc::get_mut(&mut windows.channel)
-                        .ok_or(Error::Conflict)?
-                        .entra = entra;
-                    Ok::<_, Error>(Arc::new(windows))
-                })
-                .transpose(),
-        )?
-        .flatten();
+    use crate::channel_status::ChannelName;
+    let windows = config
+        .native_protocols
+        .windows
+        .map(|config| {
+            let verifier = rss_identity_oidc::entra::HttpEntra::new(
+                identity_policy.transport,
+                identity_runtime_policy.jwks.max_token_bytes,
+                identity_policy.jwks,
+            )
+            .map_err(|_| Error::Configuration(ConfigIssue::IdentityConfiguration))?;
+            crate::windows::Windows::load(
+                config,
+                identity.authority.clone(),
+                Arc::new(verifier),
+                monotonic.clone(),
+            )
+            .map(Arc::new)
+        })
+        .transpose()?;
     let roots = channels.material(
         ChannelName::Apple,
         config
@@ -339,62 +281,23 @@ pub(crate) async fn from_compiled(
             .map(|path| crate::config::read(path, 128 * 1024, false).map(|bytes| bytes.to_vec()))
             .collect::<Result<Vec<_>, _>>(),
     )?;
-    let roots_available = roots.is_some();
     let apple_material_roots = Arc::new(roots.unwrap_or_default());
-    let mut apple = if let Some(config) = config.native_protocols.apple {
-        if !roots_available {
-            None
-        } else {
-            match rss_mdm_apple_channel::runtime_materials::runtime::load(
-                &access.apple_store(),
-                identity.tenant,
-                &protection,
-                &apple_material_roots,
-                &config.materials,
-                clock.unix_seconds()?,
-            )
-            .await
-            {
-                Ok(materials) => channels
-                    .material(
-                        ChannelName::Apple,
-                        crate::apple::Apple::load(
-                            protection.clone(),
-                            config,
-                            materials,
-                            clock.unix_seconds()?,
-                            providers.clone(),
-                            credential_receipts.clone(),
-                        ),
-                    )?
-                    .map(Arc::new),
-                Err(rss_mdm_apple_channel::runtime_materials::runtime::LoadError::Blocked(
-                    reason,
-                )) => {
-                    use rss_mdm_apple_channel::runtime_materials::runtime::MaterialFailure as M;
-                    let (state, reason) = match reason {
-                        M::NotSelected | M::Missing => {
-                            (ChannelState::Waiting, Reason::MaterialNotSelected)
-                        }
-                        M::Revoked => (ChannelState::Degraded, Reason::MaterialRevoked),
-                        M::Expired => (ChannelState::Degraded, Reason::CertificateExpired),
-                        M::VersionMismatch => {
-                            (ChannelState::Degraded, Reason::MaterialVersionMismatch)
-                        }
-                        M::Invalid => (ChannelState::Degraded, Reason::MaterialInvalid),
-                    };
-                    channels.set(ChannelName::Apple, state, Some(reason))?;
-                    None
-                }
-                Err(rss_mdm_apple_channel::runtime_materials::runtime::LoadError::Fatal(error)) => {
-                    return Err(error.into());
-                }
-            }
-        }
-    } else {
-        None
-    };
-    let mut agent_pki = channels
+    let apple = config
+        .native_protocols
+        .apple
+        .map(crate::apple::Apple::load)
+        .transpose()?
+        .map(Arc::new);
+    let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        access.archive_pool(),
+        audit_store.clone(),
+        identity
+            .storage
+            .execution(identity.management_binding.tenant())?,
+        providers.clone(),
+    ));
+    let agent_pki = channels
         .material(
             ChannelName::Agent,
             config.agent_pki.load(
@@ -402,38 +305,11 @@ pub(crate) async fn from_compiled(
                 audit_store.clone(),
                 clock.clone(),
                 providers.clone(),
+                pki.clone(),
                 bootstrap,
             ),
         )?
         .flatten();
-    let trusts = native_trusts(&windows, &apple, &agent_pki);
-    let admission = rss_mdm_pki_service::registry::Registry::new(
-        rss_mdm_install_support::StorageProfile::Mdm,
-        access.archive_pool(),
-        audit_store.clone(),
-        trusts,
-        providers.clone(),
-    );
-    admit_native(
-        &mut windows,
-        &mut apple,
-        &mut agent_pki,
-        &channels,
-        &admission,
-        identity.tenant,
-        clock.unix_seconds()?,
-    )
-    .await?;
-    loaded_native_materials(&windows, &apple, &channels)?;
-    let trusts = native_trusts(&windows, &apple, &agent_pki);
-    let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
-        rss_mdm_install_support::StorageProfile::Mdm,
-        access.archive_pool(),
-        audit_store.clone(),
-        trusts,
-        providers,
-    ));
-    observe_native_trust(&pki, &agent_pki, &channels)?;
 
     for (_, name) in [
         (
@@ -451,6 +327,9 @@ pub(crate) async fn from_compiled(
     {
         channels.mounted(name)?;
     }
+    if let Some(agent) = &agent_pki {
+        channels.installation(agent.clone())?;
+    }
     let agent_enrollment = agent_pki
         .as_ref()
         .map(|pki| {
@@ -460,7 +339,9 @@ pub(crate) async fn from_compiled(
                         ring::hmac::HMAC_SHA256,
                         &cursor_key,
                     )),
-                    tenant: identity.tenant,
+                    probe: identity
+                        .storage
+                        .execution(identity.management_binding.tenant())?,
                     store: access.registration(),
                     audit: audit_store.clone(),
                     issuer: pki.issuer.clone(),
@@ -478,11 +359,11 @@ pub(crate) async fn from_compiled(
             .map_err(Error::from)
         })
         .transpose()?;
-    let binding = config.storage_binding.execution(identity.tenant)?;
+    let binding = identity.management_binding;
     let webhooks = crate::assembly::webhooks::open(
         config.webhooks,
         protocol_runtime.clone(),
-        identity.tenant,
+        read_pool.clone(),
         audit_store.clone(),
         clock.clone(),
         protection.clone(),
@@ -500,7 +381,7 @@ pub(crate) async fn from_compiled(
         audit_store
             .on_runtime(
                 protocol_runtime.clone(),
-                identity.binding,
+                identity.management_binding,
                 &rss_mdm_audit_integration::budget::AuditBudget::new(
                     std::time::Duration::from_secs(6),
                 )
@@ -510,7 +391,6 @@ pub(crate) async fn from_compiled(
     );
     let windows_delivery = Arc::new(rss_mdm_windows_channel::management::exchange::Delivery {
         runtime: protocol_runtime.clone(),
-        tenant: identity.tenant,
         audit: protocol_audit.clone(),
         protection: protection.clone(),
         business: Arc::new(windows_business::WindowsBusiness(
@@ -523,7 +403,6 @@ pub(crate) async fn from_compiled(
     });
     let apple_delivery = Arc::new(rss_mdm_apple_channel::delivery::Delivery {
         runtime: protocol_runtime.clone(),
-        tenant: identity.tenant,
         audit: protocol_audit.clone(),
         business: Arc::new(apple_business::AppleBusiness(
             execution.clone(),
@@ -553,7 +432,6 @@ pub(crate) async fn from_compiled(
     });
     let agent_delivery = Arc::new(rss_mdm_agent_channel::delivery::Delivery {
         runtime: protocol_runtime,
-        tenant: identity.tenant,
         audit: protocol_audit,
         signing,
         tasks: agent_tasks.clone(),
@@ -569,7 +447,6 @@ pub(crate) async fn from_compiled(
         execution: execution.clone(),
     });
     let state = Arc::new(Assembly {
-        management_audit,
         request_budget: http.request,
         da,
         script_work,
@@ -590,12 +467,13 @@ pub(crate) async fn from_compiled(
         telemetry,
         runtime_observation: crate::installation::host::Observation::new(
             &config.runtime_binding,
-            identity.tenant.to_string(),
             identity.instance.to_string(),
         ),
         apple_material_roots,
         webhooks,
         pki,
+        providers,
+        credential_receipts,
         agent_enrollment,
         agent_pki,
         certificate_archive,
@@ -637,188 +515,7 @@ pub(crate) async fn from_compiled(
     Ok(routers)
 }
 
-async fn load_windows_push(
-    config: &crate::config::Config,
-    tenant: rss_request_context::TenantId,
-    protection: &rss_mdm_native_protection::Protector,
-    monotonic: Arc<dyn rss_observation::Clock>,
-) -> Result<Option<rss_mdm_windows_channel::push::Push>, Error> {
-    Ok(
-        if let Some(push) = config
-            .native_protocols
-            .windows
-            .as_ref()
-            .and_then(|w| w.push.as_ref())
-        {
-            use sqlx::Connection;
-            let mut c = sqlx::PgConnection::connect_with(&config.access_database.options()?)
-                .await
-                .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-            let mut tx = c
-                .begin()
-                .await
-                .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-                .bind(tenant.to_string())
-                .execute(&mut *tx)
-                .await
-                .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-            let value = rss_mdm_windows_channel::wns_materials::load(
-                &mut tx,
-                &tenant.to_string(),
-                push.revision,
-                protection,
-                monotonic.clone(),
-                true,
-            )
-            .await;
-            tx.rollback()
-                .await
-                .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-            c.close()
-                .await
-                .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-            Some(value?)
-        } else {
-            None
-        },
-    )
-}
-
 /// Locally owned sockets are dropped together if any bind in this channel fails.
-fn observe_native_trust(
-    pki: &Arc<rss_mdm_pki_service::registry::Registry>,
-    agent: &Option<Arc<crate::agent_pki::AgentPki>>,
-    channels: &crate::channel_status::Channels,
-) -> Result<(), Error> {
-    use crate::channel_status::ChannelName;
-    use rss_mdm_agent_wire::pki::Purpose;
-    for binding in pki.bindings() {
-        let trust = binding
-            .public()
-            .map_err(|_| Error::Unavailable(crate::Failure::CommandInvariant))?;
-        let name = match trust.purpose {
-            Purpose::Windows => ChannelName::Windows,
-            Purpose::Apple => ChannelName::Apple,
-            Purpose::Agent => ChannelName::Agent,
-            Purpose::AgentBootstrap => ChannelName::AgentBootstrap,
-            Purpose::DaDevice => return Err(Error::Forbidden),
-        };
-        channels.loaded(
-            name,
-            crate::channel_status::LoadedMaterials {
-                trust: Some(i64::try_from(trust.revision).map_err(|_| Error::Conflict)?),
-                ..Default::default()
-            },
-        )?;
-    }
-    if let Some(agent) = agent {
-        channels.installation(agent.clone(), pki.clone())?;
-    }
-    Ok(())
-}
-
-fn native_trusts(
-    windows: &Option<Arc<crate::windows::Windows>>,
-    apple: &Option<Arc<crate::apple::Apple>>,
-    agent_pki: &Option<Arc<crate::agent_pki::AgentPki>>,
-) -> Vec<rss_mdm_device_trust::DeviceTrust> {
-    let mut trusts = Vec::new();
-    if let Some(w) = windows {
-        trusts.push(w.channel.ca.trust.clone());
-    }
-    if let Some(a) = apple {
-        trusts.push(a.channel.device_trust().clone());
-    }
-    if let Some(a) = agent_pki {
-        trusts.push(a.issuer.trust().trust.clone());
-        if let Some(bootstrap) = &a.bootstrap {
-            trusts.push(bootstrap.trust.clone());
-        }
-    }
-    trusts
-}
-async fn admit_native(
-    windows: &mut Option<Arc<crate::windows::Windows>>,
-    apple: &mut Option<Arc<crate::apple::Apple>>,
-    agent_pki: &mut Option<Arc<crate::agent_pki::AgentPki>>,
-    channels: &crate::channel_status::Channels,
-    admission: &rss_mdm_pki_service::registry::Registry,
-    tenant: rss_request_context::TenantId,
-    now: i64,
-) -> Result<(), Error> {
-    use crate::channel_status::{ChannelName, ChannelState, Reason};
-    use rss_mdm_agent_wire::pki::Purpose;
-    for (purpose, name) in [
-        (Purpose::Windows, ChannelName::Windows),
-        (Purpose::Apple, ChannelName::Apple),
-        (Purpose::Agent, ChannelName::Agent),
-        (Purpose::AgentBootstrap, ChannelName::AgentBootstrap),
-    ] {
-        match admission.admit_purpose(tenant, now, purpose).await {
-            Ok(()) => (),
-            Err(error) => {
-                use rss_mdm_pki_service::Error as P;
-                let reason = match error {
-                    P::Configuration => Reason::MaterialInvalid,
-                    P::Conflict => Reason::TrustConflict,
-                    P::NotFound | P::ReadConflict | P::CursorInvalidated => {
-                        return Err(Error::Unavailable(crate::Failure::Database));
-                    }
-                    P::Request => Reason::DependencyUnavailable,
-                    P::Audit(error) => return Err(error.into()),
-                    P::Storage => return Err(Error::Unavailable(crate::Failure::Database)),
-                    P::Unknown { .. } => return Err(Error::CommitUnknown),
-                    P::Forbidden => return Err(Error::Forbidden),
-                };
-                channels.set(name, ChannelState::Degraded, Some(reason))?;
-                match purpose {
-                    Purpose::DaDevice => return Err(Error::Forbidden),
-                    Purpose::Windows => *windows = None,
-                    Purpose::Apple => *apple = None,
-                    Purpose::Agent => *agent_pki = None,
-                    Purpose::AgentBootstrap => {
-                        if let Some(pki) = agent_pki.as_mut() {
-                            let pki = Arc::get_mut(pki).ok_or(Error::Conflict)?;
-                            pki.remove_bootstrap()?;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-fn loaded_native_materials(
-    windows: &Option<Arc<crate::windows::Windows>>,
-    apple: &Option<Arc<crate::apple::Apple>>,
-    channels: &crate::channel_status::Channels,
-) -> Result<(), Error> {
-    use crate::channel_status::ChannelName;
-    if let Some(a) = apple {
-        channels.loaded(
-            ChannelName::Apple,
-            crate::channel_status::LoadedMaterials {
-                apns: a.config.materials.apns,
-                profile: a.config.materials.profile,
-                ..Default::default()
-            },
-        )?;
-    }
-    if let Some(w) = windows
-        && w.channel.push.is_some()
-    {
-        channels.loaded(
-            ChannelName::WindowsPush,
-            crate::channel_status::LoadedMaterials {
-                wns: w.config.push.as_ref().map(|p| p.revision),
-                ..Default::default()
-            },
-        )?;
-    }
-    Ok(())
-}
-
 mod configuration_channels;
 
 mod configuration_cleanup;

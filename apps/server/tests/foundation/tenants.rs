@@ -37,17 +37,14 @@ async fn tenant_use_fence_blocks_delete_and_wrong_binding_does_not_claim() -> Re
     let mut conflict = update();
     conflict.notes = Some("different body".into());
     assert!(tenants::update(conflict).await.is_err());
+    let pool = inputs.pool("shared", "mdm_access").await?;
+    let mut connection = pool.acquire().await?;
     let mut wrong = inputs.installation();
     wrong.lineage = [9; 16];
     assert!(
-        tenants::claim_database_use(
-            &inputs.database("shared", "mdm_access"),
-            &wrong,
-            &unused.to_string(),
-            1
-        )
-        .await
-        .is_err()
+        tenants::claim_use(&mut connection, &wrong, &unused.to_string(), 1)
+            .await
+            .is_err()
     );
     let unused_state = tenants::get(Get {
         database: inputs.database("shared", "mdm_owner"),
@@ -79,8 +76,8 @@ async fn tenant_use_fence_blocks_delete_and_wrong_binding_does_not_claim() -> Re
         Reason::NotFound,
         "the unused control tenant must actually be deleted"
     );
-    tenants::claim_database_use(
-        &inputs.database("shared", "mdm_access"),
+    tenants::claim_use(
+        &mut connection,
         &inputs.installation(),
         &used.to_string(),
         1,

@@ -16,7 +16,7 @@ pub struct Timeline {
     pub(crate) associations: Arc<dyn crate::associations::Associations>,
     pub(crate) pool: PgPool,
     pub(crate) audit: Arc<AuditStore>,
-    pub(crate) tenant: TenantId,
+
     pub(crate) profile: rss_mdm_install_support::StorageProfile,
     pub(crate) key: rss_mdm_query::cursor::CursorCodec,
 }
@@ -28,18 +28,6 @@ pub(crate) struct Projected {
     activity: Option<rss_mdm_audit_integration::activity::Activity>,
 }
 impl Timeline {
-    /// App composition selects an installation tenant; the reader still must authenticate for it.
-    pub fn for_tenant(&self, tenant: TenantId) -> Self {
-        Self {
-            query_budget: self.query_budget,
-            associations: self.associations.clone(),
-            pool: self.pool.clone(),
-            audit: self.audit.clone(),
-            tenant,
-            profile: self.profile,
-            key: self.key.clone(),
-        }
-    }
     /// Reuse the same product index writer, with the authenticated source owner's read transaction.
     pub fn for_source(
         &self,
@@ -52,7 +40,6 @@ impl Timeline {
             query_budget: self.query_budget,
             associations: self.associations.clone(),
             pool: self.pool.clone(),
-            tenant: self.tenant,
             key: self.key.clone(),
         }
     }
@@ -60,7 +47,6 @@ impl Timeline {
         profile: rss_mdm_install_support::StorageProfile,
         pool: PgPool,
         audit: Arc<AuditStore>,
-        tenant: TenantId,
         secret: &[u8],
         associations: Arc<dyn crate::associations::Associations>,
         query_budget: crate::QueryBudget,
@@ -73,7 +59,7 @@ impl Timeline {
             associations,
             pool,
             audit,
-            tenant,
+
             profile,
             key: rss_mdm_query::cursor::CursorCodec::new(secret).map_err(|_| Error::Integrity)?,
         })
@@ -98,7 +84,7 @@ impl Timeline {
         family: &str,
         query: &Query,
     ) -> Result<DiagnosticPage, Error> {
-        if proof.profile() != self.profile || proof.tenant_id() != self.tenant.to_string() {
+        if proof.profile() != self.profile {
             return Err(Error::Forbidden);
         }
         proof
@@ -134,12 +120,13 @@ impl Timeline {
             .await?
             && !batch.is_empty()
         {
-            self.write_batch(&batch, total, operation).await?;
+            self.write_batch(proof.binding(), &batch, total, operation)
+                .await?;
         }
         let control = budget.control();
         self.audit
             .read(
-                self.tenant,
+                proof.binding().tenant(),
                 &control,
                 (self, proof, family, query, token),
                 |ctx, tx| {
@@ -166,9 +153,13 @@ impl Timeline {
                 transaction_error,
             )
     }
-    pub(crate) async fn prepare_on(&self, c: &mut sqlx::PgConnection) -> Result<Prepared, Error> {
+    pub(crate) async fn prepare_on(
+        &self,
+        tenant: TenantId,
+        c: &mut sqlx::PgConnection,
+    ) -> Result<Prepared, Error> {
         let rows=sqlx::query("WITH candidates AS MATERIALIZED (SELECT r.* FROM rss_audit.records r WHERE r.tenant_id=$1::uuid AND starts_with(r.source_id,$2::text) AND NOT EXISTS(SELECT 1 FROM mdm_timeline.facts f WHERE f.tenant_id=r.tenant_id AND f.source=r.source_id AND f.event_id=r.event_id) ORDER BY r.position LIMIT 64), budget AS (SELECT coalesce(sum(octet_length(canonical)),0)<=8388608 AS fits FROM candidates) SELECT position,source_id,event_id,recorded_at,budget.fits,CASE WHEN budget.fits THEN canonical END AS canonical FROM candidates CROSS JOIN budget ORDER BY position")
-            .bind(self.tenant.to_string()).bind(format!("{}.",self.profile.name())).fetch_all(&mut *c).await?;
+            .bind(tenant.to_string()).bind(format!("{}.",self.profile.name())).fetch_all(&mut *c).await?;
         let mut batch = Vec::new();
         for row in rows {
             if !row.try_get::<bool, _>("fits")? {
@@ -179,7 +170,7 @@ impl Timeline {
             let event = decoded.event();
             let id = event.identity();
             let position: i64 = row.try_get("position")?;
-            if id.tenant() != self.tenant
+            if id.tenant() != tenant
                 || position < 0
                 || id.source().source_id().as_str() != row.try_get::<&str, _>("source_id")?
                 || id.event_id().as_str() != row.try_get::<&str, _>("event_id")?
@@ -190,7 +181,7 @@ impl Timeline {
             let mut view = project(event)?;
             view.position = position as u64;
             view.recorded_at = decoded.recorded_at().unix_seconds();
-            let tenant = self.tenant.to_string();
+            let tenant = tenant.to_string();
             let locator = crate::projection::operation_locator(event, &view)?;
             let association = match locator.as_ref() {
                 Some(identity) => {
@@ -235,15 +226,18 @@ impl Timeline {
         let attempt = self
             .audit
             .read(
-                self.tenant,
+                proof.binding().tenant(),
                 control,
                 (self, proof, family, query, token),
                 |(service, proof, family, query, token), tx| {
                     Box::pin(async move {
                         service.validate_cursor(proof, family, query, *token)?;
-                        tx.with_connection_context(service, |service, c| {
-                            Box::pin(async move { service.prepare_on(c).await })
-                        })
+                        tx.with_connection_context(
+                            &mut (*service, proof.binding().tenant()),
+                            |(service, tenant), c| {
+                                Box::pin(async move { service.prepare_on(*tenant, c).await })
+                            },
+                        )
                         .await
                     })
                 },
@@ -261,6 +255,7 @@ impl Timeline {
     }
     pub(crate) async fn write_batch(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         batch: &[Projected],
         total: Deadline,
         operation: Deadline,
@@ -274,7 +269,7 @@ impl Timeline {
                 Err(_) => return Ok(()), // No product transaction was started.
             };
         let result = self
-            .write_batch_on(&mut connection, batch, total, operation)
+            .write_batch_on(binding, &mut connection, batch, total, operation)
             .await;
         if result.is_err() {
             connection.close_on_drop();
@@ -283,6 +278,7 @@ impl Timeline {
     }
     async fn write_batch_on(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         connection: &mut sqlx::PgConnection,
         batch: &[Projected],
         total: Deadline,
@@ -293,7 +289,8 @@ impl Timeline {
             .map_err(|_| Error::Deadline)??;
         let result=tokio::time::timeout_at(operation.instant().into(),async{
             let milliseconds=operation.remaining(RuntimeTimer.now()).unwrap_or_default().as_millis().saturating_add(1).to_string();
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.tenant.to_string()).bind(milliseconds).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true),set_config('rss.storage_target',$3,true),set_config('rss.storage_lineage',$4,true),set_config('rss.execution_epoch',$5,true)").bind(binding.tenant().to_string()).bind(milliseconds).bind(binding.storage().target().iter().map(|b|format!("{b:02x}")).collect::<String>()).bind(binding.storage().lineage().iter().map(|b|format!("{b:02x}")).collect::<String>()).bind(binding.epoch().get().to_string()).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
+            sqlx::query("SELECT rss_transactional_messaging.check_execution()").execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
             let mut batch=batch.iter().collect::<Vec<_>>();
             batch.sort_by_key(|r|r.activity.as_ref().and_then(|a|a.target.as_ref()).map(|t|&t.device));
             for row in batch {
@@ -301,11 +298,11 @@ impl Timeline {
                 let doc=serde_json::to_value(DiagnosticFact { fact: row.view.clone(), operation: row.locator.clone(),operation_confirmed }).map_err(|_|Error::Integrity)?;
                 let bytes=serde_json::to_vec(&doc).map_err(|_|Error::Integrity)?;
                 sqlx::query("INSERT INTO mdm_timeline.facts(tenant_id,position,source,event_id,recorded_at,instance_id,operation_id,actor,action,outcome,devices,operations,document,digest,activity,activity_digest) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (tenant_id,source,event_id) DO NOTHING")
-                    .bind(self.tenant.to_string()).bind(row.view.position as i64).bind(&row.view.source).bind(&row.view.event_id)
+                    .bind(binding.tenant().to_string()).bind(row.view.position as i64).bind(&row.view.source).bind(&row.view.event_id)
                     .bind(row.view.recorded_at).bind(row.view.instance_id).bind(row.view.operation_id).bind(&row.view.actor).bind(&row.view.action)
                     .bind(&row.view.audit_outcome).bind(row.devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).bind(&row.view.related_operation_ids).bind(doc).bind(Sha256::digest(&bytes).to_vec()).bind(row.activity.as_ref().map(serde_json::to_value).transpose().map_err(|_|Error::Integrity)?).bind(row.activity.as_ref().map(|a|serde_json::to_value(a).and_then(|v|serde_json::to_vec(&v)).map(|b|Sha256::digest(b).to_vec())).transpose().map_err(|_|Error::Integrity)?).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
                 if let Some(target)=row.activity.as_ref().and_then(|a|a.target.as_ref()) {
-                    crate::activities::publish_in(&mut tx,self.tenant,&target.device,row.view.position as i64).await?;
+                    crate::activities::publish_in(&mut tx,binding.tenant(),&target.device,row.view.position as i64).await?;
                 }
             }
             Ok::<_,Error>(true)
@@ -351,7 +348,7 @@ impl Timeline {
         token: Option<&cursor::Cursor>,
     ) -> Result<(), Error> {
         if let Some(token) = token
-            && (token.tenant != self.tenant.to_string()
+            && (token.tenant != proof.binding().tenant().to_string()
                 || token.instance != proof.instance_id()
                 || token.authority
                     != proof
@@ -404,7 +401,7 @@ impl Timeline {
         }
         // Coverage and result rows share one statement snapshot, not a durable consumption offset.
         let rows=sqlx::query("WITH coverage AS (SELECT NOT EXISTS(SELECT 1 FROM rss_audit.records r WHERE r.tenant_id=$1::uuid AND starts_with(r.source_id,$17::text) AND NOT EXISTS(SELECT 1 FROM mdm_timeline.facts f WHERE f.tenant_id=r.tenant_id AND f.source=r.source_id AND f.event_id=r.event_id)) AS complete), candidates AS MATERIALIZED (SELECT document,digest,position,recorded_at,row_number() OVER (ORDER BY recorded_at DESC,position DESC) AS row_index FROM mdm_timeline.facts WHERE tenant_id=$1::uuid AND starts_with(source,$17::text) AND (instance_id=$2::uuid OR (instance_id IS NULL AND source IN ('mdm.business','mdm.request','da.business','da.request') AND document->'fact'->>'actorKind' IN ('service','device','unidentified'))) AND ($3::uuid IS NULL OR devices @> ARRAY[$3]) AND ($4::uuid IS NULL OR operation_id=$4 OR ($16::text IS NULL AND operations @> ARRAY[$4])) AND ($5::text IS NULL OR CASE WHEN $16::text IS NULL THEN actor ELSE document->'operation'->>'actor' END=$5) AND ($6::text IS NULL OR action=$6) AND ($7::text IS NULL OR outcome=$7) AND ($8::bigint IS NULL OR recorded_at>=$8) AND ($9::bigint IS NULL OR recorded_at<$9) AND ($13::text IS NULL OR document->'fact'->'target'->>'id'=$13) AND ($14::text IS NULL OR document->'fact'->'target'->>'type'=$14) AND ($15::text IS NULL OR document->'fact'->>'requestId'=$15) AND ($16::text IS NULL OR document->'operation'->>'owner'=$16) AND ($10::bigint IS NULL OR (recorded_at,position)<($10,$11)) ORDER BY recorded_at DESC,position DESC LIMIT $12), budget AS (SELECT coalesce(sum(octet_length(document::text)) FILTER (WHERE row_index < $12),0) <= $18 AS fits FROM candidates) SELECT coverage.complete,budget.fits,CASE WHEN budget.fits AND f.row_index < $12 THEN f.document END AS document,f.digest,f.position,f.recorded_at FROM coverage CROSS JOIN budget LEFT JOIN candidates f ON true ORDER BY f.recorded_at DESC,f.position DESC")
-            .bind(self.tenant.to_string()).bind(proof.instance_id()).bind(query.device.map(|id|id.into_uuid())).bind(query.operation_id)
+            .bind(proof.binding().tenant().to_string()).bind(proof.instance_id()).bind(query.device.map(|id|id.into_uuid())).bind(query.operation_id)
             .bind(&query.actor).bind(&query.action).bind(&query.outcome).bind(query.from).bind(query.until).bind(token.map(|v|v.after_at)).bind(token.map(|v|v.after_position)).bind((query.limit.unwrap_or(50)+1) as i64).bind(&query.target_id).bind(&query.target_type).bind(query.request_id.map(|id|id.to_string())).bind(query.owner.map(|owner|serde_json::to_value(owner).expect("closed owner").as_str().expect("owner string").to_owned())).bind(format!("{}.",self.profile.name())).bind(self.query_budget.bytes).fetch_all(c).await?;
         if !rows
             .first()
@@ -425,7 +422,7 @@ impl Timeline {
         complete: bool,
         mut rows: Vec<sqlx::postgres::PgRow>,
     ) -> Result<DiagnosticPage, Error> {
-        let tenant = self.tenant.to_string();
+        let tenant = proof.binding().tenant().to_string();
         self.validate_cursor(proof, family, query, token)?;
         let limit = query.limit.unwrap_or(50);
         if rows

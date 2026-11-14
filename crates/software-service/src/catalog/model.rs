@@ -131,7 +131,11 @@ pub type ContentFuture<'a> = std::pin::Pin<
     Box<dyn std::future::Future<Output = Result<Box<dyn VerifiedContent>>> + Send + 'a>,
 >;
 pub trait ContentPort: Send + Sync {
-    fn verify<'a>(&'a self, version: &'a Version) -> ContentFuture<'a>;
+    fn verify<'a>(
+        &'a self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        version: &'a Version,
+    ) -> ContentFuture<'a>;
 }
 
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
