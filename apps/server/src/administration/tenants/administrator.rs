@@ -49,14 +49,18 @@ impl Service {
             .map(|byte| format!("{byte:02x}"))
             .collect();
         let request = serde_json::json!({"action":"administrator_create","tenantId":tenant,"login":login.as_str(),"fingerprint":digest});
-        self.registry_read((self, proof, tenant), |(service, proof, tenant), c| {
-            Box::pin(async move {
-                service
-                    .authorize(c, proof, Permission::TenantAdministratorCreate)
-                    .await?;
-                tenant_on(c, tenant, false).await
-            })
-        })
+        self.registry_read(
+            Some(cutoff),
+            (self, proof, tenant),
+            |(service, proof, tenant), c| {
+                Box::pin(async move {
+                    service
+                        .authorize(c, proof, Permission::TenantAdministratorCreate)
+                        .await?;
+                    tenant_on(c, tenant, false).await
+                })
+            },
+        )
         .await?;
         let slot = self
             .provisioning_slots

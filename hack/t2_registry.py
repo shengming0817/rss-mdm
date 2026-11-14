@@ -274,7 +274,7 @@ MODULES = {
                 'crates/inventory-postgres/migrations/install.sql',
                 'apps/server/tests/foundation/recovery.rs')),
     'foundation.lifecycle': dict(
-        prefix='foundation_t2::lifecycle::', profiles=('lifecycle',),
+        prefix='foundation_t2::lifecycle::', profiles=('lifecycle','installation'),
         inputs=('apps/server/src/lifecycle.rs', 'apps/server/src/identity.rs',
                 'apps/server/src/database.rs', 'apps/server/src/owner_storage.rs',
                 'apps/server/src/worker_wake.rs', 'apps/server/src/scheduler.rs',
@@ -282,7 +282,7 @@ MODULES = {
                 'crates/policy-service/src/worker/completion.rs', 'crates/policy-service/src/configuration/source_changes.rs',
                 'crates/policy-service/schema/configuration-source-changes.sql',
                 'apps/server/src/local_delivery.rs','apps/server/src/asset_inputs.rs', 'apps/server/src/assembly/*',
-                'apps/server/tests/foundation/lifecycle.rs','apps/server/tests/support/host.rs')),
+                'apps/server/tests/foundation/lifecycle*.rs','apps/server/tests/support/host.rs', 'apps/server/src/installation/*', 'apps/server/src/administration/baseline/*', 'apps/server/src/administration/tenants/*')),
 }
 SUPPORT = ('apps/server/tests/support/authority.rs',)
 

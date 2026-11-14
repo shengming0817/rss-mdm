@@ -315,7 +315,7 @@ impl Store {
                     .await?,
             );
         }
-        let mut chunk = Zeroizing::new([0; 65536]);
+        let mut chunk = Zeroizing::new(vec![0; 65536]);
         loop {
             self.check_deadline(deadline)?;
             let n = body.read(&mut chunk[..]).await.map_err(|_| storage())?;

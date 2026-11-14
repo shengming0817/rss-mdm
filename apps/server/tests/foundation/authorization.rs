@@ -11,6 +11,12 @@ async fn same_session_reloads_current_grants_and_durable_authority_expires() -> 
     let context = Context::open("shared", &[other]).await?;
     let manager = context.account(&[Permission::AuthorizationWrite]).await?;
     let reader = context.account(&[Permission::ResourceRead]).await?;
+    let enroller = context.account(&[Permission::Enrollment]).await?;
+    context
+        .authenticate(&enroller)
+        .await?
+        .new_enrollment()?
+        .check()?;
     let proof = context.authenticate(&reader).await?;
     proof.require(Permission::ResourceRead, None)?;
     let authority = access::OperationAuthority::tenant(

@@ -104,6 +104,12 @@ impl Groups {
         authorize()?;
         let budget =
             rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
+        let budget = match proof.initialization_cutoff() {
+            Some(cutoff) => rss_mdm_audit_integration::budget::AuditBudget::until(
+                budget.deadline().shortened_to(cutoff.instant()),
+            ),
+            None => budget,
+        };
         let candidate = if matches!(command, Command::Group { .. }) {
             Some(
                 rss_mdm_inventory_service::assets::cut::capture(

@@ -167,7 +167,9 @@ impl crate::Scopes {
                 .lock()
                 .expect("runner observation")
                 .failures
-                .retain(|target, _| target.entity() != "inputs");
+                .retain(|target, _| {
+                    target.scope().tenant() != execution.tenant() || target.entity() != "inputs"
+                });
         }
         Ok(failed)
     }

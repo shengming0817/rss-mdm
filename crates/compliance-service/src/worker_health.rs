@@ -136,7 +136,9 @@ impl crate::Compliance {
                 .lock()
                 .expect("worker observation")
                 .failed
-                .retain(|target, _| target.entity() != "inputs");
+                .retain(|target, _| {
+                    target.scope().tenant() != execution.tenant() || target.entity() != "inputs"
+                });
         }
         Ok(failed)
     }

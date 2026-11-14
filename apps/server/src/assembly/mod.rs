@@ -106,6 +106,7 @@ pub(crate) struct Assembly {
 }
 
 pub(crate) struct AssemblyDependencies {
+    pub(crate) baseline_wake: Arc<tokio::sync::Notify>,
     pub(crate) da: Option<Arc<device_access::Assembly>>,
     pub(crate) script_work: Arc<rss_mdm_script_service::worker::Worker>,
     pub(crate) collection_work:
@@ -179,6 +180,7 @@ pub(crate) async fn from_compiled(
     } = compiled;
     let identity_runtime_policy = config.identity.runtime.clone();
     let AssemblyDependencies {
+        baseline_wake,
         da,
         script_work,
         collection_work,
@@ -511,7 +513,7 @@ pub(crate) async fn from_compiled(
         devices,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
     });
-    let routers = http::from_state(state, host, monotonic);
+    let routers = http::from_state(state, host, monotonic, baseline_wake);
     Ok(routers)
 }
 

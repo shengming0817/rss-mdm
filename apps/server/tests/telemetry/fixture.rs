@@ -131,7 +131,9 @@ impl Fixture {
                 bytes: self.config.limits.max_bytes,
             },
         )?);
-        service.admit_default(c.execution()).await?;
+        service
+            .admit_default(c.execution(), crate::authority_t2_support::deadline())
+            .await?;
         Ok(service)
     }
     pub async fn close(self, c: &Context) -> Result<()> {

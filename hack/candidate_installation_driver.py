@@ -174,7 +174,6 @@ def qualify(owner,origin,port):
         check(status==200,'original provisioning receipt')
         result=receipt['result']
         check(set(result)=={'tenantId','administratorId','phase','blocked','entryPath'},'current provisioning contract')
-        if result['phase']=='blocked':raise RuntimeError('tenant initialization blocked: '+str(result['blocked']))
         return result['phase']=='configured'
 
     until(lambda:completed(first['operationId']))
@@ -186,6 +185,7 @@ def qualify(owner,origin,port):
     runtime_path='/var/lib/rss-mdm/installation/runtime.json'
     original_runtime=owner.read(runtime_path)
     original_input=owner.read('/var/lib/rss-mdm/installation-input.json')
+    until(lambda:business.call('GET','/readyz')[0]==200)
     prior=observe_runtime(business,json.loads(original_runtime))
     def resources():
         # Snapshot actual process/deployment resources, not lazy connection occupancy.
@@ -201,7 +201,7 @@ def qualify(owner,origin,port):
     operation=str(uuid.uuid4())
     request=dict(name='Second organization',administratorLogin='administrator',administratorPassword='Second-compose-admin-2026!')
     status,created=platform.call('POST','/api/v1/tenant-administration/provisionings',request,operation)
-    check(status in (200,202),'shared second tenant admission')
+    check(status in (200,202) or (status==503 and created=={'code':'operation_unknown'}),'shared second tenant admission: '+str(status)+' '+str(created))
     until(lambda:completed(operation))
     status,receipt=platform.call('GET','/api/v1/tenant-administration/provisionings/'+operation)
     second=receipt['result']

@@ -1,6 +1,6 @@
 # 组、范围与 Policy
 
-Group 持有成员求值；Scope 按“目标并集与限制并集取交集，再减排除并集”组合来源；Policy 独占主 Scope 和各灰度阶段 Scope，并分配闭合 Action；资源绑定位于需要资源的 Action 内。管理入口是 `/api/v1`，资源入口是 `/api/v1`。写入带 operationId、expectedRevision、input；提交未知时重试原身份和原文档。
+Group 持有成员求值；Scope 按“目标并集与限制并集取交集，再减排除并集”组合来源；Policy 独占主 Scope 和各灰度阶段 Scope，并分配闭合 Action；资源绑定位于需要资源的 Action 内。管理与资源入口均为 `/api/v1/tenants/{tenant}`。写入带 operationId、expectedRevision、input；提交未知时重试原身份和原文档。
 
 目录读取使用 `GET /api/v1/tenants/{tenant}/groups`、`/policies` 和 `/resources`，返回 `items/nextCursor`。
 这些目录统一使用 `filter/sort/fields/limit/cursor`，不再接受 `after/descending` 或旧的散列过滤参数。

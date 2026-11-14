@@ -118,15 +118,24 @@ impl Service {
             let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
                 .map_err(|_| Error::Malformed)?;
             let stop = tokio_util::sync::CancellationToken::new();
-            if let Some(binding) =
-                crate::administration::baseline::resume(baseline, tenant, &stop, cutoff).await?
-            {
+            let now = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer);
+            let remaining = cutoff.remaining(now).unwrap_or_default();
+            // Retain the original request's final quarter for the response and receipt read.
+            let work_cutoff = cutoff.shortened_to(now + remaining.mul_f64(0.75));
+            let (configured, _) =
+                crate::administration::baseline::resume(baseline, tenant, &stop, work_cutoff)
+                    .await?;
+            if let Some(binding) = configured {
                 self.complete_initialization(binding, cutoff).await?;
             }
         }
-        self.registry_read((self, &mut receipt), |(service, receipt), c| {
-            Box::pin(async move { service.project_initialization(c, receipt).await })
-        })
+        self.registry_read(
+            Some(cutoff),
+            (self, &mut receipt),
+            |(service, receipt), c| {
+                Box::pin(async move { service.project_initialization(c, receipt).await })
+            },
+        )
         .await?;
         Ok(receipt)
     }

@@ -22,7 +22,7 @@ const origin=input.origin, other=input.otherOrigin;
 const faults=input.mode==='faults' ? await import('./auth_t3_faults.mjs') : null;
 const api=`/api/v1/identity/tenants/${input.tenant}`;
 const business=`/api/v1/tenants/${input.tenant}`;
-const inventory=business+'/devices/device-1/inventory';
+const inventory=business+'/devices/88888888-8888-4888-8888-888888888881/inventory';
 const checks={}, requests=[], privateValues=[];
 let stage='launch';
 const docker=(...args)=>{assert(faults,'fault control unavailable in normal mode');return faults.docker(...args)};
@@ -125,7 +125,7 @@ try{
 await localUsers();
   stage='inventory';let r=await request(member,inventory);
   assert(r.status===200&&r.value.asset.device.fields['device.model'].state.value.value==='Model-2364','real authorized inventory');
-  assert((await request(member,business+'/devices/outside/inventory')).status===403,'device scope');checks.inventory=true;
+  assert((await request(member,business+'/devices/88888888-8888-4888-8888-888888888882/inventory')).status===403,'device scope');checks.inventory=true;
 
   stage='permissions';const group=crypto.randomUUID(),groupPath=business+'/groups/'+group;
   const change={operationId:crypto.randomUUID(),expectedRevision:0,input:{action:'create',name:'T3-2364',description:'product authorization fixture',criteria:null}};

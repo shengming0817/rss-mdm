@@ -422,6 +422,12 @@ impl AssetService {
                 std::time::Duration::from_secs(6),
             ),
         };
+        let budget = match initialization.and_then(|p| p.initialization_cutoff()) {
+            Some(cutoff) => rss_mdm_audit_integration::budget::AuditBudget::until(
+                budget.deadline().shortened_to(cutoff.instant()),
+            ),
+            None => budget,
+        };
         let cancellation = rss_request_context::Cancellation::observe(request.map_or(
             &budget as &dyn rss_request_context::CancellationObserver,
             |request| request.cancellation.as_ref(),

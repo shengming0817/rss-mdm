@@ -133,14 +133,21 @@ impl Authority {
             .collect())
     }
     /// Rehydrate a bounded attempt from trusted product state and current authorization facts.
-    pub async fn principal(&self, store: &crate::Store) -> Result<AuthorizedPrincipal, Error> {
+    pub async fn principal(
+        &self,
+        store: &crate::Store,
+        cutoff: rss_request_context::Deadline,
+    ) -> Result<AuthorizedPrincipal, Error> {
         if self.profile != store.profile() || self.profile != store.authority_profile() {
             return Err(Error::Forbidden);
         }
-        let principal =
-            AuthorizedPrincipal::from_initialization(Arc::new(self.clone()), store.clock.clone())?
-                .load_authorization(store)
-                .await?;
+        let principal = AuthorizedPrincipal::from_initialization(
+            Arc::new(self.clone()),
+            store.clock.clone(),
+            cutoff,
+        )?
+        .load_authorization(store)
+        .await?;
         self.grants(principal.authorization()?)?;
         Ok(principal)
     }

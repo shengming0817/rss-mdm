@@ -13,7 +13,7 @@ pub struct AuthorizedPrincipal {
 impl AuthorizedPrincipal {
     /// Authorize a fresh server-allocated device; an existing device ID cannot select it.
     pub fn new_enrollment(&self) -> Result<EnrollmentCreation<'_>, Error> {
-        self.require(Permission::Enrollment, None)?;
+        self.require_all_devices(Permission::Enrollment)?;
         Ok(EnrollmentCreation {
             proof: self,
             self_service: false,
@@ -62,6 +62,7 @@ impl AuthorizedPrincipal {
     pub(crate) fn from_initialization(
         authority: Arc<crate::baseline::Authority>,
         clock: Arc<dyn rss_request_context::Clock>,
+        cutoff: rss_request_context::Deadline,
     ) -> Result<Self, Error> {
         let user = authority.user().clone();
         let binding = authority.binding()?;
@@ -75,12 +76,23 @@ impl AuthorizedPrincipal {
                 actor: crate::Actor::Account { user },
                 proof: Authentication::Initialization {
                     authority,
-                    deadline: clock.now() + std::time::Duration::from_secs(60),
+                    deadline: cutoff
+                        .instant()
+                        .min(clock.now() + std::time::Duration::from_secs(60)),
                     clock,
                 },
             },
             authorization: None,
         })
+    }
+    /// The caller's original initialization cutoff also bounds each domain operation.
+    pub fn initialization_cutoff(&self) -> Option<rss_request_context::Deadline> {
+        match &self.identity.proof {
+            Authentication::Initialization { deadline, .. } => {
+                Some(rss_request_context::Deadline::at(*deadline))
+            }
+            _ => None,
+        }
     }
     /// Durable attempts cannot leave their fixed initialization object set.
     pub fn require_initialization_target(&self, target: &str) -> Result<(), Error> {
@@ -251,7 +263,7 @@ impl<'a> EnrollmentCreation<'a> {
             self.proof.session()?;
             self.proof.check_live()
         } else {
-            self.proof.require(Permission::Enrollment, None)
+            self.proof.require_all_devices(Permission::Enrollment)
         }
     }
 }

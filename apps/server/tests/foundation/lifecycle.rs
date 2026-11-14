@@ -96,3 +96,6 @@ async fn host_reports_its_binding_then_releases_listener_and_database_resources(
     operator.close().await;
     Ok(())
 }
+
+#[path = "lifecycle_installation.rs"]
+mod installation;

@@ -14,6 +14,7 @@ pub(crate) fn from_state(
     state: Arc<Assembly>,
     host: String,
     monotonic: Arc<dyn rss_observation::Clock>,
+    baseline_wake: Arc<tokio::sync::Notify>,
 ) -> crate::native::Routers {
     let apple_state = Arc::new(rss_mdm_apple_channel::HttpState {
         pki: state.pki.clone(),
@@ -612,6 +613,7 @@ pub(crate) fn from_state(
         baseline: crate::lifecycle::baseline_registration(
             baseline.clone(),
             state.identity.tenant_administration.clone(),
+            baseline_wake,
         ),
         telemetry: state.telemetry.clone(),
         webhooks: state.webhooks.clone(),

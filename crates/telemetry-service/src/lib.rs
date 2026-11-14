@@ -363,9 +363,10 @@ impl Service {
     pub async fn admit_default(
         &self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,
+        budget: rss_transactional_messaging::policy::OperationDeadline,
     ) -> Result<(), Error> {
         let default = self.default_resource;
-        let selected=self.runtime.local_tx(execution,deadline(),move|tx|Box::pin(async move {
+        let selected=self.runtime.local_tx(execution,budget,move|tx|Box::pin(async move {
             let tenant=tx.tenant_id().to_string();
             tx.with_connection(move|c|Box::pin(async move {
                 sqlx::query("INSERT INTO mdm_telemetry.storage_binding(tenant_id,binding,expected_epoch) VALUES($1::uuid,$2,$3) ON CONFLICT DO NOTHING").bind(&tenant).bind(default.as_slice()).bind(execution.epoch().get()).execute(&mut *c).await?;

@@ -18,4 +18,5 @@ CREATE FUNCTION mdm_group.scope_source(p_group uuid) RETURNS TABLE(id uuid,delet
  WHERE g.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND g.id=p_group;
 $$;
 REVOKE ALL ON FUNCTION mdm_group.scope_dependencies(uuid),mdm_group.lock_scope_dependencies(uuid[]),mdm_group.scope_source(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_group.lock_scope_dependencies(uuid[]) TO mdm_group_runtime,mdm_scope_runtime,mdm_policy_runtime;
 COMMIT;

@@ -16,6 +16,7 @@ pub(crate) const RECOVERY: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy)]
 pub(crate) enum Work {
+    Baseline,
     Inventory,
     Devices,
     Policy,
@@ -41,7 +42,8 @@ pub(crate) enum Work {
     Compliance,
 }
 impl Work {
-    const ALL: [Self; 23] = [
+    const ALL: [Self; 24] = [
+        Self::Baseline,
         Self::Inventory,
         Self::Devices,
         Self::Policy,
@@ -68,6 +70,7 @@ impl Work {
     ];
     fn payload(self) -> &'static str {
         match self {
+            Self::Baseline => "baseline",
             Self::Inventory => "inventory",
             Self::Devices => "devices",
             Self::Policy => "policy",

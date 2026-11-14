@@ -168,7 +168,7 @@ impl Service {
         query: Read,
     ) -> std::result::Result<ReadReply, Error> {
         proof.require(Permission::TenantRead, None)?;
-        self.registry_read((self, proof, query), |(service, proof, query), c| {
+        self.registry_read(None, (self, proof, query), |(service, proof, query), c| {
             Box::pin(async move {
                 sqlx::query("SELECT pg_advisory_xact_lock(2346)")
                     .execute(&mut *c)
@@ -207,7 +207,7 @@ impl Service {
         &self,
         proof: &AuthorizedPrincipal,
     ) -> std::result::Result<serde_json::Value, Error> {
-        self.registry_read((self,proof),|(service,proof),c|Box::pin(async move{
+        self.registry_read(None, (self,proof),|(service,proof),c|Box::pin(async move{
             service.authorize(c,proof,Permission::TenantRead).await?;
             let result=sqlx::query_scalar("SELECT jsonb_build_object('count',count(*)) FROM public.mdm_tenants WHERE NOT deleted").fetch_one(c).await.map_err(|_|Reason::Storage)?;
             proof.check_live().map_err(|_|Reason::Forbidden)?;Ok(result)
@@ -215,6 +215,7 @@ impl Service {
     }
     pub(super) async fn registry_read<C: Send, T: Send>(
         &self,
+        cutoff: Option<rss_request_context::Deadline>,
         mut context: C,
         operation: impl for<'a> FnOnce(
             &'a mut C,
@@ -235,8 +236,14 @@ impl Service {
                 }
             }
         }
+        let own = rss_request_context::Deadline::from_timeout(
+            &crate::lifecycle::RuntimeTimer,
+            Duration::from_secs(6),
+        )
+        .map_err(|_| Error::Unavailable(Failure::RequestDeadline))?;
+        let cutoff = cutoff.map_or(own, |caller| own.shortened_to(caller.instant()));
         let mut connection = None;
-        let outcome = tokio::time::timeout(Duration::from_secs(6), async {
+        let outcome = tokio::time::timeout_at(cutoff.instant().into(), async {
             connection = Some(ReadConnection {
                 inner: self
                     .pool

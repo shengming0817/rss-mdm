@@ -18,7 +18,11 @@ pub async fn authorization_snapshot(
     }
     use sqlx::Acquire;
     let mut connection = None;
-    let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    let limit = database.now() + std::time::Duration::from_secs(3);
+    let cutoff = proof
+        .initialization_cutoff()
+        .map_or(limit, |caller| limit.min(caller.instant()));
+    let result = tokio::time::timeout_at(cutoff.into(), async {
         proof.check_live()?;
         connection = Some(database.acquire().await?);
         let mut tx = connection

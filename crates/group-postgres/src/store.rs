@@ -163,7 +163,24 @@ impl GroupStore {
         tx: &mut PgTransaction<'_>,
         id: GroupId,
     ) -> InTransaction<Group> {
-        self.sources.lock_reference_target_in(tx, id).await
+        input!(self.check_transaction(tx)?);
+        let row = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query("SELECT * FROM mdm_group.lock_reference_target($1::uuid)")
+                        .bind(id.to_string())
+                        .fetch_optional(c)
+                        .await
+                })
+            })
+            .await?;
+        let group = input!(
+            row.map(|row| db::decode_group(id, row))
+                .transpose()?
+                .ok_or(Rejection::NotFound)
+        );
+        input!(active(&group));
+        Ok(Ok(group))
     }
     /// Read members while holding the reference lock in the host transaction.
     /// N12 must use execute_in to compose deletion, reference checks and audit atomically.

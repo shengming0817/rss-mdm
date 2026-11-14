@@ -9,7 +9,7 @@ use crate::{
 use rss_mdm_group::{GroupId, GroupSource, OperationId, SourceCoordinates};
 use rss_transactional_messaging::fence::ExecutionBinding;
 use rss_transactional_messaging::policy::OperationDeadline;
-use rss_transactional_messaging_postgres::{PgError, PgRuntime, PgTransaction};
+use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use sqlx::Row;
 use std::sync::Arc;
 
@@ -45,23 +45,6 @@ impl GroupSources {
         self.runtime.validate_transaction(tx)?;
         Ok(Ok(()))
     }
-    async fn locked_group_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        id: GroupId,
-    ) -> Result<Option<Group>, PgError> {
-        let row = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    sqlx::query("SELECT * FROM mdm_group.lock_reference_target($1::uuid)")
-                        .bind(id.to_string())
-                        .fetch_optional(c)
-                        .await
-                })
-            })
-            .await?;
-        row.map(|row| db::decode_group(id, row)).transpose()
-    }
     /// Read Group-owned source facts in the initiating transaction.
     pub(crate) async fn get_in(
         &self,
@@ -79,11 +62,17 @@ impl GroupSources {
         id: GroupId,
     ) -> InTransaction<Group> {
         input!(self.check_transaction(tx)?);
-        let g = input!(
-            self.locked_group_in(tx, id)
-                .await?
-                .ok_or(Rejection::NotFound)
-        );
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query("SELECT mdm_group.lock_scope_dependencies(ARRAY[$1::uuid])")
+                    .bind(id.to_string())
+                    .execute(c)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await?;
+        let g = input!(db::group(tx, id, false).await?.ok_or(Rejection::NotFound));
         input!(active(&g));
         Ok(Ok(g))
     }

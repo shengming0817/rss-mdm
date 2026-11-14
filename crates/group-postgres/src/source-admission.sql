@@ -10,7 +10,7 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='mdm_group' AND c.relkind NOT IN('r','i'))
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
- WHERE n.nspname='mdm_group' AND has_function_privilege(current_user,p.oid,'EXECUTE') AND p.oid NOT IN('mdm_group.input_candidate_groups(uuid[],uuid[])'::regprocedure,'mdm_group.group_current(uuid)'::regprocedure,'mdm_group.lock_reference_target(uuid)'::regprocedure,'mdm_group.scope_dependencies(uuid)'::regprocedure,'mdm_group.lock_scope_dependencies(uuid[])'::regprocedure,'mdm_group.scope_source(uuid)'::regprocedure))
+ WHERE n.nspname='mdm_group' AND has_function_privilege(current_user,p.oid,'EXECUTE') AND p.oid NOT IN('mdm_group.input_candidate_groups(uuid[],uuid[])'::regprocedure,'mdm_group.group_current(uuid)'::regprocedure,'mdm_group.scope_dependencies(uuid)'::regprocedure,'mdm_group.lock_scope_dependencies(uuid[])'::regprocedure,'mdm_group.scope_source(uuid)'::regprocedure))
  AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication
  OR oid IN (SELECT relowner FROM tables) OR has_schema_privilege(oid,'mdm_group','CREATE'))
  AND has_schema_privilege(current_user,'mdm_group','USAGE')
@@ -26,7 +26,7 @@ SELECT
  WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute col ON col.attrelid=t.oid,LATERAL aclexplode(col.attacl) a
  WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
- AND has_function_privilege(current_user,'mdm_group.lock_reference_target(uuid)','EXECUTE')
+ AND has_function_privilege(current_user,'mdm_group.lock_scope_dependencies(uuid[])','EXECUTE')
  -- These keys are required by tenant-addressed reads, conflict handling and replay.
  AND NOT EXISTS(SELECT 1 FROM (VALUES
  ('mdm_group.definition_walk',ARRAY['tenant_id','task_id','node_id']::text[]),

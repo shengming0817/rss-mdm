@@ -78,10 +78,10 @@ def seed_inventory(stack):
     stack.sql(f"""
     BEGIN;
     SET LOCAL rss.tenant_id = '{TENANT}';
-    INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','99999999-9999-4999-8999-999999999993','2364-synthetic-read-fixture','{INSTANCE}','device-1','enrollment','consumed',clock_timestamp()+interval '200 seconds');
+    INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','99999999-9999-4999-8999-999999999993','2364-synthetic-read-fixture','{INSTANCE}','88888888-8888-4888-8888-888888888881','enrollment','consumed',clock_timestamp()+interval '200 seconds');
     INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile,state,expected_generation,password_digest,password_version,credential_ref,expires_at,issuance_operation) VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993','mdm.windows','Device','bound',0,repeat('a',64),1,gen_random_uuid(),clock_timestamp()+interval '300 seconds',gen_random_uuid());
-    INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{TENANT}','device-1');
-    INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) VALUES('{TENANT}','{registration}','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active','primary','{epoch}');
+    INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{TENANT}','88888888-8888-4888-8888-888888888881');
+    INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) VALUES('{TENANT}','{registration}','88888888-8888-4888-8888-888888888881','mdm',1,'99999999-9999-4999-8999-999999999994','active','primary','{epoch}');
     INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','mdm.windows','{epoch}',true);
     INSERT INTO mdm.collection_definitions(tenant_id,dataset,version,source,fingerprint,coverage,definition) VALUES('{TENANT}','inventory','auth-fixture-v1','mdm.windows','{fingerprint}','{coverage}','{document}');
     INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES('{{"kind":"device"}}','{TENANT}','mdm.observation.v1','{INVENTORY_GENERATION}','{scope}','{coverage}','device.model','{value}','synthetic-2364',1,2,'known','{registration}','mdm.windows','{epoch}',0);
@@ -99,7 +99,7 @@ def prepare_member(stack):
         principal=result['principalId']
         if name=='member':stack.member=principal
         else:stack.sso_member=principal
-        grant=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=principal)),grants=[dict(operation='inventory_read',scope=dict(kind='device',id='device-1'))])
+        grant=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=principal)),grants=[dict(operation='inventory_read',scope=dict(kind='device',id='88888888-8888-4888-8888-888888888881'))])
         require(browser.call('PUT',f'/api/v1/tenants/{TENANT}/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=grant))[0]==200,'explicit member inventory authorization')
     grant=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)),grants=[dict(operation=operation,scope=dict(kind='tenant')) for operation in ['group_read','group_write','release_read']]+[dict(operation='inventory_read',scope=dict(kind='all_devices'))])
     require(browser.call('PUT',f'/api/v1/tenants/{TENANT}/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=grant))[0]==200,'explicit administrator management authorization')
@@ -175,7 +175,7 @@ def run(candidate, tools_image, output):
                               ca_sha256=[sha(primary.root/'ca.crt'),sha(other.root/'ca.crt')],
                               config_sha256=sha(primary.runtime/'config.json'),gateway_sha256=sha(primary.root/'nginx.conf'),
                               runner_sha256=sha(primary.root/'browser.mjs'),candidate_sha256=sha(candidate/'candidate.json'),
-                              fixture='synthetic device-1 Model-2364, real product authorization and inventory query',
+                              fixture='synthetic 88888888-8888-4888-8888-888888888881 Model-2364, real product authorization and inventory query',
                               exclusions=['real device enrollment/commands/wipe','other IdP profiles','production capacity','legacy environment retirement'])
                 events=json.loads(primary.sql("SELECT COALESCE(json_agg(e),'[]')::text FROM (SELECT tenant_id,source_id,event_id,position,recorded_at,ledger_sequence,encode(sha256(canonical),'hex') AS canonical_sha256 FROM rss_audit.records ORDER BY tenant_id,position) e"))
                 require(len(events)>0,'product audit evidence absent')

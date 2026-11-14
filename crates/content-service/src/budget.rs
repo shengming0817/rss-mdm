@@ -9,6 +9,19 @@ pub struct UploadBudget {
     pub(crate) operation: Deadline,
 }
 impl UploadBudget {
+    /// Preserve the caller cutoff while retaining the existing settlement reserve.
+    pub fn shortened_to(self, cutoff: Deadline) -> Self {
+        let total = self.total.shortened_to(cutoff.instant());
+        let remaining = total
+            .remaining(rss_mdm_audit_integration::budget::RuntimeTimer.now())
+            .unwrap_or_default();
+        Self {
+            total,
+            operation: self
+                .operation
+                .shortened_to(total.instant() - Duration::from_secs(6).min(remaining / 4)),
+        }
+    }
     pub fn operation_deadline(self) -> Deadline {
         self.operation
     }

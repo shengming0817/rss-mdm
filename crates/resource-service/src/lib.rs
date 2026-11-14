@@ -520,11 +520,22 @@ impl ResourceCatalog {
         proof.bind_audit(audit)?;
         proof.require_initialization_target(id)?;
         proof.manage(permission)?;
+        let budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
+        let cutoff = proof
+            .initialization_cutoff()
+            .map_or(budget.deadline(), |caller| {
+                budget.deadline().shortened_to(caller.instant())
+            });
         crate::transaction::run(
             &self.audit_store,
             &self.runtime,
             audit.binding()?,
             audit,
+            rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                cutoff,
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
+            ),
             (self, command, audit, proof, permission),
             |ctx, tx| {
                 Box::pin(async move {

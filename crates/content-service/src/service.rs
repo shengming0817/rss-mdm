@@ -56,7 +56,10 @@ impl<'a> UploadAuthority<'a> {
             return budget
                 .work(async {
                     authority
-                        .principal(&app.authorization)
+                        .principal(
+                            &app.authorization,
+                            self.proof.initialization_cutoff().ok_or(Error::Forbidden)?,
+                        )
                         .await
                         .map_err(Error::from)
                 })
@@ -788,17 +791,20 @@ pub async fn complete_upload(
         .await?;
     record(app, session, audit, &result, None, budget).await
 }
-pub async fn upload<R: tokio::io::AsyncRead + Unpin + Send>(
-    app: &Access,
-    session: UploadAuthority<'_>,
-    audit: &RequestAudit,
-    id: &str,
-    input: &Selection,
+pub fn upload<'a, R: tokio::io::AsyncRead + Unpin + Send + 'a>(
+    app: &'a Access,
+    session: UploadAuthority<'a>,
+    audit: &'a RequestAudit,
+    id: &'a str,
+    input: &'a Selection,
     mut reader: R,
-) -> Result<(), Error> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + 'a>> {
     Box::pin(async move {
         let proof = session.proof;
-        let budget = store(app)?.upload_budget()?;
+        let mut budget = store(app)?.upload_budget()?;
+        if let Some(cutoff) = proof.initialization_cutoff() {
+            budget = budget.shortened_to(cutoff);
+        }
         let operation = input.operation.ok_or(Error::Malformed)?;
         let staged = begin_upload(app, proof, audit, id, operation, input, budget).await?;
         if !staged.complete && staged.offset != staged.binding.length {
@@ -842,7 +848,6 @@ pub async fn upload<R: tokio::io::AsyncRead + Unpin + Send>(
             .await?;
         record(app, session, audit, &complete, None, budget).await
     })
-    .await
 }
 
 pub trait Clock: Send + Sync {

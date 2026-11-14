@@ -686,7 +686,12 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     policy_scope.commit().await?;
     let workers = Workers::start_policy(&c, &owners, scopes.clone(), Some(&policy_fixture)).await?;
     wait_sql(&c,"SELECT member_set IS NOT NULL AND member_count=0 FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2",id).await?;
-    wait_sql(&c,"SELECT $2::uuid IS NOT NULL AND NOT EXISTS(SELECT FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND entity IN('inputs','configuration-inputs') AND next_run IS NOT NULL)",id).await?;
+    let idle = wait_sql(&c,"SELECT $2::uuid IS NOT NULL AND NOT EXISTS(SELECT FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND entity IN('inputs','configuration-inputs') AND next_run IS NOT NULL)",id).await;
+    if idle.is_err() {
+        let targets = sqlx::query_scalar::<_, serde_json::Value>("SELECT coalesce(jsonb_agg(jsonb_build_object('reconciler',reconciler,'entity',entity,'result',result,'failures',failures,'dueInSeconds',extract(epoch FROM next_run-clock_timestamp()),'leaseInSeconds',extract(epoch FROM lease_until-clock_timestamp()))),'[]'::jsonb) FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND next_run IS NOT NULL").bind(c.tenant.to_string()).fetch_one(&c.operator).await;
+        eprintln!("input drain targets: {targets:?}");
+    }
+    idle?;
     let initial_operations: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid",
     )

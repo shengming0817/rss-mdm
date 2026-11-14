@@ -124,69 +124,89 @@ impl Policies {
         proof.manage(Permission::PolicyWrite)?;
         // Verify content outside the database transaction, then bind that proof again at publication.
         let shape = op.input.checked_shape()?;
-        let verified = if let rss_mdm_policy::Change::Put { definition, .. } = &shape {
-            if definition.action.resource().is_some() {
-                proof.manage(Permission::ResourceRead)?;
-            }
-            definition.validate()?;
-            authorize_policy_snapshot(proof.authorization()?, proof, definition)?;
-            match &definition.action {
-                Action::TelemetryProfile { .. } | Action::UnmanageDevice { .. } => None,
-                Action::Configuration { resource, .. } => Some(
-                    self.configuration
-                        .as_ref()
-                        .ok_or(Error::Unsupported)?
-                        .prepare(proof.binding(), resource)
-                        .await?,
-                ),
-                Action::Execution {
-                    resource,
-                    parameters,
-                    ..
-                } => Some(
-                    self.script
-                        .as_ref()
-                        .ok_or(Error::Unsupported)?
-                        .prepare_resource(
-                            proof.binding(),
+        let preparation = async {
+            Ok::<_, Error>(
+                if let rss_mdm_policy::Change::Put { definition, .. } = &shape {
+                    if definition.action.resource().is_some() {
+                        proof.manage(Permission::ResourceRead)?;
+                    }
+                    definition.validate()?;
+                    authorize_policy_snapshot(proof.authorization()?, proof, definition)?;
+                    match &definition.action {
+                        Action::TelemetryProfile { .. } | Action::UnmanageDevice { .. } => None,
+                        Action::Configuration { resource, .. } => Some(
+                            self.configuration
+                                .as_ref()
+                                .ok_or(Error::Unsupported)?
+                                .prepare(proof.binding(), resource)
+                                .await?,
+                        ),
+                        Action::Execution {
                             resource,
-                            rss_mdm_script_service::Parameters::Sources(parameters),
-                        )
-                        .await?,
-                ),
-                Action::AgentCollection { resource, .. } => Some(
-                    self.collections
-                        .as_ref()
-                        .ok_or(Error::Unsupported)?
-                        .prepare_resource(
-                            proof.binding(),
-                            resource,
-                            rss_mdm_inventory::Channel::Agent,
-                        )
-                        .await?,
-                ),
-                Action::NativeCollection { resource, .. } => Some(
-                    self.collections
-                        .as_ref()
-                        .ok_or(Error::Unsupported)?
-                        .prepare_resource(
-                            proof.binding(),
-                            resource,
-                            rss_mdm_inventory::Channel::Mdm,
-                        )
-                        .await?,
-                ),
-                _ => None,
-            }
+                            parameters,
+                            ..
+                        } => Some(
+                            self.script
+                                .as_ref()
+                                .ok_or(Error::Unsupported)?
+                                .prepare_resource(
+                                    proof.binding(),
+                                    resource,
+                                    rss_mdm_script_service::Parameters::Sources(parameters),
+                                )
+                                .await?,
+                        ),
+                        Action::AgentCollection { resource, .. } => Some(
+                            self.collections
+                                .as_ref()
+                                .ok_or(Error::Unsupported)?
+                                .prepare_resource(
+                                    proof.binding(),
+                                    resource,
+                                    rss_mdm_inventory::Channel::Agent,
+                                )
+                                .await?,
+                        ),
+                        Action::NativeCollection { resource, .. } => Some(
+                            self.collections
+                                .as_ref()
+                                .ok_or(Error::Unsupported)?
+                                .prepare_resource(
+                                    proof.binding(),
+                                    resource,
+                                    rss_mdm_inventory::Channel::Mdm,
+                                )
+                                .await?,
+                        ),
+                        _ => None,
+                    }
+                } else {
+                    None
+                },
+            )
+        };
+        let verified = if let Some(cutoff) = proof.initialization_cutoff() {
+            // Preparation reads material; no business mutation has begun.
+            tokio::time::timeout_at(cutoff.instant().into(), preparation)
+                .await
+                .map_err(|_| Error::Unavailable(crate::Failure::PolicyTransient))??
         } else {
-            None
+            preparation.await?
         };
 
-        run(
+        let budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
+        let cutoff = proof
+            .initialization_cutoff()
+            .map_or(budget.deadline(), |caller| {
+                budget.deadline().shortened_to(caller.instant())
+            });
+        run_budget(
             &self.audit_store,
             &self.runtime,
             proof.binding(),
             audit,
+            rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff, &rss_mdm_audit_integration::budget::RuntimeTimer),
             (self, proof, id, op, audit, verified.as_ref(), &shape),
             |ctx, tx| {
                 Box::pin(async move {

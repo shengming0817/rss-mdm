@@ -93,6 +93,7 @@ pub async fn run<C: Send, R: Send, F>(
     runtime: &PgRuntime,
     binding: ExecutionBinding,
     audit: &RequestAudit,
+    budget: rss_transactional_messaging::policy::OperationDeadline,
     context: C,
     operation: F,
 ) -> std::result::Result<R, Error>
@@ -108,7 +109,7 @@ where
     let attempt = runtime
         .local_tx_with_context(
             binding,
-            deadline(),
+            budget,
             (audit_store, context, Some(operation), audit, &failure),
             |state, tx| {
                 Box::pin(async move {
