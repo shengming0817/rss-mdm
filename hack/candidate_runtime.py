@@ -474,6 +474,8 @@ class Candidate:
             self.compose('up','-d','--no-deps','postgres',stage=Stage.POSTGRES)
             self.pg=self.container('postgres');self.created.append(self.pg)
             wait(lambda:subprocess.run(['docker','exec',self.pg,'pg_isready','-h','127.0.0.1','-U','postgres'],capture_output=True,timeout=5).returncode==0,'PostgreSQL')
+            self.config['background']['database_connection_budget']=int(self.sql(
+                "SELECT current_setting('max_connections')::int-current_setting('superuser_reserved_connections')::int-current_setting('reserved_connections')::int-1"))
             self.register_private_files()
             if self.prepare:self.prepare(self)
             self.config['listen']=self.compose_environment['MDM_BACKEND_ADDRESS']+':8081'

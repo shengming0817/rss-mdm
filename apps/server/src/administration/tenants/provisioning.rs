@@ -241,8 +241,11 @@ impl Service {
     ) -> std::result::Result<(), Error> {
         self.source_runtime.local_tx(binding, rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff, &crate::lifecycle::RuntimeTimer), |tx| Box::pin(async move {
             tx.with_connection(|c| Box::pin(async move {
-                sqlx::query("UPDATE public.mdm_tenant_operations o SET receipt=jsonb_set(jsonb_set(jsonb_set(o.receipt,'{result,phase}','\"configured\"'::jsonb),'{result,blocked}','null'::jsonb),'{result,administratorId}',a.receipt->'result'->'principalId') FROM public.mdm_tenant_operations a,mdm_initialization.baselines b WHERE o.tenant_id=$1::uuid AND o.action='provision' AND o.receipt->'result'->>'phase'<>'configured' AND a.operation_id=(o.request->>'administratorOperationId')::uuid AND a.action='administrator_create' AND a.tenant_id=o.tenant_id AND b.tenant_id=o.tenant_id AND b.phase='configured'")
-                    .bind(binding.tenant().to_string()).execute(c).await?;
+                let mut sql = sqlx::QueryBuilder::new(format!(
+                    "UPDATE public.mdm_tenant_operations o SET receipt=p.receipt FROM ({RECEIPTS}) p WHERE o.operation_id=p.operation_id AND o.tenant_id="
+                ));
+                sql.push_bind(binding.tenant().to_string()).push("::uuid AND o.receipt->'result'->>'phase'<>'configured' AND p.receipt->'result'->>'phase'='configured'");
+                sql.build().execute(c).await?;
                 Ok(())
             })).await
         })).await.fold(Ok, |e|Err(super::administrator::pg_error(e)), |e|Err(super::administrator::pg_error(e)), |_|Err(Error::RollbackFailed), |_|Err(Error::CommitUnknown), |e|Err(super::administrator::pg_error(e)))
@@ -262,8 +265,8 @@ pub(super) const RECEIPTS: &str = "SELECT o.operation_id, CASE
  WHEN o.receipt->'result'->>'phase'='configured' THEN o.receipt
  ELSE jsonb_set(o.receipt,'{result}',o.receipt->'result' || jsonb_build_object(
    'administratorId',COALESCE(a.receipt->'result'->'principalId',o.receipt->'result'->'administratorId'),
-   'phase',CASE WHEN a.operation_id IS NULL THEN 'pending' ELSE COALESCE(b.phase,'pending') END,
-   'blocked',CASE WHEN a.operation_id IS NULL THEN NULL ELSE b.blocked END)) END AS receipt
+   'phase',CASE WHEN COALESCE(a.receipt->'result'->>'principalId',o.receipt->'result'->>'administratorId') IS NULL THEN 'pending' ELSE COALESCE(b.phase,'pending') END,
+   'blocked',CASE WHEN COALESCE(a.receipt->'result'->>'principalId',o.receipt->'result'->>'administratorId') IS NULL THEN NULL ELSE b.blocked END)) END AS receipt
  FROM public.mdm_tenant_operations o
  LEFT JOIN public.mdm_tenant_operations a ON a.operation_id=(o.request->>'administratorOperationId')::uuid AND a.action='administrator_create' AND a.tenant_id=o.tenant_id
  LEFT JOIN mdm_initialization.baselines b ON b.tenant_id=o.tenant_id
