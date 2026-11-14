@@ -206,7 +206,16 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
                 if server.is_finished() {
                     anyhow::bail!("App terminated before directory verification");
                 }
-                readiness=http.get("/readyz",&[]).await.ok();
+                if let Ok(response) = http.client
+                    .get(format!("http://{address}/readyz"))
+                    .header("host", "mdm.example.test")
+                    .header("x-rss-public-origin", "https://mdm.example.test")
+                    .header("x-forwarded-for", "127.0.0.1")
+                    .send().await
+                {
+                    let status = response.status().as_u16();
+                    readiness = Some((status, response.json::<Value>().await?));
+                }
                 if readiness.as_ref().is_some_and(|(status,body)|*status==200 && body["ready"]==true)
                 {
                     break;
