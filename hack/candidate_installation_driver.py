@@ -73,14 +73,19 @@ class Browser:
             cookies=response.headers.get_all('set-cookie') or []
             if cookies:self.cookie='; '.join(value.split(';',1)[0] for value in cookies)
             raw=response.read()
-            try:value=json.loads(raw) if raw else None
-            except json.JSONDecodeError:
-                if path=='/' and response.status==200:value=raw.decode('utf-8')
-                elif response.status in (502,503):value=None
-                else:raise
+            if raw and response.getheader('Content-Type','').startswith('application/json'):
+                value=json.loads(raw)
+            elif path=='/' and response.status==200:
+                value=raw.decode('utf-8')
+            else:
+                value=None
             if isinstance(value,dict) and value.get('csrfToken'):self.csrf=value['csrfToken']
             return response.status,value
         finally:connection.close()
+
+    def ready(self):
+        status,value=self.call('GET','/readyz')
+        return status==200 and isinstance(value,dict) and value.get('ready') is True
 
     def login(self, tenant, login, password):
         status,_=self.call('POST','/api/v1/identity/tenants/'+tenant+'/login',dict(login=login,password=password))
@@ -120,7 +125,7 @@ def storage_roundtrip(owner, business):
     finally:
         owner.compose('exec','-T','postgres','rm','-f',archive)
     owner.compose('up','-d','--no-deps','server','maintenance')
-    until(lambda: business.call('GET','/readyz')[0] == 200)
+    until(business.ready)
     status, replay = business.call('PUT', path, request)
     check(status == 200 and replay == receipt, 'candidate restored original write receipt')
     status, record = business.call('GET', path)
@@ -160,7 +165,7 @@ def qualify(owner,origin,port):
     check(first['platformPrincipalId']!=first['administratorId'],'independent administrators')
     ca=owner.root/'inputs/gateway-ca.crt'
     business=Browser(origin,ca,port)
-    until(lambda:business.call('GET','/readyz')[0]==200)
+    until(business.ready)
     password=(owner.root/'inputs/administrator-password').read_text().strip()
     business.login(first['tenantId'],'administrator',password)
     status,public=business.call('GET','/api/v1/mdm-host/config.json')
@@ -185,7 +190,7 @@ def qualify(owner,origin,port):
     runtime_path='/var/lib/rss-mdm/installation/runtime.json'
     original_runtime=owner.read(runtime_path)
     original_input=owner.read('/var/lib/rss-mdm/installation-input.json')
-    until(lambda:business.call('GET','/readyz')[0]==200)
+    until(business.ready)
     prior=observe_runtime(business,json.loads(original_runtime))
     def resources():
         # Snapshot actual process/deployment resources, not lazy connection occupancy.
