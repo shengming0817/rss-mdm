@@ -124,11 +124,7 @@ pub(super) async fn seed(c: &Context, cases: &mut Vec<(String, String, Value)>) 
         json!(coordinate.material),
     ));
     let ca = c.inputs.directory.join("task-trust-ca");
-    let recipient = recovery::Recipient::from_pem(
-        &std::fs::read(ca.join("ca.pem"))?,
-        &std::fs::read(ca.join("ca.key"))?,
-    )?;
     Ok(
-        json!({"active_key":"directory","key_files":{"directory":key_path},"active_recipient":recipient.id(),"recipients":[{"certificate_file":ca.join("ca.pem"),"private_key_file":ca.join("ca.key")}]}),
+        json!({"active_key":"directory","key_files":{"directory":key_path},"recipients":[{"certificate_file":ca.join("ca.pem"),"private_key_file":ca.join("ca.key")}]}),
     )
 }
