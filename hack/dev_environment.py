@@ -407,13 +407,13 @@ class Environment:
         private(operator/'account-password',password.read_text())
         private(operator/'migrate.json',dict(installation=installation(),database=database(operator,'mdm_owner'),device_access_database=database(operator,'da_owner')))
 
-        private(operator/'initialize.json',dict(audit={'mode':'plain'},installation=installation(),database=database(operator,'mdm_identity_maintenance'),
+        private(operator/'initialize.json',dict(runtime=config['identity']['runtime'],audit={'mode':'plain'},installation=installation(),database=database(operator,'mdm_identity_maintenance'),
                 tenant_id=TENANTS[0],expected_epoch=1,principal_id=ADMIN,login='admin',password_file=path(operator,'account-password')))
         auth=operator/'authorization.json'
         operation_file=self.root/'authorization-operation'
         if not operation_file.exists():private(operation_file,str(uuid.uuid4()))
         operation=operation_file.read_text()
-        private(auth,dict(profile='mdm',audit={'mode':'plain'},database=database(operator,'mdm_access'),identityDatabase=database(operator,'mdm_identity_runtime'),
+        private(auth,dict(runtime=config['identity']['runtime'],profile='mdm',audit={'mode':'plain'},database=database(operator,'mdm_access'),identityDatabase=database(operator,'mdm_identity_runtime'),
                          installation=installation(),expectedEpoch=1,login='admin',passwordFile=path(operator,'account-password'),operationId=operation,
                          user=dict(instanceId=INSTANCE,tenantId=TENANTS[0],principalId=ADMIN)))
         if self.sql("SELECT count(*) FROM pg_database WHERE datname='mdm_dev'")=='0':self.sql('CREATE DATABASE mdm_dev OWNER mdm_owner')

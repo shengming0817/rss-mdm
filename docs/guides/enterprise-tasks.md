@@ -4,7 +4,7 @@ Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理
 
 ## 配置与内容
 
-内容与任务签名分别配置；仅维护软件目录需要 `content`，Agent 脚本和软件任务需要 `content` 与 `task_signing`，原生 MDM 软件只使用 `content` 及既有原生通道凭据：
+内容存储使用安装配置 `content`；Agent 脚本和软件任务还需要当前租户的任务签名材料，由既有任务信任入口准备。原生 MDM 软件使用 `content` 及既有原生通道凭据：
 
 ```json
 {
@@ -19,9 +19,6 @@ Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理
 
     "max_bundle_entries": 4096,
     "max_expansion_ratio": 100
-  },
-  "task_signing": {
-    "revision": 1
   }
 }
 ```
@@ -30,7 +27,7 @@ Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理
 
 同一 actor/上传 ID 的元数据由 PostgreSQL 持久化已确认 offset。续传从已确认清单恢复，未确认对象由登记意图保留并参与额度计算；多实例的 epoch 防止旧写者推进新 frontier。`POST /api/v1/tenants/{tenant}/software/content/cleanup` 需要 ResourceWrite，每轮有界检查过期且无有效引用、无活跃读写的候选。清理查询 ResourceStore 的全部产物引用索引，包括复用已有摘要但未重新上传的资源。归档不抹去批准、发布或执行证据；仍被引用的内容不会清理。删除屏障与新 Resource 引用串行，S3/卷 I/O 在事务外执行。不得手工删除内容控制状态或正在使用的物理对象。
 
-密钥为 Ed25519 PKCS#8，按其他 secret 文件的权限要求部署；活动私钥必须匹配配置中的可信公钥。Agent 公钥集合通过受信任部署提供，不能信任任务自行携带的 keyId 或公钥。签名覆盖 keyId、tenant/device、task/attempt、平台与架构、用途、期限及精确资源输入；脚本包含解释器、参数和预算，软件包含定义、生命周期绑定、安装意图与全部产物摘要。消费方调用 `SignedTask::verify` 时提供本地身份及预期 task/attempt/permit。
+管理员通过 `POST /api/v1/tenants/{tenant}/task-signing/trust` 的 `prepare` 操作准备租户签名材料；私钥由原任务信任 owner 加密持有。Agent 公钥集合通过受信任部署提供，不能信任任务自行携带的 keyId 或公钥。签名覆盖 keyId、tenant/device、task/attempt、平台与架构、用途、期限及精确资源输入；脚本包含解释器、参数和预算，软件包含定义、生命周期绑定、安装意图与全部产物摘要。消费方调用 `SignedTask::verify` 时提供本地身份及预期 task/attempt/permit。
 
 Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）、`runAs`（system、logged_in_user）、`encoding: utf8`、参数 Schema 与 `bindings`、输出 Schema、`purpose`、timeoutSeconds/outputBytes/maxRows。参数仅支持字符串、整数、布尔，必须显式提供。脚本使用 bindings，SQL 模板使用 sql 中声明的命名参数并保持 bindings 为空；参数作为字面量绑定，不拼接 shell 命令或 SQL 语法。Schema 采用有界闭合子集，拒绝引用、组合器、正则与未知关键字。
 

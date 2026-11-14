@@ -136,10 +136,10 @@ def inputs(root, example, deployment_directory, *, database_host="postgres", hos
     config["scope_group_database"]=database(runtime,"mdm_scope_group_consumer")
     config["asset_input_database"]=database(runtime,"mdm_asset_ingress_consumer")
     config["publication"]["database"]=database(runtime,"mdm_software_driver")
-    write(operator,"authorization.json",dict(profile="mdm",audit={"mode":"plain"},database=database(operator,"mdm_access"),identityDatabase=database(operator,"mdm_identity_runtime"),installation=installation(),expectedEpoch=1,login="admin",passwordFile="/run/mdm/account-password",operationId=str(uuid.uuid4()),user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)))
+    write(operator,"authorization.json",dict(runtime=config["identity"]["runtime"],profile="mdm",audit={"mode":"plain"},database=database(operator,"mdm_access"),identityDatabase=database(operator,"mdm_identity_runtime"),installation=installation(),expectedEpoch=1,login="admin",passwordFile="/run/mdm/account-password",operationId=str(uuid.uuid4()),user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)))
     write(runtime,"config.json",config)
     write(operator,"migrate.json",dict(database=database(operator,"mdm_owner"),device_access_database=database(operator,"da_owner"),installation=installation()))
-    write(operator,"initialize.json",dict(audit={"mode":"plain"},database=database(operator,"mdm_identity_maintenance"),installation=installation(),tenant_id=TENANT,expected_epoch=1,principal_id=ADMIN,
+    write(operator,"initialize.json",dict(runtime=config["identity"]["runtime"],audit={"mode":"plain"},database=database(operator,"mdm_identity_maintenance"),installation=installation(),tenant_id=TENANT,expected_epoch=1,principal_id=ADMIN,
                                           login="admin",password_file=write(operator,"account-password",PASSWORD)))
     from gateway_fixture import render
     gateway=render(deployment_directory, origin="https://"+hostname, backend="server:8081")
