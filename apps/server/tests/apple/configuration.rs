@@ -229,9 +229,7 @@ async fn reconcile(
             |ctx, tx| {
                 Box::pin(async move {
                     ctx.3.prepare_in(tx, ctx.2, &[]).await?;
-                    ctx.0
-                        .wake_devices_in(ctx.2.binding()?, tx, &[ctx.1.to_owned()])
-                        .await
+                    ctx.0.wake_devices_in(tx, &[ctx.1.to_owned()]).await
                 })
             },
         )

@@ -20,14 +20,11 @@ impl Compliance {
     }
     pub(crate) async fn enqueue_task_in(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         input: &Input,
     ) -> Result<()> {
-        if binding.tenant() != tx.tenant_id() || binding.storage() != self.storage {
-            return Err(Error::Forbidden.into());
-        }
+        let epoch = tx.expected_epoch().get();
 
         self.check_task_transaction(tx)?;
         checked_input(input.validate())?;
@@ -35,16 +32,7 @@ impl Compliance {
         let input = input.clone();
         tx.with_connection(move |c| {
             Box::pin(async move {
-                pg::tasks::enqueue(
-                    c,
-                    binding.epoch().get(),
-                    t,
-                    id,
-                    input.rule,
-                    input.revision,
-                    &input,
-                )
-                .await
+                pg::tasks::enqueue(c, epoch, t, id, input.rule, input.revision, &input).await
             })
         })
         .await?;

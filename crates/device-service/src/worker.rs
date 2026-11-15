@@ -282,15 +282,30 @@ tokio::select!{biased;()=stop.cancelled()=>return Ok(()),()=notify.notified()=>{
                 for tenant in tenants {
                     after=Some(tenant);
                     let tenant=rss_request_context::TenantId::parse(&tenant.to_string()).map_err(rss_runtime::ShutdownError::new)?;
-                    let scope=Self::scope(tenant);let pass_stop=stop.child_token();let pass=DevicePass{work:&self,stop:&pass_stop};
-                    let report = rss_reconcile::run_with_notify(&pass,self.as_ref(),&scope,policy,&control,&pass_stop,&notify,|event|{
+                    let scope=Self::scope(tenant);
+                    let report = match rss_reconcile::run_batch(self.as_ref(),
+self.as_ref(),
+&scope,
+policy,
+&control,
+&stop,
+|event|{
                         let (key,kind)=match &event {
                             rss_reconcile::Observation::Deferred{..}=>return,
                             rss_reconcile::Observation::AttemptFailed{target,error,..}=>(format!("{}:{}",target.scope().tenant(),target.entity()),error.kind()),
                             rss_reconcile::Observation::ScanFailed{error,..}=>(format!("!scan:{tenant}"),error.kind()),
                         };
                         self.owner.record_worker_failure(key,kind);
-                    }).await.map_err(rss_runtime::ShutdownError::new)?;
+                    }).await {
+      Ok(report) => report,
+      Err(error) if control.check().is_ok() && matches!(error.kind(),
+          rss_reconcile::ErrorKind::Transient | rss_reconcile::ErrorKind::Deadline | rss_reconcile::ErrorKind::CommitUnknown) => {
+          // The observer retained this scope's failure. Advance the tenant cursor;
+          // an unconfirmed claim is not an empty or successfully drained batch.
+          continue;
+      }
+      Err(error) => return Err(rss_runtime::ShutdownError::new(error)),
+  };
                     worked |= [report.converged, report.reobserve, report.deferred, report.retried,
                         report.suspended, report.fenced, report.execution_failed]
                         .into_iter().any(|count| count > 0);
@@ -582,14 +597,11 @@ impl Timer for DeviceTimer {
 pub async fn wake_inputs_in(
     store: &PgMessagingStore,
     tx: &mut PgTransaction<'_>,
-    execution: rss_transactional_messaging::fence::ExecutionBinding,
 ) -> Result<(), PgError> {
     let tenant = tx.tenant_id();
-    if tenant != execution.tenant() {
-        return Err(sqlx::Error::Protocol("device input scope mismatch".into()).into());
-    }
+
     let t = tenant.to_string();
-    let epoch = execution.epoch().get();
+    let epoch = tx.expected_epoch().get();
     tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("INSERT INTO mdm_devices.checkpoints(tenant_id,expected_epoch) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&t).bind(epoch).execute(&mut *c).await?;
         let expected:i64=sqlx::query_scalar("SELECT expected_epoch FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid").bind(t).fetch_one(c).await?;
@@ -644,66 +656,5 @@ impl DeviceWork {
             tenant,
             epoch,
         ))
-    }
-}
-struct DevicePass<'a> {
-    work: &'a DeviceWork,
-    stop: &'a tokio_util::sync::CancellationToken,
-}
-impl DurableStore for DevicePass<'_> {
-    type Claim = PgClaim;
-    async fn wake<T: Timer>(
-        &self,
-        target: &Target,
-        resources: &ResourceSet,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<(), Error> {
-        self.work.wake(target, resources, control).await
-    }
-    async fn bind_resources<T: Timer>(
-        &self,
-        target: &Target,
-        resources: &ResourceSet,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<(), Error> {
-        self.work.bind_resources(target, resources, control).await
-    }
-    async fn claim_due<T: Timer>(
-        &self,
-        scope: &Scope,
-        limit: usize,
-        scan_budget: u32,
-        lease: Duration,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<ClaimBatch<PgClaim>, Error> {
-        let result = self
-            .work
-            .claim_due(scope, limit, scan_budget, lease, control)
-            .await;
-        self.stop.cancel();
-        result
-    }
-    async fn renew<T: Timer>(
-        &self,
-        claim: &PgClaim,
-        lease: Duration,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<(), Error> {
-        self.work.renew(claim, lease, control).await
-    }
-    async fn release<T: Timer>(
-        &self,
-        claim: &PgClaim,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<(), Error> {
-        self.work.release(claim, control).await
-    }
-    async fn finish<T: Timer>(
-        &self,
-        claim: &PgClaim,
-        completion: Completion,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<(), Error> {
-        self.work.finish(claim, completion, control).await
     }
 }

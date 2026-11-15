@@ -153,7 +153,6 @@ impl AssetService {
         };
         let task = change.operation_id;
         self.enqueue_query_in(
-            binding,
             tx,
             task,
             &assets::tasks::QueryInput {

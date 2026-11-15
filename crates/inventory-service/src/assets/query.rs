@@ -50,7 +50,6 @@ impl AssetService {
     )]
     pub(super) async fn asset_query(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         scope: &ReadScope,
@@ -72,7 +71,6 @@ impl AssetService {
             }
         }
         self.enqueue_query_in(
-            binding,
             tx,
             task,
             &QueryInput {

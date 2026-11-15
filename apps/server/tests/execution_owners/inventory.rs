@@ -300,3 +300,39 @@ async fn periodic_assignment_uses_actual_start_and_exact_current_version() -> an
 
 #[path = "capacity.rs"]
 mod capacity;
+
+#[tokio::test]
+#[ignore = "T2: real Agent claim admits a Collection with its original epoch and atomic outbox/wake, and replays without a second run"]
+async fn agent_claim_persists_collection_with_execution_epoch_atomically() -> anyhow::Result<()> {
+    let h = Harness::open().await?;
+    let result = async {
+        let (definition, frozen, template) = super::mixed::agent(&h)?;
+        let mut tx = command::seed_transaction(&h.c).await?;
+        sqlx::query("INSERT INTO mdm_access.report_sources (tenant_id,device,source,epoch,enabled) VALUES($1::uuid,$2,'agent.native',$3,TRUE) ON CONFLICT(tenant_id,device,source) DO UPDATE SET enabled=TRUE")
+            .bind(h.c.tenant.to_string()).bind(h.p.device().into_uuid()).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+        tx.commit().await?;
+        let version = super::mixed::publish(&h, Uuid::new_v4(), 1, definition, frozen).await?;
+        let input = w::TaskClaimRequest::new(Uuid::new_v4(), vec![w::ExecutorProfile::PowerShell7], context())?
+            .with_environment(rss_mdm_agent_wire::CollectionEnvironment { edition: None, tools: Default::default(), native_engines: template.spec().plan.requirements() })?;
+        h.delivery.claim(&h.p, &input, &request(&h.c)).await?;
+        let runs: Vec<(Uuid, i64)> = sqlx::query_as("SELECT id,expected_epoch FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND policy_version=$2")
+            .bind(h.c.tenant.to_string()).bind(version).fetch_all(&h.c.operator).await?;
+        assert_eq!(runs.len(), 1, "claim must enter real collection admission");
+        let (id, epoch) = runs[0];
+        assert_eq!(epoch, h.p.binding().epoch().get());
+        let outbox: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id=$2")
+            .bind(h.c.tenant.to_string()).bind(format!("collection.{id}")).fetch_one(&h.c.operator).await?;
+        assert_eq!(outbox, 1);
+        let wake: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity=$3)")
+            .bind(h.c.tenant.to_string()).bind(rss_mdm_inventory_service::collection::execution::wake::scope(h.c.tenant).reconciler())
+            .bind(format!("run:{id}")).fetch_one(&h.c.operator).await?;
+        assert!(wake);
+        h.delivery.claim(&h.p, &input, &request(&h.c)).await?;
+        let replayed: Vec<(Uuid, i64)> = sqlx::query_as("SELECT id,expected_epoch FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND policy_version=$2")
+            .bind(h.c.tenant.to_string()).bind(version).fetch_all(&h.c.operator).await?;
+        assert_eq!(replayed, runs);
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    h.close().await?;
+    result
+}

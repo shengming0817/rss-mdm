@@ -91,7 +91,6 @@ impl Compliance {
     }
     pub(crate) async fn enqueue(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         r: &Rule,
         candidate: &rss_mdm_inventory::AssetCut,
@@ -101,7 +100,7 @@ impl Compliance {
         let t = tx.tenant_id();
         let id = r.id;
         let revision = r.revision;
-        self.enqueue_task_in(binding, tx, task, &input).await?;
+        self.enqueue_task_in(tx, task, &input).await?;
         if !tx
             .with_connection(move |c| {
                 Box::pin(async move { pg::desired(c, t, id, revision, task).await })
@@ -556,7 +555,7 @@ impl Compliance {
                     .finish_task_in(binding, tx, task, Some("superseded"))
                     .await;
             }
-            self.enqueue(binding, tx, r, candidate).await?;
+            self.enqueue(tx, r, candidate).await?;
         }
         return self
             .finish_task_in(binding, tx, task, Some("superseded"))

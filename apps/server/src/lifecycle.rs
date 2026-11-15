@@ -530,7 +530,7 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                 role: "mdm_scope_group_consumer", domain: rss_mdm_scope_service::group_changes::DOMAIN,
                                 consumer: rss_mdm_scope_service::group_changes::CONSUMER, name: "scope-group-delivery",scopes:"SELECT * FROM mdm_group.delivery_scopes($1,$2)" },
                             |runtime, binding, messaging| (rss_mdm_scope_service::group_changes::Receiver::new(
-                                rss_mdm_install_support::StorageProfile::Mdm, runtime, binding.storage(), messaging),
+                                rss_mdm_install_support::StorageProfile::Mdm, runtime, messaging),
                                 rss_mdm_scope_service::group_changes::Validator { storage:binding.storage() }),
                         ).await.map_err(|e| ProcessError::at("startup.scope_group_delivery", e))?;
                         startup.stage_resource(DynManagedResource::new_box(crate::local_delivery::Resource(scope_delivery.clone())));
@@ -539,7 +539,7 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                             crate::local_delivery::Lane { database: &compiled.config.asset_input_database,
                                 role: "mdm_asset_ingress_consumer", domain: crate::asset_inputs::DOMAIN,
                                 consumer: crate::asset_inputs::CONSUMER, name: "asset-input-delivery",scopes:"SELECT * FROM mdm_devices.asset_delivery_scopes($1,$2)" },
-                            |_, binding, messaging| (crate::asset_inputs::Receiver { messaging, storage:binding.storage() }, crate::asset_inputs::Validator { storage:binding.storage() }),
+                            |_, binding, messaging| (crate::asset_inputs::Receiver { messaging }, crate::asset_inputs::Validator { storage:binding.storage() }),
                         ).await.map_err(|e| ProcessError::at("startup.asset_input_delivery", e))?;
                         startup.stage_resource(DynManagedResource::new_box(crate::local_delivery::Resource(asset_delivery.clone())));
                         let listen = compiled.config.listen;
@@ -663,7 +663,6 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                 da:da.clone(),
                                 script_work,
                                 collection_work,
-
                                 telemetry: telemetry.clone(),
                                 certificate_archive: archive.clone(),
                                 timeline: timeline.clone(),

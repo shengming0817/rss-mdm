@@ -92,14 +92,8 @@ impl Transactions {
         audit: &RequestAudit,
     ) -> Result<()> {
         if entity == "configuration-inputs" {
-            source_changes::advance_in(
-                audit.binding()?,
-                tx,
-                self,
-                self.source.clone(),
-                cut.ok_or(Error::Malformed)?,
-            )
-            .await?;
+            source_changes::advance_in(tx, self, self.source.clone(), cut.ok_or(Error::Malformed)?)
+                .await?;
             return source_changes::clear_failure_in(tx).await;
         }
         if let Some(device) = device {
@@ -220,10 +214,9 @@ impl Transactions {
             tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_planning.configuration_operations SET observed_command_version=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant.to_string()).bind(id).bind(version).execute(c).await?;Ok(())})).await?;
             if command.status().is_terminal() {
                 self.changes
-                    .configuration_progressed_in(audit.binding()?, tx, &[*device])
+                    .configuration_progressed_in(tx, &[*device])
                     .await?;
-                self.wake_devices_in(audit.binding()?, tx, &[*device])
-                    .await?;
+                self.wake_devices_in(tx, &[*device]).await?;
             }
         }
         let cursor = candidates.after;

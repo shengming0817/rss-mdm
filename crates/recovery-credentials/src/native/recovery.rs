@@ -160,26 +160,37 @@ impl Service {
                 let tenant = TenantId::parse(&tenant.to_string())
                     .map_err(rss_runtime::ShutdownError::new)?;
                 let scope = recovery_scope(tenant);
-                let stop = cancel.child_token();
-                let pass = Pass {
-                    worker: self,
-                    stop: &stop,
-                };
-                let report = rss_reconcile::run_with_notify(
-                    &pass,
+
+                let report = match rss_reconcile::run_batch(
+                    &self.recovery_store(),
                     self,
                     &scope,
                     policy,
                     &control,
-                    &stop,
-                    signals.command_recovery(),
+                    &cancel,
                     |event| {
                         self.readiness.observe(&event);
                         diagnostic(event);
                     },
                 )
                 .await
-                .map_err(rss_runtime::ShutdownError::new)?;
+                {
+                    Ok(report) => report,
+                    Err(error)
+                        if control.check().is_ok()
+                            && matches!(
+                                error.kind(),
+                                rss_reconcile::ErrorKind::Transient
+                                    | rss_reconcile::ErrorKind::Deadline
+                                    | rss_reconcile::ErrorKind::CommitUnknown
+                            ) =>
+                    {
+                        // The observer retained this scope's failure. Advance the tenant cursor;
+                        // an unconfirmed claim is not an empty or successfully drained batch.
+                        continue;
+                    }
+                    Err(error) => return Err(rss_runtime::ShutdownError::new(error)),
+                };
                 worked |= [
                     report.converged,
                     report.reobserve,
@@ -406,7 +417,6 @@ pub(crate) async fn apply_prepared(
 ) -> Result<bool> {
     match prepared {
         PreparedRecovery::Empty => Ok(false),
-
         PreparedRecovery::Device(name) => {
             let tenant = tx.tenant_id().to_string();
             let key = name;
@@ -783,84 +793,6 @@ async fn command_candidates_in(
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(CommandCandidates { operations, after })
-}
-
-struct Pass<'a> {
-    worker: &'a Service,
-    stop: &'a tokio_util::sync::CancellationToken,
-}
-impl rss_reconcile::DurableStore for Pass<'_> {
-    type Claim = rss_reconcile_postgres::PgClaim;
-    async fn wake<T: rss_reconcile::Timer>(
-        &self,
-        target: &rss_reconcile::Target,
-        resources: &rss_reconcile::ResourceSet,
-        control: &rss_reconcile::Control<'_, T>,
-    ) -> std::result::Result<(), rss_reconcile::Error> {
-        self.worker
-            .recovery_store()
-            .wake(target, resources, control)
-            .await
-    }
-    async fn bind_resources<T: rss_reconcile::Timer>(
-        &self,
-        target: &rss_reconcile::Target,
-        resources: &rss_reconcile::ResourceSet,
-        control: &rss_reconcile::Control<'_, T>,
-    ) -> std::result::Result<(), rss_reconcile::Error> {
-        self.worker
-            .recovery_store()
-            .bind_resources(target, resources, control)
-            .await
-    }
-    async fn claim_due<T: rss_reconcile::Timer>(
-        &self,
-        scope: &rss_reconcile::Scope,
-        limit: usize,
-        scan_budget: u32,
-        lease: Duration,
-        control: &rss_reconcile::Control<'_, T>,
-    ) -> std::result::Result<
-        rss_reconcile::ClaimBatch<rss_reconcile_postgres::PgClaim>,
-        rss_reconcile::Error,
-    > {
-        let result = self
-            .worker
-            .recovery_store()
-            .claim_due(scope, limit, scan_budget, lease, control)
-            .await;
-        self.stop.cancel();
-        result
-    }
-    async fn renew<T: rss_reconcile::Timer>(
-        &self,
-        claim: &rss_reconcile_postgres::PgClaim,
-        lease: Duration,
-        control: &rss_reconcile::Control<'_, T>,
-    ) -> std::result::Result<(), rss_reconcile::Error> {
-        self.worker
-            .recovery_store()
-            .renew(claim, lease, control)
-            .await
-    }
-    async fn release<T: rss_reconcile::Timer>(
-        &self,
-        claim: &rss_reconcile_postgres::PgClaim,
-        control: &rss_reconcile::Control<'_, T>,
-    ) -> std::result::Result<(), rss_reconcile::Error> {
-        self.worker.recovery_store().release(claim, control).await
-    }
-    async fn finish<T: rss_reconcile::Timer>(
-        &self,
-        claim: &rss_reconcile_postgres::PgClaim,
-        completion: rss_reconcile::Completion,
-        control: &rss_reconcile::Control<'_, T>,
-    ) -> std::result::Result<(), rss_reconcile::Error> {
-        self.worker
-            .recovery_store()
-            .finish(claim, completion, control)
-            .await
-    }
 }
 
 impl Service {

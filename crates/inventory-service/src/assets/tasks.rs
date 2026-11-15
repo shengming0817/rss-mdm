@@ -63,14 +63,11 @@ impl AssetService {
     }
     pub(super) async fn enqueue_query_in(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         input: &QueryInput,
     ) -> Result<()> {
-        if binding.tenant() != tx.tenant_id() || binding.storage() != self.storage {
-            return Err(Error::Forbidden.into());
-        }
+        let epoch = tx.expected_epoch().get();
 
         self.check_query_transaction(tx)?;
         if task.is_nil() || input.asset_cut.tenant().to_string() != tx.tenant_id().to_string() {
@@ -83,7 +80,7 @@ impl AssetService {
         let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| Box::pin(async move {
             sqlx::query("INSERT INTO mdm_assets.asset_query_runs(tenant_id,id,input,expected_epoch) VALUES($1::uuid,$2,$3::jsonb,$4)")
-                .bind(tenant).bind(task).bind(document).bind(binding.epoch().get()).execute(c).await?;
+                .bind(tenant).bind(task).bind(document).bind(epoch).execute(c).await?;
             Ok(())
         })).await?;
         self.reconcile_messaging

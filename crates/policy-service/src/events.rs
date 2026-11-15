@@ -388,7 +388,7 @@ impl Events {
                         )
                         .await?;
                     }
-                    crate::worker::jobs::enqueue_job_in(audit.binding()?,
+                    crate::worker::jobs::enqueue_job_in(
                         profile,
                         &s.application.reconcile_messaging,
                         tx,
@@ -779,9 +779,7 @@ impl Application {
             })
             .await?
             .map_err(Error::from)?;
-        self.changes
-            .retirement_accepted_in(binding, tx, accepted.0)
-            .await?;
+        self.changes.retirement_accepted_in(tx, accepted.0).await?;
         Ok(wire::PolicyEventDecision::Accepted {
             operations: vec![wire::PolicyEventOperation::Retirement { id: accepted.0 }],
         })

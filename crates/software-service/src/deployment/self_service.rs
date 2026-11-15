@@ -506,7 +506,6 @@ impl SoftwareService {
             .append_in(tx, &fact)
             .await?;
         crate::deployment::sources::storage::wake_execution_in(
-            p.binding(),
             &service.transactions.reconcile_messaging,
             tx,
             policy.id,

@@ -186,7 +186,7 @@ impl Scopes {
                 self.store.publish_in(tx, &publication, changed).await?;
                 let owner = self.store.owner_in(tx, run.scope).await?;
                 self.dependents
-                    .publication_recorded_in(binding, tx, owner, id)
+                    .publication_recorded_in(tx, owner, id)
                     .await?;
                 self.finish_in(binding, tx, id, None).await?;
                 let mut successor = self
@@ -231,8 +231,7 @@ impl Scopes {
                     }
                 }
                 if successor {
-                    self.enqueue_in(binding, tx, Uuid::new_v4(), run.scope)
-                        .await?;
+                    self.enqueue_in(tx, Uuid::new_v4(), run.scope).await?;
                 }
                 Ok(())
             }

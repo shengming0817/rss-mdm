@@ -2,7 +2,6 @@ use super::*;
 impl Compliance {
     pub async fn dispatch_invalidated(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<bool> {
@@ -12,14 +11,13 @@ impl Compliance {
             .await?;
         if let Some(id) = id {
             let rule = self.rule(tx, id).await?;
-            self.enqueue(binding, tx, &rule, candidate).await?;
+            self.enqueue(tx, &rule, candidate).await?;
             return Ok(true);
         }
         Ok(false)
     }
     async fn refresh_rule(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         r: &Rule,
         candidate: &rss_mdm_inventory::AssetCut,
@@ -31,7 +29,7 @@ impl Compliance {
             true
         };
         if needs {
-            self.enqueue(binding, tx, r, candidate).await?;
+            self.enqueue(tx, r, candidate).await?;
         }
         Ok(())
     }
@@ -40,13 +38,12 @@ impl Compliance {
 impl Compliance {
     pub(crate) async fn dispatch_inputs_in(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<bool> {
         self.runtime.validate_transaction(tx)?;
 
-        if self.dispatch_invalidated(binding, tx, candidate).await? {
+        if self.dispatch_invalidated(tx, candidate).await? {
             return Ok(true);
         }
         let t = tx.tenant_id();
@@ -125,7 +122,7 @@ impl Compliance {
                 )?
                 .is_empty()
             {
-                self.refresh_rule(binding, tx, rule, &cut).await?;
+                self.refresh_rule(tx, rule, &cut).await?;
             }
         }
         let next = (rules.len() > 1).then(|| rules[0].id);
@@ -160,11 +157,10 @@ impl Compliance {
     }
     pub(crate) async fn advance_inputs_in(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<()> {
-        self.dispatch_inputs_in(binding, tx, candidate).await?;
+        self.dispatch_inputs_in(tx, candidate).await?;
         Ok(())
     }
 }

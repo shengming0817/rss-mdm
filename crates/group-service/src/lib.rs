@@ -144,16 +144,10 @@ impl Groups {
 mod sources;
 
 impl Groups {
-    async fn define_in(
-        &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-        tx: &mut PgTransaction<'_>,
-        edit: DefinitionEdit,
-    ) -> Result<Value> {
+    async fn define_in(&self, tx: &mut PgTransaction<'_>, edit: DefinitionEdit) -> Result<Value> {
         json(
             &self
                 .enqueue_task_in(
-                    binding,
                     tx,
                     edit.change.operation_id,
                     &tasks::TaskInput::Definition {

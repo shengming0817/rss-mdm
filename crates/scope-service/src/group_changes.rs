@@ -67,7 +67,6 @@ impl IngressValidator<Vec<u8>> for Validator {
     }
 }
 pub struct Receiver {
-    storage: rss_transactional_messaging::fence::StorageIdentity,
     binding: rss_mdm_scope_postgres::ScopeBinding,
     messaging: rss_reconcile_postgres::PgMessagingStore,
 }
@@ -75,11 +74,9 @@ impl Receiver {
     pub fn new(
         profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
-        storage: rss_transactional_messaging::fence::StorageIdentity,
         messaging: rss_reconcile_postgres::PgMessagingStore,
     ) -> Self {
         Self {
-            storage,
             messaging,
             binding: rss_mdm_scope_postgres::ScopeBinding::new(profile, runtime),
         }
@@ -94,13 +91,7 @@ impl PgConsumerEffect<Vec<u8>> for Receiver {
     ) -> Result<TerminalDisposition, PgConsumerEffectFailure> {
         let event: GroupChanged = serde_json::from_slice(message.payload())
             .map_err(PgConsumerEffectFailure::handler_transient)?;
-        let epoch = rss_transactional_messaging::fence::Epoch::new(event.execution_epoch)
-            .map_err(PgConsumerEffectFailure::handler_transient)?;
-        let execution = rss_transactional_messaging::fence::ExecutionBinding::new(
-            self.storage,
-            tx.tenant_id(),
-            epoch,
-        );
+
         // Presentation changes do not change Scope membership or authorization.
         if !matches!(event.kind, GroupChangeKind::Edited) {
             let group = uuid::Uuid::parse_str(&event.group_id)
@@ -116,7 +107,7 @@ impl PgConsumerEffect<Vec<u8>> for Receiver {
                 })?;
         }
         if !matches!(event.kind, GroupChangeKind::Edited) {
-            crate::tasks::wake_inputs_in(self.binding.profile(), &self.messaging, tx, execution)
+            crate::tasks::wake_inputs_in(self.binding.profile(), &self.messaging, tx)
                 .await
                 .map_err(PgConsumerEffectFailure::infrastructure)?;
         }

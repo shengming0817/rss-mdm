@@ -3,7 +3,6 @@ use super::*;
 impl Groups {
     pub(crate) async fn advance_relations_in(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<()> {
@@ -33,7 +32,6 @@ impl Groups {
         let groups=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Uuid>("SELECT id FROM mdm_group.groups WHERE tenant_id=$1::uuid AND NOT deleted AND asset_context='associated_device' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 33").bind(tenant).bind(cursor).fetch_all(c).await})).await?;
         for group in groups.iter().take(32) {
             self.dispatch_group_in(
-                binding,
                 tx,
                 checked_input(rss_mdm_group::GroupId::parse(&group.to_string()))?,
                 candidate,

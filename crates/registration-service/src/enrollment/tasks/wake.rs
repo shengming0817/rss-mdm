@@ -43,15 +43,13 @@ pub async fn run_in(
 }
 
 pub async fn policy_in(
-    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
 ) -> Result<()> {
-    if binding.tenant() != tx.tenant_id() {
-        return Err(Error::Malformed.into());
-    }
+    let epoch = tx.expected_epoch().get();
+
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
@@ -59,7 +57,7 @@ pub async fn policy_in(
                 sqlx::query(crate::storage_profile::sql(profile).enrollment_tasks_wake_policy_in_1)
                     .bind(tenant)
                     .bind(id)
-                    .bind(binding.epoch().get())
+                    .bind(epoch)
                     .execute(c)
                     .await?;
             if updated.rows_affected() != 1 {

@@ -206,7 +206,6 @@ impl SoftwareService {
         if transition.command.status().is_terminal() || withdrawal_received {
             // Logical publication withdrawal can release desired claims without claiming an OS effect.
             crate::deployment::wake::wake_native_in(
-                p.binding(),
                 &service.transactions.reconcile_messaging,
                 service.transactions.source.clone(),
                 tx,
@@ -246,7 +245,7 @@ impl SoftwareService {
             return Err(Error::Malformed.into());
         }
         if eligible(&self.transactions, tx, p, &op).await? {
-            complete_ddm(p.binding(), self, tx, &op).await?;
+            complete_ddm(self, tx, &op).await?;
         }
         Ok(())
     }
@@ -322,7 +321,6 @@ fn admission(op: storage::Operation, eligible: bool, dispatch: bool) -> Result<A
     })
 }
 async fn complete_ddm(
-    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &SoftwareService,
     tx: &mut PgTransaction<'_>,
     op: &storage::Operation,
@@ -372,7 +370,6 @@ async fn complete_ddm(
         return Err(Error::Conflict.into());
     }
     crate::deployment::wake::wake_native_in(
-        execution,
         &service.transactions.reconcile_messaging,
         service.transactions.source.clone(),
         tx,

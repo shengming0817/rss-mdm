@@ -258,16 +258,7 @@ impl Store {
             .fetch_all(&self.pool)
             .await
             .map_err(db)?;
-        match rows.as_slice() {
-            [] => Ok(None),
-            [(tenant, epoch)] => Ok(Some((
-                rss_request_context::TenantId::parse(&tenant.to_string())
-                    .map_err(|_| Error::Corrupt)?,
-                rss_transactional_messaging::fence::Epoch::new(*epoch)
-                    .map_err(|_| Error::Corrupt)?,
-            ))),
-            _ => Err(Error::Unauthorized),
-        }
+        unique_original(rows)
     }
     pub async fn locate_bootstrap(
         &self,
@@ -292,16 +283,7 @@ impl Store {
             .fetch_all(&self.pool)
             .await
             .map_err(db)?;
-        match rows.as_slice() {
-            [] => Ok(None),
-            [(tenant, epoch)] => Ok(Some((
-                rss_request_context::TenantId::parse(&tenant.to_string())
-                    .map_err(|_| Error::Corrupt)?,
-                rss_transactional_messaging::fence::Epoch::new(*epoch)
-                    .map_err(|_| Error::Corrupt)?,
-            ))),
-            _ => Err(Error::Unauthorized),
-        }
+        unique_original(rows)
     }
 }
 fn unique_tenant(tenants: Vec<uuid::Uuid>) -> Result<Option<rss_request_context::TenantId>, Error> {

@@ -105,10 +105,7 @@ impl Scopes {
             self.store
                 .put_in(tx, id, expected, owner, definition)
                 .await?;
-            Some(
-                self.enqueue_in(proof.binding(), tx, Uuid::new_v4(), id)
-                    .await?,
-            )
+            Some(self.enqueue_in(tx, Uuid::new_v4(), id).await?)
         } else {
             self.store.pending_task_in(tx, id).await?
         };
@@ -207,9 +204,7 @@ impl Scopes {
             self.finish_in(proof.binding(), tx, old, Some("superseded"))
                 .await?;
         }
-        let new = self
-            .enqueue_in(proof.binding(), tx, Uuid::new_v4(), child.id)
-            .await?;
+        let new = self.enqueue_in(tx, Uuid::new_v4(), child.id).await?;
         if let Some(old) = old {
             self.store.replace_task_in(tx, old, new).await?;
         }

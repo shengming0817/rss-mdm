@@ -29,13 +29,13 @@ pub(super) async fn wake(h: &Harness, collection: bool, policy: Uuid) -> Result<
     script::transaction::inspect(
         &h.a.resources.storage.runtime,
         h.c.execution(),
-        (messaging, collection, policy, h.c.execution()),
+        (messaging, collection, policy),
         |ctx, tx| {
             Box::pin(async move {
                 if ctx.1 {
-                    collection::wake::policy_in(ctx.3, &ctx.0, tx, ctx.2).await?;
+                    collection::wake::policy_in(&ctx.0, tx, ctx.2).await?;
                 } else {
-                    script::wake::policy_in(ctx.3, &ctx.0, tx, ctx.2).await?;
+                    script::wake::policy_in(&ctx.0, tx, ctx.2).await?;
                 }
                 Ok(())
             })
@@ -475,5 +475,81 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
     assert_eq!(epoch, 1, "relay does not retag old work");
     other.close().await?;
 
+    h.close().await
+}
+
+#[tokio::test]
+#[ignore = "T2: the registered Script worker survives a real claim pool timeout and advances another tenant"]
+async fn recoverable_batch_scan_failure_does_not_stop_other_tenants() -> Result<()> {
+    let h = Harness::open().await?;
+    let other = Harness::open().await?;
+    let (first, second) = if h.c.tenant.to_string() < other.c.tenant.to_string() {
+        (&h, &other)
+    } else {
+        (&other, &h)
+    };
+    for host in [first, second] {
+        let (policy, _) = host.policy("scan-failure").await?;
+        wake(host, false, policy).await?;
+    }
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_millis(500))
+        .connect_with(
+            h.c.inputs
+                .database("shared", "mdm_scheduler_runtime")
+                .options()?,
+        )
+        .await?;
+    let timer = rss_mdm_device_service::control::recovery::Timer::new();
+    let force = CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &force);
+    let store = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
+    let worker = Arc::new(script::worker::Worker::new(
+        h.c.database.archive_pool(),
+        h.c.execution().storage(),
+        h.a.scripts.clone(),
+        store,
+        Arc::new(tokio::sync::Semaphore::new(1)),
+    )?);
+    let held = pool.acquire().await?;
+    let mut stack = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(25))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut launch = stack.startup()?.commit();
+    let status = launch.stage_deferred_task_with_token(
+        worker
+            .clone()
+            .registration(
+                policy()?,
+                Duration::from_secs(20),
+                Arc::new(tokio::sync::Notify::new()),
+            )
+            .critical(),
+    );
+    launch.finish();
+    let failed = tokio::time::timeout(Duration::from_secs(10), async {
+        while !matches!(
+            worker.health().recovery,
+            rss_mdm_recovery_observation::Phase::Failed(_)
+        ) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    drop(held);
+    let progressed = converged(second, script::wake::scope(second.c.tenant).reconciler(), 1).await;
+    let shutdown = stack.shutdown().join().await?;
+    assert!(shutdown.is_clean());
+    assert_eq!(
+        status.wait_stopped().await,
+        rss_runtime::TaskExit::Cancelled
+    );
+    failed?;
+    progressed?;
+    drop(worker);
+    pool.close().await;
+    other.close().await?;
     h.close().await
 }

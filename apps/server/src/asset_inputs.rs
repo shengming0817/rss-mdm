@@ -82,7 +82,6 @@ impl IngressValidator<Vec<u8>> for Validator {
     }
 }
 pub(crate) struct Receiver {
-    pub storage: rss_transactional_messaging::fence::StorageIdentity,
     pub messaging: rss_reconcile_postgres::PgMessagingStore,
 }
 impl PgConsumerEffect<Vec<u8>> for Receiver {
@@ -92,20 +91,15 @@ impl PgConsumerEffect<Vec<u8>> for Receiver {
         message: &MessageEnvelope<Vec<u8>>,
         _: OperationDeadline,
     ) -> Result<TerminalDisposition, PgConsumerEffectFailure> {
-        let binding = execution(message, self.storage).map_err(|e| {
-            PgConsumerEffectFailure::handler_transient(sqlx::Error::Protocol(format!(
-                "asset execution: {e:?}"
-            )))
-        })?;
         // Keep this lock order fixed. No owner progress or business tables are accessed here.
-        rss_mdm_group_service::input_wake::wake_in(&self.messaging, tx, binding)
+        rss_mdm_group_service::input_wake::wake_in(&self.messaging, tx)
             .await
             .map_err(PgConsumerEffectFailure::infrastructure)?;
         if message.metadata().route().as_str() == "asset.changed" {
-            rss_mdm_device_service::worker::wake_inputs_in(&self.messaging, tx, binding)
+            rss_mdm_device_service::worker::wake_inputs_in(&self.messaging, tx)
                 .await
                 .map_err(PgConsumerEffectFailure::infrastructure)?;
-            rss_mdm_compliance_postgres::wake_inputs_in(&self.messaging, tx, binding)
+            rss_mdm_compliance_postgres::wake_inputs_in(&self.messaging, tx)
                 .await
                 .map_err(PgConsumerEffectFailure::infrastructure)?;
         }
@@ -113,22 +107,20 @@ impl PgConsumerEffect<Vec<u8>> for Receiver {
             rss_mdm_install_support::StorageProfile::Mdm,
             &self.messaging,
             tx,
-            binding,
         )
         .await
         .map_err(PgConsumerEffectFailure::infrastructure)?;
         rss_mdm_policy_service::configuration::wake::inputs_in(
-            binding,
             rss_mdm_install_support::StorageProfile::Mdm,
             &self.messaging,
             tx,
         )
         .await
         .map_err(PgConsumerEffectFailure::infrastructure)?;
-        rss_mdm_device_service::control::source_changes::wake_in(binding, &self.messaging, tx)
+        rss_mdm_device_service::control::source_changes::wake_in(&self.messaging, tx)
             .await
             .map_err(PgConsumerEffectFailure::infrastructure)?;
-        rss_mdm_software_service::deployment::source_changes::wake_in(binding, &self.messaging, tx)
+        rss_mdm_software_service::deployment::source_changes::wake_in(&self.messaging, tx)
             .await
             .map_err(PgConsumerEffectFailure::infrastructure)?;
         Ok(TerminalDisposition::Succeeded)

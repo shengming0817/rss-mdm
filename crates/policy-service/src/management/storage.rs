@@ -34,7 +34,6 @@ pub(super) async fn write_in(
     Ok(())
 }
 pub async fn enqueue_change_in(
-    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
     changes: &dyn crate::inputs::ExecutionChanges,
@@ -48,7 +47,7 @@ pub async fn enqueue_change_in(
             rss_mdm_policy::Action::UnmanageDevice { .. }
         )
     {
-        rss_mdm_policy_postgres::schedules::accept_scan_in(profile, binding, tx).await?;
+        rss_mdm_policy_postgres::schedules::accept_scan_in(profile, tx).await?;
         let scan = rss_reconcile::Target::new(
             rss_reconcile::Scope::new(tx.tenant_id(), crate::worker::jobs::domain(profile))
                 .expect("constant domain"),
@@ -66,7 +65,6 @@ pub async fn enqueue_change_in(
             .await?;
     }
     crate::worker::jobs::enqueue_job_in(
-        binding,
         profile,
         reconcile,
         tx,
@@ -74,6 +72,6 @@ pub async fn enqueue_change_in(
         &crate::worker::Work::PolicyReconcile { policy: policy.id },
     )
     .await?;
-    changes.policy_changed_in(binding, tx, policy, old).await?;
+    changes.policy_changed_in(tx, policy, old).await?;
     Ok(())
 }

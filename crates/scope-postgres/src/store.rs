@@ -648,16 +648,11 @@ impl ScopeBinding {
     }
     pub async fn enqueue_in(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         scope: Uuid,
     ) -> Result<Uuid, BindingError> {
-        if binding.tenant() != tx.tenant_id() {
-            return Err(BindingError::Storage(
-                sqlx::Error::Protocol("scope task binding mismatch".into()).into(),
-            ));
-        }
+        let epoch = tx.expected_epoch().get();
 
         let profile = self.profile();
 
@@ -685,7 +680,7 @@ impl ScopeBinding {
                         .bind(tenant)
                         .bind(id)
                         .bind(scope)
-                        .bind(binding.epoch().get())
+                        .bind(epoch)
                         .execute(c)
                         .await?;
                     Ok(id)

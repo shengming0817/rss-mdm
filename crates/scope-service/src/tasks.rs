@@ -20,12 +20,11 @@ pub fn target(
 impl Scopes {
     pub(crate) async fn enqueue_in(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         scope: Uuid,
     ) -> transaction::Result<Uuid> {
-        let id = self.store.enqueue_in(binding, tx, id, scope).await?;
+        let id = self.store.enqueue_in(tx, id, scope).await?;
         self.reconcile_messaging
             .wake_in(
                 tx,
@@ -168,14 +167,9 @@ pub async fn wake_inputs_in(
     profile: rss_mdm_install_support::StorageProfile,
     store: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
-    binding: rss_transactional_messaging::fence::ExecutionBinding,
 ) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
-    if binding.tenant() != tx.tenant_id() {
-        return Err(sqlx::Error::Protocol("scope input binding mismatch".into()).into());
-    }
-
     let tenant = tx.tenant_id();
-    let epoch = binding.epoch().get();
+    let epoch = tx.expected_epoch().get();
     let t = tenant.to_string();
     tx.with_connection(move |c| Box::pin(async move {
         let (insert, read) = match profile {

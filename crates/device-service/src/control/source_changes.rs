@@ -429,15 +429,16 @@ fn health_deadline(
 
 /// Durable lifecycle input; notification is only a post-commit latency hint.
 pub async fn wake_in(
-    execution: rss_transactional_messaging::fence::ExecutionBinding,
     store: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
 ) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
+    let epoch = tx.expected_epoch().get();
+
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_devices.control_source_dispatch(tenant_id,expected_epoch) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&tenant).bind(execution.epoch().get()).execute(&mut *c).await?;
+        sqlx::query("INSERT INTO mdm_devices.control_source_dispatch(tenant_id,expected_epoch) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&tenant).bind(epoch).execute(&mut *c).await?;
         let expected:i64=sqlx::query_scalar("SELECT expected_epoch FROM mdm_devices.control_source_dispatch WHERE tenant_id=$1::uuid").bind(tenant).fetch_one(c).await?;
-        if expected!=execution.epoch().get(){return Err(sqlx::Error::Protocol("source input epoch mismatch".into()))}
+        if expected!=epoch{return Err(sqlx::Error::Protocol("source input epoch mismatch".into()))}
         Ok(())
     })).await?;
 

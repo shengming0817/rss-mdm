@@ -100,15 +100,16 @@ pub async fn complete_scan_in(
 /// Register lifecycle scans in the original accepted Policy transaction.
 pub async fn accept_scan_in(
     profile: rss_mdm_install_support::StorageProfile,
-    binding: rss_transactional_messaging::fence::ExecutionBinding,
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
 ) -> Result<(), rss_transactional_messaging_postgres::PgError> {
+    let epoch = tx.expected_epoch().get();
+
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
             sqlx::query(crate::storage_profile::sql(profile).schedules_scan_cursor_in_1)
                 .bind(tenant)
-                .bind(binding.epoch().get())
+                .bind(epoch)
                 .execute(c)
                 .await?;
             Ok(())

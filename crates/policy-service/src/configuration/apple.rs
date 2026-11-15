@@ -145,7 +145,7 @@ impl Transactions {
         if transition.command.version() != previous {
             service
                 .changes
-                .configuration_progressed_in(audit.binding()?, tx, std::slice::from_ref(&op.device))
+                .configuration_progressed_in(tx, std::slice::from_ref(&op.device))
                 .await?;
         }
         let withdrawal_received = transition.command.status() == dc::Status::Received
@@ -153,7 +153,7 @@ impl Transactions {
         if transition.command.status().is_terminal() || withdrawal_received {
             // Logical publication withdrawal can release desired claims without claiming an OS effect.
             service
-                .wake_devices_in(p.binding(), tx, std::slice::from_ref(&op.device))
+                .wake_devices_in(tx, std::slice::from_ref(&op.device))
                 .await?;
         }
         Ok(())
@@ -188,7 +188,7 @@ impl Transactions {
             return Err(Error::Malformed.into());
         }
         if eligible(self, tx, p, &op).await? {
-            complete_ddm(p.binding(), self, tx, &op).await?;
+            complete_ddm(self, tx, &op).await?;
         }
         Ok(())
     }
@@ -255,7 +255,6 @@ fn admission(op: storage::Operation, eligible: bool, dispatch: bool) -> Result<A
     })
 }
 async fn complete_ddm(
-    binding: rss_transactional_messaging::fence::ExecutionBinding,
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
     op: &storage::Operation,
@@ -300,11 +299,11 @@ async fn complete_ddm(
     if transition.command.version() != previous {
         service
             .changes
-            .configuration_progressed_in(binding, tx, std::slice::from_ref(&op.device))
+            .configuration_progressed_in(tx, std::slice::from_ref(&op.device))
             .await?;
     }
     service
-        .wake_devices_in(binding, tx, std::slice::from_ref(&op.device))
+        .wake_devices_in(tx, std::slice::from_ref(&op.device))
         .await?;
     Ok(())
 }

@@ -231,7 +231,6 @@ fn scope_error(
 impl rss_mdm_scope_service::sources::ScopeDependents for ScopeDependents {
     fn publication_recorded_in<'a>(
         &'a self,
-        execution: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &'a mut PgTransaction<'_>,
         owner: rss_mdm_scope_postgres::ScopeOwner,
         run: uuid::Uuid,
@@ -239,7 +238,7 @@ impl rss_mdm_scope_service::sources::ScopeDependents for ScopeDependents {
     {
         Box::pin(async move {
             self.0
-                .publication_recorded_in(execution, tx, owner, run)
+                .publication_recorded_in(tx, owner, run)
                 .await
                 .map_err(scope_error)
         })

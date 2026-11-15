@@ -45,14 +45,13 @@ pub async fn read_in(
     ))
 }
 pub async fn enqueue_job_in(
-    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
     input: &Work,
 ) -> Result<Value> {
-    rss_mdm_policy_postgres::work::enqueue_in(binding, profile, tx, id, input).await?;
+    rss_mdm_policy_postgres::work::enqueue_in(profile, tx, id, input).await?;
     let event = matches!(input, Work::PolicyEvent { .. });
     let tenant = tx.tenant_id();
     let target = if event {

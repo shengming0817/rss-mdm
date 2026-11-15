@@ -260,7 +260,6 @@ impl Groups {
                     let result = match command {
                         Command::Group { id, change } => {
                             s.group_change(
-                                audit.binding()?,
                                 tx,
                                 *id,
                                 change,

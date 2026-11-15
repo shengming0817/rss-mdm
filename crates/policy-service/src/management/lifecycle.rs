@@ -159,7 +159,6 @@ impl crate::application::Application {
                     deadline: end.min(now.saturating_add(i64::from(run_lifetime_seconds))),
                 };
                 crate::worker::jobs::enqueue_job_in(
-                    binding,
                     profile,
                     &self.reconcile_messaging,
                     tx,
@@ -277,9 +276,7 @@ impl crate::application::Application {
             })
             .await?
             .map_err(Error::from)?;
-        self.changes
-            .retirement_accepted_in(binding, tx, accepted.0)
-            .await?;
+        self.changes.retirement_accepted_in(tx, accepted.0).await?;
         if !accepted.1 {
             let audit = RequestAudit::new(
                 rss_mdm_audit_integration::Origin::Background,
@@ -322,7 +319,6 @@ impl crate::application::Application {
     /// One claimed calendar page; occurrence identities and the page cursor commit together.
     pub(crate) async fn advance_lifecycle_schedules_in(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
     ) -> Result<()> {
         let profile = self.profile();
@@ -372,7 +368,6 @@ impl crate::application::Application {
                     rss_mdm_policy_postgres::work::exists_in(profile, tx, id, false).await?;
                 if !exists {
                     crate::worker::jobs::enqueue_job_in(
-                        binding,
                         profile,
                         &self.reconcile_messaging,
                         tx,

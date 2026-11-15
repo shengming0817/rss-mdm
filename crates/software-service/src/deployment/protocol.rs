@@ -143,7 +143,6 @@ pub async fn settle_one(
         .await?;
     }
     crate::deployment::wake::wake_native_in(
-        audit.binding()?,
         &s.transactions.reconcile_messaging,
         s.transactions.source.clone(),
         tx,
@@ -234,7 +233,6 @@ fn read(op: &storage::Operation, values: bool) -> Result<crate::deployment::wind
     Ok(crate::deployment::windows_results::Read {
         id: op.id,
         device: op.device,
-
         request: request.clone(),
         values: values && !sensitive,
     })
@@ -324,7 +322,6 @@ pub(super) async fn settle_dispatch_failures(
             .append_in(tx, &fact)
             .await?;
         crate::deployment::wake::wake_native_in(
-            principal.binding(),
             &service.transactions.reconcile_messaging,
             service.transactions.source.clone(),
             tx,

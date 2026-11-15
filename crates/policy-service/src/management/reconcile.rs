@@ -133,7 +133,6 @@ impl crate::application::Application {
                 checked_input(serde_json::to_string(&key))?
             );
             let changed = rss_mdm_policy_postgres::assignments::upsert_in(
-                binding,
                 profile,
                 tx,
                 rss_mdm_policy_postgres::assignments::Assignment {
@@ -167,7 +166,7 @@ impl crate::application::Application {
                 ) && let Some(target) = &assignment.target
                 {
                     self.changes
-                        .assignment_changed_in(binding, tx, version, target, available)
+                        .assignment_changed_in(tx, version, target, available)
                         .await?;
                 }
             }
@@ -178,7 +177,7 @@ impl crate::application::Application {
         devices.sort();
         devices.dedup();
         if let Some(configuration) = &self.configuration {
-            configuration.wake_devices_in(binding, tx, &devices).await?;
+            configuration.wake_devices_in(tx, &devices).await?;
         }
         // Removed source objects remain inspectable as unavailable; existing operation targets are immutable.
         let policy = p.id;
@@ -221,12 +220,12 @@ impl crate::application::Application {
                 continue;
             };
             self.changes
-                .assignment_changed_in(binding, tx, version, &target, false)
+                .assignment_changed_in(tx, version, &target, false)
                 .await?;
             let device = target.device;
             if let Some(configuration) = &self.configuration {
                 configuration
-                    .wake_devices_in(binding, tx, std::slice::from_ref(&device))
+                    .wake_devices_in(tx, std::slice::from_ref(&device))
                     .await?;
             }
         }

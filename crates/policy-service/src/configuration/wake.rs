@@ -3,10 +3,11 @@ impl Transactions {
     /// Revision, durable wake and source acknowledgement share one transaction.
     pub async fn wake_devices_in(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         devices: &[rss_mdm_agent_wire::DeviceId],
     ) -> Result<()> {
+        let epoch = tx.expected_epoch().get();
+
         self.runtime.validate_transaction(tx)?;
         if devices.len() > 1024 {
             return Err(Error::Malformed.into());
@@ -23,7 +24,7 @@ impl Transactions {
         let tenant = tx.tenant_id();
         let names = devices.clone();
         let known:Vec<rss_mdm_agent_wire::DeviceId>=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar("SELECT device FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=ANY($2)").bind(tenant.to_string()).bind(names.iter().map(|id|id.into_uuid()).collect::<Vec<_>>()).bind(binding.epoch().get()).fetch_all(c).await.and_then(crate::configuration::device_ids)
+            sqlx::query_scalar("SELECT device FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=ANY($2)").bind(tenant.to_string()).bind(names.iter().map(|id|id.into_uuid()).collect::<Vec<_>>()).fetch_all(c).await.and_then(crate::configuration::device_ids)
         })).await?;
         let mut interested = known.into_iter().collect::<std::collections::BTreeSet<_>>();
         let missing = devices
@@ -49,7 +50,7 @@ impl Transactions {
         }
         let names = interested.into_iter().collect::<Vec<_>>();
         let updated:Vec<rss_mdm_agent_wire::DeviceId>=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar("INSERT INTO mdm_planning.configuration_devices(tenant_id,device,expected_epoch) SELECT $1::uuid,device,$3 FROM unnest($2::uuid[]) wanted(device) ORDER BY device ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=mdm_planning.configuration_devices.input_revision+1 RETURNING device").bind(tenant.to_string()).bind(names.iter().map(|id|id.into_uuid()).collect::<Vec<_>>()).bind(binding.epoch().get()).fetch_all(c).await.and_then(crate::configuration::device_ids)
+            sqlx::query_scalar("INSERT INTO mdm_planning.configuration_devices(tenant_id,device,expected_epoch) SELECT $1::uuid,device,$3 FROM unnest($2::uuid[]) wanted(device) ORDER BY device ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=mdm_planning.configuration_devices.input_revision+1 RETURNING device").bind(tenant.to_string()).bind(names.iter().map(|id|id.into_uuid()).collect::<Vec<_>>()).bind(epoch).fetch_all(c).await.and_then(crate::configuration::device_ids)
         })).await?;
         for device in updated {
             self.reconcile_messaging
@@ -108,17 +109,18 @@ impl Transactions {
 
 /// Register committed asset/object inputs without interpreting any Policy business state.
 pub async fn inputs_in(
-    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     store: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
 ) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
+    let epoch = tx.expected_epoch().get();
+
     let tenant = tx.tenant_id();
     let t = tenant.to_string();
     tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_planning.configuration_source_dispatch(tenant_id,expected_epoch) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&t).bind(binding.epoch().get()).execute(&mut *c).await?;
+        sqlx::query("INSERT INTO mdm_planning.configuration_source_dispatch(tenant_id,expected_epoch) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&t).bind(epoch).execute(&mut *c).await?;
         let expected: i64=sqlx::query_scalar("SELECT expected_epoch FROM mdm_planning.configuration_source_dispatch WHERE tenant_id=$1::uuid").bind(t).fetch_one(c).await?;
-        if expected!=binding.epoch().get() {return Err(sqlx::Error::Protocol("configuration input epoch mismatch".into()))}
+        if expected!=epoch {return Err(sqlx::Error::Protocol("configuration input epoch mismatch".into()))}
         Ok(())
     })).await?;
     let target = rss_reconcile::Target::new(

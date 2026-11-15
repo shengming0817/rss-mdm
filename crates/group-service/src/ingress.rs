@@ -4,7 +4,6 @@ use sqlx::Row;
 impl Groups {
     pub(crate) async fn dispatch_inputs_in(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<bool> {
@@ -46,7 +45,7 @@ impl Groups {
         tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("UPDATE mdm_assets.group_dispatch SET to_cut=$2,page_through=$3 WHERE tenant_id=$1::uuid").bind(tenant).bind(frozen).bind(through).execute(c).await?;Ok(())
         })).await?;
-        self.dispatch_groups_in(binding, tx, from, &cut, after, through, cursor)
+        self.dispatch_groups_in(tx, from, &cut, after, through, cursor)
             .await?;
         Ok(true)
     }
@@ -56,7 +55,6 @@ impl Groups {
     )]
     async fn dispatch_groups_in(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         from: Option<Value>,
         cut: &rss_mdm_inventory::AssetCut,
@@ -113,7 +111,7 @@ impl Groups {
         groups.sort_unstable();
         groups.dedup();
         for group in groups.iter().take(32) {
-            self.dispatch_group_in(binding, tx, *group, cut).await?;
+            self.dispatch_group_in(tx, *group, cut).await?;
         }
         if groups.len() > 32 {
             self.dispatch_cursor_in(
@@ -129,7 +127,6 @@ impl Groups {
     }
     pub(crate) async fn dispatch_group_in(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         group: rss_mdm_group::GroupId,
         cut: &rss_mdm_inventory::AssetCut,
@@ -158,7 +155,6 @@ impl Groups {
             return Ok(());
         }
         self.start_group_job_in(
-            binding,
             tx,
             GroupStart {
                 authority: vec![],
@@ -224,12 +220,11 @@ impl Groups {
     }
     pub(crate) async fn advance_inputs_in(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         cut: &rss_mdm_inventory::AssetCut,
     ) -> Result<()> {
-        self.advance_relations_in(binding, tx, cut).await?;
-        self.dispatch_inputs_in(binding, tx, cut).await?;
+        self.advance_relations_in(tx, cut).await?;
+        self.dispatch_inputs_in(tx, cut).await?;
         Ok(())
     }
 }

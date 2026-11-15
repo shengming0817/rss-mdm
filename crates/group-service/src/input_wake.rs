@@ -3,16 +3,10 @@ use rss_reconcile::{ResourceSet, Scope, Target};
 use rss_reconcile_postgres::PgMessagingStore;
 use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 
-pub async fn wake_in(
-    store: &PgMessagingStore,
-    tx: &mut PgTransaction<'_>,
-    binding: rss_transactional_messaging::fence::ExecutionBinding,
-) -> Result<(), PgError> {
+pub async fn wake_in(store: &PgMessagingStore, tx: &mut PgTransaction<'_>) -> Result<(), PgError> {
     let tenant = tx.tenant_id();
-    if tenant != binding.tenant() {
-        return Err(sqlx::Error::Protocol("group input scope mismatch".into()).into());
-    }
-    let epoch = binding.epoch().get();
+
+    let epoch = tx.expected_epoch().get();
     let t = tenant.to_string();
     tx.with_connection(move |c| Box::pin(async move {
         sqlx::query("INSERT INTO mdm_assets.group_dispatch(tenant_id,expected_epoch) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING")

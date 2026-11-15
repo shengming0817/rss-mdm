@@ -5,7 +5,6 @@ use rss_mdm_group_postgres as g;
 impl Groups {
     pub async fn ensure_group_followup_in(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         candidate: &rss_mdm_inventory::AssetCut,
@@ -50,7 +49,6 @@ impl Groups {
             };
             let successor = self
                 .start_group_job_in(
-                    binding,
                     tx,
                     GroupStart {
                         asset_cut: candidate.clone(),
@@ -120,7 +118,6 @@ impl Groups {
 
     pub async fn start_group_job_in(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         start: GroupStart,
     ) -> Result<crate::tasks::JobAccepted> {
@@ -265,7 +262,7 @@ impl Groups {
             as_of: at,
         };
         checked(self.groups.begin_build_in(tx, &request).await?)?;
-        self.enqueue_task_in(binding, tx, task, &job).await
+        self.enqueue_task_in(tx, task, &job).await
     }
 
     async fn reusable_group_job_in(
@@ -667,13 +664,8 @@ impl Groups {
             || authority > old
             || definition_changed;
         if changed {
-            rss_mdm_compliance_postgres::group_changed_in(
-                binding,
-                tx,
-                id,
-                &self.reconcile_messaging,
-            )
-            .await?;
+            rss_mdm_compliance_postgres::group_changed_in(tx, id, &self.reconcile_messaging)
+                .await?;
         }
         dirty |= self.inputs_uncovered_in(tx, id, *covered_inputs).await?;
         if dirty {
@@ -682,7 +674,6 @@ impl Groups {
                 remove: vec![],
             });
             self.start_group_job_in(
-                binding,
                 tx,
                 GroupStart {
                     asset_cut: candidate.clone(),
@@ -723,11 +714,10 @@ impl Groups {
         })).await?;
         for id in rows.iter().take(64) {
             let gid = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
-            self.dispatch_group_in(binding, tx, gid, candidate).await?;
+            self.dispatch_group_in(tx, gid, candidate).await?;
         }
         if rows.len() <= 64 {
-            self.ensure_group_followup_in(binding, tx, task, candidate)
-                .await?;
+            self.ensure_group_followup_in(tx, task, candidate).await?;
             return self.finish_task_in(binding, tx, task, None).await;
         }
         let tenant = tx.tenant_id().to_string();

@@ -213,7 +213,6 @@ impl AssetService {
                     return Err(Error::Malformed.into());
                 }
                 self.asset_query(
-                    binding,
                     tx,
                     request.operation_id,
                     scope,
@@ -273,7 +272,6 @@ impl AssetService {
                 }
                 let definition = saved.definition.ok_or(Error::NotFound)?;
                 self.asset_query(
-                    binding,
                     tx,
                     *operation,
                     scope,
@@ -324,7 +322,6 @@ pub struct AssetService {
     reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-
     clock: Arc<dyn crate::clock::Clock>,
     asset_cursor_key: ring::hmac::Key,
 }

@@ -10,24 +10,24 @@ pub(crate) fn agent_install_key(device: &rss_mdm_agent_wire::DeviceId) -> String
 }
 
 pub async fn wake_native_in(
-    execution: rss_transactional_messaging::fence::ExecutionBinding,
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
     source: std::sync::Arc<dyn crate::deployment::scope::Sources>,
     tx: &mut PgTransaction<'_>,
     device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<()> {
-    wake_native_batch_in(execution, reconcile, source, tx, &[device.to_owned()]).await
+    wake_native_batch_in(reconcile, source, tx, &[device.to_owned()]).await
 }
 
 /// Coalesced source changes update only interested devices. All wakes and the
 /// caller's input checkpoint use this transaction; RSS remains the wake owner.
 pub async fn wake_native_batch_in(
-    execution: rss_transactional_messaging::fence::ExecutionBinding,
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
     source: std::sync::Arc<dyn crate::deployment::scope::Sources>,
     tx: &mut PgTransaction<'_>,
     devices: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<()> {
+    let epoch = tx.expected_epoch().get();
+
     if devices.len() > 1024 {
         return Err(Error::Malformed.into());
     }
@@ -81,7 +81,7 @@ pub async fn wake_native_batch_in(
     let expected = interested.len();
     let updated = tx.with_connection(move |c| Box::pin(async move {
         sqlx::query_scalar::<_, uuid::Uuid>("INSERT INTO mdm_software_deployment.agent_install_inputs(tenant_id,device,expected_epoch) SELECT $1::uuid,device,$3 FROM unnest($2::uuid[]) wanted(device) ORDER BY device ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=mdm_software_deployment.agent_install_inputs.input_revision+1 WHERE mdm_software_deployment.agent_install_inputs.expected_epoch=excluded.expected_epoch RETURNING device")
-            .bind(tenant).bind(interested.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).bind(execution.epoch().get()).fetch_all(c).await.and_then(crate::deployment::database::device_ids)
+            .bind(tenant).bind(interested.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).bind(epoch).fetch_all(c).await.and_then(crate::deployment::database::device_ids)
     })).await?;
     if updated.len() != expected {
         return Err(Error::Conflict.into());

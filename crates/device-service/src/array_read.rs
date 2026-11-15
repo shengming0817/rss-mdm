@@ -202,7 +202,7 @@ async fn validate(
         if cursor.evidence.device_id.as_ref() != Some(&cursor.endpoint) {
             return Err(Error::CursorInvalidated);
         }
-        let live:bool=sqlx::query_scalar("SELECT EXISTS (SELECT FROM mdm_access.devices AS r INNER JOIN mdm_access.report_sources AS s ON (p.binding().tenant()_id, s.device) = (r.tenant_id, r.id) WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2 AND r.state = 'active' AND s.source = $3 AND CAST(s.epoch AS text) = $4 AND s.enabled AND EXISTS (SELECT FROM mdm_access.credentials AS k WHERE (k.tenant_id, k.device) = (r.tenant_id, r.id) AND k.state = 'active'))")
+        let live:bool=sqlx::query_scalar("SELECT EXISTS (SELECT FROM mdm_access.devices AS r INNER JOIN mdm_access.report_sources AS s ON (s.tenant_id, s.device) = (r.tenant_id, r.id) WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2 AND r.state = 'active' AND s.source = $3 AND CAST(s.epoch AS text) = $4 AND s.enabled AND EXISTS (SELECT FROM mdm_access.credentials AS k WHERE (k.tenant_id, k.device) = (r.tenant_id, r.id) AND k.state = 'active'))")
             .bind(proof.tenant_id()).bind(cursor.endpoint.into_uuid()).bind(cursor.evidence.source.as_str()).bind(&cursor.evidence.epoch).fetch_one(c).await?;
         if !live {
             return Err(Error::CursorInvalidated);

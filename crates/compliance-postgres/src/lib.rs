@@ -350,7 +350,6 @@ FROM mdm_compliance.rules r WHERE r.tenant_id=$1::uuid
 /// Invalidate dependent assessments and notify their owner in the caller's transaction.
 /// The durable rule state is authoritative; notification only accelerates discovery.
 pub async fn group_changed_in(
-    binding: rss_transactional_messaging::fence::ExecutionBinding,
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     group: uuid::Uuid,
     store: &rss_reconcile_postgres::PgMessagingStore,
@@ -360,7 +359,7 @@ pub async fn group_changed_in(
         .with_connection(move |c| Box::pin(async move { invalidate_group(c, tenant, group).await }))
         .await?;
     if changed > 0 {
-        wake_inputs_in(store, tx, binding).await?;
+        wake_inputs_in(store, tx).await?;
     }
     Ok(())
 }
@@ -399,14 +398,9 @@ use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 pub async fn wake_inputs_in(
     store: &PgMessagingStore,
     tx: &mut PgTransaction<'_>,
-    binding: rss_transactional_messaging::fence::ExecutionBinding,
 ) -> std::result::Result<(), PgError> {
-    if binding.tenant() != tx.tenant_id() {
-        return Err(sqlx::Error::Protocol("compliance input binding mismatch".into()).into());
-    }
-
     let tenant = tx.tenant_id();
-    let epoch = binding.epoch().get();
+    let epoch = tx.expected_epoch().get();
     let t = tenant.to_string();
     tx.with_connection(move |c| Box::pin(async move {
         sqlx::query("INSERT INTO mdm_compliance.dispatch(tenant_id,expected_epoch) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING")

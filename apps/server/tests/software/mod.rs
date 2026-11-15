@@ -73,13 +73,8 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
         (&store, &messaging),
         move |(store, messaging), tx| {
             Box::pin(async move {
-                rss_mdm_device_service::control::source_changes::wake_in(
-                    execution_binding,
-                    messaging,
-                    tx,
-                )
-                .await?;
-                owner::source_changes::wake_in(execution_binding, messaging, tx).await?;
+                rss_mdm_device_service::control::source_changes::wake_in(messaging, tx).await?;
+                owner::source_changes::wake_in(messaging, tx).await?;
                 rss_mdm_device_service::control::source_changes::fail_in(
                     execution_binding,
                     tx,
@@ -447,7 +442,6 @@ async fn rollout_snapshot_invalidates_counts_before_opening_next_stage() -> Resu
     Ok(())
 }
 async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Result<()> {
-    let execution_binding = c.execution();
     use std::time::Duration;
     let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         a.resources.storage.runtime.clone(),
@@ -460,10 +454,9 @@ async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Res
         c.execution(),
         messaging,
         move |m, tx| {
-            Box::pin(async move {
-                owner::sources::storage::wake_execution_in(execution_binding, m, tx, policy_id)
-                    .await
-            })
+            Box::pin(
+                async move { owner::sources::storage::wake_execution_in(m, tx, policy_id).await },
+            )
         },
     )
     .await?;

@@ -81,15 +81,10 @@ impl Groups {
 
     pub(crate) async fn enqueue_task_in(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         input: &TaskInput,
     ) -> Result<crate::tasks::JobAccepted> {
-        if binding.tenant() != tx.tenant_id() || binding.storage() != self.storage {
-            return Err(Error::Forbidden.into());
-        }
-
         self.check_task_transaction(tx)?;
         if id.is_nil() || input.target().is_nil() {
             return Err(Error::Malformed.into());
@@ -99,7 +94,7 @@ impl Groups {
             return Err(Error::Malformed.into());
         }
         let tenant = tx.tenant_id().to_string();
-        let epoch = binding.epoch().get();
+        let epoch = tx.expected_epoch().get();
         let kind = input.kind();
         let target = input.target();
         tx.with_connection(move |c| Box::pin(async move {

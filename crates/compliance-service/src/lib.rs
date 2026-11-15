@@ -29,7 +29,6 @@ pub struct Compliance {
     task_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-
     clock: Arc<dyn rss_mdm_inventory_service::clock::Clock>,
     groups: Arc<rss_mdm_group_postgres::GroupStore>,
     asset_reader: rss_mdm_inventory_service::assets::planning::SnapshotReader,
@@ -55,7 +54,6 @@ impl Compliance {
             worker_health: Default::default(),
             audit_store: d.audit_store,
             runtime: d.runtime.clone(),
-
             clock: d.clock,
             groups: d.groups,
             reconcile_messaging: d.reconcile_messaging,
@@ -162,7 +160,7 @@ impl Compliance {
                             return Reply::receipt(command, response);
                         }
                     }
-                    let response = s.handle(audit.binding()?, tx, command, candidate).await?;
+                    let response = s.handle(tx, command, candidate).await?;
                     if let Some(id) = operation {
                         let h = hash.clone();
                         let v = json(&response)?;
@@ -210,7 +208,6 @@ impl Compliance {
     }
     async fn handle(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         command: &Command,
         candidate: Option<&rss_mdm_inventory::AssetCut>,
@@ -245,7 +242,6 @@ impl Compliance {
             }
             Command::Put { id, request } => self
                 .put(
-                    binding,
                     tx,
                     *id,
                     request,
@@ -285,7 +281,6 @@ impl Compliance {
                 }
                 let task = self
                     .enqueue(
-                        binding,
                         tx,
                         &r,
                         candidate.ok_or(Error::Unavailable(Failure::ComplianceStorage))?,
@@ -310,7 +305,6 @@ impl Compliance {
 impl Compliance {
     async fn put(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         request: &crate::operation::Operation<Definition>,
@@ -402,7 +396,7 @@ impl Compliance {
             return Err(Error::Malformed.into());
         }
         let task = if rule.enabled {
-            Some(self.enqueue(binding, tx, &rule, candidate).await?)
+            Some(self.enqueue(tx, &rule, candidate).await?)
         } else {
             None
         };

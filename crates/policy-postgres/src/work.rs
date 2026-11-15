@@ -52,12 +52,13 @@ use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 use sqlx::Row;
 /// Insert the original work and its commit-delivered notification atomically.
 pub async fn enqueue_in(
-    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
     input: &Work,
 ) -> Result<(), PgError> {
+    let epoch = tx.expected_epoch().get();
+
     let tenant = tx.tenant_id().to_string();
     let document =
         serde_json::to_value(input).map_err(|_| crate::storage(profile).fault("work.input"))?;
@@ -71,7 +72,7 @@ pub async fn enqueue_in(
                 .bind(kind)
                 .bind(target)
                 .bind(document)
-                .bind(binding.epoch().get())
+                .bind(epoch)
                 .execute(&mut *c)
                 .await?;
             sqlx::query("SELECT pg_notify('mdm_work','policy')")

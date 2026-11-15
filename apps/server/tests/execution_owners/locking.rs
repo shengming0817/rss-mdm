@@ -55,7 +55,7 @@ async fn change(
         ctx.1.ready.notify_one();
         ctx.1.resume.notified().await;
         let current=script::transaction::checked(ctx.0.reader.locked_in(tx,policy).await?)?.expect("policy");
-        script::transaction::checked(ctx.0.policy_changed_in(binding, tx,&current,None).await)?;
+        script::transaction::checked(ctx.0.policy_changed_in( tx,&current,None).await)?;
         Ok(())
     })).await?;
     Ok(())

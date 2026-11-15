@@ -107,7 +107,6 @@ impl GroupWork {
                                         if *reason == "superseded" {
                                             groups
                                                 .ensure_group_followup_in(
-                                                    binding,
                                                     tx,
                                                     id,
                                                     candidate.ok_or_else(|| {
@@ -342,16 +341,7 @@ impl Reconciler<PgClaim> for GroupWork {
         self.reject(claim, id, reason, control).await
     }
 }
-struct GroupPass<'a> {
-    work: &'a GroupWork,
-    stop: &'a tokio_util::sync::CancellationToken,
-}
-impl std::ops::Deref for GroupPass<'_> {
-    type Target = GroupWork;
-    fn deref(&self) -> &Self::Target {
-        self.work
-    }
-}
+
 impl DurableStore for GroupWork {
     type Claim = PgClaim;
     async fn wake<T: Timer>(
@@ -442,63 +432,6 @@ impl DurableStore for GroupWork {
         result
     }
 }
-impl DurableStore for GroupPass<'_> {
-    type Claim = PgClaim;
-    async fn wake<T: Timer>(
-        &self,
-        target: &Target,
-        resources: &ResourceSet,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<(), ReconcileError> {
-        self.work.wake(target, resources, control).await
-    }
-    async fn bind_resources<T: Timer>(
-        &self,
-        target: &Target,
-        resources: &ResourceSet,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<(), ReconcileError> {
-        self.work.bind_resources(target, resources, control).await
-    }
-    async fn claim_due<T: Timer>(
-        &self,
-        scope: &Scope,
-        limit: usize,
-        scan_budget: u32,
-        lease: Duration,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<ClaimBatch<PgClaim>, ReconcileError> {
-        let result = self
-            .work
-            .claim_due(scope, limit, scan_budget, lease, control)
-            .await;
-        self.stop.cancel();
-        result
-    }
-    async fn renew<T: Timer>(
-        &self,
-        claim: &PgClaim,
-        lease: Duration,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<(), ReconcileError> {
-        self.work.renew(claim, lease, control).await
-    }
-    async fn release<T: Timer>(
-        &self,
-        claim: &PgClaim,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<(), ReconcileError> {
-        self.work.release(claim, control).await
-    }
-    async fn finish<T: Timer>(
-        &self,
-        claim: &PgClaim,
-        completion: Completion,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<(), ReconcileError> {
-        self.work.finish(claim, completion, control).await
-    }
-}
 
 struct GroupTimer(tokio::time::Instant);
 impl Timer for GroupTimer {
@@ -563,25 +496,36 @@ impl GroupWork {
                     let tenant = TenantId::parse(&tenant.to_string())
                         .map_err(rss_runtime::ShutdownError::new)?;
                     let scope = Scope::new(tenant, "mdm.groups").expect("constant scope");
-                    let stop = cancel.child_token();
-                    let pass = GroupPass {
-                        work: &self,
-                        stop: &stop,
-                    };
-                    let report = rss_reconcile::run_with_notify(
-                        &pass,
+
+                    let report = match rss_reconcile::run_batch(
+                        self.as_ref(),
                         self.as_ref(),
                         &scope,
                         policy,
                         &control,
-                        &stop,
-                        &notify,
+                        &cancel,
                         |event| {
                             self.groups.record_runner_failure(event);
                         },
                     )
                     .await
-                    .map_err(rss_runtime::ShutdownError::new)?;
+                    {
+                        Ok(report) => report,
+                        Err(error)
+                            if control.check().is_ok()
+                                && matches!(
+                                    error.kind(),
+                                    rss_reconcile::ErrorKind::Transient
+                                        | rss_reconcile::ErrorKind::Deadline
+                                        | rss_reconcile::ErrorKind::CommitUnknown
+                                ) =>
+                        {
+                            // The observer retained this scope's failure. Advance the tenant cursor;
+                            // an unconfirmed claim is not an empty or successfully drained batch.
+                            continue;
+                        }
+                        Err(error) => return Err(rss_runtime::ShutdownError::new(error)),
+                    };
                     worked |= [
                         report.converged,
                         report.reobserve,
@@ -658,7 +602,7 @@ impl GroupWork {
                             .protect_in(tx, claim, (owner, *candidate), |(owner, candidate), tx| {
                                 Box::pin(async move {
                                     owner
-                                        .advance_inputs_in(binding, tx, candidate)
+                                        .advance_inputs_in(tx, candidate)
                                         .await
                                         .map(ProtectedStep::Ready)
                                         .map_err(|e| fault(e, &Mutex::new(None)))

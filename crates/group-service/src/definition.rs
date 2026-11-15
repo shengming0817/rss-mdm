@@ -38,7 +38,6 @@ impl Groups {
         if !restart && previous.as_ref().is_some_and(|c| c.ready) {
             editor
                 .publish_change_in(
-                    binding,
                     tx,
                     edit.group,
                     &edit.change,

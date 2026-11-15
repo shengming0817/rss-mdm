@@ -133,3 +133,42 @@ async fn live_view_and_fixed_list_keep_distinct_read_semantics() -> Result<()> {
     c.close().await;
     result
 }
+
+#[tokio::test]
+#[ignore = "T2: non-manual array continuations execute source liveness SQL and reject a changed source epoch"]
+async fn non_manual_fixed_list_revalidates_source_epoch() -> Result<()> {
+    let c = Context::open("query_reads", &[]).await?;
+    let result = async {
+        let device = planning_t2_support::endpoint(&c).await?.members[0].device;
+        let account = c.account(&[Permission::InventoryRead]).await?;
+        let proof = c.authenticate(&account).await?;
+        let service = Associations::new(c.audit.clone(), &[9; 32])?;
+        let field = FieldKey::parse("custom.source_list")?;
+        let definition: FieldDefinition = serde_json::from_value(json!({"key":field,"version":1,"valueType":{"kind":"array","items":{"kind":"integer"},"maxItems":1000},"nullable":true,"manual":false,"sources":{"mdm.windows":0},"platforms":["windows"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null}))?;
+        let mut tx = seed_transaction(&c).await?;
+        let epoch: Uuid = sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND device=$2 AND source='mdm.windows'")
+            .bind(c.tenant.to_string()).bind(device.into_uuid()).fetch_one(&mut *tx).await?;
+        assert!(rss_mdm_inventory_postgres::publish_field_in(&mut tx, c.tenant, 0, &definition).await?);
+        let evidence = Evidence { source: Source::MdmWindows, dataset: Some("native-list".into()), device_id: Some(device), epoch: Some(epoch.to_string()), actor: None, ..evidence("unused") };
+        assert_eq!(rss_mdm_inventory_postgres::assign_in(&mut tx, c.tenant, &device, field, 0,
+            &State::Known(Scalar::Array(vec![Scalar::Integer(1), Scalar::Integer(2)])), &evidence).await?, Some(1));
+        tx.commit().await?;
+        let timer = rss_mdm_audit_integration::budget::RuntimeTimer;
+        let personnel = Reader::new(&c.authority, c.execution(), c.access().now() + Duration::from_secs(30), &timer, None);
+        let reference = ObjectRef::Endpoint(device);
+        let detail: Value = serde_json::to_value(service.view(&proof, &reference, &personnel).await?)?;
+        let token = detail["lists"][field.as_str()]["sources"][0]["cursor"].as_str().expect("native array cursor");
+        let first: Value = serde_json::to_value(service.list_items(&proof, &reference, field, token, 1, &personnel).await?)?;
+        assert_eq!(first["items"], json!([{"kind":"integer","value":1}]));
+        let next = first["nextCursor"].as_str().expect("second native item");
+        let second: Value = serde_json::to_value(service.list_items(&proof, &reference, field, next, 1, &personnel).await?)?;
+        assert_eq!(second["items"], json!([{"kind":"integer","value":2}]));
+        sqlx::query("UPDATE mdm_access.report_sources SET epoch=$3 WHERE tenant_id=$1::uuid AND device=$2 AND source='mdm.windows'")
+            .bind(c.tenant.to_string()).bind(device.into_uuid()).bind(Uuid::new_v4()).execute(&c.operator).await?;
+        assert!(matches!(service.list_items(&proof, &reference, field, next, 1, &personnel).await,
+            Err(rss_mdm_device_service::Error::CursorInvalidated)));
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    c.close().await;
+    result
+}

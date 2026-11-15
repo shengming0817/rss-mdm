@@ -12,17 +12,15 @@ pub async fn read_in(
 }
 
 pub async fn wake_execution_in(
-    execution: rss_transactional_messaging::fence::ExecutionBinding,
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
     policy: Uuid,
 ) -> Result<()> {
-    if execution.tenant() != tx.tenant_id() {
-        return Err(Error::Malformed.into());
-    }
+    let epoch = tx.expected_epoch().get();
+
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c|Box::pin(async move {
-        let updated=sqlx::query("INSERT INTO mdm_software_deployment.policy_recovery(tenant_id,policy,expected_epoch) VALUES($1::uuid,$2,$3) ON CONFLICT(tenant_id,policy) DO UPDATE SET input_revision=mdm_software_deployment.policy_recovery.input_revision+1 WHERE mdm_software_deployment.policy_recovery.expected_epoch=excluded.expected_epoch").bind(tenant).bind(policy).bind(execution.epoch().get()).execute(c).await?;
+        let updated=sqlx::query("INSERT INTO mdm_software_deployment.policy_recovery(tenant_id,policy,expected_epoch) VALUES($1::uuid,$2,$3) ON CONFLICT(tenant_id,policy) DO UPDATE SET input_revision=mdm_software_deployment.policy_recovery.input_revision+1 WHERE mdm_software_deployment.policy_recovery.expected_epoch=excluded.expected_epoch").bind(tenant).bind(policy).bind(epoch).execute(c).await?;
             if updated.rows_affected()!=1{return Err(sqlx::Error::Protocol("original work epoch mismatch".into()))}
             Ok(())
     })).await?;

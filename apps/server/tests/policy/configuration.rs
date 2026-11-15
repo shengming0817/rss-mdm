@@ -67,14 +67,14 @@ async fn wake(
     transaction::inspect(
         &app.runtime,
         execution,
-        (app, vec![device.to_owned()], execution),
+        (app, vec![device.to_owned()]),
         |ctx, tx| {
             Box::pin(async move {
                 ctx.0
                     .configuration
                     .as_ref()
                     .expect("MDM configuration")
-                    .wake_devices_in(ctx.2, tx, &ctx.1)
+                    .wake_devices_in(tx, &ctx.1)
                     .await
             })
         },
@@ -167,7 +167,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
                     .configuration
                     .as_ref()
                     .expect("MDM configuration")
-                    .wake_devices_in(ctx.2.binding()?, tx, &[ctx.1.to_owned()])
+                    .wake_devices_in(tx, &[ctx.1.to_owned()])
                     .await?;
                 ctx.0
                     .configuration

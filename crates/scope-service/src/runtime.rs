@@ -107,12 +107,7 @@ impl ScopeWork {
                                         match s.store.head_in(tx, task.scope, true).await {
                                             Ok(_) => {
                                                 let new = s
-                                                    .enqueue_in(
-                                                        binding,
-                                                        tx,
-                                                        Uuid::new_v4(),
-                                                        task.scope,
-                                                    )
+                                                    .enqueue_in(tx, Uuid::new_v4(), task.scope)
                                                     .await
                                                     .map_err(|e| fault(e, &Mutex::new(None)))?;
                                                 s.store
@@ -463,25 +458,36 @@ impl ScopeWork {
                         .map_err(rss_runtime::ShutdownError::new)?;
                     let scope = Scope::new(tenant, crate::tasks::domain(self.scopes.profile()))
                         .expect("constant scope");
-                    let stop = cancel.child_token();
-                    let pass = Pass {
-                        work: &self,
-                        stop: &stop,
-                    };
-                    let report = rss_reconcile::run_with_notify(
-                        &pass,
+
+                    let report = match rss_reconcile::run_batch(
+                        self.as_ref(),
                         self.as_ref(),
                         &scope,
                         policy,
                         &control,
-                        &stop,
-                        &notify,
+                        &cancel,
                         |event| {
                             self.scopes.record_runner_failure(event);
                         },
                     )
                     .await
-                    .map_err(rss_runtime::ShutdownError::new)?;
+                    {
+                        Ok(report) => report,
+                        Err(error)
+                            if control.check().is_ok()
+                                && matches!(
+                                    error.kind(),
+                                    rss_reconcile::ErrorKind::Transient
+                                        | rss_reconcile::ErrorKind::Deadline
+                                        | rss_reconcile::ErrorKind::CommitUnknown
+                                ) =>
+                        {
+                            // The observer retained this scope's failure. Advance the tenant cursor;
+                            // an unconfirmed claim is not an empty or successfully drained batch.
+                            continue;
+                        }
+                        Err(error) => return Err(rss_runtime::ShutdownError::new(error)),
+                    };
                     worked |= [
                         report.converged,
                         report.reobserve,
@@ -556,7 +562,7 @@ impl ScopeWork {
                             .protect_in(tx, claim, (owner, *candidate), |(owner, candidate), tx| {
                                 Box::pin(async move {
                                     owner
-                                        .advance_inputs_in(binding, tx, candidate)
+                                        .advance_inputs_in(tx, candidate)
                                         .await
                                         .map(ProtectedStep::Ready)
                                         .map_err(|e| fault(e, &Mutex::new(None)))
@@ -599,19 +605,18 @@ impl Scopes {
     }
     async fn advance_inputs_in(
         &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> transaction::Result<()> {
         if let Some(page) = self.store.group_change_page_in(tx).await? {
             for id in &page.scopes {
-                self.enqueue_in(binding, tx, Uuid::new_v4(), *id).await?;
+                self.enqueue_in(tx, Uuid::new_v4(), *id).await?;
             }
             self.store.complete_group_change_page_in(tx, &page).await?;
         }
         if let Some(page) = self.store.asset_page_in(tx, candidate).await? {
             for id in &page.scopes {
-                self.enqueue_in(binding, tx, Uuid::new_v4(), *id).await?;
+                self.enqueue_in(tx, Uuid::new_v4(), *id).await?;
             }
             self.store.complete_asset_page_in(tx, &page).await?;
         }
@@ -639,7 +644,7 @@ impl Scopes {
                 .collect();
             let scopes = self.store.relation_targets_in(tx, &window, devices).await?;
             for id in scopes.iter().take(32) {
-                self.enqueue_in(binding, tx, Uuid::new_v4(), *id).await?;
+                self.enqueue_in(tx, Uuid::new_v4(), *id).await?;
             }
             self.store
                 .complete_relation_page_in(tx, &window, position, more_changes, &scopes)
@@ -692,68 +697,6 @@ impl ScopeWork {
                 |_| Err(unknown()),
                 |e| Err(storage(e)),
             )
-    }
-}
-
-struct Pass<'a> {
-    work: &'a ScopeWork,
-    stop: &'a tokio_util::sync::CancellationToken,
-}
-impl DurableStore for Pass<'_> {
-    type Claim = PgClaim;
-    async fn wake<T: Timer>(
-        &self,
-        target: &Target,
-        resources: &ResourceSet,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<(), ReconcileError> {
-        self.work.wake(target, resources, control).await
-    }
-    async fn bind_resources<T: Timer>(
-        &self,
-        target: &Target,
-        resources: &ResourceSet,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<(), ReconcileError> {
-        self.work.bind_resources(target, resources, control).await
-    }
-    async fn claim_due<T: Timer>(
-        &self,
-        scope: &Scope,
-        limit: usize,
-        scan_budget: u32,
-        lease: Duration,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<ClaimBatch<PgClaim>, ReconcileError> {
-        let result = self
-            .work
-            .claim_due(scope, limit, scan_budget, lease, control)
-            .await;
-        self.stop.cancel();
-        result
-    }
-    async fn renew<T: Timer>(
-        &self,
-        claim: &PgClaim,
-        lease: Duration,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<(), ReconcileError> {
-        self.work.renew(claim, lease, control).await
-    }
-    async fn release<T: Timer>(
-        &self,
-        claim: &PgClaim,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<(), ReconcileError> {
-        self.work.release(claim, control).await
-    }
-    async fn finish<T: Timer>(
-        &self,
-        claim: &PgClaim,
-        completion: Completion,
-        control: &Control<'_, T>,
-    ) -> std::result::Result<(), ReconcileError> {
-        self.work.finish(claim, completion, control).await
     }
 }
 

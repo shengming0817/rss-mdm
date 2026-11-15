@@ -91,7 +91,6 @@ async fn deliver_input(
 ) -> Result<(Arc<PgRuntime>, asset_inputs::Receiver)> {
     let runtime = consumer(c).await?;
     let receiver = asset_inputs::Receiver {
-        storage: c.execution().storage(),
         messaging: Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
             c.execution(),
@@ -357,10 +356,7 @@ impl Workers {
             },
             |_, binding, messaging| {
                 (
-                    asset_inputs::Receiver {
-                        storage: binding.storage(),
-                        messaging,
-                    },
+                    asset_inputs::Receiver { messaging },
                     asset_inputs::Validator {
                         storage: binding.storage(),
                     },
@@ -386,7 +382,6 @@ impl Workers {
                     rss_mdm_scope_service::group_changes::Receiver::new(
                         StorageProfile::Mdm,
                         runtime,
-                        binding.storage(),
                         messaging,
                     ),
                     rss_mdm_scope_service::group_changes::Validator {
@@ -955,11 +950,11 @@ async fn coalesced_static_edit_and_scope_request_are_not_acknowledged_by_old_tas
         .local_tx_with_context(
             c.execution(),
             OperationDeadline::from_remaining(Duration::from_secs(6)),
-            (&binding, c.execution()),
-            |(binding, execution), tx| {
+            &binding,
+            |binding, tx| {
                 Box::pin(async move {
                     let merged = binding
-                        .enqueue_in(*execution, tx, Uuid::new_v4(), published.scope)
+                        .enqueue_in(tx, Uuid::new_v4(), published.scope)
                         .await
                         .map_err(|_| {
                             rss_transactional_messaging_postgres::PgError::from(
@@ -1589,7 +1584,6 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
     .await?;
     let runtime = consumer(&c).await?;
     let receiver = asset_inputs::Receiver {
-        storage: c.execution().storage(),
         messaging: Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
             c.execution(),
