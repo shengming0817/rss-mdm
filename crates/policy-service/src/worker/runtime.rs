@@ -734,7 +734,7 @@ impl PolicyWork {
                     &scope,
                     policy,
                     &control,
-                    &cancel,
+                    cancel,
                     |event| self.service.record_runner_failure(event),
                 )
                 .await

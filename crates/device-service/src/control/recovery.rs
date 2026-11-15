@@ -165,7 +165,7 @@ impl Service {
                     &scope,
                     policy,
                     &control,
-                    &cancel,
+                    cancel,
                     |event| {
                         self.readiness.observe(&event);
                         diagnostic(event);
