@@ -149,9 +149,37 @@ async fn non_manual_fixed_list_revalidates_source_epoch() -> Result<()> {
         let epoch: Uuid = sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND device=$2 AND source='mdm.windows'")
             .bind(c.tenant.to_string()).bind(device.into_uuid()).fetch_one(&mut *tx).await?;
         assert!(rss_mdm_inventory_postgres::publish_field_in(&mut tx, c.tenant, 0, &definition).await?);
-        let evidence = Evidence { source: Source::MdmWindows, dataset: Some("native-list".into()), device_id: Some(device), epoch: Some(epoch.to_string()), actor: None, ..evidence("unused") };
-        assert_eq!(rss_mdm_inventory_postgres::assign_in(&mut tx, c.tenant, &device, field, 0,
-            &State::Known(Scalar::Array(vec![Scalar::Integer(1), Scalar::Integer(2)])), &evidence).await?, Some(1));
+        // Seed an already projected native snapshot. The behavior under test starts
+        // at the public view/list API; manual assignment rejects this field by design.
+        use rss_mdm_inventory::{CollectionDefinition, CollectionField, CollectionScope};
+        use sha2::{Digest, Sha256};
+        let collection = CollectionDefinition::new("native-list", 1, Source::MdmWindows,
+            vec![CollectionField { definition: definition.clone(), scope: CollectionScope::Device }])?;
+        rss_mdm_inventory_postgres::register_collection_in(&mut tx, c.tenant, &collection).await?;
+        let scope = rss_mdm_registration_service::device::scope_dataset(
+            rss_mdm_install_support::StorageProfile::Mdm, c.tenant, &device, "mdm.windows", epoch, "native-list")?;
+        let items = [Scalar::Integer(1), Scalar::Integer(2)];
+        let bytes = serde_json::to_vec(&Scalar::Array(items.to_vec()))?;
+        let definition_bytes = serde_json::to_vec(&definition)?;
+        let definition_digest = format!("{:x}", Sha256::digest(&definition_bytes));
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        let version = format!("{:x}", Sha256::digest(serde_json::to_vec(&(1, &definition_digest, &digest))?));
+        sqlx::query("INSERT INTO mdm.array_versions(tenant_id,version,format,field,definition_digest,item_count,canonical_bytes,digest,definition) VALUES($1::uuid,$2,1,$3,$4,2,$5,$6,$7)")
+            .bind(c.tenant.to_string()).bind(&version).bind(field.as_str()).bind(&definition_digest)
+            .bind(bytes.len() as i64).bind(&digest).bind(definition_bytes).execute(&mut *tx).await?;
+        let mut end = 0i64;
+        for (ordinal, item) in items.iter().enumerate() {
+            let payload = serde_json::to_vec(item)?;
+            end += payload.len() as i64 + i64::from(ordinal > 0);
+            sqlx::query("INSERT INTO mdm.array_items(tenant_id,version,ordinal,payload,digest,prefix_bytes) VALUES($1::uuid,$2,$3,$4,sha256($4),$5)")
+                .bind(c.tenant.to_string()).bind(&version).bind(ordinal as i64).bind(payload).bind(end).execute(&mut *tx).await?;
+        }
+        let projection = rss_mdm_inventory_postgres::projection_scope(c.tenant);
+        sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope,value_version) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,1,2,'known',$8,'mdm.windows',$9,1,$10,$11)")
+            .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation())
+            .bind(scope.encode()?).bind(serde_json::to_string(&collection.coverage()?)?).bind(field.as_str())
+            .bind(Uuid::new_v4().to_string()).bind(device.into_uuid()).bind(epoch.to_string())
+            .bind(CollectionScope::Device.canonical()?).bind(version).execute(&mut *tx).await?;
         tx.commit().await?;
         let timer = rss_mdm_audit_integration::budget::RuntimeTimer;
         let personnel = Reader::new(&c.authority, c.execution(), c.access().now() + Duration::from_secs(30), &timer, None);
