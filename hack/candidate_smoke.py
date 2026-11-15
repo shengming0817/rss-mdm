@@ -116,7 +116,7 @@ def native_pki_journey(deployed,browser):
     try:
         require(call(client,'GET',path)[0]==404,'restored original Agent identity rejected')
         binding=active['runtime']
-        require(browser.call('POST',f'/api/v1/tenants/{TENANT}/devices/'+binding['deviceId']+'/registrations/'+binding['registrationId']+'/revoke',{},str(uuid.uuid4()))[0]==200,'candidate credential revoke failed')
+        require(browser.call('POST',f'/api/v1/tenants/{TENANT}/devices/'+binding['deviceId']+'/registration/revoke',{},str(uuid.uuid4()))[0]==200,'candidate credential revoke failed')
         require(call(client,'GET',path)[0]==401,'revoked credential remained valid on retained TLS connection')
     finally:client.close()
     wait(lambda:deployed.sql("SELECT count(*) FROM mdm_pki.revocations WHERE purpose='agent' AND state='published'")=='1',
