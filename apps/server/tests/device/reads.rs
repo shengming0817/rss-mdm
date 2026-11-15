@@ -191,8 +191,10 @@ async fn non_manual_fixed_list_revalidates_source_epoch() -> Result<()> {
         let next = first["nextCursor"].as_str().expect("second native item");
         let second: Value = serde_json::to_value(service.list_items(&proof, &reference, field, next, 1, &personnel).await?)?;
         assert_eq!(second["items"], json!([{"kind":"integer","value":2}]));
+        let mut tx = seed_transaction(&c).await?;
         sqlx::query("UPDATE mdm_access.report_sources SET epoch=$3 WHERE tenant_id=$1::uuid AND device=$2 AND source='mdm.windows'")
-            .bind(c.tenant.to_string()).bind(device.into_uuid()).bind(Uuid::new_v4()).execute(&c.operator).await?;
+            .bind(c.tenant.to_string()).bind(device.into_uuid()).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+        tx.commit().await?;
         assert!(matches!(service.list_items(&proof, &reference, field, next, 1, &personnel).await,
             Err(rss_mdm_device_service::Error::CursorInvalidated)));
         Ok::<_, anyhow::Error>(())
