@@ -267,7 +267,7 @@ Apple 的 `identity_seed` 永久保留原 challenge/notify ID，实际凭据放�
 标准 Compose 安装可执行：
 
 ```bash
-docker compose -f deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init observe-installation --config /var/lib/rss-mdm/installation-input.json
+docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init observe-installation --config /var/lib/rss-mdm/installation-input.json
 ```
 
 命令通过部署信任根核验所有公共 HTTPS 入口，将完整当前输入与匹配的进程观察原子保存。
