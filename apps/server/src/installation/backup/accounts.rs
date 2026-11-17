@@ -2,6 +2,21 @@
 use super::OriginalAccount;
 use crate::installation::{Error, Result};
 use std::sync::Arc;
+/// Read initialization facts from the restored archive using the admitted recovery administrator.
+/// HTTP account/grant/child receipt commit together; the parent may still be pending.
+/// CLI initialization owns a separate authorization receipt, including the management tenant.
+pub(super) async fn initialized_tenants(
+    c: &mut sqlx::PgConnection,
+    instance: &str,
+    archived: &[uuid::Uuid],
+) -> Result<std::collections::BTreeSet<uuid::Uuid>> {
+    let tenants: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT t.tenant_id FROM public.mdm_tenants t WHERE t.tenant_id=ANY($1) AND NOT t.deleted AND (
+         EXISTS(SELECT FROM mdm_access.authorization_initializations a WHERE a.tenant_id=t.tenant_id AND a.instance=$2::uuid)
+         OR EXISTS(SELECT FROM public.mdm_tenant_operations o WHERE o.tenant_id=t.tenant_id AND o.action='administrator_create' AND o.receipt->'result'->>'principalId' IS NOT NULL)) ORDER BY t.tenant_id"
+    ).bind(archived).bind(instance).fetch_all(c).await.map_err(|_| Error::Storage)?;
+    Ok(tenants.into_iter().collect())
+}
 pub(super) async fn verify_restored(
     config: &crate::config::Config,
     tenant: &str,

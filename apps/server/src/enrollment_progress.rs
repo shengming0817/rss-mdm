@@ -149,10 +149,7 @@ impl EnrollmentProgress {
         } else {
             (
                 Instructions::Macos {
-                    profile_url: format!(
-                        "/api/v1/tenants/{}/enrollments/{}/profile",
-                        context.tenant, context.enrollment
-                    ),
+                    profile_url: format!("/api/v1/enrollments/{}/profile", context.enrollment),
                     enrollment_method: "profile_based_device_enrollment",
                 },
                 false,

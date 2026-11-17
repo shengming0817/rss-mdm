@@ -37,7 +37,7 @@ SCEP、Authenticate、TokenUpdate 和实际命令。注册成功后由受管 CA 
 
 管理员在线登录并拥有目标设备的 `enrollment` 权限后，调用 `POST /api/v1/tenants/{tenant}/enrollments`，提交 `deviceId`、`source:"mdm.apple"`、256 位随机 `password`，以及非零 UUID `Idempotency-Key`。返回 HTTP 200 的 pending 授权。注册生命周期管理入口统一使用 V1；Windows 原生注册使用 `mdm.windows`，不接受请求 `channel`。
 
-设备通过 HTTPS `POST /api/v1/tenants/{tenant}/enrollments/{id}/profile` 提交 `{"password":"…"}` 下载附带 CMS 签名的 mobileconfig；响应不缓存。口令和配置只交付给授权设备。Profile 配置 RSA 2048 SCEP 身份、设备范围、AccessRights 8191、生产 APNs topic、CheckOutWhenRemoved，以及 `per-user-connections`、`bootstraptoken` capability；`SignMessage=false`，管理传输必须使用原生 mTLS。UserAuthenticate 在已绑定 mTLS 身份下返回空 DigestChallenge；不接收目录密码或建立业务账户身份。服务端保存设备实际安装 profile 的权限；后来启用 Agent 安装配置不会增加已有设备权限，也不会使其原生身份失效。缺少查询或安装权限时，策略返回 missing_native_rights，需通过正常注册流程取得用户/系统授权。
+设备通过 HTTPS `POST /api/v1/enrollments/{id}/profile` 提交 `{"password":"…"}` 下载附带 CMS 签名的 mobileconfig；响应不缓存。口令和配置只交付给授权设备。Profile 配置 RSA 2048 SCEP 身份、设备范围、AccessRights 8191、生产 APNs topic、CheckOutWhenRemoved，以及 `per-user-connections`、`bootstraptoken` capability；`SignMessage=false`，管理传输必须使用原生 mTLS。UserAuthenticate 在已绑定 mTLS 身份下返回空 DigestChallenge；不接收目录密码或建立业务账户身份。服务端保存设备实际安装 profile 的权限；后来启用 Agent 安装配置不会增加已有设备权限，也不会使其原生身份失效。缺少查询或安装权限时，策略返回 missing_native_rights，需通过正常注册流程取得用户/系统授权。
 
 SCEP challenge 在返回 allow 前提交唯一消费事实，绑定 enrollment、签发 attempt、事务 ID、CSR 摘要、公钥和配置身份。相同请求重试也被拒绝。通知丢失时，首次携带匹配有效证书的 Authenticate 可完成绑定；签发响应丢失不能重新签发，须由原管理员 resume，换口令后重新下载 Profile。新 attempt 使用新密钥；活跃已消费公钥不能跨 attempt 复用。
 
@@ -169,7 +169,7 @@ SCEP provisioner 名为 rss，最小 RSA 公钥 2048、禁用 renewal，默认�
 {"subject":{"commonName":{{ toJson .Webhooks.rss.subject }}},"keyUsage":["digitalSignature"],"extKeyUsage":["clientAuth"],"basicConstraints":{"isCA":false}}
 ```
 
-通过 `step ca provisioner webhook add rss rss --kind SCEPCHALLENGE --url https://mdm.example.test/api/v1/tenants/{tenant}/apple/scep/challenge` 配置 challenge；通过 `step ca provisioner webhook add rss rss_notify --kind NOTIFYING --url https://mdm.example.test/api/v1/tenants/{tenant}/apple/scep/notify` 配置通知。命令需附该部署的 ca-url/root/admin 身份参数；分别将输出 ID 和 secret 写入受保护配置。不能把通知类型写成不存在的 SCEPNOTIFY。
+通过 `step ca provisioner webhook add rss rss --kind SCEPCHALLENGE --url https://mdm.example.test/api/v1/apple/scep/challenge` 配置 challenge；通过 `step ca provisioner webhook add rss rss_notify --kind NOTIFYING --url https://mdm.example.test/api/v1/apple/scep/notify` 配置通知。命令需附该部署的 ca-url/root/admin 身份参数；分别将输出 ID 和 secret 写入受保护配置。不能把通知类型写成不存在的 SCEPNOTIFY。
 
 配置后重启 CA，确认 `/scep/rss?operation=GetCACaps` 可访问：该版本只在启动时安装 SCEP HTTP authority。Webhook HTTPS 证书须被 CA 的系统信任根或配置 root 信任；`federatedRoots` 不参与该版本 webhook TLS 客户端验证。生产应使用受信任服务证书，不能禁用 TLS 校验。产品要求 Host 与 product_origin 精确一致，反向代理保持 Host 并转发原始请求体和 X-Smallstep-Webhook-ID/X-Smallstep-Signature。
 
@@ -212,7 +212,7 @@ publication 或 synchronized 不证明设置生效、合规或卸载。未注册
 
 ## macOS Platform SSO 服务端
 
-可选配置 `device_access.platform_sso` 固定 `configuration`（`teamId`、`extensionId`、`applicationId`、`applicationVersion`、非零 UUID `clientId`）、`active_key` 和 `signing_keys`（名称到受保护 P-256 PKCS#8 PEM 文件的映射，最多四把）。私钥只从部署材料读取；公钥由 `/api/v1/tenants/{tenant}/apple/platform-sso/{tenant}/jwks` 发布。轮转先同时发布新旧公钥，再切 active key，等待旧令牌 300 秒有效期结束后移除旧钥。更改应用、扩展、client 或 origin 会使旧注册失效，须重新部署并注册。
+可选配置 `device_access.platform_sso` 固定 `configuration`（`teamId`、`extensionId`、`applicationId`、`applicationVersion`、非零 UUID `clientId`）、`active_key` 和 `signing_keys`（名称到受保护 P-256 PKCS#8 PEM 文件的映射，最多四把）。私钥只从部署材料读取；公钥由 `/api/v1/apple/platform-sso/{tenant}/jwks` 发布。轮转先同时发布新旧公钥，再切 active key，等待旧令牌 300 秒有效期结束后移除旧钥。更改应用、扩展、client 或 origin 会使旧注册失效，须重新部署并注册。
 
 协议固定 Apple PSSO 1.0、共享设备密钥，支持 `UserSecureEnclaveKey` 或原生 Password。运行准入要求 Apple silicon、macOS 26.4 及以上、当前 Device Access 能力和本地 helper/broker；SDK 基线为 26.4。登录、锁屏、FileVault 策略分别配置，默认 local；Require 必须保留独立 maintenanceAccounts 维修路径，grace 由管理员明确指定。当前强化子集只用于 Password。服务端不证明硬件 attestation、用户在场或 MFA，不配置在线创建用户或 ADE 登录流程。签名应用、P5 原生扩展与 P9 真机证据独立交付，服务端协议测试不能代替 Mac 登录验收。
 

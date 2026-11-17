@@ -154,6 +154,7 @@ async fn configuration_on(
     policy: Uuid,
     version: Uuid,
 ) -> Result<TelemetryConfiguration, Error> {
+    let backend = service.backend_on(c, principal.binding().tenant()).await?;
     let frozen = service
         .policies
         .current_on(principal.binding(), c, principal.device(), policy, version)
@@ -258,12 +259,9 @@ async fn configuration_on(
             .budget
             .bytes
             .min(service.limits.request_bytes)
-            .min(service.storage_budget.bytes.get()),
-        max_points: spec.budget.points.min(service.storage_budget.points.get()),
-        max_resources: spec
-            .budget
-            .resources
-            .min(service.storage_budget.series.get()),
+            .min(backend.budget.bytes.get()),
+        max_points: spec.budget.points.min(backend.budget.points.get()),
+        max_resources: spec.budget.resources.min(backend.budget.series.get()),
         execution_millis: spec
             .budget
             .execution_millis
@@ -273,7 +271,7 @@ async fn configuration_on(
             .output_bytes
             .min(template_output)
             .min(service.limits.request_bytes)
-            .min(service.storage_budget.bytes.get()),
+            .min(backend.budget.bytes.get()),
         backfill_seconds: spec.backfill_seconds,
     })
 }

@@ -174,6 +174,36 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
     config["content"] = json!({"storage":{"kind":"volume","directory":content},"imports":{},"max_artifact_bytes":1048576,"max_temporary_bytes":4194304,"max_uploads":2,"transfer_seconds":30,"retention_seconds":60,"max_bundle_entries":16,"max_expansion_ratio":10});
     let target = format!("directory-{}", c.tenant);
     config["publication"]["sources"] = json!([{"name":target,"credentials":{},"target":{"Winget":{"base":format!("https://mdm.example.test/api/v1/tenants/{{tenant}}/software/native/sources/{target}/"),"artifacts_base":format!("https://mdm.example.test/api/v1/tenants/{{tenant}}/software/native/sources/{target}/artifacts/")}}}]);
+    // A source enabled for another tenant must not hide this tenant's WinGet target.
+    let peer = Context::open("shared", &[]).await?;
+    let brew = format!("brew-{}", c.tenant);
+    let repository = content.join("brew.git");
+    anyhow::ensure!(
+        tokio::process::Command::new("/usr/bin/git")
+            .args(["init", "--bare", "--quiet"])
+            .arg(&repository)
+            .status()
+            .await?
+            .success(),
+        "bare repository fixture"
+    );
+    let token = "directory-peer-token-0123456789abcdef";
+    let token_path = content.join("brew-token");
+    std::fs::write(&token_path, token)?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600))?;
+    let source = json!({"name":brew,"credentials":{peer.tenant.to_string():{"read":token_path}},"target":{"Brew":{"base":format!("https://mdm.example.test/api/v1/tenants/{{tenant}}/software/native/sources/{brew}/"),"artifacts_base":format!("https://mdm.example.test/api/v1/tenants/{{tenant}}/software/native/sources/{brew}/artifacts/"),"credential_reference":"read","tap":"enterprise/software","repository":repository}}});
+    let files = serde_json::from_value(source["credentials"].clone())?;
+    let credentials = crate::source_credentials::SourceCredentials::load(&brew, &files)?;
+    use rss_mdm_software_service::Credentials;
+    let access = credentials.brew_read(peer.tenant, &brew, "read")?;
+    assert!(access.permits(peer.tenant, &brew, token));
+    assert!(!access.permits(c.tenant, &brew, token));
+    assert!(credentials.brew_read(c.tenant, &brew, "read").is_err());
+    config["publication"]["sources"]
+        .as_array_mut()
+        .context("sources")?
+        .push(source);
     let config = serde_json::from_value(config)?;
     let access::credential::RequestCredential::Cookie(cookie) = manager.credential()? else {
         anyhow::bail!("cookie fixture required")
@@ -225,6 +255,11 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
             Ok::<_, anyhow::Error>(())
         })
         .await.with_context(|| format!("directory App readiness: {readiness:?}"))??;
+        let (status, targets) = http.get("/software/publication-targets", &[]).await?;
+        assert_eq!(status, 200, "{targets}");
+        let found = targets["items"].as_array().context("targets")?.iter().find(|item| item["id"] == target).context("WinGet target remains discoverable")?;
+        let selected = http.selected("/software/publication-targets", "protocol==winget").await?;
+        assert_eq!(selected, *found);
         // Real HTTP contracts expose each owner and retain first-use permission boundaries.
         let (status, diagnostics) = http.get("/runtime/diagnostics", &[]).await?;
         assert_eq!(status, 200, "{diagnostics}");
@@ -445,6 +480,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
     };
     ca_server.start_kill()?;
     ca_server.wait().await?;
+    peer.close().await;
     c.close().await;
     exercise.with_context(|| format!("App completion: {cleanup:?}"))?;
     cleanup

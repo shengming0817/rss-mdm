@@ -83,7 +83,42 @@ impl SourceResources {
             physical,
         })
     }
+    /// Describe a tenant's target without acquiring execution credentials.
+    pub fn target(&self, tenant: TenantId) -> Result<super::PublicTarget> {
+        Ok(self.describe(tenant)?.0.target())
+    }
     pub fn scope(&self, tenant: TenantId, credentials: &dyn crate::Credentials) -> Result<Sources> {
+        let (source, configuration) = self.describe(tenant)?;
+        let driver = match source.binding.protocol {
+            ExportProtocol::Winget { base } => Driver::Winget {
+                base,
+                artifacts_base: source.artifacts_base,
+            },
+            ExportProtocol::Brew {
+                base,
+                tap,
+                credential_reference,
+            } => Driver::Brew {
+                base,
+                artifacts_base: source.artifacts_base,
+                access: credentials.brew_read(tenant, &self.logical, &credential_reference)?,
+                repo: self.repository.as_ref().ok_or(Error::Source)?.scope(tenant),
+                tap,
+                credential_reference,
+            },
+        };
+        Ok(Sources {
+            tenant,
+            logical: source.logical,
+            binding: Binding {
+                identity: source.binding.identity,
+                configuration,
+                driver,
+            },
+            digest: source.digest,
+        })
+    }
+    fn describe(&self, tenant: TenantId) -> Result<(ExportSources, Vec<u8>)> {
         rel::TargetId::new(tenant, &self.logical).map_err(|_| Error::Input)?;
         let address = |value: &str| -> Result<String> {
             let value =
@@ -94,18 +129,12 @@ impl SourceResources {
             }
             Ok(value)
         };
-        let (driver, configuration) = match &self.config {
+        let (protocol, artifacts_base, configuration) = match &self.config {
             SourceConfig::Winget(c) => {
                 let base = address(&c.base)?;
                 let artifacts_base = address(&c.artifacts_base)?;
                 let document = serde_json::json!([2, "hosted-winget", base, artifacts_base]);
-                (
-                    Driver::Winget {
-                        base,
-                        artifacts_base,
-                    },
-                    document,
-                )
+                (ExportProtocol::Winget { base }, artifacts_base, document)
             }
             SourceConfig::Brew(c) => {
                 let base = address(&c.base)?;
@@ -120,18 +149,12 @@ impl SourceResources {
                     c.credential_reference
                 ]);
                 (
-                    Driver::Brew {
+                    ExportProtocol::Brew {
                         base,
-                        artifacts_base,
-                        access: credentials.brew_read(
-                            tenant,
-                            &self.logical,
-                            &c.credential_reference,
-                        )?,
-                        repo: self.repository.as_ref().ok_or(Error::Source)?.scope(tenant),
                         tap: c.tap.clone(),
                         credential_reference: c.credential_reference.clone(),
                     },
+                    artifacts_base,
                     document,
                 )
             }
@@ -155,16 +178,16 @@ impl SourceResources {
             configuration
         ]))
         .map_err(|_| Error::Input)?;
-        Ok(Sources {
-            tenant,
-            logical: self.logical.clone(),
-            binding: Binding {
-                identity,
-                configuration,
-                driver,
+        Ok((
+            ExportSources {
+                tenant,
+                logical: self.logical.clone(),
+                digest: Sha256::digest(envelope).into(),
+                binding: ExportBinding { identity, protocol },
+                artifacts_base,
             },
-            digest: Sha256::digest(envelope).into(),
-        })
+            configuration,
+        ))
     }
 }
 impl Sources {
@@ -230,7 +253,65 @@ impl Sources {
     }
 }
 impl ExportSources {
+    pub(super) fn target(&self) -> super::PublicTarget {
+        super::PublicTarget {
+            id: self.logical.clone(),
+            digest: self.digest,
+            protocol: match self.binding.protocol {
+                ExportProtocol::Winget { .. } => super::TargetProtocol::Winget,
+                ExportProtocol::Brew { .. } => super::TargetProtocol::Brew,
+            },
+        }
+    }
     pub(super) fn binding(&self) -> &ExportBinding {
         &self.binding
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct Unavailable;
+    impl crate::Credentials for Unavailable {
+        fn brew_read(&self, _: TenantId, _: &str, _: &str) -> Result<crate::BrewReadAccess> {
+            Err(Error::Identity)
+        }
+    }
+    #[test]
+    fn target_metadata_is_tenant_bound_without_execution_credentials() {
+        let a = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
+        let b = TenantId::parse("22222222-2222-4222-8222-222222222222").unwrap();
+        let source = SourceResources {
+            logical: "enterprise".into(),
+            config: SourceConfig::Winget(WingetConfig {
+                base: "https://mdm.example/{tenant}/winget/".into(),
+                artifacts_base: "https://mdm.example/{tenant}/artifacts/".into(),
+            }),
+            repository: None,
+            physical: "https://mdm.example/{tenant}/winget/".into(),
+        };
+        assert_eq!(
+            source.target(a).unwrap().digest,
+            source.scope(a, &Unavailable).unwrap().digest
+        );
+        assert_ne!(
+            source.target(a).unwrap().digest,
+            source.target(b).unwrap().digest
+        );
+        let brew = SourceResources {
+            config: SourceConfig::Brew(BrewConfig {
+                base: "https://mdm.example/{tenant}/brew/".into(),
+                artifacts_base: "https://mdm.example/{tenant}/artifacts/".into(),
+                credential_reference: "read".into(),
+                tap: "enterprise/software".into(),
+                repository: "/unused".into(),
+            }),
+            ..source
+        };
+        assert!(matches!(
+            brew.target(b).unwrap().protocol,
+            super::super::TargetProtocol::Brew
+        ));
+        assert!(matches!(brew.scope(b, &Unavailable), Err(Error::Identity)));
     }
 }

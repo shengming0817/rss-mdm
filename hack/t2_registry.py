@@ -232,7 +232,7 @@ MODULES = {
     'apple.protocol': dict(prefix='apple_t2::', profiles=('shared',),
         inputs=('crates/agent-wire/src/identity.rs', 'crates/recovery-credentials/src/native/storage.rs','crates/recovery-credentials/src/native/policy-access.sql','crates/recovery-credentials/schema/task-relations.sql','crates/policy-service/src/configuration/*','crates/apple-channel/src/configuration-access.sql','crates/apple-channel/*',
                 'crates/policy-service/src/configuration/apple.rs', 'crates/policy-service/src/configuration/assets.rs', 'crates/policy-service/src/configuration/protocol.rs', 'crates/policy-service/src/configuration/storage.rs', 'crates/policy-service/src/configuration/authority.rs', 'crates/policy-service/schema/*', 'crates/registration-service/src/command_authority.rs', 'crates/registration-service/schema/command-authorities.sql', 'apps/server/src/assembly/native_ownership.rs', 'apps/server/src/assembly/configuration_channels.rs', 'crates/device-service/schema/control-*', 'crates/device-service/src/control/apple*',
-                'apps/server/src/assembly/apple_*', 'apps/server/tests/apple/*',
+                'apps/server/src/assembly/apple_*', 'apps/server/src/enrollment_progress.rs', 'apps/server/tests/apple/*',
                 'apps/server/tests/support/native_identity.rs', 'apps/server/src/assembly/command*', 'apps/server/src/assembly/host_storage.rs',
                 'apps/server/src/assembly/device_control.rs', 'apps/server/src/assembly/collection.rs',
                 'apps/server/src/assembly/software.rs', 'apps/server/src/assembly/registration.rs',

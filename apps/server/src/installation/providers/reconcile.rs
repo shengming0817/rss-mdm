@@ -27,7 +27,9 @@ pub async fn run(request: Request) -> Result<()> {
         return Err(Error::Input);
     }
     let root = crate::installation::local::Journal::open(&input.directory)?;
-    let config: crate::config::Config = root.load("runtime.json")?.ok_or(Error::Corrupt)?;
+    let config: crate::config::Config =
+        serde_json::from_value(crate::installation::runtime_files::current(&root)?)
+            .map_err(|_| Error::Corrupt)?;
     let mut c = PgConnection::connect_with(
         &input
             .database("mdm_owner")?
@@ -55,7 +57,7 @@ pub async fn run(request: Request) -> Result<()> {
     storage_tenant(input, &config, &mut c, request.tenant).await?;
     wns_tenant(&config, &mut c, request.tenant).await?;
     super::mail::qualify_tenant(input, &config, &mut c, request.tenant).await?;
-    super::webhook::qualify_tenant(input, &mut c, request.tenant).await?;
+    super::webhook::qualify_tenant(&config, &mut c, request.tenant).await?;
     c.close().await.map_err(|_| Error::Storage)
 }
 

@@ -80,6 +80,8 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 用相同 secrets、相同卷重复 `docker compose ... run --rm init` 保持原 tenant/principal/instance/operation、密码和密钥。安装已完成时不覆盖后续配置。停止、重建与重启使用普通 Compose 命令；`down` 保留卷，`down -v` 删除数据，不能用来恢复故障。没有常驻 operator 或自动创建子 Compose 的进程。
 
+首装启动就绪后，按[当前安装联合冷备](operations.md#当前安装联合冷备)运行 `observe-installation` 保存真实部署观察，再执行停写或备份。
+
 ### 服务端 SIT 部署
 
 服务端 SIT 交付包含可登录的基础环境、真实设备 CA、内容存储、任务签名、注册设置、已启用通道和运行检查。真实 Mac/Windows、Agent 安装、系统权限与设备注册结果属于后续测试准备和测试结果，不作为服务端部署完成条件。服务健康也不表示设备测试已经通过。

@@ -67,25 +67,20 @@ pub(crate) async fn receive_on(
     wire_bytes: usize,
 ) -> Result<TelemetryReceipt, Error> {
     input.validate().map_err(|_| Error::Invalid)?;
-    let _selected_backend = service.backend_on(c, principal.tenant()).await?;
+    let backend = service.backend_on(c, principal.tenant()).await?;
     if input
         .observations
         .iter()
         .map(|point| point.values.len())
         .sum::<usize>()
-        > service.storage_budget.points.get() as usize
+        > backend.budget.points.get() as usize
     {
         return Err(Error::Capacity);
     }
     let bytes = serde_json::to_vec(input)?;
     let digest = Sha256::digest(&bytes).to_vec();
     let accounted = wire_bytes.max(bytes.len());
-    if accounted
-        > service
-            .limits
-            .request_bytes
-            .min(service.storage_budget.bytes.get()) as usize
-    {
+    if accounted > service.limits.request_bytes.min(backend.budget.bytes.get()) as usize {
         return Err(Error::Capacity);
     }
     rss_mdm_registration_service::device::store::revalidate_management(
@@ -239,9 +234,9 @@ pub(crate) async fn receive_on(
             .iter()
             .map(|s| s.input().series.digest().map(|d| *d.as_bytes()))
             .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
-        if history.samples().len() > service.storage_budget.points.get() as usize
-            || unique.len() > service.storage_budget.series.get() as usize
-            || history.encode()?.len() > service.storage_budget.bytes.get() as usize
+        if history.samples().len() > backend.budget.points.get() as usize
+            || unique.len() > backend.budget.series.get() as usize
+            || history.encode()?.len() > backend.budget.bytes.get() as usize
         {
             return Err(Error::Capacity);
         }

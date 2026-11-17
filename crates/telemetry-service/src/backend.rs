@@ -84,4 +84,17 @@ pub struct Resource {
     pub binding: [u8; 32],
     pub tenant: Option<rss_request_context::TenantId>,
     pub backend: Option<std::sync::Arc<Backend>>,
+    pub budget: crate::StorageBudget,
+}
+
+/// A persisted selection keeps the admitted provider and its limits together.
+pub(crate) struct Selected {
+    pub(crate) backend: std::sync::Arc<Backend>,
+    pub(crate) budget: crate::StorageBudget,
+}
+impl std::ops::Deref for Selected {
+    type Target = Backend;
+    fn deref(&self) -> &Backend {
+        &self.backend
+    }
 }

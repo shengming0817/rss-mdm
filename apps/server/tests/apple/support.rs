@@ -22,15 +22,34 @@ pub fn context(user: bool) -> rss_mdm_apple_mdm::applicability::Context {
         apple_silicon: Some(true),
     }
 }
-#[allow(
-    clippy::cognitive_complexity,
-    reason = "one legal material fixture prepares the existing native protocol proof"
-)]
 pub async fn apple(
     c: &Context,
     n: &Native,
     key: Arc<Protector>,
     users: &[String],
+) -> Result<(
+    Arc<rss_mdm_apple_channel::Apple>,
+    rss_mdm_registration_service::DevicePrincipal,
+)> {
+    apple_with_providers(
+        c,
+        n,
+        key,
+        users,
+        Arc::new(rss_mdm_pki_service::providers::Providers::new(vec![])?),
+    )
+    .await
+}
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one legal material fixture prepares the existing native protocol proof"
+)]
+pub async fn apple_with_providers(
+    c: &Context,
+    n: &Native,
+    key: Arc<Protector>,
+    users: &[String],
+    providers: Arc<rss_mdm_pki_service::providers::Providers>,
 ) -> Result<(
     Arc<rss_mdm_apple_channel::Apple>,
     rss_mdm_registration_service::DevicePrincipal,
@@ -146,7 +165,7 @@ pub async fn apple(
         loaded.profile,
         Arc::new(push),
         loaded.binding,
-        Arc::new(rss_mdm_pki_service::providers::Providers::new(vec![])?),
+        providers,
     ));
     Ok((apple, p))
 }

@@ -263,11 +263,24 @@ Apple 的 `identity_seed` 永久保留原 challenge/notify ID，实际凭据放�
 
 ### 当前安装联合冷备
 
+首装启动并就绪后，在停写前执行 `rss-mdm observe-installation --config /absolute/private-installation-input.json`。
+标准 Compose 安装可执行：
+
+```bash
+docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init observe-installation --config /var/lib/rss-mdm/installation-input.json
+```
+
+命令通过部署信任根核验所有公共 HTTPS 入口，将完整当前输入与匹配的进程观察原子保存。
+`configure-host` 和 `rotate-protection` 同样在真实观察后更新此记录；尚未装载的 desired 不可进入冷备。
+重启后可重放观察命令；冷备只读取停机前持久记录，不依赖已停止的 `/readyz`。
+
 `backup-installation` 接受安装输入、稳定操作 ID、安装目录之外的私有备份目录，以及每个保留 CA 的 issuer、purpose、configuration_file、在线/离线目录、离线根钥及密码文件。运维先停止全部写服务；准备阶段校验原安装、宿主记录及 CA 在线证书与离线根钥关系，数据库连接屏障拒绝仍有写连接的备份。产品不读取或控制 CA 容器。备份含秘密，公开回执仅返回操作、阶段及 manifest SHA-256。
 
 运维先用 Compose 停止全部相关后端、网关和 CA 写入服务；产品备份命令不控制容器。命令持久保存原身份，验证无业务写连接，保存和暂时收回普通运行角色的数据库 CONNECT 授权。数据库 owner 和受控管理员用于原样 dump 及切换到原只读角色后的 Ledger 验证。联合归档保留 Docker 卷内固定服务 UID/GID/权限、原保护材料、内容卷、S3 确切物理版本和 CA 在线/离线目录。未决对象继续保持未知；原 Ledger 历史逐页验证，不更换 HMAC 密钥。归档封存后按原权限恢复连接并重新观察宿主。
 
-`restore-installation` 使用备份目录、独立保存的 manifest 摘要、新恢复操作 ID、目标管理员数据库连接，以及平台和每个已启用业务租户的 `accounts`（tenant_id、原 principal_id/login/password_file）。这是同址恢复：数据库名称/地址、安装路径、材料路径和内容路径保持原值；目标库必须为空（用 `TEMPLATE template0` 创建，避免继承 Timescale 对象），受限角色及原凭据须已恢复，外置材料父目录须存在。拒绝覆盖不同文件内容或已有业务库。恢复数据库使用单事务和持久操作标记，原角色授权在验证完成后恢复；原账户执行真实认证及授权核对，不以密码重置代替验证。
+`restore-installation` 使用备份目录、独立保存的 manifest 摘要、新恢复操作 ID、目标管理员数据库连接，以及平台和每个已初始化管理员的业务租户的 `accounts`（tenant_id、原 principal_id/login/password_file）。这是同址恢复：数据库名称/地址、安装路径、材料路径和内容路径保持原值；目标库必须为空（用 `TEMPLATE template0` 创建，避免继承 Timescale 对象），数据库 owner、受限角色及原凭据须保持原值并已恢复，外置材料父目录须存在。拒绝覆盖不同文件内容或已有业务库。恢复数据库使用单事务和持久操作标记，原角色授权在验证完成后恢复；原账户执行真实认证及授权核对，不以密码重置代替验证。
+
+已预留但尚未提交管理员账户的租户仍完整归档，恢复不要求不存在的账户；管理员已提交而默认配置仍 pending/blocked 的租户仍须核验原账户。恢复后用原 provisioning 操作和原输入继续完成待办，不创建替代租户或重置密码。
 
 CA 的镜像、网络、卷、启停与恢复由原运维 Compose/Kubernetes 声明负责。产品命令只校验所提供的在线/离线材料、恢复数据和身份，不读取 Docker inspect，不重建容器。`restore-installation` 完成后，先用交付的部署 renderer 重新生成网关配置。安装工具仅恢复 `deployment.json`、TLS 材料和公开配置，不生成 Nginx 语法。按原部署环境先恢复 CA，再运行以下命令。这里使用标准安装卷路径；自定义安装须替换为原 `deployment.gateway_directory`：
 

@@ -5,6 +5,9 @@ use reqwest::Method;
 use serde_json::json;
 use std::{net::SocketAddr, os::unix::fs::PermissionsExt, path::Path};
 
+#[path = "lifecycle_maintenance.rs"]
+mod maintenance;
+
 struct Browser {
     address: SocketAddr,
     client: reqwest::Client,
@@ -186,11 +189,18 @@ async fn installed_service_creates_another_tenant_without_reassembly() -> Result
     private(&root.join("platform-password"), platform_password)?;
     let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = reservation.local_addr()?;
+    let gateway = maintenance::Gateway::open(
+        address,
+        &pg_root.join("server.crt"),
+        &pg_root.join("server.key"),
+    )
+    .await?;
     // Deserialize the same current input contract used by the ordinary install command.
     let installation_input = json!({
         "directory":root.join("installation"),
-        "deployment":{"directory":root.join("runtime"),"gateway_directory":root.join("gateway"),"probe_address":null,
-            "certificate_file":pg_root.join("pg/server.crt"),"private_key_file":pg_root.join("pg/server.key"),
+        "deployment":{"directory":root.join("runtime"),"gateway_directory":root.join("gateway"),"probe_address":gateway.address.to_string(),
+            "probe_addresses":{"https://mdm.example.test:8443":gateway.address.to_string()},
+            "certificate_file":pg_root.join("server.crt"),"private_key_file":pg_root.join("server.key"),
             "trust_file":administrator.ca_file,"content_volume":root.join("content")},
         "database":{"name":"mdm_installation_proof","administrator":administrator},
         "organization_name":"First organization","platform_login":"platform","administrator_login":"administrator",
@@ -268,8 +278,10 @@ async fn installed_service_creates_another_tenant_without_reassembly() -> Result
         let after = peer.ready(tenant).await?;
         ensure!(before["observation"] == after["observation"], "new tenant changed running process");
         ensure!(count_before == resource_count().await? && runtime_before == std::fs::read(&runtime_path)?, "new tenant changed installation resources");
-        let replayed = install(serde_json::from_value(installation_input.clone())?).await?;
+        let replayed = install(serde_json::from_value(installation_input.clone())?).await.context("replay original installation")?;
         ensure!(replayed.operation_id == first.operation_id && replayed.tenant_id == first.tenant_id, "installer replay changed original identities");
+        gateway.probe(&administrator.ca_file).await?;
+        crate::installation::runtime_files::observe_installation(serde_json::from_value(installation_input.clone())?).await.context("observe initial installation")?;
         Ok::<_, anyhow::Error>(())
     }.await;
     if exercise.is_err() {
@@ -291,5 +303,13 @@ async fn installed_service_creates_another_tenant_without_reassembly() -> Result
         tokio::net::TcpStream::connect(address).await.is_err(),
         "installed listener leaked"
     );
+    // Keep the full maintenance journey off the test thread stack.
+    Box::pin(maintenance::exercise(
+        &root,
+        &installation_input,
+        &first,
+        management,
+    ))
+    .await?;
     Ok(())
 }

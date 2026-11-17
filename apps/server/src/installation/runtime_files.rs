@@ -107,7 +107,7 @@ impl GatewayTls {
         config.trust_file = self.trust_file.clone();
     }
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Applied {
     pub host_id: uuid::Uuid,
@@ -116,6 +116,59 @@ pub struct Applied {
     pub material_digest: String,
     pub process_generation: uuid::Uuid,
     pub instance_id: String,
+}
+/// One atomic record of the complete input actually observed through deployment TLS.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Deployment {
+    runtime: Value,
+    observation: Applied,
+}
+fn owner(root: &Journal) -> Result<Journal> {
+    // The installer template supplies only the immutable installation coordinate.
+    let initial: crate::config::Config = root.load("runtime.json")?.ok_or(Error::Corrupt)?;
+    Journal::open(&root.path(&format!(
+        "rss-mdm-{}",
+        initial.runtime_binding.host_id.simple()
+    ))?)
+}
+pub(super) fn requested(root: &Journal) -> Result<Value> {
+    owner(root)?
+        .load("requested-runtime.json")?
+        .ok_or(Error::Corrupt)
+}
+/// A pending desired input cannot be consumed as an applied installation.
+pub(super) fn current(root: &Journal) -> Result<Value> {
+    let owner = owner(root)?;
+    let desired: Value = owner
+        .load("requested-runtime.json")?
+        .ok_or(Error::Corrupt)?;
+    let deployed: Deployment = owner.load("applied.json")?.ok_or(Error::Conflict)?;
+    let config: crate::config::Config =
+        serde_json::from_value(deployed.runtime.clone()).map_err(|_| Error::Corrupt)?;
+    if desired != deployed.runtime
+        || !matches(
+            &deployed.observation,
+            &config.runtime_binding,
+            &config.identity.instance_id,
+        )
+    {
+        return Err(Error::Conflict);
+    }
+    Ok(deployed.runtime)
+}
+/// Observe the installed desired configuration while its public endpoints are running.
+pub async fn observe_installation(input: super::install::Input) -> Result<Applied> {
+    let root = Journal::open(&input.directory)?;
+    if root
+        .load::<Option<uuid::Uuid>>("backup-operation.json")?
+        .flatten()
+        .is_some()
+    {
+        return Err(Error::Busy);
+    }
+    let runtime = requested(&root)?;
+    observe_runtime(&input.directory, &runtime).await
 }
 fn public_file(name: &str) -> bool {
     matches!(
@@ -334,12 +387,21 @@ pub async fn prepare(directory: &Path, config: &Config, runtime: &Value) -> Resu
 /// Publish files and observe an already running host. Pending until operations restarts it.
 pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result<Applied> {
     prepare(directory, config, runtime).await?;
+    observe_runtime(directory, runtime).await
+}
+async fn observe_runtime(directory: &Path, runtime: &Value) -> Result<Applied> {
     let decoded: crate::config::Config =
         serde_json::from_value(runtime.clone()).map_err(|_| Error::Input)?;
     let owner = Journal::open(&directory.join(format!(
         "rss-mdm-{}",
         decoded.runtime_binding.host_id.simple()
     )))?;
+    let desired: Value = owner
+        .load("requested-runtime.json")?
+        .ok_or(Error::Corrupt)?;
+    if &desired != runtime {
+        return Err(Error::Conflict);
+    }
     let effective: Config = owner.load("runtime-files.json")?.ok_or(Error::Corrupt)?;
     let root =
         crate::config::read(&effective.trust_file, 128 * 1024, false).map_err(|_| Error::Input)?;
@@ -383,7 +445,13 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
         }
     }
     let applied = observed.ok_or(Error::Corrupt)?;
-    owner.save("applied.json", &applied)?;
+    owner.save(
+        "applied.json",
+        &Deployment {
+            runtime: runtime.clone(),
+            observation: applied.clone(),
+        },
+    )?;
     Ok(applied)
 }
 fn matches(value: &Applied, binding: &Binding, instance: &str) -> bool {

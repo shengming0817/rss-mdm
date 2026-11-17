@@ -14,12 +14,16 @@ pub(super) fn deadline() -> rss_request_context::Deadline {
 pub(super) struct Fixture {
     pub config: crate::telemetry::Config,
     pub owner: crate::owner_storage::OwnerRuntime,
+    resources: std::sync::Mutex<Vec<crate::telemetry::Resource>>,
     directory: tempfile::TempDir,
     database: String,
     roles: [String; 2],
 }
 impl Fixture {
     pub async fn open(c: &Context) -> Result<Self> {
+        Self::open_with_limits(c, 128, 64).await
+    }
+    pub async fn open_with_limits(c: &Context, points: u32, series: u32) -> Result<Self> {
         use std::os::unix::fs::PermissionsExt;
         // The installer rejects symlink ancestors, including the macOS /var temp alias.
         let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
@@ -45,12 +49,13 @@ impl Fixture {
             "resource_id":Uuid::new_v4(),"backend":{"kind":"postgres","database":runtime},"connections":2,"cursor_key_file":directory.path().join("cursor"),
             "maintenance":{"rows":4096,"buckets":64,"step_seconds":6},
             "ingress":{"requestBytes":1048576,"pendingBatches":64,"batchesPerMinute":120,"bytesPerMinute":8388608},
-            "limits":{"max_points":128,"max_series":64,"max_bytes":1048576,"replay_micros":86400000000u64,"cursor_micros":60000000}
+            "limits":{"max_points":points,"max_series":series,"max_bytes":1048576,"replay_micros":86400000000u64,"cursor_micros":60000000}
         }))?;
         let owner = planning::owner(c, "mdm_telemetry_runtime").await?;
         let fixture = Self {
             config,
             owner,
+            resources: Default::default(),
             directory,
             database,
             roles,
@@ -95,7 +100,11 @@ impl Fixture {
             Backend::ClickHouse(_) => unreachable!(),
         }
     }
-    pub async fn service(&self, c: &Context) -> Result<Arc<Service>> {
+    pub async fn service(
+        &self,
+        c: &Context,
+        configurations: &[crate::telemetry::Config],
+    ) -> Result<Arc<Service>> {
         let objects = Arc::new(rss_mdm_device_service::planning::PlanningObjects);
         let dependencies = PolicyDependencies {
             agent_facts: Arc::new(crate::assembly::agent_facts::AgentFacts),
@@ -109,36 +118,32 @@ impl Fixture {
             )),
             objects,
         };
-        let service = Arc::new(Service::new(
+        let service = crate::telemetry::open(
+            configurations,
             c.execution(),
             self.owner.runtime.clone(),
             dependencies,
-            vec![rss_mdm_telemetry_service::backend::Resource {
-                binding: self.config.configuration_binding()?,
-                tenant: None,
-                backend: Some(Arc::new(Backend::Postgres(self.store().await?))),
-            }],
             Arc::new(rss_mdm_task_trust::Signing::new(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 rss_mdm_task_trust::Use::AgentTask,
                 crate::device_material_support::protection(c)?,
             )?),
-            self.config.ingress.clone(),
-            self.config.maintenance,
-            rss_mdm_telemetry_service::StorageBudget {
-                points: self.config.limits.max_points,
-                series: self.config.limits.max_series,
-                bytes: self.config.limits.max_bytes,
-            },
-        )?);
+            |resource| self.resources.lock().unwrap().push(resource),
+        )
+        .await?;
         service
             .admit_default(c.execution(), crate::authority_t2_support::deadline())
             .await?;
         Ok(service)
     }
     pub async fn close(self, c: &Context) -> Result<()> {
-        self.owner.runtime.close().await;
         let mut failures = Vec::new();
+        for resource in self.resources.into_inner().unwrap() {
+            if let Err(error) = resource.0.close(deadline()).await {
+                failures.push(format!("close telemetry storage: {error}"));
+            }
+        }
+        self.owner.runtime.close().await;
         if let Err(error) = sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "DROP DATABASE IF EXISTS {} WITH (FORCE)",
             self.database
