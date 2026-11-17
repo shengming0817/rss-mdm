@@ -553,3 +553,6 @@ async fn recoverable_batch_scan_failure_does_not_stop_other_tenants() -> Result<
     other.close().await?;
     h.close().await
 }
+
+#[path = "discovery.rs"]
+mod discovery;

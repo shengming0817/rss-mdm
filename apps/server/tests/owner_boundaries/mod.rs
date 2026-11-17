@@ -17,6 +17,9 @@ pub(super) struct Owners {
 }
 impl Owners {
     pub(super) async fn open(c: &Context) -> Result<Self> {
+        Self::with_discovery(c, c.database.archive_pool()).await
+    }
+    pub(super) async fn with_discovery(c: &Context, discovery: sqlx::PgPool) -> Result<Self> {
         let storage = planning::owner(c, "mdm_inventory_runtime").await?;
         let groups = Arc::new(
             rss_mdm_group_postgres::GroupStore::new(
@@ -36,7 +39,7 @@ impl Owners {
             crate::clock::SystemClock,
         )));
         let service = group::Groups::new(group::Dependencies {
-            read_pool: c.inputs.pool("shared", "mdm_access").await?,
+            read_pool: discovery.clone(),
             objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
             probe: c.execution(),
             groups: groups.clone(),
@@ -48,7 +51,7 @@ impl Owners {
         })
         .await?;
         let compliance = compliance::Compliance::new(compliance::Dependencies {
-            read_pool: c.database.archive_pool(),
+            read_pool: discovery,
             audit_store: storage.audit.clone(),
             runtime: storage.runtime.clone(),
             probe: c.execution(),

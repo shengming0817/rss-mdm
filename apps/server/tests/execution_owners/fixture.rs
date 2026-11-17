@@ -19,7 +19,11 @@ pub(super) struct Fixture {
 }
 impl Fixture {
     pub(super) async fn open(c: &Context) -> Result<Self> {
-        let resources = Prepared::open(c, |_| {}).await?;
+        Self::with_discovery(c, c.database.archive_pool()).await
+    }
+    pub(super) async fn with_discovery(c: &Context, discovery: sqlx::PgPool) -> Result<Self> {
+        let mut resources = Prepared::open(c, |_| {}).await?;
+        resources.storage.discovery_pool = discovery;
         let result: Result<_> = async {
             let config = &resources.config;
             let storage = &resources.storage;
@@ -97,7 +101,7 @@ impl Fixture {
             )
             .await?;
             let access_execution = Box::pin(assembly::access_execution::assemble(
-                c.database.archive_pool(),
+                storage.discovery_pool.clone(),
                 storage.runtime.clone(),
                 c.execution(),
                 storage.audit.clone(),
