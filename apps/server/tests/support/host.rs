@@ -108,7 +108,7 @@ where
             }
         })
         .await?;
-        proof(client, base).await
+        Box::pin(proof(client, base)).await
     };
     let result = tokio::select! {
         result = &mut server => anyhow::bail!("host exited during HTTP proof: {result:?}"),

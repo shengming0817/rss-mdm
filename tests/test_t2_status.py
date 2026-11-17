@@ -139,7 +139,7 @@ class T2Status(unittest.TestCase):
         self.assertEqual(affected(['apps/server/tests/identity/unit.rs']), [])
         self.assertEqual(affected(['Cargo.toml']), [])
         self.assertEqual(affected(['apps/server/tests/support/authority.rs']), sorted(MODULES))
-        self.assertEqual(profiles(['foundation.tenants', 'foundation.authorization']), ['shared', 'transaction'])
+        self.assertEqual(profiles(['foundation.tenants', 'foundation.authorization']), ['http_scope', 'shared', 'transaction'])
         decision = ci_impact.selected([], t2=['foundation.tenants'])
         self.assertEqual(decision['t2']['modules'], ['foundation.tenants'])
         decision['t2']['modules'] = ['unknown']

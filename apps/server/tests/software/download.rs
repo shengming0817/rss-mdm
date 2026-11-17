@@ -3,11 +3,15 @@ use super::*;
 use crate::host_t2_support as host;
 use rss_mdm_content_service as content;
 
-async fn prepare(
+async fn queued(
     c: &Context,
     id: Uuid,
     lifetime: Option<i64>,
-) -> Result<(rss_mdm_resource::Version, owner::storage::Operation)> {
+) -> Result<(
+    Fixture,
+    rss_mdm_resource::Version,
+    owner::storage::Operation,
+)> {
     let (_, target, _, scope, _) = endpoints(c).await?;
     let resource = software(c, "native-download").await?;
     let (policy, _) = policy(
@@ -26,14 +30,7 @@ async fn prepare(
         .service
         .accept_action_dispatch(c.execution(), id, fingerprint)
         .await?;
-    if let Some(seconds) = lifetime {
-        let mut tx = command::seed_transaction(c).await?;
-        let cutoff = now() + seconds;
-        let state = rss_mdm_task_state::RunState::new(cutoff, now())?;
-        sqlx::query("UPDATE mdm_software_deployment.action_runs SET deadline=$3,state=$4 WHERE tenant_id=$1::uuid AND id=$2")
-            .bind(c.tenant.to_string()).bind(id).bind(cutoff).bind(serde_json::to_value(state)?).execute(&mut *tx).await?;
-        tx.commit().await?;
-    }
+    limit_run(c, id, lifetime).await?;
     let execution = c.execution();
     owner::transaction::inspect(
         &fixture.resources.storage.runtime,
@@ -50,57 +47,76 @@ async fn prepare(
     let operation =
         owner::storage::load_on(&mut tx, c.tenant, &fixture.resources.protection, id).await?;
     tx.commit().await?;
-    let audit = || {
-        RequestAudit::unresolved(
-            rss_mdm_audit_integration::Origin::Request,
-            rss_mdm_install_support::StorageProfile::Mdm,
-            "download-proof",
-            AuditIntent::Routine,
-        )
-    };
-    let url = url(&operation);
-    let token = url
+    Ok((fixture, resource, operation))
+}
+async fn limit_run(c: &Context, id: Uuid, lifetime: Option<i64>) -> Result<()> {
+    if let Some(seconds) = lifetime {
+        let mut tx = command::seed_transaction(c).await?;
+        let cutoff = now() + seconds;
+        let state = rss_mdm_task_state::RunState::new(cutoff, now())?;
+        sqlx::query("UPDATE mdm_software_deployment.action_runs SET deadline=$3,state=$4 WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(c.tenant.to_string()).bind(id).bind(cutoff).bind(serde_json::to_value(state)?).execute(&mut *tx).await?;
+        tx.commit().await?;
+    }
+    Ok(())
+}
+async fn prepare(
+    c: &Context,
+    id: Uuid,
+    lifetime: Option<i64>,
+) -> Result<(rss_mdm_resource::Version, owner::storage::Operation)> {
+    let (fixture, resource, operation) = Box::pin(queued(c, id, lifetime)).await?;
+    let issued = url(&operation);
+    let token = issued
         .query_pairs()
         .find(|(k, _)| k == "token")
         .unwrap()
         .1
         .into_owned();
-    assert!(
-        matches!(
-            fixture
-                .software
-                .service
-                .software_installation_artifact(id, &token, &audit())
-                .await,
-            Err(owner::Error::Forbidden)
-        ),
-        "queued command must not authorize bytes"
-    );
+    forbidden(&fixture, id, &token).await?;
     let mut tx = command::seed_transaction(c).await?;
     sqlx::query("UPDATE rss_device_command.commands SET status='published',published_at=queued_at,version=version+1 WHERE tenant_id=$1::uuid AND command_id=$2").bind(c.tenant.to_string()).bind(id.to_string()).execute(&mut *tx).await?;
     tx.commit().await?;
-    assert!(
-        matches!(
-            fixture
-                .software
-                .service
-                .software_installation_artifact(id, &token, &audit())
-                .await,
-            Err(owner::Error::Forbidden)
-        ),
-        "published without native dispatch must not authorize bytes"
+    forbidden(&fixture, id, &token).await?;
+    dispatch(c, id, operation.device).await?;
+    conflicting_scope(c, &fixture, id, &token).await?;
+    fixture.close().await?;
+    Ok((resource, operation))
+}
+async fn forbidden(fixture: &Fixture, id: Uuid, token: &str) -> Result<()> {
+    let audit = RequestAudit::unresolved(
+        rss_mdm_audit_integration::Origin::Request,
+        rss_mdm_install_support::StorageProfile::Mdm,
+        "download-proof",
+        AuditIntent::Routine,
     );
+    let result = fixture
+        .software
+        .service
+        .software_installation_artifact(id, token, &audit)
+        .await;
+    audit.finalize(None);
+    assert!(
+        matches!(result, Err(owner::Error::Forbidden)),
+        "queued or undispatched commands must not authorize bytes: {result:?}"
+    );
+    Ok(())
+}
+async fn dispatch(c: &Context, id: Uuid, device: rss_mdm_agent_wire::DeviceId) -> Result<()> {
     // Minimum already-dispatched protocol fact; signing, authority and content readers stay real.
     let mut tx = command::seed_transaction(c).await?;
     let credential: Uuid = sqlx::query_scalar(
         "SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND device=$2",
     )
     .bind(c.tenant.to_string())
-    .bind(target.device.into_uuid())
+    .bind(device.into_uuid())
     .fetch_one(&mut *tx)
     .await?;
-    sqlx::query("INSERT INTO mdm_windows.attempts(protocol_epoch,tenant_id,id,operation,device,ordinal,credential,session,message,phase,request) VALUES($1,$2::uuid,$3,$4,$5,1,$6,1,1,'execute',$7)").bind(Uuid::new_v4()).bind(c.tenant.to_string()).bind(Uuid::new_v4()).bind(id).bind(target.device.into_uuid()).bind(credential).bind(vec![0u8;68]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_windows.attempts(protocol_epoch,tenant_id,id,operation,device,ordinal,credential,session,message,phase,request) VALUES($1,$2::uuid,$3,$4,$5,1,$6,1,1,'execute',$7)").bind(Uuid::new_v4()).bind(c.tenant.to_string()).bind(Uuid::new_v4()).bind(id).bind(device.into_uuid()).bind(credential).bind(vec![0u8;68]).execute(&mut *tx).await?;
     tx.commit().await?;
+    Ok(())
+}
+async fn conflicting_scope(c: &Context, fixture: &Fixture, id: Uuid, token: &str) -> Result<()> {
     // Discovery cannot overwrite a scope already bound by its caller, even within one tenant.
     use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
     for binding in [
@@ -122,14 +138,14 @@ async fn prepare(
             fixture
                 .software
                 .service
-                .software_installation_artifact(id, &token, &audit)
+                .software_installation_artifact(id, token, &audit)
                 .await
                 .is_err()
         );
         assert_eq!(audit.binding()?, binding);
+        audit.finalize(None);
     }
-    fixture.close().await?;
-    Ok((resource, operation))
+    Ok(())
 }
 fn url(operation: &owner::storage::Operation) -> url::Url {
     let owner::Task::Windows {
@@ -146,9 +162,9 @@ fn url(operation: &owner::storage::Operation) -> url::Url {
 async fn final_router_serves_only_current_signed_native_content() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let operation_id = Uuid::new_v4();
-    let (resource, operation) = prepare(&c, operation_id, None).await?;
+    let (resource, operation) = Box::pin(prepare(&c, operation_id, None)).await?;
     let expiring = Context::open("shared", &[]).await?;
-    let (_, expired) = prepare(&expiring, Uuid::new_v4(), Some(10)).await?;
+    let (_, expired) = Box::pin(prepare(&expiring, Uuid::new_v4(), Some(10))).await?;
     let issued = url(&operation);
     let directory = tempfile::tempdir()?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -179,31 +195,27 @@ async fn final_router_serves_only_current_signed_native_content() -> Result<()> 
         sha256: rss_mdm_resource::Digest::of(b"msi").bytes(),
         actor: "download-proof".into(),
     };
-    store
-        .begin(c.execution(), id, binding, now(), store.upload_budget()?)
-        .await?;
-    store
-        .append(
+    Box::pin(store.begin(c.execution(), id, binding, now(), store.upload_budget()?)).await?;
+    Box::pin(store.append(
+        c.execution(),
+        "download-proof",
+        id,
+        0,
+        now(),
+        &b"msi"[..],
+        store.upload_budget()?,
+    ))
+    .await?;
+    assert!(
+        Box::pin(store.finish(
             c.execution(),
             "download-proof",
             id,
-            0,
             now(),
-            &b"msi"[..],
-            store.upload_budget()?,
-        )
-        .await?;
-    assert!(
-        store
-            .finish(
-                c.execution(),
-                "download-proof",
-                id,
-                now(),
-                store.upload_budget()?
-            )
-            .await?
-            .complete
+            store.upload_budget()?
+        ))
+        .await?
+        .complete
     );
     store.close().await;
     let management = config.identity.management_tenant;
@@ -265,7 +277,7 @@ async fn final_router_serves_only_current_signed_native_content() -> Result<()> 
             )
             .await?;
             // A valid token cannot survive current registration revocation.
-            let mut tx = command::seed_transaction(&c).await?;
+            let mut tx = command::seed_transaction(c).await?;
             sqlx::query(
                 "UPDATE mdm_access.devices SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2",
             )
@@ -280,7 +292,7 @@ async fn final_router_serves_only_current_signed_native_content() -> Result<()> 
                 "permission_denied",
             )
             .await?;
-            let mut tx = command::seed_transaction(&c).await?;
+            let mut tx = command::seed_transaction(c).await?;
             sqlx::query(
                 "UPDATE mdm_access.devices SET state='active' WHERE tenant_id=$1::uuid AND id=$2",
             )
@@ -298,7 +310,7 @@ async fn final_router_serves_only_current_signed_native_content() -> Result<()> 
             if wait > 0 {
                 tokio::time::sleep(std::time::Duration::from_secs(wait as u64)).await;
             }
-            let expired_url = url(&expired);
+            let expired_url = url(expired);
             host::reject(
                 client
                     .get(format!(
@@ -330,7 +342,7 @@ async fn final_router_serves_only_current_signed_native_content() -> Result<()> 
             );
             // Equal opaque IDs in two tenants must not select either tenant's signed operation.
             let foreign = Context::open("shared", &[]).await?;
-            let (_, foreign_operation) = prepare(&foreign, operation_id, None).await?;
+            let (_, foreign_operation) = Box::pin(prepare(&foreign, operation_id, None)).await?;
             assert_ne!(url(&foreign_operation).query(), issued.query());
             host::reject(
                 client.get(&download).send().await?,
