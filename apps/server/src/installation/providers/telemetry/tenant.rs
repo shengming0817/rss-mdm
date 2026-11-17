@@ -54,17 +54,7 @@ async fn verify_installation(input: &Request, journal: &Journal) -> Result<()> {
         PgConnection::connect_with(&input.administrator.options().map_err(|_| Error::Input)?)
             .await
             .map_err(|_| Error::Storage)?;
-    let (id, binding): (Uuid, Vec<u8>) =
-        sqlx::query_as("SELECT id,binding FROM public.mdm_telemetry_installation")
-            .fetch_one(&mut c)
-            .await
-            .map_err(|_| Error::Storage)?;
-    if id != receipt.installation_id
-        || binding
-            != Sha256::digest(serde_json::to_vec(&original).map_err(|_| Error::Corrupt)?).as_slice()
-    {
-        return Err(Error::Conflict);
-    }
+    verify_identity(&mut c, receipt.installation_id, &original).await?;
     if input.clickhouse.is_some() {
         let control: String = sqlx::query_scalar("SELECT id::text FROM rss_ts_ch.installation")
             .fetch_one(&mut c)
@@ -132,21 +122,7 @@ async fn select(input: TenantRequest) -> Result<TenantReceipt> {
         .storage_binding
         .execution(tenant)
         .map_err(|_| Error::Input)?;
-    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('rss.storage_target',$2,true),set_config('rss.storage_lineage',$3,true),set_config('rss.execution_epoch',$4,true)")
-        .bind(tenant.to_string()).bind(Uuid::from_bytes(execution.storage().target()).simple().to_string()).bind(Uuid::from_bytes(execution.storage().lineage()).simple().to_string()).bind(execution.epoch().get().to_string()).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
-    sqlx::query("SELECT rss_transactional_messaging.check_execution()")
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| Error::Conflict)?;
-    sqlx::query_scalar::<_, Uuid>(
-        "SELECT tenant_id FROM public.mdm_tenants WHERE tenant_id=$1 AND NOT deleted FOR SHARE",
-    )
-    .bind(input.tenant)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|_| Error::Storage)?
-    .ok_or(Error::Conflict)?;
+    let mut tx = tenant_transaction(&mut c, tenant, input.tenant, execution).await?;
     selection::lock_change(&mut tx, tenant)
         .await
         .map_err(|_| Error::Storage)?;
@@ -160,18 +136,25 @@ async fn select(input: TenantRequest) -> Result<TenantReceipt> {
         tenant: input.tenant,
         material_revision: revision,
     };
-    if !previous
-        .as_ref()
-        .is_some_and(|p| p.operation_id == Some(input.operation_id) && p.revision == revision)
-    {
-        if previous.as_ref().map_or(0, |p| p.revision) != input.expected_revision {
+    let previous = previous.ok_or(Error::Conflict)?;
+    if previous.operation_id == Some(input.operation_id) && previous.revision == revision {
+        tx.commit().await.map_err(|_| Error::Storage)?;
+        journal.save("receipt.json", &result)?;
+        return Ok(result);
+    }
+    let pending = selection::pending(&mut tx, tenant)
+        .await
+        .map_err(|_| Error::Storage)?;
+    let change = if let Some(pending) = pending {
+        if pending.operation_id != Some(input.operation_id) || pending.revision != revision {
             return Err(Error::Conflict);
         }
-        // Before superseding a selection, repair the original receipt if its DB commit
-        // survived a process failure between commit and the journal rename.
-        if let Some(previous) = &previous
-            && let (Some(op), Some(resource)) = (previous.operation_id, previous.resource_id)
-        {
+        pending
+    } else {
+        if previous.revision != input.expected_revision {
+            return Err(Error::Conflict);
+        }
+        if let (Some(op), Some(resource)) = (previous.operation_id, previous.resource_id) {
             let old_journal = Journal::open(&root.path(&format!("telemetry-tenant-{op}"))?)?;
             old_journal.save(
                 "receipt.json",
@@ -183,50 +166,95 @@ async fn select(input: TenantRequest) -> Result<TenantReceipt> {
                 },
             )?;
         }
-        if previous.as_ref().is_some_and(|p| p.binding != binding) {
-            let used:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_telemetry.batches WHERE tenant_id=$1) OR EXISTS(SELECT FROM mdm_telemetry.definition_progress WHERE tenant_id=$1) OR EXISTS(SELECT FROM mdm_telemetry.maintenance WHERE tenant_id=$1)").bind(input.tenant).fetch_one(&mut *tx).await.map_err(|_|Error::Storage)?;
-            if used
-                || old_reader(previous.as_ref(), &protection, tenant)?
-                    .is_some_and(|r| r.password.is_some())
-            {
+        let old = previous
+            .reader(&protection, tenant)
+            .map_err(|_| Error::Corrupt)?;
+        let old = if previous.binding == binding {
+            old
+        } else {
+            if old.is_some_and(|r| r.password.is_some()) {
                 return Err(Error::Conflict);
             }
-        }
-        let old = old_reader(
-            previous.as_ref().filter(|p| p.binding == binding),
-            &protection,
-            tenant,
-        )?;
-        let reader = changed_reader(&input, supplied, old, &journal).await?;
-        let material = if let Some(reader) = reader {
-            clickhouse::provision_reader(&input.installation, tenant, &reader).await?;
-            Some(
-                reader
-                    .seal(&protection, tenant, target.resource_id, revision)
-                    .map_err(|_| Error::Storage)?,
-            )
-        } else {
             None
         };
-        sqlx::query("INSERT INTO mdm_telemetry.storage_binding(tenant_id,binding,expected_epoch,resource_id,revision,operation_id,material) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(tenant_id) DO UPDATE SET binding=excluded.binding,expected_epoch=excluded.expected_epoch,resource_id=excluded.resource_id,revision=excluded.revision,operation_id=excluded.operation_id,material=excluded.material")
-            .bind(input.tenant).bind(binding.as_slice()).bind(execution.epoch().get()).bind(target.resource_id).bind(revision).bind(input.operation_id).bind(material).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
-    }
+        let reader = changed_reader(&input, supplied, old, &journal).await?;
+        let next = Selection {
+            binding: binding.to_vec(),
+            resource_id: Some(target.resource_id),
+            revision,
+            operation_id: Some(input.operation_id),
+            material: reader
+                .map(|r| r.seal(&protection, tenant, target.resource_id, revision))
+                .transpose()
+                .map_err(|_| Error::Storage)?,
+        };
+        selection::reserve(&mut tx, tenant, &previous, &next)
+            .await
+            .map_err(|_| Error::Conflict)?;
+        next
+    };
     tx.commit().await.map_err(|_| Error::Storage)?;
+    let future = change
+        .reader(&protection, tenant)
+        .map_err(|_| Error::Corrupt)?;
+    if let Some(reader) = &future {
+        let old = previous
+            .reader(&protection, tenant)
+            .map_err(|_| Error::Corrupt)?;
+        clickhouse::provision_reader(&input.installation, tenant, reader, old.as_ref()).await?;
+    }
+    let mut tx = tenant_transaction(&mut c, tenant, input.tenant, execution).await?;
+    selection::ready(&mut tx, tenant, input.operation_id)
+        .await
+        .map_err(|_| Error::Storage)?;
+    tx.commit().await.map_err(|_| Error::Storage)?;
+    let retire = matches!(input.action, Action::Retire);
+    let wait = tokio::time::sleep(std::time::Duration::from_secs(12));
+    tokio::pin!(wait);
+    loop {
+        let mut tx = tenant_transaction(&mut c, tenant, input.tenant, execution).await?;
+        selection::lock_change(&mut tx, tenant)
+            .await
+            .map_err(|_| Error::Storage)?;
+        let published = selection::publish(&mut tx, tenant, input.operation_id, retire)
+            .await
+            .map_err(|_| Error::Storage)?;
+        tx.commit().await.map_err(|_| Error::Storage)?;
+        if published {
+            break;
+        }
+        tokio::select! {()=&mut wait=>return Err(Error::Busy),()=tokio::time::sleep(std::time::Duration::from_millis(200))=>{}}
+    }
     journal.save("receipt.json", &result)?;
     Ok(result)
 }
-fn old_reader(
-    selection: Option<&Selection>,
-    key: &Protector,
+async fn tenant_transaction(
+    c: &mut PgConnection,
     tenant: TenantId,
-) -> Result<Option<Reader>> {
-    selection
-        .map(|s| s.reader(key, tenant))
-        .transpose()
-        .map(Option::flatten)
-        .map_err(|_| Error::Corrupt)
+    tenant_uuid: Uuid,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+) -> Result<sqlx::Transaction<'_, sqlx::Postgres>> {
+    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| Error::Storage)?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('rss.storage_target',$2,true),set_config('rss.storage_lineage',$3,true),set_config('rss.execution_epoch',$4,true)")
+        .bind(tenant.to_string()).bind(Uuid::from_bytes(execution.storage().target()).simple().to_string()).bind(Uuid::from_bytes(execution.storage().lineage()).simple().to_string()).bind(execution.epoch().get().to_string()).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
+    sqlx::query("SELECT rss_transactional_messaging.check_execution()")
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| Error::Conflict)?;
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT t.tenant_id FROM public.mdm_tenants t CROSS JOIN public.mdm_installation i WHERE t.tenant_id=$1 AND t.used AND NOT t.deleted AND t.tenant_id<>i.management_tenant_id FOR SHARE OF t",
+    )
+    .bind(tenant_uuid)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| Error::Storage)?
+    .ok_or(Error::Conflict)?;
+    Ok(tx)
 }
-
 fn supplied_reader(input: &TenantRequest, target: &Config) -> Result<Option<Reader>> {
     Ok(match (&input.action, &target.backend) {
         (

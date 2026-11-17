@@ -272,11 +272,7 @@ async fn installation_replayed(
     binding: &[u8],
 ) -> Result<bool> {
     sql(&mut *c,"CREATE TABLE IF NOT EXISTS public.mdm_telemetry_installation(id uuid PRIMARY KEY,binding bytea NOT NULL CHECK(octet_length(binding)=32)); REVOKE ALL ON public.mdm_telemetry_installation FROM PUBLIC").await?;
-    let previous: Vec<(Uuid, Vec<u8>)> =
-        sqlx::query_as("SELECT id,binding FROM public.mdm_telemetry_installation")
-            .fetch_all(&mut *c)
-            .await
-            .map_err(|_| Error::Storage)?;
+    let previous = physical_identities(c).await?;
     if previous.is_empty() {
         return Ok(false);
     }
@@ -286,6 +282,23 @@ async fn installation_replayed(
     Ok(true)
 }
 
+async fn physical_identities(c: &mut PgConnection) -> Result<Vec<(Uuid, Vec<u8>)>> {
+    sqlx::query_as("SELECT id,binding FROM public.mdm_telemetry_installation LIMIT 2")
+        .fetch_all(c)
+        .await
+        .map_err(|_| Error::Storage)
+}
+async fn verify_identity(
+    c: &mut PgConnection,
+    identity: Uuid,
+    original: &serde_json::Value,
+) -> Result<()> {
+    let digest = Sha256::digest(serde_json::to_vec(original).map_err(|_| Error::Corrupt)?).to_vec();
+    if physical_identities(c).await? != [(identity, digest)] {
+        return Err(Error::Conflict);
+    }
+    Ok(())
+}
 async fn admit_postgres_server(c: &mut PgConnection, input: &Request) -> Result<()> {
     let version: i32 =
         sqlx::query_scalar("SELECT current_setting('server_version_num')::int/10000")
@@ -454,16 +467,7 @@ async fn maintain_inner(input: PhysicalRequest) -> Result<serde_json::Value> {
     )
     .await
     .map_err(|_| Error::Storage)?;
-    let actual: (Uuid, Vec<u8>) =
-        sqlx::query_as("SELECT id,binding FROM public.mdm_telemetry_installation")
-            .fetch_one(&mut connection)
-            .await
-            .map_err(|_| Error::Storage)?;
-    let expected =
-        Sha256::digest(serde_json::to_vec(&original).map_err(|_| Error::Input)?).to_vec();
-    if actual != (installation.installation_id, expected) {
-        return Err(Error::Conflict);
-    }
+    verify_identity(&mut connection, installation.installation_id, &original).await?;
     if matches!(input.action, PhysicalAction::ConvertChunks { .. }) {
         let writers:i64=sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND backend_type='client backend'").fetch_one(&mut connection).await.map_err(|_|Error::Storage)?;
         if writers != 0 {

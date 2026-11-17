@@ -273,7 +273,7 @@ impl Config {
                 .try_into()
                 .map_err(|_| invalid())?;
                 let runtime = pool(database, self.connections).await?;
-                if !matches!(sqlx::query_scalar::<_,uuid::Uuid>("SELECT id FROM public.mdm_telemetry_installation").fetch_one(&runtime).await, Ok(id) if id==self.resource_id)
+                if !matches!(sqlx::query_scalar::<_,uuid::Uuid>("SELECT id FROM public.mdm_telemetry_installation LIMIT 2").fetch_all(&runtime).await, Ok(ids) if ids==[self.resource_id])
                 {
                     runtime.close().await;
                     return Err(unavailable());
@@ -339,7 +339,7 @@ impl Config {
                 )
                 .map_err(|_| invalid())?;
                 let runtime = pool(control, self.connections).await?;
-                if !matches!(sqlx::query_scalar::<_,uuid::Uuid>("SELECT id FROM public.mdm_telemetry_installation").fetch_one(&runtime).await, Ok(id) if id==self.resource_id)
+                if !matches!(sqlx::query_scalar::<_,uuid::Uuid>("SELECT id FROM public.mdm_telemetry_installation LIMIT 2").fetch_all(&runtime).await, Ok(ids) if ids==[self.resource_id])
                 {
                     runtime.close().await;
                     return Err(unavailable());
@@ -429,7 +429,16 @@ pub(crate) async fn open(
         default.maintenance,
     )
     .map(Arc::new)
+    .inspect(|_service| {
+        #[cfg(test)]
+        let _ = INSTALLED_SERVICE.try_with(|slot| slot.set(_service.clone()));
+    })
     .map_err(|_| invalid())
+}
+#[cfg(test)]
+tokio::task_local! {
+    /// Lets the installed-host T2 exercise the exact mounted ingress with its authenticated device.
+    pub(crate) static INSTALLED_SERVICE: Arc<std::sync::OnceLock<Arc<Service>>>;
 }
 pub(crate) struct Resource(pub Arc<Backend>);
 impl rss_runtime::ManagedResource for Resource {

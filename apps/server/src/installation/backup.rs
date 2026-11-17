@@ -236,7 +236,7 @@ pub async fn restore(input: Restore) -> Result<Receipt> {
         connection_fence(&mut c, &journal, false).await?;
         c.close().await.map_err(|_| Error::Storage)?;
         telemetry::release(&frozen, &journal).await?;
-        telemetry::admit(&frozen).await?;
+        telemetry::admit(&frozen, &input.administrator).await?;
         activate_restored(&input, &frozen, &journal, &root).await
     }
     .await
@@ -283,6 +283,15 @@ async fn freeze_backup(input: Request, root: &Journal, journal: &Journal) -> Res
     crate::migration::verify_identity(&mut c, &installation)
         .await
         .map_err(|_| Error::Conflict)?;
+    if sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT FROM mdm_telemetry.storage_binding WHERE pending IS NOT NULL)",
+    )
+    .fetch_one(&mut c)
+    .await
+    .map_err(|_| Error::Storage)?
+    {
+        return Err(Error::Busy);
+    }
     let tenants: Vec<Uuid> = sqlx::query_scalar(
         "SELECT tenant_id FROM public.mdm_tenants WHERE NOT deleted ORDER BY tenant_id",
     )

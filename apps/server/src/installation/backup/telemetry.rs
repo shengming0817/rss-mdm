@@ -152,14 +152,12 @@ pub(super) async fn fence(frozen: &Frozen, journal: &Journal) -> Result<()> {
     Ok(())
 }
 pub(super) async fn capture(frozen: &Frozen, journal: &Journal) -> Result<()> {
-    let mut started = false;
-    for index in 0..frozen.request.telemetry.len() {
-        started |= target(journal, index)?
-            .load::<Vec<(String, bool)>>("database-connections.json")?
-            .is_some();
-    }
-    if !started {
-        admit(frozen).await?;
+    if !journal
+        .load::<bool>("telemetry-preflight.json")?
+        .unwrap_or(false)
+    {
+        admit(frozen, &administrator(&frozen.request.installation)?).await?;
+        journal.save("telemetry-preflight.json", &true)?;
     }
     fence(frozen, journal).await?;
     for (index, profile) in frozen.request.telemetry.iter().enumerate() {
@@ -436,6 +434,7 @@ async fn restore_clickhouse(
     qualify_readers(
         frozen,
         &profile.configuration,
+        &input.administrator,
         ReaderOperation::Restore(profile),
     )
     .await
@@ -454,9 +453,9 @@ fn deadline() -> Result<rss_request_context::Deadline> {
 async fn qualify_readers(
     frozen: &Frozen,
     physical: &crate::telemetry::Config,
+    admin: &crate::config::Database,
     operation: ReaderOperation<'_>,
 ) -> Result<()> {
-    let admin = administrator(&frozen.request.installation)?;
     let config: crate::config::Config =
         serde_json::from_value(frozen.runtime.clone()).map_err(|_| Error::Corrupt)?;
     let key = config.native_protector().map_err(|_| Error::Corrupt)?;
@@ -490,7 +489,7 @@ async fn qualify_readers(
             if reader.password.is_some() {
                 match operation {
                     ReaderOperation::Restore(profile) => {
-                        clickhouse::provision_reader(profile, tenant, &reader).await?
+                        clickhouse::provision_reader(profile, tenant, &reader, None).await?
                     }
                     ReaderOperation::Admit(owner) => {
                         reader
@@ -504,12 +503,12 @@ async fn qualify_readers(
     }
     c.close().await.map_err(|_| Error::Storage)
 }
-pub(super) async fn admit(frozen: &Frozen) -> Result<()> {
+pub(super) async fn admit(frozen: &Frozen, admin: &crate::config::Database) -> Result<()> {
     for config in configured(&frozen.runtime)? {
         let backend = config.open_backend().await.map_err(|_| Error::Corrupt)?;
         let qualified = match &backend {
             rss_mdm_telemetry_service::backend::Backend::ClickHouse(owner) => {
-                qualify_readers(frozen, &config, ReaderOperation::Admit(owner)).await
+                qualify_readers(frozen, &config, admin, ReaderOperation::Admit(owner)).await
             }
             _ => Ok(()),
         };

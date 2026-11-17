@@ -1,231 +1,291 @@
-//! Product-owned reader material against the original installation and persisted RSS receipts.
-use anyhow::{Context, Result, ensure};
-use rss_mdm_telemetry_service::{
-    backend::{Backend, SystemClock},
-    selection,
+//! Live product intake and relay with an already enrolled device and issued policy version.
+use super::*;
+use crate::{
+    authority_t2_support::{Context as AuthorityContext, Inputs},
+    device_material_support as device,
 };
-use rss_request_context::{Deadline, TenantId};
-use rss_timeseries::*;
-use rss_timeseries_clickhouse::{ChOwner, ChStore};
-use sqlx::Connection;
-use std::{num::NonZeroU32, time::Duration};
-use uuid::Uuid;
+use rss_mdm_agent_wire::runtime as wire;
+use rss_mdm_telemetry_service::Service;
+use rss_request_context::TenantId;
+use sha2::{Digest, Sha256};
 
-struct ScopeAuthority(TenantId);
-impl Authority for ScopeAuthority {
-    fn authorize(&self, access: Access<'_>) -> Result<(), Error> {
-        let scope = match access {
-            Access::Definition(DefinitionMutation::Register { definition, .. }) => {
-                &definition.spec().scope
-            }
-            Access::Write(batch) => batch.stream().scope(),
-            Access::Query(query) => query.selection().scope(),
-            Access::Receipt(receipt) => receipt.stream.scope(),
-            _ => return Err(Error::Unauthorized),
-        };
-        if scope.tenant() == self.0 {
-            Ok(())
-        } else {
-            Err(Error::Unauthorized)
-        }
-    }
+pub(super) struct Upload {
+    principal: rss_mdm_registration_service::DevicePrincipal,
+    input: wire::TelemetryUpload,
+    history: Value,
+    cursor: String,
+    sample: i64,
 }
-fn deadline() -> Deadline {
-    Deadline::from_timeout(&SystemClock, Duration::from_secs(10)).unwrap()
-}
-async fn material(
-    db: &crate::config::Database,
+
+async fn device_context(
     config: &crate::config::Config,
-    tenant: TenantId,
-    installation: Uuid,
-) -> Result<(selection::Reader, i64)> {
-    let mut c = sqlx::PgConnection::connect_with(&db.options()?).await?;
-    let mut tx = c.begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(tenant.to_string())
-        .execute(&mut *tx)
-        .await?;
-    let selected = selection::load(&mut tx, tenant)
-        .await?
-        .context("explicit storage selection")?;
-    ensure!(selected.resource_id == Some(installation));
-    let reader = selected
-        .reader(config.native_protector()?.as_ref(), tenant)?
-        .context("current reader")?;
-    tx.commit().await?;
-    c.close().await?;
-    Ok((reader, selected.revision))
-}
-struct Facts {
-    definition: Authorized<DefinitionMutation>,
-    batch: Authorized<Batch>,
-    query: Authorized<Query>,
-}
-fn facts(tenant: TenantId, value: i64) -> Result<Facts> {
-    let authority = ScopeAuthority(tenant);
-    let scope = Scope::new(tenant, Id::new("mdm.telemetry")?);
-    let definition = Definition::new(DefinitionSpec {
-        scope: scope.clone(),
-        key: Id::new("custom.shared")?,
-        version: 1,
-        unit: Id::new("count")?,
-        metric: Metric::Gauge {
-            number: NumberKind::I64,
-        },
-        dimensions: DimensionRules {
-            allowed: Default::default(),
-            required: Default::default(),
-            max_count: 0,
-            max_value_bytes: 1,
-            max_total_bytes: 1,
-        },
-    })?;
-    let stream = Stream::new(scope, Id::new("device:agent.native")?, Id::new("epoch")?);
-    let series = Series::new(
-        definition.clone(),
-        Id::new("device")?,
-        Id::new("device")?,
-        Default::default(),
-    )?;
-    let mut samples = Vec::new();
-    for sequence in 1..=2 {
-        samples.push(Sample::new(SampleInput {
-            stream: stream.clone(),
-            series: series.clone(),
-            id: Id::new(format!("sample-{sequence}"))?,
-            sequence,
-            observed_at: Timestamp::new(sequence as i64)?,
-            interval: None,
-            reading: Reading::Valid(Value::Number(Number::I64(value))),
-        })?);
-    }
-    let limit = NonZeroU32::new(1).unwrap();
-    let query = Query::new(
-        Selection::Exact {
-            stream: stream.clone(),
-            series,
-        },
-        Interval::new(Timestamp::new(0)?, Timestamp::new(4)?)?,
-        QueryBudget {
-            max_series: limit,
-            max_points: limit,
-        },
-        QueryMode::History,
-    )?;
-    Ok(Facts {
-        definition: Authorized::<DefinitionMutation>::verify(
-            &authority,
-            DefinitionMutation::Register {
-                definition,
-                expected_latest: None,
-            },
-        )?,
-        batch: Authorized::<Batch>::verify(
-            &authority,
-            Batch::new(stream, Id::new("installed-batch")?, samples)?,
-        )?,
-        query: Authorized::<Query>::verify(&authority, query)?,
-    })
-}
-async fn publish(store: &ChStore<SystemClock>, facts: &Facts) -> Result<()> {
-    ensure!(
-        matches!(
-            store.change(&facts.definition, deadline()).await?,
-            Outcome::Accepted(_)
-        ),
-        "register field"
-    );
-    ensure!(
-        matches!(
-            store.write(&facts.batch, deadline()).await?,
-            Outcome::Accepted(_)
-        ),
-        "persist batch"
-    );
-    Ok(())
-}
-async fn open(
-    reader: &selection::Reader,
-    owner: &ChOwner<SystemClock>,
-    tenant: TenantId,
-    rev: i64,
-) -> Result<ChStore<SystemClock>> {
-    Ok(reader.bind(owner, tenant, rev, deadline()).await?)
-}
-pub(super) async fn exercise(
-    runtime: &serde_json::Value,
     primary: &crate::config::Database,
-    a: Uuid,
-    b: Uuid,
-) -> Result<()> {
-    let config: crate::config::Config = serde_json::from_value(runtime.clone())?;
-    let physical = config
-        .telemetry
-        .iter()
-        .find(|p| matches!(p.backend, crate::telemetry::Storage::ClickHouse { .. }))
-        .context("ClickHouse installation")?;
-    let a = TenantId::parse(&a.to_string())?;
-    let b = TenantId::parse(&b.to_string())?;
-    let (ra, va) = material(primary, &config, a, physical.resource_id).await?;
-    let (rb, vb) = material(primary, &config, b, physical.resource_id).await?;
-    ensure!((va, vb) == (1, 2));
-    let fa = facts(a, 11)?;
-    let fb = facts(b, 22)?;
-    let backend = physical.open_backend().await?;
-    let Backend::ClickHouse(owner) = &backend else {
-        anyhow::bail!("expected ClickHouse")
+    dir: &Path,
+    tenant: TenantId,
+) -> Result<AuthorityContext> {
+    let inputs = Inputs {
+        installation: crate::migration::Installation {
+            instance_id: config.identity.instance_id.clone(),
+            target: config.storage_binding.target,
+            lineage: config.storage_binding.lineage,
+            audit_mode: config.audit.mode(),
+        },
+        databases: [(
+            "installed".into(),
+            [
+                ("postgres".into(), primary.clone()),
+                ("mdm_access".into(), config.access_database.clone()),
+                (
+                    "mdm_identity_runtime".into(),
+                    config.identity.database.clone(),
+                ),
+            ]
+            .into(),
+        )]
+        .into(),
+        directory: dir.to_owned(),
     };
-    ensure!(
-        open(&ra, owner, b, vb).await.is_err(),
-        "foreign reader qualified for B"
-    );
-    let sa = open(&ra, owner, a, va).await?;
-    let sb = open(&rb, owner, b, vb).await?;
-    publish(&sa, &fa).await?;
-    publish(&sb, &fb).await?;
-    let first = sb.query(&fb.query, None, deadline()).await?;
-    let cursor = first.next.context("two stored samples must paginate")?;
-    ensure!(
-        first.rows.len() == 1
-            && first.rows[0].sample.input().reading
-                == Reading::Valid(Value::Number(Number::I64(22)))
-    );
-    ensure!(
-        sa.query(&fb.query, None, deadline()).await.is_err()
-            && sa
-                .query(&fa.query, Some(&cursor), deadline())
-                .await
-                .is_err()
-    );
-    sb.retire(deadline()).await?;
-    ensure!(
-        sa.query(&fa.query, None, deadline()).await?.rows[0]
-            .sample
-            .input()
-            .reading
-            == Reading::Valid(Value::Number(Number::I64(11)))
-    );
-    backend.close(deadline()).await?;
-    let backend = physical.open_backend().await?;
-    let Backend::ClickHouse(owner) = &backend else {
-        anyhow::bail!("expected original ClickHouse")
+    let operator = inputs.pool("installed", "postgres").await?;
+    AuthorityContext::connect("installed", inputs, operator, tenant, &config.audit).await
+}
+
+async fn issued(
+    c: &AuthorityContext,
+    config: &crate::config::Config,
+    principal: &rss_mdm_registration_service::DevicePrincipal,
+    value: i64,
+) -> Result<(wire::TelemetryUpload, Value)> {
+    use rss_mdm_inventory as inv;
+    let vector: Value = serde_json::from_str(include_str!(
+        "../../../../crates/agent-wire/tests/fixtures/telemetry-v1-vectors.json"
+    ))?;
+    let mut original = vector["signed"]["configuration"].clone();
+    original["fields"][0]["timeSeries"]["retention"]["key"] = json!("shared_metrics");
+    original["fields"][0]["platforms"] = json!(["windows"]);
+    let field: inv::FieldDefinition = serde_json::from_value(original["fields"][0].clone())?;
+    let profile: rss_mdm_resource::TelemetryProfile = serde_json::from_value(
+        json!({"template":{"resource":"metric-script","version":"v1","variant":"default","platform":"windows","architecture":"x86_64"},"parameters":{},"fields":[{"key":field.key,"version":1}],"projection":"history","sampleMillis":5000,"uploadMillis":10000,"budget":{"points":64,"bytes":65536,"resources":1,"executionMillis":1000,"outputBytes":4096},"boost":null,"backfillSeconds":3600}),
+    )?;
+    let script = serde_json::from_value(
+        json!({"profile":rss_mdm_resource::ScriptProfile::PowerShell7,"sql":null,"runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":original["collector"]["outputSchema"],"purpose":{"kind":"collection","scope":{"kind":"device"},"applicability":{"minimumOsVersion":null,"minimumBuild":null,"editions":[],"enrollments":[],"tools":{},"capabilities":[]},"mappings":original["collector"]["mappings"]},"timeoutSeconds":1,"outputBytes":4096,"maxRows":1}),
+    )?;
+    let epoch = Uuid::new_v4();
+    let policy = Uuid::new_v4();
+    let version = Uuid::new_v4();
+    let protection = config.native_protector()?;
+    let trust = device::seed_trust(
+        c,
+        &protection,
+        &[rss_mdm_agent_wire::task_trust::KeyState::Active],
+    )
+    .await?;
+    device::seed_ack(c, &trust, principal.device()).await?;
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    original["tenantId"] = json!(c.tenant.to_string());
+    original["deviceId"] = json!(principal.device());
+    original["policy"] = json!(policy);
+    original["policyVersion"] = json!(version);
+    original["sourceEpoch"] = json!(epoch);
+    original["issuedAt"] = json!(now - 10);
+    original["expiresAt"] = json!(now + 280);
+    original["binding"] = json!(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&(
+            c.tenant.to_string(),
+            principal.device(),
+            "agent.script",
+            epoch,
+            policy,
+            version,
+            &profile
+        ))?)
+    ));
+    let wire: wire::TelemetryConfiguration = serde_json::from_value(original)?;
+    let frozen = rss_mdm_policy_service::telemetry::FrozenProfile {
+        resource_digest: wire.resource_digest,
+        profile,
+        fields: vec![field.clone()],
+        source: inv::Source::AgentScript,
+        collector: rss_mdm_policy_service::telemetry::FrozenCollector::Script {
+            definition: script,
+            reference: "fixture.ps1".into(),
+            length: 4,
+            digest: [7; 32],
+        },
     };
-    let (rb, vb) = material(primary, &config, b, physical.resource_id).await?;
-    let recovered = open(&rb, owner, b, vb).await?;
+    let frozen = serde_json::to_value(frozen)?;
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     ensure!(
-        matches!(
-            recovered.write(&fb.batch, deadline()).await?,
-            Outcome::Replay(_)
-        ),
-        "original receipt"
+        rss_mdm_inventory_postgres::publish_retention_policy_in(
+            &mut tx,
+            c.tenant,
+            &inv::RetentionPolicy {
+                key: "shared_metrics".into(),
+                revision: 1,
+                raw_seconds: 86400,
+                summary_seconds: 86400,
+                restore_seconds: 0
+            }
+        )
+        .await?
     );
-    let page = recovered
-        .query(&fb.query, Some(&cursor), deadline())
+    ensure!(rss_mdm_inventory_postgres::publish_field_in(&mut tx, c.tenant, 0, &field).await?);
+    sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,device,source,epoch,next_sequence,enabled) VALUES($1::uuid,$2,'agent.script',$3,0,true)").bind(c.tenant.to_string()).bind(principal.device().into_uuid()).bind(epoch).execute(&mut *tx).await?;
+    let definition = json!({"scope":{"targets":[{"kind":"device","id":principal.device()}],"exclusions":[]},"action":{"kind":"telemetry_profile","resource":{"id":"profile","version":"v1","variant":"default","platform":"windows","architecture":"x86_64"}}});
+    let author = json!({"kind":"account","principal":"fixture"});
+    sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'archived',$4,$5,$6)").bind(c.tenant.to_string()).bind(policy).bind(version).bind(definition).bind(author).bind(now).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,resource,resource_version,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'telemetry_profile','profile','v1',$4,$5)").bind(c.tenant.to_string()).bind(version).bind(policy).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).execute(&mut *tx).await?;
+    let signing = rss_mdm_task_trust::Signing::new(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        rss_mdm_task_trust::Use::AgentTask,
+        protection,
+    )?;
+    let signed = signing.sign_telemetry_on(&mut tx, principal, wire).await?;
+    tx.commit().await?;
+    let first = (now - 1) * 1_000_000;
+    let mut points = Vec::new();
+    for sequence in 1..=2 {
+        points.push(wire::TelemetryObservation {
+            id: Uuid::new_v4(),
+            sequence,
+            observed_at: first + sequence as i64,
+            values: [(
+                wire::FieldKey::parse("custom.load")?,
+                wire::TelemetryReading::Valid {
+                    value: wire::Scalar::Integer(value),
+                    interval_start: None,
+                },
+            )]
+            .into(),
+        });
+    }
+    let query = json!({"device":principal.device(),"field":"custom.load","resource":"device","startMicros":first.to_string(),"endMicros":(first+10).to_string(),"maxPoints":1,"mode":"history"});
+    Ok((
+        wire::TelemetryUpload {
+            configuration: signed,
+            batch_id: Uuid::new_v4(),
+            observations: points,
+        },
+        query,
+    ))
+}
+async fn page(
+    browser: &mut Browser,
+    tenant: TenantId,
+    query: &Value,
+    expected: i64,
+) -> Result<Value> {
+    let (status, page) = browser
+        .call(
+            Method::POST,
+            &format!("/api/v1/tenants/{tenant}/telemetry/history"),
+            Some(query.clone()),
+            None,
+        )
         .await?;
     ensure!(
-        page.rows.len() == 1 && page.next.is_none() && page.rows[0].sample.input().sequence == 2,
-        "original cursor and unique second sample"
+        status == 200 && page["rows"].as_array().is_some_and(|r| r.len() == 1),
+        "tenant history: {status} {page}"
     );
-    backend.close(deadline()).await?;
-    Ok(())
+    ensure!(
+        page["rows"][0]["sample"]["reading"]["value"]["value"]["value"].as_str()
+            == Some(expected.to_string().as_str()),
+        "tenant-specific value"
+    );
+    Ok(page)
+}
+impl Upload {
+    pub(super) async fn publish(
+        running: &maintenance::Running,
+        browser: &mut Browser,
+        tenant: Uuid,
+        primary: &crate::config::Database,
+        runtime: &Value,
+        dir: &Path,
+        sample: i64,
+    ) -> Result<Self> {
+        let service = running.telemetry.get().context("live telemetry ingress")?;
+        let config: crate::config::Config = serde_json::from_value(runtime.clone())?;
+        let tenant = TenantId::parse(&tenant.to_string())?;
+        let c = device_context(&config, primary, dir, tenant).await?;
+        let (registration, grant) = device::seed_registration(&c).await?;
+        let principal = device::authenticated_agent(
+            &c,
+            grant,
+            &registration,
+            vec![
+                wire::Capability::InventoryCollectionV1,
+                wire::Capability::TelemetryCollectV1,
+            ],
+        )
+        .await?;
+        let (input, history) = issued(&c, &config, &principal, sample).await?;
+        c.close().await;
+        let accepted = service
+            .receive(&principal, &input, serde_json::to_vec(&input)?.len())
+            .await?;
+        ensure!(!accepted.replayed);
+        tokio::time::timeout(Duration::from_secs(40), async {
+            loop {
+                let receipt = service.status(&principal, input.batch_id).await?;
+                if matches!(receipt.delivery, wire::TelemetryDelivery::Published) {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            }
+        })
+        .await
+        .context("await product relay delivery")??;
+        let first = page(browser, tenant, &history, sample).await?;
+        let cursor = first["next"]
+            .as_str()
+            .context("history continuation")?
+            .to_owned();
+        Ok(Self {
+            principal,
+            input,
+            history,
+            cursor,
+            sample,
+        })
+    }
+    pub(super) async fn reject_foreign_cursor(
+        &self,
+        browser: &mut Browser,
+        other: &Self,
+    ) -> Result<()> {
+        let mut query = self.history.clone();
+        query["after"] = json!(other.cursor);
+        let (status, _) = browser
+            .call(
+                Method::POST,
+                &format!(
+                    "/api/v1/tenants/{}/telemetry/history",
+                    self.principal.tenant()
+                ),
+                Some(query),
+                None,
+            )
+            .await?;
+        ensure!(
+            matches!(status, 400 | 403 | 409),
+            "foreign continuation {status}"
+        );
+        Ok(())
+    }
+    pub(super) async fn replay(&self, service: &Arc<Service>, browser: &mut Browser) -> Result<()> {
+        let replay = service
+            .receive(
+                &self.principal,
+                &self.input,
+                serde_json::to_vec(&self.input)?.len(),
+            )
+            .await?;
+        ensure!(replay.replayed && matches!(replay.delivery, wire::TelemetryDelivery::Published));
+        let mut query = self.history.clone();
+        query["after"] = json!(self.cursor);
+        let next = page(browser, self.principal.tenant(), &query, self.sample).await?;
+        ensure!(next["next"].is_null(), "exactly two original samples");
+        Ok(())
+    }
 }

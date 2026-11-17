@@ -20,7 +20,26 @@ pub(in crate::installation) async fn execute(
     label: &str,
     statement: &str,
 ) -> Result<String> {
-    let (endpoint, ca, credentials) = configuration(input)?;
+    let (_, _, credentials) = configuration(input)?;
+    let password =
+        crate::config::secret(&credentials.installer.password_file).map_err(|_| Error::Input)?;
+    execute_as(
+        input,
+        label,
+        statement,
+        &credentials.installer.user,
+        &password,
+    )
+    .await
+}
+async fn execute_as(
+    input: &Request,
+    label: &str,
+    statement: &str,
+    login: &str,
+    password: &str,
+) -> Result<String> {
+    let (endpoint, ca, _) = configuration(input)?;
     let url = url::Url::parse(endpoint).map_err(|_| Error::Input)?;
     if url.scheme() != "https"
         || url.host_str().is_none()
@@ -45,12 +64,10 @@ pub(in crate::installation) async fn execute(
         .timeout(std::time::Duration::from_secs(65))
         .build()
         .map_err(|_| Error::Input)?;
-    let password =
-        crate::config::secret(&credentials.installer.password_file).map_err(|_| Error::Input)?;
     let id = Uuid::new_v5(&input.operation_id, label.as_bytes()).to_string();
     let mut response = client
         .post(url)
-        .basic_auth(&credentials.installer.user, Some(password.as_str()))
+        .basic_auth(login, Some(password))
         .query(&[
             ("query_id", id.as_str()),
             ("wait_end_of_query", "1"),
@@ -246,14 +263,82 @@ pub(super) async fn reader_exists(input: &Request, name: &str) -> Result<bool> {
         _ => Err(Error::Corrupt),
     }
 }
+/// Never adopt an account with unrelated roles, grants or row policies. Partial
+/// grants are possible only while recovering this same reserved operation.
+async fn verify_reader_catalog(
+    input: &Request,
+    tenant: rss_request_context::TenantId,
+    name: &str,
+) -> Result<()> {
+    user(name)?;
+    let login = literal(name);
+    let grants = format!(
+        "SELECT count() FROM system.grants WHERE user_name={login} AND NOT (access_type='SELECT' AND ifNull(database,'')='rss_ts_ch' AND ifNull(table,'') IN ('installation','raw','summaries') AND column IS NULL AND NOT grant_option AND NOT is_partial_revoke) FORMAT TabSeparated"
+    );
+    let roles = format!(
+        "SELECT count() FROM system.role_grants WHERE user_name={login} FORMAT TabSeparated"
+    );
+    let mut expected = Vec::new();
+    for table in ["raw", "summaries"] {
+        expected.push(format!("(table={table} AND short_name={policy} AND replaceRegexpAll(ifNull(select_filter,''),'[[:space:]]','')={filter} AND NOT is_restrictive AND NOT apply_to_all AND apply_to_list=[{login}] AND empty(apply_to_except))",table=literal(table),policy=literal(&format!("telemetry_reader_{name}_{table}")),filter=literal(&format!("tenant='{}'",tenant))));
+    }
+    let policies = format!(
+        "SELECT count() FROM system.row_policies WHERE database='rss_ts_ch' AND (apply_to_all OR has(apply_to_list,{login}) OR short_name IN ({},{})) AND NOT ({}) FORMAT TabSeparated",
+        literal(&format!("telemetry_reader_{name}_raw")),
+        literal(&format!("telemetry_reader_{name}_summaries")),
+        expected.join(" OR ")
+    );
+    for (label, statement) in [
+        ("reader-roles", roles),
+        ("reader-grants", grants),
+        ("reader-policies", policies),
+    ] {
+        if execute(input, label, &statement).await?.trim() != "0" {
+            return Err(Error::Conflict);
+        }
+    }
+    Ok(())
+}
+async fn authenticates(input: &Request, name: &str, secret: &str) -> bool {
+    execute_as(
+        input,
+        "reader-login",
+        "SELECT currentUser() FORMAT TabSeparated",
+        name,
+        secret,
+    )
+    .await
+    .is_ok_and(|v| v.trim() == name)
+}
 /// Establish policies before granting table access. The caller reserves a new login
 /// or verifies its durable ownership before replay, rotation and restore.
 pub(in crate::installation) async fn provision_reader(
     input: &Request,
     tenant: rss_request_context::TenantId,
     material: &rss_mdm_telemetry_service::selection::Reader,
+    previous: Option<&rss_mdm_telemetry_service::selection::Reader>,
 ) -> Result<()> {
     let name = user(&material.user)?;
+    let exists = reader_exists(input, &material.user).await?;
+    verify_reader_catalog(input, tenant, &material.user).await?;
+    if exists {
+        let mut owned = false;
+        for secret in [
+            previous.and_then(|r| r.password.as_deref()),
+            material.password.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if authenticates(input, &material.user, secret).await {
+                owned = true;
+                break;
+            }
+        }
+        if !owned {
+            return Err(Error::Conflict);
+        }
+    }
     let Some(password) = material.password.as_ref() else {
         execute(
             input,

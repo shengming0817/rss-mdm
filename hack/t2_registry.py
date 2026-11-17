@@ -285,7 +285,7 @@ MODULES = {
                 'crates/policy-service/src/worker/completion.rs', 'crates/policy-service/src/configuration/source_changes.rs',
                 'crates/policy-service/schema/configuration-source-changes.sql',
                 'apps/server/src/local_delivery.rs','apps/server/src/asset_inputs.rs', 'apps/server/src/assembly/*',
-                'apps/server/tests/foundation/lifecycle*.rs','hack/t2_telemetry.py','apps/server/tests/support/host.rs', 'apps/server/src/installation/*', 'apps/server/src/administration/baseline/*', 'apps/server/src/administration/tenants/*')),
+                'apps/server/tests/foundation/lifecycle*.rs','apps/server/src/telemetry.rs','crates/telemetry-service/src/selection*.rs','hack/t2_telemetry.py','apps/server/tests/support/host.rs', 'apps/server/src/installation/*', 'apps/server/src/administration/baseline/*', 'apps/server/src/administration/tenants/*')),
 }
 SUPPORT = ('apps/server/tests/support/authority.rs',)
 

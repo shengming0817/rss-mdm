@@ -15,6 +15,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 /// Current selection in the tenant-scoped transaction.
+#[derive(Serialize, Deserialize)]
 pub struct Selection {
     pub binding: Vec<u8>,
     pub resource_id: Option<Uuid>,
@@ -24,8 +25,15 @@ pub struct Selection {
 }
 
 pub async fn load(c: &mut PgConnection, tenant: TenantId) -> Result<Option<Selection>, Error> {
-    let row=sqlx::query("SELECT binding,resource_id,revision,operation_id,material FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid")
-        .bind(tenant.to_string()).fetch_optional(c).await?;
+    load_row(c, tenant, false).await
+}
+pub(crate) async fn load_row(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    active_only: bool,
+) -> Result<Option<Selection>, Error> {
+    let row=sqlx::query("SELECT binding,resource_id,revision,operation_id,material FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid AND (NOT $2 OR pending IS NULL)")
+        .bind(tenant.to_string()).bind(active_only).fetch_optional(c).await?;
     row.map(|r| {
         Ok(Selection {
             binding: r.try_get("binding")?,
@@ -118,31 +126,168 @@ impl Selection {
 /// Participate in the existing product key rotation transaction.
 pub async fn rewrap(c: &mut PgConnection, tenant: TenantId, key: &Protector) -> Result<u64, Error> {
     lock_change(c, tenant).await?;
-    let Some(selection) = load(c, tenant).await? else {
-        return Ok(0);
-    };
-    let Some(bytes) = selection.material else {
-        return Ok(0);
-    };
-    if bytes.starts_with(&key.ciphertext_prefix()) {
-        return Ok(0);
-    }
-    let aad = aad(
-        tenant,
-        selection.resource_id.ok_or(Error::Storage)?,
-        selection.revision,
-    )?;
-    let wrapped = key.rewrap_bytes(&bytes, &aad).map_err(|_| Error::Storage)?;
-    Ok(
+    let mut changed = 0;
+    if let Some(mut current) = load(c, tenant).await?
+        && rewrap_selection(&mut current, tenant, key)?
+    {
         sqlx::query(
             "UPDATE mdm_telemetry.storage_binding SET material=$2 WHERE tenant_id=$1::uuid",
         )
         .bind(tenant.to_string())
-        .bind(wrapped)
-        .execute(c)
-        .await?
-        .rows_affected(),
-    )
+        .bind(current.material)
+        .execute(&mut *c)
+        .await?;
+        changed += 1;
+    }
+    if let Some(mut pending) = pending(c, tenant).await?
+        && rewrap_selection(&mut pending, tenant, key)?
+    {
+        sqlx::query("UPDATE mdm_telemetry.storage_binding SET pending=$2 WHERE tenant_id=$1::uuid")
+            .bind(tenant.to_string())
+            .bind(serde_json::to_value(pending)?)
+            .execute(c)
+            .await?;
+        changed += 1;
+    }
+    Ok(changed)
+}
+fn rewrap_selection(row: &mut Selection, tenant: TenantId, key: &Protector) -> Result<bool, Error> {
+    let Some(bytes) = row.material.as_ref() else {
+        return Ok(false);
+    };
+    if bytes.starts_with(&key.ciphertext_prefix()) {
+        return Ok(false);
+    }
+    let aad = aad(tenant, row.resource_id.ok_or(Error::Storage)?, row.revision)?;
+    row.material = Some(key.rewrap_bytes(bytes, &aad).map_err(|_| Error::Storage)?);
+    Ok(true)
+}
+pub async fn pending(c: &mut PgConnection, tenant: TenantId) -> Result<Option<Selection>, Error> {
+    let row=sqlx::query_scalar::<_,serde_json::Value>("SELECT pending FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid AND pending IS NOT NULL")
+        .bind(tenant.to_string()).fetch_optional(c).await?;
+    row.map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| Error::Storage)
+}
+/// Freeze the next revision while admissions and maintenance share the tenant fence.
+pub async fn reserve(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    current: &Selection,
+    next: &Selection,
+) -> Result<(), Error> {
+    if next.revision != current.revision.checked_add(1).ok_or(Error::Invalid)? {
+        return Err(Error::Conflict);
+    }
+    if current.binding != next.binding {
+        let used:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid) OR EXISTS(SELECT FROM mdm_telemetry.definition_progress WHERE tenant_id=$1::uuid) OR EXISTS(SELECT FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid)").bind(tenant.to_string()).fetch_one(&mut *c).await?;
+        if used {
+            return Err(Error::Conflict);
+        }
+    }
+    let rows=sqlx::query("UPDATE mdm_telemetry.storage_binding SET pending=$3 WHERE tenant_id=$1::uuid AND revision=$2 AND pending IS NULL")
+        .bind(tenant.to_string()).bind(current.revision).bind(serde_json::to_value(next)?).execute(c).await?.rows_affected();
+    if rows != 1 {
+        return Err(Error::Conflict);
+    }
+    Ok(())
+}
+pub async fn ready(c: &mut PgConnection, tenant: TenantId, op: Uuid) -> Result<(), Error> {
+    if sqlx::query("UPDATE mdm_telemetry.storage_binding SET probe_ready=true WHERE tenant_id=$1::uuid AND pending->>'operation_id'=$2")
+        .bind(tenant.to_string()).bind(op.to_string()).execute(c).await?.rows_affected()!=1 {return Err(Error::Conflict);}
+    Ok(())
+}
+/// The installer publishes only the original probed operation. Retirement has verified account absence.
+pub async fn publish(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    op: Uuid,
+    retire: bool,
+) -> Result<bool, Error> {
+    let Some(next) = pending(c, tenant).await? else {
+        return Err(Error::Conflict);
+    };
+    if next.operation_id != Some(op) {
+        return Err(Error::Conflict);
+    }
+    Ok(sqlx::query("UPDATE mdm_telemetry.storage_binding SET binding=$3,resource_id=$4,revision=$5,operation_id=$2,material=$6,pending=NULL,probe_ready=false,qualified=NULL WHERE tenant_id=$1::uuid AND pending->>'operation_id'=($2::uuid)::text AND (qualified=$2 OR $7)")
+        .bind(tenant.to_string()).bind(op).bind(next.binding).bind(next.resource_id).bind(next.revision).bind(next.material).bind(retire).execute(c).await?.rows_affected()==1)
+}
+impl crate::Service {
+    /// The existing scoped relay performs admission on the host-owned physical resource.
+    pub(crate) async fn qualify_reader(
+        self: &Arc<Self>,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<(), Error> {
+        let service = self.clone();
+        let cutoff = Deadline::from_timeout(&SystemClock, Duration::from_secs(6))
+            .map_err(|_| Error::Storage)?;
+        self.runtime
+            .local_tx(
+                execution,
+                rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                    cutoff,
+                    &SystemClock,
+                ),
+                move |tx| {
+                    Box::pin(async move {
+                        tx.with_connection(move |c| {
+                            Box::pin(async move {
+                                Ok(service.qualify_on(c, execution.tenant(), cutoff).await)
+                            })
+                        })
+                        .await
+                    })
+                },
+            )
+            .await
+            .fold(
+                |v| v,
+                |_| Err(Error::Storage),
+                |_| Err(Error::Storage),
+                |_| Err(Error::Unknown),
+                |_| Err(Error::Unknown),
+                |_| Err(Error::Storage),
+            )
+    }
+    async fn qualify_on(
+        &self,
+        c: &mut PgConnection,
+        tenant: TenantId,
+        cutoff: Deadline,
+    ) -> Result<(), Error> {
+        lock_read(c, tenant).await?;
+        let value=sqlx::query_scalar::<_,serde_json::Value>("SELECT pending FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid AND probe_ready AND qualified IS NULL")
+            .bind(tenant.to_string()).fetch_optional(&mut *c).await?;
+        let Some(value) = value else { return Ok(()) };
+        let candidate: Selection = serde_json::from_value(value)?;
+        let resource = self
+            .resources
+            .get(candidate.binding.as_slice())
+            .ok_or(Error::Storage)?;
+        if Some(resource.installation) != candidate.resource_id
+            || resource.tenant.is_some_and(|t| t != tenant)
+        {
+            return Err(Error::Denied);
+        }
+        let access = match resource.backend.as_deref().ok_or(Error::Storage)? {
+            crate::backend::Backend::Postgres(pg) => crate::backend::Access::Postgres(pg.clone()),
+            crate::backend::Backend::ClickHouse(owner) => {
+                crate::backend::Access::ClickHouse(Arc::new(
+                    candidate
+                        .reader(&self.protection, tenant)?
+                        .ok_or(Error::Storage)?
+                        .bind(owner, tenant, candidate.revision, cutoff)
+                        .await?,
+                ))
+            }
+        };
+        crate::diagnostics::probe(&access, tenant, cutoff).await?;
+        let op = candidate.operation_id.ok_or(Error::Storage)?;
+        sqlx::query("UPDATE mdm_telemetry.storage_binding SET qualified=$2 WHERE tenant_id=$1::uuid AND pending->>'operation_id'=($2::uuid)::text AND probe_ready")
+            .bind(tenant.to_string()).bind(op).execute(c).await?;
+        Ok(())
+    }
 }
 type Slot = tokio::sync::Mutex<Option<Arc<ChStore<SystemClock>>>>;
 #[derive(Default)]
@@ -154,6 +299,7 @@ impl Readers {
         key: &Protector,
         tenant: TenantId,
         selection: &Selection,
+        cutoff: Deadline,
     ) -> Result<Arc<ChStore<SystemClock>>, Error> {
         let slot = self
             .0
@@ -168,8 +314,7 @@ impl Readers {
         {
             return Ok(access.clone());
         }
-        let deadline = Deadline::from_timeout(&SystemClock, Duration::from_secs(6))
-            .map_err(|_| Error::Storage)?;
+        let deadline = cutoff.capped(&SystemClock, Duration::from_secs(6));
         if let Some(old) = active.as_ref() {
             old.retire(deadline).await?;
         }

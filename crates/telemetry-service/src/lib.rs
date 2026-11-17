@@ -360,6 +360,9 @@ impl Service {
         execution: rss_transactional_messaging::fence::ExecutionBinding,
         budget: rss_transactional_messaging::policy::OperationDeadline,
     ) -> Result<(), Error> {
+        let cutoff =
+            rss_request_context::Deadline::from_timeout(&backend::SystemClock, budget.timeout())
+                .map_err(|_| Error::Storage)?;
         let default = self.default_resource;
         self.runtime.local_tx(execution,budget,move|tx|Box::pin(async move {
             let tenant=tx.tenant_id().to_string();
@@ -369,7 +372,7 @@ impl Service {
                 Ok(())
             })).await
         })).await.fold(Ok,|_|Err(Error::Storage),|_|Err(Error::Storage),|_|Err(Error::Unknown),|_|Err(Error::Unknown),|_|Err(Error::Storage))?;
-        self.backend(execution).await.map(|_| ())
+        self.backend(execution, cutoff).await.map(|_| ())
     }
 
     async fn backend_on(
@@ -377,8 +380,23 @@ impl Service {
         c: &mut sqlx::PgConnection,
         tenant: TenantId,
     ) -> Result<backend::Selected, Error> {
+        let cutoff = rss_request_context::Deadline::from_timeout(
+            &backend::SystemClock,
+            std::time::Duration::from_secs(6),
+        )
+        .map_err(|_| Error::Storage)?;
+        self.backend_until(c, tenant, cutoff).await
+    }
+    async fn backend_until(
+        &self,
+        c: &mut sqlx::PgConnection,
+        tenant: TenantId,
+        cutoff: rss_request_context::Deadline,
+    ) -> Result<backend::Selected, Error> {
         selection::lock_read(c, tenant).await?;
-        let row = selection::load(c, tenant).await?.ok_or(Error::Storage)?;
+        let row = selection::load_row(c, tenant, true)
+            .await?
+            .ok_or(Error::Storage)?;
         let resource = self
             .resources
             .get(row.binding.as_slice())
@@ -396,7 +414,7 @@ impl Service {
             backend::Backend::Postgres(pg) => backend::Access::Postgres(pg.clone()),
             backend::Backend::ClickHouse(owner) => backend::Access::ClickHouse(
                 self.readers
-                    .access(owner, &self.protection, tenant, &row)
+                    .access(owner, &self.protection, tenant, &row, cutoff)
                     .await?,
             ),
         };
@@ -409,17 +427,27 @@ impl Service {
     async fn backend(
         self: &Arc<Self>,
         execution: rss_transactional_messaging::fence::ExecutionBinding,
+        cutoff: rss_request_context::Deadline,
     ) -> Result<backend::Selected, Error> {
         let service = self.clone();
         self.runtime
-            .local_tx(execution, deadline(), move |tx| {
-                Box::pin(async move {
-                    tx.with_connection(move |c| {
-                        Box::pin(async move { Ok(service.backend_on(c, execution.tenant()).await) })
+            .local_tx(
+                execution,
+                rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                    cutoff,
+                    &backend::SystemClock,
+                ),
+                move |tx| {
+                    Box::pin(async move {
+                        tx.with_connection(move |c| {
+                            Box::pin(async move {
+                                Ok(service.backend_until(c, execution.tenant(), cutoff).await)
+                            })
+                        })
+                        .await
                     })
-                    .await
-                })
-            })
+                },
+            )
             .await
             .fold(
                 |v| v,

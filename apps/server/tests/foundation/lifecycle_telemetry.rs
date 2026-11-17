@@ -2,6 +2,8 @@
 use super::*;
 #[path = "lifecycle_telemetry_data.rs"]
 mod data;
+#[path = "lifecycle_telemetry_recovery.rs"]
+mod recovery;
 use crate::installation::{configure, install, providers::telemetry, runtime_files};
 
 async fn resources(
@@ -137,6 +139,11 @@ pub(super) async fn exercise(
     pg: &crate::config::Database,
     inputs: &Path,
 ) -> Result<()> {
+    let mut primary = pg.clone();
+    primary.name = source["database"]["name"]
+        .as_str()
+        .context("product database")?
+        .to_owned();
     let resources = resources(root, first, pg, inputs).await?;
     let mut runtime = maintenance::desired(root, first.host_id)?;
     for resource in &resources {
@@ -165,6 +172,17 @@ pub(super) async fn exercise(
     };
     attach(source, &resources[0], a, 0, reader("a")?).await?;
     available(&mut first_browser, a, true).await?;
+    let a_data = data::Upload::publish(
+        &running,
+        &mut first_browser,
+        a,
+        &primary,
+        &runtime,
+        root,
+        11,
+    )
+    .await
+    .context("A product intake")?;
     let (_, before) = platform.call(Method::GET, "/readyz", None, None).await?;
     let mut control = pg.clone();
     control.name = "ch_control".into();
@@ -181,6 +199,12 @@ pub(super) async fn exercise(
     let b_reader = reader("b")?;
     attach(source, &resources[0], b, 0, b_reader.clone()).await?;
     available(&mut peer, b, true).await?;
+    let b_data = data::Upload::publish(&running, &mut peer, b, &primary, &runtime, root, 22)
+        .await
+        .context("B product intake")?;
+    a_data
+        .reject_foreign_cursor(&mut first_browser, &b_data)
+        .await?;
     let (_, after) = platform.call(Method::GET, "/readyz", None, None).await?;
     ensure!(
         before["observation"].is_object()
@@ -202,23 +226,57 @@ pub(super) async fn exercise(
     let (t, mut shared) = provision(&mut platform).await?;
     attach(source, &resources[1], t, 0, json!({"kind":"select"})).await?;
     available(&mut shared, t, true).await?;
+    let _shared_data =
+        data::Upload::publish(&running, &mut shared, t, &primary, &runtime, root, 33)
+            .await
+            .context("SharedRls product intake")?;
+    a_data
+        .replay(running.telemetry.get().unwrap(), &mut first_browser)
+        .await?;
     ensure!(
         sessions().await? == original,
         "reader rotation must retain the shared control session"
     );
     observer.close().await;
     running.close().await?;
-    // With the App stopped, open exactly one owner on the installed resource and
-    // exercise the reader material committed by the live maintenance operation.
-    let mut primary = pg.clone();
-    primary.name = source["database"]["name"]
-        .as_str()
-        .context("product database")?
-        .to_owned();
-    data::exercise(&runtime, &primary, a, b).await?;
+    Box::pin(recovery::cold(
+        root,
+        source,
+        first,
+        management,
+        &primary,
+        pg,
+        &resources,
+        [a, b, t],
+    ))
+    .await
+    .context("shared storage cold recovery")?;
     let restarted = maintenance::Running::open(&runtime).await?;
+    peer.login(
+        &b.to_string(),
+        "administrator",
+        "Telemetry-admin-password!42",
+    )
+    .await?;
+    first_browser
+        .login(
+            &a.to_string(),
+            "administrator",
+            "Telemetry-admin-password!42",
+        )
+        .await?;
+    shared
+        .login(
+            &t.to_string(),
+            "administrator",
+            "Telemetry-admin-password!42",
+        )
+        .await?;
     available(&mut peer, b, true).await?;
     available(&mut shared, t, true).await?;
+    b_data
+        .replay(restarted.telemetry.get().unwrap(), &mut peer)
+        .await?;
     attach(source, &resources[0], b, 2, json!({"kind":"retire"})).await?;
     available(&mut peer, b, false).await?;
     available(&mut first_browser, a, true).await?;
