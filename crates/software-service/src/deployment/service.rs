@@ -263,15 +263,17 @@ impl crate::deployment::transactions::Transactions {
                 else {
                     return Err(Error::Unsupported.into());
                 };
-                let package = action
-                    .native_packages
+                let native = action.native.as_ref().ok_or(Error::Unsupported)?;
+                let package = native
+                    .packages
                     .get(&rss_mdm_policy::SoftwareTarget::new(platform, architecture))
                     .ok_or(Error::Unsupported)?;
                 if !self.inputs.materials.software_distribution.mdm_enabled
                     || *operation != input.operation_id
                     || input.target != NativeTarget::Device
                     || checked_input(serde_json::to_vec(&input.task))?
-                        != checked_input(serde_json::to_vec(&package.task(
+                        != checked_input(serde_json::to_vec(&native.task(
+                            package,
                             *operation,
                             &self.protection,
                             tx.tenant_id(),

@@ -2,6 +2,7 @@
 pub mod frozen;
 pub mod identity;
 pub mod native;
+pub mod native_download;
 
 /// Host-owned software admission, read once with the rest of product configuration.
 #[derive(Clone, Copy, Default, serde::Deserialize, serde::Serialize)]

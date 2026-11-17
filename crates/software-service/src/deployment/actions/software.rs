@@ -122,7 +122,8 @@ pub(crate) async fn slot_in(
         let package = policy
             .assignment
             .frozen
-            .native_packages
+            .native.as_ref().ok_or(Error::Unsupported)?
+            .packages
             .get(&rss_mdm_policy::SoftwareTarget::new(p, a))
             .ok_or(Error::Unsupported)?;
         serde_json::json!({"channel":"mdm","resource":policy.assignment.frozen.resource,"version":policy.assignment.frozen.version,"digest":policy.assignment.frozen.resource_digest,"intent":"install","target":{"kind":"device"},"packages":[package.effect_identity()],"packageVersions":{(package.effect_identity()):package.effect_version()}})

@@ -168,13 +168,16 @@ pub async fn policy(
         };
         BTreeMap::from([(
             rss_mdm_policy::SoftwareTarget::WindowsX86_64,
-            owner::native::Package::compile(definition, "https://mdm.example.test".into())?,
+            owner::native::Package::compile(definition)?,
         )])
     } else {
         BTreeMap::new()
     };
     let action = owner::frozen::FrozenSoftwareAction {
-        native_packages: native,
+        native: (channel == rss_mdm_policy::SoftwareChannel::Mdm).then_some(owner::native_download::NativeSoftware {
+            origin: "https://mdm.example.test".into(),
+            packages: native,
+        }),
         channel,
         delivery: rss_mdm_policy::SoftwareDelivery::Direct,
         resource: resource.resource().as_str().into(),
