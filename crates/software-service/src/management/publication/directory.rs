@@ -79,7 +79,7 @@ pub async fn targets(
                 let rows = s
                     .services
                     .values()
-                    .map(|s| s.operation(p.binding()).map(|op| op.target()))
+                    .map(|s| s.target(p.binding().tenant()))
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(failure)?;
                 let binding = q

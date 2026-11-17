@@ -68,6 +68,10 @@ impl std::ops::Deref for PublicationOperation<'_> {
     }
 }
 impl PublicationService {
+    /// Non-secret target metadata; execution still requires tenant source credentials.
+    pub fn target(&self, tenant: TenantId) -> Result<PublicTarget> {
+        self.source.target(tenant)
+    }
     pub fn exports(&self, tenant: TenantId) -> Result<super::ExportReader> {
         Ok(super::ExportReader::new(
             self.source
@@ -163,14 +167,7 @@ impl PublicationOperation<'_> {
         )
     }
     pub fn target(&self) -> PublicTarget {
-        PublicTarget {
-            id: self.sources.logical.clone(),
-            digest: self.sources.digest,
-            protocol: match self.sources.binding.driver {
-                Driver::Winget { .. } => TargetProtocol::Winget,
-                Driver::Brew { .. } => TargetProtocol::Brew,
-            },
-        }
+        self.sources.exports().target()
     }
     pub fn tenant(&self) -> TenantId {
         self.sources.tenant
