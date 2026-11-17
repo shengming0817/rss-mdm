@@ -87,7 +87,7 @@ where
         .build()?;
     let base = format!("http://{address}");
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let mut server = Box::pin(crate::serve(
+    let mut server = tokio::spawn(crate::serve(
         config,
         async move {
             stopped
@@ -116,7 +116,7 @@ where
     };
     stop.send(())
         .map_err(|_| anyhow::anyhow!("host lost stop receiver"))?;
-    tokio::time::timeout(Duration::from_secs(70), &mut server).await??;
+    tokio::time::timeout(Duration::from_secs(70), &mut server).await???;
     result
 }
 

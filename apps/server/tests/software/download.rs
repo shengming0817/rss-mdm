@@ -160,16 +160,21 @@ fn url(operation: &owner::storage::Operation) -> url::Url {
 #[tokio::test]
 #[ignore = "T2: final App consumes issued software URL and enforces current native authority and verified bytes"]
 async fn final_router_serves_only_current_signed_native_content() -> Result<()> {
-    let c = Context::open("shared", &[]).await?;
+    let c = Context::open("native_download", &[]).await?;
     let operation_id = Uuid::new_v4();
     let (resource, operation) = Box::pin(prepare(&c, operation_id, None)).await?;
-    let expiring = Context::open("shared", &[]).await?;
+    let expiring = Context::open("native_download", &[]).await?;
     let (_, expired) = Box::pin(prepare(&expiring, Uuid::new_v4(), Some(10))).await?;
     let issued = url(&operation);
     let directory = tempfile::tempdir()?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let mut configuration =
-        host::configuration(&c.inputs, "shared", listener.local_addr()?, Uuid::new_v4()).await?;
+    let mut configuration = host::configuration(
+        &c.inputs,
+        "native_download",
+        listener.local_addr()?,
+        Uuid::new_v4(),
+    )
+    .await?;
     configuration["software_distribution"]["mdm_enabled"] = json!(true);
     configuration["content"] = json!({"storage":{"kind":"volume","directory":directory.path()},"imports":{},"max_artifact_bytes":33554432,"max_temporary_bytes":67108864,"max_uploads":4,"transfer_seconds":60,"retention_seconds":3600,"max_bundle_entries":4096,"max_expansion_ratio":100});
     let config: crate::config::Config = serde_json::from_value(configuration.clone())?;
@@ -226,97 +231,138 @@ async fn final_router_serves_only_current_signed_native_content() -> Result<()> 
     .execute(&c.operator)
     .await?;
     drop(listener);
-    let result = {
+    let result = async {
         let c = &c;
         let directory = &directory;
         let expired = &expired;
         let operation = &operation;
         let issued = &issued;
-        host::run(configuration, |client, base| async move {
-            let path = format!("{}?{}", issued.path(), issued.query().unwrap());
-            let download = format!("{base}{path}");
-            let response = client.get(&download).send().await?;
-            assert_eq!(response.status(), 200);
-            assert_eq!(response.headers()["cache-control"], "private, no-store");
-            Uuid::parse_str(response.headers()["x-request-id"].to_str()?)?;
-            assert_eq!(response.bytes().await?.as_ref(), b"msi");
-            let response = client
-                .get(&download)
-                .header("range", "bytes=1-2")
-                .send()
+        Box::pin(host::run(configuration.clone(), |client, base| {
+            Box::pin(async move {
+                let path = format!("{}?{}", issued.path(), issued.query().unwrap());
+                let download = format!("{base}{path}");
+                let response = client.get(&download).send().await?;
+                assert_eq!(response.status(), 200);
+                assert_eq!(response.headers()["cache-control"], "private, no-store");
+                Uuid::parse_str(response.headers()["x-request-id"].to_str()?)?;
+                assert_eq!(response.bytes().await?.as_ref(), b"msi");
+                let response = client
+                    .get(&download)
+                    .header("range", "bytes=1-2")
+                    .send()
+                    .await?;
+                assert_eq!(response.status(), 206);
+                assert_eq!(response.headers()["content-range"], "bytes 1-2/3");
+                assert_eq!(response.bytes().await?.as_ref(), b"si");
+                host::reject(
+                    client
+                        .get(format!("{base}{}?token={}", issued.path(), "0".repeat(64)))
+                        .send()
+                        .await?,
+                    403,
+                    "permission_denied",
+                )
                 .await?;
-            assert_eq!(response.status(), 206);
-            assert_eq!(response.headers()["content-range"], "bytes 1-2/3");
-            assert_eq!(response.bytes().await?.as_ref(), b"si");
-            host::reject(
-                client
-                    .get(format!("{base}{}?token={}", issued.path(), "0".repeat(64)))
-                    .send()
-                    .await?,
-                403,
-                "permission_denied",
-            )
-            .await?;
-            host::reject(
-                client
-                    .get(download.replace(&operation_id.to_string(), &Uuid::new_v4().to_string()))
-                    .send()
-                    .await?,
-                403,
-                "permission_denied",
-            )
-            .await?;
-            host::reject(
-                client
+                host::reject(
+                    client
+                        .get(
+                            download
+                                .replace(&operation_id.to_string(), &Uuid::new_v4().to_string()),
+                        )
+                        .send()
+                        .await?,
+                    403,
+                    "permission_denied",
+                )
+                .await?;
+                // The gateway rejects a foreign virtual host before dispatching a browser route.
+                let foreign_host = client
                     .get(&download)
                     .header("host", "foreign.example.test")
                     .send()
-                    .await?,
-                400,
-                "malformed_request",
-            )
-            .await?;
-            // A valid token cannot survive current registration revocation.
-            let mut tx = command::seed_transaction(c).await?;
-            sqlx::query(
+                    .await?;
+                assert_eq!(foreign_host.status(), 403);
+                assert!(foreign_host.bytes().await?.is_empty());
+                // A valid token cannot survive current registration revocation.
+                let mut tx = command::seed_transaction(c).await?;
+                sqlx::query(
                 "UPDATE mdm_access.devices SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2",
             )
             .bind(c.tenant.to_string())
             .bind(operation.device.into_uuid())
             .execute(&mut *tx)
             .await?;
-            tx.commit().await?;
-            host::reject(
-                client.get(&download).send().await?,
-                403,
-                "permission_denied",
-            )
-            .await?;
-            let mut tx = command::seed_transaction(c).await?;
-            sqlx::query(
+                tx.commit().await?;
+                host::reject(
+                    client.get(&download).send().await?,
+                    409,
+                    "operation_conflict",
+                )
+                .await?;
+                let mut tx = command::seed_transaction(c).await?;
+                sqlx::query(
                 "UPDATE mdm_access.devices SET state='active' WHERE tenant_id=$1::uuid AND id=$2",
             )
             .bind(c.tenant.to_string())
             .bind(operation.device.into_uuid())
             .execute(&mut *tx)
             .await?;
-            tx.commit().await?;
-            assert_eq!(
-                client.get(&download).send().await?.bytes().await?.as_ref(),
-                b"msi"
-            );
-            // Expiration is evaluated from the original persisted request, without a fake clock.
-            let wait = expired.request.deadline.saturating_sub(now());
-            if wait > 0 {
-                tokio::time::sleep(std::time::Duration::from_secs(wait as u64)).await;
-            }
-            let expired_url = url(expired);
+                tx.commit().await?;
+                assert_eq!(
+                    client.get(&download).send().await?.bytes().await?.as_ref(),
+                    b"msi"
+                );
+                // Expiration is evaluated from the original persisted request, without a fake clock.
+                let wait = expired.request.deadline.saturating_sub(now());
+                if wait > 0 {
+                    tokio::time::sleep(std::time::Duration::from_secs(wait as u64)).await;
+                }
+                let expired_url = url(expired);
+                host::reject(
+                    client
+                        .get(format!(
+                            "{base}{}?{}",
+                            expired_url.path(),
+                            expired_url.query().unwrap()
+                        ))
+                        .send()
+                        .await?,
+                    403,
+                    "permission_denied",
+                )
+                .await?;
+                // Corrupt actual stored bytes; no successful response may start streaming them.
+                let tenant_directory = directory.path().join(c.tenant.to_string());
+                let chunk = std::fs::read_dir(tenant_directory)?
+                    .filter_map(Result::ok)
+                    .map(|e| e.path())
+                    .find(|p| std::fs::read(p).is_ok_and(|v| v == b"msi"))
+                    .expect("sealed chunk");
+                std::fs::write(&chunk, b"bad")?;
+                let failed = client.get(&download).send().await?;
+                assert!(failed.status().is_server_error());
+                assert_ne!(failed.bytes().await?.as_ref(), b"bad");
+                std::fs::write(&chunk, b"msi")?;
+                assert_eq!(
+                    client.get(&download).send().await?.bytes().await?.as_ref(),
+                    b"msi"
+                );
+                Ok(())
+            })
+        }))
+        .await?;
+        // Prepare the second operation with the first host drained, so installation-wide
+        // workers cannot race fixture admission. Restart the same final Router for discovery.
+        let foreign = Context::open("native_download", &[]).await?;
+        let (_, foreign_operation) = Box::pin(prepare(&foreign, operation_id, None)).await?;
+        assert_ne!(url(&foreign_operation).query(), issued.query());
+        let result = host::run(configuration, |client, base| async move {
             host::reject(
                 client
                     .get(format!(
                         "{base}{}?{}",
-                        expired_url.path(),
-                        expired_url.query().unwrap()
+                        issued.path(),
+                        issued.query().unwrap()
                     ))
                     .send()
                     .await?,
@@ -324,37 +370,13 @@ async fn final_router_serves_only_current_signed_native_content() -> Result<()> 
                 "permission_denied",
             )
             .await?;
-            // Corrupt actual stored bytes; no successful response may start streaming them.
-            let tenant_directory = directory.path().join(c.tenant.to_string());
-            let chunk = std::fs::read_dir(tenant_directory)?
-                .filter_map(Result::ok)
-                .map(|e| e.path())
-                .find(|p| std::fs::read(p).is_ok_and(|v| v == b"msi"))
-                .expect("sealed chunk");
-            std::fs::write(&chunk, b"bad")?;
-            let failed = client.get(&download).send().await?;
-            assert!(failed.status().is_server_error());
-            assert_ne!(failed.bytes().await?.as_ref(), b"bad");
-            std::fs::write(&chunk, b"msi")?;
-            assert_eq!(
-                client.get(&download).send().await?.bytes().await?.as_ref(),
-                b"msi"
-            );
-            // Equal opaque IDs in two tenants must not select either tenant's signed operation.
-            let foreign = Context::open("shared", &[]).await?;
-            let (_, foreign_operation) = Box::pin(prepare(&foreign, operation_id, None)).await?;
-            assert_ne!(url(&foreign_operation).query(), issued.query());
-            host::reject(
-                client.get(&download).send().await?,
-                403,
-                "permission_denied",
-            )
-            .await?;
-            foreign.close().await;
             Ok(())
         })
-        .await
-    };
+        .await;
+        foreign.close().await;
+        result
+    }
+    .await;
     expiring.close().await;
     c.close().await;
     result

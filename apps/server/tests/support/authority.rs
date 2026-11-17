@@ -73,6 +73,7 @@ impl Inputs {
 
 pub struct Context {
     pub inputs: Inputs,
+    pub profile: String,
     pub tenant: TenantId,
     pub operator: PgPool,
     pub database: crate::Database,
@@ -190,6 +191,7 @@ impl Context {
         .await?;
         Ok(Self {
             inputs,
+            profile: profile.to_owned(),
             tenant,
             operator,
             database,

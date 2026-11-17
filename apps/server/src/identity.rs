@@ -200,14 +200,14 @@ async fn execution_scope(
                 Err(_) => return ScopeFailure::Forbidden.response(path),
             }
         };
-        // The installation registry precedes candidate-tenant admission: an unknown tenant
-        // has no execution fence yet. Only this directory lookup uses the installed host scope.
-        let admitted = scope.runtime.local_tx(scope.management, OperationDeadline::from_cutoff(cutoff, &crate::lifecycle::RuntimeTimer), move |tx| Box::pin(async move {
+        // A missing tenant has no execution fence. Only a confirmed fenced outcome is
+        // denied; storage faults and uncertain settlement retain availability semantics.
+        let admitted = scope.runtime.local_tx(binding, OperationDeadline::from_cutoff(cutoff, &crate::lifecycle::RuntimeTimer), move |tx| Box::pin(async move {
             tx.with_connection(move |c| Box::pin(async move {
                 sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM public.mdm_tenants WHERE tenant_id=$1::uuid AND NOT deleted)")
                     .bind(binding.tenant().to_string()).fetch_one(c).await
             })).await
-        })).await.fold(Ok, Err, Err, |_| Err(PgError::from(sqlx::Error::Protocol("scope rollback unconfirmed".into()))), |_| Err(PgError::from(sqlx::Error::Protocol("scope commit unconfirmed".into()))), Err);
+        })).await.fold(Ok, Err, Err, |_| Err(PgError::from(sqlx::Error::Protocol("scope rollback unconfirmed".into()))), |_| Err(PgError::from(sqlx::Error::Protocol("scope commit unconfirmed".into()))), |_| Ok(false));
         match admitted {
             Ok(true) => (),
             Ok(false) => return ScopeFailure::Forbidden.response(path),

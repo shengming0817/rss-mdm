@@ -26,13 +26,13 @@ impl Prepared {
         config["identity"]["management_tenant"] = json!(management);
         config["identity"]["instance_id"] = json!(c.inputs.installation.instance_id);
         config["identity"]["database"] =
-            serde_json::to_value(c.inputs.database("shared", "mdm_identity_runtime"))?;
+            serde_json::to_value(c.inputs.database(&c.profile, "mdm_identity_runtime"))?;
         config["access_database"] =
-            serde_json::to_value(c.inputs.database("shared", "mdm_access"))?;
+            serde_json::to_value(c.inputs.database(&c.profile, "mdm_access"))?;
         config["device_access"]["database"] =
-            serde_json::to_value(c.inputs.database("shared", "da_access"))?;
+            serde_json::to_value(c.inputs.database(&c.profile, "da_access"))?;
         config["command_database"] =
-            serde_json::to_value(c.inputs.database("shared", "mdm_command_runtime"))?;
+            serde_json::to_value(c.inputs.database(&c.profile, "mdm_command_runtime"))?;
         config["storage_binding"] = json!({"target":c.inputs.installation.target,"lineage":c.inputs.installation.lineage,"epoch":1});
         config["native_protocols"] = json!({});
         config["device_pki"] = json!([]);

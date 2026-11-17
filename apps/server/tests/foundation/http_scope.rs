@@ -108,7 +108,7 @@ async fn scope_failures_are_typed_on_product_and_identity_routes() -> Result<()>
             ] {
                 for path in [
                     format!("/api/v1/tenants/{tenant}/device-views"),
-                    format!("/api/v1/identity/tenants/{tenant}/login-options"),
+                    format!("/api/v1/identity/tenants/{tenant}/session"),
                 ] {
                     let body = rejected(
                         &diagnostics,
@@ -146,8 +146,8 @@ async fn scope_failures_are_typed_on_product_and_identity_routes() -> Result<()>
             // A live tenant proceeds to authentication; this rules out unconditional scope rejection.
             let product = format!("{base}/api/v1/tenants/{}/device-views", c.tenant);
             assert_eq!(client.get(&product).send().await?.status(), 401);
-            let sdk = format!("{base}/api/v1/identity/tenants/{}/login-options", c.tenant);
-            assert_eq!(client.get(&sdk).send().await?.status(), 200);
+            let sdk = format!("{base}/api/v1/identity/tenants/{}/session", c.tenant);
+            host::reject(client.get(&sdk).send().await?, 401, "invalid_credential").await?;
             // Dedicated profile: revoke only the actual scope reader, then restore the same privilege.
             sqlx::query("REVOKE SELECT ON public.mdm_tenants FROM mdm_identity_runtime")
                 .execute(&c.operator)
@@ -174,7 +174,7 @@ async fn scope_failures_are_typed_on_product_and_identity_routes() -> Result<()>
                 .execute(&c.operator)
                 .await?;
             failed?;
-            assert_eq!(client.get(&sdk).send().await?.status(), 200);
+            host::reject(client.get(&sdk).send().await?, 401, "invalid_credential").await?;
             Ok(())
         })
         .await
