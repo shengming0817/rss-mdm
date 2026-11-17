@@ -4,6 +4,7 @@ pub mod action_admission;
 pub mod application;
 pub mod clock;
 mod diagnostic;
+mod discovery;
 mod error;
 mod error_projection;
 pub mod events;

@@ -142,12 +142,13 @@ impl RuntimeDiagnostics {
                         observed_at: f.observed_at,
                     }),
                 },
+                health.recovery,
             );
             let health = self.groups.runner_health();
             let mut group = worker_component(
                 ComponentName::Group,
                 self.groups.task_state(),
-                health.scan.is_some(),
+                health.discovery.is_some() || health.scan.is_some(),
                 false,
             );
             apply_runner(
@@ -166,12 +167,13 @@ impl RuntimeDiagnostics {
                         observed_at: f.observed_at,
                     }),
                 },
+                health.recovery,
             );
             let health = self.scopes.runner_health();
             let mut scope = worker_component(
                 ComponentName::Scope,
                 self.scopes.task_state(),
-                health.scan.is_some(),
+                health.discovery.is_some() || health.scan.is_some(),
                 false,
             );
             apply_runner(
@@ -190,12 +192,13 @@ impl RuntimeDiagnostics {
                         observed_at: f.observed_at,
                     }),
                 },
+                health.recovery,
             );
             let health = self.assets.worker_status();
             let mut assets = worker_component(
                 ComponentName::AssetQuery,
                 health.task,
-                health.scan.is_some(),
+                health.discovery.is_some() || health.scan.is_some(),
                 false,
             );
             apply_runner(
@@ -214,12 +217,13 @@ impl RuntimeDiagnostics {
                         observed_at: f.observed_at,
                     }),
                 },
+                health.recovery,
             );
             let health = self.compliance.worker_status();
             let mut compliance = worker_component(
                 ComponentName::Compliance,
                 health.task,
-                health.scan.is_some(),
+                health.discovery.is_some() || health.scan.is_some(),
                 false,
             );
             apply_runner(
@@ -238,6 +242,7 @@ impl RuntimeDiagnostics {
                         observed_at: f.observed_at,
                     }),
                 },
+                health.recovery,
             );
             let health = self.devices.worker_health();
             let mut associations = worker_component(
@@ -839,7 +844,28 @@ fn attempt_stage(stage: rss_reconcile::Stage) -> AttemptStage {
         rss_reconcile::Stage::Finish => AttemptStage::Finish,
     }
 }
-fn apply_runner(value: &mut Component, runner: Runner) {
+fn apply_runner(
+    value: &mut Component,
+    runner: Runner,
+    recovery: rss_mdm_recovery_observation::Phase,
+) {
+    use rss_mdm_recovery_observation::Phase;
+    let (state, reason) = match recovery {
+        Phase::Unobserved => (PhaseState::Unobserved, Some(Reason::Unobserved)),
+        Phase::Healthy => (PhaseState::Healthy, None),
+        Phase::Failed(kind) => {
+            value.health = Health::Degraded;
+            value.readiness = Readiness::NotReady;
+            let reason = execution_failure(kind);
+            value.reasons.push(reason);
+            (PhaseState::Failed, Some(reason))
+        }
+    };
+    value.phases.push(PhaseObservation {
+        name: PhaseName::Recovery,
+        state,
+        reason,
+    });
     if runner.scan.as_ref().is_some_and(|scan| !scan.successful) || runner.unresolved_attempts > 0 {
         value.health = Health::Degraded;
         value.readiness = Readiness::NotReady;
@@ -851,7 +877,7 @@ fn apply_runner(value: &mut Component, runner: Runner) {
                 .or_else(|| runner.scan.as_ref().and_then(|s| s.reason))
                 .unwrap_or(Reason::DependencyUnavailable),
         );
-    } else if runner.scan.is_none() {
+    } else if runner.scan.is_none() && recovery == Phase::Unobserved {
         value.health = Health::Unknown;
         value.reasons.push(Reason::Unobserved);
     }

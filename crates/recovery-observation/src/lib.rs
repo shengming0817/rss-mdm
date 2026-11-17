@@ -2,14 +2,13 @@
 //! No business decisions, worker loop, timers, transaction execution or durable state.
 use rss_reconcile::{Completion, ErrorKind, Observation, Scope, Target};
 use rss_runtime::{TaskState, TaskStatus};
-use std::{
-    collections::BTreeMap,
-    sync::{
-        Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
+use std::sync::{
+    Mutex, OnceLock,
+    atomic::{AtomicBool, Ordering},
 };
 
+mod observations;
+pub use observations::{Attempt, Observations, Scan, Snapshot};
 mod store;
 pub use store::ObservedStore;
 
@@ -25,6 +24,7 @@ pub struct Health {
     pub task: Option<TaskState>,
     pub stopping: bool,
     pub recovery: Phase,
+    pub discovery: Phase,
     pub scan: Phase,
     pub unresolved_attempts: u64,
     pub truncated: bool,
@@ -44,33 +44,15 @@ impl Health {
             && self.phases().all(|p| !matches!(p, Phase::Failed(_)))
     }
 }
-struct Rounds {
-    scan: Phase,
-    relay: Option<Phase>,
-    inputs: Option<Phase>,
-    failures: BTreeMap<String, ErrorKind>,
-    overflow: bool,
-}
-impl Rounds {
-    fn record(&mut self, key: String, outcome: Result<(), ErrorKind>) {
-        match outcome {
-            Ok(()) => {
-                self.failures.remove(&key);
-            }
-            Err(error) if self.failures.len() < 1000 || self.failures.contains_key(&key) => {
-                self.failures.insert(key, error);
-            }
-            Err(_) => self.overflow = true,
-        }
-    }
-}
 /// A new process starts an observation window. Overflow remains failed until restart;
 /// successful work never erases failures for another target or scope.
 pub struct Readiness {
     domain: String,
     task: OnceLock<TaskStatus>,
     stopping: AtomicBool,
-    rounds: Mutex<Rounds>,
+    rounds: Mutex<Observations>,
+    relay_enabled: bool,
+    inputs_enabled: bool,
 }
 impl Readiness {
     pub fn new(domain: &str, relay: bool, inputs: bool) -> Self {
@@ -78,47 +60,32 @@ impl Readiness {
             domain: domain.into(),
             task: OnceLock::new(),
             stopping: AtomicBool::new(false),
-            rounds: Mutex::new(Rounds {
-                scan: Phase::Unobserved,
-                relay: relay.then_some(Phase::Unobserved),
-                inputs: inputs.then_some(Phase::Unobserved),
-                failures: BTreeMap::new(),
-                overflow: false,
-            }),
+            rounds: Mutex::new(Observations::default()),
+            relay_enabled: relay,
+            inputs_enabled: inputs,
         }
     }
     pub fn health(&self) -> Health {
-        let (recovery, relay, inputs, scan, unresolved_attempts, truncated) =
-            match self.rounds.lock() {
-                Ok(r) => (
-                    if r.overflow {
-                        Phase::Failed(ErrorKind::Invariant)
-                    } else {
-                        r.failures
-                            .values()
-                            .next()
-                            .copied()
-                            .map_or(r.scan, Phase::Failed)
-                    },
-                    r.relay,
-                    r.inputs,
-                    r.scan,
-                    r.failures.len() as u64,
-                    r.overflow,
-                ),
-                Err(_) => (
-                    Phase::Failed(ErrorKind::Invariant),
-                    None,
-                    None,
-                    Phase::Failed(ErrorKind::Invariant),
-                    0,
-                    true,
-                ),
-            };
+        let snapshot = self.rounds.lock().ok().map(|r| r.snapshot());
+        let recovery = snapshot.map_or(Phase::Failed(ErrorKind::Invariant), |s| s.recovery);
+        let scan = snapshot.map_or(Phase::Failed(ErrorKind::Invariant), |s| phase_scan(s.scan));
+        let relay = self
+            .relay_enabled
+            .then(|| snapshot.map_or(Phase::Failed(ErrorKind::Invariant), |s| phase_scan(s.relay)));
+        let inputs = self.inputs_enabled.then(|| {
+            snapshot.map_or(Phase::Failed(ErrorKind::Invariant), |s| {
+                phase_scan(s.inputs)
+            })
+        });
+        let unresolved_attempts = snapshot.map_or(0, |s| s.unresolved_attempts);
+        let truncated = snapshot.is_none_or(|s| s.truncated);
         Health {
             task: self.task.get().map(TaskStatus::current),
             stopping: self.stopping.load(Ordering::Acquire),
             recovery,
+            discovery: snapshot.map_or(Phase::Failed(ErrorKind::Invariant), |s| {
+                phase_scan(s.discovery)
+            }),
             scan,
             unresolved_attempts,
             truncated,
@@ -134,38 +101,33 @@ impl Readiness {
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::Release);
     }
-    pub fn relay(&self, outcome: Result<(), ErrorKind>) {
-        if let Ok(mut r) = self.rounds.lock()
-            && r.relay.is_some()
+    pub fn relay_round(&self, outcome: Result<(), ErrorKind>) {
+        if self.relay_enabled
+            && let Ok(mut r) = self.rounds.lock()
         {
-            r.relay = Some(phase(outcome));
+            r.relay_round(&self.domain, outcome, None);
         }
     }
-    pub fn inputs(&self, scope: &Scope, outcome: Result<(), ErrorKind>) {
-        if let Ok(mut r) = self.rounds.lock()
-            && r.inputs.is_some()
+    pub fn inputs(&self, target: &Target, outcome: Result<(), ErrorKind>) {
+        if self.inputs_enabled
+            && self.check(target.scope()).is_ok()
+            && let Ok(mut r) = self.rounds.lock()
         {
-            r.inputs = Some(phase(outcome));
-            r.record(format!("{}:inputs", scope.tenant()), outcome);
+            r.inputs(target, outcome, None);
         }
     }
-    /// Runner timeouts may drop the store future before it can return an observation.
+    /// Also records runner timeouts that drop a store future before it returns.
     pub fn observe(&self, event: &Observation) {
-        match event {
-            Observation::ScanFailed { scope, error } if scope.reconciler() == self.domain => {
-                self.scan_scope(scope, Err(error.kind()));
+        let scope = match event {
+            Observation::ScanFailed { scope, .. } => scope,
+            Observation::AttemptFailed { target, .. } | Observation::Deferred { target } => {
+                target.scope()
             }
-            Observation::AttemptFailed { target, error, .. }
-                if target.scope().reconciler() == self.domain =>
-            {
-                if let Ok(mut r) = self.rounds.lock() {
-                    r.record(
-                        format!("{}:{}", target.scope().tenant(), target.entity()),
-                        Err(error.kind()),
-                    );
-                }
-            }
-            _ => {}
+        };
+        if self.check(scope).is_ok()
+            && let Ok(mut r) = self.rounds.lock()
+        {
+            r.observe(event, None);
         }
     }
     fn check(&self, scope: &Scope) -> Result<(), rss_reconcile::Error> {
@@ -175,37 +137,39 @@ impl Readiness {
             Err(rss_reconcile::Error::new(ErrorKind::Invariant))
         }
     }
-    pub fn scan(&self, outcome: Result<(), ErrorKind>) {
+    pub fn discovery(&self, outcome: Result<(), ErrorKind>) {
         if let Ok(mut r) = self.rounds.lock() {
-            r.scan = phase(outcome);
+            r.discovery(&self.domain, outcome, None);
         }
     }
     pub fn scan_scope(&self, scope: &Scope, outcome: Result<(), ErrorKind>) {
-        if let Ok(mut r) = self.rounds.lock() {
-            r.scan = phase(outcome);
-            r.record(format!("scope:{}:scan", scope.tenant()), outcome);
+        if self.check(scope).is_ok()
+            && let Ok(mut r) = self.rounds.lock()
+        {
+            r.scan(scope, outcome, None);
         }
     }
     pub fn relay_scope(&self, scope: &Scope, epoch: i64, outcome: Result<(), ErrorKind>) {
-        if let Ok(mut r) = self.rounds.lock()
-            && r.relay.is_some()
+        if self.relay_enabled
+            && self.check(scope).is_ok()
+            && let Ok(mut r) = self.rounds.lock()
         {
-            r.relay = Some(phase(outcome));
-            r.record(format!("scope:{}:relay:{epoch}", scope.tenant()), outcome);
+            r.relay(scope, epoch, outcome, None);
         }
     }
     fn settled(&self, target: &Target, completion: Completion) {
-        if matches!(completion, Completion::Converged | Completion::Reobserve(_))
-            && let Ok(mut r) = self.rounds.lock()
-        {
-            r.failures
-                .remove(&format!("{}:{}", target.scope().tenant(), target.entity()));
+        if let Ok(mut r) = self.rounds.lock() {
+            r.settled(target, completion);
         }
     }
 }
-fn phase(outcome: Result<(), ErrorKind>) -> Phase {
-    match outcome {
-        Ok(()) => Phase::Healthy,
-        Err(kind) => Phase::Failed(kind),
+fn phase_scan(scan: Option<Scan>) -> Phase {
+    match scan {
+        None => Phase::Unobserved,
+        Some(Scan { failure: None, .. }) => Phase::Healthy,
+        Some(Scan {
+            failure: Some(kind),
+            ..
+        }) => Phase::Failed(kind),
     }
 }

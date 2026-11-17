@@ -1,5 +1,6 @@
 //! Product composition: Inventory owns facts, Group owns predicates and membership,
 //! Compliance owns assessments. Existing automation owns all task progress.
+mod discovery;
 use crate::authorization::{Permission, Snapshot, context::AuthorizedPrincipal};
 use crate::transaction::*;
 
@@ -25,7 +26,7 @@ pub use model::*;
 pub struct Compliance {
     storage: rss_transactional_messaging::fence::StorageIdentity,
     read_pool: sqlx::PgPool,
-    worker_health: std::sync::Mutex<crate::worker_health::ObservationState>,
+    worker_health: std::sync::Mutex<rss_mdm_recovery_observation::Observations>,
     task_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
@@ -434,10 +435,10 @@ fn authorize(
 
 impl Compliance {
     pub fn worker_status(&self) -> crate::WorkerStatus {
-        self.worker_health
-            .lock()
-            .expect("worker observation")
-            .status(self.task_status.get().map(rss_runtime::TaskStatus::current))
+        crate::worker_health::status(
+            &self.worker_health.lock().expect("worker observation"),
+            self.task_status.get().map(rss_runtime::TaskStatus::current),
+        )
     }
     pub async fn queue_health(
         &self,
@@ -469,7 +470,7 @@ fn query_error(error: rss_mdm_query::Error) -> Error {
 }
 
 mod worker_health;
-pub use worker_health::{WorkerAttempt, WorkerScan, WorkerStatus};
+pub use worker_health::WorkerStatus;
 
 /// Fresh Compliance storage is provided by its PostgreSQL owner.
 pub const INSTALL_SQL: &str = rss_mdm_compliance_postgres::MIGRATION_SQL;

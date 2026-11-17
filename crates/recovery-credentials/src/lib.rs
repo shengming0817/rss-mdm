@@ -1,6 +1,7 @@
 //! Product recovery material ownership; execution and platform channels retain their lifecycles.
 //! ref: rust-openssl openssl-v0.10.81 openssl/src/cms.rs.
 pub mod directory;
+mod discovery;
 pub mod filevault;
 mod filevault_service;
 pub use filevault_service::{FilevaultService, Link as FilevaultLink, filevault_operation_receipt};

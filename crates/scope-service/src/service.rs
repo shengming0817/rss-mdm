@@ -17,7 +17,7 @@ pub struct Scopes {
     pub(crate) groups: Arc<rss_mdm_group_postgres::GroupSources>,
     pub(crate) projection: crate::projection::ScopeProjection,
     pub(crate) dependents: Arc<dyn sources::ScopeDependents>,
-    pub(crate) runner_health: std::sync::Mutex<crate::health::RunnerObservation>,
+    pub(crate) runner_health: std::sync::Mutex<rss_mdm_recovery_observation::Observations>,
     pub(crate) task: std::sync::OnceLock<rss_runtime::TaskStatus>,
 }
 pub struct Dependencies {

@@ -378,7 +378,7 @@ impl DurableStore for GroupWork {
             .claim_due(scope, limit, scan_budget, lease, control)
             .await;
         self.groups
-            .record_scan(result.as_ref().err().map(|e| e.kind()));
+            .record_scan(scope, result.as_ref().err().map(|e| e.kind()));
         result
     }
     async fn renew<T: Timer>(
@@ -472,12 +472,28 @@ impl GroupWork {
                 if cancel.is_cancelled() {
                     return Ok(());
                 }
-                let tenants: Vec<Uuid> =
-                    sqlx::query_scalar("SELECT tenant_id FROM mdm_assets.group_work_scopes($1)")
+                let discovered = tokio::select! { biased;
+                    () = cancel.cancelled() => return Ok(()),
+                    result = tokio::time::timeout(Duration::from_secs(5), sqlx::query_scalar("SELECT tenant_id FROM mdm_assets.group_work_scopes($1)")
                         .bind(after)
-                        .fetch_all(&self.groups.read_pool)
-                        .await
-                        .map_err(rss_runtime::ShutdownError::new)?;
+                        .fetch_all(&self.groups.read_pool)) =>
+                        result.map_err(|_| rss_reconcile::ErrorKind::Deadline)
+                            .and_then(|page| page.map_err(|error| crate::discovery::classify(&error))),
+                };
+                if cancel.is_cancelled() { return Ok(()) }
+                self.groups.record_discovery(discovered.as_ref().map(|_| ()).map_err(|kind| *kind));
+                let tenants: Vec<Uuid> = match discovered {
+                    Ok(page) => page,
+                    Err(rss_reconcile::ErrorKind::Transient | rss_reconcile::ErrorKind::Deadline) => {
+                        // A failed page is not empty. Keep its cursor and rate-limit retries even under wake storms.
+                        tokio::select! { biased;
+                            () = cancel.cancelled() => return Ok(()),
+                            () = tokio::time::sleep(Duration::from_secs(5)) => {},
+                        }
+                        continue;
+                    }
+                    Err(kind) => return Err(rss_runtime::ShutdownError::new(rss_reconcile::Error::new(kind))),
+                };
                 if tenants.is_empty() {
                     after = None;
                     if std::mem::take(&mut worked) {

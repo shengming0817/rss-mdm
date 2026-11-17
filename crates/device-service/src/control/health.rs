@@ -149,7 +149,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
             let healthy = result.is_ok()
                 && matches!(completion, Completion::Converged | Completion::Reobserve(_));
             self.0.readiness.inputs(
-                claim.target().scope(),
+                claim.target(),
                 if healthy {
                     Ok(())
                 } else {

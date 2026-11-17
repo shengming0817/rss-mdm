@@ -271,10 +271,31 @@ impl DeviceWork {
             let mut worked = false;
             loop {
                 if stop.is_cancelled(){return Ok(())}
-                let page:Result<Vec<Uuid>,sqlx::Error>=sqlx::query_scalar("SELECT tenant_id FROM mdm_devices.association_work_scopes($1)").bind(after).fetch_all(&self.read_pool).await;
-                let tenants=match page {
-                    Ok(tenants)=>{if let Ok(mut failures)=self.owner.worker_failures.lock(){failures.remove("!discovery");} self.owner.worker_observed.store(true,std::sync::atomic::Ordering::Release);tenants},
-                    Err(_)=>{self.owner.record_worker_failure("!discovery".into(),ErrorKind::Transient);Vec::new()},
+                let discovered = tokio::select! { biased;
+                    () = stop.cancelled() => return Ok(()),
+                    result = tokio::time::timeout(Duration::from_secs(5), sqlx::query_scalar("SELECT tenant_id FROM mdm_devices.association_work_scopes($1)").bind(after).fetch_all(&self.read_pool)) =>
+                        result.map_err(|_| rss_reconcile::ErrorKind::Deadline)
+                            .and_then(|page| page.map_err(|error| crate::discovery::classify(&error))),
+                };
+                if stop.is_cancelled() { return Ok(()) }
+                match &discovered {
+                    Ok(_) => {
+                        if let Ok(mut failures) = self.owner.worker_failures.lock() { failures.remove("!discovery"); }
+                        self.owner.worker_observed.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                    Err(kind) => self.owner.record_worker_failure("!discovery".into(), *kind),
+                }
+                let tenants: Vec<Uuid> = match discovered {
+                    Ok(page) => page,
+                    Err(rss_reconcile::ErrorKind::Transient | rss_reconcile::ErrorKind::Deadline) => {
+                        // A failed page is not empty. Keep its cursor and rate-limit retries even under wake storms.
+                        tokio::select! { biased;
+                            () = stop.cancelled() => return Ok(()),
+                            () = tokio::time::sleep(Duration::from_secs(5)) => {},
+                        }
+                        continue;
+                    }
+                    Err(kind) => return Err(rss_runtime::ShutdownError::new(rss_reconcile::Error::new(kind))),
                 };
                 if tenants.is_empty(){after=None;
                     if std::mem::take(&mut worked) { continue; }

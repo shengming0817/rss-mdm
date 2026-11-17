@@ -699,11 +699,42 @@ impl PolicyWork {
                     "SELECT tenant_id FROM rss_da.policy_work_scopes($1)"
                 }
             };
-            let tenants: Vec<Uuid> = sqlx::query_scalar(query)
-                .bind(after)
-                .fetch_all(&self.read_pool)
-                .await
-                .map_err(rss_runtime::ShutdownError::new)?;
+            let discovered = tokio::select! { biased;
+                () = cancel.cancelled() => return Ok(()),
+                result = tokio::time::timeout(Duration::from_secs(5), sqlx::query_scalar(query)
+            .bind(after)
+            .fetch_all(&self.read_pool)) =>
+                    result.map_err(|_| rss_reconcile::ErrorKind::Deadline)
+                        .and_then(|page| page.map_err(|error| crate::discovery::classify(&error))),
+            };
+            if cancel.is_cancelled() {
+                return Ok(());
+            }
+            let domain = if events {
+                jobs::event_domain(self.profile())
+            } else {
+                jobs::domain(self.profile())
+            };
+            self.service.record_discovery(
+                domain,
+                discovered.as_ref().map(|_| ()).map_err(|kind| *kind),
+            );
+            let tenants: Vec<Uuid> = match discovered {
+                Ok(page) => page,
+                Err(rss_reconcile::ErrorKind::Transient | rss_reconcile::ErrorKind::Deadline) => {
+                    // A failed page is not empty. Keep its cursor and rate-limit retries even under wake storms.
+                    tokio::select! { biased;
+                        () = cancel.cancelled() => return Ok(()),
+                        () = tokio::time::sleep(Duration::from_secs(5)) => {},
+                    }
+                    continue;
+                }
+                Err(kind) => {
+                    return Err(rss_runtime::ShutdownError::new(rss_reconcile::Error::new(
+                        kind,
+                    )));
+                }
+            };
             if tenants.is_empty() {
                 after = None;
                 if std::mem::take(&mut worked) {
