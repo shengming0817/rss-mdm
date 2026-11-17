@@ -107,7 +107,10 @@ GRANT SELECT,INSERT ON mdm_telemetry.observation_receipts TO mdm_telemetry_runti
 
 -- App-owned fixed installation/admission identity, shared by every tenant replica.
 CREATE TABLE mdm_telemetry.storage_binding (
- expected_epoch bigint NOT NULL CHECK(expected_epoch>0),tenant_id uuid PRIMARY KEY,binding bytea NOT NULL CHECK(octet_length(binding)=32)
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),tenant_id uuid PRIMARY KEY,binding bytea NOT NULL CHECK(octet_length(binding)=32),
+ resource_id uuid, revision bigint NOT NULL DEFAULT 0 CHECK(revision>=0), operation_id uuid,
+ material bytea, CHECK((revision=0 AND resource_id IS NULL AND operation_id IS NULL AND material IS NULL)
+ OR (revision>0 AND resource_id IS NOT NULL AND operation_id IS NOT NULL))
 );
 ALTER TABLE mdm_telemetry.storage_binding ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_telemetry.storage_binding FORCE ROW LEVEL SECURITY;

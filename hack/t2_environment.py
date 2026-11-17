@@ -86,6 +86,8 @@ def prepared(root, modules, binary, command, resources):
                         fresh.reset()
                     isolated.callback(fresh.reset)
                     fresh.up()
+                    from t2_telemetry import providers as telemetry_providers
+                    private(directory/'telemetry-providers.json', isolated.enter_context(telemetry_providers(root, fresh)))
                     values[profile] = {'postgres': dict(host='localhost', port=fresh.port(), name='postgres', user='postgres',
                         ca_file=str(fresh.root/'ca.crt'), password_file=str(fresh.root/'pg/pg-password'))}
                     resources.append(dict(kind='postgres', identity=fresh.container(), profile=profile, action='created'))

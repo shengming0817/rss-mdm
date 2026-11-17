@@ -34,7 +34,6 @@ pub struct ClickHouse {
 pub struct Request {
     pub operation_id: Uuid,
     pub directory: PathBuf,
-    pub tenant: String,
     pub configuration: Config,
     /// Already created empty database, accessed only by the deployment operator.
     pub administrator: Database,
@@ -63,17 +62,7 @@ fn same_database(a: &Database, b: &Database) -> bool {
     a.host == b.host && a.port == b.port && a.name == b.name
 }
 impl Request {
-    pub(in crate::installation) fn validate(&self) -> Result<rss_request_context::TenantId> {
-        let tenant =
-            rss_request_context::TenantId::parse(&self.tenant).map_err(|_| Error::Input)?;
-        if self
-            .configuration
-            .tenant()
-            .map_err(|_| Error::Input)?
-            .is_some_and(|owner| owner != tenant)
-        {
-            return Err(Error::Input);
-        }
+    pub(in crate::installation) fn validate(&self) -> Result<()> {
         self.configuration.validate().map_err(|_| Error::Input)?;
         identifier(&self.owner)?;
         identifier(&self.configuration.database().user)?;
@@ -125,7 +114,7 @@ impl Request {
         {
             return Err(Error::Input);
         }
-        Ok(tenant)
+        Ok(())
     }
 }
 /// Install once, recover the original transaction identity, then admit the actual runtime roles.
@@ -675,133 +664,5 @@ pub(in crate::installation) async fn restore_roles(input: &Request, identity: Uu
 }
 
 /// Add one tenant-scoped ClickHouse reader to an existing admitted installation.
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TenantRequest {
-    pub installation: Request,
-    pub operation_id: Uuid,
-    pub tenant: String,
-    pub reader: Credential,
-    pub cursor_key_file: PathBuf,
-}
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TenantReceipt {
-    pub operation_id: Uuid,
-    pub tenant: String,
-    pub configuration: Config,
-}
-pub async fn prepare_tenant(input: TenantRequest) -> Result<TenantReceipt> {
-    tokio::time::timeout(
-        std::time::Duration::from_secs(180),
-        prepare_tenant_inner(input),
-    )
-    .await
-    .map_err(|_| Error::Storage)?
-}
-async fn prepare_tenant_inner(input: TenantRequest) -> Result<TenantReceipt> {
-    input.installation.validate()?;
-    rss_request_context::TenantId::parse(&input.tenant).map_err(|_| Error::Input)?;
-    if input.operation_id.is_nil() || input.tenant == input.installation.tenant {
-        return Err(Error::Input);
-    }
-    identifier(&input.reader.user)?;
-    let original = Journal::open(&input.installation.directory)?;
-    let frozen: serde_json::Value = original.load("request.json")?.ok_or(Error::Corrupt)?;
-    if frozen != serde_json::to_value(&input.installation).map_err(|_| Error::Input)? {
-        return Err(Error::Conflict);
-    }
-    let installation: Receipt = original.load("receipt.json")?.ok_or(Error::Corrupt)?;
-    if !installation.admitted {
-        return Err(Error::Conflict);
-    }
-    let mut c = PgConnection::connect_with(
-        &input
-            .installation
-            .administrator
-            .options()
-            .map_err(|_| Error::Input)?,
-    )
-    .await
-    .map_err(|_| Error::Storage)?;
-    let actual: (Uuid, Vec<u8>) =
-        sqlx::query_as("SELECT id,binding FROM public.mdm_telemetry_installation")
-            .fetch_one(&mut c)
-            .await
-            .map_err(|_| Error::Storage)?;
-    c.close().await.map_err(|_| Error::Storage)?;
-    if actual
-        != (
-            installation.installation_id,
-            Sha256::digest(serde_json::to_vec(&frozen).map_err(|_| Error::Input)?).to_vec(),
-        )
-    {
-        return Err(Error::Conflict);
-    }
-    let mut target = input.installation.clone();
-    let Storage::ClickHouse {
-        reader,
-        writer,
-        maintenance,
-        ..
-    } = &mut target.configuration.backend
-    else {
-        return Err(Error::Input);
-    };
-    if input.reader.user == reader.user
-        || input.reader.user == writer.user
-        || input.reader.user == maintenance.user
-    {
-        return Err(Error::Input);
-    }
-    *reader = input.reader.clone();
-    target.tenant = input.tenant.clone();
-    target.operation_id = input.operation_id;
-    target.configuration.cursor_key_file = input.cursor_key_file.clone();
-    target.configuration.validate().map_err(|_| Error::Input)?;
-    let journal = Journal::open(
-        &input
-            .installation
-            .directory
-            .join(format!("tenant-{}", input.operation_id)),
-    )?;
-    let request = serde_json::to_value(&input).map_err(|_| Error::Input)?;
-    if let Some(previous) = journal.load::<serde_json::Value>("request.json")? {
-        if previous != request {
-            return Err(Error::Conflict);
-        }
-    } else {
-        let exists = clickhouse::execute(
-            &target,
-            "reserve-reader",
-            &format!(
-                "SELECT count() FROM system.users WHERE name='{}' FORMAT TabSeparated",
-                input.reader.user
-            ),
-        )
-        .await?;
-        if exists.trim() != "0" {
-            return Err(Error::Conflict);
-        }
-        journal.save("request.json", &request)?;
-    }
-    clickhouse::provision_users(&target).await?;
-    let backend = target
-        .configuration
-        .open_backend()
-        .await
-        .map_err(|_| Error::Storage)?;
-    let deadline = rss_request_context::Deadline::from_timeout(
-        &rss_mdm_telemetry_service::backend::SystemClock,
-        std::time::Duration::from_secs(10),
-    )
-    .map_err(|_| Error::Storage)?;
-    backend.close(deadline).await.map_err(|_| Error::Storage)?;
-    let receipt = TenantReceipt {
-        operation_id: input.operation_id,
-        tenant: input.tenant,
-        configuration: target.configuration,
-    };
-    journal.save("receipt.json", &receipt)?;
-    Ok(receipt)
-}
+mod tenant;
+pub use tenant::{TenantRequest, prepare_tenant};

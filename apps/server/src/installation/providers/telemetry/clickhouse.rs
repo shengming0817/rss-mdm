@@ -93,7 +93,6 @@ fn user(value: &str) -> Result<String> {
 }
 pub(super) async fn install(input: &Request, journal: &Journal) -> Result<()> {
     let Storage::ClickHouse {
-        reader,
         writer,
         maintenance,
         ..
@@ -103,12 +102,7 @@ pub(super) async fn install(input: &Request, journal: &Journal) -> Result<()> {
     };
     let (_, _, bootstrap) = configuration(input)?;
     let mut names = std::collections::BTreeSet::new();
-    for name in [
-        &reader.user,
-        &writer.user,
-        &maintenance.user,
-        &bootstrap.installer.user,
-    ] {
+    for name in [&writer.user, &maintenance.user, &bootstrap.installer.user] {
         user(name)?;
         if !names.insert(name) {
             return Err(Error::Input);
@@ -138,7 +132,7 @@ pub(super) async fn install(input: &Request, journal: &Journal) -> Result<()> {
         {
             return Err(Error::Conflict);
         }
-        for credential in [reader, writer, maintenance] {
+        for credential in [writer, maintenance] {
             if execute(
                 input,
                 &format!("reserve-user-{}", credential.user),
@@ -183,11 +177,10 @@ pub(super) async fn install(input: &Request, journal: &Journal) -> Result<()> {
             return Err(Error::Conflict);
         }
     }
-    provision_users(input).await
+    provision_users(input, true).await
 }
-pub(in crate::installation) async fn provision_users(input: &Request) -> Result<()> {
+pub(in crate::installation) async fn provision_users(input: &Request, writes: bool) -> Result<()> {
     let Storage::ClickHouse {
-        reader,
         writer,
         maintenance,
         ..
@@ -196,7 +189,7 @@ pub(in crate::installation) async fn provision_users(input: &Request) -> Result<
         return Err(Error::Input);
     };
     let (_, _, bootstrap) = configuration(input)?;
-    for credential in [reader, writer, maintenance] {
+    for credential in [writer, maintenance] {
         let password =
             crate::config::secret(&credential.password_file).map_err(|_| Error::Input)?;
         execute(
@@ -210,14 +203,12 @@ pub(in crate::installation) async fn provision_users(input: &Request) -> Result<
         )
         .await?;
     }
-    let reader_policy = reader.user.clone();
     let maintenance_policy = maintenance.user.clone();
-    let reader = user(&reader.user)?;
     let writer = user(&writer.user)?;
     let maintenance = user(&maintenance.user)?;
     let installer = user(&bootstrap.installer.user)?;
     let mut grants = vec![
-        format!("GRANT SELECT ON rss_ts_ch.installation TO {reader},{writer},{maintenance}"),
+        format!("GRANT SELECT ON rss_ts_ch.installation TO {writer},{maintenance}"),
         format!("GRANT CREATE TEMPORARY TABLE ON *.* TO {writer}"),
         format!("GRANT SELECT ON rss_ts_ch.active_attempts TO {writer}"),
         format!("GRANT SELECT ON rss_ts_ch.guard_identity TO {writer}"),
@@ -228,17 +219,89 @@ pub(in crate::installation) async fn provision_users(input: &Request) -> Result<
     ];
     for table in ["raw", "summaries"] {
         grants.push(format!(
-            "GRANT SELECT ON rss_ts_ch.{table} TO {reader},{maintenance}"
+            "GRANT SELECT ON rss_ts_ch.{table} TO {maintenance}"
         ));
-        grants.push(format!("GRANT INSERT ON rss_ts_ch.{table} TO {writer}"));
-        grants.push(format!(
-            "GRANT ALTER DELETE ON rss_ts_ch.{table} TO {maintenance}"
-        ));
-        grants.push(format!("CREATE ROW POLICY IF NOT EXISTS telemetry_reader_{reader_policy}_{table} ON rss_ts_ch.{table} USING tenant={} TO {reader}",literal(&input.tenant)));
+        if writes {
+            grants.push(format!("GRANT INSERT ON rss_ts_ch.{table} TO {writer}"));
+            grants.push(format!(
+                "GRANT ALTER DELETE ON rss_ts_ch.{table} TO {maintenance}"
+            ));
+        }
         grants.push(format!("CREATE ROW POLICY IF NOT EXISTS telemetry_maintenance_{maintenance_policy}_{table} ON rss_ts_ch.{table} USING 1 TO {maintenance},{installer}"));
     }
     for (index, grant) in grants.iter().enumerate() {
         execute(input, &format!("grant-{index}"), grant).await?;
     }
+    Ok(())
+}
+
+pub(super) async fn reader_exists(input: &Request, name: &str) -> Result<bool> {
+    let sql = format!(
+        "SELECT count() FROM system.users WHERE name={} FORMAT TabSeparated",
+        literal(name)
+    );
+    match execute(input, "reader-exists", &sql).await?.trim() {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        _ => Err(Error::Corrupt),
+    }
+}
+/// Establish policies before granting table access. The caller reserves a new login
+/// or verifies its durable ownership before replay, rotation and restore.
+pub(in crate::installation) async fn provision_reader(
+    input: &Request,
+    tenant: rss_request_context::TenantId,
+    material: &rss_mdm_telemetry_service::selection::Reader,
+) -> Result<()> {
+    let name = user(&material.user)?;
+    let Some(password) = material.password.as_ref() else {
+        execute(
+            input,
+            "retire-reader",
+            &format!("DROP USER IF EXISTS {name}"),
+        )
+        .await?;
+        for table in ["raw", "summaries"] {
+            execute(
+                input,
+                &format!("retire-policy-{table}"),
+                &format!(
+                    "DROP ROW POLICY IF EXISTS telemetry_reader_{}_{table} ON rss_ts_ch.{table}",
+                    material.user
+                ),
+            )
+            .await?;
+        }
+        return Ok(());
+    };
+    execute(
+        input,
+        "create-reader",
+        &format!(
+            "CREATE USER IF NOT EXISTS {name} IDENTIFIED WITH sha256_password BY {}",
+            literal(password)
+        ),
+    )
+    .await?;
+    for table in ["raw", "summaries"] {
+        execute(input,&format!("reader-policy-{table}"),&format!("CREATE ROW POLICY IF NOT EXISTS telemetry_reader_{}_{table} ON rss_ts_ch.{table} USING tenant={} TO {name}",material.user,literal(&tenant.to_string()))).await?;
+    }
+    for table in ["installation", "raw", "summaries"] {
+        execute(
+            input,
+            &format!("reader-select-{table}"),
+            &format!("GRANT SELECT ON rss_ts_ch.{table} TO {name}"),
+        )
+        .await?;
+    }
+    execute(
+        input,
+        "reader-password",
+        &format!(
+            "ALTER USER {name} IDENTIFIED WITH sha256_password BY {}",
+            literal(password)
+        ),
+    )
+    .await?;
     Ok(())
 }

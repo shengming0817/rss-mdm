@@ -553,7 +553,9 @@ ClickHouse 使用固定 HTTPS origin 和显式 CA，运行读、写、维护及�
 
 分区准备及 dedicated 原生列存转换使用 `maintain-telemetry-storage`，传入原安装请求和固定维护操作 UUID。操作要求停写，并核对原安装身份；返回 `more` 时沿用原请求继续，`unknown` 时不得生成新操作身份。该入口不提供在线后端迁移。
 
-共享 ClickHouse 安装增加租户时，使用 `prepare-telemetry-tenant` 提供原安装请求、新操作 UUID、租户身份、独立 reader 凭据及游标密钥。该入口核对原安装身份，为新 reader 建立精确租户行策略，并在实际准入后返回该租户的运行配置。不得复用另一租户的 reader 或把新租户伪装成首次安装。联合备份须同时包含所有使用该安装的宿主配置和凭据。
+新租户使用已装配的共享后端时，部署管理员运行 `prepare-telemetry-tenant`。输入包含原产品安装输入（`product`）、原物理安装请求（`installation`）、`tenant`、`operationId`、`expectedRevision` 和 `action`。首次选择的 revision 为 0。SharedRls 使用 `{"kind":"select"}`。ClickHouse 使用 `{"kind":"reader","password_file":"…","cursor_key_file":"…"}`，每个租户使用独立密码文件与 32 字节游标密钥。部署工具根据安装和租户生成 reader 名并配置行策略。运行配置只包含物理资源；ClickHouse 配置的 `backend` 提供 control、endpoint、CA、writer、maintenance 和扫描预算，省略顶层 `cursor_key_file`。PostgreSQL 系列继续提供该文件。
+
+回执中的 `materialRevision` 确认领域选择已保存。用该租户的管理员会话查看运行诊断中的遥测存储，再执行一次业务读写验证接入。运行进程会在原安装上准入最新 reader。轮换时沿用原游标密钥、提供新密码和当前 revision；退役使用 `{"kind":"retire"}`。重试使用同一个操作 ID 和原私密输入。已有批次、定义进度或维护任务的租户继续使用原安装。
 
 主业务库、普通遥测 PostgreSQL 和 Timescale profile 统一采用 PG17；普通 PostgreSQL 共用 `postgres` 固定镜像，Timescale 固定为 `2.30.2-pg17`。联合备份统一由安装器携带的 PG17 `pg_dump`/`pg_restore` 执行。缺少或不匹配的客户端明确失败。ClickHouse 的备份磁盘和配置恢复仍遵循原 UID/GID 与权限约束，部署时应使其与恢复执行身份兼容，不能依靠恢复命令隐式 chown。
 

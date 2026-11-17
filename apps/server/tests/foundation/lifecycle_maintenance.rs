@@ -124,7 +124,7 @@ impl Gateway {
         Ok(Self { address, task })
     }
 }
-struct Running {
+pub(super) struct Running {
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<std::result::Result<(), crate::ProcessError>>,
 }
@@ -140,7 +140,7 @@ impl Running {
         clippy::disallowed_methods,
         reason = "integration supplies the production monotonic clock"
     )]
-    async fn open(runtime: &Value) -> Result<Self> {
+    pub(super) async fn open(runtime: &Value) -> Result<Self> {
         let config: crate::config::Config = serde_json::from_value(runtime.clone())?;
         let address = config.listen;
         let (stop, stopped) = tokio::sync::oneshot::channel();
@@ -165,7 +165,7 @@ impl Running {
         }
         Ok(running)
     }
-    async fn close(mut self) -> Result<()> {
+    pub(super) async fn close(mut self) -> Result<()> {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
@@ -173,7 +173,7 @@ impl Running {
         Ok(())
     }
 }
-fn desired(root: &Path, host: Uuid) -> Result<Value> {
+pub(super) fn desired(root: &Path, host: Uuid) -> Result<Value> {
     Ok(serde_json::from_slice(&std::fs::read(
         root.join("installation")
             .join(format!("rss-mdm-{}", host.simple()))

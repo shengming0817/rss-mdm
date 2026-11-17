@@ -373,6 +373,8 @@ journal 必须保留：新布局使用新建实例，不能修改旧安装账本
 
 标准 Compose 的 `maintenance` 在启动及每小时调用 `maintain-default-telemetry`，使用原安装状态准备 UTC 当天起未来 8 天的日分区，并覆盖前一天的补传窗口。手动恢复使用同一安装输入：`rss-mdm maintain-default-telemetry --config <installation-input.json>`（具体参数以二进制 `--help` 为准）。重复调用复用当天的操作身份及数据库回执，不安装新后端、不改变保留策略。
 
+可选遥测联合备份按物理安装提供一份原安装请求。保管产品控制库、native protection 密钥、各安装的控制库与 ClickHouse 原生备份。恢复工具从产品库读取各租户当前材料版本，在原安装身份上重建已启用的 reader，逐租户重新准入。
+
 准备分区允许现有 runtime 连接存在。创建分区仍需父表锁；锁等待有界，超时事务回滚，释放阻塞锁后重试原操作即可。维护失败时检查 PostgreSQL 锁、安装状态卷和凭据；不要给业务 runtime 授予 DDL 权限。物理 chunk 转换仍须停写，逻辑保留沿用原保留执行器。
 
 `initialization_authorization` 表示原账户授权依据失效；`initialization_content` 表示内容供应未就绪；`initialization_conflict` 表示未完成对象已发生变更；`initialization_telemetry_backend` 表示遥测依赖缺失。服务每分钟恢复已保存意图，内容部分上传和未知提交通过原 upload/operation 回执继续。先恢复依赖或处理已变更对象，再观察运行诊断；不删除基线行或回执来重置部署。

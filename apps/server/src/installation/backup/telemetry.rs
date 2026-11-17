@@ -38,45 +38,23 @@ pub(super) fn validate(frozen: &Frozen) -> Result<()> {
     {
         for config in configured(&frozen.runtime)? {
             let key = config.resource_id;
-            required.insert(key);
+            if !required.insert(key) {
+                return Err(Error::Conflict);
+            }
             let profile = frozen
                 .request
                 .telemetry
                 .iter()
                 .find(|p| p.configuration.resource_id == key)
                 .ok_or(Error::Input)?;
-            if coordinate(config.database()) != coordinate(profile.configuration.database()) {
+            if config.configuration_binding().map_err(|_| Error::Corrupt)?
+                != profile
+                    .configuration
+                    .configuration_binding()
+                    .map_err(|_| Error::Input)?
+                || config.database().user != profile.configuration.database().user
+            {
                 return Err(Error::Conflict);
-            }
-            match (&config.backend, &profile.configuration.backend) {
-                (Storage::Postgres { .. }, Storage::Postgres { .. }) => {}
-                (
-                    Storage::TimescaleShared {
-                        chunk_micros: a, ..
-                    },
-                    Storage::TimescaleShared {
-                        chunk_micros: b, ..
-                    },
-                ) if a == b => {}
-                (
-                    Storage::TimescaleDedicated {
-                        tenant: a,
-                        chunk_micros: ac,
-                        resolutions: ar,
-                        ..
-                    },
-                    Storage::TimescaleDedicated {
-                        tenant: b,
-                        chunk_micros: bc,
-                        resolutions: br,
-                        ..
-                    },
-                ) if a == b && ac == bc && ar == br => {}
-                (
-                    Storage::ClickHouse { endpoint: a, .. },
-                    Storage::ClickHouse { endpoint: b, .. },
-                ) if a == b => {}
-                _ => return Err(Error::Conflict),
             }
         }
     }
@@ -88,26 +66,6 @@ pub(super) fn validate(frozen: &Frozen) -> Result<()> {
 fn ch_user(value: &str) -> Result<String> {
     crate::telemetry::identifier(value).map_err(|_| Error::Input)?;
     Ok(format!("`{value}`"))
-}
-async fn ch_fence_all(frozen: &Frozen, profile: &StorageRequest, enable: bool) -> Result<()> {
-    if profile.clickhouse.is_none() {
-        return Ok(());
-    }
-    for config in configured(&frozen.runtime)? {
-        if coordinate(config.database()) == coordinate(profile.configuration.database())
-            && matches!(config.backend, Storage::ClickHouse { .. })
-        {
-            let mut current = profile.clone();
-            current.tenant = config
-                .tenant()
-                .map_err(|_| Error::Corrupt)?
-                .ok_or(Error::Corrupt)?
-                .to_string();
-            current.configuration = config;
-            ch_fence(&current, enable).await?;
-        }
-    }
-    Ok(())
 }
 async fn ch_fence(profile: &StorageRequest, enable: bool) -> Result<()> {
     let Storage::ClickHouse {
@@ -176,7 +134,7 @@ pub(super) async fn fence(frozen: &Frozen, journal: &Journal) -> Result<()> {
                 return Err(Error::Conflict);
             }
         }
-        ch_fence_all(frozen, profile, true).await?;
+        ch_fence(profile, true).await?;
         connection_fence(&mut c, &storage, true).await?;
         if let Some(ch) = &profile.clickhouse {
             // ClickHouse retains read-only PostgreSQL engine connections after its
@@ -309,7 +267,7 @@ pub(super) async fn release(frozen: &Frozen, journal: &Journal) -> Result<()> {
 async fn release_inner(frozen: &Frozen, journal: &Journal) -> Result<()> {
     for (index, profile) in frozen.request.telemetry.iter().enumerate() {
         let storage = target(journal, index)?;
-        ch_fence_all(frozen, profile, false).await?;
+        ch_fence(profile, false).await?;
         let mut c = sqlx::PgConnection::connect_with(
             &profile.administrator.options().map_err(|_| Error::Input)?,
         )
@@ -369,7 +327,7 @@ async fn restore_profile(
     };
     c.close().await.map_err(|_| Error::Storage)?;
     if let Some(instance) = control_instance {
-        restore_clickhouse(input, frozen, journal, index, profile, &storage, &instance).await?;
+        restore_clickhouse(input, frozen, index, profile, &storage, &instance).await?;
     }
     Ok(())
 }
@@ -410,7 +368,6 @@ async fn restore_postgres_data(
 async fn restore_clickhouse(
     input: &Restore,
     frozen: &Frozen,
-    _journal: &Journal,
     index: usize,
     profile: &StorageRequest,
     storage: &Journal,
@@ -474,32 +431,93 @@ async fn restore_clickhouse(
         )
         .await?;
     }
-    for config in configured(&frozen.runtime)? {
-        if coordinate(config.database()) == coordinate(profile.configuration.database())
-            && matches!(config.backend, Storage::ClickHouse { .. })
-        {
-            let mut selected = profile.clone();
-            selected.tenant = config
-                .tenant()
+    clickhouse::provision_users(profile, false).await?;
+    ch_fence(profile, true).await?;
+    qualify_readers(
+        frozen,
+        &profile.configuration,
+        ReaderOperation::Restore(profile),
+    )
+    .await
+}
+enum ReaderOperation<'a> {
+    Restore(&'a StorageRequest),
+    Admit(&'a rss_timeseries_clickhouse::ChOwner<rss_mdm_telemetry_service::backend::SystemClock>),
+}
+fn deadline() -> Result<rss_request_context::Deadline> {
+    rss_request_context::Deadline::from_timeout(
+        &rss_mdm_telemetry_service::backend::SystemClock,
+        std::time::Duration::from_secs(10),
+    )
+    .map_err(|_| Error::Storage)
+}
+async fn qualify_readers(
+    frozen: &Frozen,
+    physical: &crate::telemetry::Config,
+    operation: ReaderOperation<'_>,
+) -> Result<()> {
+    let admin = administrator(&frozen.request.installation)?;
+    let config: crate::config::Config =
+        serde_json::from_value(frozen.runtime.clone()).map_err(|_| Error::Corrupt)?;
+    let key = config.native_protector().map_err(|_| Error::Corrupt)?;
+    let binding = physical
+        .configuration_binding()
+        .map_err(|_| Error::Corrupt)?;
+    let mut c = sqlx::PgConnection::connect_with(&admin.options().map_err(|_| Error::Input)?)
+        .await
+        .map_err(|_| Error::Storage)?;
+    for id in &frozen.tenants {
+        let tenant =
+            rss_request_context::TenantId::parse(&id.to_string()).map_err(|_| Error::Corrupt)?;
+        let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(tenant.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| Error::Storage)?;
+        let row = rss_mdm_telemetry_service::selection::load(&mut tx, tenant)
+            .await
+            .map_err(|_| Error::Storage)?;
+        tx.commit().await.map_err(|_| Error::Storage)?;
+        if let Some(row) = row.filter(|row| row.resource_id == Some(physical.resource_id)) {
+            if row.binding != binding {
+                return Err(Error::Conflict);
+            }
+            let reader = row
+                .reader(&key, tenant)
                 .map_err(|_| Error::Corrupt)?
-                .ok_or(Error::Corrupt)?
-                .to_string();
-            selected.configuration = config;
-            clickhouse::provision_users(&selected).await?;
-            ch_fence(&selected, true).await?;
+                .ok_or(Error::Corrupt)?;
+            if reader.password.is_some() {
+                match operation {
+                    ReaderOperation::Restore(profile) => {
+                        clickhouse::provision_reader(profile, tenant, &reader).await?
+                    }
+                    ReaderOperation::Admit(owner) => {
+                        reader
+                            .bind(owner, tenant, row.revision, deadline()?)
+                            .await
+                            .map_err(|_| Error::Corrupt)?;
+                    }
+                }
+            }
         }
     }
-    Ok(())
+    c.close().await.map_err(|_| Error::Storage)
 }
 pub(super) async fn admit(frozen: &Frozen) -> Result<()> {
     for config in configured(&frozen.runtime)? {
         let backend = config.open_backend().await.map_err(|_| Error::Corrupt)?;
-        let deadline = rss_request_context::Deadline::from_timeout(
-            &rss_mdm_telemetry_service::backend::SystemClock,
-            std::time::Duration::from_secs(10),
-        )
-        .map_err(|_| Error::Storage)?;
-        backend.close(deadline).await.map_err(|_| Error::Storage)?;
+        let qualified = match &backend {
+            rss_mdm_telemetry_service::backend::Backend::ClickHouse(owner) => {
+                qualify_readers(frozen, &config, ReaderOperation::Admit(owner)).await
+            }
+            _ => Ok(()),
+        };
+        backend
+            .close(deadline()?)
+            .await
+            .map_err(|_| Error::Storage)?;
+        qualified?;
     }
     Ok(())
 }

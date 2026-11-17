@@ -8,6 +8,9 @@ use std::{net::SocketAddr, os::unix::fs::PermissionsExt, path::Path};
 #[path = "lifecycle_maintenance.rs"]
 mod maintenance;
 
+#[path = "lifecycle_telemetry.rs"]
+mod telemetry;
+
 struct Browser {
     address: SocketAddr,
     client: reqwest::Client,
@@ -309,6 +312,15 @@ async fn installed_service_creates_another_tenant_without_reassembly() -> Result
         &installation_input,
         &first,
         management,
+    ))
+    .await?;
+    Box::pin(telemetry::exercise(
+        &root,
+        &installation_input,
+        &first,
+        management,
+        &administrator,
+        &inputs.directory,
     ))
     .await?;
     Ok(())

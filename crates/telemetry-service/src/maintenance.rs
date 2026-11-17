@@ -503,6 +503,7 @@ impl Service {
             let replayed = tx.with_connection(move|c|Box::pin(async move {
                 let result=async {
                     authorize(c,tenant,&actor,&intent).await?;
+                    crate::selection::lock_read(c,tenant).await?;
                     let inserted=sqlx::query("INSERT INTO mdm_telemetry.maintenance(tenant_id,id,binding,request) VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING")
                         .bind(tenant.to_string()).bind(intent.id).bind(binding.as_slice()).bind(serde_json::to_value(Stored { input: intent.clone(), rows, buckets })?).execute(&mut *c).await?.rows_affected();
                     let stored:Vec<u8>=sqlx::query_scalar("SELECT binding FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")

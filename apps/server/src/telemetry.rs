@@ -24,7 +24,7 @@ pub struct Config {
     pub ingress: rss_mdm_telemetry_service::Limits,
     pub maintenance: rss_mdm_telemetry_service::maintenance::Policy,
     pub limits: Limits,
-    pub cursor_key_file: PathBuf,
+    pub cursor_key_file: Option<PathBuf>,
     pub connections: NonZeroU32,
 }
 #[derive(Clone, Deserialize, Serialize)]
@@ -60,11 +60,9 @@ pub enum Storage {
         resolutions: Vec<NonZeroU64>,
     },
     ClickHouse {
-        tenant: String,
         control: Database,
         endpoint: String,
         ca_file: PathBuf,
-        reader: Credential,
         writer: Credential,
         maintenance: Credential,
         max_scan_rows: NonZeroU64,
@@ -103,7 +101,9 @@ async fn pool(database: &Database, max: NonZeroU32) -> Result<sqlx::PgPool, Erro
 }
 impl Config {
     pub(crate) fn validate(&self) -> Result<(), Error> {
-        if self.resource_id.is_nil() {
+        if self.resource_id.is_nil()
+            || self.cursor_key_file.is_none() != matches!(self.backend, Storage::ClickHouse { .. })
+        {
             return Err(invalid());
         }
         self.ingress.validate().map_err(|_| invalid())?;
@@ -163,8 +163,14 @@ impl Config {
     }
     pub(crate) fn configuration_binding(&self) -> Result<[u8; 32], Error> {
         use sha2::{Digest, Sha256};
-        let coordinate =
-            |database: &Database| (database.host.clone(), database.port, database.name.clone());
+        let coordinate = |database: &Database| {
+            (
+                database.host.clone(),
+                database.port,
+                database.name.clone(),
+                database.user.clone(),
+            )
+        };
         let backend = match &self.backend {
             Storage::Postgres { database } => serde_json::json!(["postgres", coordinate(database)]),
             Storage::TimescaleShared {
@@ -189,14 +195,26 @@ impl Config {
                 ])
             }
             Storage::ClickHouse {
-                tenant: _,
                 control,
                 endpoint,
+                writer,
+                maintenance,
                 ..
-            } => serde_json::json!(["click_house", coordinate(control), endpoint]),
+            } => serde_json::json!([
+                "click_house",
+                coordinate(control),
+                &control.user,
+                endpoint,
+                &writer.user,
+                &maintenance.user
+            ]),
         };
         let identity = self.resource_id;
-        let cursor = Sha256::digest(read(&self.cursor_key_file, 32, true)?);
+        let cursor = self
+            .cursor_key_file
+            .as_ref()
+            .map(|file| read(file, 32, true).map(Sha256::digest))
+            .transpose()?;
         Ok(Sha256::digest(
             serde_json::to_vec(&(
                 "mdm.telemetry.storage.v1",
@@ -204,7 +222,7 @@ impl Config {
                 backend,
                 &self.ingress,
                 &self.limits,
-                cursor.as_slice(),
+                cursor.as_ref().map(|digest| digest.as_slice()),
             ))
             .map_err(|_| invalid())?,
         )
@@ -212,7 +230,7 @@ impl Config {
     }
     pub(crate) fn tenant(&self) -> Result<Option<TenantId>, Error> {
         match &self.backend {
-            Storage::TimescaleDedicated { tenant, .. } | Storage::ClickHouse { tenant, .. } => {
+            Storage::TimescaleDedicated { tenant, .. } => {
                 Ok(Some(TenantId::parse(tenant).map_err(|_| invalid())?))
             }
             _ => Ok(None),
@@ -233,10 +251,6 @@ impl Config {
     pub(crate) async fn open_backend(&self) -> Result<Backend, Error> {
         self.validate()?;
         let profile = self.profile()?;
-        let key: [u8; 32] = read(&self.cursor_key_file, 32, true)?
-            .as_slice()
-            .try_into()
-            .map_err(|_| invalid())?;
         let deadline =
             Deadline::from_timeout(&SystemClock, Duration::from_secs(30)).map_err(|_| invalid())?;
         let limits = rss_timeseries_postgres::Limits {
@@ -250,6 +264,14 @@ impl Config {
             Storage::Postgres { database }
             | Storage::TimescaleShared { database, .. }
             | Storage::TimescaleDedicated { database, .. } => {
+                let key = read(
+                    self.cursor_key_file.as_deref().ok_or_else(invalid)?,
+                    32,
+                    true,
+                )?
+                .as_slice()
+                .try_into()
+                .map_err(|_| invalid())?;
                 let runtime = pool(database, self.connections).await?;
                 if !matches!(sqlx::query_scalar::<_,uuid::Uuid>("SELECT id FROM public.mdm_telemetry_installation").fetch_one(&runtime).await, Ok(id) if id==self.resource_id)
                 {
@@ -289,7 +311,7 @@ impl Config {
                 )
                 .await
                 {
-                    Ok(store) => Backend::Postgres(store),
+                    Ok(store) => Backend::Postgres(Arc::new(store)),
                     Err(_) => {
                         runtime.close().await;
                         if let Some(p) = maintenance {
@@ -300,21 +322,18 @@ impl Config {
                 }
             }
             Storage::ClickHouse {
-                tenant: _,
                 control,
                 endpoint,
                 ca_file,
-                reader,
                 writer,
                 maintenance,
                 max_scan_rows,
                 max_scan_bytes,
                 max_memory_bytes,
             } => {
-                let connections = rss_timeseries_clickhouse::Connections::new(
+                let connections = rss_timeseries_clickhouse::ConnectionConfig::new(
                     endpoint,
                     &read(ca_file, 1024 * 1024, false)?,
-                    reader.load()?,
                     writer.load()?,
                     maintenance.load()?,
                 )
@@ -331,22 +350,21 @@ impl Config {
                     max_bytes: limits.max_bytes,
                     replay_micros: limits.replay_micros,
                     cursor_micros: limits.cursor_micros,
+                    max_concurrent_operations: self.connections,
                     max_scan_rows: *max_scan_rows,
                     max_scan_bytes: *max_scan_bytes,
                     max_memory_bytes: *max_memory_bytes,
                 };
-                match rss_timeseries_clickhouse::ChStore::new(
-                    self.tenant()?.ok_or_else(invalid)?,
+                match rss_timeseries_clickhouse::ChOwner::new(
                     runtime.clone(),
                     connections,
                     SystemClock,
                     limits,
-                    rss_timeseries_clickhouse::CursorKey::new(key),
                     deadline,
                 )
                 .await
                 {
-                    Ok(store) => Backend::ClickHouse(Box::new(store)),
+                    Ok(store) => Backend::ClickHouse(store),
                     Err(_) => {
                         runtime.close().await;
                         return Err(unavailable());
@@ -390,6 +408,7 @@ pub(crate) async fn open(
         };
         acquire(Resource(backend.clone()));
         resources.push(rss_mdm_telemetry_service::backend::Resource {
+            installation: configuration.resource_id,
             binding,
             tenant,
             backend: Some(backend),
