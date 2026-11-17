@@ -261,10 +261,7 @@ async fn configuration_on(
             .min(service.limits.request_bytes)
             .min(backend.budget.bytes.get()),
         max_points: spec.budget.points.min(backend.budget.points.get()),
-        max_resources: spec
-            .budget
-            .resources
-            .min(backend.budget.series.get()),
+        max_resources: spec.budget.resources.min(backend.budget.series.get()),
         execution_millis: spec
             .budget
             .execution_millis

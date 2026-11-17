@@ -457,11 +457,7 @@ async fn distribute(input: &Input, operation: &Journal, saved: &mut Saved) -> Re
     Ok(())
 }
 
-async fn activate_writers(
-    input: &Input,
-    operation: &Journal,
-    saved: &mut Saved,
-) -> Result<()> {
+async fn activate_writers(input: &Input, operation: &Journal, saved: &mut Saved) -> Result<()> {
     let observed = apply(input, &saved.write).await?;
     if !observed {
         return Ok(());
@@ -497,9 +493,12 @@ async fn rewrap_batch(
 
 fn verify_candidates(saved: &Saved) -> Result<()> {
     let purpose = saved.receipt.purpose;
-    let original: crate::config::Config = serde_json::from_value(saved.base.clone()).map_err(|_| Error::Corrupt)?;
+    let original: crate::config::Config =
+        serde_json::from_value(saved.base.clone()).map_err(|_| Error::Corrupt)?;
     let old_key = purpose.active_id(&original)?;
-    if old_key == saved.receipt.key_id { return Err(Error::Conflict); }
+    if old_key == saved.receipt.key_id {
+        return Err(Error::Conflict);
+    }
     let write = saved.write.pointer(purpose.path()).ok_or(Error::Corrupt)?;
     let next = match purpose {
         Purpose::Native | Purpose::Windows => &write["active_file"],
@@ -514,10 +513,16 @@ fn verify_candidates(saved: &Saved) -> Result<()> {
     if saved.read.pointer(purpose.path()) != Some(&expected_read) || write != &expected_write {
         return Err(Error::Conflict);
     }
-    for (runtime, active) in [(&saved.read, &old_key), (&saved.write, &saved.receipt.key_id)] {
-        let candidate: crate::config::Config = serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
+    for (runtime, active) in [
+        (&saved.read, &old_key),
+        (&saved.write, &saved.receipt.key_id),
+    ] {
+        let candidate: crate::config::Config =
+            serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
         // Construction loads every retained key; exact stage equality preserves historical readers.
-        if purpose.active_id(&candidate)? != *active { return Err(Error::Conflict); }
+        if purpose.active_id(&candidate)? != *active {
+            return Err(Error::Conflict);
+        }
     }
     Ok(())
 }
@@ -573,32 +578,72 @@ mod tests {
             std::fs::write(path, bytes).unwrap();
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-        let new_id = rss_mdm_native_protection::Protector::new(&[2; 32]).unwrap().id().to_owned();
+        let new_id = rss_mdm_native_protection::Protector::new(&[2; 32])
+            .unwrap()
+            .id()
+            .to_owned();
         for purpose in [Purpose::Native, Purpose::Windows] {
-            let mut base: Value = serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+            let mut base: Value =
+                serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))
+                    .unwrap();
             let original = json!({"active_file":old,"historical_files":[],"fingerprint_file":old});
             *base.pointer_mut(purpose.path()).unwrap() = original.clone();
             let (read, write) = purpose.stages(&original, &next, &new_id).unwrap();
             let saved = Saved {
-                receipt: Receipt { operation_id: Uuid::new_v4(), phase: Phase::Distributing, key_id: new_id.clone(), purpose, rewritten: 0, historical_keys_retained: true },
+                receipt: Receipt {
+                    operation_id: Uuid::new_v4(),
+                    phase: Phase::Distributing,
+                    key_id: new_id.clone(),
+                    purpose,
+                    rewritten: 0,
+                    historical_keys_retained: true,
+                },
                 read: successor(base.clone(), read, purpose).unwrap(),
                 write: successor(base.clone(), write, purpose).unwrap(),
                 base,
                 tenants: vec![],
             };
             verify_candidates(&saved).unwrap();
-            let read = purpose.protector(&serde_json::from_value(saved.read.clone()).unwrap()).unwrap();
-            let write = purpose.protector(&serde_json::from_value(saved.write.clone()).unwrap()).unwrap();
-            let aad = rss_mdm_native_protection::ProtectionContext::new(rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap(), "rotation", "phase-test", 1).unwrap().derive();
-            for sealed in [read.seal_bytes(b"retained", &aad).unwrap(), write.seal_bytes(b"retained", &aad).unwrap()] {
-                assert_eq!(read.open_bytes(&sealed, &aad).unwrap().expose(), b"retained");
-                assert_eq!(write.open_bytes(&sealed, &aad).unwrap().expose(), b"retained");
+            let read = purpose
+                .protector(&serde_json::from_value(saved.read.clone()).unwrap())
+                .unwrap();
+            let write = purpose
+                .protector(&serde_json::from_value(saved.write.clone()).unwrap())
+                .unwrap();
+            let aad = rss_mdm_native_protection::ProtectionContext::new(
+                rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111")
+                    .unwrap(),
+                "rotation",
+                "phase-test",
+                1,
+            )
+            .unwrap()
+            .derive();
+            for sealed in [
+                read.seal_bytes(b"retained", &aad).unwrap(),
+                write.seal_bytes(b"retained", &aad).unwrap(),
+            ] {
+                assert_eq!(
+                    read.open_bytes(&sealed, &aad).unwrap().expose(),
+                    b"retained"
+                );
+                assert_eq!(
+                    write.open_bytes(&sealed, &aad).unwrap().expose(),
+                    b"retained"
+                );
             }
             let mut invalid = saved;
             invalid.read = invalid.write.clone();
             assert!(matches!(verify_candidates(&invalid), Err(Error::Conflict)));
         }
-        for (purpose, keys, active) in [(Purpose::OidcCredentials,"credential_keys","active_credential_key"),(Purpose::Recovery,"key_files","active_key")] {
+        for (purpose, keys, active) in [
+            (
+                Purpose::OidcCredentials,
+                "credential_keys",
+                "active_credential_key",
+            ),
+            (Purpose::Recovery, "key_files", "active_key"),
+        ] {
             let original = json!({keys:{"old":old},active:"old"});
             let (read, write) = purpose.stages(&original, &next, &new_id).unwrap();
             assert_eq!(read[active], "old");

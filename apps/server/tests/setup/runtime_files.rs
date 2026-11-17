@@ -251,7 +251,8 @@ fn applied_runtime_rejects_pending_inputs_and_incomplete_observations() {
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().canonicalize().unwrap();
     let root = Journal::open(&directory.join("installation")).unwrap();
-    let mut runtime: Value = serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+    let mut runtime: Value =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
     let applied = previous();
     runtime["runtime_binding"] = serde_json::to_value(binding(&applied)).unwrap();
     runtime["identity"]["instance_id"] = json!(applied.instance_id);
@@ -259,13 +260,24 @@ fn applied_runtime_rejects_pending_inputs_and_incomplete_observations() {
     let save = |runtime: &Value, observation: Applied| {
         let owner = owner(&root).unwrap();
         owner.save("requested-runtime.json", runtime).unwrap();
-        owner.save("applied.json", &Deployment { runtime: runtime.clone(), observation }).unwrap();
+        owner
+            .save(
+                "applied.json",
+                &Deployment {
+                    runtime: runtime.clone(),
+                    observation,
+                },
+            )
+            .unwrap();
     };
     save(&runtime, applied.clone());
     assert_eq!(current(&root).unwrap(), runtime);
     let mut pending = runtime.clone();
     pending["runtime_binding"]["revision"] = json!(applied.revision + 1);
-    owner(&root).unwrap().save("requested-runtime.json", &pending).unwrap();
+    owner(&root)
+        .unwrap()
+        .save("requested-runtime.json", &pending)
+        .unwrap();
     assert!(matches!(current(&root), Err(Error::Conflict)));
     let mut invalid = applied.clone();
     invalid.process_generation = uuid::Uuid::nil();

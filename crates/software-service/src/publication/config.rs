@@ -94,7 +94,11 @@ impl SourceResources {
                 base,
                 artifacts_base: source.artifacts_base,
             },
-            ExportProtocol::Brew { base, tap, credential_reference } => Driver::Brew {
+            ExportProtocol::Brew {
+                base,
+                tap,
+                credential_reference,
+            } => Driver::Brew {
                 base,
                 artifacts_base: source.artifacts_base,
                 access: credentials.brew_read(tenant, &self.logical, &credential_reference)?,
@@ -106,15 +110,23 @@ impl SourceResources {
         Ok(Sources {
             tenant,
             logical: source.logical,
-            binding: Binding { identity: source.binding.identity, configuration, driver },
+            binding: Binding {
+                identity: source.binding.identity,
+                configuration,
+                driver,
+            },
             digest: source.digest,
         })
     }
     fn describe(&self, tenant: TenantId) -> Result<(ExportSources, Vec<u8>)> {
         rel::TargetId::new(tenant, &self.logical).map_err(|_| Error::Input)?;
         let address = |value: &str| -> Result<String> {
-            let value = super::artifact::checked_url(&value.replace("{tenant}", &tenant.to_string()))?.to_string();
-            if !value.ends_with('/') { return Err(Error::Input); }
+            let value =
+                super::artifact::checked_url(&value.replace("{tenant}", &tenant.to_string()))?
+                    .to_string();
+            if !value.ends_with('/') {
+                return Err(Error::Input);
+            }
             Ok(value)
         };
         let (protocol, artifacts_base, configuration) = match &self.config {
@@ -127,22 +139,56 @@ impl SourceResources {
             SourceConfig::Brew(c) => {
                 let base = address(&c.base)?;
                 let artifacts_base = address(&c.artifacts_base)?;
-                let document = serde_json::json!([2, "brew", self.physical, c.tap, base, artifacts_base, c.credential_reference]);
-                (ExportProtocol::Brew { base, tap: c.tap.clone(), credential_reference: c.credential_reference.clone() }, artifacts_base, document)
+                let document = serde_json::json!([
+                    2,
+                    "brew",
+                    self.physical,
+                    c.tap,
+                    base,
+                    artifacts_base,
+                    c.credential_reference
+                ]);
+                (
+                    ExportProtocol::Brew {
+                        base,
+                        tap: c.tap.clone(),
+                        credential_reference: c.credential_reference.clone(),
+                    },
+                    artifacts_base,
+                    document,
+                )
             }
         };
-        let configuration = serde_json::to_vec(&serde_json::json!([1, tenant.to_string(), self.logical, configuration])).map_err(|_| Error::Input)?;
-        let identity = Sha256::digest(serde_json::to_vec(&(tenant.to_string(), &self.physical)).map_err(|_| Error::Input)?).to_vec();
-        let envelope = serde_json::to_vec(&serde_json::json!([1, tenant.to_string(), self.logical, identity, configuration])).map_err(|_| Error::Input)?;
-        Ok((ExportSources {
-            tenant,
-            logical: self.logical.clone(),
-            digest: Sha256::digest(envelope).into(),
-            binding: ExportBinding { identity, protocol },
-            artifacts_base,
-        }, configuration))
+        let configuration = serde_json::to_vec(&serde_json::json!([
+            1,
+            tenant.to_string(),
+            self.logical,
+            configuration
+        ]))
+        .map_err(|_| Error::Input)?;
+        let identity = Sha256::digest(
+            serde_json::to_vec(&(tenant.to_string(), &self.physical)).map_err(|_| Error::Input)?,
+        )
+        .to_vec();
+        let envelope = serde_json::to_vec(&serde_json::json!([
+            1,
+            tenant.to_string(),
+            self.logical,
+            identity,
+            configuration
+        ]))
+        .map_err(|_| Error::Input)?;
+        Ok((
+            ExportSources {
+                tenant,
+                logical: self.logical.clone(),
+                digest: Sha256::digest(envelope).into(),
+                binding: ExportBinding { identity, protocol },
+                artifacts_base,
+            },
+            configuration,
+        ))
     }
-
 }
 impl Sources {
     pub fn binding(&self) -> &Binding {
@@ -244,8 +290,14 @@ mod tests {
             repository: None,
             physical: "https://mdm.example/{tenant}/winget/".into(),
         };
-        assert_eq!(source.target(a).unwrap().digest, source.scope(a, &Unavailable).unwrap().digest);
-        assert_ne!(source.target(a).unwrap().digest, source.target(b).unwrap().digest);
+        assert_eq!(
+            source.target(a).unwrap().digest,
+            source.scope(a, &Unavailable).unwrap().digest
+        );
+        assert_ne!(
+            source.target(a).unwrap().digest,
+            source.target(b).unwrap().digest
+        );
         let brew = SourceResources {
             config: SourceConfig::Brew(BrewConfig {
                 base: "https://mdm.example/{tenant}/brew/".into(),
@@ -256,7 +308,10 @@ mod tests {
             }),
             ..source
         };
-        assert!(matches!(brew.target(b).unwrap().protocol, super::super::TargetProtocol::Brew));
+        assert!(matches!(
+            brew.target(b).unwrap().protocol,
+            super::super::TargetProtocol::Brew
+        ));
         assert!(matches!(brew.scope(b, &Unavailable), Err(Error::Identity)));
     }
 }

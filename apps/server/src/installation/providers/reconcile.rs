@@ -27,7 +27,9 @@ pub async fn run(request: Request) -> Result<()> {
         return Err(Error::Input);
     }
     let root = crate::installation::local::Journal::open(&input.directory)?;
-    let config: crate::config::Config = serde_json::from_value(crate::installation::runtime_files::current(&root)?).map_err(|_| Error::Corrupt)?;
+    let config: crate::config::Config =
+        serde_json::from_value(crate::installation::runtime_files::current(&root)?)
+            .map_err(|_| Error::Corrupt)?;
     let mut c = PgConnection::connect_with(
         &input
             .database("mdm_owner")?

@@ -127,18 +127,32 @@ struct Deployment {
 fn owner(root: &Journal) -> Result<Journal> {
     // The installer template supplies only the immutable installation coordinate.
     let initial: crate::config::Config = root.load("runtime.json")?.ok_or(Error::Corrupt)?;
-    Journal::open(&root.path(&format!("rss-mdm-{}", initial.runtime_binding.host_id.simple()))?)
+    Journal::open(&root.path(&format!(
+        "rss-mdm-{}",
+        initial.runtime_binding.host_id.simple()
+    ))?)
 }
 pub(super) fn requested(root: &Journal) -> Result<Value> {
-    owner(root)?.load("requested-runtime.json")?.ok_or(Error::Corrupt)
+    owner(root)?
+        .load("requested-runtime.json")?
+        .ok_or(Error::Corrupt)
 }
 /// A pending desired input cannot be consumed as an applied installation.
 pub(super) fn current(root: &Journal) -> Result<Value> {
     let owner = owner(root)?;
-    let desired: Value = owner.load("requested-runtime.json")?.ok_or(Error::Corrupt)?;
+    let desired: Value = owner
+        .load("requested-runtime.json")?
+        .ok_or(Error::Corrupt)?;
     let deployed: Deployment = owner.load("applied.json")?.ok_or(Error::Conflict)?;
-    let config: crate::config::Config = serde_json::from_value(deployed.runtime.clone()).map_err(|_| Error::Corrupt)?;
-    if desired != deployed.runtime || !matches(&deployed.observation, &config.runtime_binding, &config.identity.instance_id) {
+    let config: crate::config::Config =
+        serde_json::from_value(deployed.runtime.clone()).map_err(|_| Error::Corrupt)?;
+    if desired != deployed.runtime
+        || !matches(
+            &deployed.observation,
+            &config.runtime_binding,
+            &config.identity.instance_id,
+        )
+    {
         return Err(Error::Conflict);
     }
     Ok(deployed.runtime)
@@ -146,7 +160,11 @@ pub(super) fn current(root: &Journal) -> Result<Value> {
 /// Observe the installed desired configuration while its public endpoints are running.
 pub async fn observe_installation(input: super::install::Input) -> Result<Applied> {
     let root = Journal::open(&input.directory)?;
-    if root.load::<Option<uuid::Uuid>>("backup-operation.json")?.flatten().is_some() {
+    if root
+        .load::<Option<uuid::Uuid>>("backup-operation.json")?
+        .flatten()
+        .is_some()
+    {
         return Err(Error::Busy);
     }
     let runtime = requested(&root)?;
@@ -378,8 +396,12 @@ async fn observe_runtime(directory: &Path, runtime: &Value) -> Result<Applied> {
         "rss-mdm-{}",
         decoded.runtime_binding.host_id.simple()
     )))?;
-    let desired: Value = owner.load("requested-runtime.json")?.ok_or(Error::Corrupt)?;
-    if &desired != runtime { return Err(Error::Conflict); }
+    let desired: Value = owner
+        .load("requested-runtime.json")?
+        .ok_or(Error::Corrupt)?;
+    if &desired != runtime {
+        return Err(Error::Conflict);
+    }
     let effective: Config = owner.load("runtime-files.json")?.ok_or(Error::Corrupt)?;
     let root =
         crate::config::read(&effective.trust_file, 128 * 1024, false).map_err(|_| Error::Input)?;
@@ -423,7 +445,13 @@ async fn observe_runtime(directory: &Path, runtime: &Value) -> Result<Applied> {
         }
     }
     let applied = observed.ok_or(Error::Corrupt)?;
-    owner.save("applied.json", &Deployment { runtime: runtime.clone(), observation: applied.clone() })?;
+    owner.save(
+        "applied.json",
+        &Deployment {
+            runtime: runtime.clone(),
+            observation: applied.clone(),
+        },
+    )?;
     Ok(applied)
 }
 fn matches(value: &Applied, binding: &Binding, instance: &str) -> bool {

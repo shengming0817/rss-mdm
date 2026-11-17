@@ -35,6 +35,25 @@ pub async fn apple(
     Arc<rss_mdm_apple_channel::Apple>,
     rss_mdm_registration_service::DevicePrincipal,
 )> {
+    apple_with_providers(
+        c,
+        n,
+        key,
+        users,
+        Arc::new(rss_mdm_pki_service::providers::Providers::new(vec![])?),
+    )
+    .await
+}
+pub async fn apple_with_providers(
+    c: &Context,
+    n: &Native,
+    key: Arc<Protector>,
+    users: &[String],
+    providers: Arc<rss_mdm_pki_service::providers::Providers>,
+) -> Result<(
+    Arc<rss_mdm_apple_channel::Apple>,
+    rss_mdm_registration_service::DevicePrincipal,
+)> {
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let cert = std::fs::read_to_string(n.directory.join("runtime.pem"))?;
     let private = std::fs::read(n.directory.join("runtime.pk8"))?;
@@ -146,7 +165,7 @@ pub async fn apple(
         loaded.profile,
         Arc::new(push),
         loaded.binding,
-        Arc::new(rss_mdm_pki_service::providers::Providers::new(vec![])?),
+        providers,
     ));
     Ok((apple, p))
 }

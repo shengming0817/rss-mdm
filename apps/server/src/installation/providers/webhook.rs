@@ -2,7 +2,6 @@
 use crate::installation::{Error, Result, install::Input, local::Journal};
 use rss_mdm_webhook_service::materials;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 use sqlx::{Connection, PgConnection};
 use std::time::Duration;
 use uuid::Uuid;
@@ -100,7 +99,8 @@ pub async fn export(input: Export) -> Result<ExportReceipt> {
         &serde_json::to_vec(&input).map_err(|_| Error::Input)?,
     )?;
     let config: crate::config::Config =
-        serde_json::from_value(crate::installation::runtime_files::current(&root)?).map_err(|_| Error::Input)?;
+        serde_json::from_value(crate::installation::runtime_files::current(&root)?)
+            .map_err(|_| Error::Input)?;
     let tenant = input.tenant;
     let mut c = PgConnection::connect_with(
         &input

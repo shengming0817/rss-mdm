@@ -100,7 +100,11 @@ impl Fixture {
             Backend::ClickHouse(_) => unreachable!(),
         }
     }
-    pub async fn service(&self, c: &Context, configurations: &[crate::telemetry::Config]) -> Result<Arc<Service>> {
+    pub async fn service(
+        &self,
+        c: &Context,
+        configurations: &[crate::telemetry::Config],
+    ) -> Result<Arc<Service>> {
         let objects = Arc::new(rss_mdm_device_service::planning::PlanningObjects);
         let dependencies = PolicyDependencies {
             agent_facts: Arc::new(crate::assembly::agent_facts::AgentFacts),
@@ -125,7 +129,8 @@ impl Fixture {
                 crate::device_material_support::protection(c)?,
             )?),
             |resource| self.resources.lock().unwrap().push(resource),
-        ).await?;
+        )
+        .await?;
         service
             .admit_default(c.execution(), crate::authority_t2_support::deadline())
             .await?;

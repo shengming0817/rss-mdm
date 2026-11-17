@@ -533,8 +533,11 @@ async fn activate_restored(
             .fetch_one(&mut c)
             .await
             .map_err(|_| Error::Storage)?;
-    let config: crate::config::Config = serde_json::from_value(frozen.runtime.clone()).map_err(|_| Error::Corrupt)?;
-    let mut required = accounts::initialized_tenants(&mut c, &config.identity.instance_id, &frozen.tenants).await?;
+    let config: crate::config::Config =
+        serde_json::from_value(frozen.runtime.clone()).map_err(|_| Error::Corrupt)?;
+    let mut required =
+        accounts::initialized_tenants(&mut c, &config.identity.instance_id, &frozen.tenants)
+            .await?;
     required.insert(management);
     let supplied = input
         .accounts

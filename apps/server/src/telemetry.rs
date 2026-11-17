@@ -378,7 +378,8 @@ pub(crate) async fn open(
             let tenant = configuration.tenant()?;
             let backend = Arc::new(configuration.open_backend().await?);
             Ok::<_, Error>((binding, tenant, backend))
-        }.await;
+        }
+        .await;
         let (binding, tenant, backend) = match opened {
             Ok(opened) => opened,
             Err(error) if index == 0 => return Err(error),

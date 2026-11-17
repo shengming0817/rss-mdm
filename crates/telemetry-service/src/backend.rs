@@ -94,5 +94,7 @@ pub(crate) struct Selected {
 }
 impl std::ops::Deref for Selected {
     type Target = Backend;
-    fn deref(&self) -> &Backend { &self.backend }
+    fn deref(&self) -> &Backend {
+        &self.backend
+    }
 }

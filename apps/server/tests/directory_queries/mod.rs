@@ -178,7 +178,15 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
     let peer = Context::open("shared", &[]).await?;
     let brew = format!("brew-{}", c.tenant);
     let repository = content.join("brew.git");
-    anyhow::ensure!(tokio::process::Command::new("/usr/bin/git").args(["init", "--bare", "--quiet"]).arg(&repository).status().await?.success(), "bare repository fixture");
+    anyhow::ensure!(
+        tokio::process::Command::new("/usr/bin/git")
+            .args(["init", "--bare", "--quiet"])
+            .arg(&repository)
+            .status()
+            .await?
+            .success(),
+        "bare repository fixture"
+    );
     let token = "directory-peer-token-0123456789abcdef";
     let token_path = content.join("brew-token");
     std::fs::write(&token_path, token)?;
@@ -192,7 +200,10 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
     assert!(access.permits(peer.tenant, &brew, token));
     assert!(!access.permits(c.tenant, &brew, token));
     assert!(credentials.brew_read(c.tenant, &brew, "read").is_err());
-    config["publication"]["sources"].as_array_mut().context("sources")?.push(source);
+    config["publication"]["sources"]
+        .as_array_mut()
+        .context("sources")?
+        .push(source);
     let config = serde_json::from_value(config)?;
     let access::credential::RequestCredential::Cookie(cookie) = manager.credential()? else {
         anyhow::bail!("cookie fixture required")

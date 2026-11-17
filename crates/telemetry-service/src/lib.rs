@@ -152,7 +152,7 @@ impl Service {
         signing: Arc<rss_mdm_task_trust::Signing>,
         limits: Limits,
         maintenance_policy: maintenance::Policy,
-        ) -> Result<Self, Error> {
+    ) -> Result<Self, Error> {
         let default_resource = resources
             .first()
             .filter(|r| r.tenant.is_none() && r.backend.is_some())

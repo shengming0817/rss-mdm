@@ -80,12 +80,7 @@ pub(crate) async fn receive_on(
     let bytes = serde_json::to_vec(input)?;
     let digest = Sha256::digest(&bytes).to_vec();
     let accounted = wire_bytes.max(bytes.len());
-    if accounted
-        > service
-            .limits
-            .request_bytes
-            .min(backend.budget.bytes.get()) as usize
-    {
+    if accounted > service.limits.request_bytes.min(backend.budget.bytes.get()) as usize {
         return Err(Error::Capacity);
     }
     rss_mdm_registration_service::device::store::revalidate_management(

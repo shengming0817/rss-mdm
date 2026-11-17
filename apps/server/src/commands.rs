@@ -197,9 +197,14 @@ async fn installation(command: &str, path: &std::path::Path) -> Result<(), Proce
         }
         #[cfg(unix)]
         "observe-installation" => {
-            let receipt = crate::installation::runtime_files::observe_installation(config::load(path)?)
-                .await.map_err(|error| setup_failure("installation.observation", error))?;
-            println!("{}", serde_json::to_string(&receipt).expect("public application observation"));
+            let receipt =
+                crate::installation::runtime_files::observe_installation(config::load(path)?)
+                    .await
+                    .map_err(|error| setup_failure("installation.observation", error))?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).expect("public application observation")
+            );
             Ok(())
         }
         #[cfg(unix)]
