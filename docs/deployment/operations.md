@@ -278,7 +278,7 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 运维先用 Compose 停止全部相关后端、网关和 CA 写入服务；产品备份命令不控制容器。命令持久保存原身份，验证无业务写连接，保存和暂时收回普通运行角色的数据库 CONNECT 授权。数据库 owner 和受控管理员用于原样 dump 及切换到原只读角色后的 Ledger 验证。联合归档保留 Docker 卷内固定服务 UID/GID/权限、原保护材料、内容卷、S3 确切物理版本和 CA 在线/离线目录。未决对象继续保持未知；原 Ledger 历史逐页验证，不更换 HMAC 密钥。归档封存后按原权限恢复连接并重新观察宿主。
 
-`restore-installation` 使用备份目录、独立保存的 manifest 摘要、新恢复操作 ID、目标管理员数据库连接，以及平台和每个已初始化管理员的业务租户的 `accounts`（tenant_id、原 principal_id/login/password_file）。这是同址恢复：数据库名称/地址、安装路径、材料路径和内容路径保持原值；目标库必须为空（用 `TEMPLATE template0` 创建，避免继承 Timescale 对象），受限角色及原凭据须已恢复，外置材料父目录须存在。拒绝覆盖不同文件内容或已有业务库。恢复数据库使用单事务和持久操作标记，原角色授权在验证完成后恢复；原账户执行真实认证及授权核对，不以密码重置代替验证。
+`restore-installation` 使用备份目录、独立保存的 manifest 摘要、新恢复操作 ID、目标管理员数据库连接，以及平台和每个已初始化管理员的业务租户的 `accounts`（tenant_id、原 principal_id/login/password_file）。这是同址恢复：数据库名称/地址、安装路径、材料路径和内容路径保持原值；目标库必须为空（用 `TEMPLATE template0` 创建，避免继承 Timescale 对象），数据库 owner、受限角色及原凭据须保持原值并已恢复，外置材料父目录须存在。拒绝覆盖不同文件内容或已有业务库。恢复数据库使用单事务和持久操作标记，原角色授权在验证完成后恢复；原账户执行真实认证及授权核对，不以密码重置代替验证。
 
 已预留但尚未提交管理员账户的租户仍完整归档，恢复不要求不存在的账户；管理员已提交而默认配置仍 pending/blocked 的租户仍须核验原账户。恢复后用原 provisioning 操作和原输入继续完成待办，不创建替代租户或重置密码。
 

@@ -88,6 +88,10 @@ async fn due_identity_prepares_then_activates_the_original_epoch() -> Result<()>
     c.close().await;
     result
 }
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one original renewal is followed through real preparation, callbacks and credential activation"
+)]
 async fn exercise(c: &Context, a: &Fixture) -> Result<()> {
     let n = identity::seed(c, "apple").await?;
     let issuer = format!("{:x}", Sha256::digest(&n.root));
@@ -197,7 +201,10 @@ async fn exercise(c: &Context, a: &Fixture) -> Result<()> {
         .context("actual SCEP challenge")?;
     let output = tokio::process::Command::new("python3")
         .args([
-            "hack/native_protocol_materials.py",
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../hack/native_protocol_materials.py"
+            ),
             c.inputs.directory.to_str().unwrap(),
             "apple",
             &n.device.to_string(),
@@ -207,7 +214,11 @@ async fn exercise(c: &Context, a: &Fixture) -> Result<()> {
         ])
         .output()
         .await?;
-    ensure!(output.status.success(), "renewal certificate fixture");
+    ensure!(
+        output.status.success(),
+        "renewal certificate fixture: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let output: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     let path = std::path::Path::new(output["directory"].as_str().unwrap());
     let csr =
@@ -332,6 +343,15 @@ async fn profile_url(c: &Context, app: HttpState) -> Result<()> {
         app.credentials.clone(),
         c.audit.clone(),
     );
+    let operation = Uuid::new_v4();
+    let request = audit(c);
+    proof.bind_audit(&request)?;
+    request.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Registration,
+        operation,
+        "enrollment_create",
+        AuditIntent::Management,
+    );
     let created = service
         .create(
             &proof,
@@ -341,10 +361,11 @@ async fn profile_url(c: &Context, app: HttpState) -> Result<()> {
                 windows_profile: None,
             },
             &account.credential()?,
-            Uuid::new_v4(),
-            &audit(c),
+            operation,
+            &request,
         )
-        .await?;
+        .await
+        .context("create profile enrollment")?;
     let status = service
         .status(
             &proof,

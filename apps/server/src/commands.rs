@@ -125,6 +125,10 @@ async fn run(command: &str, path: &std::path::Path) -> Result<(), ProcessError> 
     }
 }
 
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "closed dispatch keeps each maintenance owner and its public receipt explicit"
+)]
 async fn installation(command: &str, path: &std::path::Path) -> Result<(), ProcessError> {
     match command {
         #[cfg(unix)]

@@ -562,7 +562,8 @@ async fn default_queries(
         service.admit_default(c.execution(),crate::authority_t2_support::deadline()).await?;
         let binding:Vec<u8>=sqlx::query_scalar("SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
         assert_eq!(binding,default.config.configuration_binding()?);
-        let (device,_)=materials::seed_registration(&c).await?;
+        let (device,grant)=materials::seed_registration(&c).await?;
+        let _principal=materials::authenticated_agent(&c,grant,&device,vec![rss_mdm_agent_wire::runtime::Capability::InventoryCollectionV1]).await?;
         let epoch=Uuid::new_v4();
         let mut tx=crate::command_runtime_t2_support::seed_transaction(&c).await?;
         sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,device,source,epoch,next_sequence,enabled) VALUES($1::uuid,$2,'agent.native',$3,0,true)").bind(c.tenant.to_string()).bind(device.into_uuid()).bind(epoch).execute(&mut *tx).await?;

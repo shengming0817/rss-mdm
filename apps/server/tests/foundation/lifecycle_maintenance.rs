@@ -40,6 +40,35 @@ impl axum::serve::Listener for Listener {
     }
 }
 impl Gateway {
+    pub async fn probe(&self, trust: &Path) -> Result<()> {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(10))
+            .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(trust)?)?)
+            .resolve("mdm.example.test", self.address)
+            .build()?;
+        let response = client
+            .get(format!(
+                "https://mdm.example.test:{}/readyz",
+                self.address.port()
+            ))
+            .header("host", "mdm.example.test")
+            .send()
+            .await
+            .context("real gateway readiness transport")?;
+        let status = response.status();
+        let body = response.text().await?;
+        ensure!(
+            status.is_success(),
+            "real gateway readiness: {status}: {body}"
+        );
+        let value: Value = serde_json::from_str(&body)?;
+        ensure!(
+            value["ready"] == true,
+            "real gateway reports unready: {value}"
+        );
+        Ok(())
+    }
     pub async fn open(backend: SocketAddr, certificate: &Path, key: &Path) -> Result<Self> {
         let tls = rustls::ServerConfig::builder()
             .with_no_client_auth()
@@ -168,6 +197,10 @@ async fn capture(root: &Path, source: &Value, name: &str) -> Result<backup::Rece
     .await?)
 }
 
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one installation carries original operations through configuration, four rotations and interrupted-provisioning cold recovery"
+)]
 pub(super) async fn exercise(
     root: &Path,
     source: &Value,
@@ -175,7 +208,9 @@ pub(super) async fn exercise(
     management: &str,
 ) -> Result<()> {
     // The ordinary initial installation must already be cold-backup eligible.
-    let initial = capture(root, source, "initial-backup").await?;
+    let initial = capture(root, source, "initial-backup")
+        .await
+        .context("capture initial installation")?;
     ensure!(
         initial.stage == backup::Stage::Complete,
         "initial cold backup"
@@ -211,11 +246,13 @@ pub(super) async fn exercise(
     for change in [
         json!({"kind":"oidc","settings":{"group_facts_max_age_seconds":300,"return_targets":{},"assurance_profiles":[],"private_providers":[]}}),
         json!({"kind":"recovery","profile":"mdm","recipient":{"kind":"generate"}}),
-        json!({"kind":"channels","settings":{"windows":{"entra":null,"enrollment":{"origin":"https://mdm.example.test"},"management":{"origin":"https://mdm.example.test"},"protocol_protection":null,"provider_id":"RSS-MDM","poll":{"interval_for_first_set_of_retries":15,"number_of_first_retries":0,"interval_for_second_set_of_retries":0,"number_of_second_retries":0,"interval_for_remaining_scheduled_retries":0,"number_of_remaining_scheduled_retries":0,"poll_on_login":true,"all_users_poll_on_first_login":false},"additional_management":[]},"apple":null,"agent":{"mode":"disabled"},"providers":[],"apple_material_roots":[]}}),
+        json!({"kind":"channels","settings":{"windows":{"entra":null,"enrollment":{"origin":"https://mdm.example.test"},"management":{"origin":"https://mdm.example.test:8443"},"protocol_protection":null,"provider_id":"RSS-MDM","poll":{"interval_for_first_set_of_retries":15,"number_of_first_retries":0,"interval_for_second_set_of_retries":0,"number_of_second_retries":0,"interval_for_remaining_scheduled_retries":0,"number_of_remaining_scheduled_retries":0,"poll_on_login":true,"all_users_poll_on_first_login":false},"additional_management":[]},"apple":null,"agent":{"mode":"disabled"},"providers":[],"apple_material_roots":[]}}),
     ] {
         let runtime = desired(root, first.host_id)?;
         let request = json!({"installation":source,"operation_id":Uuid::new_v4(),"tenant":first.tenant_id,"expected_revision":runtime["runtime_binding"]["revision"],"change":change});
-        let pending = configure::run(serde_json::from_value(request.clone())?).await?;
+        let pending = configure::run(serde_json::from_value(request.clone())?)
+            .await
+            .with_context(|| format!("configure {}", request["change"]["kind"]))?;
         ensure!(
             pending.deployment_required && pending.applied.is_none(),
             "material change awaits deployment"
@@ -255,7 +292,9 @@ pub(super) async fn exercise(
             purpose,
             operation_id: rotation,
         };
-        let distributed = protection::rotate(request()).await?;
+        let distributed = protection::rotate(request())
+            .await
+            .with_context(|| format!("distribute {path}"))?;
         ensure!(
             distributed.phase == protection::Phase::Distributing,
             "old process does not acknowledge read phase"
@@ -268,7 +307,11 @@ pub(super) async fn exercise(
         running.close().await?;
         running = Running::open(&read).await?;
         ensure!(
-            protection::rotate(request()).await?.phase == protection::Phase::Activating,
+            protection::rotate(request())
+                .await
+                .with_context(|| format!("activate {path}"))?
+                .phase
+                == protection::Phase::Activating,
             "write phase awaits a new process"
         );
         let write = desired(root, first.host_id)?;
@@ -278,7 +321,9 @@ pub(super) async fn exercise(
         );
         running.close().await?;
         running = Running::open(&write).await?;
-        let mut finished = protection::rotate(request()).await?;
+        let mut finished = protection::rotate(request())
+            .await
+            .with_context(|| format!("rewrap {path}"))?;
         for _ in 0..8 {
             if finished.phase == protection::Phase::Complete {
                 break;
@@ -393,7 +438,9 @@ pub(super) async fn exercise(
         accounts.push(json!({"tenant_id":tenant,"account":{"principal_id":principal,"login":"administrator","password_file":root.join(password)}}));
     }
     pool.close().await;
-    let archived = capture(root, source, "current-backup").await?;
+    let archived = capture(root, source, "current-backup")
+        .await
+        .context("capture current installation")?;
     ensure!(
         archived.stage == backup::Stage::Complete,
         "current cold backup"
@@ -411,13 +458,25 @@ pub(super) async fn exercise(
             name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
             "fixture database identifier"
         );
+        let owner: String = sqlx::query_scalar(
+            "SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname=$1",
+        )
+        .bind(name)
+        .fetch_one(&mut admin)
+        .await?;
+        ensure!(
+            owner
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+            "fixture database owner"
+        );
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "DROP DATABASE {name} WITH (FORCE)"
         )))
         .execute(&mut admin)
         .await?;
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "CREATE DATABASE {name} TEMPLATE template0"
+            "CREATE DATABASE {name} OWNER {owner} TEMPLATE template0"
         )))
         .execute(&mut admin)
         .await?;
@@ -429,7 +488,20 @@ pub(super) async fn exercise(
     let restore: backup::Restore = serde_json::from_value(
         json!({"directory":root.join("current-backup"),"operation_id":Uuid::new_v4(),"backup_manifest_sha256":archived.manifest_sha256,"administrator":database,"accounts":accounts}),
     )?;
-    let restored = backup::restore(restore).await?;
+    // Poll the complete restore owner independently of this long journey
+    // and the outer installation test; debug builds otherwise nest their poll stacks.
+    let restored = tokio::spawn(backup::restore(restore))
+        .await
+        .context("restore task")?
+        .with_context(|| {
+            let progress = std::fs::read(root.join("current-backup/restore-progress.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+            format!(
+                "restore current installation at {:?}",
+                progress.and_then(|value| value.get("stage").cloned())
+            )
+        })?;
     ensure!(
         restored.stage == backup::Stage::Complete,
         "restore accepts pending tenants without phantom accounts"
@@ -444,7 +516,7 @@ pub(super) async fn exercise(
     browser
         .login(management, "platform", "Installation-platform-admin!42")
         .await?;
-    for (operation, tenant, request, body, _) in pending {
+    for (operation, _, request, body, _) in &pending {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(1)
             .connect_with(database.options()?)
@@ -455,20 +527,22 @@ pub(super) async fn exercise(
         .bind(operation)
         .fetch_one(&pool)
         .await?;
-        assert_eq!(unchanged, request);
+        assert_eq!(&unchanged, request);
         pool.close().await;
         let (status, value) = browser
             .call(
                 Method::POST,
                 "/api/v1/tenant-administration/provisionings",
-                Some(body),
-                Some(operation),
+                Some(body.clone()),
+                Some(*operation),
             )
             .await?;
         ensure!(
             matches!(status, 200 | 202 | 503),
             "resume pending: {status}: {value}"
         );
+    }
+    for (operation, tenant, _, _, _) in pending {
         browser.configured(operation).await?;
         let mut business = Browser::new(browser.address)?;
         business
