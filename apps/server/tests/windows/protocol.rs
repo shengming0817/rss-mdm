@@ -102,6 +102,7 @@ async fn attest(
     next.run(request).await
 }
 struct Host {
+    state: Arc<rss_mdm_windows_channel::HttpState>,
     address: SocketAddr,
     stop: tokio::sync::oneshot::Sender<()>,
     task: tokio::task::JoinHandle<std::io::Result<()>>,
@@ -239,7 +240,7 @@ async fn host(
         audit_store: c.audit.clone(),
         requests: requests.clone(),
     };
-    let (_, router) = rss_mdm_windows_channel::routers(state, boundary(), boundary());
+    let (_, router) = rss_mdm_windows_channel::routers(state.clone(), boundary(), boundary());
     let admission = crate::native::admission::Admission::new(monotonic, requests, "windows-t2");
     let mut lifecycle = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
@@ -279,6 +280,7 @@ async fn host(
         .await
     });
     Ok(Host {
+        state,
         address,
         stop,
         task,
@@ -403,7 +405,7 @@ pub(crate) async fn windows(
 }
 
 #[tokio::test]
-#[ignore = "T2: actual TLS/HTTP and persisted unfinished SyncML package across owner restart"]
+#[ignore = "T2: actual TLS/HTTP, WNS revocation and persisted unfinished SyncML package across owner restart"]
 async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let n = identity::seed(&c, "windows").await?;
@@ -420,6 +422,34 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
         message
     };
     let h = host(&c, &n, w.clone()).await?;
+    // WNS OAuth qualification is a precondition, not the seam exercised here.
+    // Persist the qualified material locally; this test sends no WNS network request.
+    let tenant = c.tenant.to_string();
+    let protection = &h.assembly.resources.protection;
+    let mut tx = command::seed_transaction(&c).await?;
+    let material = rss_mdm_windows_channel::wns_materials::prepare(
+        &mut tx,
+        &tenant,
+        uuid::Uuid::new_v4(),
+        "windows-protocol-test",
+        &rss_mdm_windows_channel::wns_materials::Request {
+            expected_revision: 0,
+            package_family_name: "Rss.Test_0123456789abc".into(),
+            sid: "ms-app://rss-test".to_owned().into(),
+            client_secret: "test-secret".to_owned().into(),
+        },
+        protection,
+    )
+    .await?;
+    sqlx::query("UPDATE mdm_wns.versions SET qualified_at=1,selected=true WHERE tenant_id=$1::uuid AND revision=$2")
+        .bind(&tenant).bind(material.revision).execute(&mut *tx).await?;
+    sqlx::query("UPDATE mdm_wns.heads SET desired_revision=$2 WHERE tenant_id=$1::uuid")
+        .bind(&tenant)
+        .bind(material.revision)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    assert!(h.state.windows(c.execution()).await?.push.is_some());
     let http = client(&n)?;
     let mut first = s::decode(
         include_bytes!("../../../../crates/windows-mdm/tests/fixtures/initialization.xml"),
@@ -459,6 +489,21 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
             .target,
         native_id
     );
+    let mut tx = command::seed_transaction(&c).await?;
+    rss_mdm_windows_channel::wns_materials::revoke(
+        &mut tx,
+        &tenant,
+        uuid::Uuid::new_v4(),
+        "windows-protocol-test",
+        &rss_mdm_windows_channel::wns_materials::RevokeRequest {
+            expected_revision: material.revision,
+            material_revision: material.revision,
+        },
+        protection,
+    )
+    .await?;
+    tx.commit().await?;
+    assert!(h.state.windows(c.execution()).await?.push.is_none());
     let substituted = s::encode(&next(&n, 2, 212, false), &CodecLimits::default())?;
     assert!(
         send(&http, &h, &substituted).await.is_err(),
@@ -471,6 +516,7 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
     drop(http);
     h.close().await?;
     let h = host(&c, &n, w).await?;
+    assert!(h.state.windows(c.execution()).await?.push.is_none());
     let http = client(&n)?;
     let third = s::encode(&native_next(3, 200, true), &CodecLimits::default())?;
     let response = send(&http, &h, &third).await?;

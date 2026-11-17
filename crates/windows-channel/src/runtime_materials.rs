@@ -138,14 +138,15 @@ impl Runtime {
         .await
         .map_err(db)?
         .flatten();
-        if let Some(revision) = revision {
+        // WNS only wakes the client; losing its eligibility must preserve client-initiated MDM.
+        // Check before either cache reuse or material loading, retaining real storage errors.
+        if let Some(revision) = revision
+            && crate::wns_materials::is_selected(&mut tx, &tenant, revision).await?
+        {
             let mut transports = self.push.lock().await;
             let push = if let Some((old, push)) = transports.get(&tenant)
                 && *old == revision
             {
-                if !crate::wns_materials::is_selected(&mut tx, &tenant, revision).await? {
-                    return Err(Error::Conflict);
-                }
                 push.clone()
             } else {
                 let push = Arc::new(
