@@ -305,7 +305,7 @@ async fn prepare_on(
         })
         .map_err(db)?;
     let deadline = after.min(now + 3600);
-    sqlx::query("INSERT INTO mdm_apple.scep_attempts (tenant_id, id, enrollment, authorization_version, configuration, state, issuer, expires_at, device, renewal_of, challenge_hash, access_rights, scep_url, scep_provisioner,expected_epoch) SELECT CAST($1 AS uuid), CAST($2 AS uuid), CAST($3 AS uuid), COALESCE(max(authorization_version), 0) + 1, $4, 'prepared', $5, to_timestamp($6), CAST($7 AS text), CAST($8 AS uuid), $9, $10, $11, $12,current_setting('rss.execution_epoch')::bigint FROM mdm_apple.scep_attempts WHERE tenant_id = CAST($1 AS uuid) AND enrollment = CAST($3 AS uuid)")
+    sqlx::query("INSERT INTO mdm_apple.scep_attempts (tenant_id, id, enrollment, authorization_version, configuration, state, issuer, expires_at, device, renewal_of, challenge_hash, access_rights, scep_url, scep_provisioner,expected_epoch) SELECT CAST($1 AS uuid), CAST($2 AS uuid), CAST($3 AS uuid), COALESCE(max(authorization_version), 0) + 1, $4, 'prepared', $5, to_timestamp($6), CAST($7 AS uuid), CAST($8 AS uuid), $9, $10, $11, $12,current_setting('rss.execution_epoch')::bigint FROM mdm_apple.scep_attempts WHERE tenant_id = CAST($1 AS uuid) AND enrollment = CAST($3 AS uuid)")
         .bind(tenant).bind(id.to_string()).bind(enrollment.to_string()).bind(apple.configuration.as_slice()).bind(issuer).bind(deadline as f64).bind(device.into_uuid()).bind(&old_id).bind(Sha256::digest(secret.as_bytes()).as_slice()).bind(apple.access_rights()).bind(scep_url).bind(scep_provisioner).execute(&mut *c).await.map_err(db)?;
     let request = crate::protection::seal(
         &apple.protection,
@@ -315,7 +315,7 @@ async fn prepare_on(
         crate::protection::Part::Request,
         &request,
     )?;
-    sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, certificate, phase, request, state, deadline) VALUES (CAST($1 AS uuid), CAST($2 AS uuid), CAST($3 AS text), CAST($2 AS uuid), 'renew', $4, 'pending', to_timestamp($5))")
+    sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, certificate, phase, request, state, deadline) VALUES (CAST($1 AS uuid), CAST($2 AS uuid), CAST($3 AS uuid), CAST($2 AS uuid), 'renew', $4, 'pending', to_timestamp($5))")
         .bind(tenant).bind(id.to_string()).bind(device.into_uuid()).bind(request).bind(deadline as f64).execute(&mut *c).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.channels SET next_push = clock_timestamp() WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(tenant).bind(device.into_uuid()).execute(&mut *c).await.map_err(db)?;
     crate::notify(c, "apple").await.map_err(db)?;
@@ -354,7 +354,7 @@ async fn current(
     {
         return Err(Error::Unauthorized);
     }
-    let row=sqlx::query("SELECT s.state, s.issuer, s.scep_provisioner, CAST(s.enrollment AS text), s.device, CAST(s.renewal_of AS text), s.configuration, s.challenge_hash, s.transaction_id, s.csr_digest, s.spki, s.fingerprint, a.udid, old.spki AS old_spki FROM mdm_apple.scep_attempts AS s INNER JOIN mdm_apple.scep_attempts AS old ON (old.tenant_id, old.id) = (s.tenant_id, s.renewal_of) INNER JOIN mdm_apple.devices AS a ON (a.tenant_id, a.device) = (s.tenant_id, s.device) WHERE s.tenant_id = CAST($1 AS uuid) AND s.id = CAST($2 AS uuid) AND s.device=$3 AND s.state IN ('prepared', 'consumed') AND s.expires_at > clock_timestamp() AND old.state = 'bound' AND old.not_after > EXTRACT(EPOCH FROM clock_timestamp()) AND a.state = 'active' AND EXISTS (SELECT 1 FROM mdm_apple.attempts AS delivery WHERE (delivery.tenant_id, delivery.certificate) = (s.tenant_id, s.id) AND delivery.phase = 'renew' AND delivery.state IN ('sent', 'not_now', 'acknowledged') AND delivery.deadline > clock_timestamp()) FOR UPDATE OF s, old, a").bind(tenant).bind(id).bind(device.into_uuid()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    let row=sqlx::query("SELECT s.state, s.expected_epoch, s.issuer, s.scep_provisioner, CAST(s.enrollment AS text), s.device, CAST(s.renewal_of AS text), s.configuration, s.challenge_hash, s.transaction_id, s.csr_digest, s.spki, s.fingerprint, a.udid, old.spki AS old_spki FROM mdm_apple.scep_attempts AS s INNER JOIN mdm_apple.scep_attempts AS old ON (old.tenant_id, old.id) = (s.tenant_id, s.renewal_of) INNER JOIN mdm_apple.devices AS a ON (a.tenant_id, a.device) = (s.tenant_id, s.device) WHERE s.tenant_id = CAST($1 AS uuid) AND s.id = CAST($2 AS uuid) AND s.device=$3 AND s.state IN ('prepared', 'consumed') AND s.expires_at > clock_timestamp() AND old.state = 'bound' AND old.not_after > EXTRACT(EPOCH FROM clock_timestamp()) AND a.state = 'active' AND EXISTS (SELECT 1 FROM mdm_apple.attempts AS delivery WHERE (delivery.tenant_id, delivery.certificate) = (s.tenant_id, s.id) AND delivery.phase = 'renew' AND delivery.state IN ('sent', 'not_now', 'acknowledged') AND delivery.deadline > clock_timestamp()) FOR UPDATE OF s, old, a").bind(tenant).bind(id).bind(device.into_uuid()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     Ok(Some(row))
 }
 #[allow(
