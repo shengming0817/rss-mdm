@@ -103,6 +103,13 @@ impl<S: Clone + Send + Sync + 'static, M: Declaration> Router<S, M> {
         }
         self
     }
+    /// Attach responses produced by the mounted ingress owner, including external protocol routes.
+    pub fn rejections(mut self, describe: fn(&str, &str) -> Vec<crate::signature::Response>) -> Self {
+        for endpoint in &mut self.endpoints {
+            endpoint.ingress_rejections.extend(describe(endpoint.method, &endpoint.path));
+        }
+        self
+    }
     pub fn endpoints(&self) -> &[Endpoint] {
         &self.endpoints
     }

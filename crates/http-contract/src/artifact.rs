@@ -25,7 +25,7 @@ pub fn document(
                 ));
             }
             let crate::EndpointContract::Product(signature) = &endpoint.contract else {
-                external.push(json!({"listener":listener,"method":endpoint.method,"path":endpoint.path,"owner":endpoint.resource.owner,"protocol":endpoint.contract,"conditions":endpoint.conditions}));
+                external.push(json!({"listener":listener,"method":endpoint.method,"path":endpoint.path,"owner":endpoint.resource.owner,"protocol":endpoint.contract,"conditions":endpoint.conditions,"ingressResponses":endpoint.ingress_rejections}));
                 continue;
             };
             let handler_path = match &endpoint.configured_path {
@@ -34,7 +34,9 @@ pub fn document(
                     .replace(&binding.capture(), "configured-static-segment"),
                 None => endpoint.path.clone(),
             };
-            for error in crate::validation::signature(signature, &handler_path) {
+            let mut described = (**signature).clone();
+            described.responses.extend(endpoint.ingress_rejections.clone());
+            for error in crate::validation::signature(&described, &handler_path) {
                 errors.push(format!(
                     "{listener} {} {}: {error}",
                     endpoint.method, endpoint.path
@@ -112,6 +114,12 @@ pub fn document(
         // Rejections are already included in responses; keep one consumer-facing response set.
         request.as_object_mut().expect("request object").remove("rejections");
         let mut responses = serde_json::to_value(&signature.responses).expect("closed response description");
+        for rejection in &endpoint.ingress_rejections {
+            let rejection = serde_json::to_value(rejection).expect("ingress response description");
+            if !responses.as_array().expect("responses").contains(&rejection) {
+                responses.as_array_mut().expect("responses").push(rejection);
+            }
+        }
         let mut authentication = endpoint.authentication.map(|describe| serde_json::to_value(describe(endpoint.method, &endpoint.path)).expect("authentication description"));
         if let Some(authentication) = &mut authentication {
             let rejections = authentication.as_object_mut().expect("authentication object").remove("rejections").expect("authentication rejections");

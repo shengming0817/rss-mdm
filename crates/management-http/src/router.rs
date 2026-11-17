@@ -46,7 +46,6 @@ pub struct Services {
     pub operation_diagnostics: Arc<crate::operation_diagnostics::Services>,
     pub operation_reads: Arc<dyn crate::execution::operations::Reads>,
     pub software_queries: Arc<rss_mdm_software_service::deployment::queries::Queries>,
-    pub software_downloads: Arc<dyn crate::software_content::Packages>,
     pub task_trust: Arc<rss_mdm_task_trust::Service>,
     pub task_reads: Arc<dyn crate::execution::task_reads::Reads>,
     pub queries: Arc<rss_mdm_device_service::control::queries::Queries>,
@@ -336,17 +335,14 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
     let host_context =
         crate::authorization::http::mount_protection(host_context, authentication.clone(), false);
     let protected = crate::authorization::http::mount_protection(protected, authentication, false);
-    let software_content = crate::software_content::register()
-        .bind_with(context, |(s, _)| s.software_downloads.clone());
     {
-        rss_mdm_http_contract::route_module! { struct AssembleModule4 for [Browser] { software_content, host_context, api_v1_agent_enroll at "/api/v1/agent/enroll", api_v1 at "/api/v1/tenants/{tenant}" } }
+        rss_mdm_http_contract::route_module! { struct AssembleModule4 for [Browser] { host_context, api_v1_agent_enroll at "/api/v1/agent/enroll", api_v1 at "/api/v1/tenants/{tenant}" } }
         AssembleModule4 {
-            software_content,
             host_context,
             api_v1_agent_enroll: public_packages,
             api_v1: protected,
         }
-        .assemble()
+        .assemble().rejections(crate::boundary::rejections)
     }
 }
 pub fn workspace_routes() -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {

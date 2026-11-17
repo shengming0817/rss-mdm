@@ -54,6 +54,7 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
             conditions: Vec::new(),
             configured_path: None,
             authentication: None,
+            ingress_rejections: Vec::new(),
         }
     }
     pub fn layer<L>(self, layer: L) -> Self

@@ -74,6 +74,51 @@ struct HttpExecution {
     timeout: Duration,
     federation: Option<rss_identity_postgres::Federation>,
 }
+const TENANT_PREFIXES: [&str; 3] = [
+    "/api/v1/identity/tenants/", "/api/v1/identity-host/tenants/", "/api/v1/tenants/",
+];
+#[derive(Clone, Copy)]
+enum ScopeFailure { Malformed, Forbidden, Unavailable, Deadline }
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(tag = "code", rename_all = "snake_case")]
+enum IdentityScopeFailure { IdentityUnavailable }
+impl ScopeFailure {
+    fn product_error(self) -> rss_mdm_management_http::Error {
+        use rss_mdm_management_http::{Error, Failure};
+        match self {
+            Self::Malformed => Error::Malformed,
+            Self::Forbidden => Error::Forbidden,
+            Self::Unavailable => Error::Unavailable(Failure::IdentityStorage),
+            Self::Deadline => Error::Unavailable(Failure::RequestDeadline),
+        }
+    }
+    fn identity(self, path: &str) -> bool {
+        matches!(self, Self::Unavailable | Self::Deadline) && path.starts_with("/api/v1/identity/")
+    }
+    fn response(self, path: &str) -> Response {
+        let response = if self.identity(path) {
+            (StatusCode::SERVICE_UNAVAILABLE, axum::Json(IdentityScopeFailure::IdentityUnavailable)).into_response()
+        } else { self.product_error().into_response() };
+        let mut response = response;
+        if matches!(self, Self::Deadline) && self.identity(path) {
+            response.extensions_mut().insert(rss_identity_http_axum::HttpFailure::RequestTimeout);
+        }
+        rss_mdm_management_http::boundary::secure(response, uuid::Uuid::new_v4())
+    }
+    fn contract(self, path: &str) -> rss_mdm_http_contract::signature::Response {
+        let response = if self.identity(path) {
+            rss_mdm_http_contract::signature::Response::json::<IdentityScopeFailure>(503)
+        } else { self.product_error().response_contract() };
+        rss_mdm_management_http::boundary::rejection_contract(response)
+    }
+}
+pub(crate) fn scope_rejections(_: &str, path: &str) -> Vec<rss_mdm_http_contract::signature::Response> {
+    let mut responses = vec![ScopeFailure::Unavailable.contract(path)];
+    if TENANT_PREFIXES.iter().any(|prefix| path.starts_with(prefix)) || path.starts_with("/api/v1/tenant-administration/") {
+        responses.extend([ScopeFailure::Malformed.contract(path), ScopeFailure::Forbidden.contract(path)]);
+    }
+    responses
+}
 // Product-installed coordinates select the SDK scope. The route only identifies which
 // installed product context is requested; it cannot author storage, lineage or epoch.
 async fn execution_scope(
@@ -85,7 +130,7 @@ async fn execution_scope(
     let Ok(mut cutoff) =
         rss_request_context::Deadline::from_timeout(&crate::lifecycle::RuntimeTimer, scope.timeout)
     else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        return ScopeFailure::Deadline.response(parts.uri.path());
     };
     if let Some(parent) = parts.extensions.get::<rss_request_context::Deadline>() {
         cutoff = cutoff.shortened_to(parent.instant());
@@ -96,18 +141,14 @@ async fn execution_scope(
     let tenant = if path.starts_with("/api/v1/tenant-administration/") {
         Some(scope.management.tenant())
     } else {
-        let locator = [
-            "/api/v1/identity/tenants/",
-            "/api/v1/identity-host/tenants/",
-            "/api/v1/tenants/",
-        ]
+        let locator = TENANT_PREFIXES
         .iter()
         .find_map(|prefix| path.strip_prefix(prefix))
         .and_then(|rest| rest.split('/').next());
         match locator {
             Some(raw) => match TenantId::parse(raw) {
                 Ok(tenant) if tenant.to_string() == raw => Some(tenant),
-                _ => return StatusCode::BAD_REQUEST.into_response(),
+                _ => return ScopeFailure::Malformed.response(path),
             },
             None => None,
         }
@@ -118,7 +159,7 @@ async fn execution_scope(
         } else {
             match scope.storage.execution(tenant) {
                 Ok(binding) => binding,
-                Err(_) => return StatusCode::FORBIDDEN.into_response(),
+                Err(_) => return ScopeFailure::Forbidden.response(path),
             }
         };
         let admitted = scope.runtime.local_tx(binding, OperationDeadline::from_cutoff(cutoff, &crate::lifecycle::RuntimeTimer), move |tx| Box::pin(async move {
@@ -129,8 +170,8 @@ async fn execution_scope(
         })).await.fold(Ok, Err, Err, |_| Err(PgError::from(sqlx::Error::Protocol("scope rollback unconfirmed".into()))), |_| Err(PgError::from(sqlx::Error::Protocol("scope commit unconfirmed".into()))), Err);
         match admitted {
             Ok(true) => (),
-            Ok(false) => return StatusCode::FORBIDDEN.into_response(),
-            Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            Ok(false) => return ScopeFailure::Forbidden.response(path),
+            Err(_) => return ScopeFailure::Unavailable.response(path),
         }
         parts.extensions.insert(binding);
         if tenant != scope.management.tenant()
@@ -145,7 +186,7 @@ async fn execution_scope(
                 )
                 .await
         {
-            let mut response = StatusCode::SERVICE_UNAVAILABLE.into_response();
+            let mut response = ScopeFailure::Unavailable.response(path);
             response
                 .extensions_mut()
                 .insert(rss_identity_http_axum::HttpFailure::Authority(error));
