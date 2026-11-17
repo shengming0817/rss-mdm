@@ -120,7 +120,16 @@ impl ScopeFailure {
                 .extensions_mut()
                 .insert(rss_identity_http_axum::HttpFailure::RequestTimeout);
         }
-        rss_mdm_management_http::boundary::secure(response, uuid::Uuid::new_v4())
+        let request_id = uuid::Uuid::new_v4();
+        let failure = match self {
+            Self::Malformed => "malformed_scope",
+            Self::Forbidden => "scope_denied",
+            Self::Unavailable => "scope_unavailable",
+            Self::Deadline => "scope_deadline",
+        };
+        tracing::warn!(target: "rss_mdm_app::http_scope", event = "mdm_request", %request_id,
+            stage = "execution_scope", status = response.status().as_u16(), failure);
+        rss_mdm_management_http::boundary::secure(response, request_id)
     }
     fn contract(self, path: &str) -> rss_mdm_http_contract::signature::Response {
         let response = if self.identity(path) {

@@ -3,9 +3,73 @@ use crate::{authority_t2_support::*, host_t2_support as host};
 use anyhow::Result;
 use uuid::Uuid;
 
+#[derive(Clone, Default)]
+struct Diagnostics(
+    std::sync::Arc<std::sync::Mutex<Vec<serde_json::Map<String, serde_json::Value>>>>,
+);
+#[derive(Default)]
+struct Fields(serde_json::Map<String, serde_json::Value>);
+impl tracing::field::Visit for Fields {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.0.insert(field.name().into(), value.into());
+    }
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        self.0.insert(field.name().into(), value.into());
+    }
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0
+            .insert(field.name().into(), format!("{value:?}").into());
+    }
+}
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Diagnostics {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        if event.metadata().target() == "rss_mdm_app::http_scope" {
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            self.0.lock().unwrap().push(fields.0);
+        }
+    }
+}
+async fn rejected(
+    diagnostics: &Diagnostics,
+    response: reqwest::Response,
+    status: u16,
+    code: &str,
+) -> Result<serde_json::Value> {
+    let request_id = response.headers()["x-request-id"].to_str()?.to_owned();
+    let body = host::reject(response, status, code).await?;
+    let events = diagnostics.0.lock().unwrap();
+    let event = events
+        .iter()
+        .find(|e| e["request_id"] == request_id)
+        .expect("scope response must correlate to its server diagnostic");
+    assert_eq!(event["event"], "mdm_request");
+    assert_eq!(event["stage"], "execution_scope");
+    assert_eq!(event["status"], status);
+    assert_eq!(
+        event["failure"],
+        match status {
+            400 => "malformed_scope",
+            403 => "scope_denied",
+            _ => "scope_unavailable",
+        }
+    );
+    assert_eq!(
+        event.len(),
+        5,
+        "closed diagnostics cannot include caller paths or provider details"
+    );
+    Ok(body)
+}
+
 #[tokio::test]
 #[ignore = "T2: final App projects malformed, missing, deleted and failed tenant lookups with real PostgreSQL roles"]
 async fn scope_failures_are_typed_on_product_and_identity_routes() -> Result<()> {
+    use tracing_subscriber::prelude::*;
+    let diagnostics = Diagnostics::default();
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(diagnostics.clone()),
+    )?;
     let c = Context::open("http_scope", &[]).await?;
     let management = crate::identity::management_tenant(
         &c.inputs.database("http_scope", "mdm_identity_runtime"),
@@ -46,7 +110,8 @@ async fn scope_failures_are_typed_on_product_and_identity_routes() -> Result<()>
                     format!("/api/v1/tenants/{tenant}/device-views"),
                     format!("/api/v1/identity/tenants/{tenant}/login-options"),
                 ] {
-                    let body = host::reject(
+                    let body = rejected(
+                        &diagnostics,
                         client.get(format!("{base}{path}")).send().await?,
                         status,
                         code,
@@ -88,13 +153,20 @@ async fn scope_failures_are_typed_on_product_and_identity_routes() -> Result<()>
                 .execute(&c.operator)
                 .await?;
             let failed = async {
-                host::reject(
+                rejected(
+                    &diagnostics,
                     client.get(&product).send().await?,
                     503,
                     "service_unavailable",
                 )
                 .await?;
-                host::reject(client.get(&sdk).send().await?, 503, "identity_unavailable").await?;
+                rejected(
+                    &diagnostics,
+                    client.get(&sdk).send().await?,
+                    503,
+                    "identity_unavailable",
+                )
+                .await?;
                 Ok::<_, anyhow::Error>(())
             }
             .await;

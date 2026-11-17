@@ -14,7 +14,11 @@ pub fn install_diagnostics() -> Result<(), ProcessError> {
     // environment overrides, or inherited span fields in this product sink.
     tracing_subscriber::registry()
         .with(tracing_subscriber::filter::filter_fn(|meta| {
-            meta.is_event() && meta.target() == "rss_axum::server"
+            meta.is_event()
+                && matches!(
+                    meta.target(),
+                    "rss_axum::server" | "rss_mdm_app::http_scope"
+                )
         }))
         .with(
             tracing_subscriber::fmt::layer()
