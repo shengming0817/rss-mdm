@@ -308,14 +308,45 @@ async fn discovery_recovery_preserves_the_lifecycle_and_tenant_pages() -> Result
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(90), &cancel);
+    use sha2::{Digest, Sha256};
     let policy_id = Uuid::new_v4();
+    let version = Uuid::new_v4();
+    // Archived policy cleanup may retain a historical Scope without executing devices.
+    let definition: rss_mdm_policy::Definition = serde_json::from_value(json!({
+        "scope": Uuid::new_v4(), "action": {"kind":"unmanage_device", "runLifetimeSeconds":300}
+    }))?;
+    definition.validate()?;
+    let rss_mdm_policy::Action::UnmanageDevice {
+        schedule,
+        run_lifetime_seconds,
+    } = &definition.action
+    else {
+        unreachable!()
+    };
     for tenant in &tenants {
+        let actor = rss_mdm_authorization_service::Actor::ApiKey {
+            instance: fixture.resources.config.identity.instance_id.clone(),
+            tenant: tenant.to_string(),
+            id: Uuid::new_v4(),
+        };
+        let frozen = serde_json::to_value(
+            rss_mdm_device_service::control::frozen::Frozen::UnmanageDevice {
+                schedule: schedule.clone(),
+                run_lifetime_seconds: *run_lifetime_seconds,
+                actor: actor.clone(),
+            },
+        )?;
         let mut tx = c.operator.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
             .bind(tenant.to_string())
             .execute(&mut *tx)
             .await?;
-        // Retained cleanup work is valid after a policy has been removed; no device journey is needed.
+        sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'archived',$4,$5,0)")
+            .bind(tenant.to_string()).bind(policy_id).bind(version).bind(serde_json::to_value(&definition)?)
+            .bind(serde_json::to_value(actor)?).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'unmanage_device',$4,$5)")
+            .bind(tenant.to_string()).bind(version).bind(policy_id).bind(&frozen)
+            .bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO mdm_script.policy_recovery(tenant_id,expected_epoch,policy) VALUES($1::uuid,1,$2)")
             .bind(tenant.to_string()).bind(policy_id).execute(&mut *tx).await?;
         tx.commit().await?;

@@ -114,6 +114,51 @@ impl SoftwareService {
             self.run_worker(policy, &cancel, &signals).await
         })
     }
+    /// Retry this discovery page before advancing the outer tenant cursor.
+    async fn discover_tenants(
+        &self,
+        after: Option<Uuid>,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> std::result::Result<Option<Vec<Uuid>>, rss_runtime::ShutdownError> {
+        loop {
+            if cancel.is_cancelled() {
+                self.readiness.stop();
+                return Ok(None);
+            }
+            let discovered = tokio::select! { biased;
+                    () = cancel.cancelled() => { self.readiness.stop(); return Ok(None); },
+                    result = tokio::time::timeout(Duration::from_secs(5), sqlx::query_scalar(
+                "SELECT tenant_id FROM mdm_software_deployment.work_scopes($1)",
+            )
+            .bind(after)
+            .fetch_all(&self.read_pool)) =>
+                        result.map_err(|_| rss_reconcile::ErrorKind::Deadline)
+                            .and_then(|page| page.map_err(|error| crate::discovery::classify(&error))),
+                };
+            if cancel.is_cancelled() {
+                self.readiness.stop();
+                return Ok(None);
+            }
+            self.readiness
+                .discovery(discovered.as_ref().map(|_| ()).map_err(|kind| *kind));
+            match discovered {
+                Ok(page) => return Ok(Some(page)),
+                Err(rss_reconcile::ErrorKind::Transient | rss_reconcile::ErrorKind::Deadline) => {
+                    // A failed page is not empty. Keep its cursor and rate-limit retries even under wake storms.
+                    tokio::select! { biased;
+                        () = cancel.cancelled() => { self.readiness.stop(); return Ok(None); },
+                        () = tokio::time::sleep(Duration::from_secs(5)) => {},
+                    }
+                    continue;
+                }
+                Err(kind) => {
+                    return Err(rss_runtime::ShutdownError::new(rss_reconcile::Error::new(
+                        kind,
+                    )));
+                }
+            };
+        }
+    }
     pub async fn run_worker(
         &self,
         policy: rss_reconcile::Policy,
@@ -126,43 +171,8 @@ impl SoftwareService {
         let mut after: Option<Uuid> = None;
         let mut worked = false;
         loop {
-            if cancel.is_cancelled() {
-                self.readiness.stop();
+            let Some(tenants) = self.discover_tenants(after, cancel).await? else {
                 return Ok(());
-            }
-            let discovered = tokio::select! { biased;
-                    () = cancel.cancelled() => { self.readiness.stop(); return Ok(()); },
-                    result = tokio::time::timeout(Duration::from_secs(5), sqlx::query_scalar(
-                "SELECT tenant_id FROM mdm_software_deployment.work_scopes($1)",
-            )
-            .bind(after)
-            .fetch_all(&self.read_pool)) =>
-                        result.map_err(|_| rss_reconcile::ErrorKind::Deadline)
-                            .and_then(|page| page.map_err(|error| crate::discovery::classify(&error))),
-                };
-            if cancel.is_cancelled() {
-                {
-                    self.readiness.stop();
-                    return Ok(());
-                }
-            }
-            self.readiness
-                .discovery(discovered.as_ref().map(|_| ()).map_err(|kind| *kind));
-            let tenants: Vec<Uuid> = match discovered {
-                Ok(page) => page,
-                Err(rss_reconcile::ErrorKind::Transient | rss_reconcile::ErrorKind::Deadline) => {
-                    // A failed page is not empty. Keep its cursor and rate-limit retries even under wake storms.
-                    tokio::select! { biased;
-                        () = cancel.cancelled() => { self.readiness.stop(); return Ok(()); },
-                        () = tokio::time::sleep(Duration::from_secs(5)) => {},
-                    }
-                    continue;
-                }
-                Err(kind) => {
-                    return Err(rss_runtime::ShutdownError::new(rss_reconcile::Error::new(
-                        kind,
-                    )));
-                }
             };
             if tenants.is_empty() {
                 after = None;
