@@ -657,3 +657,5 @@ async fn unbatched_self_service_waits_for_main_scope() -> Result<()> {
     c.close().await;
     Ok(())
 }
+
+mod download;

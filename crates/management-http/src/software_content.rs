@@ -21,7 +21,8 @@ pub fn register()
                 ),
             ),
         }
-        .assemble().rejections(crate::boundary::rejections)
+        .assemble()
+        .rejections(crate::boundary::rejections)
     }
 }
 use crate::Error;

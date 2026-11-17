@@ -342,7 +342,8 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
             api_v1_agent_enroll: public_packages,
             api_v1: protected,
         }
-        .assemble().rejections(crate::boundary::rejections)
+        .assemble()
+        .rejections(crate::boundary::rejections)
     }
 }
 pub fn workspace_routes() -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {

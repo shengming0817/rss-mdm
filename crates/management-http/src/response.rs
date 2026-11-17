@@ -252,10 +252,19 @@ impl rss_mdm_http_contract::signature::Output for Error {
 
 impl Error {
     /// The same closed projection used by IntoResponse, for outer host rejection declarations.
-    pub fn response_contract(&self) -> rss_mdm_http_contract::signature::Response { describe(self.code()) }
+    pub fn response_contract(&self) -> rss_mdm_http_contract::signature::Response {
+        describe(self.code())
+    }
 }
 fn describe(code: Code) -> rss_mdm_http_contract::signature::Response {
-    let mut response = rss_mdm_http_contract::signature::Response::json::<Body>(code.status().as_u16());
-    response.body.as_mut().expect("JSON error body").schema.value["properties"]["code"]["const"] = serde_json::to_value(code).expect("closed error code");
+    let mut response =
+        rss_mdm_http_contract::signature::Response::json::<Body>(code.status().as_u16());
+    response
+        .body
+        .as_mut()
+        .expect("JSON error body")
+        .schema
+        .value["properties"]["code"]["const"] =
+        serde_json::to_value(code).expect("closed error code");
     response
 }

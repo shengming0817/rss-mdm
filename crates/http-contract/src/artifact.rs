@@ -35,7 +35,9 @@ pub fn document(
                 None => endpoint.path.clone(),
             };
             let mut described = (**signature).clone();
-            described.responses.extend(endpoint.ingress_rejections.clone());
+            described
+                .responses
+                .extend(endpoint.ingress_rejections.clone());
             for error in crate::validation::signature(&described, &handler_path) {
                 errors.push(format!(
                     "{listener} {} {}: {error}",

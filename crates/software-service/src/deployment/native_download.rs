@@ -29,9 +29,15 @@ impl NativeSoftware {
     ) -> Result<Task, Error> {
         let aad = aad(tenant, operation)?;
         let tag = protection
-            .mac(&serde_json::to_vec(&package.artifact).map_err(|_| Error::Input)?, &aad)
+            .mac(
+                &serde_json::to_vec(&package.artifact).map_err(|_| Error::Input)?,
+                &aad,
+            )
             .map_err(|_| Error::Integrity)?;
-        let token = tag.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let token = tag
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
         let path = PACKAGE_PATH.replace("{id}", &operation.to_string());
         let url = format!("{}{path}?token={token}", self.origin.trim_end_matches('/'));
         package.task(operation, &url)
@@ -72,11 +78,122 @@ pub(crate) fn verify_token(
             .map_err(|_| Error::NotAdmitted)?;
     }
     protection
-        .verify_mac(&serde_json::to_vec(artifact).map_err(|_| Error::Input)?, &aad(tenant, operation)?, &tag)
+        .verify_mac(
+            &serde_json::to_vec(artifact).map_err(|_| Error::Input)?,
+            &aad(tenant, operation)?,
+            &tag,
+        )
         .map_err(|_| Error::NotAdmitted)
 }
 
 fn aad(tenant: TenantId, operation: Uuid) -> Result<rss_mdm_native_protection::DerivedAad, Error> {
     rss_mdm_native_protection::canonical::aad(tenant, "software.download", &operation)
         .map_err(|_| Error::Input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::native::Identity;
+    use super::*;
+    use rss_mdm_policy::SoftwareTarget;
+    use rss_mdm_resource as r;
+
+    #[test]
+    fn frozen_download_binds_tenant_operation_and_artifact_for_every_platform() {
+        let protector = Protector::new(&[57; 32]).unwrap();
+        let tenant = TenantId::parse(&Uuid::new_v4().to_string()).unwrap();
+        let operation = Uuid::new_v4();
+        let identities = [
+            Identity::Msi {
+                product: Uuid::new_v4(),
+                version: "1.2".into(),
+            },
+            Identity::Msix {
+                family: "Acme.App_0123456789abc".into(),
+                identity: r::MsixIdentity {
+                    name: "Acme.App".into(),
+                    publisher: "CN=Acme".into(),
+                    version: [1, 2, 0, 0],
+                    architecture: r::MsixArchitecture::X86_64,
+                    resource_id: String::new(),
+                },
+            },
+            Identity::Pkg {
+                receipt: "com.acme.app".into(),
+                version: "1.2".into(),
+            },
+        ];
+        for identity in identities {
+            let package = Package {
+                identity,
+                artifact: r::SoftwareArtifact {
+                    reference: "package".into(),
+                    origin: None,
+                    length: 3,
+                    sha256: r::Digest::of(b"msi").bytes(),
+                },
+                timeout_seconds: 600,
+                minimum_os: None,
+            };
+            let frozen = NativeSoftware {
+                origin: "https://frozen.example.test/".into(),
+                packages: [(SoftwareTarget::WindowsX86_64, package.clone())].into(),
+            };
+            let task = frozen
+                .task(&package, operation, &protector, tenant)
+                .unwrap();
+            let url = format!(
+                "https://frozen.example.test/api/v1/software/installations/{operation}/package?token="
+            );
+            let encoded = serde_json::to_string(&task).unwrap();
+            let start = encoded
+                .find(&url)
+                .expect("native platform consumes the signed URL")
+                + url.len();
+            let token = &encoded[start..start + 64];
+            verify_token(&protector, tenant, operation, &package.artifact, token).unwrap();
+            assert!(
+                verify_token(&protector, tenant, Uuid::new_v4(), &package.artifact, token).is_err()
+            );
+            assert!(
+                verify_token(
+                    &protector,
+                    TenantId::parse(&Uuid::new_v4().to_string()).unwrap(),
+                    operation,
+                    &package.artifact,
+                    token
+                )
+                .is_err()
+            );
+            let mut changed = package.artifact.clone();
+            changed.sha256[0] ^= 1;
+            assert!(verify_token(&protector, tenant, operation, &changed, token).is_err());
+            assert!(
+                verify_token(&protector, tenant, operation, &package.artifact, "invalid").is_err()
+            );
+            let restarted: NativeSoftware =
+                serde_json::from_value(serde_json::to_value(&frozen).unwrap()).unwrap();
+            assert!(
+                restarted
+                    .package_for_task(
+                        operation,
+                        &Protector::new(&[57; 32]).unwrap(),
+                        tenant,
+                        &task
+                    )
+                    .unwrap()
+                    .is_some()
+            );
+            let changed_host = NativeSoftware {
+                origin: "https://new.example.test".into(),
+                ..restarted
+            };
+            assert!(
+                changed_host
+                    .package_for_task(operation, &protector, tenant, &task)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
 }

@@ -75,13 +75,22 @@ struct HttpExecution {
     federation: Option<rss_identity_postgres::Federation>,
 }
 const TENANT_PREFIXES: [&str; 3] = [
-    "/api/v1/identity/tenants/", "/api/v1/identity-host/tenants/", "/api/v1/tenants/",
+    "/api/v1/identity/tenants/",
+    "/api/v1/identity-host/tenants/",
+    "/api/v1/tenants/",
 ];
 #[derive(Clone, Copy)]
-enum ScopeFailure { Malformed, Forbidden, Unavailable, Deadline }
+enum ScopeFailure {
+    Malformed,
+    Forbidden,
+    Unavailable,
+    Deadline,
+}
 #[derive(serde::Serialize, schemars::JsonSchema)]
 #[serde(tag = "code", rename_all = "snake_case")]
-enum IdentityScopeFailure { IdentityUnavailable }
+enum IdentityScopeFailure {
+    IdentityUnavailable,
+}
 impl ScopeFailure {
     fn product_error(self) -> rss_mdm_management_http::Error {
         use rss_mdm_management_http::{Error, Failure};
@@ -97,25 +106,45 @@ impl ScopeFailure {
     }
     fn response(self, path: &str) -> Response {
         let response = if self.identity(path) {
-            (StatusCode::SERVICE_UNAVAILABLE, axum::Json(IdentityScopeFailure::IdentityUnavailable)).into_response()
-        } else { self.product_error().into_response() };
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(IdentityScopeFailure::IdentityUnavailable),
+            )
+                .into_response()
+        } else {
+            self.product_error().into_response()
+        };
         let mut response = response;
         if matches!(self, Self::Deadline) && self.identity(path) {
-            response.extensions_mut().insert(rss_identity_http_axum::HttpFailure::RequestTimeout);
+            response
+                .extensions_mut()
+                .insert(rss_identity_http_axum::HttpFailure::RequestTimeout);
         }
         rss_mdm_management_http::boundary::secure(response, uuid::Uuid::new_v4())
     }
     fn contract(self, path: &str) -> rss_mdm_http_contract::signature::Response {
         let response = if self.identity(path) {
             rss_mdm_http_contract::signature::Response::json::<IdentityScopeFailure>(503)
-        } else { self.product_error().response_contract() };
+        } else {
+            self.product_error().response_contract()
+        };
         rss_mdm_management_http::boundary::rejection_contract(response)
     }
 }
-pub(crate) fn scope_rejections(_: &str, path: &str) -> Vec<rss_mdm_http_contract::signature::Response> {
+pub(crate) fn scope_rejections(
+    _: &str,
+    path: &str,
+) -> Vec<rss_mdm_http_contract::signature::Response> {
     let mut responses = vec![ScopeFailure::Unavailable.contract(path)];
-    if TENANT_PREFIXES.iter().any(|prefix| path.starts_with(prefix)) || path.starts_with("/api/v1/tenant-administration/") {
-        responses.extend([ScopeFailure::Malformed.contract(path), ScopeFailure::Forbidden.contract(path)]);
+    if TENANT_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+        || path.starts_with("/api/v1/tenant-administration/")
+    {
+        responses.extend([
+            ScopeFailure::Malformed.contract(path),
+            ScopeFailure::Forbidden.contract(path),
+        ]);
     }
     responses
 }
@@ -142,9 +171,9 @@ async fn execution_scope(
         Some(scope.management.tenant())
     } else {
         let locator = TENANT_PREFIXES
-        .iter()
-        .find_map(|prefix| path.strip_prefix(prefix))
-        .and_then(|rest| rest.split('/').next());
+            .iter()
+            .find_map(|prefix| path.strip_prefix(prefix))
+            .and_then(|rest| rest.split('/').next());
         match locator {
             Some(raw) => match TenantId::parse(raw) {
                 Ok(tenant) if tenant.to_string() == raw => Some(tenant),

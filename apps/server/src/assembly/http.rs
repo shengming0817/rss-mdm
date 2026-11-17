@@ -561,9 +561,13 @@ pub(crate) fn from_state(
     }
     let apple = state.apple.clone();
     let browser = BrowserRoutes {
-        software_downloads: rss_mdm_management_http::software_content::routes(Arc::new(super::software::Downloads {
-            software: state.software.service.clone(), content: state.content_writer.clone(),
-        }), management_boundary.clone()),
+        software_downloads: rss_mdm_management_http::software_content::routes(
+            Arc::new(super::software::Downloads {
+                software: state.software.service.clone(),
+                content: state.content_writer.clone(),
+            }),
+            management_boundary.clone(),
+        ),
         device_access: super::device_access::browser(
             state.da.as_ref().map(|da| {
                 Arc::new(rss_mdm_management_http::operation_diagnostics::Services {
@@ -600,7 +604,8 @@ pub(crate) fn from_state(
             },
         )),
     }
-    .assemble().rejections(crate::identity::scope_rejections);
+    .assemble()
+    .rejections(crate::identity::scope_rejections);
     let browser = authentication
         .merge(browser.into_checked_axum(rss_mdm_http_contract::module::Listener::Browser));
     let browser = state
@@ -808,7 +813,10 @@ rss_mdm_http_contract::route_module! {
 /// Third-party Identity routers retain their external owner; product adapters remain included.
 pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<String>> {
     let browser = BrowserRoutes {
-        software_downloads: rss_mdm_management_http::software_content::register().bind_with(None::<&Arc<dyn rss_mdm_management_http::software_content::Packages>>, Clone::clone),
+        software_downloads: rss_mdm_management_http::software_content::register().bind_with(
+            None::<&Arc<dyn rss_mdm_management_http::software_content::Packages>>,
+            Clone::clone,
+        ),
         device_access: super::device_access::browser(None, None, true),
         tenants: rss_mdm_management_http::tenant_administration::contract_routes(
             crate::administration::tenants::http::mount_registry(None, None, true),
@@ -843,7 +851,8 @@ pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<St
             Clone::clone,
         ),
     }
-    .assemble().rejections(crate::identity::scope_rejections);
+    .assemble()
+    .rejections(crate::identity::scope_rejections);
     let agent = mount_agent(
         None,
         empty_da_agent_routes(),

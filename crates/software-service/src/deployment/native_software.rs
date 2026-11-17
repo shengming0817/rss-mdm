@@ -213,9 +213,21 @@ impl SoftwareService {
                         return Err(Error::NotFound.into());
                     };
                     let native = action.native.as_ref().ok_or(Error::Forbidden)?;
-                    let package = native.package_for_task(id, &s.transactions.protection, tx.tenant_id(), &op.request.task)?
+                    let package = native
+                        .package_for_task(
+                            id,
+                            &s.transactions.protection,
+                            tx.tenant_id(),
+                            &op.request.task,
+                        )?
                         .ok_or(Error::Forbidden)?;
-                    super::native_download::verify_token(&s.transactions.protection, tx.tenant_id(), id, &package.artifact, token)?;
+                    super::native_download::verify_token(
+                        &s.transactions.protection,
+                        tx.tenant_id(),
+                        id,
+                        &package.artifact,
+                        token,
+                    )?;
                     let now = s
                         .transactions
                         .installation_authorization_time(storage::now(tx).await?);
@@ -300,7 +312,10 @@ pub async fn package_on(
     };
     let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
     let native = action.native.as_ref().ok_or(Error::Forbidden)?;
-    Ok(native.package_for_task(*operation, protection, tenant_id, task)?.cloned())
+    Ok(native
+        .package_for_task(*operation, protection, tenant_id, task)
+        .map_err(|_| Error::Unavailable(crate::deployment::Failure::SoftwareCatalogInvariant))?
+        .cloned())
 }
 
 /// Shared selected-software authority facts for dispatch and directory reads.

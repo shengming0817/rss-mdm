@@ -29,9 +29,7 @@ pub struct Package {
     pub minimum_os: Option<[u16; 4]>,
 }
 impl Package {
-    pub fn compile(
-        definition: &r::SoftwareDefinition,
-    ) -> std::result::Result<Self, Error> {
+    pub fn compile(definition: &r::SoftwareDefinition) -> std::result::Result<Self, Error> {
         let spec = definition.spec();
         if !spec.dependencies.is_empty()
             || spec.reboot != r::SoftwareReboot::Report

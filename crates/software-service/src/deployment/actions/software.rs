@@ -122,7 +122,9 @@ pub(crate) async fn slot_in(
         let package = policy
             .assignment
             .frozen
-            .native.as_ref().ok_or(Error::Unsupported)?
+            .native
+            .as_ref()
+            .ok_or(Error::Unsupported)?
             .packages
             .get(&rss_mdm_policy::SoftwareTarget::new(p, a))
             .ok_or(Error::Unsupported)?;

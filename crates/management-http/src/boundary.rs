@@ -23,26 +23,49 @@ pub struct Envelope {
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub requests: Arc<tokio::sync::Semaphore>,
 }
-pub fn wrap<M: rss_mdm_http_contract::module::Declaration>(router: Router<(), M>, envelope: Envelope) -> Router<(), M> {
+pub fn wrap<M: rss_mdm_http_contract::module::Declaration>(
+    router: Router<(), M>,
+    envelope: Envelope,
+) -> Router<(), M> {
     wrap_with(router, envelope, Admission::Bound)
 }
 
 // Only the software ingress can choose deferred scope discovery; ordinary routes stay bound.
-pub(crate) fn wrap_download<M: rss_mdm_http_contract::module::Declaration>(router: Router<(), M>, envelope: Envelope) -> Router<(), M> {
+pub(crate) fn wrap_download<M: rss_mdm_http_contract::module::Declaration>(
+    router: Router<(), M>,
+    envelope: Envelope,
+) -> Router<(), M> {
     wrap_with(router, envelope, Admission::Download)
 }
 #[derive(Clone, Copy)]
-enum Admission { Bound, Download }
+enum Admission {
+    Bound,
+    Download,
+}
 #[derive(Clone, Copy)]
 struct DownstreamResponse;
-fn wrap_with<M: rss_mdm_http_contract::module::Declaration>(router: Router<(), M>, envelope: Envelope, admission: Admission) -> Router<(), M> {
+fn wrap_with<M: rss_mdm_http_contract::module::Declaration>(
+    router: Router<(), M>,
+    envelope: Envelope,
+    admission: Admission,
+) -> Router<(), M> {
     let endpoints = Arc::new(router.endpoints().to_vec());
     router
-        .layer(middleware::from_fn_with_state(envelope.requests.clone(), controlled_body))
-        .layer(middleware::from_fn_with_state((envelope, endpoints, admission), admit))
+        .layer(middleware::from_fn_with_state(
+            envelope.requests.clone(),
+            controlled_body,
+        ))
+        .layer(middleware::from_fn_with_state(
+            (envelope, endpoints, admission),
+            admit,
+        ))
 }
 // The marker identifies a completed downstream response without inspecting its status or body.
-async fn controlled_body(State(requests): State<Arc<tokio::sync::Semaphore>>, request: Request, next: Next) -> Response {
+async fn controlled_body(
+    State(requests): State<Arc<tokio::sync::Semaphore>>,
+    request: Request,
+    next: Next,
+) -> Response {
     let mut response = body(request, next, requests).await;
     response.extensions_mut().insert(DownstreamResponse);
     response
@@ -67,12 +90,19 @@ fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
     }
 }
 async fn admit(
-    State((envelope, endpoints, admission)): State<(Envelope, Arc<Vec<rss_mdm_http_contract::Endpoint>>, Admission)>,
+    State((envelope, endpoints, admission)): State<(
+        Envelope,
+        Arc<Vec<rss_mdm_http_contract::Endpoint>>,
+        Admission,
+    )>,
     mut request: Request,
     next: Next,
 ) -> Response {
     let started = envelope.clock.now();
-    let binding = request.extensions().get::<rss_transactional_messaging::fence::ExecutionBinding>().copied();
+    let binding = request
+        .extensions()
+        .get::<rss_transactional_messaging::fence::ExecutionBinding>()
+        .copied();
     if matches!(admission, Admission::Bound) && binding.is_none() {
         return rejection(Error::Forbidden);
     }
@@ -94,8 +124,19 @@ async fn admit(
             request_intent,
         );
     let audit = match admission {
-        Admission::Bound => RequestAudit::new(rss_mdm_audit_integration::Origin::Request, envelope.profile, binding.expect("bound admission"), route_action(route), intent),
-        Admission::Download => RequestAudit::unresolved(rss_mdm_audit_integration::Origin::Request, envelope.profile, "native-package-download", rss_mdm_audit_integration::AuditIntent::Routine),
+        Admission::Bound => RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Request,
+            envelope.profile,
+            binding.expect("bound admission"),
+            route_action(route),
+            intent,
+        ),
+        Admission::Download => RequestAudit::unresolved(
+            rss_mdm_audit_integration::Origin::Request,
+            envelope.profile,
+            "native-package-download",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        ),
     };
     let id = audit.request_id();
     let _permit = match envelope.admission.clone().try_acquire_owned() {
@@ -117,8 +158,13 @@ async fn admit(
     {
         project(Error::Malformed)
     } else {
-        let mut response = rss_axum::request_control(State(envelope.request_budget), request, next).await;
-        if response.extensions_mut().remove::<DownstreamResponse>().is_none() {
+        let mut response =
+            rss_axum::request_control(State(envelope.request_budget), request, next).await;
+        if response
+            .extensions_mut()
+            .remove::<DownstreamResponse>()
+            .is_none()
+        {
             response = project(Error::Unavailable(Failure::RequestDeadline));
         }
         response
@@ -249,10 +295,18 @@ pub fn rejection(error: Error) -> Response {
     secure(project(error), uuid::Uuid::new_v4())
 }
 /// Describe exactly the response decorations on a product rejection.
-pub fn rejection_contract(mut response: rss_mdm_http_contract::signature::Response) -> rss_mdm_http_contract::signature::Response {
+pub fn rejection_contract(
+    mut response: rss_mdm_http_contract::signature::Response,
+) -> rss_mdm_http_contract::signature::Response {
     use rss_mdm_http_contract::signature::Schema;
-    response.headers.insert("x-request-id".into(), Schema::response::<uuid::Uuid>());
-    for (name, value) in [("cache-control", "no-store"), ("referrer-policy", "no-referrer"), ("x-content-type-options", "nosniff")] {
+    response
+        .headers
+        .insert("x-request-id".into(), Schema::response::<uuid::Uuid>());
+    for (name, value) in [
+        ("cache-control", "no-store"),
+        ("referrer-policy", "no-referrer"),
+        ("x-content-type-options", "nosniff"),
+    ] {
         let mut schema = Schema::response::<String>();
         schema.value["const"] = value.into();
         response.headers.insert(name.into(), schema);
@@ -261,13 +315,28 @@ pub fn rejection_contract(mut response: rss_mdm_http_contract::signature::Respon
 }
 pub(crate) fn rejections(_: &str, _: &str) -> Vec<rss_mdm_http_contract::signature::Response> {
     use rss_mdm_http_contract::signature::Output;
-    let errors = [Error::Malformed, Error::Forbidden, Error::RequestTooLarge,
-        Error::Unavailable(Failure::RequestDeadline), Error::CommitUnknown, Error::RollbackFailed,
-        Error::Unavailable(Failure::AuditIntegrity), Error::Unavailable(Failure::AuditContract)];
-    let mut responses = errors.iter().map(|error| rejection_contract(error.response_contract())).collect::<Vec<_>>();
-    let mut limited = <Error as Output>::responses().into_iter().find(|response|
-        response.body.as_ref().is_some_and(|body| body.schema.value["properties"]["code"]["const"] == "request_limited")
-    ).expect("closed request limit code");
+    let errors = [
+        Error::Malformed,
+        Error::Forbidden,
+        Error::RequestTooLarge,
+        Error::Unavailable(Failure::RequestDeadline),
+        Error::CommitUnknown,
+        Error::RollbackFailed,
+        Error::Unavailable(Failure::AuditIntegrity),
+        Error::Unavailable(Failure::AuditContract),
+    ];
+    let mut responses = errors
+        .iter()
+        .map(|error| rejection_contract(error.response_contract()))
+        .collect::<Vec<_>>();
+    let mut limited = <Error as Output>::responses()
+        .into_iter()
+        .find(|response| {
+            response.body.as_ref().is_some_and(|body| {
+                body.schema.value["properties"]["code"]["const"] == "request_limited"
+            })
+        })
+        .expect("closed request limit code");
     let mut retry = rss_mdm_http_contract::signature::Schema::response::<String>();
     retry.value["const"] = "1".into();
     limited.headers.insert("retry-after".into(), retry);
