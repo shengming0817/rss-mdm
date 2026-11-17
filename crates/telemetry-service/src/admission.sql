@@ -1,4 +1,4 @@
-WITH tables AS (SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_telemetry' AND c.relkind='r'),
+WITH tables AS (SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_telemetry' AND c.relkind='r' AND c.relname<>'reader_operations'),
 execution_roles AS (SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(session_user,oid,'SET')),
 reachable AS (SELECT r.* FROM pg_roles r WHERE EXISTS(SELECT 1 FROM execution_roles e WHERE pg_has_role(e.oid,r.oid,'USAGE'))),
 trust_tables AS (
@@ -13,7 +13,8 @@ trust_tables AS (
  ARRAY['tenant_id','device','source','epoch','id','scope','sequence','started_at','sealed_at','attempts','result','reason','batch','digest','input_digest','delivery_pending'] AS inserts
 ), isolated AS (SELECT oid FROM tables UNION SELECT oid FROM trust_tables UNION SELECT 'mdm_access.collection_runs'::regclass)
 SELECT
- (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['batches','definition_progress','gap_reports','maintenance','observation_receipts','rate_windows','resources','retention_targets','storage_binding'] FROM tables)
+ NOT EXISTS(SELECT FROM reachable r WHERE has_any_column_privilege(r.oid,'mdm_telemetry.reader_operations','SELECT,INSERT,UPDATE,REFERENCES') OR has_table_privilege(r.oid,'mdm_telemetry.reader_operations','DELETE,TRUNCATE,TRIGGER'))
+ AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['batches','definition_progress','gap_reports','maintenance','observation_receipts','rate_windows','resources','retention_targets','storage_binding'] FROM tables)
  AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication OR oid IN(SELECT relowner FROM tables))
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE NOT relrowsecurity OR NOT relforcerowsecurity OR NOT has_table_privilege(current_user,t.oid,'SELECT') OR (has_table_privilege(current_user,t.oid,'INSERT')<>(t.relname<>'storage_binding'))
  OR (has_table_privilege(current_user,t.oid,'DELETE')<>(t.relname='gap_reports'))

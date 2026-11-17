@@ -269,6 +269,7 @@ async fn verify_reader_catalog(
     input: &Request,
     tenant: rss_request_context::TenantId,
     name: &str,
+    detached: bool,
 ) -> Result<()> {
     user(name)?;
     let login = literal(name);
@@ -278,9 +279,14 @@ async fn verify_reader_catalog(
     let roles = format!(
         "SELECT count() FROM system.role_grants WHERE user_name={login} FORMAT TabSeparated"
     );
+    let targets = if detached {
+        format!("(apply_to_list=[{login}] OR empty(apply_to_list))")
+    } else {
+        format!("apply_to_list=[{login}]")
+    };
     let mut expected = Vec::new();
     for table in ["raw", "summaries"] {
-        expected.push(format!("(table={table} AND short_name={policy} AND replaceRegexpAll(ifNull(select_filter,''),'[[:space:]]','')={filter} AND NOT is_restrictive AND NOT apply_to_all AND apply_to_list=[{login}] AND empty(apply_to_except))",table=literal(table),policy=literal(&format!("telemetry_reader_{name}_{table}")),filter=literal(&format!("tenant='{}'",tenant))));
+        expected.push(format!("(table={table} AND short_name={policy} AND replaceRegexpAll(ifNull(select_filter,''),'[[:space:]]','')={filter} AND NOT is_restrictive AND NOT apply_to_all AND {targets} AND empty(apply_to_except))",table=literal(table),policy=literal(&format!("telemetry_reader_{name}_{table}")),filter=literal(&format!("tenant='{}'",tenant))));
     }
     let policies = format!(
         "SELECT count() FROM system.row_policies WHERE database='rss_ts_ch' AND (apply_to_all OR has(apply_to_list,{login}) OR short_name IN ({},{})) AND NOT ({}) FORMAT TabSeparated",
@@ -310,6 +316,37 @@ async fn authenticates(input: &Request, name: &str, secret: &str) -> bool {
     .await
     .is_ok_and(|v| v.trim() == name)
 }
+async fn verify_login(
+    input: &Request,
+    material: &rss_mdm_telemetry_service::selection::Reader,
+    previous: Option<&rss_mdm_telemetry_service::selection::Reader>,
+) -> Result<()> {
+    for secret in [
+        previous.and_then(|r| r.password.as_deref()),
+        material.password.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if authenticates(input, &material.user, secret).await {
+            return Ok(());
+        }
+    }
+    Err(Error::Conflict)
+}
+async fn drop_reader_policies(input: &Request, name: &str) -> Result<()> {
+    for table in ["raw", "summaries"] {
+        execute(
+            input,
+            &format!("remove-reader-policy-{table}"),
+            &format!(
+                "DROP ROW POLICY IF EXISTS telemetry_reader_{name}_{table} ON rss_ts_ch.{table}"
+            ),
+        )
+        .await?;
+    }
+    Ok(())
+}
 /// Establish policies before granting table access. The caller reserves a new login
 /// or verifies its durable ownership before replay, rotation and restore.
 pub(in crate::installation) async fn provision_reader(
@@ -320,24 +357,9 @@ pub(in crate::installation) async fn provision_reader(
 ) -> Result<()> {
     let name = user(&material.user)?;
     let exists = reader_exists(input, &material.user).await?;
-    verify_reader_catalog(input, tenant, &material.user).await?;
+    verify_reader_catalog(input, tenant, &material.user, !exists).await?;
     if exists {
-        let mut owned = false;
-        for secret in [
-            previous.and_then(|r| r.password.as_deref()),
-            material.password.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if authenticates(input, &material.user, secret).await {
-                owned = true;
-                break;
-            }
-        }
-        if !owned {
-            return Err(Error::Conflict);
-        }
+        verify_login(input, material, previous).await?;
     }
     let Some(password) = material.password.as_ref() else {
         execute(
@@ -346,19 +368,12 @@ pub(in crate::installation) async fn provision_reader(
             &format!("DROP USER IF EXISTS {name}"),
         )
         .await?;
-        for table in ["raw", "summaries"] {
-            execute(
-                input,
-                &format!("retire-policy-{table}"),
-                &format!(
-                    "DROP ROW POLICY IF EXISTS telemetry_reader_{}_{table} ON rss_ts_ch.{table}",
-                    material.user
-                ),
-            )
-            .await?;
-        }
-        return Ok(());
+        return drop_reader_policies(input, &material.user).await;
     };
+    if !exists {
+        // Detached exact policies can survive a prior DROP USER. No live login uses these names.
+        drop_reader_policies(input, &material.user).await?;
+    }
     execute(
         input,
         "create-reader",

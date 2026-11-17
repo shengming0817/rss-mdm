@@ -215,7 +215,9 @@ async fn fresh(root: &Path, administrator: &crate::config::Database) -> Result<I
         serde_json::to_vec(&installation_input)?,
     )?;
     let input: Input = crate::config::load(&root.join("install.json"))?;
-    let first = install(input).await?;
+    let first = install(input)
+        .await
+        .context("initialize fresh installation")?;
     let public: Value = serde_json::from_slice(&std::fs::read(
         root.join("gateway")
             .join(first.host_id.simple().to_string())

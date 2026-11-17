@@ -669,4 +669,4 @@ pub(in crate::installation) async fn restore_roles(input: &Request, identity: Uu
 
 /// Add one tenant-scoped ClickHouse reader to an existing admitted installation.
 mod tenant;
-pub use tenant::{TenantRequest, prepare_tenant};
+pub use tenant::{TenantRequest, cancel, prepare_tenant, status};

@@ -4,7 +4,7 @@ pub async fn execute() -> Result<(), ProcessError> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "rss-mdm install|observe-installation|maintain-materials|maintain-content-storage|maintain-default-telemetry|prepare-telemetry|prepare-telemetry-tenant|maintain-telemetry-storage|rotate-protection|initialize-ca|configure-host|public-host-config|export-webhook-key|backup-installation|restore-installation|serve|migrate|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe|http-contract"
+            "rss-mdm install|observe-installation|maintain-materials|maintain-content-storage|maintain-default-telemetry|prepare-telemetry|prepare-telemetry-tenant|telemetry-tenant-operation-status|cancel-telemetry-tenant-operation|maintain-telemetry-storage|rotate-protection|initialize-ca|configure-host|public-host-config|export-webhook-key|backup-installation|restore-installation|serve|migrate|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe|http-contract"
         );
         return Ok(());
     }
@@ -184,6 +184,28 @@ async fn installation(command: &str, path: &std::path::Path) -> Result<(), Proce
             println!(
                 "{}",
                 serde_json::to_string(&receipt).expect("tenant telemetry receipt")
+            );
+            Ok(())
+        }
+        #[cfg(unix)]
+        "telemetry-tenant-operation-status" => {
+            let result = crate::installation::providers::telemetry::status(config::load(path)?)
+                .await
+                .map_err(|e| setup_failure("telemetry.tenant.status", e))?;
+            println!(
+                "{}",
+                serde_json::to_string(&result).expect("public operation status")
+            );
+            Ok(())
+        }
+        #[cfg(unix)]
+        "cancel-telemetry-tenant-operation" => {
+            let result = crate::installation::providers::telemetry::cancel(config::load(path)?)
+                .await
+                .map_err(|e| setup_failure("telemetry.tenant.cancel", e))?;
+            println!(
+                "{}",
+                serde_json::to_string(&result).expect("public operation status")
             );
             Ok(())
         }

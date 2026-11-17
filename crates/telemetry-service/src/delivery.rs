@@ -175,7 +175,7 @@ async fn deliver_on(
     history: Option<Batch>,
     cutoff: Deadline,
 ) -> Result<(), Error> {
-    let backend = service.backend_on(c, execution.tenant()).await?;
+    let backend = service.work_backend_on(c, execution.tenant()).await?;
     use sqlx::Row;
     let row = sqlx::query("SELECT input_digest, context_digest, delivery, device, credential, epoch FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND id = $2 FOR UPDATE")
         .bind(execution.tenant().to_string()).bind(input.input.batch_id).fetch_one(&mut *c).await?;

@@ -45,6 +45,13 @@
     },
     {
       "schema": "mdm_telemetry",
+      "table": "reader_operations",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_telemetry",
       "table": "resources",
       "read_write": false,
       "updates": [],

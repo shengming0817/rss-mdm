@@ -246,6 +246,16 @@ class T2Status(unittest.TestCase):
             self.assertEqual(evidence['status'], 'failed')
             self.assertFalse((output / 'junit.xml').exists())
 
+    def test_shared_telemetry_inputs(self):
+        for path in ('apps/server/src/lifecycle.rs','apps/server/src/runtime_diagnostics.rs',
+                     'crates/management-http/src/telemetry.rs',
+                     'crates/agent-wire/tests/fixtures/telemetry-v1-vectors.json'):
+            self.assertIn('telemetry.shared_installation', affected([path]))
+        for path in ('hack/t2_telemetry.py','apps/server/tests/foundation/lifecycle_telemetry_data.rs'):
+            selected=affected([path])
+            self.assertIn('telemetry.shared_installation', selected)
+            self.assertNotIn('foundation.lifecycle', selected)
+
     def test_real_shutdown_inputs_select_the_existing_lifecycle_proof(self):
         from ci_registry import ROOT
         for path, expected in (

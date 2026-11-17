@@ -147,7 +147,10 @@ pub struct Service {
     running: std::sync::atomic::AtomicBool,
 }
 impl Service {
-    /// Bind only already-admitted dependencies; never install or repair schemas here.
+    /// True when the host actually opened every configured installation.
+    pub fn admits_installations(&self, count: usize) -> bool {
+        self.resources.len() == count
+    }
     pub fn new(
         probe: rss_transactional_messaging::fence::ExecutionBinding,
         runtime: Arc<PgRuntime>,
@@ -385,16 +388,29 @@ impl Service {
             std::time::Duration::from_secs(6),
         )
         .map_err(|_| Error::Storage)?;
-        self.backend_until(c, tenant, cutoff).await
+        self.backend_until(c, tenant, cutoff, false).await
+    }
+    async fn work_backend_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        tenant: TenantId,
+    ) -> Result<backend::Selected, Error> {
+        let cutoff = rss_request_context::Deadline::from_timeout(
+            &backend::SystemClock,
+            std::time::Duration::from_secs(6),
+        )
+        .map_err(|_| Error::Storage)?;
+        self.backend_until(c, tenant, cutoff, true).await
     }
     async fn backend_until(
         &self,
         c: &mut sqlx::PgConnection,
         tenant: TenantId,
         cutoff: rss_request_context::Deadline,
+        draining_worker: bool,
     ) -> Result<backend::Selected, Error> {
         selection::lock_read(c, tenant).await?;
-        let row = selection::load_row(c, tenant, true)
+        let row = selection::load_row(c, tenant, true, draining_worker)
             .await?
             .ok_or(Error::Storage)?;
         let resource = self
@@ -441,7 +457,9 @@ impl Service {
                     Box::pin(async move {
                         tx.with_connection(move |c| {
                             Box::pin(async move {
-                                Ok(service.backend_until(c, execution.tenant(), cutoff).await)
+                                Ok(service
+                                    .backend_until(c, execution.tenant(), cutoff, false)
+                                    .await)
                             })
                         })
                         .await

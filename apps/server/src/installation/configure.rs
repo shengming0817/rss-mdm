@@ -791,15 +791,29 @@ async fn apply_change(
                 return Err(Error::Input);
             }
             settings.validate().map_err(|_| Error::Input)?;
+            let backend = settings.open_backend().await.map_err(|_| Error::Storage)?;
+            let deadline = rss_request_context::Deadline::from_timeout(
+                &rss_mdm_telemetry_service::backend::SystemClock,
+                std::time::Duration::from_secs(10),
+            )
+            .map_err(|_| Error::Storage)?;
+            backend.close(deadline).await.map_err(|_| Error::Storage)?;
             let value = serde_json::to_value(settings).map_err(|_| Error::Input)?;
             let resources = runtime["telemetry"].as_array_mut().ok_or(Error::Corrupt)?;
             if let Some(existing) = resources
-                .iter()
+                .iter_mut()
                 .find(|r| r["resource_id"] == value["resource_id"])
             {
-                if existing != &value {
+                let previous: crate::telemetry::Config =
+                    serde_json::from_value(existing.clone()).map_err(|_| Error::Corrupt)?;
+                if previous
+                    .configuration_binding()
+                    .map_err(|_| Error::Corrupt)?
+                    != settings.configuration_binding().map_err(|_| Error::Input)?
+                {
                     return Err(Error::Conflict);
                 }
+                *existing = value;
             } else {
                 resources.push(value);
             }

@@ -30,6 +30,7 @@ impl Binding {
 pub(crate) struct Observation {
     #[serde(flatten)]
     binding: PublicBinding,
+    telemetry_ready: bool,
     process_generation: Uuid,
     instance_id: String,
 }
@@ -42,7 +43,7 @@ struct PublicBinding {
     material_digest: String,
 }
 impl Observation {
-    pub(crate) fn new(binding: &Binding, instance: String) -> Self {
+    pub(crate) fn new(binding: &Binding, instance: String, telemetry_ready: bool) -> Self {
         Self {
             binding: PublicBinding {
                 host_id: binding.host_id,
@@ -50,6 +51,7 @@ impl Observation {
                 revision: binding.revision,
                 material_digest: binding.material_digest.clone(),
             },
+            telemetry_ready,
             process_generation: Uuid::new_v4(),
             instance_id: instance,
         }

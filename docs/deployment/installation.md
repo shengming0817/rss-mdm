@@ -556,6 +556,7 @@ ClickHouse 使用固定 HTTPS origin 和显式 CA，运行读、写、维护及�
 用 `prepare-telemetry` 安装物理资源。向 `configure-host` 提交 `change.kind=telemetry` 时省略顶层 `tenant` 或传 `null`，部署新宿主配置，并让原配置操作观察到 `applied`。ClickHouse 的 `backend` 指定 control、endpoint、CA、writer、maintenance 和扫描预算；游标密钥随租户 reader 提交。PostgreSQL 系列的物理配置提供 `cursor_key_file`。
 
 新增业务租户完成开通后，部署管理员运行 `prepare-telemetry-tenant`。输入含原产品安装输入 `product`、原物理安装请求 `installation`、租户 UUID `tenant`、本次 `operationId`、`expectedRevision` 和 `action`。首次使用修订号 0。
+原产品库在登记、排空、供应方变更和运行期资格检查各阶段保存操作状态。`telemetry-tenant-operation-status` 使用产品安装输入、租户和操作 ID 查询，支持遗失原 reader 输入后的回执核对。对长期无法准入的候选执行 `cancel-telemetry-tenant-operation`，提供同一产品、租户、操作 ID 和原物理安装输入，恢复旧版本后可用新操作修正。轮换时提交不同密码和相同游标密钥，保留先前签发的游标。
 
 - PostgreSQL、TimescaleSharedRls 和 TimescaleDedicatedTenant 使用 `{"kind":"select"}`。Dedicated 校验物理安装已指定的租户。
 - ClickHouse 使用 `{"kind":"reader","password_file":"…","cursor_key_file":"…"}`。每个租户提供独立密码文件和 32 字节游标密钥。轮换提交新密码并沿用原游标密钥。退役使用 `{"kind":"retire"}`。

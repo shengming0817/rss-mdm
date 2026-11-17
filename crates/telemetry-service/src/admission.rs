@@ -67,20 +67,10 @@ pub(crate) async fn receive_on(
     wire_bytes: usize,
 ) -> Result<TelemetryReceipt, Error> {
     input.validate().map_err(|_| Error::Invalid)?;
-    let backend = service.backend_on(c, principal.tenant()).await?;
-    if input
-        .observations
-        .iter()
-        .map(|point| point.values.len())
-        .sum::<usize>()
-        > backend.budget.points.get() as usize
-    {
-        return Err(Error::Capacity);
-    }
     let bytes = serde_json::to_vec(input)?;
     let digest = Sha256::digest(&bytes).to_vec();
     let accounted = wire_bytes.max(bytes.len());
-    if accounted > service.limits.request_bytes.min(backend.budget.bytes.get()) as usize {
+    if accounted > service.limits.request_bytes as usize {
         return Err(Error::Capacity);
     }
     rss_mdm_registration_service::device::store::revalidate_management(
@@ -103,6 +93,19 @@ pub(crate) async fn receive_on(
         if row.try_get::<uuid::Uuid, _>("device").and_then(|id| rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e))))? != *principal.device()
             || row.try_get::<Vec<u8>,_>("input_digest")? != digest { return Err(Error::Conflict); }
         return Ok(TelemetryReceipt { batch_id: input.batch_id, received_at: row.try_get("received_at")?, replayed: true, delivery: delivery(row.try_get("delivery")?)? });
+    }
+    let backend = service.backend_on(c, principal.tenant()).await?;
+    if input
+        .observations
+        .iter()
+        .map(|point| point.values.len())
+        .sum::<usize>()
+        > backend.budget.points.get() as usize
+    {
+        return Err(Error::Capacity);
+    }
+    if accounted > backend.budget.bytes.get() as usize {
+        return Err(Error::Capacity);
     }
     service
         .signing

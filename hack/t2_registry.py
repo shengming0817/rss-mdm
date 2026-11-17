@@ -281,6 +281,8 @@ MODULES = {
         inputs=('apps/server/tests/foundation/mod.rs','apps/server/tests/foundation/lifecycle*.rs',
                 'apps/server/tests/support/authority*.rs','apps/server/tests/task_trust/support.rs',
                 'apps/server/src/installation/*','apps/server/src/telemetry.rs','crates/telemetry-service/*',
+                'apps/server/src/lifecycle.rs','apps/server/src/runtime_diagnostics.rs','apps/server/src/assembly/http.rs','apps/server/src/assembly/mod.rs',
+                'crates/management-http/src/telemetry*','crates/agent-wire/tests/fixtures/telemetry-v1-vectors.json',
                 'hack/task_trust_materials.py','hack/t2_telemetry.py')),
     'foundation.lifecycle': dict(
         prefix='foundation_t2::lifecycle::', profiles=('lifecycle','installation'),
@@ -291,7 +293,7 @@ MODULES = {
                 'crates/policy-service/src/worker/completion.rs', 'crates/policy-service/src/configuration/source_changes.rs',
                 'crates/policy-service/schema/configuration-source-changes.sql',
                 'apps/server/src/local_delivery.rs','apps/server/src/asset_inputs.rs', 'apps/server/src/assembly/*',
-                'apps/server/tests/foundation/lifecycle*.rs','apps/server/src/telemetry.rs','crates/telemetry-service/src/selection*.rs','hack/t2_telemetry.py','apps/server/tests/support/host.rs', 'apps/server/src/installation/*', 'apps/server/src/administration/baseline/*', 'apps/server/src/administration/tenants/*')),
+                'apps/server/tests/foundation/lifecycle.rs','apps/server/tests/foundation/lifecycle_installation.rs','apps/server/tests/foundation/lifecycle_maintenance*.rs','apps/server/tests/support/host.rs', 'apps/server/src/installation/*', 'apps/server/src/administration/baseline/*', 'apps/server/src/administration/tenants/*')),
 }
 SUPPORT = ('apps/server/tests/support/authority.rs',)
 

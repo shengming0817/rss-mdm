@@ -374,6 +374,9 @@ journal 必须保留：新布局使用新建实例，不能修改旧安装账本
 标准 Compose 的 `maintenance` 在启动及每小时调用 `maintain-default-telemetry`，使用原安装状态准备 UTC 当天起未来 8 天的日分区，并覆盖前一天的补传窗口。手动恢复使用同一安装输入：`rss-mdm maintain-default-telemetry --config <installation-input.json>`（具体参数以二进制 `--help` 为准）。重复调用复用当天的操作身份及数据库回执，不安装新后端、不改变保留策略。
 
 可选遥测联合备份按物理安装提供一份原安装请求。保管产品控制库、native protection 密钥、各安装的控制库与 ClickHouse 原生备份。恢复工具从产品库读取各租户当前材料版本，在原安装身份上重建已启用的 reader，逐租户重新准入。
+同址恢复前先停写，核验目标 ClickHouse 的 `rss_ts_ch` 和 SQL 访问实体。目标 reader 及其专属行策略可以为空；保留时必须匹配归档的租户、策略和凭据。若目标有快照之后轮换的用户、角色或同名策略，先由目标管理员核对归属并备份该状态，再按原安装身份清除或恢复对应实体。原生表归档和 SQL 访问实体须同时具备恢复条件。
+
+`telemetry-tenant-operation-status` 的输入为 `product`、`tenant`、`operationId`，只需原产品控制库和安装配置。它返回安装 ID、目标材料修订和状态。处于 `draining` 时，原安装继续投递已接收批次，新接收等待。处于 `applying` 或 `qualifying` 时，可以重放原请求，也可用 `cancel-telemetry-tenant-operation` 并附 `installation` 撤销。撤销先认证并恢复原外部 reader，再清除候选。供应方不可达时保留 `cancelling`，待恢复后重试同一撤销命令。只有 `published` 状态对应已发布回执。
 
 准备分区允许现有 runtime 连接存在。创建分区仍需父表锁；锁等待有界，超时事务回滚，释放阻塞锁后重试原操作即可。维护失败时检查 PostgreSQL 锁、安装状态卷和凭据；不要给业务 runtime 授予 DDL 权限。物理 chunk 转换仍须停写，逻辑保留沿用原保留执行器。
 

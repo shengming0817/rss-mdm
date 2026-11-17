@@ -114,6 +114,7 @@ pub struct Applied {
     pub operation_id: uuid::Uuid,
     pub revision: u64,
     pub material_digest: String,
+    pub telemetry_ready: bool,
     pub process_generation: uuid::Uuid,
     pub instance_id: String,
 }
@@ -494,6 +495,9 @@ async fn observe(
     }
     let observation: Applied =
         serde_json::from_value(value["observation"].clone()).map_err(|_| Error::Storage)?;
+    if !observation.telemetry_ready {
+        return Err(Error::Storage);
+    }
     if !matches(&observation, binding, instance) {
         return Err(Error::Conflict);
     }

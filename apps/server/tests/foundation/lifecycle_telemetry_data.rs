@@ -157,7 +157,7 @@ async fn issued(
             values: [(
                 wire::FieldKey::parse("custom.load")?,
                 wire::TelemetryReading::Valid {
-                    value: wire::Scalar::Integer(value),
+                    value: wire::Scalar::Integer(value + sequence as i64 - 1),
                     interval_start: None,
                 },
             )]
@@ -257,6 +257,47 @@ impl Upload {
             sample,
         })
     }
+    pub(super) async fn more(&self, service: &Arc<Service>) -> Result<Uuid> {
+        let mut upload = self.input.clone();
+        upload.batch_id = Uuid::new_v4();
+        for point in &mut upload.observations {
+            point.id = Uuid::new_v4();
+            point.sequence += 2;
+            point.observed_at += 100;
+        }
+        let receipt = service
+            .receive(&self.principal, &upload, serde_json::to_vec(&upload)?.len())
+            .await?;
+        ensure!(!receipt.replayed && matches!(receipt.delivery, wire::TelemetryDelivery::Pending));
+        Ok(upload.batch_id)
+    }
+    pub(super) async fn published(&self, service: &Arc<Service>, id: Uuid) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(70), async {
+            loop {
+                if matches!(
+                    service.status(&self.principal, id).await?.delivery,
+                    wire::TelemetryDelivery::Published
+                ) {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        })
+        .await
+        .context("original accepted batch completes during drain")??;
+        Ok(())
+    }
+    pub(super) async fn original_receipt(&self, service: &Arc<Service>) -> Result<()> {
+        let receipt = service
+            .receive(
+                &self.principal,
+                &self.input,
+                serde_json::to_vec(&self.input)?.len(),
+            )
+            .await?;
+        ensure!(receipt.replayed && matches!(receipt.delivery, wire::TelemetryDelivery::Published));
+        Ok(())
+    }
     pub(super) async fn reject_foreign_cursor(
         &self,
         browser: &mut Browser,
@@ -292,7 +333,7 @@ impl Upload {
         ensure!(replay.replayed && matches!(replay.delivery, wire::TelemetryDelivery::Published));
         let mut query = self.history.clone();
         query["after"] = json!(self.cursor);
-        let next = page(browser, self.principal.tenant(), &query, self.sample).await?;
+        let next = page(browser, self.principal.tenant(), &query, self.sample + 1).await?;
         ensure!(next["next"].is_null(), "exactly two original samples");
         Ok(())
     }

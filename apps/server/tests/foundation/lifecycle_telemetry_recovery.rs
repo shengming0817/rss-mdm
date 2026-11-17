@@ -29,6 +29,48 @@ fn reader(ch: &Value, tenant: Uuid) -> Result<String> {
         Uuid::new_v5(&physical, tenant.as_bytes()).simple()
     ))
 }
+pub(super) async fn login(
+    root: &Path,
+    ch: &Value,
+    tenant: Uuid,
+    file: &str,
+    expected: bool,
+) -> Result<()> {
+    let (client, endpoint) = clickhouse_client(ch)?;
+    let password = crate::config::secret(&root.join(file))?;
+    let status = client
+        .post(endpoint)
+        .basic_auth(reader(ch, tenant)?, Some(password.as_str()))
+        .body("SELECT currentUser()")
+        .send()
+        .await?
+        .status();
+    ensure!(
+        if expected {
+            status.is_success()
+        } else {
+            matches!(status.as_u16(), 401 | 403)
+        },
+        "reader authentication {status}"
+    );
+    Ok(())
+}
+pub(super) async fn interrupt_retirement(ch: &Value, tenant: Uuid) -> Result<()> {
+    let (client, endpoint) = clickhouse_client(ch)?;
+    let password = crate::config::secret(Path::new(
+        ch["clickhouse"]["installer"]["password_file"]
+            .as_str()
+            .context("installer password")?,
+    ))?;
+    client
+        .post(endpoint)
+        .basic_auth("installer", Some(password.as_str()))
+        .body(format!("DROP USER {}", reader(ch, tenant)?))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
 pub(super) async fn reader_isolation(root: &Path, ch: &Value, a: Uuid, b: Uuid) -> Result<()> {
     let (client, endpoint) = clickhouse_client(ch)?;
     let a_password = crate::config::secret(&root.join("a-password"))?;
@@ -117,6 +159,23 @@ pub(super) async fn cold(
     maintenance::reset_fixture_database(&mut connection, "shared_metrics").await?;
     connection.close().await?;
     let ch = &profiles[0];
+    let disk = Path::new(
+        ch["clickhouse"]["backup_directory"]
+            .as_str()
+            .context("isolated backup disk")?,
+    );
+    let mut source_zips = 0;
+    for entry in std::fs::read_dir(disk)? {
+        let archive = entry?.path().join("snapshot.zip");
+        if archive.is_file() {
+            std::fs::remove_file(archive)?;
+            source_zips += 1;
+        }
+    }
+    ensure!(
+        source_zips == 1,
+        "one physical source ZIP discarded before archive restore"
+    );
     let (client, endpoint) = clickhouse_client(ch)?;
     let password = crate::config::secret(Path::new(
         ch["clickhouse"]["installer"]["password_file"]

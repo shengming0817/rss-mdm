@@ -70,7 +70,7 @@ async fn advance_on(
     field: &FieldDefinition,
     cutoff: Deadline,
 ) -> Result<bool, Error> {
-    let backend = service.backend_on(c, execution.tenant()).await?;
+    let backend = service.work_backend_on(c, execution.tenant()).await?;
     sqlx::query("INSERT INTO mdm_telemetry.definition_progress(tenant_id,field,version,digest) VALUES($1::uuid,$2,0,NULL) ON CONFLICT DO NOTHING")
         .bind(execution.tenant().to_string()).bind(field.key.as_str()).execute(&mut *c).await?;
     let row = sqlx::query("SELECT version,digest FROM mdm_telemetry.definition_progress WHERE tenant_id=$1::uuid AND field=$2 FOR UPDATE")
@@ -198,7 +198,7 @@ async fn retire_on(
     service: &Service,
     c: &mut PgConnection,
 ) -> Result<(), Error> {
-    let backend = service.backend_on(c, execution.tenant()).await?;
+    let backend = service.work_backend_on(c, execution.tenant()).await?;
     // A shared catalog fence prevents fresh admission while retirement is decided.
     sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2554))")
         .bind(format!("{}:field-catalog", execution.tenant()))

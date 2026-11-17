@@ -25,15 +25,16 @@ pub struct Selection {
 }
 
 pub async fn load(c: &mut PgConnection, tenant: TenantId) -> Result<Option<Selection>, Error> {
-    load_row(c, tenant, false).await
+    load_row(c, tenant, false, false).await
 }
 pub(crate) async fn load_row(
     c: &mut PgConnection,
     tenant: TenantId,
     active_only: bool,
+    draining_worker: bool,
 ) -> Result<Option<Selection>, Error> {
-    let row=sqlx::query("SELECT binding,resource_id,revision,operation_id,material FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid AND (NOT $2 OR pending IS NULL)")
-        .bind(tenant.to_string()).bind(active_only).fetch_optional(c).await?;
+    let row=sqlx::query("SELECT binding,resource_id,revision,operation_id,material FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid AND (NOT $2 OR pending IS NULL OR ($3 AND NOT changing))")
+        .bind(tenant.to_string()).bind(active_only).bind(draining_worker).fetch_optional(c).await?;
     row.map(|r| {
         Ok(Selection {
             binding: r.try_get("binding")?,
@@ -198,20 +199,15 @@ pub async fn ready(c: &mut PgConnection, tenant: TenantId, op: Uuid) -> Result<(
     Ok(())
 }
 /// The installer publishes only the original probed operation. Retirement has verified account absence.
-pub async fn publish(
-    c: &mut PgConnection,
-    tenant: TenantId,
-    op: Uuid,
-    retire: bool,
-) -> Result<bool, Error> {
+pub async fn publish(c: &mut PgConnection, tenant: TenantId, op: Uuid) -> Result<bool, Error> {
     let Some(next) = pending(c, tenant).await? else {
         return Err(Error::Conflict);
     };
     if next.operation_id != Some(op) {
         return Err(Error::Conflict);
     }
-    Ok(sqlx::query("UPDATE mdm_telemetry.storage_binding SET binding=$3,resource_id=$4,revision=$5,operation_id=$2,material=$6,pending=NULL,probe_ready=false,qualified=NULL WHERE tenant_id=$1::uuid AND pending->>'operation_id'=($2::uuid)::text AND (qualified=$2 OR $7)")
-        .bind(tenant.to_string()).bind(op).bind(next.binding).bind(next.resource_id).bind(next.revision).bind(next.material).bind(retire).execute(c).await?.rows_affected()==1)
+    Ok(sqlx::query("UPDATE mdm_telemetry.storage_binding SET binding=$3,resource_id=$4,revision=$5,operation_id=$2,material=$6,pending=NULL,changing=false,probe_ready=false,qualified=NULL WHERE tenant_id=$1::uuid AND pending->>'operation_id'=($2::uuid)::text AND (qualified=$2 OR EXISTS(SELECT FROM mdm_telemetry.reader_operations o WHERE o.operation_id=$2 AND o.tenant_id=$1::uuid AND o.action='retire' AND o.state='qualifying'))")
+        .bind(tenant.to_string()).bind(op).bind(next.binding).bind(next.resource_id).bind(next.revision).bind(next.material).execute(c).await?.rows_affected()==1)
 }
 impl crate::Service {
     /// The existing scoped relay performs admission on the host-owned physical resource.

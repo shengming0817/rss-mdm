@@ -153,6 +153,17 @@ pub(super) async fn exercise(
         .to_owned();
     let resources = resources(root, first, pg, inputs).await?;
     let mut runtime = maintenance::desired(root, first.host_id)?;
+    let bad = root.join("incorrect-writer");
+    private(&bad, Uuid::new_v4().simple().to_string())?;
+    let mut unavailable = resources[0]["configuration"].clone();
+    unavailable["backend"]["writer"]["password_file"] = json!(bad);
+    let request = json!({"installation":source,"operation_id":Uuid::new_v4(),"tenant":null,"expected_revision":runtime["runtime_binding"]["revision"],"change":{"kind":"telemetry","settings":unavailable}});
+    ensure!(
+        configure::run(serde_json::from_value(request)?)
+            .await
+            .is_err(),
+        "physical credentials must qualify before acceptance"
+    );
     for resource in &resources {
         let request = json!({"installation":source,"operation_id":Uuid::new_v4(),"tenant":null,"expected_revision":runtime["runtime_binding"]["revision"],"change":{"kind":"telemetry","settings":resource["configuration"]}});
         let receipt = configure::run(serde_json::from_value(request)?).await?;
@@ -234,6 +245,36 @@ pub(super) async fn exercise(
         .max_connections(1)
         .connect_with(primary.options()?)
         .await?;
+    let service = running.telemetry.get().context("installed ingress")?;
+    let query = json!({"product":source,"tenant":b,"operationId":request["operationId"]});
+    let mut unchanged = request.clone();
+    unchanged["action"] = b_reader.clone();
+    ensure!(
+        matches!(
+            telemetry::prepare_tenant(serde_json::from_value(unchanged)?).await,
+            Err(crate::installation::Error::Conflict)
+        ),
+        "same password cannot rotate"
+    );
+    sqlx::raw_sql("CREATE FUNCTION public.pause_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'hold published receipt'; END $$; CREATE TRIGGER pause_receipt BEFORE UPDATE OF delivery ON mdm_telemetry.batches FOR EACH ROW WHEN (NEW.delivery='published') EXECUTE FUNCTION public.pause_receipt()").execute(&admin).await?;
+    let awaiting = b_data.more(service).await?;
+    ensure!(
+        matches!(
+            telemetry::prepare_tenant(serde_json::from_value(request.clone())?).await,
+            Err(crate::installation::Error::Busy)
+        ),
+        "in-flight batch holds the original installation"
+    );
+    ensure!(
+        serde_json::to_value(telemetry::status(serde_json::from_value(query.clone())?).await?)?["state"]
+            == "draining"
+    );
+    sqlx::raw_sql(
+        "DROP TRIGGER pause_receipt ON mdm_telemetry.batches; DROP FUNCTION public.pause_receipt()",
+    )
+    .execute(&admin)
+    .await?;
+    b_data.published(service, awaiting).await?;
     sqlx::raw_sql("CREATE FUNCTION public.interrupt_reader_probe() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'interrupted reader'; END $$; CREATE TRIGGER interrupt_reader_probe BEFORE UPDATE ON mdm_telemetry.storage_binding FOR EACH ROW WHEN (NEW.probe_ready AND NOT OLD.probe_ready) EXECUTE FUNCTION public.interrupt_reader_probe()").execute(&admin).await?;
     ensure!(
         matches!(
@@ -242,6 +283,26 @@ pub(super) async fn exercise(
         ),
         "interrupted reader must remain pending"
     );
+    recovery::login(root, &resources[0], b, "b-password", false).await?;
+    let mut different = request.clone();
+    different["action"] = json!({"kind":"retire"});
+    ensure!(matches!(
+        telemetry::prepare_tenant(serde_json::from_value(different)?).await,
+        Err(crate::installation::Error::Conflict)
+    ));
+    let mut cancellation = query.clone();
+    cancellation["installation"] = resources[0].clone();
+    ensure!(
+        serde_json::to_value(telemetry::cancel(serde_json::from_value(cancellation)?).await?)?["state"]
+            == "cancelled"
+    );
+    recovery::login(root, &resources[0], b, "b-password", true).await?;
+    let mut request = request;
+    request["operationId"] = json!(Uuid::new_v4());
+    ensure!(matches!(
+        telemetry::prepare_tenant(serde_json::from_value(request.clone())?).await,
+        Err(crate::installation::Error::Storage)
+    ));
     sqlx::raw_sql("DROP TRIGGER interrupt_reader_probe ON mdm_telemetry.storage_binding; DROP FUNCTION public.interrupt_reader_probe()").execute(&admin).await?;
     admin.close().await;
     let mut competing = request.clone();
@@ -255,6 +316,7 @@ pub(super) async fn exercise(
     );
     available(&mut peer, b, false).await?;
     available(&mut first_browser, a, true).await?;
+    let committed_query = json!({"product":source,"tenant":b,"operationId":request["operationId"]});
     replay_selection(request, &resources[0], 1)
         .await
         .context("resume original reader rotation")?;
@@ -263,7 +325,7 @@ pub(super) async fn exercise(
     let (t, mut shared) = provision(&mut platform).await?;
     attach(source, &resources[1], t, 0, json!({"kind":"select"})).await?;
     available(&mut shared, t, true).await?;
-    let _shared_data =
+    let shared_data =
         data::Upload::publish(&running, &mut shared, t, &primary, &runtime, inputs, 33)
             .await
             .context("SharedRls product intake")?;
@@ -310,11 +372,22 @@ pub(super) async fn exercise(
         .await?;
     available(&mut peer, b, true).await?;
     available(&mut shared, t, true).await?;
+    ensure!(
+        serde_json::to_value(telemetry::status(serde_json::from_value(committed_query)?).await?)?["state"]
+            == "published"
+    );
+    shared_data
+        .replay(restarted.telemetry.get().unwrap(), &mut shared)
+        .await?;
     b_data
         .replay(restarted.telemetry.get().unwrap(), &mut peer)
         .await?;
+    recovery::interrupt_retirement(&resources[0], b).await?;
     attach(source, &resources[0], b, 2, json!({"kind":"retire"})).await?;
     available(&mut peer, b, false).await?;
+    b_data
+        .original_receipt(restarted.telemetry.get().unwrap())
+        .await?;
     available(&mut first_browser, a, true).await?;
     restarted.close().await?;
     Ok(())

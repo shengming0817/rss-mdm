@@ -5,6 +5,8 @@ use rss_mdm_native_protection::{ProtectionContext, Protector};
 use rss_mdm_telemetry_service::selection::{self, Reader, Selection};
 use rss_request_context::TenantId;
 use zeroize::Zeroizing;
+mod operation;
+pub use operation::{cancel, status};
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -76,18 +78,13 @@ async fn verify_installation(input: &Request, journal: &Journal) -> Result<()> {
 }
 
 async fn select(input: TenantRequest) -> Result<TenantReceipt> {
-    let (root, config) = open_host(&input)?;
+    let (_host_lock, config) = open_host(&input)?;
     let tenant = TenantId::parse(&input.tenant.to_string()).map_err(|_| Error::Input)?;
     let target = installed_target(&config, &input.installation.configuration, tenant)?;
     let storage = Journal::open(&input.installation.directory)?;
     verify_installation(&input.installation, &storage).await?;
-    let journal = Journal::open(&root.path(&format!("telemetry-tenant-{}", input.operation_id))?)?;
     let protection = config.native_protector().map_err(|_| Error::Corrupt)?;
     let supplied = supplied_reader(&input, target)?;
-    freeze_request(&input, tenant, &supplied, &protection, &journal)?;
-    if let Some(receipt) = journal.load("receipt.json")? {
-        return Ok(receipt);
-    }
     let mut c = product_connection(&input.product, &config).await?;
     let execution = config
         .storage_binding
@@ -108,36 +105,25 @@ async fn select(input: TenantRequest) -> Result<TenantReceipt> {
         material_revision: revision,
     };
     let previous = previous.ok_or(Error::Conflict)?;
-    if previous.operation_id == Some(input.operation_id) && previous.revision == revision {
-        tx.commit().await.map_err(|_| Error::Storage)?;
-        journal.save("receipt.json", &result)?;
+    let phase = operation::record(&mut tx, &input, tenant, &supplied, &protection, &result).await?;
+    if phase == "published" {
         return Ok(result);
     }
-    let pending = selection::pending(&mut tx, tenant)
-        .await
-        .map_err(|_| Error::Storage)?;
-    let change = if let Some(pending) = pending {
-        if pending.operation_id != Some(input.operation_id) || pending.revision != revision {
-            return Err(Error::Conflict);
-        }
-        pending
-    } else {
-        let next = next_selection(
-            &input,
-            &previous,
-            supplied,
-            tenant,
-            &protection,
-            &root,
-            &journal,
-        )
-        .await?;
-        selection::reserve(&mut tx, tenant, &previous, &next)
-            .await
-            .map_err(|_| Error::Conflict)?;
-        next
-    };
+    if matches!(phase.as_str(), "cancelled" | "cancelling") {
+        return Err(Error::Conflict);
+    }
+    let change = reserved(
+        &mut tx,
+        &input,
+        &previous,
+        supplied,
+        tenant,
+        &protection,
+        revision,
+    )
+    .await?;
     tx.commit().await.map_err(|_| Error::Storage)?;
+    operation::drain(&mut c, tenant, execution, &input).await?;
     let future = change
         .reader(&protection, tenant)
         .map_err(|_| Error::Corrupt)?;
@@ -148,8 +134,33 @@ async fn select(input: TenantRequest) -> Result<TenantReceipt> {
         clickhouse::provision_reader(&input.installation, tenant, reader, old.as_ref()).await?;
     }
     publish_qualified(&mut c, tenant, execution, &input).await?;
-    journal.save("receipt.json", &result)?;
     Ok(result)
+}
+async fn reserved(
+    tx: &mut PgConnection,
+    input: &TenantRequest,
+    previous: &Selection,
+    supplied: Option<Reader>,
+    tenant: TenantId,
+    protection: &Protector,
+    revision: i64,
+) -> Result<Selection> {
+    let pending = selection::pending(tx, tenant)
+        .await
+        .map_err(|_| Error::Storage)?;
+    let change = if let Some(pending) = pending {
+        if pending.operation_id != Some(input.operation_id) || pending.revision != revision {
+            return Err(Error::Conflict);
+        }
+        pending
+    } else {
+        let next = next_selection(input, previous, supplied, tenant, protection).await?;
+        selection::reserve(tx, tenant, previous, &next)
+            .await
+            .map_err(|_| Error::Conflict)?;
+        next
+    };
+    Ok(change)
 }
 async fn publish_qualified(
     c: &mut PgConnection,
@@ -158,11 +169,11 @@ async fn publish_qualified(
     input: &TenantRequest,
 ) -> Result<()> {
     let mut tx = tenant_transaction(c, tenant, input.tenant, execution).await?;
+    operation::set(&mut tx, input.operation_id, "qualifying").await?;
     selection::ready(&mut tx, tenant, input.operation_id)
         .await
         .map_err(|_| Error::Storage)?;
     tx.commit().await.map_err(|_| Error::Storage)?;
-    let retire = matches!(input.action, Action::Retire);
     let wait = tokio::time::sleep(std::time::Duration::from_secs(12));
     tokio::pin!(wait);
     loop {
@@ -170,9 +181,12 @@ async fn publish_qualified(
         selection::lock_change(&mut tx, tenant)
             .await
             .map_err(|_| Error::Storage)?;
-        let published = selection::publish(&mut tx, tenant, input.operation_id, retire)
+        let published = selection::publish(&mut tx, tenant, input.operation_id)
             .await
             .map_err(|_| Error::Storage)?;
+        if published {
+            operation::set(&mut tx, input.operation_id, "published").await?;
+        }
         tx.commit().await.map_err(|_| Error::Storage)?;
         if published {
             break;
@@ -227,26 +241,12 @@ async fn next_selection(
     supplied: Option<Reader>,
     tenant: TenantId,
     protection: &Protector,
-    root: &Journal,
-    journal: &Journal,
 ) -> Result<Selection> {
     let target = &input.installation.configuration;
     let binding = target.configuration_binding().map_err(|_| Error::Input)?;
     let revision = input.expected_revision.checked_add(1).ok_or(Error::Input)?;
     if previous.revision != input.expected_revision {
         return Err(Error::Conflict);
-    }
-    if let (Some(op), Some(resource)) = (previous.operation_id, previous.resource_id) {
-        let old_journal = Journal::open(&root.path(&format!("telemetry-tenant-{op}"))?)?;
-        old_journal.save(
-            "receipt.json",
-            &TenantReceipt {
-                operation_id: op,
-                tenant: input.tenant,
-                installation_id: resource,
-                material_revision: previous.revision,
-            },
-        )?;
     }
     let old = previous
         .reader(protection, tenant)
@@ -259,7 +259,7 @@ async fn next_selection(
         }
         None
     };
-    let reader = changed_reader(input, supplied, old, journal).await?;
+    let reader = changed_reader(input, supplied, old).await?;
     Ok(Selection {
         binding: binding.to_vec(),
         resource_id: Some(target.resource_id),
@@ -325,9 +325,15 @@ fn supplied_reader(input: &TenantRequest, target: &Config) -> Result<Option<Read
             if [&writer.user, &maintenance.user, &installer.user].contains(&&user) {
                 return Err(Error::Input);
             }
+            let password = crate::config::secret(password_file).map_err(|_| Error::Input)?;
+            if password.trim() != password.as_str()
+                || !password.bytes().all(|b| (0x20..=0x7e).contains(&b))
+            {
+                return Err(Error::Input);
+            }
             Some(Reader {
                 user,
-                password: Some(crate::config::secret(password_file).map_err(|_| Error::Input)?),
+                password: Some(password),
                 cursor: Zeroizing::new(
                     crate::config::read(cursor_key_file, 32, true)
                         .map_err(|_| Error::Input)?
@@ -346,41 +352,6 @@ fn supplied_reader(input: &TenantRequest, target: &Config) -> Result<Option<Read
         ) => None,
         _ => return Err(Error::Input),
     })
-}
-
-fn freeze_request(
-    input: &TenantRequest,
-    tenant: TenantId,
-    supplied: &Option<Reader>,
-    protection: &Protector,
-    journal: &Journal,
-) -> Result<()> {
-    let identity =
-        Zeroizing::new(serde_json::to_vec(&(input, supplied)).map_err(|_| Error::Input)?);
-    let aad = ProtectionContext::new(
-        tenant,
-        &input.operation_id.to_string(),
-        "telemetry.operation",
-        1,
-    )
-    .map_err(|_| Error::Input)?
-    .derive();
-    if let Some((key, tag)) = journal.load::<(String, Vec<u8>)>("request.json")? {
-        protection
-            .verify_mac_with_key(&key, &identity, &aad, &tag)
-            .map_err(|_| Error::Conflict)?;
-    } else {
-        journal.save(
-            "request.json",
-            &(
-                protection.fingerprint_id(),
-                protection
-                    .mac(&identity, &aad)
-                    .map_err(|_| Error::Storage)?,
-            ),
-        )?;
-    }
-    Ok(())
 }
 
 async fn product_connection(
@@ -419,22 +390,18 @@ async fn changed_reader(
     input: &TenantRequest,
     supplied: Option<Reader>,
     old: Option<Reader>,
-    journal: &Journal,
 ) -> Result<Option<Reader>> {
     Ok(match (&input.action, supplied) {
         (Action::Reader { .. }, Some(reader)) => {
             if let Some(old) = old {
-                if old.user != reader.user || *old.cursor != *reader.cursor {
+                if old.user != reader.user
+                    || *old.cursor != *reader.cursor
+                    || old.password == reader.password
+                {
                     return Err(Error::Conflict);
                 }
-            } else if !journal
-                .load::<bool>("reader-reserved.json")?
-                .unwrap_or(false)
-            {
-                if clickhouse::reader_exists(&input.installation, &reader.user).await? {
-                    return Err(Error::Conflict);
-                }
-                journal.save("reader-reserved.json", &true)?;
+            } else if clickhouse::reader_exists(&input.installation, &reader.user).await? {
+                return Err(Error::Conflict);
             }
             Some(reader)
         }
