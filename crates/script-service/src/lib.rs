@@ -3,6 +3,7 @@ mod activity;
 pub mod admission;
 pub mod agent;
 pub mod agent_facts;
+mod discovery;
 pub mod eligibility;
 pub mod frozen;
 mod output;

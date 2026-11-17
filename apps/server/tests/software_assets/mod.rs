@@ -1,5 +1,5 @@
 //! Real HTTP handlers, owner roles, immutable arrays and durable query execution.
-mod fixture;
+pub(crate) mod fixture;
 use crate::{authority_t2_support::Context, planning_t2_support as planning};
 use anyhow::{Context as _, Result};
 use fixture::{Fixture, Http, definitions, facts, installation};

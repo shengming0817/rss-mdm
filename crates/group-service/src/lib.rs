@@ -1,4 +1,5 @@
 //! Complete Group use cases, immutable membership views and durable calculation.
+mod discovery;
 use crate::{operation::Operation, transaction::*};
 use rss_contract::Timepoint;
 use rss_mdm_inventory_service::assets;
@@ -31,7 +32,7 @@ pub struct Dependencies {
 pub struct Groups {
     read_pool: sqlx::PgPool,
     pub(crate) task_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
-    runner_health: std::sync::Mutex<health::RunnerObservation>,
+    runner_health: std::sync::Mutex<rss_mdm_recovery_observation::Observations>,
     pub(crate) storage: rss_transactional_messaging::fence::StorageIdentity,
     pub(crate) objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
 

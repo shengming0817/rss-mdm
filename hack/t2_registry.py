@@ -186,7 +186,7 @@ MODULES = {
                 'apps/server/tests/support/command_runtime.rs', 'apps/server/tests/task_trust/support.rs',
                 'hack/task_trust_materials.py')),
     'task.recovery': dict(prefix='assembly::execution_owners_t2::workers::', profiles=('shared',),
-        inputs=('crates/agent-wire/src/identity.rs', 'crates/script-service/*', 'crates/inventory-service/src/collection/*',
+        inputs=('crates/group-service/*', 'crates/scope-service/*', 'crates/compliance-service/*', 'crates/policy-service/*', 'crates/recovery-credentials/*', 'crates/registration-service/*', 'crates/device-access-postgres/*', 'crates/device-service/src/discovery.rs', 'crates/device-service/src/worker.rs', 'crates/device-service/src/control/recovery.rs', 'crates/software-service/src/discovery.rs', 'crates/software-service/src/deployment/recovery.rs', 'crates/inventory-service/src/discovery.rs', 'crates/inventory-service/src/assets/runtime.rs', 'crates/inventory-service/src/worker_health.rs', 'crates/agent-wire/src/identity.rs', 'crates/script-service/*', 'crates/inventory-service/src/collection/*',
                 'crates/inventory-service/schema/*', 'crates/agent-channel/*',
                 'crates/device-service/src/control/capacity.rs', 'crates/task-state/*', 'crates/recovery-observation/*',
                 'crates/device-service/src/control/actions/history.rs', 'crates/device-service/src/control/unmanage.rs',

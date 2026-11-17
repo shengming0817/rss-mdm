@@ -316,7 +316,7 @@ pub struct AssetService {
     storage: rss_transactional_messaging::fence::StorageIdentity,
     read_pool: sqlx::PgPool,
     software_sources: software::Sources,
-    worker_health: std::sync::Mutex<crate::worker_health::ObservationState>,
+    worker_health: std::sync::Mutex<rss_mdm_recovery_observation::Observations>,
     task_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
     inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
     reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
@@ -692,10 +692,10 @@ fn restrict_fields(device: &mut DeviceView, catalog: &rss_mdm_inventory::Catalog
 
 impl AssetService {
     pub fn worker_status(&self) -> crate::WorkerStatus {
-        self.worker_health
-            .lock()
-            .expect("worker observation")
-            .status(self.task_status.get().map(rss_runtime::TaskStatus::current))
+        crate::worker_health::status(
+            &self.worker_health.lock().expect("worker observation"),
+            self.task_status.get().map(rss_runtime::TaskStatus::current),
+        )
     }
     pub async fn queue_health(
         &self,

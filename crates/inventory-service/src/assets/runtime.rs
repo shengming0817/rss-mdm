@@ -302,7 +302,8 @@ impl DurableStore for QueryWork {
             .lock()
             .expect("worker observation")
             .scan(
-                result.as_ref().err().map(|e| e.kind()),
+                scope,
+                result.as_ref().map(|_| ()).map_err(|e| e.kind()),
                 self.assets.clock.unix_seconds(),
             );
         result
@@ -393,12 +394,28 @@ impl QueryWork {
                 if cancel.is_cancelled() {
                     return Ok(());
                 }
-                let tenants: Vec<Uuid> =
-                    sqlx::query_scalar("SELECT tenant_id FROM mdm_assets.query_work_scopes($1)")
+                let discovered = tokio::select! { biased;
+                    () = cancel.cancelled() => return Ok(()),
+                    result = tokio::time::timeout(Duration::from_secs(5), sqlx::query_scalar("SELECT tenant_id FROM mdm_assets.query_work_scopes($1)")
                         .bind(after)
-                        .fetch_all(&self.assets.read_pool)
-                        .await
-                        .map_err(rss_runtime::ShutdownError::new)?;
+                        .fetch_all(&self.assets.read_pool)) =>
+                        result.map_err(|_| rss_reconcile::ErrorKind::Deadline)
+                            .and_then(|page| page.map_err(|error| crate::discovery::classify(&error))),
+                };
+                if cancel.is_cancelled() { return Ok(()) }
+                self.assets.worker_health.lock().expect("worker observation").discovery("mdm.asset-queries", discovered.as_ref().map(|_| ()).map_err(|kind| *kind), self.assets.clock.unix_seconds());
+                let tenants: Vec<Uuid> = match discovered {
+                    Ok(page) => page,
+                    Err(rss_reconcile::ErrorKind::Transient | rss_reconcile::ErrorKind::Deadline) => {
+                        // A failed page is not empty. Keep its cursor and rate-limit retries even under wake storms.
+                        tokio::select! { biased;
+                            () = cancel.cancelled() => return Ok(()),
+                            () = tokio::time::sleep(Duration::from_secs(5)) => {},
+                        }
+                        continue;
+                    }
+                    Err(kind) => return Err(rss_runtime::ShutdownError::new(rss_reconcile::Error::new(kind))),
+                };
                 if tenants.is_empty() {
                     after = None;
                     if std::mem::take(&mut worked) {
@@ -430,7 +447,7 @@ impl QueryWork {
                                 .worker_health
                                 .lock()
                                 .expect("worker observation")
-                                .failure(event, self.assets.clock.unix_seconds());
+                                .observe(&event, self.assets.clock.unix_seconds());
                         },
                     )
                     .await

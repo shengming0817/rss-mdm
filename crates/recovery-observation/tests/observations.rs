@@ -140,8 +140,8 @@ async fn only_same_scope_scan_and_confirmed_target_finish_recover_health() {
         .claim_due(&other_tenant, 1, 64, Duration::from_secs(1), &control)
         .await
         .unwrap();
-    health.scan(Ok(())); // An empty discovery page cannot erase the failed tenant scan.
-    health.relay(Ok(()));
+    health.discovery(Ok(())); // An empty discovery page cannot erase the failed tenant scan.
+    health.relay_round(Ok(()));
     assert_eq!(
         health.health().recovery,
         Phase::Failed(ErrorKind::Transient)
@@ -249,9 +249,9 @@ fn durable_input_recovery_clears_only_its_own_attempt_failure() {
     let operation = Target::new(scope, "operation").unwrap();
     fail(&health, &inputs);
     fail(&health, &operation);
-    health.inputs(inputs.scope(), Err(ErrorKind::Permanent));
+    health.inputs(&inputs, Err(ErrorKind::Permanent));
     assert_eq!(health.health().unresolved_attempts, 2);
-    health.inputs(inputs.scope(), Ok(()));
+    health.inputs(&inputs, Ok(()));
     assert_eq!(health.health().inputs, Some(Phase::Healthy));
     assert_eq!(health.health().unresolved_attempts, 1);
     assert_eq!(

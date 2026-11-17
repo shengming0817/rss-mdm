@@ -9,8 +9,7 @@ pub(crate) use uuid::Uuid;
 pub struct Application {
     pub(crate) profile: rss_mdm_install_support::StorageProfile,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub(crate) automation_observation:
-        std::sync::Mutex<crate::worker::health::AutomationObservation>,
+    pub(crate) automation_observation: std::sync::Mutex<rss_mdm_recovery_observation::Observations>,
     pub(crate) automation_task: std::sync::OnceLock<rss_runtime::TaskStatus>,
     pub runtime: Arc<PgRuntime>,
     pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,

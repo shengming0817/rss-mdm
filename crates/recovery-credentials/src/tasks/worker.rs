@@ -93,7 +93,9 @@ impl Worker {
                     if stop.is_cancelled() {
                         return Ok(());
                     }
-                    let tenants: Vec<Uuid> = sqlx::query_scalar(match self.service.profile() {
+                    let discovered = tokio::select! { biased;
+                    () = stop.cancelled() => { self.readiness.stop(); return Ok(()); },
+                    result = tokio::time::timeout(Duration::from_secs(5), sqlx::query_scalar(match self.service.profile() {
                         rss_mdm_install_support::StorageProfile::Mdm => {
                             "SELECT tenant_id FROM mdm_recovery_tasks.runs_work_scopes($1)"
                         }
@@ -102,11 +104,25 @@ impl Worker {
                         }
                     })
                     .bind(after)
-                    .fetch_all(&self.read_pool)
-                    .await
-                    .map_err(rss_runtime::ShutdownError::new)?;
-                    if tenants.is_empty() {
-                        self.readiness.scan(Ok(()));
+                    .fetch_all(&self.read_pool)) =>
+                        result.map_err(|_| rss_reconcile::ErrorKind::Deadline)
+                            .and_then(|page| page.map_err(|error| crate::discovery::classify(&error))),
+                };
+                if stop.is_cancelled() { { self.readiness.stop(); return Ok(()); } }
+                self.readiness.discovery(discovered.as_ref().map(|_| ()).map_err(|kind| *kind));
+                let tenants: Vec<Uuid> = match discovered {
+                    Ok(page) => page,
+                    Err(rss_reconcile::ErrorKind::Transient | rss_reconcile::ErrorKind::Deadline) => {
+                        // A failed page is not empty. Keep its cursor and rate-limit retries even under wake storms.
+                        tokio::select! { biased;
+                            () = stop.cancelled() => { self.readiness.stop(); return Ok(()); },
+                            () = tokio::time::sleep(Duration::from_secs(5)) => {},
+                        }
+                        continue;
+                    }
+                    Err(kind) => return Err(rss_runtime::ShutdownError::new(rss_reconcile::Error::new(kind))),
+                };
+                if tenants.is_empty() {
                         after = None;
                         if std::mem::take(&mut worked) {
                             continue;
@@ -182,7 +198,7 @@ impl Worker {
         rss_mdm_recovery_observation::ObservedStore::new(&self.store, &self.readiness)
     }
     pub fn record_relay_health(&self, result: &std::result::Result<usize, Error>) {
-        self.readiness.relay(
+        self.readiness.relay_round(
             result
                 .as_ref()
                 .map(|_| ())

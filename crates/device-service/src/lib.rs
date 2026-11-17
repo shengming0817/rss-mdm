@@ -6,6 +6,7 @@ pub mod changes;
 mod cursor;
 pub mod directory;
 mod directory_filter;
+mod discovery;
 pub mod lifecycle;
 pub mod lifecycle_management;
 mod model;
@@ -51,6 +52,7 @@ pub struct Associations {
     key: ring::hmac::Key,
 }
 pub struct WorkerHealth {
+    pub discovery: rss_mdm_recovery_observation::Phase,
     pub task: Option<rss_runtime::TaskState>,
     pub observed: bool,
     pub unresolved_attempts: u64,
@@ -82,7 +84,23 @@ impl Associations {
                 )
             })
             .unwrap_or((0, true, Some(rss_reconcile::ErrorKind::Invariant)));
+        let discovery = match self.worker_failures.lock() {
+            Ok(failures) => match failures.get("!discovery") {
+                Some(kind) => rss_mdm_recovery_observation::Phase::Failed(**kind),
+                None if self
+                    .worker_observed
+                    .load(std::sync::atomic::Ordering::Acquire) =>
+                {
+                    rss_mdm_recovery_observation::Phase::Healthy
+                }
+                None => rss_mdm_recovery_observation::Phase::Unobserved,
+            },
+            Err(_) => {
+                rss_mdm_recovery_observation::Phase::Failed(rss_reconcile::ErrorKind::Invariant)
+            }
+        };
         WorkerHealth {
+            discovery,
             task: self
                 .worker_status
                 .get()

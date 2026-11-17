@@ -130,18 +130,38 @@ impl Service {
                 self.readiness.stop();
                 return Ok(());
             }
-            let tenants: Vec<Uuid> = match sqlx::query_scalar(
+            let discovered = tokio::select! { biased;
+                    () = cancel.cancelled() => { self.readiness.stop(); return Ok(()); },
+                    result = tokio::time::timeout(Duration::from_secs(5), sqlx::query_scalar(
                 "SELECT tenant_id FROM mdm_devices.control_work_scopes($1)",
             )
             .bind(after)
-            .fetch_all(&self.read_pool)
-            .await
-            {
-                Ok(tenants) => tenants,
-                Err(_) => {
-                    self.readiness
-                        .scan(Err(rss_reconcile::ErrorKind::Transient));
-                    Vec::new()
+            .fetch_all(&self.read_pool)) =>
+                        result.map_err(|_| rss_reconcile::ErrorKind::Deadline)
+                            .and_then(|page| page.map_err(|error| crate::discovery::classify(&error))),
+                };
+            if cancel.is_cancelled() {
+                {
+                    self.readiness.stop();
+                    return Ok(());
+                }
+            }
+            self.readiness
+                .discovery(discovered.as_ref().map(|_| ()).map_err(|kind| *kind));
+            let tenants: Vec<Uuid> = match discovered {
+                Ok(page) => page,
+                Err(rss_reconcile::ErrorKind::Transient | rss_reconcile::ErrorKind::Deadline) => {
+                    // A failed page is not empty. Keep its cursor and rate-limit retries even under wake storms.
+                    tokio::select! { biased;
+                        () = cancel.cancelled() => { self.readiness.stop(); return Ok(()); },
+                        () = tokio::time::sleep(Duration::from_secs(5)) => {},
+                    }
+                    continue;
+                }
+                Err(kind) => {
+                    return Err(rss_runtime::ShutdownError::new(rss_reconcile::Error::new(
+                        kind,
+                    )));
                 }
             };
             if tenants.is_empty() {
@@ -226,7 +246,7 @@ impl Service {
                 if let rss_reconcile::Observation::AttemptFailed { target, error, .. } = &event
                     && target.entity() == "inputs"
                 {
-                    self.readiness.inputs(target.scope(), Err(error.kind()));
+                    self.readiness.inputs(target, Err(error.kind()));
                 }
                 diagnostic(event);
             },
@@ -241,7 +261,7 @@ impl Service {
         result
     }
     pub fn record_relay_health(&self, result: &std::result::Result<usize, Error>) {
-        self.readiness.relay(
+        self.readiness.relay_round(
             result
                 .as_ref()
                 .map(|_| ())

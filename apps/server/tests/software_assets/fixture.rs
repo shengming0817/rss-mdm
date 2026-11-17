@@ -1,10 +1,13 @@
 use super::*;
 use rss_mdm_inventory_service::{assets as a, inventory_runtime as rt};
-pub(super) struct Fixture {
+pub(crate) struct Fixture {
     pub assets: Arc<a::AssetService>,
 }
 impl Fixture {
     pub async fn open(c: &Context) -> Result<Self> {
+        Self::with_discovery(c, c.database.archive_pool()).await
+    }
+    pub(crate) async fn with_discovery(c: &Context, discovery: sqlx::PgPool) -> Result<Self> {
         let clock = rt::Clock::new(
             crate::clock::monotonic(),
             crate::authority_t2_support::inventory_policy()?,
@@ -79,7 +82,7 @@ impl Fixture {
             )?;
         Ok(Self {
             assets: Arc::new(a::AssetService::new(a::AssetDependencies {
-                read_pool: c.database.archive_pool(),
+                read_pool: discovery,
                 inventory,
                 audit_store: owner.audit,
                 runtime: owner.runtime,
