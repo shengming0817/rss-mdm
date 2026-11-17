@@ -560,7 +560,7 @@ pub async fn run(request: Request) -> Result<Receipt> {
     if let Some(receipt) = completed(&root, &journal, request.operation_id)? {
         return Ok(receipt);
     }
-    let base: Value = root.load("runtime.json")?.ok_or(Error::Corrupt)?;
+    let base = super::runtime_files::requested(&root)?;
     let base: crate::config::Config = serde_json::from_value(base).map_err(|_| Error::Corrupt)?;
     let host_id = base.runtime_binding.host_id;
     let mut c = sqlx::PgConnection::connect_with(

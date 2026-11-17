@@ -59,23 +59,6 @@ async fn probe(
     Ok(bytes)
 }
 
-fn runtime(input: &Input) -> Result<Value> {
-    let root = Journal::open(&input.directory)?;
-    let base: crate::config::Config = root.load("runtime.json")?.ok_or(Error::Corrupt)?;
-    let host = base.runtime_binding.host_id;
-    let journal = Journal::open(&input.directory.join(format!("rss-mdm-{}", host.simple())))?;
-    let runtime: Value = journal
-        .load("requested-runtime.json")?
-        .ok_or(Error::Corrupt)?;
-    let applied: crate::installation::runtime_files::Applied =
-        journal.load("applied.json")?.ok_or(Error::Corrupt)?;
-    if runtime["runtime_binding"]["host_id"] != json!(host)
-        || runtime["runtime_binding"]["operation_id"] != json!(applied.operation_id)
-    {
-        return Err(Error::Conflict);
-    }
-    Ok(runtime)
-}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Export {
@@ -117,7 +100,7 @@ pub async fn export(input: Export) -> Result<ExportReceipt> {
         &serde_json::to_vec(&input).map_err(|_| Error::Input)?,
     )?;
     let config: crate::config::Config =
-        serde_json::from_value(runtime(&input.installation)?).map_err(|_| Error::Input)?;
+        serde_json::from_value(crate::installation::runtime_files::current(&root)?).map_err(|_| Error::Input)?;
     let tenant = input.tenant;
     let mut c = PgConnection::connect_with(
         &input
@@ -184,12 +167,10 @@ pub async fn export(input: Export) -> Result<ExportReceipt> {
 }
 
 pub(super) async fn qualify_tenant(
-    input: &Input,
+    config: &crate::config::Config,
     c: &mut PgConnection,
     tenant: Uuid,
 ) -> Result<()> {
-    let config: crate::config::Config =
-        serde_json::from_value(runtime(input)?).map_err(|_| Error::Corrupt)?;
     let protection = config.native_protector().map_err(|_| Error::Corrupt)?;
     let configuration = config
         .webhooks

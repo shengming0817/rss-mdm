@@ -262,7 +262,7 @@ pub async fn restore(input: Restore) -> Result<Receipt> {
 }
 
 async fn freeze_backup(input: Request, root: &Journal, journal: &Journal) -> Result<Frozen> {
-    let runtime: Value = root.load("runtime.json")?.ok_or(Error::Corrupt)?;
+    let runtime = super::runtime_files::current(root)?;
     let config: crate::config::Config =
         serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
     let installation = crate::migration::Installation {
@@ -290,19 +290,6 @@ async fn freeze_backup(input: Request, root: &Journal, journal: &Journal) -> Res
     .await
     .map_err(|_| Error::Storage)?;
     c.close().await.map_err(|_| Error::Storage)?;
-    let applied_owner = Journal::open(&input.installation.directory.join(format!(
-        "rss-mdm-{}",
-        config.runtime_binding.host_id.simple()
-    )))?;
-    let applied: super::runtime_files::Applied =
-        applied_owner.load("applied.json")?.ok_or(Error::Corrupt)?;
-    if runtime["runtime_binding"]["operation_id"] != json!(applied.operation_id)
-        || config.runtime_binding.host_id != applied.host_id
-        || config.identity.instance_id != applied.instance_id
-        || config.runtime_binding.material_digest != applied.material_digest
-    {
-        return Err(Error::Conflict);
-    }
     input.installation.deployment.content_snapshot(&runtime)?;
     for provider in runtime["device_pki"].as_array().ok_or(Error::Corrupt)? {
         if !input.authorities.iter().any(|a| {
