@@ -19,11 +19,7 @@ impl crate::application::Application {
         let profile = self.profile();
 
         let Some(p) = storage::read_in(
-            &rss_mdm_policy_postgres::PolicyReader::bind(
-                profile,
-                self.runtime.clone(),
-                self.tenant,
-            ),
+            &rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone()),
             tx,
             policy,
         )
@@ -73,6 +69,7 @@ impl crate::application::Application {
     }
     pub(crate) async fn advance_assignment_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         prepared: PreparedAssignment,
@@ -83,6 +80,7 @@ impl crate::application::Application {
         let (p, assignments, more, channel) = match prepared {
             PreparedAssignment::Empty => {
                 return crate::worker::jobs::finish_job_in(
+                    binding,
                     profile,
                     tx,
                     &self.audit_store,
@@ -92,7 +90,9 @@ impl crate::application::Application {
                 .await;
             }
             PreparedAssignment::Lifecycle(batch) => {
-                return self.advance_lifecycle_assignment_in(tx, task, *batch).await;
+                return self
+                    .advance_lifecycle_assignment_in(binding, tx, task, *batch)
+                    .await;
             }
             PreparedAssignment::Ordinary {
                 policy,
@@ -150,8 +150,15 @@ impl crate::application::Application {
             )
             .await?;
             if changed {
-                self.assignment_fact_in(tx, &fact_key, &p, assignment.target.as_ref(), available)
-                    .await?;
+                self.assignment_fact_in(
+                    binding,
+                    tx,
+                    &fact_key,
+                    &p,
+                    assignment.target.as_ref(),
+                    available,
+                )
+                .await?;
                 if matches!(
                     p.definition.action.kind(),
                     rss_mdm_policy::ActionKind::NativeCollection
@@ -178,10 +185,9 @@ impl crate::application::Application {
         let scope = p.definition.scope;
         let previous =
             rss_mdm_policy_postgres::assignments::objects_in(profile, tx, policy, version).await?;
-        let retained =
-            rss_mdm_scope_postgres::ScopeBinding::new(profile, self.runtime.clone(), self.tenant)
-                .target_members_in(tx, scope, previous.clone())
-                .await?;
+        let retained = rss_mdm_scope_postgres::ScopeBinding::new(profile, self.runtime.clone())
+            .target_members_in(tx, scope, previous.clone())
+            .await?;
         let missing = previous
             .into_iter()
             .filter(|object| !retained.contains(object))
@@ -199,6 +205,7 @@ impl crate::application::Application {
                 .transpose()
                 .map_err(|_| Error::Malformed)?;
             self.assignment_fact_in(
+                binding,
                 tx,
                 &format!(
                     "assignment:{task}:{policy}:{version}:{}:removed",
@@ -229,7 +236,8 @@ impl crate::application::Application {
                 Ok(())
             }
         } else {
-            crate::worker::jobs::finish_job_in(profile, tx, &self.audit_store, task, None).await
+            crate::worker::jobs::finish_job_in(binding, profile, tx, &self.audit_store, task, None)
+                .await
         }
     }
 }
@@ -237,6 +245,7 @@ impl crate::application::Application {
 impl crate::application::Application {
     async fn assignment_fact_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         key: &str,
         p: &Policy,
@@ -247,7 +256,7 @@ impl crate::application::Application {
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             self.profile(),
-            tx.tenant_id().to_string(),
+            binding,
             "policy_assignment",
             AuditIntent::Management,
         );

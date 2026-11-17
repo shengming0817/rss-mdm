@@ -100,6 +100,7 @@ async fn recover_runs_in(
 }
 
 pub async fn audit_recovery(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &SoftwareService,
     tx: &mut PgTransaction<'_>,
     run: &db::Run,
@@ -109,7 +110,7 @@ pub async fn audit_recovery(
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            tx.tenant_id().to_string(),
+            execution,
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -153,13 +154,14 @@ pub async fn audit_recovery(
 impl SoftwareService {
     pub async fn accept_action_dispatch(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         id: Uuid,
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), crate::deployment::Error> {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            self.transactions.tenant.to_string(),
+            execution,
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -171,7 +173,7 @@ impl SoftwareService {
         );
         audit.target(&id.to_string());
         audit.identify_service("command-dispatch");
-        let result=crate::deployment::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.audit_store.binding(),&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
+        let result=crate::deployment::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,execution,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
             let (service,id,fingerprint,audit)=ctx;
             crate::deployment::transaction::prepare_audit_in(&service.transactions.audit_store,tx,audit,&[]).await?;
             let run=super::storage::read_run(tx,*id).await?;
@@ -215,6 +217,7 @@ pub(super) async fn stale_registration(
 }
 
 pub async fn recover_one(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &SoftwareService,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
@@ -234,7 +237,8 @@ pub async fn recover_one(
     if let db::ScheduledPolicy::Software(software) = &plan
         && software.assignment.channel() == rss_mdm_inventory::Channel::Mdm
     {
-        super::native_software::advance_run(service, tx, &mut run, software, now).await?;
+        super::native_software::advance_run(execution, service, tx, &mut run, software, now)
+            .await?;
     }
     // A sealed protocol result is durable execution evidence, even after worker downtime.
     run.state.expire(now);
@@ -250,6 +254,6 @@ pub async fn recover_one(
         &run,
     )
     .await?;
-    audit_recovery(service, tx, &run, &previous).await?;
+    audit_recovery(execution, service, tx, &run, &previous).await?;
     Ok(())
 }

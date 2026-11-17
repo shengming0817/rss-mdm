@@ -1,6 +1,6 @@
 //! Native package-manager reads over the existing frozen publication authority.
 use axum::{
-    Json,
+    Extension, Json,
     body::Bytes,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
@@ -14,7 +14,7 @@ use rss_mdm_http_contract::{
 };
 use rss_mdm_software_service::management::publication::service::PublicationDirectory;
 use rss_mdm_software_service::publication::{
-    self as p, ExportDocument, PublicationService, PublishedSoftware,
+    self as p, ExportDocument, PublicationOperation, PublishedSoftware,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -63,14 +63,20 @@ fn failure(e: p::Error) -> StatusCode {
         _ => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
-fn service<'a>(state: &'a StateData, source: &str) -> Result<&'a PublicationService, StatusCode> {
+fn service<'a>(
+    state: &'a StateData,
+    source: &str,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
+) -> Result<PublicationOperation<'a>, StatusCode> {
     state
         .directory
         .services
         .get(source)
-        .map(Arc::as_ref)
-        .ok_or(StatusCode::NOT_FOUND)
+        .ok_or(StatusCode::NOT_FOUND)?
+        .operation(binding)
+        .map_err(failure)
 }
+
 fn token(headers: &HeaderMap) -> Option<String> {
     let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     if let Some(token) = value.strip_prefix("Bearer ") {
@@ -93,7 +99,10 @@ fn token(headers: &HeaderMap) -> Option<String> {
     }
     Some(token.into())
 }
-fn authenticated(service: &PublicationService, headers: &HeaderMap) -> Result<(), StatusCode> {
+fn authenticated(
+    service: &PublicationOperation<'_>,
+    headers: &HeaderMap,
+) -> Result<(), StatusCode> {
     if service.native_read_allowed(token(headers).as_deref()) {
         Ok(())
     } else {
@@ -109,25 +118,26 @@ fn contract(headers: &HeaderMap) -> Result<(), StatusCode> {
 pub fn routes() -> Router<Arc<StateData>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
  rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { external_get_information, external_post_search, external_get_manifest, external_get_frozen_information, external_post_frozen_search, external_get_frozen_manifest, external_get_refs, external_post_upload_pack, external_get_artifact } }
- RoutesModule1 { external_get_information: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/information", external_get(information, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
-external_post_search: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/manifestSearch", external_post(search, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
-external_get_manifest: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/packageManifests/{package}", external_get(manifest, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
-external_get_frozen_information: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/exports/{publication}/information", external_get(frozen_information, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
-external_post_frozen_search: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/exports/{publication}/manifestSearch", external_post(frozen_search, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
-external_get_frozen_manifest: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/exports/{publication}/packageManifests/{package}", external_get(frozen_manifest, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
-external_get_refs: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/exports/{publication}/info/refs", external_get(refs, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
-external_post_upload_pack: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/exports/{publication}/git-upload-pack", external_post(upload_pack, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
-external_get_artifact: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/artifacts/{resource}/{version}/{digest}/{*file}", external_get(artifact, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])) }.assemble()
+ RoutesModule1 { external_get_information: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/software/native/sources/{source}/information", external_get(information, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
+external_post_search: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/software/native/sources/{source}/manifestSearch", external_post(search, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
+external_get_manifest: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/software/native/sources/{source}/packageManifests/{package}", external_get(manifest, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
+external_get_frozen_information: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/software/native/sources/{source}/exports/{publication}/information", external_get(frozen_information, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
+external_post_frozen_search: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/software/native/sources/{source}/exports/{publication}/manifestSearch", external_post(frozen_search, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
+external_get_frozen_manifest: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/software/native/sources/{source}/exports/{publication}/packageManifests/{package}", external_get(frozen_manifest, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
+external_get_refs: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/software/native/sources/{source}/exports/{publication}/info/refs", external_get(refs, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
+external_post_upload_pack: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/software/native/sources/{source}/exports/{publication}/git-upload-pack", external_post(upload_pack, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
+external_get_artifact: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/software/native/sources/{source}/artifacts/{resource}/{version}/{digest}/{*file}", external_get(artifact, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])) }.assemble()
 }
       .layer(axum::extract::DefaultBodyLimit::max(1024*1024))
       .layer(axum::middleware::from_fn(no_store))
 }
 async fn information(
+    Extension(binding): Extension<rss_transactional_messaging::fence::ExecutionBinding>,
     State(state): State<Arc<StateData>>,
-    Path(source): Path<String>,
+    Path((_tenant, source)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, StatusCode> {
-    let s = service(&state, &source)?;
+    let s = service(&state, &source, binding)?;
     if !s.native_winget() {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -137,12 +147,13 @@ async fn information(
     ))
 }
 async fn frozen_information(
+    Extension(binding): Extension<rss_transactional_messaging::fence::ExecutionBinding>,
     State(state): State<Arc<StateData>>,
-    Path((source, id)): Path<(String, String)>,
+    Path((_tenant, source, id)): Path<(String, String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, StatusCode> {
     let id = digest(&id)?;
-    let s = service(&state, &source)?;
+    let s = service(&state, &source, binding)?;
     if !s.native_winget() {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -276,7 +287,7 @@ fn search_row(document: &ExportDocument) -> Result<Value, StatusCode> {
     )
 }
 async fn page(
-    s: &PublicationService,
+    s: &PublicationOperation<'_>,
     after: &str,
 ) -> Result<(Vec<(String, PublishedSoftware)>, Option<String>), StatusCode> {
     let cutoff = cutoff()?;
@@ -297,8 +308,9 @@ async fn page(
     Ok((values, next))
 }
 async fn search(
+    Extension(binding): Extension<rss_transactional_messaging::fence::ExecutionBinding>,
     State(state): State<Arc<StateData>>,
-    Path(source): Path<String>,
+    Path((_tenant, source)): Path<(String, String)>,
     headers: HeaderMap,
     Json(input): Json<Search>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -307,7 +319,7 @@ async fn search(
         .clone()
         .try_acquire_owned()
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    let s = service(&state, &source)?;
+    let s = service(&state, &source, binding)?;
     if !s.native_winget() {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -318,7 +330,7 @@ async fn search(
         .map(|v| v.to_str().map_err(|_| StatusCode::BAD_REQUEST))
         .transpose()?
         .unwrap_or("");
-    let (values, next) = page(s, after).await?;
+    let (values, next) = page(&s, after).await?;
     search_results(
         &input,
         limit,
@@ -369,12 +381,13 @@ fn search_results(
 }
 
 async fn frozen_search(
+    Extension(binding): Extension<rss_transactional_messaging::fence::ExecutionBinding>,
     State(state): State<Arc<StateData>>,
-    Path((source, id)): Path<(String, String)>,
+    Path((_tenant, source, id)): Path<(String, String, String)>,
     headers: HeaderMap,
     Json(input): Json<Search>,
 ) -> Result<Json<Value>, StatusCode> {
-    let s = service(&state, &source)?;
+    let s = service(&state, &source, binding)?;
     if !s.native_winget() {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -400,8 +413,9 @@ struct VersionQuery {
     version: Option<String>,
 }
 async fn manifest(
+    Extension(binding): Extension<rss_transactional_messaging::fence::ExecutionBinding>,
     State(state): State<Arc<StateData>>,
-    Path((source, package)): Path<(String, String)>,
+    Path((_tenant, source, package)): Path<(String, String, String)>,
     headers: HeaderMap,
     Query(query): Query<VersionQuery>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -410,7 +424,7 @@ async fn manifest(
         .clone()
         .try_acquire_owned()
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    let s = service(&state, &source)?;
+    let s = service(&state, &source, binding)?;
     if !s.native_winget() {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -469,12 +483,13 @@ async fn manifest(
     manifest_response(documents, &package, query.version.as_deref())
 }
 async fn frozen_manifest(
+    Extension(binding): Extension<rss_transactional_messaging::fence::ExecutionBinding>,
     State(state): State<Arc<StateData>>,
-    Path((source, id, package)): Path<(String, String, String)>,
+    Path((_tenant, source, id, package)): Path<(String, String, String, String)>,
     headers: HeaderMap,
     Query(query): Query<VersionQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    let s = service(&state, &source)?;
+    let s = service(&state, &source, binding)?;
     if !s.native_winget() {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -524,12 +539,14 @@ enum GitRead<'a> {
     Upload(&'a [u8]),
 }
 async fn refs(
+    Extension(binding): Extension<rss_transactional_messaging::fence::ExecutionBinding>,
     State(state): State<Arc<StateData>>,
-    Path((source, id)): Path<(String, String)>,
+    Path((_tenant, source, id)): Path<(String, String, String)>,
     Query(query): Query<GitQuery>,
     headers: HeaderMap,
 ) -> Response {
     git(
+        binding,
         &state,
         &source,
         &id,
@@ -540,16 +557,25 @@ async fn refs(
     .unwrap_or_else(|e| e)
 }
 async fn upload_pack(
+    Extension(binding): Extension<rss_transactional_messaging::fence::ExecutionBinding>,
     State(state): State<Arc<StateData>>,
-    Path((source, id)): Path<(String, String)>,
+    Path((_tenant, source, id)): Path<(String, String, String)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    git(&state, &source, &id, &headers, GitRead::Upload(&body))
-        .await
-        .unwrap_or_else(|e| e)
+    git(
+        binding,
+        &state,
+        &source,
+        &id,
+        &headers,
+        GitRead::Upload(&body),
+    )
+    .await
+    .unwrap_or_else(|e| e)
 }
 async fn git(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     state: &StateData,
     source: &str,
     id: &str,
@@ -565,11 +591,11 @@ async fn git(
         .clone()
         .try_acquire_owned()
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE.into_response())?;
-    let s = service(state, source).map_err(IntoResponse::into_response)?;
+    let s = service(state, source, binding).map_err(IntoResponse::into_response)?;
     if s.native_winget() {
         return Err(StatusCode::NOT_FOUND.into_response());
     }
-    authenticated(s, headers).map_err(|status| {
+    authenticated(&s, headers).map_err(|status| {
         (
             status,
             [(
@@ -631,8 +657,10 @@ async fn git(
         .into_response())
 }
 async fn artifact(
+    Extension(binding): Extension<rss_transactional_messaging::fence::ExecutionBinding>,
     State(state): State<Arc<StateData>>,
-    Path((source, resource, version, expected, file)): Path<(
+    Path((_tenant, source, resource, version, expected, file)): Path<(
+        String,
         String,
         String,
         String,
@@ -646,7 +674,7 @@ async fn artifact(
         Err(status) => return status.into_response(),
     };
     let result = async {
-        let s = service(&state, &source).map_err(IntoResponse::into_response)?;
+        let s = service(&state, &source, binding).map_err(IntoResponse::into_response)?;
         let expected = digest(&expected).map_err(IntoResponse::into_response)?;
         let content = state
             .content
@@ -690,7 +718,7 @@ async fn artifact(
                     )
                     .map_err(|_| StatusCode::SERVICE_UNAVAILABLE.into_response())?;
                     let verified = content
-                        .verify(&descriptor)
+                        .verify(binding, &descriptor)
                         .await
                         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE.into_response())?;
                     s.published(value.publication, deadline)

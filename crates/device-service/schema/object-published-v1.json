@@ -23,6 +23,10 @@
       "type": "integer",
       "minimum": 1,
       "maximum": 9223372036854775807
+    },
+    "executionEpoch": {
+      "type": "integer",
+      "minimum": 1
     }
   },
   "required": [
@@ -30,6 +34,7 @@
     "tenant",
     "historyEpoch",
     "snapshotId",
-    "through"
+    "through",
+    "executionEpoch"
   ]
 }

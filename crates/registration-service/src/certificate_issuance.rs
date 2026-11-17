@@ -53,7 +53,8 @@ pub struct DeviceIssuer {
     profile: rss_mdm_install_support::StorageProfile,
     purpose: Purpose,
     providers: Arc<Providers>,
-    trust: Arc<DeviceIdentityTrust>,
+    registry: Arc<rss_mdm_pki_service::registry::Registry>,
+    installation: Uuid,
     days: u16,
     clock: Arc<dyn Clock>,
 }
@@ -61,30 +62,29 @@ impl DeviceIssuer {
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
         self.profile
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "issuer materials, installation identity and clock remain explicit"
+    )]
     pub fn new(
         profile: rss_mdm_install_support::StorageProfile,
         providers: Arc<Providers>,
         days: u16,
         development: bool,
-        trust: Arc<DeviceIdentityTrust>,
+        purpose: Purpose,
+        registry: Arc<rss_mdm_pki_service::registry::Registry>,
+        installation: Uuid,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, IssuanceError> {
         if days == 0 || days > 3650 || (!development && days != 365) {
             return Err(IssuanceError::Configuration);
         }
-        let purpose = trust.purpose().map_err(|_| IssuanceError::Configuration)?;
-        let active = trust
-            .trust
-            .active()
-            .map_err(|_| IssuanceError::Configuration)?;
-        providers
-            .get(purpose, &active.digest)
-            .map_err(|_| IssuanceError::Configuration)?;
         Ok(Self {
             profile,
             purpose,
             providers,
-            trust,
+            registry,
+            installation,
             days,
             clock,
         })
@@ -104,9 +104,65 @@ impl DeviceIssuer {
             .map(|p| p.authority_digest(&digest))
             .map_err(|_| Error::Configuration)
     }
-    pub fn trust(&self) -> &Arc<DeviceIdentityTrust> {
-        &self.trust
+    pub fn installation(&self) -> Uuid {
+        self.installation
     }
+    pub async fn trust(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<Arc<DeviceIdentityTrust>, Error> {
+        let trust = self
+            .registry
+            .current(execution, self.purpose, self.clock.unix_seconds()?)
+            .await
+            .map_err(|_| Error::Configuration)?;
+        self.trust_snapshot(trust)
+    }
+    pub async fn trust_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<Arc<DeviceIdentityTrust>, Error> {
+        let trust = self
+            .registry
+            .current_on(c, execution, self.purpose, self.clock.unix_seconds()?)
+            .await
+            .map_err(|_| Error::Configuration)?;
+        self.trust_snapshot(trust)
+    }
+    pub async fn bootstrap_trust(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<rss_mdm_device_trust::DeviceTrust, Error> {
+        if self.purpose != Purpose::Agent {
+            return Err(Error::Unsupported);
+        }
+        let trust = self
+            .registry
+            .current(
+                execution,
+                Purpose::AgentBootstrap,
+                self.clock.unix_seconds()?,
+            )
+            .await
+            .map_err(|_| Error::Configuration)?;
+        if trust.public().map_err(|_| Error::Configuration)?.service_id != self.installation {
+            return Err(Error::Configuration);
+        }
+        Ok(trust)
+    }
+    fn trust_snapshot(
+        &self,
+        trust: rss_mdm_device_trust::DeviceTrust,
+    ) -> Result<Arc<DeviceIdentityTrust>, Error> {
+        if trust.public().map_err(|_| Error::Configuration)?.service_id != self.installation {
+            return Err(Error::Configuration);
+        }
+        DeviceIdentityTrust::from_trust(trust, self.days)
+            .map(Arc::new)
+            .map_err(|_| Error::Configuration)
+    }
+    /// Freeze signing under the caller's existing transaction.
     pub(crate) async fn authorize_in(
         &self,
         c: &mut sqlx::PgConnection,
@@ -163,11 +219,11 @@ impl DeviceIssuer {
             end,
         })
     }
-    pub(crate) fn end(&self, start: i64) -> Result<i64, Error> {
+    pub(crate) fn end(&self, trust: &DeviceIdentityTrust, start: i64) -> Result<i64, Error> {
         let end = start
             .checked_add(i64::from(self.days) * 86400)
             .ok_or(Error::Configuration)?;
-        if !self.trust.permits_window(start, end) {
+        if !trust.permits_window(start, end) {
             return Err(Error::Configuration);
         }
         Ok(end)
@@ -177,7 +233,7 @@ impl DeviceIssuer {
         &self,
         intent: AuthorizedDeviceIssuanceIntent,
         store: &rss_mdm_pki_service::signing::SigningStore,
-        tenant: Uuid,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
     ) -> Result<Issued, IssuanceError> {
         if store.profile() != self.profile {
             return Err(IssuanceError::Configuration);
@@ -189,7 +245,7 @@ impl DeviceIssuer {
         if now < intent.start || now >= intent.deadline || now - intent.start >= 60 {
             return Err(IssuanceError::Authorization(Error::Unauthorized));
         }
-        self.sign(store, tenant, &intent, now)
+        self.sign(store, execution, &intent, now)
             .await
             .map(|certificate| Issued {
                 attempt: intent.attempt,
@@ -200,10 +256,14 @@ impl DeviceIssuer {
     async fn sign(
         &self,
         store: &rss_mdm_pki_service::signing::SigningStore,
-        tenant: Uuid,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         intent: &AuthorizedDeviceIssuanceIntent,
         now: i64,
     ) -> Result<IssuedDeviceCertificate, IssuanceError> {
+        let trust = self
+            .trust(execution)
+            .await
+            .map_err(IssuanceError::Authorization)?;
         let unknown = || IssuanceError::Unknown {
             attempt: intent.attempt,
         };
@@ -220,7 +280,7 @@ impl DeviceIssuer {
             .map_err(|_| IssuanceError::Configuration)?;
         let chain = store
             .issue(
-                tenant,
+                execution,
                 (
                     rss_mdm_pki_service::registry::purpose(self.purpose),
                     &issuer,
@@ -242,7 +302,7 @@ impl DeviceIssuer {
                         .map_err(|_| rss_mdm_pki_service::Error::Request)
                 },
                 |chain| {
-                    self.trust
+                    trust
                         .validate_issued_for(
                             intent.issuer,
                             chain.to_vec(),
@@ -256,7 +316,7 @@ impl DeviceIssuer {
             )
             .await
             .map_err(|_| unknown())?;
-        self.trust
+        trust
             .validate_issued_for(
                 intent.issuer,
                 chain,

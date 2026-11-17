@@ -9,8 +9,7 @@ impl Reader {
         tx: &mut PgTransaction<'_>,
         version: &r::Version,
     ) -> Result<[u8; 32]> {
-        self.tenant(tx)?;
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         let resource = version.resource().as_str().to_owned();
         let label = version.label().as_str().to_owned();
         let digest = version.digest().bytes();
@@ -390,8 +389,7 @@ impl Reader {
         version: &r::Version,
         allow_draft: bool,
     ) -> Result<[u8; 32]> {
-        self.tenant(tx)?;
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         let resource = version.resource().as_str().to_owned();
         let label = version.label().as_str().to_owned();
         let digest = version.digest().bytes();
@@ -407,10 +405,11 @@ impl Reader {
 impl Catalog {
     pub fn publication_partition(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         version: &r::Version,
     ) -> Result<rss_transactional_messaging::message::PartitionIdentity> {
         event::partition(
-            self.tenant,
+            binding.tenant(),
             &format!(
                 "resource/{}/{}",
                 version.resource().as_str(),

@@ -44,6 +44,34 @@
     {
       "name": "rss_da.credential_save_retired_run",
       "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "rss_da.access_runs_work_scopes",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "rss_da.access_runs_work_epoch",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "rss_da.access_runs_work_relay_scopes",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "rss_da.credential_runs_work_scopes",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "rss_da.credential_runs_work_epoch",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "rss_da.credential_runs_work_relay_scopes",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "rss_da.recovery_versions_maintenance_scopes",
+      "search_path": "search_path=pg_catalog, pg_temp"
     }
   ],
   "external_relations": [

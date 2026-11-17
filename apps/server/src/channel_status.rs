@@ -20,22 +20,9 @@ pub(crate) enum ChannelState {
 }
 #[derive(Clone, Copy)]
 pub(crate) enum Reason {
-    MaterialNotSelected,
-    MaterialUnreadable,
-    MaterialInvalid,
-    TrustConflict,
-    MaterialRevoked,
-    MaterialVersionMismatch,
-    CertificateExpired,
-    DependencyUnavailable,
-}
-#[derive(Clone, Default)]
-pub(crate) struct LoadedMaterials {
-    pub trust: Option<i64>,
-    pub apns: Option<i64>,
-    pub profile: Option<i64>,
-    pub wns: Option<i64>,
-    pub signing: Option<i64>,
+    NotSelected,
+    Unreadable,
+    Invalid,
 }
 #[derive(Clone)]
 pub(crate) struct Assembly {
@@ -43,19 +30,19 @@ pub(crate) struct Assembly {
     pub state: ChannelState,
     pub reason: Option<Reason>,
     pub mounted: bool,
-    pub materials: LoadedMaterials,
 }
 
 pub(crate) struct Channels {
     endpoints: rss_mdm_management_http::enrollment::channels::PublicEndpoints,
     values: RwLock<Vec<Assembly>>,
-    installation: OnceLock<(
-        Arc<crate::agent_pki::AgentPki>,
-        Arc<rss_mdm_pki_service::registry::Registry>,
-    )>,
+    agent: OnceLock<Arc<crate::agent_pki::AgentPki>>,
+    protection: Arc<rss_mdm_native_protection::Protector>,
 }
 impl Channels {
-    pub(crate) fn new(config: &crate::config::Config) -> Self {
+    pub(crate) fn new(
+        config: &crate::config::Config,
+        protection: Arc<rss_mdm_native_protection::Protector>,
+    ) -> Self {
         let windows = config.native_protocols.windows.as_ref();
         let apple = config.native_protocols.apple.is_some();
         let agent = matches!(config.agent_pki, crate::agent_pki::Config::StepCa { .. });
@@ -98,12 +85,9 @@ impl Channels {
                     (ChannelName::Apple, apple),
                     (ChannelName::Windows, windows.is_some()),
                     (ChannelName::Agent, agent),
-                    (
-                        ChannelName::WindowsPush,
-                        windows.is_some_and(|w| w.push.is_some()),
-                    ),
+                    (ChannelName::WindowsPush, windows.is_some()),
                     (ChannelName::AgentBootstrap, bootstrap),
-                    (ChannelName::Signing, config.task_signing.is_some()),
+                    (ChannelName::Signing, true),
                 ]
                 .into_iter()
                 .map(|(name, enabled)| Assembly {
@@ -113,19 +97,22 @@ impl Channels {
                     } else {
                         ChannelState::Disabled
                     },
-                    reason: enabled.then_some(Reason::MaterialNotSelected),
+                    reason: enabled.then_some(Reason::NotSelected),
                     mounted: false,
-                    materials: Default::default(),
                 })
                 .collect(),
             ),
-            installation: OnceLock::new(),
+            agent: OnceLock::new(),
+            protection,
         }
     }
     pub(crate) fn endpoints(
         &self,
+        tenant: rss_request_context::TenantId,
     ) -> rss_mdm_management_http::enrollment::channels::PublicEndpoints {
-        self.endpoints.clone()
+        let mut endpoints = self.endpoints.clone();
+        endpoints.console = format!("{}/tenants/{tenant}", endpoints.console);
+        endpoints
     }
     pub(crate) fn set(
         &self,
@@ -160,26 +147,6 @@ impl Channels {
         value.mounted = true;
         Ok(())
     }
-    pub(crate) fn loaded(
-        &self,
-        name: ChannelName,
-        materials: LoadedMaterials,
-    ) -> Result<(), crate::Error> {
-        let mut values = self
-            .values
-            .write()
-            .map_err(|_| crate::Error::Unavailable(crate::Failure::CommandInvariant))?;
-        let value = values
-            .iter_mut()
-            .find(|v| v.name == name)
-            .ok_or(crate::Error::Malformed)?;
-        value.materials.trust = materials.trust.or(value.materials.trust);
-        value.materials.apns = materials.apns.or(value.materials.apns);
-        value.materials.profile = materials.profile.or(value.materials.profile);
-        value.materials.wns = materials.wns.or(value.materials.wns);
-        value.materials.signing = materials.signing.or(value.materials.signing);
-        Ok(())
-    }
     pub(crate) fn snapshot(&self) -> Vec<Assembly> {
         match self.values.read() {
             Ok(values) => values.clone(),
@@ -189,11 +156,8 @@ impl Channels {
     pub(crate) fn installation(
         &self,
         agent: Arc<crate::agent_pki::AgentPki>,
-        pki: Arc<rss_mdm_pki_service::registry::Registry>,
     ) -> Result<(), crate::Error> {
-        self.installation
-            .set((agent, pki))
-            .map_err(|_| crate::Error::Conflict)
+        self.agent.set(agent).map_err(|_| crate::Error::Conflict)
     }
     /// Only errors classified at a material boundary may enter this path.
     pub(crate) fn material<T>(
@@ -209,7 +173,7 @@ impl Channels {
             Err(crate::Error::Configuration(issue)) => {
                 use crate::ConfigIssue as C;
                 let reason = match issue {
-                    C::FileAccess => Reason::MaterialUnreadable,
+                    C::FileAccess => Reason::Unreadable,
                     C::AgentPki
                     | C::SecretContents
                     | C::SecretEncoding
@@ -222,7 +186,7 @@ impl Channels {
                     | C::AppleChallengeWebhook
                     | C::AppleNotifyWebhook
                     | C::FileShape
-                    | C::FileSize => Reason::MaterialInvalid,
+                    | C::FileSize => Reason::Invalid,
                     _ => return Err(crate::Error::Configuration(issue)),
                 };
                 self.set(name, ChannelState::Degraded, Some(reason))?;
@@ -234,85 +198,70 @@ impl Channels {
 }
 
 impl rss_mdm_software_service::installation::inputs::Admission for Channels {
-    fn ready_signing_revision(&self, now: i64) -> Option<u64> {
-        use rss_mdm_agent_wire::pki::Purpose;
-        let (agent, pki) = self.installation.get()?;
-        let revision = {
-            let states = self.values.read().ok()?;
-            let ready = [
-                ChannelName::Agent,
-                ChannelName::AgentBootstrap,
-                ChannelName::Signing,
-            ]
-            .into_iter()
-            .all(|name| {
-                states.iter().any(|s| {
-                    s.name == name
-                        && s.state == ChannelState::Ready
-                        && (name != ChannelName::Agent || s.mounted)
-                })
-            });
-            if !ready {
-                return None;
+    fn ready_signing_revision<'a>(
+        &'a self,
+        c: &'a mut sqlx::PgConnection,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        now: i64,
+    ) -> futures::future::BoxFuture<'a, rss_mdm_software_service::catalog::Result<Option<u64>>>
+    {
+        Box::pin(async move {
+            use rss_mdm_software_service::catalog::Error;
+            let Some(agent) = self.agent.get() else {
+                return Ok(None);
+            };
+            if agent.bootstrap.is_none()
+                || !self
+                    .snapshot()
+                    .iter()
+                    .any(|s| s.name == ChannelName::Agent && s.mounted)
+            {
+                return Ok(None);
             }
-            states
-                .iter()
-                .find(|s| s.name == ChannelName::Signing)
-                .and_then(|s| s.materials.signing)
-                .and_then(|revision| u64::try_from(revision).ok())?
-        };
-        // Release the local facts lock before consulting the actual authorities.
-        let ready = agent.bootstrap.is_some()
-            && agent.issuance_ready(now)
-            && [Purpose::Agent, Purpose::AgentBootstrap]
-                .into_iter()
-                .all(|purpose| {
-                    pki.trust(purpose)
-                        .ok()
-                        .and_then(|trust| {
-                            rss_mdm_device_trust::DeviceTrust::new(trust, purpose, now).ok()
-                        })
-                        .is_some()
-                });
-        ready.then_some(revision)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn prepared_materials_without_final_assembly_cannot_admit_installation() {
-        use rss_mdm_software_service::installation::inputs::Admission;
-        let channels = Channels {
-            endpoints: rss_mdm_management_http::enrollment::channels::PublicEndpoints {
-                console: "https://mdm.example.test".into(),
-                agent: vec![],
-                windows_enrollment: None,
-                windows_management: vec![],
-                apple_management: None,
-            },
-            values: RwLock::new(
-                [
-                    ChannelName::Agent,
-                    ChannelName::AgentBootstrap,
-                    ChannelName::Signing,
-                ]
-                .into_iter()
-                .map(|name| Assembly {
-                    name,
-                    state: ChannelState::Ready,
-                    reason: None,
-                    mounted: true,
-                    materials: LoadedMaterials {
-                        signing: Some(1),
-                        ..Default::default()
-                    },
-                })
-                .collect(),
-            ),
-            installation: OnceLock::new(),
-        };
-        assert_eq!(channels.ready_signing_revision(1_800_000_000), None);
+            if !agent
+                .issuance_ready_on(c, binding, now)
+                .await
+                .map_err(|_| Error::Dependency)?
+            {
+                return Ok(None);
+            }
+            let bootstrap = rss_mdm_pki_service::registry::trust_on(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                binding.tenant(),
+                rss_mdm_agent_wire::pki::Purpose::AgentBootstrap,
+            )
+            .await
+            .map_err(|_| Error::Dependency)?;
+            rss_mdm_device_trust::DeviceTrust::new(
+                bootstrap,
+                rss_mdm_agent_wire::pki::Purpose::AgentBootstrap,
+                now,
+            )
+            .map_err(|_| Error::Dependency)?;
+            let trust = match rss_mdm_task_trust::trust::current(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                rss_mdm_task_trust::Use::AgentTask,
+                c,
+                binding.tenant(),
+            )
+            .await
+            {
+                Ok(trust) => trust,
+                Err(rss_mdm_task_trust::Error::NotFound) => return Ok(None),
+                Err(_) => return Err(Error::Dependency),
+            };
+            rss_mdm_task_trust::trust::load(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                rss_mdm_task_trust::Use::AgentTask,
+                c,
+                binding.tenant(),
+                trust.revision,
+                &self.protection,
+            )
+            .await
+            .map_err(|_| Error::Dependency)?;
+            Ok(Some(trust.revision))
+        })
     }
 }

@@ -60,7 +60,7 @@ impl crate::deployment::queries::Queries {
         _apple: bool,
     ) -> crate::deployment::Result<Vec<crate::deployment::queries::records::Capability>> {
         use rss_mdm_registration_service::device::endpoints;
-        let tenant = self.tenant.to_string();
+        let tenant = proof.binding().tenant().to_string();
         let agent = endpoints::current_in(
             rss_mdm_install_support::StorageProfile::Mdm,
             c,
@@ -85,7 +85,7 @@ impl crate::deployment::queries::Queries {
         } else {
             None
         };
-        let supported = agent_support(self.signed, self.content_available);
+        let supported = self.content_available;
         let result = [capability(
             current,
             proof,
@@ -124,10 +124,6 @@ fn capability(
         "productSupport":{"state":if supported{"supported"}else{"unsupported"},"reason":if supported{None}else{Some("product_not_configured")}},
         "devicePrerequisite":{"state":prerequisite.0,"reason":prerequisite.1},
         "permission":{"allowed":allowed,"reason":if allowed{None}else{Some("permission_denied")}}})
-}
-
-fn agent_support(signed: bool, content: bool) -> bool {
-    signed && content
 }
 
 pub const RELATION_SQL: &str = "SELECT o.id, o.device, CAST('command' AS text) AS kind, o.source_kind, o.policy_version, v.policy, CAST(o.input_context ->> 'deadline' AS bigint) AS deadline, COALESCE(d.status, 'unknown') AS status, CAST(octet_length(o.request) + octet_length(CAST(o.authority AS text)) + octet_length(CAST(o.input_context AS text)) + COALESCE(octet_length(CAST(o.dispatch_failure AS text)), 0) + 1024 AS bigint) AS input_bytes FROM mdm_software_deployment.operations AS o LEFT JOIN rss_device_command.commands AS d ON (d.tenant_id, d.command_id) = (o.tenant_id, CAST(o.id AS text)) LEFT JOIN mdm_policy.versions AS v ON (v.tenant_id, v.id) = (o.tenant_id, o.policy_version) WHERE o.tenant_id = CAST($1 AS uuid) UNION ALL SELECT r.id, r.device, 'action_run', r.source_kind, r.policy_version, v.policy, r.deadline, COALESCE(r.state ->> 'execution', 'unknown'), CAST(0 AS bigint) FROM mdm_software_deployment.action_runs AS r LEFT JOIN mdm_policy.versions AS v ON (v.tenant_id, v.id) = (r.tenant_id, r.policy_version) WHERE r.tenant_id = CAST($1 AS uuid)";

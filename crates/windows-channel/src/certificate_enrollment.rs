@@ -81,9 +81,8 @@ fn anonymous_discovery(
     bytes: &[u8],
     purpose: Purpose,
 ) -> Response {
-    let windows = match app.windows() {
-        Ok(windows) => windows,
-        Err(error) => return fault(None, error),
+    let Some(windows) = app.windows.as_ref() else {
+        return fault(None, Error::Unsupported);
     };
     let message = match decode_at(
         bytes,
@@ -192,7 +191,9 @@ async fn principal(
     purpose: Purpose,
 ) -> Result<DevicePrincipal, Error> {
     let Extension(peer) = peer.ok_or(Error::Unauthorized)?;
-    let checked = app.windows()?.ca.verify(
+    let execution = app.certificate_binding(&peer).await?;
+    let windows = app.windows(execution).await?;
+    let checked = windows.ca.verify(
         peer.chain(),
         app.clock
             .unix_seconds()
@@ -203,15 +204,14 @@ async fn principal(
         .management_principal(
             &crate::device::ChannelMount::new(
                 rss_mdm_install_support::StorageProfile::Mdm,
-                app.identity.tenant(),
                 rss_mdm_inventory::ReportSource::MdmWindows,
                 purpose,
             )
-            .credential(checked.fingerprint())?,
+            .credential(execution, checked.fingerprint())?,
         )
         .await?;
     if principal.purpose() == rss_mdm_registration_service::Purpose::WindowsDeclared {
-        linked::current_parent(app, principal.device()).await?;
+        linked::current_parent(app, &windows, execution, principal.device()).await?;
     }
     Ok(principal)
 }

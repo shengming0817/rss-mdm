@@ -105,7 +105,7 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
         if name == "profile-active" || name == "profile-deprecated" {
             let store = rss_mdm_resource_postgres::ResourceStore::new(
                 resource_owner.runtime.clone(),
-                c.audit.binding(),
+                c.execution(),
                 crate::authority_t2_support::deadline(),
             )
             .await?;
@@ -124,6 +124,7 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
                 }
                 store
                     .execute(
+                        c.execution(),
                         &rss_mdm_resource_postgres::Request {
                             id: r::Id::new(Uuid::new_v4().to_string())?,
                             resource: r::Id::new(name)?,
@@ -188,22 +189,24 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
         projection.store.clone(),
         c.database.inventory(),
         c.audit.clone(),
-        c.tenant,
+        c.execution().storage(),
+        c.execution().epoch(),
         clock.clone(),
         Arc::new(rt::Readiness::default()),
     ));
     let owner = planning::owner(&c, "mdm_inventory_runtime").await?;
     let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         owner.runtime.clone(),
-        c.audit.binding(),
+        c.execution(),
         rss_mdm_inventory_service::transaction::deadline(),
     ))
     .await?;
     let assets = Arc::new(a::AssetService::new(a::AssetDependencies {
+        read_pool: c.database.archive_pool(),
         inventory,
         audit_store: owner.audit.clone(),
         runtime: owner.runtime.clone(),
-        tenant: c.tenant,
+        probe: c.execution(),
         clock: Arc::new(crate::clock::SystemClock),
         cursor_key: vec![7; 32],
         reconcile_messaging: messaging,
@@ -211,7 +214,7 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
             objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
             groups: rss_mdm_group_postgres::GroupStore::new(
                 owner.runtime.clone(),
-                c.audit.binding(),
+                c.execution(),
                 rss_mdm_inventory_service::transaction::deadline(),
             )
             .await?

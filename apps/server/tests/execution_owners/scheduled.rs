@@ -9,14 +9,13 @@ async fn probe(h: &Harness, version: Uuid) -> Result<(bool, bool)> {
     let reader = rss_mdm_policy_postgres::PolicyReader::bind(
         rss_mdm_install_support::StorageProfile::Mdm,
         h.a.resources.storage.runtime.clone(),
-        h.c.tenant,
     );
     Ok(h.a
         .resources
         .storage
         .runtime
         .local_tx_with_context(
-            h.c.audit.binding(),
+            h.c.execution(),
             script::transaction::deadline(),
             reader,
             move |reader, tx| {
@@ -46,11 +45,10 @@ async fn wake(
     let reader = rss_mdm_policy_postgres::PolicyReader::bind(
         rss_mdm_install_support::StorageProfile::Mdm,
         h.a.resources.storage.runtime.clone(),
-        h.c.tenant,
     );
     let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         h.a.resources.storage.runtime.clone(),
-        h.c.audit.binding(),
+        h.c.execution(),
         script::transaction::deadline(),
     ))
     .await?;
@@ -58,7 +56,7 @@ async fn wake(
         .storage
         .runtime
         .local_tx_with_context(
-            h.c.audit.binding(),
+            h.c.execution(),
             script::transaction::deadline(),
             (reader, messaging, target),
             move |(reader, messaging, target), tx| {

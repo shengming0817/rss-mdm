@@ -127,10 +127,7 @@ impl DeviceService {
         let profile = self.profile();
 
         q.require_schema(&SCHEMA).map_err(error)?;
-        if p.tenant_id() != self.tenant {
-            return Err(Error::Forbidden);
-        }
-        let mut tx = self.access.snapshot(&self.tenant).await?;
+        let mut tx = self.access.snapshot(p.tenant_id()).await?;
         let current = authority(profile, &mut tx, p).await?;
         prepare(&mut tx, &current, p, q).await?;
         let allowed = current
@@ -147,7 +144,7 @@ impl DeviceService {
             ))
             .map_err(error)?;
         let after = q.after(codec, &binding).map_err(error)?;
-        let mut sql = selection(profile, &self.tenant, allowed, q, after.as_ref(), false)?;
+        let mut sql = selection(profile, p.tenant_id(), allowed, q, after.as_ref(), false)?;
         let candidates: Vec<(Option<Uuid>, i64, Option<Value>)> =
             sql.build_query_as().fetch_all(&mut *tx).await.map_err(db)?;
         check_sources(
@@ -214,14 +211,11 @@ impl DeviceService {
         let profile = self.profile();
 
         q.require_schema(&SCHEMA).map_err(error)?;
-        if p.tenant_id() != self.tenant {
-            return Err(Error::Forbidden);
-        }
-        let mut tx = self.access.snapshot(&self.tenant).await?;
+        let mut tx = self.access.snapshot(p.tenant_id()).await?;
         let current = authority(profile, &mut tx, p).await?;
         prepare(&mut tx, &current, p, q).await?;
         let grant = current.query_binding(p)?;
-        let mut sql = source_budget(profile, &self.tenant, STATISTICS_SOURCES, false);
+        let mut sql = source_budget(profile, p.tenant_id(), STATISTICS_SOURCES, false);
         sql.push("SELECT b.rows,CASE WHEN b.rows<=")
             .push_bind(STATISTICS_SOURCES)
             .push(crate::storage_profile::sql(profile).device_directory_directory_statistics_1);
@@ -260,16 +254,15 @@ impl DeviceService {
         let p = request.proof.as_ref();
         let profile = self.profile();
 
-        if p.tenant_id() != self.tenant {
-            return Err(Error::Forbidden);
-        }
-        let mut tx = self.access.snapshot(&self.tenant).await?;
+        let mut tx = self.access.snapshot(p.tenant_id()).await?;
         let current = authority(profile, &mut tx, p).await?;
         current
             .require(p, Permission::InventoryRead, Some(device))
             .map_err(rss_mdm_authorization_service::Error::from)?;
         let grant = current.query_binding(p)?;
-        let item = self.directory_device_on(&mut tx, device).await?;
+        let item = self
+            .directory_device_on(p.tenant_id(), &mut tx, device)
+            .await?;
         tx.rollback().await.map_err(db)?;
         self.access.confirm_query(request, &grant).await?;
         Ok(item)
@@ -277,12 +270,13 @@ impl DeviceService {
     /// Read one already-authorized identity on the caller's snapshot connection.
     pub async fn directory_device_on(
         &self,
+        tenant: &str,
         c: &mut PgConnection,
         device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<Item, Error> {
         let profile = self.profile();
 
-        let value = page_on(profile, c, &self.tenant, &[device.to_owned()]).await?;
+        let value = page_on(profile, c, tenant, &[device.to_owned()]).await?;
         value["items"]
             .as_array()
             .and_then(|v| v.first())

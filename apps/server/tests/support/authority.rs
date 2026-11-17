@@ -73,6 +73,7 @@ impl Inputs {
 
 pub struct Context {
     pub inputs: Inputs,
+    pub profile: String,
     pub tenant: TenantId,
     pub operator: PgPool,
     pub database: crate::Database,
@@ -83,6 +84,19 @@ pub struct Context {
     pub audit: Arc<AuditStore>,
 }
 impl Context {
+    pub fn execution(&self) -> rss_transactional_messaging::fence::ExecutionBinding {
+        use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
+        ExecutionBinding::new(
+            StorageIdentity::new(
+                self.inputs.installation.target,
+                self.inputs.installation.lineage,
+            )
+            .unwrap(),
+            self.tenant,
+            Epoch::new(1).unwrap(),
+        )
+    }
+
     pub async fn open(profile: &str, additional_tenants: &[TenantId]) -> Result<Self> {
         let inputs = Inputs::load()?;
         let operator = inputs.pool(profile, "postgres").await?;
@@ -177,6 +191,7 @@ impl Context {
         .await?;
         Ok(Self {
             inputs,
+            profile: profile.to_owned(),
             tenant,
             operator,
             database,
@@ -210,7 +225,7 @@ impl Context {
                     self.audit.integrity().clone(),
                 )?
                 .authority,
-            self.audit.binding(),
+            self.execution(),
             Arc::new(access::identity_management::IdentityManagementPolicy::new(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 &self.inputs.installation.instance_id,
@@ -237,7 +252,7 @@ impl Context {
         let issued = self
             .authority
             .login_local(
-                self.audit.binding(),
+                self.execution(),
                 LoginKey::parse(&login)?,
                 Password::new(password.into())?,
                 AttemptSource::parse("foundation-t2")?,
@@ -256,8 +271,13 @@ impl Context {
         account: &Account,
     ) -> Result<access::context::AuthorizedPrincipal> {
         Ok(
-            access::session::SessionAuthority::new(self.authority.clone(), self.audit.binding())
-                .authenticate(&self.access(), account.credential()?, deadline())
+            access::session::SessionAuthority::new(self.authority.clone())
+                .authenticate(
+                    self.execution(),
+                    &self.access(),
+                    account.credential()?,
+                    deadline(),
+                )
                 .await?,
         )
     }
@@ -280,10 +300,7 @@ impl Context {
         ));
         access::context::RequestAuth {
             proof,
-            sessions: access::session::SessionAuthority::new(
-                self.authority.clone(),
-                self.audit.binding(),
-            ),
+            sessions: access::session::SessionAuthority::new(self.authority.clone()),
             deadline: budget.deadline().instant(),
             cancellation: budget,
         }
@@ -292,7 +309,7 @@ impl Context {
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Request,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            self.tenant.to_string(),
+            self.execution(),
             "foundation",
             AuditIntent::Management,
         );

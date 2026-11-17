@@ -23,6 +23,7 @@ mod receipts;
 async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() -> Result<()> {
     use serde_json::{Value, json};
     let c = Context::open("shared", &[]).await?;
+    let tenant = c.tenant;
     let manager = c
         .account(&[
             Permission::PolicyRead,
@@ -88,13 +89,8 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
     let retirement_lease = device::hold_retirement(&c, operation).await?;
     let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = reservation.local_addr()?;
-    let config = crate::host_t2_support::configuration(
-        &c.inputs,
-        "shared",
-        c.tenant,
-        address,
-        Uuid::new_v4(),
-    )?;
+    let config =
+        crate::host_t2_support::configuration(&c.inputs, "shared", address, Uuid::new_v4()).await?;
     let config = serde_json::from_value(config)?;
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -140,7 +136,9 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
         .await?;
         let mut failures = Vec::new();
         for (owner, case_id, query, expected) in &cases {
-            let path = format!("/api/v1/operation-diagnostics/operations/{owner}/{case_id}{query}");
+            let path = format!(
+                "/api/v1/tenants/{tenant}/operation-diagnostics/operations/{owner}/{case_id}{query}"
+            );
             let (status, body) = send(path).await?;
             let matches = status == 200
                 && body["operation"]["owner"] == *owner
@@ -163,7 +161,7 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
             failures.join("\n")
         );
         let (status, discovery) = send(format!(
-            "/api/v1/operation-diagnostics?owner=device_management&operationId={}",
+            "/api/v1/tenants/{tenant}/operation-diagnostics?owner=device_management&operationId={}",
             background.operation
         ))
         .await?;
@@ -180,7 +178,7 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
         let actor = item["operation"]["actor"].as_str().unwrap();
         assert!(item["operation"]["instance"].is_null());
         let background_path = format!(
-            "/api/v1/operation-diagnostics/operations/device_management/{}?actor={actor}",
+            "/api/v1/tenants/{tenant}/operation-diagnostics/operations/device_management/{}?actor={actor}",
             background.operation
         );
         let (status, original) = send(background_path.clone()).await?;
@@ -196,7 +194,7 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
         );
         assert_eq!(
             send(format!(
-                "/api/v1/operation-diagnostics/operations/device_management/{}",
+                "/api/v1/tenants/{tenant}/operation-diagnostics/operations/device_management/{}",
                 background.operation
             ))
             .await?
@@ -216,8 +214,9 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
             403,
             "one original member is outside current scope"
         );
-        let retirement_path =
-            format!("/api/v1/operation-diagnostics/operations/retirement/{operation}");
+        let retirement_path = format!(
+            "/api/v1/tenants/{tenant}/operation-diagnostics/operations/retirement/{operation}"
+        );
         let (status, before) = send(retirement_path.clone()).await?;
         assert_eq!(status, 200, "{before}");
         assert_eq!(before["executionEvidence"]["availability"], "available");
@@ -242,7 +241,7 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
             execution.to_string()
         );
         retirement_lease.release().await?;
-        let (status, value) = send(format!("/api/v1/operation-diagnostics/operations/pki/{old_pki}?instance={instance}&includeAudit=true")).await?;
+        let (status, value) = send(format!("/api/v1/tenants/{tenant}/operation-diagnostics/operations/pki/{old_pki}?instance={instance}&includeAudit=true")).await?;
         assert_eq!(status, 200, "{value}");
         assert_eq!(value["originalResult"]["availability"], "available");
         assert_eq!(value["operation"]["instance"], instance.to_string());
@@ -254,14 +253,14 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
         sqlx::query("INSERT INTO mdm_assets.group_operations(tenant_id,id,actor,instance,fingerprint,response) VALUES($1::uuid,$2,$3,$4::uuid,$5,'{\"damaged\":true}')")
             .bind(c.tenant.to_string()).bind(damaged).bind(proof.principal_id()).bind(proof.instance_id()).bind(vec![17_u8;32]).execute(&c.operator).await?;
         let (status, value) = send(format!(
-            "/api/v1/operation-diagnostics/operations/group/{damaged}?includeAudit=true"
+            "/api/v1/tenants/{tenant}/operation-diagnostics/operations/group/{damaged}?includeAudit=true"
         ))
         .await?;
         assert_eq!(status, 200, "{value}");
         assert_eq!(value["originalResult"]["availability"], "unavailable");
         assert_eq!(value["auditEvidence"]["availability"], "available");
         let (status, value) = send(format!(
-            "/api/v1/operation-diagnostics/operations/certificate_archive/{}?includeAudit=true",
+            "/api/v1/tenants/{tenant}/operation-diagnostics/operations/certificate_archive/{}?includeAudit=true",
             Uuid::new_v4()
         ))
         .await?;
@@ -269,8 +268,9 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
         assert_eq!(value["originalResult"]["availability"], "not_found");
         assert_eq!(value["auditEvidence"]["availability"], "available");
         for owner in receipts::ACTOR_OWNERS {
-            let path =
-                format!("/api/v1/operation-diagnostics/operations/{owner}/{foreign_operation}");
+            let path = format!(
+                "/api/v1/tenants/{tenant}/operation-diagnostics/operations/{owner}/{foreign_operation}"
+            );
             let (status, body) = send(path.clone()).await?;
             assert_eq!(status, 200, "{owner}: {body}");
             assert_eq!(
@@ -280,7 +280,7 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
             assert_eq!(send(format!("{path}?instance={instance}")).await?.0, 403);
         }
         let path = format!(
-            "/api/v1/operation-diagnostics/operations/resource/{operation}?includeAudit=true"
+            "/api/v1/tenants/{tenant}/operation-diagnostics/operations/resource/{operation}?includeAudit=true"
         );
         let mut cursor: Option<String> = None;
         let mut requests = std::collections::BTreeSet::new();
@@ -311,7 +311,7 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
             if let Some(cursor) = &cursor {
                 let encoded: String =
                     url::form_urlencoded::byte_serialize(cursor.as_bytes()).collect();
-                assert_eq!(send(format!("/api/v1/operation-diagnostics/operations/scope/{operation}?includeAudit=true&cursor={encoded}")).await?.0, 409);
+                assert_eq!(send(format!("/api/v1/tenants/{tenant}/operation-diagnostics/operations/scope/{operation}?includeAudit=true&cursor={encoded}")).await?.0, 409);
             } else {
                 break;
             }
@@ -348,6 +348,7 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
 #[ignore = "T2: real Identity, receipt owner, HTTP and audit index failure"]
 async fn original_result_survives_lost_response_new_config_and_index_failure() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
+    let tenant = c.tenant;
     let manager = c
         .account(&[
             Permission::AuthorizationRead,
@@ -419,14 +420,12 @@ async fn original_result_survives_lost_response_new_config_and_index_failure() -
     assert_eq!(original_request, Some(first_request.to_string()));
     let timeline = c.database.timeline(
         c.audit.clone(),
-        c.tenant,
         &[41; 32],
         rss_mdm_timeline_service::QueryBudget::new(1024, 8 * 1024 * 1024)?,
     )?;
     let services = Arc::new(Services {
         timeline: timeline.clone(),
         reads: Arc::new(super::operation_diagnostics::Installation {
-            tenant: c.tenant,
             tenants: None,
             audit: c.audit.clone(),
             timeline,
@@ -440,7 +439,6 @@ async fn original_result_survives_lost_response_new_config_and_index_failure() -
     let authentication = Arc::new(
         rss_mdm_management_http::authorization::http::AuthenticationState {
             identity: Arc::new(rss_mdm_management_http::identity::Identity {
-                binding: c.audit.binding(),
                 rp_generation: rss_identity_postgres::RpGeneration::new(1)?,
                 authority: c.authority.clone(),
                 webauthn,
@@ -448,13 +446,12 @@ async fn original_result_survives_lost_response_new_config_and_index_failure() -
                     "https://localhost",
                     Duration::from_secs(8),
                 )?,
-                tenant: c.tenant,
             }),
             access: c.access(),
             requests: Arc::new(tokio::sync::Semaphore::new(8)),
         },
     );
-    rss_mdm_http_contract::route_module! {struct DiagnosticsProof for [Browser]{diagnostics at "/api/v1"}}
+    rss_mdm_http_contract::route_module! {struct DiagnosticsProof for [Browser]{diagnostics at "/api/v1/tenants/{tenant}"}}
     let routes = DiagnosticsProof {
         diagnostics: rss_mdm_management_http::operation_diagnostics::routes().with_state(services),
     }
@@ -475,10 +472,10 @@ async fn original_result_survives_lost_response_new_config_and_index_failure() -
             clock: Arc::new(crate::Monotonic(std::time::Instant::now)),
             audit_store: c.audit.clone(),
             requests: Arc::new(tokio::sync::Semaphore::new(8)),
-            tenant: c.tenant.to_string(),
         },
     )
-    .into_axum();
+    .into_axum()
+    .layer(axum::Extension(c.execution()));
     let access::credential::RequestCredential::Cookie(secret) = manager.credential()? else {
         anyhow::bail!("cookie required")
     };
@@ -500,14 +497,16 @@ async fn original_result_survives_lost_response_new_config_and_index_failure() -
             Ok::<_, anyhow::Error>((status, serde_json::from_slice::<serde_json::Value>(&body)?))
         }
     };
-    let path = format!("/api/v1/operation-diagnostics/operations/authorization/{operation}");
+    let path = format!(
+        "/api/v1/tenants/{tenant}/operation-diagnostics/operations/authorization/{operation}"
+    );
     let (status, body) = send(format!("{path}?includeAudit=true")).await?;
     assert_eq!(status, 200);
     assert_eq!(body["originalResult"]["value"]["revision"], 1);
     assert_eq!(body["auditEvidence"]["availability"], "restricted");
     assert_eq!(
         send(format!(
-            "/api/v1/operation-diagnostics/requests/{first_request}"
+            "/api/v1/tenants/{tenant}/operation-diagnostics/requests/{first_request}"
         ))
         .await?
         .0,
@@ -571,7 +570,7 @@ async fn original_result_survives_lost_response_new_config_and_index_failure() -
     };
     let session = c
         .authority
-        .inspect_session(c.audit.binding(), revoke_secret, deadline())
+        .inspect_session(c.execution(), revoke_secret, deadline())
         .await?;
     c.authority
         .revoke_current_session(session, deadline())

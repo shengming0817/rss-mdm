@@ -57,6 +57,7 @@ pub(crate) async fn discover_in(
 }
 
 pub async fn audit_recovery(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &Service,
     tx: &mut PgTransaction<'_>,
     run: &db::Run,
@@ -66,7 +67,7 @@ pub async fn audit_recovery(
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            tx.tenant_id().to_string(),
+            execution,
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -110,13 +111,14 @@ pub async fn audit_recovery(
 impl Service {
     pub async fn accept_action_dispatch(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         id: Uuid,
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), crate::control::Error> {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            self.transactions.tenant.to_string(),
+            execution,
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -128,7 +130,7 @@ impl Service {
         );
         audit.target(&id.to_string());
         audit.identify_service("command-dispatch");
-        let result=crate::control::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.audit_store.binding(),&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
+        let result=crate::control::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,execution,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
             let (service,id,fingerprint,audit)=ctx;
             crate::control::transaction::prepare_audit_in(&service.transactions.audit_store,tx,audit,&[]).await?;
             let run=super::storage::read_run(tx,*id).await?;
@@ -171,7 +173,12 @@ pub(super) async fn stale_registration(
         .await?)
 }
 
-pub async fn recover_one(service: &Service, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<()> {
+pub async fn recover_one(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    service: &Service,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<()> {
     let now = storage::now(tx).await?;
     let mut run = db::load_run(tx, id).await?;
     let plan = db::load_source(&service.transactions.policy_reader, tx, run.source).await?;
@@ -193,6 +200,6 @@ pub async fn recover_one(service: &Service, tx: &mut PgTransaction<'_>, id: Uuid
         run.state.cancel();
     }
     db::save_run(&service.transactions.reconcile_messaging, tx, &run).await?;
-    audit_recovery(service, tx, &run, &previous).await?;
+    audit_recovery(execution, service, tx, &run, &previous).await?;
     Ok(())
 }

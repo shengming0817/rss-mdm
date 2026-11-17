@@ -10,7 +10,9 @@
 mod git;
 mod import;
 mod template;
-pub use git::{CommitId, DocumentPresence, Prepared, PublishResult, Repository, Snapshot};
+pub use git::{
+    CommitId, DocumentPresence, Prepared, PublishResult, Repository, RepositoryScope, Snapshot,
+};
 pub use import::{TapImport, TapPayload};
 use rss_request_context::TenantId;
 use std::fmt;

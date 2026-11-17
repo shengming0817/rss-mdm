@@ -17,12 +17,10 @@ pub fn protection(c: &Context) -> Result<Arc<Protector>> {
 }
 pub fn service(c: &Context, protection: Arc<Protector>) -> Result<rss_mdm_task_trust::Service> {
     Ok(rss_mdm_task_trust::Service::new(
-        c.tenant,
         Arc::new(rss_mdm_task_trust::Signing::new(
             rss_mdm_install_support::StorageProfile::Mdm,
             rss_mdm_task_trust::Use::AgentTask,
-            c.tenant,
-            None,
+            protection.clone(),
         )?),
         protection,
         c.audit.clone(),
@@ -288,7 +286,7 @@ pub async fn authenticated_agent(
     let principal = rss_mdm_registration_service::device::authenticate_endpoint_in(
         rss_mdm_install_support::StorageProfile::Mdm,
         &mut tx,
-        c.tenant,
+        c.execution(),
         &peer,
     )
     .await?;

@@ -164,7 +164,7 @@ async fn pki_receipts(tx: &mut sqlx::PgConnection, tenant: &str, id: Uuid) -> Re
         .bind(tenant).bind(b"retained certificate material".to_vec()).bind("a".repeat(64)).bind(vec![17_u8;32]).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_pki.signing(tenant_id,attempt,purpose,issuer,binding,deadline,digest,state) VALUES($1::uuid,$2,'agent',$3,$4,1700000900,$5,'unknown')")
         .bind(tenant).bind(id).bind("a".repeat(64)).bind(b"retained opaque signing intent".to_vec()).bind(vec![17_u8;32]).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_pki.revocations(tenant_id,attempt,purpose,issuer,serial,state) VALUES($1::uuid,$2,'agent',$3,'1','submitted')")
+    sqlx::query("INSERT INTO mdm_pki.revocations(expected_epoch,tenant_id,attempt,purpose,issuer,serial,state) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,'agent',$3,'1','submitted')")
         .bind(tenant).bind(id).bind("a".repeat(64)).execute(&mut *tx).await?;
     Ok(())
 }

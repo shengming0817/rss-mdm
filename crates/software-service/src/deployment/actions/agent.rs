@@ -106,6 +106,7 @@ impl SoftwareService {
             match &policy {
                 db::ScheduledPolicy::Software(software) if software_capable => {
                     super::software::accept_for_device(
+                        p.binding(),
                         &service.transactions,
                         tx,
                         software,
@@ -179,7 +180,7 @@ impl SoftwareService {
         {
             run.state.cancel();
         }
-        super::recovery::audit_recovery(service, tx, &run, &previous).await?;
+        super::recovery::audit_recovery(p.binding(), service, tx, &run, &previous).await?;
         if run.state.cancellation == Cancellation::None
             && run.available_at <= now
             && allowed

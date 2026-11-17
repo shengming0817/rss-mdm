@@ -49,7 +49,7 @@ impl Service {
     ) -> Result<Detail> {
         grant.require(proof, Permission::OperationRead, Some(device))?;
         let s = &self.transactions;
-        let op = storage::load_on(c, s.tenant, &s.protection, id).await?;
+        let op = storage::load_on(c, proof.binding().tenant(), &s.protection, id).await?;
         if op.device != *device {
             return Err(Error::Forbidden.into());
         }
@@ -58,16 +58,26 @@ impl Service {
             .fetch_one(&mut *c)
             .await?;
         let status = stored(dc::Status::restore(&status))?;
-        let authorization = if op.authority.valid(&s.materials, c, s.tenant).await? {
+        let authorization = if op
+            .authority
+            .valid(&s.materials, c, proof.binding().tenant())
+            .await?
+        {
             Authorization::Authorized
         } else {
             Authorization::Blocked {
                 reason: BlockReason::SourceInvalid,
             }
         };
-        let observation =
-            super::apple::observation_on(c, s.tenant, s.apple_results.clone(), &op, status, false)
-                .await?;
+        let observation = super::apple::observation_on(
+            c,
+            proof.binding().tenant(),
+            s.apple_results.clone(),
+            &op,
+            status,
+            false,
+        )
+        .await?;
         Ok(Detail {
             operation_id: id,
             command_id: id,
@@ -85,14 +95,15 @@ impl Service {
     }
     pub async fn decisions_on(
         &self,
+        tenant: TenantId,
         c: &mut sqlx::PgConnection,
         ids: Vec<Uuid>,
     ) -> Result<std::collections::BTreeMap<Uuid, Decision>> {
         let s = &self.transactions;
-        let operations = storage::load_many_on(c, s.tenant, &s.protection, ids).await?;
+        let operations = storage::load_many_on(c, tenant, &s.protection, ids).await?;
         let mut result = std::collections::BTreeMap::new();
         for op in operations.into_values() {
-            let authorization = if op.authority.valid(&s.materials, c, s.tenant).await? {
+            let authorization = if op.authority.valid(&s.materials, c, tenant).await? {
                 Authorization::Authorized
             } else {
                 Authorization::Blocked {

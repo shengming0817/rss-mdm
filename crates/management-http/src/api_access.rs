@@ -113,6 +113,8 @@ pub(crate) fn register_network()
     }
 }
 async fn list(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(state): State<Arc<Management>>,
     Extension(auth): Extension<RequestAuth>,
     query: rss_mdm_http_contract::query::OwnedQuery<
@@ -151,7 +153,7 @@ async fn list(
 }
 async fn detail(
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<rss_mdm_authorization_service::api_key::KeyRecord>, Error> {
     auth.proof.user()?;
     auth.proof.require(
@@ -197,6 +199,8 @@ async fn apply(
     Ok(Json(KeyChangeBody(result)))
 }
 async fn create(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(state): State<Arc<Management>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -222,7 +226,7 @@ async fn update(
     State(state): State<Arc<Management>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     body: Result<Json<Update>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<KeyChangeBody>, Error> {
     let Json(input) = body.map_err(Error::from)?;
@@ -245,7 +249,7 @@ async fn rotate(
     State(state): State<Arc<Management>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     body: Result<Json<Mutation>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<KeyChangeBody>, Error> {
     let Json(input) = body.map_err(Error::from)?;
@@ -266,7 +270,7 @@ async fn revoke(
     State(state): State<Arc<Management>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     body: Result<Json<Mutation>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<KeyChangeBody>, Error> {
     let Json(input) = body.map_err(Error::from)?;
@@ -309,7 +313,6 @@ async fn network_change(
 
 pub struct BearerAdmission {
     pub access: Arc<rss_mdm_authorization_service::Store>,
-    pub tenant: String,
 }
 /// Marks a product rejection before Identity can own authentication settlement.
 #[derive(Clone, Copy)]
@@ -338,12 +341,11 @@ pub async fn admit_bearer(
     if request.headers().contains_key("x-api-key") {
         return reject(Error::Malformed);
     }
-    let permitted = request
-        .uri()
-        .path()
-        .strip_prefix("/api/v1/identity/tenants/")
-        .is_some_and(|path| path.split('/').next() == Some(state.tenant.as_str()));
-    if !permitted {
+    if request
+        .extensions()
+        .get::<rss_transactional_messaging::fence::ExecutionBinding>()
+        .is_none()
+    {
         return reject(Error::Forbidden);
     }
     let Some(address) = request

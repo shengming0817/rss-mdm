@@ -125,15 +125,17 @@ pub(crate) async fn policy(
 }
 pub(crate) async fn current_parent(
     app: &HttpState,
+    windows: &crate::Windows,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     parent: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<(), Error> {
     let mut c = app
         .access
-        .begin_read(&app.identity.tenant().to_string())
+        .begin_read(&execution.tenant().to_string())
         .await?;
     let certificate: Vec<u8> = sqlx::query_scalar("SELECT material.certificate FROM mdm_access.devices AS r INNER JOIN mdm_access.credentials AS k ON (k.tenant_id, k.device) = (r.tenant_id, r.id) INNER JOIN LATERAL (SELECT e.certificate FROM mdm_access.enrollment_certificates AS e WHERE e.tenant_id = r.tenant_id AND e.request_id = r.request_id UNION ALL SELECT n.certificate FROM mdm_windows.renewals AS n WHERE n.tenant_id = r.tenant_id AND n.device = r.id AND n.activated_at IS NOT NULL) AS material ON encode(sha256(material.certificate), 'hex') = k.locator WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2 AND r.purpose = 'primary' AND r.state = 'active' AND k.state = 'active' AND k.purpose = 'primary'")
-        .bind(app.identity.tenant().to_string()).bind(parent.into_uuid()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
-    app.windows()?.ca.verify(&[certificate.into()], now(app)?)?;
+        .bind(execution.tenant().to_string()).bind(parent.into_uuid()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    windows.ca.verify(&[certificate.into()], now(app)?)?;
     Ok(())
 }
 pub(crate) async fn issue(
@@ -189,12 +191,12 @@ async fn issue_message(
         );
     }
     let (parent, id, intent) = prepare_request(app, message, bytes, audit).await?;
-    let certificate = issuance::sign(app, &parent.tenant().to_string(), &intent, now(app)?).await?;
-    complete(app, &parent, id, &intent, &certificate, audit).await?;
-    let secrets =
-        app.windows()?
-            .protection
-            .open(&parent.tenant().to_string(), id, &intent.sealed)?;
+    let windows = app.windows(parent.binding()).await?;
+    let certificate = issuance::sign(app, parent.binding(), &windows, &intent, now(app)?).await?;
+    complete(app, &windows, &parent, id, &intent, &certificate, audit).await?;
+    let secrets = windows
+        .protection
+        .open(&parent.tenant().to_string(), id, &intent.sealed)?;
     let thumbprint = |b: &[u8]| {
         ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, b)
             .as_ref()
@@ -203,7 +205,7 @@ async fn issue_message(
             .collect::<String>()
     };
     let subject = format!("CN={}", intent.device);
-    let w = app.windows()?;
+    let w = windows;
     let provision = rss_mdm_windows_mdm::provisioning::encode(
         &rss_mdm_windows_mdm::provisioning::Provisioning {
             renew_days: rss_mdm_certificate::windows::RenewalPolicy::RENEW_DAYS,
@@ -247,17 +249,39 @@ pub(crate) async fn prepare_request(
     let Body::Issue(input) = &message.body else {
         return Err(Error::Malformed);
     };
-    let proof = app.windows()?.ca.linked_proof(bytes, now(app)?)?;
+    let leaf = &message
+        .header
+        .security
+        .as_ref()
+        .and_then(|s| s.binary_token.as_ref())
+        .ok_or(Error::Unauthorized)?
+        .bytes
+        .0;
+    use sha2::Digest;
+    let fingerprint: [u8; 32] = sha2::Sha256::digest(leaf).into();
+    let tenant = app
+        .access
+        .locate_certificate(fingerprint)
+        .await?
+        .ok_or(Error::Unauthorized)?;
+    let execution = app.execution(tenant);
+    let windows = app.windows(execution).await?;
+    let proof = windows.ca.linked_proof(bytes, now(app)?)?;
+    if proof.fingerprint() != fingerprint {
+        return Err(Error::Unauthorized);
+    }
+    audit
+        .bind_scope(execution)
+        .map_err(|_| Error::Unauthorized)?;
     let parent = app
         .devices
         .management_principal(
             &crate::device::ChannelMount::new(
                 rss_mdm_install_support::StorageProfile::Mdm,
-                app.identity.tenant(),
                 rss_mdm_inventory::ReportSource::MdmWindows,
                 Purpose::Primary,
             )
-            .credential(proof.fingerprint())?,
+            .credential(execution, proof.fingerprint())?,
         )
         .await?;
     let operation = message
@@ -287,12 +311,22 @@ pub(crate) async fn prepare_request(
     let soap::CertificateRequest::Pkcs10(csr) = &input.request else {
         return Err(Error::Malformed);
     };
-    let (id, intent) = intent(app, &parent, operation, proof.replay(), &csr.0, input).await?;
+    let (id, intent) = intent(
+        app,
+        &windows,
+        &parent,
+        operation,
+        proof.replay(),
+        &csr.0,
+        input,
+    )
+    .await?;
     Ok((parent, id, intent))
 }
 
 async fn intent(
     app: &HttpState,
+    windows: &crate::Windows,
     parent: &DevicePrincipal,
     operation: Uuid,
     digest: [u8; 32],
@@ -301,20 +335,25 @@ async fn intent(
 ) -> Result<(Uuid, issuance::Intent), Error> {
     issuance::prepare_transaction(
         &app.audit_store,
-        parent.tenant(),
-        (app, parent, operation, digest, csr, input),
+        parent.binding(),
+        (app, windows, parent, operation, digest, csr, input),
         |ctx, c| {
             Box::pin(async move {
-                let (app, p, o, d, csr, i) = ctx;
-                intent_on(c, app, p, *o, *d, csr, i).await
+                let (app, windows, p, o, d, csr, i) = ctx;
+                intent_on(c, app, windows, p, *o, *d, csr, i).await
             })
         },
     )
     .await
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep execution scope and existing operation inputs explicit"
+)]
 async fn intent_on(
     connection: &mut sqlx::PgConnection,
     app: &HttpState,
+    windows: &crate::Windows,
     parent: &DevicePrincipal,
     operation: Uuid,
     digest: [u8; 32],
@@ -333,7 +372,7 @@ async fn intent_on(
         &parent.tenant().to_string(),
     )
     .await?;
-    let w = app.windows()?;
+    let w = windows;
     let verified = certificate::Csr::verify(csr)?;
     let tenant = parent.tenant().to_string();
     let c = connection;
@@ -442,6 +481,7 @@ async fn intent_on(
 }
 pub(crate) async fn complete(
     app: &HttpState,
+    windows: &crate::Windows,
     parent: &DevicePrincipal,
     id: Uuid,
     intent: &issuance::Intent,
@@ -449,7 +489,7 @@ pub(crate) async fn complete(
     audit: &RequestAudit,
 ) -> Result<(), Error> {
     let profile = certificate::IssuanceProfile::decode(&intent.profile)?;
-    let leaf = app.windows()?.ca.validate_issued(
+    let leaf = windows.ca.validate_issued(
         &profile,
         &certificate::Csr::verify(&intent.csr)?,
         &[certificate.into()],
@@ -457,16 +497,16 @@ pub(crate) async fn complete(
     )?;
     let credential = crate::device::ChannelMount::new(
         rss_mdm_install_support::StorageProfile::Mdm,
-        parent.tenant(),
         rss_mdm_inventory::ReportSource::MdmWindows,
         Purpose::WindowsDeclared,
     )
-    .credential(leaf.fingerprint())?;
+    .credential(parent.binding(), leaf.fingerprint())?;
     let budget = app.devices.retirement_budget();
-    let result = app.audit_store.write(parent.tenant(),
-            &budget.source_control(),(app,parent,id,intent,certificate,audit,&credential),|(app,parent,id,intent,certificate,audit,credential),tx|Box::pin(async move {
-        let replayed = tx.with_connection_context(&mut (*app,*parent,*id,*intent,*certificate,*credential),|(app,parent,id,intent,certificate,credential),c|Box::pin(async move {
-            let (app,parent,id,intent,certificate,credential) = (*app,*parent,*id,*intent,*certificate,*credential);
+    let result = app.audit_store.write(
+            audit.binding()?,
+            &budget.source_control(),(app,windows,parent,id,intent,certificate,audit,&credential),|(app,windows,parent,id,intent,certificate,audit,credential),tx|Box::pin(async move {
+        let replayed = tx.with_connection_context(&mut (*app,*windows,*parent,*id,*intent,*certificate,*credential),|(app,windows,parent,id,intent,certificate,credential),c|Box::pin(async move {
+            let (_,windows,parent,id,intent,certificate,credential) = (*app,*windows,*parent,*id,*intent,*certificate,*credential);
             rss_mdm_registration_service::admission::lock_in(rss_mdm_install_support::StorageProfile::Mdm, c, &parent.tenant().to_string()).await?;
             crate::device::store::revalidate_management(rss_mdm_install_support::StorageProfile::Mdm, c,parent).await?;
             issuance::require_current_intent(c, &parent.tenant().to_string(), id, intent).await?;
@@ -478,7 +518,7 @@ pub(crate) async fn complete(
             crate::device::linked::bind_in(rss_mdm_install_support::StorageProfile::Mdm, c,parent,credential,id,[intent.credential,intent.epoch]).await?;
             sqlx::query("UPDATE mdm_access.management_sessions s SET state='superseded' WHERE s.tenant_id=$1::uuid AND s.device=$2 AND s.state IN('challenge','collecting') AND EXISTS(SELECT FROM mdm_access.requests q WHERE q.tenant_id=s.tenant_id AND q.device=s.device AND q.protocol_epoch=s.protocol_epoch AND q.authority_kind='parent_certificate' AND q.state='cancelled')")
                 .bind(parent.tenant().to_string()).bind(parent.device().into_uuid()).execute(&mut *c).await.map_err(db)?;
-            let secrets = app.windows()?.protection.open(&parent.tenant().to_string(),id,&intent.sealed)?;
+            let secrets = windows.protection.open(&parent.tenant().to_string(),id,&intent.sealed)?;
             rss_mdm_pki_service::certificates::record_in(rss_mdm_install_support::StorageProfile::Mdm, c,&parent.tenant().to_string(),"windows",&intent.device,
                 &rss_mdm_device_trust::digest(&intent.issuer),certificate).await.map_err(|_|Error::Unavailable(Failure::Database))?;
             enrollment_store::insert_certificate(c,&parent.tenant().to_string(),id.to_string(),certificate,&secrets.server_nonce).await.map_err(db)?;

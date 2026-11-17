@@ -33,7 +33,7 @@ use uuid::Uuid;
 pub struct Reader {
     profile: rss_mdm_install_support::StorageProfile,
     runtime: Arc<PgRuntime>,
-    tenant: TenantId,
+
     objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
 }
 impl Reader {
@@ -43,25 +43,21 @@ impl Reader {
     pub fn new(
         profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
         objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
     ) -> Self {
         Self {
             profile,
             runtime,
-            tenant,
+
             objects,
         }
     }
     /// The host binds this capability to the exact runtime used by the consuming service.
-    pub fn is_bound_to(&self, runtime: &Arc<PgRuntime>, tenant: TenantId) -> bool {
-        self.tenant == tenant && Arc::ptr_eq(&self.runtime, runtime)
+    pub fn is_bound_to(&self, runtime: &Arc<PgRuntime>) -> bool {
+        Arc::ptr_eq(&self.runtime, runtime)
     }
     pub fn validate_in(&self, tx: &PgTransaction<'_>) -> crate::transaction::Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::Forbidden.into());
-        }
         Ok(())
     }
     pub async fn prepare_in(
@@ -81,6 +77,7 @@ impl Reader {
     /// Read on the bound consumer's already opened transaction connection.
     pub async fn current_on(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut sqlx::PgConnection,
         device: &rss_mdm_agent_wire::DeviceId,
         policy: Uuid,
@@ -90,7 +87,7 @@ impl Reader {
 
         current_on(
             profile,
-            self.tenant,
+            binding.tenant(),
             self.objects.clone(),
             c,
             device,
@@ -102,6 +99,7 @@ impl Reader {
     /// History is read by its original identity, even after a new version or disable.
     pub async fn historical_on(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut sqlx::PgConnection,
         policy: Uuid,
         version: Uuid,
@@ -111,7 +109,7 @@ impl Reader {
         let value = rss_mdm_policy_postgres::telemetry::historical_on(
             profile,
             c,
-            self.tenant,
+            binding.tenant(),
             policy,
             version,
         )
@@ -122,25 +120,33 @@ impl Reader {
     }
     pub async fn candidates_on(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut sqlx::PgConnection,
     ) -> Result<Vec<(Uuid, Uuid, serde_json::Value)>, Error> {
         let profile = self.profile();
 
-        rss_mdm_policy_postgres::telemetry::candidates_on(profile, c, self.tenant)
+        rss_mdm_policy_postgres::telemetry::candidates_on(profile, c, binding.tenant())
             .await
             .map_err(|_| Error::Unavailable(Failure::PolicyStorage))
     }
     pub async fn is_current_on(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut sqlx::PgConnection,
         policy: Uuid,
         version: Uuid,
     ) -> Result<bool, Error> {
         let profile = self.profile();
 
-        rss_mdm_policy_postgres::telemetry::is_current_on(profile, c, self.tenant, policy, version)
-            .await
-            .map_err(|_| Error::Unavailable(Failure::PolicyStorage))
+        rss_mdm_policy_postgres::telemetry::is_current_on(
+            profile,
+            c,
+            binding.tenant(),
+            policy,
+            version,
+        )
+        .await
+        .map_err(|_| Error::Unavailable(Failure::PolicyStorage))
     }
 }
 

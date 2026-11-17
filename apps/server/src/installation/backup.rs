@@ -9,7 +9,7 @@ use super::{Error, Result, install::Input, local::Journal, snapshot_tree};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::Connection;
-use std::{collections::BTreeMap, path::PathBuf};
+use std::path::PathBuf;
 use uuid::Uuid;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,16 +44,10 @@ pub struct Receipt {
     pub manifest_sha256: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
-struct Host {
-    id: Uuid,
-    tenant: Uuid,
-    slot: Option<usize>,
-    runtime: Value,
-}
-#[derive(Serialize, Deserialize)]
 struct Frozen {
     request: Request,
-    hosts: Vec<Host>,
+    runtime: Value,
+    tenants: Vec<Uuid>,
     installation: crate::migration::Installation,
 }
 pub(super) fn administrator(input: &Input) -> Result<crate::config::Database> {
@@ -268,12 +262,11 @@ pub async fn restore(input: Restore) -> Result<Receipt> {
 }
 
 async fn freeze_backup(input: Request, root: &Journal, journal: &Journal) -> Result<Frozen> {
-    let capacity = super::tenant_hosts::Capacity::current(&input.installation, root)?;
-    let runtime: Value = root.load("runtime.json")?.ok_or(Error::Corrupt)?;
+    let runtime = super::runtime_files::current(root)?;
     let config: crate::config::Config =
-        serde_json::from_value(runtime).map_err(|_| Error::Corrupt)?;
+        serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
     let installation = crate::migration::Installation {
-        instance_id: config.identity.instance_id,
+        instance_id: config.identity.instance_id.clone(),
         target: config.storage_binding.target,
         lineage: config.storage_binding.lineage,
         audit_mode: config.audit.mode(),
@@ -290,15 +283,20 @@ async fn freeze_backup(input: Request, root: &Journal, journal: &Journal) -> Res
     crate::migration::verify_identity(&mut c, &installation)
         .await
         .map_err(|_| Error::Conflict)?;
-    let slots: BTreeMap<Uuid, usize> = root.load("host-reservations.json")?.unwrap_or_default();
-    let receipts:Vec<Value>=sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='enabled' ORDER BY operation_id").fetch_all(&mut c).await.map_err(|_|Error::Storage)?;
+    let tenants: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT tenant_id FROM public.mdm_tenants WHERE NOT deleted ORDER BY tenant_id",
+    )
+    .fetch_all(&mut c)
+    .await
+    .map_err(|_| Error::Storage)?;
     c.close().await.map_err(|_| Error::Storage)?;
-    let mut hosts = Vec::new();
-    for receipt in receipts {
-        hosts.push(freeze_host(&input, &slots, receipt, capacity).await?);
-    }
-    if hosts.is_empty() {
-        return Err(Error::Conflict);
+    input.installation.deployment.content_snapshot(&runtime)?;
+    for provider in runtime["device_pki"].as_array().ok_or(Error::Corrupt)? {
+        if !input.authorities.iter().any(|a| {
+            json!(a.purpose) == provider["purpose"] && json!(a.issuer) == provider["issuer"]
+        }) {
+            return Err(Error::Conflict);
+        }
     }
     for authority in &input.authorities {
         if !authority.online_directory.is_absolute()
@@ -316,7 +314,8 @@ async fn freeze_backup(input: Request, root: &Journal, journal: &Journal) -> Res
     }
     let frozen = Frozen {
         request: input,
-        hosts,
+        runtime,
+        tenants,
         installation,
     };
     telemetry::validate(&frozen)?;
@@ -325,63 +324,6 @@ async fn freeze_backup(input: Request, root: &Journal, journal: &Journal) -> Res
         &serde_json::to_vec(&frozen).map_err(|_| Error::Input)?,
     )?;
     Ok(frozen)
-}
-
-async fn freeze_host(
-    input: &Request,
-    slots: &BTreeMap<Uuid, usize>,
-    receipt: Value,
-    capacity: super::tenant_hosts::Capacity,
-) -> Result<Host> {
-    let receipt: crate::administration::tenants::Receipt =
-        serde_json::from_value(receipt).map_err(|_| Error::Corrupt)?;
-    let crate::administration::tenants::ReceiptResult::Provisioning(p) = receipt.result else {
-        return Err(Error::Corrupt);
-    };
-    let owner = Journal::open(
-        &input
-            .installation
-            .directory
-            .join(format!("rss-mdm-{}", p.host_id.simple())),
-    )?;
-    let runtime: Value = owner
-        .load("requested-runtime.json")?
-        .ok_or(Error::Corrupt)?;
-    capacity.require_current(&runtime)?;
-    let applied: super::runtime_files::Applied =
-        owner.load("applied.json")?.ok_or(Error::Corrupt)?;
-    if runtime["runtime_binding"]["operation_id"] != json!(applied.operation_id)
-        || applied.host_id != p.host_id
-        || applied.tenant_id != p.tenant_id.to_string()
-    {
-        return Err(Error::Conflict);
-    }
-    for provider in runtime["device_pki"].as_array().ok_or(Error::Corrupt)? {
-        if !input.authorities.iter().any(|a| {
-            json!(a.purpose) == provider["purpose"] && json!(a.issuer) == provider["issuer"]
-        }) {
-            return Err(Error::Conflict);
-        }
-    }
-    host_deployment(&input.installation, slots.get(&p.host_id).copied())?
-        .content_snapshot(&runtime)?;
-    Ok(Host {
-        id: p.host_id,
-        tenant: p.tenant_id,
-        slot: slots.get(&p.host_id).copied(),
-        runtime,
-    })
-}
-
-fn host_deployment(input: &Input, slot: Option<usize>) -> Result<&super::runtime_files::Config> {
-    match slot {
-        Some(index) => input
-            .additional_hosts
-            .get(index)
-            .map(|s| &s.deployment)
-            .ok_or(Error::Corrupt),
-        None => Ok(&input.deployment),
-    }
 }
 
 async fn capture_stopped(frozen: &Frozen, journal: &Journal, progress: &mut Receipt) -> Result<()> {
@@ -393,11 +335,14 @@ async fn capture_stopped(frozen: &Frozen, journal: &Journal, progress: &mut Rece
     no_writers(&mut c).await?;
     telemetry::capture(frozen, journal).await?;
     capture_ledger_heads(&mut c, frozen, journal).await?;
-    for host in &frozen.hosts {
-        let deployment = host_deployment(&frozen.request.installation, host.slot)?;
-        let volume = deployment.content_snapshot(&host.runtime)?;
-        snapshot_tree::capture(journal, &format!("volume-{}", host.id.simple()), &volume)?;
-        storage::capture(&mut c, journal, host.id, &host.runtime).await?;
+    let volume = frozen
+        .request
+        .installation
+        .deployment
+        .content_snapshot(&frozen.runtime)?;
+    snapshot_tree::capture(journal, "content-volume", &volume)?;
+    for tenant in &frozen.tenants {
+        storage::capture(&mut c, journal, *tenant, &frozen.runtime).await?;
     }
     no_writers(&mut c).await?;
     // Forced RLS must not filter a whole-installation archive. The deployment
@@ -420,7 +365,7 @@ async fn capture_stopped(frozen: &Frozen, journal: &Journal, progress: &mut Rece
     }
     let mut inputs =
         vec![serde_json::to_value(&frozen.request.installation).map_err(|_| Error::Corrupt)?];
-    inputs.extend(frozen.hosts.iter().map(|h| h.runtime.clone()));
+    inputs.push(frozen.runtime.clone());
     inputs.extend(
         frozen
             .request
@@ -535,23 +480,21 @@ async fn restore_contents(
         .map_err(|_| Error::Storage)?;
     connection_fence(&mut c, journal, true).await?;
     no_writers(&mut c).await?;
-    for host in &frozen.hosts {
-        let deployment = host_deployment(&frozen.request.installation, host.slot)?;
-        deployment.content_snapshot(&host.runtime)?;
-        snapshot_tree::restore(journal, &format!("volume-{}", host.id.simple()))?;
-        storage::restore(&mut c, journal, host.id, &host.runtime).await?;
+    frozen
+        .request
+        .installation
+        .deployment
+        .content_snapshot(&frozen.runtime)?;
+    snapshot_tree::restore(journal, "content-volume")?;
+    for tenant in &frozen.tenants {
+        storage::restore(&mut c, journal, *tenant, &frozen.runtime).await?;
     }
     let expected: Vec<ledger::Head> = journal
         .load("ledger-checkpoints.json")?
         .ok_or(Error::Corrupt)?;
     for head in expected {
-        let host = frozen
-            .hosts
-            .iter()
-            .find(|host| host.tenant.to_string() == head.tenant)
-            .unwrap_or(&frozen.hosts[0]);
         let actual = ledger::verify_operator(
-            &host.runtime,
+            &frozen.runtime,
             std::slice::from_ref(&head.tenant),
             &input.administrator,
         )
@@ -575,15 +518,12 @@ async fn activate_restored(
     _journal: &Journal,
     _root: &Journal,
 ) -> Result<()> {
-    for host in &frozen.hosts {
-        let deployment = host_deployment(&frozen.request.installation, host.slot)?;
-        super::runtime_files::prepare(
-            &frozen.request.installation.directory,
-            deployment,
-            &host.runtime,
-        )
-        .await?;
-    }
+    super::runtime_files::prepare(
+        &frozen.request.installation.directory,
+        &frozen.request.installation.deployment,
+        &frozen.runtime,
+    )
+    .await?;
     let mut c =
         sqlx::PgConnection::connect_with(&input.administrator.options().map_err(|_| Error::Input)?)
             .await
@@ -593,11 +533,11 @@ async fn activate_restored(
             .fetch_one(&mut c)
             .await
             .map_err(|_| Error::Storage)?;
-    let mut required = frozen
-        .hosts
-        .iter()
-        .map(|h| h.tenant)
-        .collect::<std::collections::BTreeSet<_>>();
+    let config: crate::config::Config =
+        serde_json::from_value(frozen.runtime.clone()).map_err(|_| Error::Corrupt)?;
+    let mut required =
+        accounts::initialized_tenants(&mut c, &config.identity.instance_id, &frozen.tenants)
+            .await?;
     required.insert(management);
     let supplied = input
         .accounts
@@ -608,20 +548,11 @@ async fn activate_restored(
         return Err(Error::Input);
     }
     for account in &input.accounts {
-        let host = frozen
-            .hosts
-            .iter()
-            .find(|h| h.tenant == account.tenant_id)
-            .unwrap_or(&frozen.hosts[0]);
-        let config: crate::config::Config =
-            serde_json::from_value(host.runtime.clone()).map_err(|_| Error::Corrupt)?;
-        let epoch: i64 = sqlx::query_scalar(
-            "SELECT epoch FROM rss_transactional_messaging.tenant_epoch WHERE tenant_id=$1",
-        )
-        .bind(account.tenant_id)
-        .fetch_one(&mut c)
-        .await
-        .map_err(|_| Error::Storage)?;
+        let epoch = if account.tenant_id == management {
+            rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH
+        } else {
+            config.storage_binding.epoch
+        };
         accounts::verify_restored(
             &config,
             &account.tenant_id.to_string(),
@@ -685,14 +616,8 @@ async fn capture_ledger_heads(
             .map_err(|_| Error::Storage)?;
     let mut checkpoints = Vec::new();
     for tenant in tenants {
-        let runtime = frozen
-            .hosts
-            .iter()
-            .find(|h| h.tenant == tenant)
-            .unwrap_or(&frozen.hosts[0]);
-        checkpoints.extend(
-            ledger::verify_operator(&runtime.runtime, &[tenant.to_string()], &admin).await?,
-        );
+        checkpoints
+            .extend(ledger::verify_operator(&frozen.runtime, &[tenant.to_string()], &admin).await?);
     }
     journal.secret(
         "ledger-checkpoints.json",

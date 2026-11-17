@@ -27,14 +27,13 @@ macro_rules! input {
 }
 pub(crate) use input;
 
-/// One tenant's Group adapter. The host owns and closes the shared RSS runtime.
-/// Borrowed methods validate the runtime owner and tenant before all reads/writes.
+/// Shared Group adapter. The host owns and closes the RSS runtime.
+/// Borrowed methods validate runtime ownership and use the original tenant-fenced transaction.
 /// Companion callers must propagate SQL errors to the outer
 /// local_tx owner, never issue transaction-control SQL or change tenant settings.
 pub struct GroupStore {
     pub(crate) runtime: Arc<PgRuntime>,
-    pub(crate) tenant: TenantId,
-    binding: ExecutionBinding,
+
     writer: PgOutboxWriter,
     pub(crate) sources: crate::GroupSources,
 }
@@ -43,11 +42,12 @@ impl GroupStore {
     /// The outer transaction declares every partition once, before any business locks.
     pub fn partition(
         &self,
+        tenant: TenantId,
         id: &str,
     ) -> Result<rss_transactional_messaging::message::PartitionIdentity, PgError> {
         use rss_transactional_messaging::message::{PartitionIdentity, PartitionKey};
         Ok(PartitionIdentity::new(
-            self.tenant,
+            tenant,
             event::domain(),
             data(PartitionKey::parse(id))?,
         ))
@@ -60,7 +60,6 @@ impl GroupStore {
         binding: ExecutionBinding,
         deadline: OperationDeadline,
     ) -> Result<Self, Error> {
-        let tenant = binding.tenant();
         settle(
             runtime
                 .local_tx(binding, deadline, |tx| {
@@ -74,10 +73,8 @@ impl GroupStore {
         )?;
         Ok(Self {
             writer: PgOutboxWriter::new(runtime.clone(), event::domain()),
-            sources: crate::GroupSources::bound(runtime.clone(), binding),
+            sources: crate::GroupSources::bound(runtime.clone()),
             runtime,
-            tenant,
-            binding,
         })
     }
     /// Borrow the read capabilities of this already admitted Group owner.
@@ -85,27 +82,20 @@ impl GroupStore {
         self.sources.clone()
     }
 
-    /// Return the tenant used for all reads, writes, rules and operation identities.
-    pub fn tenant(&self) -> TenantId {
-        self.tenant
-    }
     pub(crate) fn check_transaction(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
         self.writer.validate_transaction(tx)?;
-        Ok(if self.tenant == tx.tenant_id() {
-            Ok(())
-        } else {
-            Err(Rejection::TenantMismatch)
-        })
+        Ok(Ok(()))
     }
     /// Read the current group including a tombstone; missing/foreign groups return None.
     pub async fn get(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         id: GroupId,
         deadline: OperationDeadline,
     ) -> Result<Option<Group>, Error> {
         settle(
             self.runtime
-                .local_tx(self.binding, deadline, move |tx| {
+                .local_tx(binding, deadline, move |tx| {
                     Box::pin(async move { Ok(Ok(db::group(tx, id, false).await?)) })
                 })
                 .await,
@@ -125,6 +115,7 @@ impl GroupStore {
     /// Missing or foreign-tenant versions return None; the host authorizes disclosure.
     pub async fn rule(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         id: GroupId,
         version: &str,
         deadline: OperationDeadline,
@@ -136,7 +127,7 @@ impl GroupStore {
         let version = version.to_owned();
         settle(
             self.runtime
-                .local_tx(self.binding, deadline, move |tx| {
+                .local_tx(binding, deadline, move |tx| {
                     Box::pin(async move { Ok(Ok(db::find_rule(tx, id, version).await?)) })
                 })
                 .await,
@@ -172,12 +163,30 @@ impl GroupStore {
         tx: &mut PgTransaction<'_>,
         id: GroupId,
     ) -> InTransaction<Group> {
-        self.sources.lock_reference_target_in(tx, id).await
+        input!(self.check_transaction(tx)?);
+        let row = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query("SELECT * FROM mdm_group.lock_reference_target($1::uuid)")
+                        .bind(id.to_string())
+                        .fetch_optional(c)
+                        .await
+                })
+            })
+            .await?;
+        let group = input!(
+            row.map(|row| db::decode_group(id, row))
+                .transpose()?
+                .ok_or(Rejection::NotFound)
+        );
+        input!(active(&group));
+        Ok(Ok(group))
     }
     /// Read members while holding the reference lock in the host transaction.
     /// N12 must use execute_in to compose deletion, reference checks and audit atomically.
     pub async fn execute(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         operation: OperationId,
         as_of: Timepoint,
         command: &Command,
@@ -188,11 +197,11 @@ impl GroupStore {
         }
         settle(
             self.runtime
-                .local_tx_with_context(self.binding, deadline, (self, command), move |ctx, tx| {
+                .local_tx_with_context(binding, deadline, (self, command), move |ctx, tx| {
                     Box::pin(async move {
                         tx.prepare_outbox_partitions(&[ctx
                             .0
-                            .partition(&ctx.1.group().to_string())?])
+                            .partition(tx.tenant_id(), &ctx.1.group().to_string())?])
                             .await?;
                         ctx.0.execute_in(tx, operation, as_of, ctx.1).await
                     })
@@ -213,9 +222,9 @@ impl GroupStore {
         command: &Command,
     ) -> InTransaction<Receipt> {
         input!(self.check_transaction(tx)?);
-        let request = input!(command_document(self.tenant, command));
+        let request = input!(command_document(tx.tenant_id(), command));
         let hash = fingerprint(&[
-            self.tenant.to_string().as_bytes(),
+            tx.tenant_id().to_string().as_bytes(),
             &as_of.unix_seconds().to_be_bytes(),
             &request,
         ]);
@@ -280,7 +289,7 @@ impl GroupStore {
         group: GroupId,
         r: &Rule,
     ) -> InTransaction<()> {
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let version = r.view().version.to_owned();
         let hash = digest(&data(codec::encode_rule(r))?);
         let old=tx.with_connection(move |c|Box::pin(async move {
@@ -300,12 +309,21 @@ impl GroupStore {
         kind: GroupChangeKind,
         receipt: &Receipt,
     ) -> Result<(), PgError> {
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let group = receipt.group.id.to_string();
         let authority=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query_scalar::<_,i64>("SELECT authority_version FROM mdm_group.source_state WHERE tenant_id=$1::uuid AND group_id=$2::uuid")
                 .bind(tenant).bind(group).fetch_optional(c).await
         })).await?.unwrap_or(0);
+        let execution_epoch: i64 = tx
+            .with_connection(|c| {
+                Box::pin(async move {
+                    sqlx::query_scalar("SELECT current_setting('rss.execution_epoch')::bigint")
+                        .fetch_one(c)
+                        .await
+                })
+            })
+            .await?;
         // Check writer provenance before Group DML. A prior message without its atomic receipt
         // indicates corruption, not an invitation to adopt or repair unknown business effects.
         match self
@@ -313,7 +331,8 @@ impl GroupStore {
             .append(
                 tx,
                 event::message(
-                    self.tenant,
+                    tx.tenant_id(),
+                    execution_epoch,
                     at,
                     kind,
                     receipt,
@@ -323,11 +342,16 @@ impl GroupStore {
             .await?
         {
             AppendOutcome::Inserted => {
-                tx.with_connection(|c| Box::pin(async move {
-                    sqlx::query("SELECT pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'group_events')").execute(c).await?;
-                    Ok(())
-                })).await
-            },
+                tx.with_connection(|c| {
+                    Box::pin(async move {
+                        sqlx::query("SELECT pg_notify('mdm_work','group_events')")
+                            .execute(c)
+                            .await?;
+                        Ok(())
+                    })
+                })
+                .await
+            }
             AppendOutcome::AlreadyPresent => Err(StorageFault::OutboxIdentity.error()),
         }
     }

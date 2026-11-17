@@ -99,7 +99,7 @@ async fn seed_group(
         .bind(n.device.into_uuid())
         .execute(&mut *tx)
         .await?;
-        sqlx::query("INSERT INTO mdm_planning.configuration_operations(tenant_id,id,device,request,input_context,fingerprint,generation,epoch,authority,dispatch_fingerprint,gateway_accepted,policy_version) VALUES($1::uuid,$2,$3,$4,$5,$6,1,1,$7,$6,true,$8)").bind(c.tenant.to_string()).bind(id).bind(n.device.into_uuid()).bind(sealed).bind(serde_json::to_value(metadata)?).bind(digest).bind(authority).bind(version).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_planning.configuration_operations(expected_epoch,tenant_id,id,device,request,input_context,fingerprint,generation,epoch,authority,dispatch_fingerprint,gateway_accepted,policy_version) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,$4,$5,$6,1,1,$7,$6,true,$8)").bind(c.tenant.to_string()).bind(id).bind(n.device.into_uuid()).bind(sealed).bind(serde_json::to_value(metadata)?).bind(digest).bind(authority).bind(version).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     Ok(())
@@ -154,8 +154,8 @@ async fn verify_routes(
         (n, Purpose::Primary, 66u128),
         (child, Purpose::WindowsDeclared, 1),
     ] {
-        let evidence = device::ChannelMount::new(Mdm, c.tenant, MdmWindows, purpose)
-            .credential(Sha256::digest(&peer.certificate).into())?;
+        let evidence = device::ChannelMount::new(Mdm, MdmWindows, purpose)
+            .credential(c.execution(), Sha256::digest(&peer.certificate).into())?;
         let principal = store::management_in(Mdm, &mut *tx, &evidence).await?;
         let candidates = a
             .configuration
@@ -167,8 +167,8 @@ async fn verify_routes(
         );
         sqlx::query("INSERT INTO mdm_windows.capabilities(tenant_id,device,protocol_epoch,os_version,edition,session,observed_at) VALUES($1::uuid,$2,$3,'10.0.22631.0',48,17,1)").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(peer.epoch).execute(&mut *tx).await?;
     }
-    let evidence = device::ChannelMount::new(Mdm, c.tenant, MdmWindows, Purpose::Primary)
-        .credential(Sha256::digest(&n.certificate).into())?;
+    let evidence = device::ChannelMount::new(Mdm, MdmWindows, Purpose::Primary)
+        .credential(c.execution(), Sha256::digest(&n.certificate).into())?;
     let parent = store::management_in(Mdm, &mut *tx, &evidence).await?;
     let user = a
         .configuration

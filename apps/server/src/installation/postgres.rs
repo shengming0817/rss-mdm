@@ -119,7 +119,8 @@ async fn prepare_roles(input: &Input, tag: &str, secrets: &str) -> Result<()> {
                 .await
                 .map_err(|_| Error::Storage)?;
         }
-        sqlx::raw_sql(r#"DO $profiles$
+        sqlx::raw_sql(r#"GRANT rss_tmsg_relay TO da_owner;
+DO $profiles$
 DECLARE role_name text; secret text;
 BEGIN
  EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC',current_database());

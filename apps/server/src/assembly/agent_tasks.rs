@@ -774,7 +774,14 @@ impl Installation for AgentTasks {
                 .installation_artifact(id, audit)
                 .await
                 .map_err(software_error)?;
-            let verified = store.verify(&artifact).await?;
+            let verified = store
+                .verify(
+                    audit
+                        .binding()
+                        .map_err(rss_mdm_agent_channel::Error::from)?,
+                    &artifact,
+                )
+                .await?;
             self.software
                 .revalidate_installation_download(id, &artifact, audit)
                 .await

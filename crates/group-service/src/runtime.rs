@@ -21,20 +21,21 @@ impl GroupWork {
     }
     async fn capture<T: Timer>(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         control: &Control<'_, T>,
     ) -> std::result::Result<rss_mdm_inventory::AssetCut, ReconcileError> {
         control.check()?;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(control.remaining());
         rss_mdm_inventory_service::assets::cut::capture(
             &self.groups.audit_store,
-            self.groups.tenant,
+            binding.tenant(),
             &budget,
         )
         .await
         .map_err(|e| storage(fault(e.into(), &Mutex::new(None))))
     }
     fn check(&self, scope: &Scope) -> std::result::Result<(), ReconcileError> {
-        if scope.tenant() != self.groups.tenant || scope.reconciler() != "mdm.groups" {
+        if scope.reconciler() != "mdm.groups" {
             return Err(ReconcileError::new(ErrorKind::Invariant));
         }
         Ok(())
@@ -59,15 +60,16 @@ impl GroupWork {
         reason: &str,
         control: &Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
+        let binding = self.execution(claim, control).await?;
         let candidate = if reason == "superseded" {
-            Some(self.capture(control).await?)
+            Some(self.capture(binding, control).await?)
         } else {
             None
         };
         self.groups
             .runtime
             .local_tx_with_context(
-                self.groups.audit_store.binding(),
+                binding,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -85,7 +87,7 @@ impl GroupWork {
                             .map_err(|e| fault(e, &Mutex::new(None)))?;
                         tx.prepare_outbox_partitions(&[groups
                             .groups
-                            .partition(&state.input.target().to_string())?])
+                            .partition(tx.tenant_id(), &state.input.target().to_string())?])
                             .await?;
                         groups
                             .check_task_transaction(tx)
@@ -99,7 +101,7 @@ impl GroupWork {
                                 |(groups, reason, candidate), tx| {
                                     Box::pin(async move {
                                         groups
-                                            .finish_task_in(tx, id, Some(reason))
+                                            .finish_task_in(binding, tx, id, Some(reason))
                                             .await
                                             .map_err(|e| fault(e, &Mutex::new(None)))?;
                                         if *reason == "superseded" {
@@ -165,9 +167,10 @@ impl Reconciler<PgClaim> for GroupWork {
         claim: &PgClaim,
         control: &Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<ReconcileDiff<bool>>, ReconcileError> {
+        let binding = self.execution(claim, control).await?;
         control.check()?;
         let Some(id) = self.task(claim)? else {
-            let pending = self.inputs_pending(control).await?;
+            let pending = self.inputs_pending(binding, control).await?;
             return Ok(ReconcileStep::Ready(ReconcileDiff::between(
                 DesiredState::present(false),
                 ActualState::present(pending),
@@ -177,7 +180,7 @@ impl Reconciler<PgClaim> for GroupWork {
             .groups
             .runtime
             .local_tx_with_context(
-                self.groups.audit_store.binding(),
+                binding,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -212,17 +215,18 @@ impl Reconciler<PgClaim> for GroupWork {
         _: ReconcileDiff<bool>,
         control: &Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
+        let binding = self.execution(claim, control).await?;
         control.check()?;
         let Some(id) = self.task(claim)? else {
             return self.apply_inputs(claim, control).await;
         };
-        let candidate = self.capture(control).await?;
+        let candidate = self.capture(binding, control).await?;
         let failure = Mutex::new(None);
         let attempt =
             self.groups
                 .runtime
                 .local_tx_with_context(
-                    self.groups.audit_store.binding(),
+                    binding,
                     rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                         control.remaining(),
                     ),
@@ -240,7 +244,7 @@ impl Reconciler<PgClaim> for GroupWork {
                                 .map_err(|e| fault(e, failure))?;
                             tx.prepare_outbox_partitions(&[groups
                                 .groups
-                                .partition(&state.input.target().to_string())?])
+                                .partition(tx.tenant_id(), &state.input.target().to_string())?])
                                 .await?;
                             groups
                                 .authorize_task_in(tx, id, &state.input)
@@ -266,7 +270,7 @@ impl Reconciler<PgClaim> for GroupWork {
                                                     match state.input {
                                             tasks::TaskInput::Definition { ref edit } => {
                                                 groups
-                                                    .advance_group_definition_in(
+                                                    .advance_group_definition_in(binding,
                                                         tx,
                                                         id,
                                                         edit,
@@ -277,7 +281,7 @@ impl Reconciler<PgClaim> for GroupWork {
                                             }
                                             ref input @ tasks::TaskInput::Calculation { .. } => {
                                                 groups
-                                                    .advance_group_job_in(
+                                                    .advance_group_job_in(binding,
                                                         tx,
                                                         id,
                                                         input,
@@ -337,6 +341,7 @@ impl Reconciler<PgClaim> for GroupWork {
         self.reject(claim, id, reason, control).await
     }
 }
+
 impl DurableStore for GroupWork {
     type Claim = PgClaim;
     async fn wake<T: Timer>(
@@ -373,7 +378,7 @@ impl DurableStore for GroupWork {
             .claim_due(scope, limit, scan_budget, lease, control)
             .await;
         self.groups
-            .record_scan(result.as_ref().err().map(|e| e.kind()));
+            .record_scan(scope, result.as_ref().err().map(|e| e.kind()));
         result
     }
     async fn renew<T: Timer>(
@@ -454,17 +459,102 @@ impl GroupWork {
         let (task, status) = rss_runtime::ManagedTask::prepare("mdm-group-calculation", drain);
         let _ = self.groups.task_status.set(status);
         task.into_registration(move |cancel| async move {
-            #[allow(clippy::disallowed_methods, reason="monotonic execution clock boundary")]
-            let timer=GroupTimer(tokio::time::Instant::now());
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "monotonic execution clock boundary"
+            )]
+            let timer = GroupTimer(tokio::time::Instant::now());
             let force = tokio_util::sync::CancellationToken::new();
-            let control=Control::new(&timer,Duration::MAX,&force);
-            let scope=Scope::new(self.groups.tenant,"mdm.groups").expect("constant scope");
-                         rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,&cancel,&notify,|event| {
-                if !matches!(event, rss_reconcile::Observation::Deferred { .. }) {
-                    eprintln!("{}",serde_json::json!({"event":"mdm_group_task_failure","diagnostic":format!("{event:?}")}));
+            let control = Control::new(&timer, Duration::MAX, &force);
+            let mut after: Option<Uuid> = None;
+            let mut worked = false;
+            loop {
+                if cancel.is_cancelled() {
+                    return Ok(());
                 }
-                self.groups.record_runner_failure(event);
-            }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)
+                let discovered = tokio::select! { biased;
+                    () = cancel.cancelled() => return Ok(()),
+                    result = tokio::time::timeout(Duration::from_secs(5), sqlx::query_scalar("SELECT tenant_id FROM mdm_assets.group_work_scopes($1)")
+                        .bind(after)
+                        .fetch_all(&self.groups.read_pool)) =>
+                        result.map_err(|_| rss_reconcile::ErrorKind::Deadline)
+                            .and_then(|page| page.map_err(|error| crate::discovery::classify(&error))),
+                };
+                if cancel.is_cancelled() { return Ok(()) }
+                self.groups.record_discovery(discovered.as_ref().map(|_| ()).map_err(|kind| *kind));
+                let tenants: Vec<Uuid> = match discovered {
+                    Ok(page) => page,
+                    Err(rss_reconcile::ErrorKind::Transient | rss_reconcile::ErrorKind::Deadline) => {
+                        // A failed page is not empty. Keep its cursor and rate-limit retries even under wake storms.
+                        tokio::select! { biased;
+                            () = cancel.cancelled() => return Ok(()),
+                            () = tokio::time::sleep(Duration::from_secs(5)) => {},
+                        }
+                        continue;
+                    }
+                    Err(kind) => return Err(rss_runtime::ShutdownError::new(rss_reconcile::Error::new(kind))),
+                };
+                if tenants.is_empty() {
+                    after = None;
+                    if std::mem::take(&mut worked) {
+                        continue;
+                    }
+
+                    tokio::select! { biased;
+                        () = cancel.cancelled() => return Ok(()),
+                        () = notify.notified() => {},
+                        () = tokio::time::sleep(Duration::from_secs(5)) => {},
+                    }
+                    continue;
+                }
+                for tenant in tenants {
+                    after = Some(tenant);
+                    let tenant = TenantId::parse(&tenant.to_string())
+                        .map_err(rss_runtime::ShutdownError::new)?;
+                    let scope = Scope::new(tenant, "mdm.groups").expect("constant scope");
+
+                    let report = match rss_reconcile::run_batch(
+                        self.as_ref(),
+                        self.as_ref(),
+                        &scope,
+                        policy,
+                        &control,
+                        &cancel,
+                        |event| {
+                            self.groups.record_runner_failure(event);
+                        },
+                    )
+                    .await
+                    {
+                        Ok(report) => report,
+                        Err(error)
+                            if control.check().is_ok()
+                                && matches!(
+                                    error.kind(),
+                                    rss_reconcile::ErrorKind::Transient
+                                        | rss_reconcile::ErrorKind::Deadline
+                                        | rss_reconcile::ErrorKind::CommitUnknown
+                                ) =>
+                        {
+                            // The observer retained this scope's failure. Advance the tenant cursor;
+                            // an unconfirmed claim is not an empty or successfully drained batch.
+                            continue;
+                        }
+                        Err(error) => return Err(rss_runtime::ShutdownError::new(error)),
+                    };
+                    worked |= [
+                        report.converged,
+                        report.reobserve,
+                        report.deferred,
+                        report.retried,
+                        report.suspended,
+                        report.fenced,
+                        report.execution_failed,
+                    ]
+                    .into_iter()
+                    .any(|count| count > 0);
+                }
+            }
         })
     }
 }
@@ -472,12 +562,13 @@ impl GroupWork {
 impl GroupWork {
     async fn inputs_pending<T: Timer>(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         control: &Control<'_, T>,
     ) -> std::result::Result<bool, ReconcileError> {
         self.groups
             .runtime
             .local_tx_with_context(
-                self.groups.audit_store.binding(),
+                binding,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -506,11 +597,12 @@ impl GroupWork {
         claim: &PgClaim,
         control: &Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
-        let candidate = self.capture(control).await?;
+        let binding = self.execution(claim, control).await?;
+        let candidate = self.capture(binding, control).await?;
         self.groups
             .runtime
             .local_tx_with_context(
-                self.groups.audit_store.binding(),
+                binding,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -555,14 +647,41 @@ impl GroupWork {
         failed: bool,
         control: &Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
-        self.groups.runtime.local_tx_with_context(self.groups.audit_store.binding(),
+        let binding = self.execution(claim, control).await?;
+        self.groups.runtime.local_tx_with_context(binding,
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),
             (&self.groups,claim), |(owner,claim),tx|Box::pin(async move {
                 owner.reconcile_messaging.protect_in(tx,claim,owner, |_owner,tx|Box::pin(async move {
-                    let tenant=tx.tenant_id().to_string(); tx.with_connection(move |c|Box::pin(async move {sqlx::query("INSERT INTO mdm_assets.group_dispatch(tenant_id,input_failed) VALUES($1::uuid,$2) ON CONFLICT(tenant_id) DO UPDATE SET input_failed=excluded.input_failed").bind(tenant).bind(failed).execute(c).await?; Ok(())})).await?;
+                    let tenant=tx.tenant_id().to_string(); tx.with_connection(move |c|Box::pin(async move {sqlx::query("UPDATE mdm_assets.group_dispatch SET input_failed=$2 WHERE tenant_id=$1::uuid").bind(tenant).bind(failed).execute(c).await?; Ok(())})).await?;
                     Ok(ProtectedStep::Ready(()))
                 })).await
             })).await.fold(Ok, |e|Err(storage(e)), |e|Err(storage(e)),
                 |_|Err(ReconcileError::new(ErrorKind::RollbackFailed)), |_|Err(unknown()), |e|Err(storage(e)))
+    }
+}
+
+impl GroupWork {
+    async fn execution<T: Timer>(
+        &self,
+        claim: &PgClaim,
+        control: &Control<'_, T>,
+    ) -> std::result::Result<rss_transactional_messaging::fence::ExecutionBinding, ReconcileError>
+    {
+        control.check()?;
+        let id = self.task(claim)?;
+        let tenant = claim.target().scope().tenant();
+        let epoch: i64 = sqlx::query_scalar("SELECT mdm_assets.group_work_epoch($1::uuid,$2)")
+            .bind(tenant.to_string())
+            .bind(id)
+            .fetch_one(&self.groups.read_pool)
+            .await
+            .map_err(|e| storage(e.into()))?;
+        let epoch = rss_transactional_messaging::fence::Epoch::new(epoch)
+            .map_err(|_| ReconcileError::new(ErrorKind::Invariant))?;
+        Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.groups.storage,
+            tenant,
+            epoch,
+        ))
     }
 }

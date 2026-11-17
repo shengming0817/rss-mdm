@@ -93,6 +93,7 @@ pub struct Receipt {
 }
 /// All fields originate in PG, never in device claims.
 pub struct Authorization {
+    pub expected_epoch: i64,
     pub self_service: bool,
     pub id: Uuid,
     pub device: rss_mdm_agent_wire::DeviceId,

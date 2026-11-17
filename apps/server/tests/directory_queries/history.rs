@@ -192,7 +192,7 @@ pub(super) async fn exercise(
         U1.to_uppercase()
     );
     let (status, page) = http
-        .get("/api/v1/devices", &[("filter", &filter), ("sort", "id")])
+        .get("/devices", &[("filter", &filter), ("sort", "id")])
         .await?;
     assert_eq!(status, 200, "{page}");
     let expected = [f.device.to_string(), f.duplicate.to_string()]
@@ -208,7 +208,7 @@ pub(super) async fn exercise(
         expected
     );
     let (status, stats) = http
-        .get("/api/v1/devices/statistics", &[("filter", &filter)])
+        .get("/devices/statistics", &[("filter", &filter)])
         .await?;
     assert_eq!(status, 200, "{stats}");
     assert_eq!(stats["statistics"]["total"], 2);
@@ -216,24 +216,24 @@ pub(super) async fn exercise(
         format!("serialNumber==Directory-S1;hardwareUuid=={U2}"),
         "serialNumber==Untrusted".into(),
     ] {
-        let (status, page) = http.get("/api/v1/devices", &[("filter", &filter)]).await?;
+        let (status, page) = http.get("/devices", &[("filter", &filter)]).await?;
         assert_eq!(status, 200, "{page}");
         assert_eq!(page["items"], json!([]));
     }
     let filter = format!("serialNumber==absent,id=={}", f.no_evidence);
     assert_eq!(
-        http.selected("/api/v1/devices", &filter).await?["id"],
+        http.selected("/devices", &filter).await?["id"],
         f.no_evidence.to_string()
     );
     for query in [
         [("filter", "serialNumber=icontains=Directory")],
         [("sort", "serialNumber")],
     ] {
-        assert_eq!(http.get("/api/v1/devices", &query).await?.0, 400);
+        assert_eq!(http.get("/devices", &query).await?.0, 400);
     }
     let (status, time_page) = http
         .get(
-            "/api/v1/devices",
+            "/devices",
             &[
                 ("filter", "registeredAt=isnotnull=true"),
                 ("sort", "registeredAt"),
@@ -252,7 +252,7 @@ pub(super) async fn exercise(
         .context("registeredAt stable pagination")?;
     let (status, next) = http
         .get(
-            "/api/v1/devices",
+            "/devices",
             &[
                 ("filter", "registeredAt=isnotnull=true"),
                 ("sort", "registeredAt"),
@@ -266,7 +266,7 @@ pub(super) async fn exercise(
     assert!(next["nextCursor"].is_null());
     assert!(
         http.selected(
-            "/api/v1/devices",
+            "/devices",
             &format!("id=={};registeredAt=isnull=true", f.no_evidence)
         )
         .await?["registeredAt"]
@@ -297,6 +297,7 @@ pub(super) async fn exercise(
         anyhow::bail!("cookie")
     };
     let limited = Http {
+        tenant: c.tenant,
         client: http.client.clone(),
         address: http.address,
         cookie: format!("__Host-identity-session={}", cookie.expose()),
@@ -304,13 +305,13 @@ pub(super) async fn exercise(
     };
     assert_eq!(
         limited
-            .selected("/api/v1/devices", "serialNumber==Directory-S1")
+            .selected("/devices", "serialNumber==Directory-S1")
             .await?["id"],
         f.device.to_string()
     );
     let (status, count) = limited
         .get(
-            "/api/v1/devices/statistics",
+            "/devices/statistics",
             &[("filter", "serialNumber==Directory-S1")],
         )
         .await?;
@@ -326,7 +327,7 @@ pub(super) async fn exercise(
     let mut tx = seed_transaction(c).await?;
     assert!(rss_mdm_inventory_postgres::publish_field_in(&mut tx, c.tenant, 1, &field).await?);
     tx.commit().await?;
-    for path in ["/api/v1/devices", "/api/v1/devices/statistics"] {
+    for path in ["/devices", "/devices/statistics"] {
         assert_eq!(
             ordinary
                 .get(path, &[("filter", "serialNumber==Directory-S1")])
@@ -340,7 +341,7 @@ pub(super) async fn exercise(
     let mut tx = seed_transaction(c).await?;
     assert!(rss_mdm_inventory_postgres::publish_field_in(&mut tx, c.tenant, 2, &field).await?);
     tx.commit().await?;
-    let (_, count) = http.get("/api/v1/devices/statistics", &[]).await?;
+    let (_, count) = http.get("/devices/statistics", &[]).await?;
     let total = count["statistics"]["total"]
         .as_u64()
         .context("device count")?;
@@ -355,7 +356,7 @@ pub(super) async fn exercise(
         if let Some(token) = cursor.as_deref() {
             query.push(("cursor", token));
         }
-        let (status, page) = http.get("/api/v1/devices", &query).await?;
+        let (status, page) = http.get("/devices", &query).await?;
         assert_eq!(status, 200, "{page}");
         for item in page["items"].as_array().unwrap() {
             assert!(item.get("inventoryAvailable").is_none());
@@ -374,7 +375,7 @@ pub(super) async fn exercise(
     tx.commit().await?;
     assert_eq!(
         http.selected(
-            "/api/v1/devices",
+            "/devices",
             &format!(
                 "id=={};serialNumber==Directory-S2;hardwareUuid=={U2}",
                 f.device
@@ -401,12 +402,14 @@ async fn native_registered_at(
         let identities = [Uuid::new_v4(), Uuid::new_v4()];
         let grant = Uuid::new_v4();
         let device = rss_mdm_agent_wire::DeviceId::new_v4();
-        let credential = device::ChannelMount::new(Mdm, c.tenant, source, Purpose::Primary)
-            .credential(if source == ReportSource::MdmWindows {
+        let credential = device::ChannelMount::new(Mdm, source, Purpose::Primary).credential(
+            c.execution(),
+            if source == ReportSource::MdmWindows {
                 [41; 32]
             } else {
                 [42; 32]
-            })?;
+            },
+        )?;
         let command = device::BindRegistration {
             operation_id: Uuid::new_v4(),
             request_id: request,

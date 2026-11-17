@@ -31,7 +31,7 @@ pub(crate) async fn open(
     match rss_mdm_content_service::Store::open(
         protection,
         c,
-        &config.identity.tenant_id,
+        config.management_binding()?,
         Arc::new(crate::lifecycle::RuntimeTimer),
         pool.clone(),
     )
@@ -55,7 +55,7 @@ pub(crate) async fn access(
     owner
         .runtime
         .local_tx(
-            owner.audit.binding(),
+            identity.management_binding,
             crate::identity::deadline(),
             move |tx| {
                 Box::pin(async move {
@@ -90,16 +90,12 @@ pub(crate) async fn access(
     Ok(Arc::new(rss_mdm_content_service::service::Access {
         sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
             identity.authority.clone(),
-            identity.binding,
         ),
         authorization,
         runtime: owner.runtime.clone(),
         audit_store: owner.audit.clone(),
-        tenant: identity.tenant,
         content: Some(content),
         clock: Arc::new(crate::clock::ContentClock(clock)),
-        catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(
-            identity.tenant,
-        )),
+        catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new()),
     }))
 }

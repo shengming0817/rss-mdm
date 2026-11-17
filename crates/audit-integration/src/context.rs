@@ -1,6 +1,7 @@
 //! Closed, credential-free audit facts shared by request finalization and transactions.
 //! ref: Rust 1.89.0 library/std/src/sync/poison/mutex.rs
-use std::sync::{Arc, Mutex};
+use rss_transactional_messaging::fence::ExecutionBinding;
+use std::sync::{Arc, Mutex, OnceLock};
 use uuid::Uuid;
 
 /// Shared request facts and diagnostic projection. It never proves transaction settlement.
@@ -26,7 +27,7 @@ struct Context {
     profile: crate::StorageProfile,
     origin: Origin,
     request_id: Uuid,
-    tenant: String,
+    scope: OnceLock<(String, ExecutionBinding)>,
     state: Mutex<State>,
 }
 struct State {
@@ -114,11 +115,30 @@ impl RequestAudit {
         self.operation(id, action, intent);
         self.operation_owner(owner);
     }
-    /// Create a request identity for one product and tenant; persisted facts validate its canonical tenant ID.
+    /// Capture the operation's host-supplied scope once; audit coordinates confer no authority.
     pub fn new(
         origin: Origin,
         profile: crate::StorageProfile,
-        tenant: String,
+        binding: ExecutionBinding,
+        action: &'static str,
+        intent: crate::AuditIntent,
+    ) -> Self {
+        Self::create(origin, profile, Some(binding), action, intent)
+    }
+    /// Protocol ingress may identify the tenant only after parsing/verifying its original credentials.
+    /// An unresolved request cannot start an audit transaction or construct a valid tenant fact.
+    pub fn unresolved(
+        origin: Origin,
+        profile: crate::StorageProfile,
+        action: &'static str,
+        intent: crate::AuditIntent,
+    ) -> Self {
+        Self::create(origin, profile, None, action, intent)
+    }
+    fn create(
+        origin: Origin,
+        profile: crate::StorageProfile,
+        binding: Option<ExecutionBinding>,
         action: &'static str,
         intent: crate::AuditIntent,
     ) -> Self {
@@ -126,7 +146,9 @@ impl RequestAudit {
             profile,
             origin,
             request_id: Uuid::new_v4(),
-            tenant,
+            scope: binding
+                .map(|v| OnceLock::from((v.tenant().to_string(), v)))
+                .unwrap_or_default(),
             state: Mutex::new(State {
                 snapshot: Snapshot {
                     target_type: profile.name(),
@@ -168,7 +190,7 @@ impl RequestAudit {
             profile: self.0.profile,
             origin: self.0.origin,
             request_id: self.0.request_id,
-            tenant: self.0.tenant.clone(),
+            scope: self.0.scope.clone(),
             state: Mutex::new(State {
                 snapshot: self.snapshot(),
                 finalized: false,
@@ -184,7 +206,7 @@ impl RequestAudit {
             profile: self.0.profile,
             origin: self.0.origin,
             request_id: self.0.request_id,
-            tenant: self.0.tenant.clone(),
+            scope: self.0.scope.clone(),
             state: Mutex::new(State {
                 snapshot,
                 finalized: true,
@@ -200,7 +222,7 @@ impl RequestAudit {
             profile,
             origin: self.0.origin,
             request_id: self.0.request_id,
-            tenant: self.0.tenant.clone(),
+            scope: self.0.scope.clone(),
             state: Mutex::new(State {
                 snapshot,
                 finalized: true,
@@ -209,14 +231,14 @@ impl RequestAudit {
     }
     /// Installation provisioning records a target-tenant fact during the same request.
     /// The destination transaction still verifies its own tenant binding and authority.
-    pub fn tenant_fact_copy(&self, tenant: String, action: &'static str) -> Self {
+    pub fn tenant_fact_copy(&self, binding: ExecutionBinding, action: &'static str) -> Self {
         let mut snapshot = self.snapshot();
         snapshot.action = action;
         Self(Arc::new(Context {
             profile: self.0.profile,
             origin: self.0.origin,
             request_id: self.0.request_id,
-            tenant,
+            scope: OnceLock::from((binding.tenant().to_string(), binding)),
             state: Mutex::new(State {
                 snapshot,
                 finalized: true,
@@ -240,7 +262,23 @@ impl RequestAudit {
     }
     /// Return the source-owned tenant text; a transaction still validates its typed tenant binding.
     pub fn tenant(&self) -> &str {
-        &self.0.tenant
+        self.0.scope.get().map(|v| v.0.as_str()).unwrap_or_default()
+    }
+    pub fn binding(&self) -> Result<ExecutionBinding, crate::Error> {
+        self.0
+            .scope
+            .get()
+            .map(|v| v.1)
+            .ok_or(crate::Error::Admission)
+    }
+    /// Freeze the source-selected operation scope; neither a retry nor another credential may retarget it.
+    pub fn bind_scope(&self, binding: ExecutionBinding) -> Result<(), crate::Error> {
+        let _ = self.0.scope.set((binding.tenant().to_string(), binding));
+        if self.binding()? == binding {
+            Ok(())
+        } else {
+            Err(crate::Error::Admission)
+        }
     }
     /// Freeze the current safe facts; subsequent context changes do not alter an existing Fact.
     pub fn snapshot(&self) -> Snapshot {
@@ -456,7 +494,7 @@ mod tests {
         let audit = RequestAudit::new(
             crate::Origin::Request,
             crate::StorageProfile::Mdm,
-            "tenant".into(),
+            crate::test_binding("11111111-1111-4111-8111-111111111111"),
             "collection_read",
             crate::AuditIntent::Routine,
         );
@@ -473,7 +511,7 @@ mod tests {
         let a = RequestAudit::new(
             crate::Origin::Request,
             crate::StorageProfile::Mdm,
-            "tenant".into(),
+            crate::test_binding("11111111-1111-4111-8111-111111111111"),
             "enrollment_create",
             crate::AuditIntent::Management,
         );

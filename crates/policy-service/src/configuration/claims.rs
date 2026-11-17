@@ -48,6 +48,7 @@ pub(crate) struct Desired<'a> {
     ready: bool,
 }
 fn desired<'a>(
+    tenant: TenantId,
     service: &Transactions,
     device: &rss_mdm_agent_wire::DeviceId,
     policy: &'a Policy,
@@ -57,19 +58,19 @@ fn desired<'a>(
     let Frozen::Configuration { native, .. } = frozen;
     let native = native.open(
         &service.protection,
-        service.tenant,
+        tenant,
         super::definition::Owner::Policy {
             policy: policy.id,
             version: policy.version,
         },
     )?;
     let objects = native.objects()?;
-    let object_digests = native.object_digests(&service.protection, service.tenant, device)?;
+    let object_digests = native.object_digests(&service.protection, tenant, device)?;
     Ok(Desired {
         policy,
         digest: super::protection::fingerprint(
             &service.protection,
-            service.tenant,
+            tenant,
             device,
             "native-configuration/v1",
             &(&native.target, &native.apply),
@@ -380,10 +381,10 @@ impl Transactions {
         let prior = prior_claims(&self.policy_reader, tx, device).await?;
         let mut inputs = Vec::new();
         for (p, f) in &wanted {
-            inputs.push(desired(self, device, p, f, true)?);
+            inputs.push(desired(tx.tenant_id(), self, device, p, f, true)?);
         }
         for (p, f) in &waiting {
-            inputs.push(desired(self, device, p, f, false)?);
+            inputs.push(desired(tx.tenant_id(), self, device, p, f, false)?);
         }
         // Unresolved scope or dispatched unknown side effects retain their own exact object range.
         // A retired parent's uncertain Delete must also fence a newly assigned child.
@@ -394,7 +395,7 @@ impl Transactions {
             if inputs.iter().any(|d| d.policy.id == p.id) {
                 continue;
             }
-            let prior_input = desired(self, device, p, f, false)?;
+            let prior_input = desired(tx.tenant_id(), self, device, p, f, false)?;
             let uncertain = if let Some(id) = object_state(tx, device, &prior_input.objects).await?
             {
                 let operation = storage::load(tx, &self.protection, id).await?;
@@ -519,7 +520,7 @@ impl Transactions {
             if selected.is_some_and(|id| id != policy.id) {
                 continue;
             }
-            let old = desired(self, device, policy, frozen, false)?;
+            let old = desired(tx.tenant_id(), self, device, policy, frozen, false)?;
             if !removed.insert(old.digest.clone()) {
                 continue;
             }
@@ -543,7 +544,7 @@ impl Transactions {
             let mut removal_contracts = BTreeSet::new();
             let mut retain = !matches!(exit, Exit::Remove);
             for (co_policy, co_frozen) in &prior {
-                let co = desired(self, device, co_policy, co_frozen, false)?;
+                let co = desired(tx.tenant_id(), self, device, co_policy, co_frozen, false)?;
                 if co.digest == old.digest {
                     let Frozen::Configuration { exit, .. } = co_frozen;
                     retain |= !matches!(exit, Exit::Remove);
@@ -745,7 +746,7 @@ impl Transactions {
             return Ok(false);
         }
         let results = self.channels.clone();
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let id = op.id;
         Ok(tx
             .with_connection(move |c| {
@@ -766,7 +767,7 @@ impl Transactions {
             .map(|task| {
                 super::protection::fingerprint(
                     &self.protection,
-                    self.tenant,
+                    tx.tenant_id(),
                     device,
                     "native-configuration/v1",
                     &(&desired.native.target, task),
@@ -782,7 +783,7 @@ impl Transactions {
             let operation = storage::load(tx, &self.protection, id).await?;
             let digest = super::protection::fingerprint(
                 &self.protection,
-                self.tenant,
+                tx.tenant_id(),
                 device,
                 "native-configuration/v1",
                 &(&operation.request.target, &operation.request.task),
@@ -807,7 +808,7 @@ impl Transactions {
         let foreign = current != old.device;
         let previous = super::protection::fingerprint(
             &self.protection,
-            self.tenant,
+            tx.tenant_id(),
             &old.device,
             "native-configuration/v1",
             &(&old.request.target, &old.request.task),
@@ -878,7 +879,7 @@ impl Transactions {
         let policy = desired.policy;
         let unit = desired
             .native
-            .unit_key(&self.protection, self.tenant, device)?;
+            .unit_key(&self.protection, tx.tenant_id(), device)?;
         let source_objects = if remove {
             vec![]
         } else {
@@ -948,7 +949,7 @@ impl Transactions {
         };
         let fingerprint = super::protection::fingerprint(
             &self.protection,
-            self.tenant,
+            tx.tenant_id(),
             device,
             "configuration-command/v1",
             &(input, policy.id, policy.version, remove),

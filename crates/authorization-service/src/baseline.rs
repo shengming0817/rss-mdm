@@ -3,6 +3,7 @@
 use crate::{
     Error, Grant, Permission, Receipt, Scope, Subject, User, context::AuthorizedPrincipal,
 };
+use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, sync::Arc};
 
@@ -14,6 +15,9 @@ pub struct Authority {
     user: User,
     rule: Receipt,
     targets: BTreeSet<String>,
+    storage_target: [u8; 16],
+    storage_lineage: [u8; 16],
+    expected_epoch: i64,
 }
 const PERMISSIONS: &[Permission] = &[
     Permission::GroupRead,
@@ -31,12 +35,16 @@ const PERMISSIONS: &[Permission] = &[
 ];
 impl Authority {
     pub(crate) fn new(
+        binding: ExecutionBinding,
         profile: rss_mdm_install_support::StorageProfile,
         user: User,
         rule: Receipt,
         targets: BTreeSet<String>,
     ) -> Result<Self, Error> {
         user.validate(&user.tenant_id, &user.instance_id)?;
+        if user.tenant_id != binding.tenant().to_string() {
+            return Err(Error::Forbidden);
+        }
         if rule.deleted
             || rule.id.is_nil()
             || rule.revision == 0
@@ -47,6 +55,9 @@ impl Authority {
             return Err(Error::Malformed);
         }
         Ok(Self {
+            storage_target: binding.storage().target(),
+            storage_lineage: binding.storage().lineage(),
+            expected_epoch: binding.epoch().get(),
             profile,
             user,
             rule,
@@ -59,6 +70,15 @@ impl Authority {
     }
     pub fn user(&self) -> &User {
         &self.user
+    }
+    pub fn binding(&self) -> Result<ExecutionBinding, Error> {
+        Ok(ExecutionBinding::new(
+            StorageIdentity::new(self.storage_target, self.storage_lineage)
+                .map_err(|_| Error::Corrupt)?,
+            rss_request_context::TenantId::parse(&self.user.tenant_id)
+                .map_err(|_| Error::Corrupt)?,
+            Epoch::new(self.expected_epoch).map_err(|_| Error::Corrupt)?,
+        ))
     }
     pub(crate) fn allows_target(&self, target: &str) -> bool {
         self.targets.contains(target)
@@ -113,14 +133,21 @@ impl Authority {
             .collect())
     }
     /// Rehydrate a bounded attempt from trusted product state and current authorization facts.
-    pub async fn principal(&self, store: &crate::Store) -> Result<AuthorizedPrincipal, Error> {
+    pub async fn principal(
+        &self,
+        store: &crate::Store,
+        cutoff: rss_request_context::Deadline,
+    ) -> Result<AuthorizedPrincipal, Error> {
         if self.profile != store.profile() || self.profile != store.authority_profile() {
             return Err(Error::Forbidden);
         }
-        let principal =
-            AuthorizedPrincipal::from_initialization(Arc::new(self.clone()), store.clock.clone())
-                .load_authorization(store)
-                .await?;
+        let principal = AuthorizedPrincipal::from_initialization(
+            Arc::new(self.clone()),
+            store.clock.clone(),
+            cutoff,
+        )?
+        .load_authorization(store)
+        .await?;
         self.grants(principal.authorization()?)?;
         Ok(principal)
     }
@@ -128,6 +155,7 @@ impl Authority {
 /// Called only inside the already-authenticated target account/grant creation transaction.
 /// The caller must commit the returned evidence with that same provisioning operation.
 pub async fn grant_administrator_on(
+    binding: ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     user: User,
@@ -135,7 +163,7 @@ pub async fn grant_administrator_on(
     targets: BTreeSet<String>,
 ) -> Result<(Receipt, Authority), Error> {
     let receipt = crate::store::grant_tenant_administrator_on(profile, c, user.clone(), id).await?;
-    let authority = Authority::new(profile, user, receipt.clone(), targets)?;
+    let authority = Authority::new(binding, profile, user, receipt.clone(), targets)?;
     Ok((receipt, authority))
 }
 
@@ -191,6 +219,11 @@ mod tests {
         };
         let id = Uuid::from_u128(4);
         let authority = Authority::new(
+            ExecutionBinding::new(
+                StorageIdentity::new([1; 16], [2; 16]).unwrap(),
+                rss_request_context::TenantId::parse(&user.tenant_id).unwrap(),
+                Epoch::new(1).unwrap(),
+            ),
             rss_mdm_install_support::StorageProfile::Mdm,
             user.clone(),
             Receipt {

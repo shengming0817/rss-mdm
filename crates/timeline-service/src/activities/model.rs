@@ -14,6 +14,14 @@ pub enum Reader<'a> {
         user: Option<&'a AuthorizedPrincipal>,
     },
 }
+impl Reader<'_> {
+    pub(crate) fn execution(&self) -> rss_transactional_messaging::fence::ExecutionBinding {
+        match self {
+            Self::Management { proof, .. } => proof.binding(),
+            Self::Agent { device, .. } => device.binding(),
+        }
+    }
+}
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Query {

@@ -76,14 +76,11 @@ impl ResourceCatalog {
     ) -> std::result::Result<Page<Entry>, Error> {
         q.require_schema(&SCHEMA).map_err(query_error)?;
         proof.manage(Permission::ResourceRead)?;
-        if proof.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
         let rid = id(resource).map_err(|_| Error::Malformed)?;
         let vid = id(version).map_err(|_| Error::Malformed)?;
         transaction::inspect(
             &self.runtime,
-            self.audit_store.binding(),
+            proof.binding(),
             (self, proof, resource, version, q, rid, vid),
             |ctx, tx| {
                 Box::pin(async move {
@@ -98,7 +95,7 @@ impl ResourceCatalog {
                         .map_err(|_| Error::Resource(error::ResourceError::Missing))?;
                     let binding = fingerprint(&(
                         SCHEMA.id,
-                        s.tenant.to_string(),
+                        p.tenant_id(),
                         p.instance_id(),
                         p.principal_id(),
                         authority.query_binding(p)?,

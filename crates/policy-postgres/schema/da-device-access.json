@@ -28,6 +28,14 @@
       "name": "rss_da.lock_policy",
       "search_path": "search_path=pg_catalog",
       "security_definer": true
+    },
+    {
+      "name": "rss_da.policy_work_scopes",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "rss_da.policy_work_epoch",
+      "search_path": "search_path=pg_catalog, pg_temp"
     }
   ],
   "external_relations": [

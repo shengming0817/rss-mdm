@@ -130,6 +130,7 @@ impl Service {
         for version in versions {
             let plan = policy::read_in(&self.transactions, tx, version).await?;
             crate::enrollment::tasks::admission::accept_for_device(
+                p.binding(),
                 profile,
                 &self.transactions,
                 tx,
@@ -180,7 +181,8 @@ impl Service {
         } else {
             true
         };
-        crate::enrollment::tasks::recovery::audit_recovery(self, tx, &run, &previous).await?;
+        crate::enrollment::tasks::recovery::audit_recovery(p.binding(), self, tx, &run, &previous)
+            .await?;
         let offer = if waiting_ready
             && run.state.cancellation == Cancellation::None
             && run.available_at <= now

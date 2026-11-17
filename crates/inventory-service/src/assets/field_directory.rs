@@ -25,7 +25,7 @@ impl AssetService {
         q.require_schema(&SCHEMA).map_err(crate::query_error)?;
         crate::transaction::inspect(
             &self.runtime,
-            self.audit_store.binding(),
+            p.binding(),
             (self, p, q, audit),
             |ctx, tx| {
                 Box::pin(async move {
@@ -37,7 +37,7 @@ impl AssetService {
                     if !editor {
                         current.inventory_devices(p)?;
                     }
-                    let catalog = catalog_in(tx, s.tenant).await?;
+                    let catalog = catalog_in(tx, p.binding().tenant()).await?;
                     let entries = catalog.fields().map(entry).collect::<Result<Vec<_>>>()?;
                     let codec = CursorCodec::from_key(s.asset_cursor_key.clone());
                     let binding = q
@@ -92,11 +92,11 @@ impl AssetService {
     ) -> std::result::Result<AssetEnvelope, Error> {
         crate::transaction::inspect(
             &self.runtime,
-            self.audit_store.binding(),
+            p.binding(),
             (self, p, key, audit),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, p, key, _audit) = *ctx;
+                    let (_, p, key, _audit) = *ctx;
                     let current = query_authority(tx, p).await?;
                     let editor = current
                         .require(p, Permission::InventoryFieldsWrite, None)
@@ -104,7 +104,7 @@ impl AssetService {
                     if !editor {
                         current.inventory_devices(p)?;
                     }
-                    let catalog = catalog_in(tx, s.tenant).await?;
+                    let catalog = catalog_in(tx, p.binding().tenant()).await?;
                     let field = catalog.definition(key).map_err(|_| Error::NotFound)?;
                     // Catalog descriptors are discoverable metadata. Sensitive conditions
                     // and values remain checked by their existing read/compile owners.

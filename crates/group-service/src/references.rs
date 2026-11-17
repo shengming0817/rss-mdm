@@ -84,7 +84,7 @@ impl Groups {
         id: Uuid,
     ) -> Result<bool> {
         self.check_task_transaction(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let sql = format!("SELECT EXISTS(SELECT FROM ({}) facts)", facts_sql());
         Ok(tx
             .with_connection(move |c| {
@@ -106,23 +106,21 @@ impl Groups {
     ) -> std::result::Result<Page<Entry>, Error> {
         q.require_schema(&SCHEMA).map_err(|_| Error::Malformed)?;
         proof.manage(Permission::GroupRead)?;
-        if proof.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
-        transaction::inspect(&self.runtime,self.audit_store.binding(),(self,proof,id,q),|ctx,tx|Box::pin(async move {
+
+        transaction::inspect(&self.runtime,proof.binding(),(self,proof,id,q),|ctx,tx|Box::pin(async move {
             let (s,p,id,q)=*ctx;
             let authority=transaction::query_authority(tx,p).await?;
             authority.require(p,Permission::GroupRead,None)?;
             let gid=checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
             group_checked(s.groups.get_in(tx,gid).await?)?.filter(|g|!g.deleted).ok_or(Error::Group(GroupMissing::Group))?;
-            let binding=checked_input(fingerprint(&(SCHEMA.id,s.tenant.to_string(),p.instance_id(),p.principal_id(),authority.query_binding(p)?,id,q.limit())))?;
+            let binding=checked_input(fingerprint(&(SCHEMA.id,p.binding().tenant().to_string(),p.instance_id(),p.principal_id(),authority.query_binding(p)?,id,q.limit())))?;
             let codec=CursorCodec::from_key(s.cursor_key.clone());
             let after:Option<Position>=q.cursor().as_ref().map(|token|{
                 let token=rss_contract::PageCursor::parse(token).map_err(|_|Error::Malformed)?;
                 codec.decode(&token,&binding).map_err(|_|Error::Conflict)
             }).transpose()?;
             let sql=format!("SELECT * FROM ({}) facts WHERE ($3::integer IS NULL OR (kind,id)>($3,$4::uuid)) ORDER BY kind,id LIMIT $5",facts_sql());
-            let tenant=s.tenant.to_string(); let limit=q.limit()+1;
+            let tenant=p.binding().tenant().to_string(); let limit=q.limit()+1;
             let rows=tx.with_connection(move|c|Box::pin(async move {
                 sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).bind(tenant).bind(id).bind(after.map(|p|p.0)).bind(after.map(|p|p.1)).bind(limit as i64).fetch_all(c).await
             })).await?;

@@ -45,6 +45,7 @@ GRANT UPDATE(revision,enabled,desired,current_run,deleted) ON mdm_compliance.rul
 GRANT DELETE ON mdm_compliance.fields,mdm_compliance.groups TO mdm_inventory_runtime;
 
 CREATE TABLE mdm_compliance.runs (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL,id uuid NOT NULL,rule_id uuid NOT NULL,rule_revision bigint NOT NULL,
  input jsonb NOT NULL CHECK(octet_length(input::text)<=1048576),
  CHECK(coalesce(input->>'rule'=rule_id::text AND (input->>'revision')::bigint=rule_revision,false)),
@@ -76,7 +77,7 @@ GRANT UPDATE(binding) ON mdm_compliance.evaluations TO mdm_inventory_runtime;
 GRANT UPDATE(state) ON mdm_compliance.evaluation_arrays TO mdm_inventory_runtime;
 GRANT DELETE ON mdm_compliance.evaluations,mdm_compliance.evaluation_arrays TO mdm_inventory_runtime;
 CREATE TABLE mdm_compliance.dispatch (
- tenant_id uuid PRIMARY KEY,from_cut jsonb, to_cut jsonb,
+ tenant_id uuid PRIMARY KEY,expected_epoch bigint NOT NULL CHECK(expected_epoch>0),from_cut jsonb, to_cut jsonb,
  input_failed boolean NOT NULL DEFAULT false,
  event_after bigint NOT NULL DEFAULT 0 CHECK(event_after>=0),
  page_through bigint CHECK(page_through>event_after),cursor uuid
@@ -90,3 +91,18 @@ GRANT UPDATE(input_failed,from_cut,to_cut,event_after,page_through,cursor) ON md
 
 GRANT USAGE ON SCHEMA mdm_compliance TO mdm_command_runtime;
 GRANT SELECT ON mdm_compliance.results TO mdm_command_runtime;
+
+-- Read-only work discovery; execution still uses the original frozen generation.
+CREATE POLICY work_discovery ON mdm_compliance.runs FOR SELECT TO mdm_owner USING(true);
+CREATE POLICY work_discovery ON mdm_compliance.dispatch FOR SELECT TO mdm_owner USING(true);
+CREATE FUNCTION mdm_compliance.compliance_work_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT tenant_id FROM ((SELECT DISTINCT tenant_id FROM mdm_compliance.runs WHERE after_tenant IS NULL OR tenant_id>after_tenant ORDER BY tenant_id LIMIT 32) UNION (SELECT DISTINCT tenant_id FROM mdm_compliance.dispatch WHERE after_tenant IS NULL OR tenant_id>after_tenant ORDER BY tenant_id LIMIT 32)) work ORDER BY tenant_id LIMIT 32
+$$;
+CREATE FUNCTION mdm_compliance.compliance_work_epoch(t uuid, task uuid) RETURNS bigint
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$ SELECT expected_epoch FROM mdm_compliance.runs WHERE tenant_id=t AND id=task UNION ALL SELECT expected_epoch FROM mdm_compliance.dispatch WHERE task IS NULL AND tenant_id=t $$;
+ALTER FUNCTION mdm_compliance.compliance_work_scopes(uuid) OWNER TO mdm_owner;
+ALTER FUNCTION mdm_compliance.compliance_work_epoch(uuid,uuid) OWNER TO mdm_owner;
+REVOKE ALL ON FUNCTION mdm_compliance.compliance_work_scopes(uuid),mdm_compliance.compliance_work_epoch(uuid,uuid) FROM PUBLIC;
+GRANT USAGE ON SCHEMA mdm_compliance TO mdm_access;
+GRANT EXECUTE ON FUNCTION mdm_compliance.compliance_work_scopes(uuid),mdm_compliance.compliance_work_epoch(uuid,uuid) TO mdm_access;

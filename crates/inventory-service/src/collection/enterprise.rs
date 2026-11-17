@@ -179,6 +179,7 @@ pub fn script_progress(
 
 /// Seal only the original pending attempt without manufacturing device evidence.
 pub async fn abandon_in(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     attempt: Uuid,
@@ -199,6 +200,7 @@ pub async fn abandon_in(
     .await
     .map_err(|_| sqlx::Error::Protocol("invalid pending collection".into()))?;
     super::store::seal(
+        execution,
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
         &mut run,

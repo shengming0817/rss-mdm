@@ -28,7 +28,12 @@ impl Preparation {
         let Delivery::Native { target } = delivery else {
             return Err(Error::Unsupported);
         };
-        let owner = self.exports.get(*target).ok_or(Error::Unsupported)?;
+        let owner = self
+            .exports
+            .get(*target)
+            .ok_or(Error::Unsupported)?
+            .exports(tenant)
+            .map_err(|_| Error::Unsupported)?;
         let exported = owner
             .native_export_on(c, selected.version(), locked)
             .await?

@@ -124,58 +124,68 @@ pub struct PolicyDependencies {
     pub policies: Arc<rss_mdm_policy_service::telemetry::Reader>,
     pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
 }
-/// One tenant's telemetry application; the host owns its worker and adopted backend.
+/// Shared telemetry application; installation owns physical backends and shutdown.
 pub struct Service {
     agent_facts: Arc<dyn rss_mdm_script_service::agent_facts::Store>,
     read_pool: sqlx::PgPool,
     clock: Arc<dyn rss_request_context::Clock>,
-    tenant: TenantId,
+
     runtime: Arc<PgRuntime>,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     policies: Arc<rss_mdm_policy_service::telemetry::Reader>,
     objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
-    backend: backend::Backend,
+    storage: rss_transactional_messaging::fence::StorageIdentity,
+    resources: std::collections::BTreeMap<[u8; 32], backend::Resource>,
+    default_resource: [u8; 32],
     signing: Arc<rss_mdm_task_trust::Signing>,
     limits: Limits,
     maintenance_policy: maintenance::Policy,
-    storage_budget: StorageBudget,
     running: std::sync::atomic::AtomicBool,
 }
 impl Service {
     /// Bind only already-admitted dependencies; never install or repair schemas here.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "admitted dependencies and independent ingestion, maintenance and storage budgets are assembled explicitly"
-    )]
     pub fn new(
-        tenant: TenantId,
+        probe: rss_transactional_messaging::fence::ExecutionBinding,
         runtime: Arc<PgRuntime>,
         dependencies: PolicyDependencies,
-        backend: backend::Backend,
+        resources: Vec<backend::Resource>,
         signing: Arc<rss_mdm_task_trust::Signing>,
         limits: Limits,
         maintenance_policy: maintenance::Policy,
-        storage_budget: StorageBudget,
     ) -> Result<Self, Error> {
+        let default_resource = resources
+            .first()
+            .filter(|r| r.tenant.is_none() && r.backend.is_some())
+            .ok_or(Error::Invalid)?
+            .binding;
+        let count = resources.len();
+        let resources = resources
+            .into_iter()
+            .map(|r| (r.binding, r))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if resources.len() != count {
+            return Err(Error::Invalid);
+        }
         limits.validate()?;
         maintenance_policy.validate()?;
-        if !dependencies.policies.is_bound_to(&runtime, tenant) {
+        if !dependencies.policies.is_bound_to(&runtime) {
             return Err(Error::Denied);
         }
         Ok(Self {
             agent_facts: dependencies.agent_facts,
             read_pool: dependencies.read_pool,
             clock: dependencies.clock,
-            tenant,
+
             runtime,
             audit_store: dependencies.audit_store,
             policies: dependencies.policies,
             objects: dependencies.objects,
-            backend,
+            storage: probe.storage(),
+            resources,
+            default_resource,
             signing,
             limits,
             maintenance_policy,
-            storage_budget,
             running: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -197,7 +207,7 @@ impl Service {
         let principal = principal.clone();
         let input = input.clone();
         self.runtime
-            .local_tx(self.audit_store.binding(), deadline(), move |tx| {
+            .local_tx(principal.binding(), deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
@@ -233,15 +243,14 @@ impl Service {
         principal: &DevicePrincipal,
         batch: uuid::Uuid,
     ) -> Result<TelemetryReceipt, Error> {
-        let service = self.clone();
         let principal = principal.clone();
         self.runtime
-            .local_tx(self.audit_store.binding(), deadline(), move |tx| {
+            .local_tx(principal.binding(), deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            Ok(admission::status_on(&service, c, &principal, batch).await)
-                        })
+                        Box::pin(
+                            async move { Ok(admission::status_on(c, &principal, batch).await) },
+                        )
                     })
                     .await
                 })
@@ -255,10 +264,6 @@ impl Service {
                 |_| Err(Error::Unknown),
                 |_| Err(Error::Storage),
             )
-    }
-    /// Idempotent close; the caller must stop the relay before closing adopted resources.
-    pub async fn close(&self, deadline: rss_request_context::Deadline) -> Result<(), Error> {
-        self.backend.close(deadline).await.map_err(Into::into)
     }
 }
 fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
@@ -291,16 +296,13 @@ impl Service {
         observation: uuid::Uuid,
     ) -> Result<CurrentObservation, Error> {
         let principal = principal.clone();
-        let service = self.clone();
+
         self.runtime
-            .local_tx(self.audit_store.binding(), deadline(), move |tx| {
+            .local_tx(principal.binding(), deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
-                            Ok(
-                                admission::current_on(&service, c, &principal, batch, observation)
-                                    .await,
-                            )
+                            Ok(admission::current_on(c, &principal, batch, observation).await)
                         })
                     })
                     .await
@@ -333,7 +335,7 @@ pub async fn admit_configuration(
             rss_mdm_inventory_postgres::verify_collections(c).await
                 .map_err(|_| sqlx::Error::Protocol("collection producer admission rejected".into()))?;
             if !sqlx::query_scalar::<_,bool>(ADMISSION_SQL).fetch_one(&mut *c).await? { return Err(sqlx::Error::Protocol("owner storage admission rejected".into())); }
-            sqlx::query("INSERT INTO mdm_telemetry.storage_binding VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(tenant.to_string()).bind(binding.as_slice()).execute(&mut *c).await?;
+            sqlx::query("INSERT INTO mdm_telemetry.storage_binding(tenant_id,binding,expected_epoch) VALUES($1::uuid,$2,$3) ON CONFLICT DO NOTHING").bind(tenant.to_string()).bind(binding.as_slice()).bind(execution.epoch().get()).execute(&mut *c).await?;
             let stored:Vec<u8>=sqlx::query_scalar("SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid").bind(tenant.to_string()).fetch_one(c).await?;
             Ok(stored==binding)
         })).await
@@ -348,3 +350,59 @@ pub const RELAY_CONCURRENCY: u32 = 2;
 pub const CONTROL_WORKERS: u32 = RELAY_CONCURRENCY + 1;
 
 mod snapshot;
+
+impl Service {
+    /// Initialize only domain selection. Existing explicit selections are retained exactly.
+    pub async fn admit_default(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        budget: rss_transactional_messaging::policy::OperationDeadline,
+    ) -> Result<(), Error> {
+        let default = self.default_resource;
+        let selected=self.runtime.local_tx(execution,budget,move|tx|Box::pin(async move {
+            let tenant=tx.tenant_id().to_string();
+            tx.with_connection(move|c|Box::pin(async move {
+                sqlx::query("INSERT INTO mdm_telemetry.storage_binding(tenant_id,binding,expected_epoch) VALUES($1::uuid,$2,$3) ON CONFLICT DO NOTHING").bind(&tenant).bind(default.as_slice()).bind(execution.epoch().get()).execute(&mut *c).await?;
+                sqlx::query_scalar::<_,Vec<u8>>("SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid").bind(tenant).fetch_one(c).await
+            })).await
+        })).await.fold(Ok,|_|Err(Error::Storage),|_|Err(Error::Storage),|_|Err(Error::Unknown),|_|Err(Error::Unknown),|_|Err(Error::Storage))?;
+        self.selected(execution.tenant(), &selected).map(|_| ())
+    }
+    fn selected(&self, tenant: TenantId, key: &[u8]) -> Result<backend::Selected, Error> {
+        let key: [u8; 32] = key.try_into().map_err(|_| Error::Storage)?;
+        let resource = self.resources.get(&key).ok_or(Error::Storage)?;
+        if resource.tenant.is_some_and(|t| t != tenant) {
+            return Err(Error::Denied);
+        }
+        Ok(backend::Selected {
+            backend: resource.backend.clone().ok_or(Error::Storage)?,
+            budget: resource.budget,
+        })
+    }
+    async fn backend_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        tenant: TenantId,
+    ) -> Result<backend::Selected, Error> {
+        let key: Vec<u8> = sqlx::query_scalar(
+            "SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid",
+        )
+        .bind(tenant.to_string())
+        .fetch_one(c)
+        .await?;
+        self.selected(tenant, &key)
+    }
+}
+
+impl Service {
+    async fn backend(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<backend::Selected, Error> {
+        let tenant = execution.tenant().to_string();
+        let selected=self.runtime.local_tx(execution,deadline(),move|tx|Box::pin(async move {
+            tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Vec<u8>>("SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid").bind(tenant).fetch_one(c).await})).await
+        })).await.fold(Ok,|_|Err(Error::Storage),|_|Err(Error::Storage),|_|Err(Error::Unknown),|_|Err(Error::Unknown),|_|Err(Error::Storage))?;
+        self.selected(execution.tenant(), &selected)
+    }
+}

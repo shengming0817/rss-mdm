@@ -13,10 +13,23 @@ fn now() -> i64 {
 }
 async fn seed(c: &Context) -> Result<sqlx::Transaction<'_, sqlx::Postgres>> {
     let mut tx = c.operator.begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(c.tenant.to_string())
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('rss.execution_epoch',$2,true),set_config('rss.storage_target',$3,true),set_config('rss.storage_lineage',$4,true)")
+        .bind(c.tenant.to_string()).bind(c.execution().epoch().get().to_string()).bind(c.execution().storage().target().iter().map(|b|format!("{b:02x}")).collect::<String>()).bind(c.execution().storage().lineage().iter().map(|b|format!("{b:02x}")).collect::<String>())
         .execute(&mut *tx)
         .await?;
+    let id = recipient(c)?.id().to_owned();
+    for table in [
+        "mdm_recovery.recipient_selection",
+        "rss_da.recovery_recipient_selection",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO {table}(tenant_id,recipient) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING"
+        )))
+        .bind(c.tenant.to_string())
+        .bind(&id)
+        .execute(&mut *tx)
+        .await?;
+    }
     Ok(tx)
 }
 fn keys(active: &str) -> Result<recovery::KeyRing> {
@@ -28,16 +41,17 @@ fn keys(active: &str) -> Result<recovery::KeyRing> {
         ],
     )?)
 }
-pub(super) fn protection(c: &Context, active: &str) -> Result<Arc<recovery::Protection>> {
+fn recipient(c: &Context) -> Result<recovery::Recipient> {
     let dir = c.inputs.directory.join("task-trust-ca");
-    let recipient = recovery::Recipient::from_pem(
+    Ok(recovery::Recipient::from_pem(
         &std::fs::read(dir.join("ca.pem"))?,
         &std::fs::read(dir.join("ca.key"))?,
-    )?;
+    )?)
+}
+pub(super) fn protection(c: &Context, active: &str) -> Result<Arc<recovery::Protection>> {
     Ok(Arc::new(recovery::Protection::new(
         keys(active)?,
-        recipient.id().into(),
-        vec![recipient],
+        vec![recipient(c)?],
     )?))
 }
 struct Owners {
@@ -67,13 +81,13 @@ impl Owners {
             rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
         let audit = Arc::new(
             c.audit
-                .on_runtime(runtime.clone(), c.audit.binding(), &budget.control())
+                .on_runtime(runtime.clone(), c.execution(), &budget.control())
                 .await?,
         );
         let native = material::protection(c)?;
         let copies = recovery::native::inputs::Copies::bind(
             runtime.clone(),
-            c.audit.binding(),
+            c.execution(),
             crate::authority_t2_support::background()?.command_supersede_batch,
             native.clone(),
             Arc::new(rss_mdm_apple_channel::flow_store::Store { protection: native }),
@@ -82,7 +96,9 @@ impl Owners {
         let maintenance = recovery::maintenance::Maintenance::new(
             rss_mdm_install_support::StorageProfile::Mdm,
             runtime.clone(),
-            c.tenant,
+            c.database.archive_pool(),
+            c.execution().storage(),
+            c.execution().epoch(),
             audit.clone(),
             credentials,
             Some(Arc::new(copies)),
@@ -234,7 +250,7 @@ async fn input_copy(
     sqlx::query("INSERT INTO mdm_access.command_authorities (tenant_id, device, command_device, generation, epoch) VALUES ($1, $2, $3, 1, 1)").bind(coordinate.tenant).bind(binding.device.into_uuid()).bind(command_device).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_device_command.authorities(tenant_id,device_id,generation,authority_epoch) VALUES($1,$2,1,1)").bind(coordinate.tenant).bind(command_device).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,version) VALUES($1,$2,$3,1,1,$4,$5,$6,'mdm.recovery.native.v1',$2,$4,'published',$6,2)").bind(coordinate.tenant).bind(operation.to_string()).bind(command_device).bind(vec![1u8;32]).bind(input.deadline*1_000_000).bind(now()*1_000_000).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_recovery_tasks.operations (tenant_id, id, device, request, input_context, fingerprint, generation, epoch, authority, dispatch_fingerprint, gateway_accepted) VALUES ($1, $2, $3, $4, $5, $6, 1, 1, $7, $6, TRUE)").bind(coordinate.tenant).bind(operation).bind(binding.device.into_uuid()).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(serde_json::to_value(authority)?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_recovery_tasks.operations (expected_epoch,tenant_id, id, device, request, input_context, fingerprint, generation, epoch, authority, dispatch_fingerprint, gateway_accepted) VALUES (current_setting('rss.execution_epoch')::bigint,$1, $2, $3, $4, $5, $6, 1, 1, $7, $6, TRUE)").bind(coordinate.tenant).bind(operation).bind(binding.device.into_uuid()).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(serde_json::to_value(authority)?).execute(&mut *tx).await?;
     sqlx::query(
         "INSERT INTO mdm_apple.native_commands (tenant_id, id, device) VALUES ($1, $2, $3)",
     )

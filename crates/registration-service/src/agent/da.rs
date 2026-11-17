@@ -8,7 +8,7 @@ use rss_mdm_certificate::ClientCertificateEvidence;
 
 pub struct Assembly {
     pub cursor: rss_mdm_query::cursor::CursorCodec,
-    pub tenant: rss_request_context::TenantId,
+    pub probe: rss_transactional_messaging::fence::ExecutionBinding,
     pub store: Arc<Store>,
     pub audit: Arc<AuditStore>,
     pub issuer: Arc<DeviceIssuer>,
@@ -20,6 +20,12 @@ pub struct RegistrationService {
 }
 
 impl RegistrationService {
+    pub fn execution(
+        &self,
+        tenant: rss_request_context::TenantId,
+    ) -> rss_transactional_messaging::fence::ExecutionBinding {
+        self.inner.execution(tenant)
+    }
     pub fn new(a: Assembly) -> Result<Self, Error> {
         if a.store.profile() != rss_mdm_install_support::StorageProfile::Da
             || a.issuer.profile() != a.store.profile()
@@ -30,7 +36,8 @@ impl RegistrationService {
         Ok(Self {
             inner: Service {
                 cursor: a.cursor,
-                tenant: a.tenant,
+                storage: a.probe.storage(),
+                expected_epoch: a.probe.epoch(),
                 store: a.store,
                 audit: a.audit,
                 issuer: a.issuer,
@@ -49,8 +56,11 @@ impl RegistrationService {
     pub fn service_id(&self) -> Result<Uuid, Error> {
         self.inner.service_id()
     }
-    pub fn trust(&self) -> &Arc<DeviceIdentityTrust> {
-        self.inner.trust()
+    pub async fn trust(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<Arc<DeviceIdentityTrust>, Error> {
+        self.inner.trust(execution).await
     }
     pub async fn authenticate(
         &self,
@@ -60,9 +70,10 @@ impl RegistrationService {
     }
     pub async fn device_trust(
         &self,
+        tenant: rss_request_context::TenantId,
         peer: Option<&ClientCertificateEvidence>,
     ) -> Result<rss_mdm_agent_wire::pki::Trust, Failure> {
-        self.inner.device_trust(peer).await
+        self.inner.device_trust(tenant, peer).await
     }
     pub async fn acknowledge_trust(
         &self,
@@ -98,6 +109,7 @@ impl RegistrationService {
         a: &RequestAudit,
     ) -> Result<da::Grant, Failure> {
         let p = self.authenticate(peer).await?;
+        a.bind_scope(p.binding()).map_err(|_| Error::Unauthorized)?;
         self.create(Authority::Device(&p), input, a).await
     }
     async fn create(
@@ -128,7 +140,7 @@ impl RegistrationService {
             Box::pin(async move {
                 let (s, authority, input, a, bound, d) = ctx;
                 let profile = s.profile();
-                let tenant = s.tenant.to_string();
+                let tenant = a.binding()?.tenant().to_string();
                 if crate::device::installation_in(profile, c).await? != s.service_id()? {
                     return Err(Error::Forbidden);
                 }
@@ -334,7 +346,13 @@ impl RegistrationService {
     pub async fn status(&self, input: &wire::StatusRequest) -> Result<da::Progress, Failure> {
         version(input.wire_version, input.operation_id)?;
         let s = &self.inner;
-        let tenant = s.tenant.to_string();
+        let tenant = s
+            .store
+            .locate_grant(input.grant_id)
+            .await?
+            .ok_or(Error::Unauthorized)?
+            .0
+            .to_string();
         let mut tx = s.store.begin(&tenant).await?;
         let row = grant_row(s.profile(), &mut tx, &tenant, input.grant_id).await?;
         if row
@@ -399,7 +417,7 @@ impl RegistrationService {
             Box::pin(async move {
                 let (s, p, registration, operation, a) = ctx;
                 let profile = s.profile();
-                let tenant = s.tenant.to_string();
+                let tenant = a.binding()?.tenant().to_string();
                 let row = sqlx::query(crate::storage_profile::sql(profile).da_registration)
                     .bind(&tenant)
                     .bind(registration.into_uuid())

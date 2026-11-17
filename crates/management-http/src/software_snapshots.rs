@@ -72,7 +72,7 @@ async fn replace(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(source): Path<String>,
+    Path((_tenant, source)): Path<(uuid::Uuid, String)>,
     Json(input): Json<Mutation<owner::Import>>,
 ) -> Result<Json<owner::Receipt>, Error> {
     owner::replace(&app, &auth.proof, &audit, source, input)
@@ -84,7 +84,7 @@ async fn snapshot(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(source): Path<String>,
+    Path((_tenant, source)): Path<(uuid::Uuid, String)>,
 ) -> Result<Json<owner::SnapshotDetail>, Error> {
     owner::snapshot(&app, &auth.proof, &audit, source)
         .await
@@ -95,7 +95,7 @@ async fn entry(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((source, id)): Path<(String, Uuid)>,
+    Path((_tenant, source, id)): Path<(uuid::Uuid, String, Uuid)>,
 ) -> Result<Json<owner::EntryDetail>, Error> {
     owner::entry(&app, &auth.proof, &audit, source, id)
         .await
@@ -106,7 +106,7 @@ async fn operation(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((source, id)): Path<(String, Uuid)>,
+    Path((_tenant, source, id)): Path<(uuid::Uuid, String, Uuid)>,
 ) -> Result<Json<owner::Receipt>, Error> {
     owner::operation(&app, &auth.proof, &audit, source, id)
         .await
@@ -117,6 +117,8 @@ type Collection<T> = rss_mdm_http_contract::CollectionResponse<
     Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<T>>>,
 >;
 async fn sources(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -135,7 +137,7 @@ async fn entries(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(source): Path<String>,
+    Path((_tenant, source)): Path<(uuid::Uuid, String)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Directory<Entries>,
     >,

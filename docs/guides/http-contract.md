@@ -4,6 +4,16 @@
 
 受保护端点的 `authentication` 引用实际管理认证 owner；`alternatives` 为互斥凭据方式，各自包含 header schema、必填 header 和限制。Cookie 的写请求要求 Origin、`X-Identity-Request: 1` 和 session 绑定的 CSRF，GET/HEAD 使用被动认证；Bearer/API key 仅在实际允许的入口出现。`conditional_response_headers` 描述 401 的 `WWW-Authenticate` 条件，不能作为每个 401 都必含该 header 的承诺。描述在最终路径组合后解析，租户管理及自助入口保留实际凭据限制。认证 owner 在 handler 之前可能产生的拒绝响应也合并到端点唯一的 `responses` 集合；客户端按同一契约验证状态、错误体和响应头，认证失效继续交由既有会话 owner 处理。
 
+宿主在认证之前解析租户范围。无效租户标识返回 `400 malformed_request`，不存在或已删除租户返回
+`403 permission_denied`；这些是产品宿主拒绝，包括 Identity SDK 挂载入口。范围查询不可用时，产品入口返回
+`503 service_unavailable`，Identity 入口保留 `503 identity_unavailable`。错误带服务端生成的 `x-request-id`
+和禁止缓存、安全响应头；管理请求预算耗尽也进入同一错误与审计完成边界，提交未知仍返回 `operation_unknown`。
+产品端点在 `responses` 中声明这些提前拒绝，Identity SDK 的产品宿主拒绝另由 `externalOwners[].ingressResponses` 描述。
+
+原生软件安装任务直接消费发布时冻结的 `/api/v1/software/installations/{id}/package?token=…` 下载 URL。
+下载依据原操作定位租户并核验令牌、当前执行权限和完整内容；它不需要浏览器会话或租户路径参数。
+URL 含下载凭据，不应转发或记录到客户端日志；成功响应保持私有且禁止缓存，支持范围下载。
+
 普通目录分页的公共上限为 1024，各入口默认页大小由实际 query owner 导出。完整 Agent 报告最多 4096 字段，报告 JSON 与完整 Observation Batch 分别受 4 MiB 总字节约束；字段数不能替代字节校验。字段定义与采集定义的完整 PostgreSQL JSONB 表示分别限 1 MiB、4 MiB。Telemetry 每字段的维度、State 成员和每维词表支持 1024，单值 256 字节、词表总量 32768 字节和组合展开 4096 的约束仍共同生效。客户端应从最终后端 commit 再生契约，并固定消费对应 Agent schema 指纹。
 
 ## 按需导出
@@ -31,8 +41,8 @@ python3 hack/http_contract_artifact.py --output artifacts/http-contract/http-v1.
 
 Schema 中的 `x-rss-extension` 仅标识具体扩展位置及其 owner，例如 Resource 输出、展示元数据、Apple 已验证的原生 status 叶子。它不表示整个响应可接受任意 JSON。动态字段和列表仍由 Inventory/用户 schema 解释。
 
-资产数组和采集作用域分页分别使用 `POST /api/v1/devices/{id}/inventory-lists/{field}`、
-`POST /api/v1/devices/{id}/inventory-scopes`。JSON 请求体包含可选 `limit`、`cursor`；数组分页还可传
+资产数组和采集作用域分页分别使用 `POST /api/v1/tenants/{tenant}/devices/{id}/inventory-lists/{field}`、
+`POST /api/v1/tenants/{tenant}/devices/{id}/inventory-scopes`。JSON 请求体包含可选 `limit`、`cursor`；数组分页还可传
 类型化 `scope`。不使用 URL 参数；浏览器会话按 POST 规则提供 CSRF。两者仍是仅需原读取权限的只读
 操作，不追加管理变更审计。token 自包含固定 `AssetCut`，最大 256 KiB；Rust 与 Nginx 的请求体预算均为
 384 KiB。固定快照不得放入 URI（HTTP URI 类型自身有长度上限）。已有查询任务的结果分页引用原任务
@@ -52,7 +62,7 @@ Schema 中的 `x-rss-extension` 仅标识具体扩展位置及其 owner，例如
 
 普通目录只能从真实公开行模型推导，挂载时执行完整性检查将 `modelIdentity`、未投影模型引用 与实际成功响应的 `items` 对齐；`Projection<T>` 仍省略未选择字段。列表与统计的 `role` 不同，但必须引用同一个目录 owner。HTTP 制品只发布能力和模型，不包含 SQL、数据库角色或内部执行绑定。固定顺序历史、固定快照、资格扫描和引用列表另标注 `purpose` 与具体原因；DA 活跃配置属于普通目录。
 
-`/api/v1/devices` 的 `registeredAt` 是首次成功主注册事务记录的 Unix 秒，支持范围、空值过滤与排序；重试和续证保持不变，缺少可信历史的记录保持 null。`serialNumber`、`hardwareUuid` 是仅过滤的历史定位选择器，只支持 `==`、`=in=` 及逻辑组合，沿用 Inventory 规范化和字段敏感权限。组合条件必须在同一设备的同一份可信采集证据中成立；多个上报不会拼接，重复硬件返回全部获授权候选且不重复计数。非硬件 OR 分支不要求硬件证据。
+`/api/v1/tenants/{tenant}/devices` 的 `registeredAt` 是首次成功主注册事务记录的 Unix 秒，支持范围、空值过滤与排序；重试和续证保持不变，缺少可信历史的记录保持 null。`serialNumber`、`hardwareUuid` 是仅过滤的历史定位选择器，只支持 `==`、`=in=` 及逻辑组合，沿用 Inventory 规范化和字段敏感权限。组合条件必须在同一设备的同一份可信采集证据中成立；多个上报不会拼接，重复硬件返回全部获授权候选且不重复计数。非硬件 OR 分支不要求硬件证据。
 
 硬件定位包含仍保留的退管设备，普通 Inventory 保留清理不删除定位证据；已物理删除的设备不会复活。结果只用于选择原设备 ID，时间线仍需要原 `AuditRead` 权限，不据此自动关联、合并历史或继承身份。新安装定义不回填旧记录，不从证书时间或最近通信推测注册时间。
 

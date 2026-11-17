@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 /// Enterprise software input frozen at Policy publication, before per-device admission.
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct FrozenSoftwareAction {
-    pub native_packages: BTreeMap<rss_mdm_policy::SoftwareTarget, super::native::Package>,
+    pub native: Option<super::native_download::NativeSoftware>,
     pub channel: rss_mdm_policy::SoftwareChannel,
     pub delivery: rss_mdm_policy::SoftwareDelivery,
     pub resource: String,

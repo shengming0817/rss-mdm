@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 mod database;
 pub mod device_access;
+mod discovery;
 pub mod enterprise;
 mod error;
 pub mod recovery;

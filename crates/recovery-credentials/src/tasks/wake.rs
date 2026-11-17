@@ -30,10 +30,15 @@ pub async fn run_in(
             Box::pin(async { Ok(()) })
         })
         .await?;
-    tx.with_connection(|c| Box::pin(async move {
-        sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'credential_recovery')").execute(c).await?;
-        Ok(())
-    })).await?;
+    tx.with_connection(|c| {
+        Box::pin(async move {
+            sqlx::query("SELECT pg_notify('mdm_work','credential_recovery')")
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await?;
     Ok(())
 }
 
@@ -43,14 +48,20 @@ pub async fn policy_in(
     tx: &mut PgTransaction<'_>,
     id: Uuid,
 ) -> Result<()> {
+    let epoch = tx.expected_epoch().get();
+
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            sqlx::query(crate::storage_profile::sql(profile).tasks_wake_policy_in_1)
+            let updated = sqlx::query(crate::storage_profile::sql(profile).tasks_wake_policy_in_1)
                 .bind(tenant)
                 .bind(id)
+                .bind(epoch)
                 .execute(c)
                 .await?;
+            if updated.rows_affected() != 1 {
+                return Err(sqlx::Error::Protocol("original work epoch mismatch".into()));
+            }
             Ok(())
         })
     })
@@ -71,7 +82,15 @@ pub async fn entity_in(
             Box::pin(async { Ok(()) })
         })
         .await?;
-    tx.with_connection(|c|Box::pin(async move {sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'credential_recovery')").execute(c).await?;Ok(())})).await?;
+    tx.with_connection(|c| {
+        Box::pin(async move {
+            sqlx::query("SELECT pg_notify('mdm_work','credential_recovery')")
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await?;
     Ok(())
 }
 

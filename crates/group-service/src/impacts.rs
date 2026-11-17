@@ -140,9 +140,7 @@ impl Groups {
             .require_schema(&SCHEMA)
             .map_err(|_| Error::Malformed)?;
         proof.manage(Permission::GroupRead)?;
-        if proof.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
+
         proof.require_all_devices(Permission::InventoryRead)?;
         let codec = CursorCodec::from_key(self.cursor_key.clone());
         let cursor = q
@@ -164,7 +162,7 @@ impl Groups {
         );
         crate::transaction::inspect(
             &self.runtime,
-            self.audit_store.binding(),
+            proof.binding(),
             (self, proof, q, audit, cursor),
             |ctx, tx| {
                 Box::pin(async move {
@@ -206,7 +204,7 @@ impl Groups {
                         .unix_seconds()
                         .ok_or(Error::Unavailable(Failure::Clock))?;
                     let after = if let Some(c) = cursor {
-                        if c.tenant != s.tenant.to_string()
+                        if c.tenant != p.binding().tenant().to_string()
                             || c.root != id
                             || c.kind != q.kind
                             || c.relation != q.relation
@@ -247,7 +245,7 @@ impl Groups {
                     let next = if more {
                         let expires_at = cursor.as_ref().map_or(now + 60, |c| c.expires_at);
                         let value = Cursor {
-                            tenant: s.tenant.to_string(),
+                            tenant: p.binding().tenant().to_string(),
                             root: id,
                             kind: q.kind,
                             relation: q.relation.clone(),

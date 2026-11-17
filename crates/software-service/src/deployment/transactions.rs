@@ -36,13 +36,13 @@ pub struct Transactions {
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) store: rss_device_command_postgres::PgStore<()>,
     pub(crate) reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
-    pub(crate) tenant: TenantId,
+
     pub(crate) instance: String,
 }
 impl Transactions {
     pub async fn bind(
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
+        probe: rss_transactional_messaging::fence::ExecutionBinding,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         materials: Arc<Materials>,
     ) -> std::result::Result<Self, Error> {
@@ -62,7 +62,7 @@ impl Transactions {
         let supersede_batch = materials.supersede_batch;
         let caller = runtime.clone();
         let (_, store) = runtime
-            .local_tx(audit_store.binding(), deadline(), move |tx| {
+            .local_tx(probe, deadline(), move |tx| {
                 Box::pin(async move {
                     audit.bind_in(tx).await.map_err(PgError::from)?;
                     storage::admit_policy_participant(tx).await?;
@@ -78,15 +78,10 @@ impl Transactions {
                 |_| Err(Error::CommitUnknown),
                 |_| Err(invalid()),
             )?;
-        storage::bind_native_key(
-            &runtime,
-            audit_store.binding(),
-            materials.protection.fingerprint_id(),
-        )
-        .await?;
+        storage::bind_native_key(&runtime, probe, materials.protection.fingerprint_id()).await?;
         let reconcile_messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
-            audit_store.binding(),
+            probe,
             deadline(),
         ))
         .await
@@ -94,7 +89,7 @@ impl Transactions {
         let bootstrap = Box::pin(
             rss_mdm_registration_service::installation::Transactions::bind(
                 runtime.clone(),
-                tenant,
+                probe,
                 audit_store.clone(),
                 materials.registration.clone(),
             ),
@@ -107,15 +102,10 @@ impl Transactions {
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 runtime.clone(),
-                tenant,
             ),
-            inputs: Arc::new(Inputs::bind(
-                runtime.clone(),
-                tenant,
-                materials.inputs.clone(),
-            )),
+            inputs: Arc::new(Inputs::bind(runtime.clone(), materials.inputs.clone())),
             runtime,
-            tenant,
+
             audit_store,
             store,
             reconcile_messaging,

@@ -10,7 +10,7 @@ SELECT
  OR NOT has_table_privilege(current_user,t.oid,'SELECT') OR NOT has_table_privilege(current_user,t.oid,'INSERT')
  OR has_table_privilege(current_user,t.oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
  OR has_table_privilege(current_user,t.oid,'DELETE')<>(t.relname IN('query_evaluation_arrays','query_evaluations','software_evidence','software_members','software_objects','software_buckets'))
- OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>1
+ OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid AND polroles && (ARRAY[0::oid] || ARRAY(SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER'))))<>1
  OR NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=t.oid AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
  AND lower(replace(regexp_replace(pg_get_expr(polqual,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
  AND lower(replace(regexp_replace(pg_get_expr(polwithcheck,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'))
@@ -30,7 +30,7 @@ SELECT
  AND has_table_privilege(current_user,c.oid,'SELECT') AND has_table_privilege(current_user,c.oid,'INSERT')
  AND NOT has_table_privilege(current_user,c.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
  AND has_column_privilege(current_user,c.oid,'revision','UPDATE') AND has_column_privilege(current_user,c.oid,'fact','UPDATE')
- AND (SELECT count(*) FROM pg_policy WHERE polrelid=c.oid)=1
+ AND (SELECT count(*) FROM pg_policy WHERE polrelid=c.oid AND polroles && (ARRAY[0::oid] || ARRAY(SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER'))))=1
  AND EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid AND p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid]
  AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
  AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid))

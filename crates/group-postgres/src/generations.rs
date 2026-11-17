@@ -173,13 +173,13 @@ impl GroupStore {
         for device in devices {
             input!(
                 rss_mdm_group::ObjectKey::new(
-                    self.tenant,
+                    tx.tenant_id(),
                     rss_mdm_agent_wire::ObjectRef::Endpoint(*device)
                 )
                 .map_err(crate::store::core_rejection)
             );
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let devices = devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>();
         let after = after.map(|id| id.to_string());
         let rows: Vec<String> = tx
@@ -257,7 +257,7 @@ impl GroupStore {
                 .await?
                 .ok_or(Rejection::NotFound)
         );
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let id = request.id.to_string();
         let old = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_scalar::<_,Vec<u8>>("SELECT fingerprint FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=$2::uuid")
@@ -280,8 +280,8 @@ impl GroupStore {
             return Ok(Err(Rejection::InvalidInput));
         }
 
-        input!(check_page_selection(self.tenant, request));
-        let tenant = self.tenant.to_string();
+        input!(check_page_selection(tx.tenant_id(), request));
+        let tenant = tx.tenant_id().to_string();
         let r = request.clone();
         let base_members = if request.changed_objects.is_some() {
             group.member_count as i64
@@ -333,7 +333,7 @@ impl GroupStore {
         if g.kind != GroupKind::Dynamic {
             return Ok(Err(Rejection::KindMismatch));
         }
-        if page.tenant != self.tenant
+        if page.tenant != tx.tenant_id()
             || page.version != build.request.input_version
             || g.rule_version != build.request.rule_version
         {
@@ -370,7 +370,7 @@ impl GroupStore {
             &input!(crate::codec::encode_page(page).map_err(|_| Rejection::PageBudgetExceeded)),
             &data(serde_json::to_vec(&page.after.map(|k| k.id())))?,
         ]);
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let first_id = first.key.id().to_owned();
         let old=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query_scalar::<_,Vec<u8>>("SELECT fingerprint FROM mdm_group.member_pages WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND (first_kind,first_id)=($3,$4)")
@@ -427,7 +427,7 @@ impl GroupStore {
             || decisions.windows(2).any(|v| v[0].object >= v[1].object)
             || decisions.iter().any(|d| {
                 d.origin != crate::DecisionOrigin::System
-                    || rss_mdm_group::ObjectKey::new(self.tenant, d.object).is_err()
+                    || rss_mdm_group::ObjectKey::new(tx.tenant_id(), d.object).is_err()
                     || after.is_some_and(|a| &d.object <= a)
                     || build
                         .request
@@ -442,7 +442,7 @@ impl GroupStore {
             serde_json::to_vec(&(after, decisions)).map_err(|_| Rejection::PageBudgetExceeded)
         );
         let fingerprint = digest(&bytes);
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let first = decisions[0].object;
         let old = tx.with_connection(move|c|Box::pin(async move {
             sqlx::query_scalar::<_,Vec<u8>>("SELECT fingerprint FROM mdm_group.member_pages WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND (first_kind,first_id)=($3,$4)")
@@ -512,7 +512,7 @@ impl GroupStore {
                 members -= i64::from(row.try_get::<bool, _>("matched")?);
             }
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let first = *ids.first().ok_or_else(stored_shape)?;
         let last = *ids.last().ok_or_else(stored_shape)?;
         let kinds = ids.iter().map(|o| o.kind()).collect::<Vec<_>>();
@@ -555,7 +555,7 @@ impl GroupStore {
             .map(|id| (id, false))
             .chain(patch.add.into_iter().map(|id| (id, true)))
             .collect();
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let group_id = group.id.to_string();
         let selected: Vec<_> = wanted.keys().map(|id| id.into_uuid()).collect();
         let old=tx.with_connection(move |c|Box::pin(async move {
@@ -576,7 +576,7 @@ impl GroupStore {
         let added = values.iter().filter(|v| **v).count();
         let removed = values.len() - added;
         let members = input!(member_count_after_patch(group.member_count, added, removed));
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let group_id = group.id.to_string();
         let revision = input!(
             group
@@ -618,7 +618,7 @@ impl GroupStore {
         }
         if !build.input_sealed {
             input!(self.seal_missing_delta_in(tx, id, &build).await?);
-            let tenant = self.tenant.to_string();
+            let tenant = tx.tenant_id().to_string();
             tx.with_connection(move |c|Box::pin(async move {
                 sqlx::query("UPDATE mdm_group.member_runs SET phase='diff' WHERE tenant_id=$1::uuid AND id=$2::uuid AND phase='reading'")
                     .bind(tenant).bind(id.to_string()).execute(c).await?;Ok(())
@@ -675,7 +675,7 @@ impl GroupStore {
         let last = devices.last().cloned().or(after);
         let added = changes.iter().filter(|v| **v).count() as i64;
         let removed = changes.len() as i64 - added;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let dynamic = build.request.patch.is_none();
         let kinds = ids.iter().map(|o| o.kind()).collect::<Vec<_>>();
         let uuids = ids.iter().map(|o| o.uuid()).collect::<Vec<_>>();
@@ -712,7 +712,7 @@ impl GroupStore {
                 }
             };
             if same_input {
-                let tenant = self.tenant.to_string();
+                let tenant = tx.tenant_id().to_string();
                 let rows=tx.with_connection(move |c|Box::pin(async move {
                     let rows=sqlx::query("SELECT object_kind,object_id FROM mdm_group.member_changes WHERE tenant_id=$1::uuid AND run_id=$2::uuid ORDER BY object_kind,object_id LIMIT 1000")
                         .bind(&tenant).bind(id.to_string()).fetch_all(&mut *c).await?;
@@ -737,7 +737,7 @@ impl GroupStore {
         added: usize,
         removed: usize,
     ) -> Result<bool, rss_transactional_messaging_postgres::PgError> {
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let owner = build.request.group.to_string();
         let id = build.request.id;
         let sparse = build.request.changed_objects.is_some();
@@ -780,7 +780,7 @@ impl GroupStore {
         if !build.ready || group.rule_version != build.request.rule_version {
             return Ok(Err(Rejection::VersionConflict));
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let counts=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("SELECT added,removed FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=$2::uuid")
                 .bind(tenant).bind(id.to_string()).fetch_one(c).await
@@ -825,7 +825,7 @@ impl GroupStore {
                 .await?;
         }
         db::save_group(tx, &receipt.group, false).await?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let group = receipt.group.id;
         let document = data(serde_json::to_vec(&receipt))?;
         tx.with_connection(move |c|Box::pin(async move {

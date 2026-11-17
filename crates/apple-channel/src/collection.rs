@@ -43,6 +43,7 @@ pub async fn receive(
         if current && run.sealed_at.is_none() {
             facts.extend(
                 store::seal(
+                    p.binding(),
                     rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &mut run,
@@ -70,7 +71,7 @@ pub async fn receive(
             };
         attempt.settle(c, status, valid).await?;
         if status == wire::Status::Acknowledged && valid {
-            facts.extend(prepare_native(c, protection, &tenant, collection).await?);
+            facts.extend(prepare_native(p.binding(), c, protection, &tenant, collection).await?);
         } else if status != wire::Status::NotNow {
             let mut run = store::load_on(
                 rss_mdm_install_support::StorageProfile::Mdm,
@@ -97,6 +98,7 @@ pub async fn receive(
             )?;
             facts.extend(
                 store::seal(
+                    p.binding(),
                     rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &mut run,
@@ -176,6 +178,7 @@ pub async fn receive(
             )?;
             facts.extend(
                 store::seal(
+                    p.binding(),
                     rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &mut run,
@@ -218,6 +221,7 @@ pub async fn send(
             if run.sealed_at.is_none() {
                 facts.extend(
                     store::seal(
+                        p.binding(),
                         rss_mdm_install_support::StorageProfile::Mdm,
                         c,
                         &mut run,
@@ -247,6 +251,7 @@ pub async fn send(
 }
 
 pub async fn prepare_native(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     tenant: &str,
@@ -292,6 +297,7 @@ pub async fn prepare_native(
         run.attempts = Attempts::native(run.attempts.definition().clone(), values, now)
             .map_err(|_| Error::Malformed)?;
         return Ok(store::seal(
+            execution,
             rss_mdm_install_support::StorageProfile::Mdm,
             c,
             &mut run,
@@ -440,6 +446,7 @@ pub async fn prepare_native(
             run.attempts = Attempts::native(run.attempts.definition().clone(), values, now)
                 .map_err(|_| Error::Malformed)?;
             return Ok(store::seal(
+                execution,
                 rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 &mut run,

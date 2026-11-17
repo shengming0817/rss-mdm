@@ -181,7 +181,7 @@ async fn maintenance_rewrap_is_atomic_and_concurrent() -> Result<()> {
     sqlx::raw_sql(sqlx::AssertSqlSafe(install))
         .execute(&c.operator)
         .await?;
-    let rejected = owner.maintenance.run_once().await;
+    let rejected = owner.maintenance.run_once(c.execution()).await;
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "DROP TRIGGER {trigger} ON rss_audit.records; DROP FUNCTION public.{trigger}()"
     )))
@@ -197,7 +197,10 @@ async fn maintenance_rewrap_is_atomic_and_concurrent() -> Result<()> {
     .fetch_one(&c.operator)
     .await?;
     assert_eq!(unchanged, "old");
-    let (a, b) = tokio::join!(owner.maintenance.run_once(), owner.maintenance.run_once());
+    let (a, b) = tokio::join!(
+        owner.maintenance.run_once(c.execution()),
+        owner.maintenance.run_once(c.execution())
+    );
     a?;
     b?;
     let mut tx = seed(&c).await?;
@@ -242,7 +245,7 @@ async fn expiry_preserves_unresolved_material_then_resumes() -> Result<()> {
     sqlx::query("UPDATE mdm_recovery.versions SET validity='revoked',invalidated_at=$3 WHERE tenant_id=$1 AND entry=$2").bind(coordinate.tenant).bind(coordinate.material).bind(now()-7_776_001).execute(&mut *tx).await?;
     tx.commit().await?;
     input_secrets(&c, &coordinate, operation, attempt, true).await?;
-    owner.maintenance.run_once().await?;
+    owner.maintenance.run_once(c.execution()).await?;
     let mut tx = seed(&c).await?;
     let exists: bool = sqlx::query_scalar(
         "SELECT sealed IS NOT NULL FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2",
@@ -264,7 +267,7 @@ async fn expiry_preserves_unresolved_material_then_resumes() -> Result<()> {
     // Published -> Received -> Applied advances the component version twice.
     sqlx::query("UPDATE rss_device_command.commands SET status='applied',received_at=$3,terminal_at=$3,version=version+2 WHERE tenant_id=$1 AND command_id=$2").bind(coordinate.tenant).bind(operation.to_string()).bind(now()*1_000_000).execute(&mut *tx).await?;
     tx.commit().await?;
-    owner.maintenance.run_once().await?;
+    owner.maintenance.run_once(c.execution()).await?;
     let row: (Option<Vec<u8>>, Option<String>) = sqlx::query_as(
         "SELECT sealed,key_id FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2",
     )
@@ -513,13 +516,13 @@ async fn filevault_receipt(
             &vault::NativeAction {
                 action: "collect_filevault".into(),
                 coordinates: Some(pending.clone()),
-                recipient: protection.active_recipient().id().into(),
+                recipient: recipient(c)?.id().into(),
                 reconciles: None,
             },
         )
         .await?;
     }
-    let report = filevault_report(protection, secret)?;
+    let report = filevault_report(&recipient(c)?, secret)?;
     let receipts = recovery::native_receipts::NativeReceipts::new(protection.clone());
     receipts
         .receive_in(
@@ -551,7 +554,7 @@ async fn filevault_receipt(
     Ok(())
 }
 
-fn filevault_report(protection: &recovery::Protection, secret: &[u8]) -> Result<plist::Dictionary> {
+fn filevault_report(recipient: &recovery::Recipient, secret: &[u8]) -> Result<plist::Dictionary> {
     use openssl::{
         cms::{CMSOptions, CmsContentInfo},
         stack::Stack,
@@ -559,9 +562,7 @@ fn filevault_report(protection: &recovery::Protection, secret: &[u8]) -> Result<
         x509::X509,
     };
     let mut recipients = Stack::new()?;
-    recipients.push(X509::from_der(
-        &protection.active_recipient().certificate_der()?,
-    )?)?;
+    recipients.push(X509::from_der(&recipient.certificate_der()?)?)?;
     let cms = CmsContentInfo::encrypt(
         &recipients,
         secret,

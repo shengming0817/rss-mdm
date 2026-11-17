@@ -53,9 +53,10 @@ pub(super) async fn page(
         Tenants(Vec<Tenant>),
     }
     let rows = if provisionings {
-        let mut sql = sqlx::QueryBuilder::new(
-            "SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision'",
-        );
+        let mut sql = sqlx::QueryBuilder::new(format!(
+            "SELECT receipt FROM ({}) provisionings WHERE true",
+            super::provisioning::RECEIPTS,
+        ));
         rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*PROVISIONING_BINDINGS)
             .map_err(error)?;
         let values = sql
@@ -71,23 +72,9 @@ pub(super) async fn page(
                 .map_err(|_| Reason::Storage)?,
         )
     } else {
-        // Epoch is an RSS tenant-scoped fact. The installation registry is bounded to
-        // 1024 business tenants plus management; qualify each original row under its
-        // tenant scope before applying one complete public-model filter and page.
-        let ids: Vec<String> = sqlx::query_scalar(
-            "SELECT tenant_id::text FROM public.mdm_tenants WHERE NOT deleted ORDER BY tenant_id LIMIT 1026",
-        ).fetch_all(&mut *c).await.map_err(|_| Reason::Storage)?;
-        if ids.len() > 1025 {
-            return Err(Reason::Storage);
-        }
-        let mut candidates = Vec::with_capacity(ids.len());
-        for id in ids {
-            candidates.push(tenant_on(c, &id, false).await?);
-        }
-        scope(c, p.tenant_id()).await?;
-        let mut sql = sqlx::QueryBuilder::new("SELECT row FROM jsonb_array_elements(");
-        sql.push_bind(serde_json::to_value(candidates).map_err(|_| Reason::Storage)?)
-            .push("::jsonb) row WHERE true");
+        let mut sql = sqlx::QueryBuilder::new(
+            "SELECT row FROM (SELECT jsonb_build_object('tenantId',t.tenant_id,'management',t.tenant_id=i.management_tenant_id,'name',t.name,'notes',t.notes,'revision',t.revision,'deletable',NOT(t.used OR t.deleted OR t.tenant_id=i.management_tenant_id)) AS row FROM public.mdm_tenants t CROSS JOIN public.mdm_installation i WHERE NOT t.deleted) tenants WHERE true",
+        );
         rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*TENANT_BINDINGS)
             .map_err(error)?;
         let values: Vec<Value> = sql

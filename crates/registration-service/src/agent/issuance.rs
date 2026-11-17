@@ -30,7 +30,19 @@ impl Service {
         &self,
         input: &wire::CertificateRequest,
         a: &RequestAudit,
+        origin: &rss_mdm_certificate::GatewayOrigin,
     ) -> Result<wire::Candidate, Failure> {
+        let (tenant, epoch) = self
+            .store
+            .locate_grant(input.grant_id)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        self.require_connection_origin(
+            rss_transactional_messaging::fence::ExecutionBinding::new(self.storage, tenant, epoch),
+            origin,
+        )
+        .await?;
+
         if self.issuer.purpose() != rss_mdm_agent_wire::pki::Purpose::Agent {
             return Err(Error::Forbidden.into());
         }
@@ -52,6 +64,17 @@ impl Service {
         input: &CertificateInput,
         a: &RequestAudit,
     ) -> Result<wire::Candidate, Failure> {
+        let (tenant, epoch) = self
+            .store
+            .locate_grant(input.grant_id)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        a.bind_scope(rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            tenant,
+            epoch,
+        ))
+        .map_err(|_| Error::Unauthorized)?;
         let profile = self.profile();
 
         version(input.wire_version, input.operation_id)?;
@@ -85,7 +108,7 @@ impl Service {
             .write(a, (self, input, a, request_digest, spki, csr), |ctx, c| {
                 Box::pin(async move {
                     let (service, input, a, digest, spki, csr) = ctx;
-                    let tenant = service.tenant.to_string();
+                    let tenant = a.binding()?.tenant().to_string();
                     configurations::lock_for_grant(profile, c, &tenant, input.grant_id).await?;
                     let grant = grant_row(profile, c, &tenant, input.grant_id).await?;
                     check_secret(&tenant, &grant, &input.secret)?;
@@ -103,13 +126,16 @@ impl Service {
                             .await
                             .map_err(db)?
                     {
-                        if row.try_get::<Uuid, _>("operation_id").map_err(db)? != input.operation_id
+                        if row.try_get::<i64, _>("expected_epoch").map_err(db)?
+                            != a.binding()?.epoch().get()
+                            || row.try_get::<Uuid, _>("operation_id").map_err(db)?
+                                != input.operation_id
                             || row.try_get::<String, _>("request_digest").map_err(db)? != *digest
                             || row.try_get::<String, _>("spki").map_err(db)? != *spki
                         {
                             return Err(Error::Conflict);
                         }
-                        service.grant_live(c, &grant).await?;
+                        service.grant_live(a.binding()?, c, &grant).await?;
                         let value = if row.try_get::<String, _>("state").map_err(db)? == "issued" {
                             Claim::Issued(candidate(&grant, &row)?)
                         } else {
@@ -120,7 +146,7 @@ impl Service {
                             replay: true,
                         });
                     }
-                    service.grant_live(c, &grant).await?;
+                    service.grant_live(a.binding()?, c, &grant).await?;
                     if service.issuer.purpose() == rss_mdm_agent_wire::pki::Purpose::Agent
                         && grant
                             .try_get::<Option<Uuid>, _>("predecessor")
@@ -171,7 +197,8 @@ impl Service {
                         .map_err(db)?;
                     a.target_device(&device);
                     let start = now(c).await?;
-                    let end = service.issuer.end(start)?;
+                    let trust = service.issuer.trust_on(c, a.binding()?).await?;
+                    let end = service.issuer.end(&trust, start)?;
                     let identity = rss_mdm_certificate::device_identity::identity(
                         service.issuer.purpose(),
                         service.service_id()?,
@@ -180,7 +207,7 @@ impl Service {
                     )
                     .map_err(|_| Error::Configuration)?;
                     let attempt = Uuid::new_v4();
-                    let issuer = service.trust().issuer_digest();
+                    let issuer = trust.issuer_digest();
                     let signing = Signing {
                         attempt,
                         issuer,
@@ -241,7 +268,7 @@ impl Service {
             .issue(
                 intent,
                 &rss_mdm_pki_service::signing::SigningStore::new(profile, self.audit.clone()),
-                Uuid::parse_str(&self.tenant.to_string()).map_err(|_| Error::Configuration)?,
+                a.binding().map_err(Error::from)?,
             )
             .await
         {
@@ -279,11 +306,11 @@ impl Service {
         );
         self.write(a, (self, id), |ctx, c| {
             Box::pin(async move {
-                let (service, id) = ctx;
+                let (_, id) = ctx;
                 let n = sqlx::query(
                     crate::storage_profile::sql(profile).agent_issuance_record_unknown_1,
                 )
-                .bind(service.tenant.to_string())
+                .bind(a.binding()?.tenant().to_string())
                 .bind(*id)
                 .execute(c)
                 .await
@@ -334,7 +361,7 @@ impl Service {
             |ctx, c| {
                 Box::pin(async move {
                     let (service, grant, id, certificate, digest, principal, operation, a) = ctx;
-                    let tenant = service.tenant.to_string();
+                    let tenant = a.binding()?.tenant().to_string();
                     if let Some(p) = principal {
                         p.check_live()?;
                         rss_mdm_authorization_service::lock_on(
@@ -518,7 +545,7 @@ impl Service {
 
         self.proof(p, a)?;
         version(input.wire_version, input.operation_id)?;
-        let tenant = self.tenant.to_string();
+        let tenant = p.binding().tenant().to_string();
         let mut tx = self.store.begin(&tenant).await?;
         let i = sqlx::query(crate::storage_profile::sql(profile).agent_issuance_recover_issuance_1)
             .bind(&tenant)
@@ -561,7 +588,8 @@ impl Service {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let issued = self
-            .trust()
+            .trust(p.binding())
+            .await?
             .recover_issued_for(
                 expected,
                 chain,

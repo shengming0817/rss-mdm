@@ -51,7 +51,7 @@ pub async fn initialize(
     }
     let user = verify_local(
         authority,
-        store.binding(),
+        audit.binding()?,
         expected,
         login,
         password,
@@ -127,7 +127,7 @@ pub async fn complete_verified_administrator(
     if operation.is_nil() {
         return Err(Error::Malformed);
     }
-    user.validate(&user.tenant_id, &user.instance_id)?;
+    user.validate(&audit.binding()?.tenant().to_string(), &user.instance_id)?;
     audit.set_principal(&user.principal_id, &user.instance_id);
     audit.owned_operation(
         rss_mdm_audit_integration::operation::OperationOwner::Authorization,
@@ -147,8 +147,8 @@ pub async fn complete_verified_administrator(
     )?;
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
-    let tenant = TenantId::parse(&user.tenant_id).map_err(|_| Error::Malformed)?;
-    let result=store.write(tenant,&budget.source_control(),(profile,store,&user,operation,audit,fact),|(profile,store,user,operation,audit,fact),tx|Box::pin(async move {
+    let result=store.write(
+            audit.binding()?,&budget.source_control(),(profile,store,&user,operation,audit,fact),|(profile,store,user,operation,audit,fact),tx|Box::pin(async move {
         let mut context=(*profile,*user,*operation);
         let (receipt,replay)=tx.with_connection_context(&mut context,|(profile,user,operation),c|Box::pin(async move {
             crate::lock_on(*profile, c,&user.tenant_id,&user.instance_id).await?;
@@ -191,7 +191,7 @@ pub async fn initialize_baseline(
 ) -> Result<(Receipt, crate::baseline::Authority), Error> {
     let verified = verify_local(
         authority,
-        store.binding(),
+        audit.binding()?,
         input.expected,
         input.login,
         input.password,
@@ -208,6 +208,7 @@ pub async fn initialize_baseline(
         cutoff,
     )
     .await?;
-    let frozen = crate::baseline::Authority::new(profile, user, receipt.clone(), targets)?;
+    let frozen =
+        crate::baseline::Authority::new(audit.binding()?, profile, user, receipt.clone(), targets)?;
     Ok((receipt, frozen))
 }

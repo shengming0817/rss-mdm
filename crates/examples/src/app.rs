@@ -34,6 +34,7 @@ use tokio_util::sync::CancellationToken;
 /// fn bypass(app: rss_mdm_examples::app::App) { let _ = app.source(); }
 /// ```
 pub struct App {
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     observation: Arc<rss_observation_postgres::PgStore<Clock>>,
     projection: rss_projection_postgres::PgStore,
     clock: Clock,
@@ -41,10 +42,15 @@ pub struct App {
 }
 impl App {
     pub async fn open(
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         options: &PgConnectOptions,
         authority: FixtureAuthority,
         clock: Clock,
     ) -> Result<Self> {
+        anyhow::ensure!(
+            binding.tenant() == authority.scope().tenant(),
+            "fixture scope mismatch"
+        );
         let pool = storage::pool(options).await?;
         // Retain the construction guard only until the component adopts the pool.
         let observation = match rss_observation_postgres::PgStore::new(
@@ -97,6 +103,7 @@ impl App {
         .await;
         match projection {
             Ok(projection) => Ok(Self {
+                binding,
                 observation,
                 projection,
                 clock,
@@ -212,7 +219,7 @@ impl App {
             .await?;
         let execution = self
             .projection
-            .projection(claim, Inventory::new(source.clone()))?;
+            .projection(claim, Inventory::new(source.clone(), self.binding))?;
         let (mut applied, mut duplicates, mut filtered) = (0_u64, 0_u64, 0_u64);
         loop {
             let control = Control::new(&self.clock, cutoff, cancel);

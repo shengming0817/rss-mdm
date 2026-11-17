@@ -183,6 +183,7 @@ async fn next_command(
     anyhow::bail!("Apple prerequisites did not complete for {wanted}")
 }
 async fn policy_worker(
+    c: &Context,
     a: &Fixture,
     app: Arc<rss_mdm_policy_service::application::Application>,
 ) -> Result<Arc<rss_mdm_policy_service::worker::PolicyWork>> {
@@ -193,6 +194,7 @@ async fn policy_worker(
         instance: resources.config.identity.instance_id.clone(),
     });
     let events = crate::assembly::policy::events(
+        c.execution(),
         app.clone(),
         materials,
         a.software.materials.clone(),
@@ -201,6 +203,8 @@ async fn policy_worker(
     )
     .await?;
     Ok(rss_mdm_policy_service::worker::PolicyWork::new(
+        c.database.archive_pool(),
+        c.execution().storage(),
         app,
         events,
         resources.storage.reconcile.clone(),
@@ -219,7 +223,7 @@ async fn reconcile(
         rss_mdm_policy_service::transaction::run(
             &owner.audit,
             &owner.runtime,
-            c.audit.binding(),
+            c.execution(),
             &audit,
             (cfg, device, &audit, &owner.audit),
             |ctx, tx| {
@@ -236,7 +240,7 @@ async fn reconcile(
         let timer = rss_mdm_policy_service::clock::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cancel);
-        while cfg.relay_once(&control).await? > 0 {}
+        while cfg.relay_once(c.execution(), &control).await? > 0 {}
     }
     Ok(())
 }
@@ -288,7 +292,7 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
     let app = crate::assembly::policy::application(
         &crate::authority_t2_support::background()?,
         &owner,
-        c.tenant,
+        c.execution(),
         &[7; 32],
         Arc::new(crate::clock::SystemClock),
         key.clone(),
@@ -300,16 +304,16 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
     // publication is covered by the planning owner tests.
     let mut seed = command::seed_transaction(&c).await?;
     sqlx::query(
-        "INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2)",
+        "INSERT INTO mdm_planning.configuration_devices(expected_epoch,tenant_id,device) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2)",
     )
     .bind(c.tenant.to_string())
     .bind(n.device.into_uuid())
     .execute(&mut *seed)
     .await?;
     seed.commit().await?;
-    let a = Fixture::open(&c, false).await?;
+    let a = Fixture::open(&c).await?;
     let d = delivery(&c, &a).await?;
-    let worker = policy_worker(&a, app.clone()).await?;
+    let worker = policy_worker(&c, &a, app.clone()).await?;
     let first = published.policy;
     let other = planning::published(&c, &object(&n.device)?).await?;
     let second = other.policy;
@@ -495,7 +499,7 @@ async fn policy_profile_reservation_dispatch_and_observation() -> Result<()> {
     let app = crate::assembly::policy::application(
         &crate::authority_t2_support::background()?,
         &owner,
-        c.tenant,
+        c.execution(),
         &[7; 32],
         Arc::new(crate::clock::SystemClock),
         key.clone(),
@@ -507,16 +511,16 @@ async fn policy_profile_reservation_dispatch_and_observation() -> Result<()> {
     // publication is covered by the planning owner tests.
     let mut seed = command::seed_transaction(&c).await?;
     sqlx::query(
-        "INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2)",
+        "INSERT INTO mdm_planning.configuration_devices(expected_epoch,tenant_id,device) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2)",
     )
     .bind(c.tenant.to_string())
     .bind(n.device.into_uuid())
     .execute(&mut *seed)
     .await?;
     seed.commit().await?;
-    let a = Fixture::open(&c, false).await?;
+    let a = Fixture::open(&c).await?;
     let d = delivery(&c, &a).await?;
-    let worker = policy_worker(&a, app.clone()).await?;
+    let worker = policy_worker(&c, &a, app.clone()).await?;
     reconcile(&c, &owner, cfg, &n.device, &worker).await?;
     let packet = next_command(&d, &apple, &p, &c, "InstallProfile").await?;
     let payload = packet["Command"].as_dictionary().unwrap()["Payload"]

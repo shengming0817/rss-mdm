@@ -93,9 +93,6 @@ impl DeviceService {
         if key.is_nil() {
             return Err(Error::Malformed);
         }
-        if admin.tenant_id() != self.tenant {
-            return Err(Error::Forbidden);
-        }
         admin.credentials(device)?;
         let digest = digest(&("credential_revoke", device));
         let operation = Operation {
@@ -107,8 +104,7 @@ impl DeviceService {
         let attempt = self
             .audit_store
             .write(
-                rss_request_context::TenantId::parse(admin.tenant_id())
-                    .map_err(|_| Error::Malformed)?,
+                admin.binding(),
                 &budget.source_control(),
                 (
                     &self.audit_store,
@@ -171,10 +167,7 @@ impl DeviceService {
     ) -> Result<(DevicePrincipal, Scope), Error> {
         let profile = self.profile();
 
-        if credential.purpose != Purpose::Primary
-            || source != credential.source
-            || self.tenant != credential.tenant.to_string()
-        {
+        if credential.purpose != Purpose::Primary || source != credential.source {
             return Err(Error::Forbidden);
         }
         let tenant = credential.tenant.to_string();
@@ -213,6 +206,7 @@ impl DeviceService {
                 .map_err(db)?
                 .ok_or(Error::Forbidden)?;
         let principal = DevicePrincipal {
+            binding: credential.binding,
             profile,
             tenant: credential.tenant,
             device: row
@@ -250,9 +244,6 @@ impl DeviceService {
     ) -> Result<Scope, Error> {
         let profile = self.profile();
 
-        if proof.tenant_id() != self.tenant {
-            return Err(Error::Forbidden);
-        }
         // Recheck current MDM resource permission. Requested coordinates only choose a source.
         proof.require(
             rss_mdm_authorization_service::Permission::InventoryRead,
@@ -659,6 +650,7 @@ async fn revoke_on(
         return Err(Error::Conflict);
     }
     crate::lifecycle::retire(
+        audit.binding()?,
         profile,
         tx,
         facts,

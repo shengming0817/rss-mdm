@@ -426,9 +426,6 @@ async fn require_installed_key(
     Ok(())
 }
 pub struct Loaded {
-    pub(crate) profile: rss_mdm_install_support::StorageProfile,
-    pub(crate) usage: Use,
-    pub(crate) tenant: TenantId,
     pub(crate) task: crate::signing::Signer,
 }
 /// Load an exact published revision only while its signer remains active in the current authority.
@@ -463,9 +460,6 @@ pub async fn load(
         .map(|key| (key.id.clone(), key.public_key.clone()))
         .collect();
     Ok(Loaded {
-        profile,
-        usage,
-        tenant,
         task: crate::signing::Signer::from_bytes(private.expose(), &active.id, &keys)
             .map_err(|_| Error::Unavailable(crate::Failure::CommandInvariant))?,
     })

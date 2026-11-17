@@ -5,7 +5,6 @@ use rss_mdm_agent_wire::vault::*;
 use rss_mdm_audit_integration::{AuditIntent, AuditStore, Fact, RequestAudit, budget::AuditBudget};
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_mdm_install_support::StorageProfile;
-use rss_request_context::TenantId;
 use sqlx::PgConnection;
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
@@ -55,20 +54,17 @@ impl From<rss_mdm_audit_integration::InvalidFact> for Error {
     }
 }
 pub struct Service {
-    tenant: TenantId,
     installation: Uuid,
     audit: Arc<AuditStore>,
     cursor: rss_mdm_query::cursor::CursorCodec,
 }
 impl Service {
     pub fn new(
-        tenant: TenantId,
         installation: Uuid,
         audit: Arc<AuditStore>,
         cursor: rss_mdm_query::cursor::CursorCodec,
     ) -> Self {
         Self {
-            tenant,
             installation,
             audit,
             cursor,
@@ -122,10 +118,7 @@ impl Service {
             Box<dyn Future<Output = Result<(R, bool), Error>> + Send + 'a>,
         > + Send,
     ) -> Result<R, Error> {
-        if actor.profile() != StorageProfile::Da
-            || actor.tenant_id() != self.tenant.to_string()
-            || audit.profile() != StorageProfile::Da
-        {
+        if actor.profile() != StorageProfile::Da || audit.profile() != StorageProfile::Da {
             return Err(Error::Denied);
         }
         actor.bind_audit(audit).map_err(|_| Error::Denied)?;
@@ -138,7 +131,7 @@ impl Service {
         let budget = AuditBudget::new(Duration::from_secs(6));
         // Keep nested transaction futures off native handler/test stacks.
         let attempt = Box::pin(self.audit.write(
-            self.tenant,
+            actor.binding(),
             &budget.source_control(),
             (self, input, scope, Some(f), session, audit),
             |ctx, tx| {

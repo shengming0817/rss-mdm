@@ -237,6 +237,7 @@ impl Service {
     ) -> Result<bool> {
         use crate::lifecycle::{self as owner, Stage};
         use rss_mdm_task_state::Execution;
+        let binding = audit.binding()?;
         let tenant = tx.tenant_id();
         let PreparedRetirement {
             id,
@@ -254,7 +255,7 @@ impl Service {
             let progress = self
                 .transactions
                 .task_cleanup
-                .advance_in(tx, &registrations)
+                .advance_in(audit.binding()?, tx, &registrations)
                 .await?;
             self.transactions
                 .audit_store
@@ -287,7 +288,7 @@ impl Service {
                     .with_connection(move |c| {
                         Box::pin(async move {
                             let mut facts = Vec::new();
-                            crate::control::retire_in(c, &mut facts, &t, value)
+                            crate::control::retire_in(binding, c, &mut facts, &t, value)
                                 .await
                                 .map(|()| facts)
                                 .map_err(|e| sqlx::Error::Protocol(e.to_string()))
@@ -368,6 +369,7 @@ impl Service {
                         .transactions
                         .task_cleanup
                         .remove_software_in(
+                            audit.binding()?,
                             tx,
                             id,
                             &Target {
@@ -501,6 +503,7 @@ impl Service {
                     device: channel.device,
                 };
                 crate::control::actions::production::queue_run_in(
+                    audit.binding()?,
                     &self.transactions,
                     tx,
                     crate::control::actions::production::RunInput {
@@ -539,11 +542,12 @@ impl Service {
             }
         }
         let participant = self.transactions.retirement.clone();
+        let execution = audit.binding()?;
         let facts = tx
             .with_connection(move |c| {
                 Box::pin(async move {
                     Ok(
-                        owner::settle_retirement_in(c, tenant, id, participant.as_ref())
+                        owner::settle_retirement_in(execution, c, tenant, id, participant.as_ref())
                             .await
                             .map_err(Error::from),
                     )

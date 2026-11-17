@@ -9,7 +9,7 @@ use sqlx::{PgConnection, Row};
 pub struct AuthorityReader {
     pub inventory: Arc<dyn crate::deployment::inventory::Inventory>,
     pub software_distribution: SoftwareDistribution,
-    pub tenant: TenantId,
+
     pub instance: String,
     pub source: Arc<dyn crate::deployment::scope::Sources>,
     pub lifecycle: Arc<dyn crate::deployment::retirement::Lifecycle>,
@@ -26,7 +26,7 @@ impl AuthorityReader {
         require_dispatch: bool,
     ) -> std::result::Result<rss_mdm_registration_service::enrollment::managed::Authority, Error>
     {
-        let tenant = self.tenant.to_string();
+        let tenant = p.binding().tenant().to_string();
         crate::deployment::authorization::lock_shared_on(
             rss_mdm_install_support::StorageProfile::Mdm,
             c,
@@ -65,7 +65,7 @@ impl AuthorityReader {
         }
         let request = crate::deployment::input_storage::open_row(
             &self.protection,
-            self.tenant,
+            p.binding().tenant(),
             installation,
             &row,
             "request",
@@ -224,9 +224,6 @@ impl rss_mdm_registration_service::installation::Installations for AuthorityRead
         id: Uuid,
     ) -> rss_mdm_registration_service::agent::Pending<'a, bool> {
         Box::pin(async move {
-            if tenant != self.tenant {
-                return Err(rss_mdm_registration_service::Error::Forbidden);
-            }
             let op = storage::load_on(c, tenant, &self.protection, id)
                 .await
                 .map_err(|e| match e {
@@ -252,9 +249,6 @@ impl rss_mdm_registration_service::installation::Installations for AuthorityRead
         id: Uuid,
     ) -> rss_mdm_registration_service::agent::Pending<'a, bool> {
         Box::pin(async move {
-            if tenant != self.tenant {
-                return Err(rss_mdm_registration_service::Error::Forbidden);
-            }
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_software_deployment.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.id=$2 AND d.status IN('rejected','cancelled','timed_out','superseded'))").bind(tenant.to_string()).bind(id).fetch_one(c).await.map_err(|_|rss_mdm_registration_service::Error::Storage)
         })
     }
@@ -270,7 +264,6 @@ impl rss_mdm_registration_service::installation::Installations for AuthorityRead
     > {
         Box::pin(async move {
             let value:std::result::Result<_,Error>=async {
-                if tenant!=self.tenant {return Err(Error::Forbidden);}
                 crate::deployment::authorization::lock_shared_on(rss_mdm_install_support::StorageProfile::Mdm, c,&tenant.to_string(),&self.instance).await?;
                 let row=sqlx::query("SELECT o.device, o.request, o.input_context, o.authority, mdm_software_deployment.installation_status(o.id) AS status FROM mdm_software_deployment.operations AS o WHERE o.tenant_id = CAST($1 AS uuid) AND o.id = $2").bind(tenant.to_string()).bind(id).fetch_optional(&mut *c).await.map_err(database::db)?.ok_or(Error::Forbidden)?;
                 let request=crate::deployment::input_storage::open_row(&self.protection,tenant,id,&row,"request")?;

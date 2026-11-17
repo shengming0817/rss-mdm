@@ -41,7 +41,7 @@ impl Signals {
 
 /// Called inside the transaction that persists work; PostgreSQL sends only at COMMIT.
 pub async fn notify(connection: &mut PgConnection, work: Work) -> Result<(), sqlx::Error> {
-    sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),$1)")
+    sqlx::query("SELECT pg_notify('mdm_work',$1)")
         .bind(work.payload())
         .execute(connection)
         .await?;

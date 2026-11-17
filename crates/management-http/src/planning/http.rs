@@ -98,6 +98,8 @@ pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::De
 // be checked again even when reading an immutable result with an old cursor.
 
 async fn group_directory(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -128,7 +130,7 @@ async fn group_read(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<GroupResponse, Error> {
     run_group(
         &app,
@@ -144,7 +146,7 @@ async fn group_write(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     payload: BodyInput<rss_mdm_group_service::operation::Operation<GroupChange>>,
 ) -> std::result::Result<GroupResponse, Error> {
     let change = body(payload)?;
@@ -167,6 +169,8 @@ async fn group_write(
 }
 
 async fn group_preview(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -182,7 +186,7 @@ async fn group_task(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((group, task)): Path<(Uuid, Uuid)>,
+    Path((_tenant, group, task)): Path<(uuid::Uuid, Uuid, Uuid)>,
 ) -> std::result::Result<GroupResponse, Error> {
     run_group(
         &app,
@@ -201,7 +205,12 @@ async fn group_page(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((group, result, kind)): Path<(Uuid, Uuid, rss_mdm_group_service::pages::GroupPageKind)>,
+    Path((_tenant, group, result, kind)): Path<(
+        uuid::Uuid,
+        Uuid,
+        Uuid,
+        rss_mdm_group_service::pages::GroupPageKind,
+    )>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<GroupPageQuery>,
     >,
@@ -284,7 +293,7 @@ async fn device_groups(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<DeviceGroupsQuery>,
     >,
@@ -310,7 +319,7 @@ async fn group_impacts(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     params: rss_mdm_http_contract::query::OwnedQuery<GroupImpactsQuery>,
 ) -> Result<
     rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_group_service::impacts::Impacts>>,
@@ -451,7 +460,7 @@ async fn group_references(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<GroupReferencesQuery>,
     >,

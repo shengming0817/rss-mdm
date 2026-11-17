@@ -42,7 +42,8 @@ pub trait Sources: Send + Sync {
 }
 pub struct Dependencies {
     pub runtime: Arc<PgRuntime>,
-    pub tenant: TenantId,
+    pub probe: rss_transactional_messaging::fence::ExecutionBinding,
+    pub discovery_pool: sqlx::PgPool,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub clock: Arc<dyn Clock>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
@@ -56,10 +57,12 @@ pub struct Dependencies {
 
 #[derive(Clone)]
 pub struct Service {
+    storage: rss_transactional_messaging::fence::StorageIdentity,
+    discovery_pool: sqlx::PgPool,
     timer: timer::Timer,
     cursor: rss_mdm_query::cursor::CursorCodec,
     runtime: Arc<PgRuntime>,
-    tenant: TenantId,
+
     host: Arc<authority::Host>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
     recovery: Arc<
@@ -99,7 +102,8 @@ impl Service {
     ) -> Result<Arc<Self>, Error> {
         let Dependencies {
             runtime,
-            tenant,
+            probe,
+            discovery_pool,
             audit,
             clock,
             protection,
@@ -111,25 +115,26 @@ impl Service {
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let audit = Arc::new(
             audit
-                .on_runtime(runtime.clone(), audit.binding(), &budget.control())
+                .on_runtime(runtime.clone(), probe, &budget.control())
                 .await?,
         );
         let result = Arc::new(Self {
+            storage: probe.storage(),
+            discovery_pool,
             cursor,
             runtime,
-            tenant,
+
             audit,
             recovery,
             timer: timer::Timer::new(timer),
             host: Arc::new(authority::Host {
-                tenant: Uuid::parse_str(&tenant.to_string()).map_err(|_| Error::Invalid)?,
                 policies,
                 protection,
                 clock,
                 sources,
             }),
         });
-        let check=result.runtime.local_tx(result.audit.binding(),deadline(),|tx|Box::pin(async move {
+        let check=result.runtime.local_tx(probe,deadline(),|tx|Box::pin(async move {
             tx.with_connection(|c|Box::pin(async move {let ok:bool=sqlx::query_scalar("SELECT to_regclass('mdm_webhook.events') IS NOT NULL AND to_regclass('mdm_webhook.deliveries') IS NOT NULL").fetch_one(c).await?;if ok{Ok(())}else{Err(sqlx::Error::Protocol("webhook installation missing".into()))}})).await
         })).await.fold(Ok,Err,Err,Err,Err,Err);
         check.map_err(|_| Error::Storage)?;
@@ -146,9 +151,7 @@ impl Service {
     ) -> Result<Reply, Error> {
         proof.manage(required(&command))?;
         proof.bind_audit(&audit)?;
-        if proof.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Denied);
-        }
+
         let op = operation(&command);
         if let Some(id) = op {
             if id.is_nil() {
@@ -174,7 +177,7 @@ impl Service {
         let attempt = self
             .runtime
             .local_tx_with_context(
-                self.audit.binding(),
+                proof.binding(),
                 deadline(),
                 (
                     self,
@@ -307,7 +310,7 @@ impl Service {
     ) -> Result<Vec<u8>, Error> {
         let operation = operation(command).ok_or(Error::Invalid)?;
         let context = rss_mdm_native_protection::ProtectionContext::new(
-            self.tenant,
+            p.binding().tenant(),
             &operation.to_string(),
             "webhook.material.operation",
             1,
@@ -332,7 +335,7 @@ impl Service {
         operation: Uuid,
         device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<(Value, bool), Error> {
-        let t = self.host.tenant;
+        let t = Uuid::parse_str(p.tenant_id()).map_err(|_| Error::Invalid)?;
         let input = ("test", subscription, operation, device);
         let s = storage::get(c, t, subscription).await?;
         p.require(Permission::InventoryRead, Some(device))?;
@@ -417,19 +420,33 @@ impl Service {
                     Err(e) => return Err(e.into()),
                 }
             }
-            directory::deliveries(c, self.host.tenant, &q, after.as_ref(), &allowed, only).await?
+            directory::deliveries(
+                c,
+                Uuid::parse_str(p.tenant_id()).map_err(|_| Error::Invalid)?,
+                &q,
+                after.as_ref(),
+                &allowed,
+                only,
+            )
+            .await?
         } else {
-            directory::subscriptions(c, self.host.tenant, &q, after.as_ref()).await?
+            directory::subscriptions(
+                c,
+                Uuid::parse_str(p.tenant_id()).map_err(|_| Error::Invalid)?,
+                &q,
+                after.as_ref(),
+            )
+            .await?
         };
         if deliveries {
             for row in &rows {
                 let event = storage::event(
                     c,
-                    self.host.tenant,
+                    Uuid::parse_str(p.tenant_id()).map_err(|_| Error::Invalid)?,
                     serde_json::from_value(row["eventId"].clone()).map_err(|_| unavailable())?,
                 )
                 .await?;
-                if event.tenant_id != self.host.tenant {
+                if event.tenant_id != Uuid::parse_str(p.tenant_id()).map_err(|_| Error::Invalid)? {
                     return Err(Error::Denied);
                 }
                 current.require(
@@ -468,7 +485,7 @@ impl Service {
         id: Uuid,
         mutation: &storage::Mutation,
     ) -> Result<Value, Error> {
-        let t = self.host.tenant;
+        let t = Uuid::parse_str(p.tenant_id()).map_err(|_| Error::Invalid)?;
         match &mutation.change {
             storage::Change::Put(settings) => {
                 self.host.policies.check(t, settings)?;
@@ -494,10 +511,11 @@ impl Service {
     }
     async fn lock_operation_on(
         &self,
+        p: &AuthorizedPrincipal,
         c: &mut PgConnection,
         command: &Command,
     ) -> Result<bool, Error> {
-        let t = self.host.tenant;
+        let t = Uuid::parse_str(p.tenant_id()).map_err(|_| Error::Invalid)?;
         Ok(if let Some(op) = operation(command) {
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2796))")
                 .bind(format!("{t}:{op}"))
@@ -549,7 +567,7 @@ impl Service {
                 return Err(Error::Denied);
             }
         }
-        let t = self.host.tenant;
+        let t = Uuid::parse_str(p.tenant_id()).map_err(|_| Error::Invalid)?;
         let value = match command {
             Command::Materials => {
                 serde_json::json!({"configurationSha256":self.host.policies.digest(),"keys":webhooks::materials::directory(c,t).await?})
@@ -611,8 +629,8 @@ impl Service {
         command: &Command,
     ) -> Result<(Reply, bool), Error> {
         p.manage(required(command))?;
-        let t = self.host.tenant;
-        let replayed = self.lock_operation_on(c, command).await?;
+        let t = Uuid::parse_str(p.tenant_id()).map_err(|_| Error::Invalid)?;
+        let replayed = self.lock_operation_on(p, c, command).await?;
         let value = match command {
             Command::OperationReceipt(id) => {
                 rss_mdm_authorization_service::lock_shared_on(

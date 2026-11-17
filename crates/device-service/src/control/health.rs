@@ -31,27 +31,6 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         lease: std::time::Duration,
         control: &rss_reconcile::Control<'_, T>,
     ) -> Result<rss_reconcile::ClaimBatch<Self::Claim>, rss_reconcile::Error> {
-        if self.0.readiness.health().inputs != Some(rss_mdm_recovery_observation::Phase::Healthy) {
-            let suspended = crate::control::transaction::inspect(
-                &self.0.transactions.runtime,
-                self.0.transactions.audit_store.binding(),
-                (),
-                |_, tx| {
-                    Box::pin(async move {
-                        crate::control::source_changes::health_in(tx)
-                            .await
-                            .map(|(_, _, suspended)| suspended)
-                    })
-                },
-            )
-            .await
-            .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
-            self.0.readiness.inputs(if suspended {
-                Err(ErrorKind::Transient)
-            } else {
-                Ok(())
-            });
-        }
         rss_mdm_recovery_observation::ObservedStore::new(&self.0.reconcile, &self.0.readiness)
             .claim_due(scope, limit, scan_budget, lease, control)
             .await
@@ -79,11 +58,18 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
     ) -> Result<(), rss_reconcile::Error> {
         use rss_reconcile::Completion;
         let settlement = control.child(std::time::Duration::from_secs(6));
-        let input =
-            claim.target() == &crate::control::source_changes::target(self.0.transactions.tenant);
+        let input = claim.target()
+            == &crate::control::source_changes::target(claim.target().scope().tenant());
         if input
             && matches!(
-                self.0.settle_inputs(claim, completion, &settlement).await?,
+                self.0
+                    .settle_inputs(
+                        self.0.binding_for(claim, &settlement).await?,
+                        claim,
+                        completion,
+                        &settlement
+                    )
+                    .await?,
                 rss_reconcile::ReconcileStep::Deferred(_)
             )
         {
@@ -95,7 +81,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         {
             let waiting = crate::control::transaction::inspect(
                 &self.0.transactions.runtime,
-                self.0.transactions.audit_store.binding(),
+                self.0.binding_for(claim, &settlement).await?,
                 work,
                 |work, tx| {
                     Box::pin(async move {
@@ -116,7 +102,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         {
             let pending = crate::control::transaction::inspect(
                 &self.0.transactions.runtime,
-                self.0.transactions.audit_store.binding(),
+                self.0.binding_for(claim, &settlement).await?,
                 policy,
                 |policy, tx| {
                     Box::pin(async move {
@@ -136,7 +122,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
                 (false, Completion::Reobserve(_)) => {
                     let pending = crate::control::transaction::inspect(
                         &self.0.transactions.runtime,
-                        self.0.transactions.audit_store.binding(),
+                        self.0.binding_for(claim, &settlement).await?,
                         claim.target().entity(),
                         |entity, tx| {
                             Box::pin(async move {
@@ -162,14 +148,17 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         if input {
             let healthy = result.is_ok()
                 && matches!(completion, Completion::Converged | Completion::Reobserve(_));
-            self.0.readiness.inputs(if healthy {
-                Ok(())
-            } else {
-                Err(result
-                    .as_ref()
-                    .err()
-                    .map_or(ErrorKind::Transient, |e| e.kind()))
-            });
+            self.0.readiness.inputs(
+                claim.target(),
+                if healthy {
+                    Ok(())
+                } else {
+                    Err(result
+                        .as_ref()
+                        .err()
+                        .map_or(ErrorKind::Transient, |e| e.kind()))
+                },
+            );
         }
         result
     }

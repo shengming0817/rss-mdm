@@ -14,7 +14,7 @@ pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::De
     {
         rss_mdm_http_contract::route_module! { struct RoutesModule101 for [Browser] { base, get_groups, get_group_detail, put_group_write, get_members, get_departments } }
         RoutesModule101 {
-            base: rule_routes(),
+            base: tenant_rule_routes(),
             get_groups: rss_mdm_http_contract::module::Route::new(
                 "/authorization/user-groups",
                 get(groups, &contracts::USER_GROUPS, &[RouteOperation::List]),
@@ -148,6 +148,8 @@ async fn rules(
     Ok(rss_mdm_http_contract::CollectionResponse(Json(page)))
 }
 async fn groups(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     query: rss_mdm_http_contract::query::OwnedQuery<
@@ -185,7 +187,7 @@ async fn rule_detail(
 async fn group_detail(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<
     Json<rss_mdm_authorization_service::Revision<rss_mdm_authorization_service::UserGroup>>,
     Error,
@@ -220,7 +222,7 @@ async fn group_write(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     body: Result<Json<Change<UserGroup>>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Receipt>, Error> {
     let Json(change) = body.map_err(Error::from)?;
@@ -238,7 +240,7 @@ async fn group_write(
 async fn members(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Directory<MembersQuery>,
     >,
@@ -254,6 +256,8 @@ async fn members(
     Ok(rss_mdm_http_contract::CollectionResponse(Json(page)))
 }
 async fn departments(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     Extension(auth): Extension<RequestAuth>,
 ) -> Result<Json<crate::identity_contract::Departments>, Error> {
     use crate::identity_contract::{DepartmentSource, Departments};
@@ -302,9 +306,9 @@ use axum::{
 fn programmatic_allowed(path: &str, authorization: bool, management: bool) -> bool {
     !management
         && authorization
-        && !path.starts_with("/api/v1/self-")
+        && !path.starts_with("/api/v1/tenants/{tenant}/self-")
         && !path.starts_with("/api/v1/identity-host/")
-        && path != "/api/v1/registration-quotas/me"
+        && path != "/api/v1/tenants/{tenant}/registration-quotas/me"
 }
 
 /// Mount the executing owner and its transport declaration through the same seam.
@@ -404,13 +408,21 @@ async fn authenticate_inner(
     management: bool,
 ) -> Response {
     let (mut parts, body) = request.into_parts();
+    let Some(binding) = parts
+        .extensions
+        .get::<rss_transactional_messaging::fence::ExecutionBinding>()
+        .copied()
+    else {
+        return Error::Forbidden.into_response();
+    };
     let Some(control) = parts.extensions.get::<rss_axum::RequestControl>().cloned() else {
         return Error::Unavailable(Failure::RequestDeadline).into_response();
     };
     let path = parts
         .extensions
-        .get::<axum::extract::OriginalUri>()
-        .map_or_else(|| parts.uri.path(), |original| original.0.path())
+        .get::<axum::extract::MatchedPath>()
+        .map(|v| v.as_str())
+        .unwrap_or_default()
         .to_owned();
     let activity =
         if parts.method == axum::http::Method::GET || parts.method == axum::http::Method::HEAD {
@@ -430,6 +442,7 @@ async fn authenticate_inner(
     match app
         .identity
         .authenticate_request(
+            binding,
             &parts.headers,
             activity,
             &app.access,
@@ -492,7 +505,6 @@ async fn authenticate_inner(
             parts.extensions.insert(RequestAuth {
                 sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
                     app.identity.authority.clone(),
-                    app.identity.binding,
                 ),
                 proof: Arc::new(proof),
                 deadline,
@@ -572,4 +584,100 @@ struct Effective {
     tenant_id: String,
     principal_id: String,
     grants: Vec<rss_mdm_authorization_service::EffectiveGrant>,
+}
+
+pub fn tenant_rule_routes()
+-> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RuleRoutesModule1 for [Browser] { get_effective, get_rules, get_rule_detail, put_rule_write } }
+        RuleRoutesModule1 {
+            get_effective: rss_mdm_http_contract::module::Route::new(
+                "/authorization",
+                get(
+                    tenant_effective,
+                    &contracts::EFFECTIVE_AUTHORITY,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            get_rules: rss_mdm_http_contract::module::Route::new(
+                "/authorization/rules",
+                get(
+                    tenant_rules,
+                    &contracts::AUTHORIZATION_RULES,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_rule_detail: rss_mdm_http_contract::module::Route::new(
+                "/authorization/rules/{id}",
+                rss_mdm_http_contract::routing::get(
+                    tenant_rule_detail,
+                    &contracts::AUTHORIZATION_RULES,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            put_rule_write: rss_mdm_http_contract::module::Route::new(
+                "/authorization/rules/{id}",
+                rss_mdm_http_contract::routing::put(
+                    tenant_rule_write,
+                    &contracts::AUTHORIZATION_RULES,
+                    &[
+                        RouteOperation::Create,
+                        RouteOperation::Update,
+                        RouteOperation::Delete,
+                    ],
+                ),
+            ),
+        }
+        .assemble()
+    }
+}
+
+async fn tenant_effective(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+    Extension(auth): Extension<RequestAuth>,
+) -> Result<Json<Effective>, Error> {
+    effective(Extension(auth)).await
+}
+
+async fn tenant_rules(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<RulesQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<directory::RuleRow>>>,
+    >,
+    Error,
+> {
+    rules(State(app), Extension(auth), query).await
+}
+
+async fn tenant_rule_detail(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
+) -> Result<Json<rss_mdm_authorization_service::Revision<rss_mdm_authorization_service::Rule>>, Error>
+{
+    rule_detail(State(app), Extension(auth), Path(id)).await
+}
+
+async fn tenant_rule_write(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
+    body: Result<Json<Change<Rule>>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<Receipt>, Error> {
+    rule_write(
+        State(app),
+        Extension(auth),
+        Extension(audit),
+        Path(id),
+        body,
+    )
+    .await
 }

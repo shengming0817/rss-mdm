@@ -81,7 +81,7 @@ impl AssetService {
         tx: &mut PgTransaction<'_>,
         access: &FieldLayoutAccess,
     ) -> Result<Response> {
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let row = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query("SELECT revision,document::text FROM mdm_assets.field_layouts WHERE tenant_id=$1::uuid")
                 .bind(tenant).fetch_optional(c).await
@@ -95,7 +95,7 @@ impl AssetService {
             ),
             None => (0, FieldLayout::default()),
         };
-        let catalog = catalog_in(tx, self.tenant).await?;
+        let catalog = catalog_in(tx, tx.tenant_id()).await?;
         Ok(Response::FieldLayout {
             revision,
             editable: matches!(access, FieldLayoutAccess::Edit),
@@ -113,7 +113,7 @@ impl AssetService {
         {
             return Err(Error::Malformed.into());
         }
-        let catalog = catalog_in(tx, self.tenant).await?;
+        let catalog = catalog_in(tx, tx.tenant_id()).await?;
         let layout = change.input.normalized(&catalog)?;
         let document = checked_input(serde_json::to_string(&layout))?;
         // PostgreSQL's jsonb text adds whitespace. Check the same representation as the
@@ -135,7 +135,7 @@ impl AssetService {
         if !fits {
             return Err(Error::Malformed.into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let expected = change.expected_revision as i64;
         let revision = tx.with_connection(move |c| Box::pin(async move {
             if expected == 0 {

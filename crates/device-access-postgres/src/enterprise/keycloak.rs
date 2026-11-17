@@ -9,12 +9,14 @@ use zeroize::{Zeroize, Zeroizing};
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Configuration {
+    pub tenant: Uuid,
     pub provider: Uuid,
     pub issuer: String,
     pub client_id: String,
     pub addresses: Vec<SocketAddr>,
 }
 pub struct Administrator {
+    pub tenant: Uuid,
     pub provider: Uuid,
     fingerprint: String,
     client: reqwest::Client,
@@ -60,7 +62,8 @@ impl Administrator {
             .path_segments()
             .ok_or(Error::Configuration)?
             .collect::<Vec<_>>();
-        if config.provider.is_nil()
+        if config.tenant.is_nil()
+            || config.provider.is_nil()
             || issuer.scheme() != "https"
             || issuer.host_str().is_none()
             || !issuer.username().is_empty()
@@ -108,6 +111,7 @@ impl Administrator {
             "{:x}",
             Sha256::digest(
                 serde_json::to_vec(&(
+                    config.tenant,
                     config.provider,
                     &config.issuer,
                     &config.client_id,
@@ -117,6 +121,7 @@ impl Administrator {
             )
         );
         Ok(Self {
+            tenant: config.tenant,
             provider: config.provider,
             fingerprint,
             client: builder.build().map_err(|_| Error::Configuration)?,

@@ -42,7 +42,7 @@ pub fn assemble(
                 reports_per_minute: 10,
                 ..Default::default()
             },
-            tenant: c.tenant,
+            probe: c.execution(),
             installation: Uuid::parse_str(&c.inputs.installation.instance_id)?,
             identity_instance: rss_identity_core::InstanceId::parse(
                 &c.inputs.installation.instance_id,
@@ -52,7 +52,7 @@ pub fn assemble(
             proof_audit: c.proof_audit.clone(),
             cursor: rss_mdm_query::cursor::CursorCodec::new(&[37; 32])?,
             protection: m.protection.clone(),
-            platform: Some(super::platform::runtime(c)?),
+            platform: Some(super::platform::runtime()?),
             evidence: evidence.clone(),
             broker_query: None,
             agent_facts: None,
@@ -65,7 +65,6 @@ pub fn assemble(
         service: runtime.business,
         admission: runtime.admission,
         platform: Arc::new(rss_mdm_device_access_http::platform_sso::HttpState {
-            binding: c.sessions.binding(),
             context: runtime.platform,
             authority: c.authority.clone(),
             origin: "https://localhost".into(),
@@ -82,7 +81,7 @@ pub(super) async fn login(
     principal: Uuid,
 ) -> Result<(AuthorizedPrincipal, SessionSecret)> {
     let issued = Box::pin(c.authority.login_local(
-        c.sessions.binding(),
+        c.execution(),
         LoginKey::parse(&format!("da-{principal}"))?,
         Password::new("foundation-only-valid-password".into())?,
         rss_identity_postgres::AttemptSource::parse("da-business")?,
@@ -92,6 +91,7 @@ pub(super) async fn login(
     .await?;
     let secret = SessionSecret::parse(issued.secret().expose().into())?;
     let actor = Box::pin(c.sessions.authenticate(
+        c.execution(),
         &c.authorization,
         RequestCredential::Cookie(SessionSecret::parse(secret.expose().into())?),
         rss_transactional_messaging::policy::OperationDeadline::from_remaining(
@@ -105,7 +105,7 @@ pub(super) fn audit(c: &Context) -> rss_mdm_audit_integration::RequestAudit {
     rss_mdm_audit_integration::RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         DA,
-        c.tenant.to_string(),
+        c.execution(),
         "da-business-proof",
         rss_mdm_audit_integration::AuditIntent::Management,
     )
@@ -143,11 +143,7 @@ pub async fn verify(
         .context("create and log in business proof principal")?;
     let bearer = c
         .authority
-        .inspect_bearer(
-            c.sessions.binding(),
-            BearerSecret::parse(token)?,
-            deadline(),
-        )
+        .inspect_bearer(c.execution(), BearerSecret::parse(token)?, deadline())
         .await?;
     let principal = bearer.account().principal.as_uuid();
     let (actor, session_secret) = Box::pin(login(c, principal))
@@ -262,6 +258,13 @@ pub async fn verify(
     assert_eq!(settled.1, before.1 + 1);
     assert_eq!(settled.2, before.2 + 1);
     assert_eq!(settled.3, before.3 + 1);
+    let source_epochs: Vec<i64> = sqlx::query_scalar("SELECT (envelope->'attributes'->>'executionEpoch')::bigint FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm-webhook-source'")
+        .bind(c.tenant.to_string()).fetch_all(&c.operator).await?;
+    assert_eq!(
+        source_epochs,
+        vec![c.execution().epoch().get()],
+        "original execution captured without installing MDM webhook storage"
+    );
     let replay = Box::pin(business.service.change_device_access(
         &actor,
         &receipt.device,
@@ -291,7 +294,7 @@ pub async fn verify(
         .revoke_current_session(
             c.authority
                 .inspect_session(
-                    c.sessions.binding(),
+                    c.execution(),
                     SessionSecret::parse(session_secret.expose().into())?,
                     deadline(),
                 )
@@ -400,6 +403,7 @@ pub async fn verify(
     tx.rollback().await?;
     let mut invalid = Vec::new();
     let mut v = observation.clone();
+    v.issued_at = now() - 60;
     v.expires_at = now() - 1;
     invalid.push(v);
     let mut v = observation.clone();
@@ -435,8 +439,9 @@ pub async fn verify(
         );
         assert_eq!(
             request_audits(c).await?,
-            requests_before + 1,
-            "rejected evidence retains its request Audit fact"
+            requests_before
+                + i64::from(v.tenant == observation.tenant && v.authority == observation.authority),
+            "authenticated evidence retains its tenant's denial fact; an unknown scope is not attributed to this tenant"
         );
     }
     let mut tampered = signed(&observation)?;
@@ -449,8 +454,8 @@ pub async fn verify(
     assert_eq!(counts(c).await?, evidence_count);
     assert_eq!(
         request_audits(c).await?,
-        requests_before + 1,
-        "invalid signature retains its denial Audit fact"
+        requests_before,
+        "an invalid signature does not acquire an audit tenant from its payload"
     );
     let mut tx = c.seed().await?;
     assert!(
@@ -540,7 +545,7 @@ pub(super) async fn operation_proof(
     let generation = rss_identity_postgres::RpGeneration::new(1)?;
     let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
     let session = Box::pin(c.authority.inspect_session(
-        c.sessions.binding(),
+        c.execution(),
         SessionSecret::parse(session_secret.expose().into())?,
         deadline(),
     ))
@@ -556,7 +561,7 @@ pub(super) async fn operation_proof(
     .await?;
     let response = authenticator.do_registration(origin.clone(), registration.options)?;
     let session = Box::pin(c.authority.inspect_session(
-        c.sessions.binding(),
+        c.execution(),
         SessionSecret::parse(session_secret.expose().into())?,
         deadline(),
     ))
@@ -570,7 +575,7 @@ pub(super) async fn operation_proof(
     ))
     .await?;
     let session = Box::pin(c.authority.inspect_session(
-        c.sessions.binding(),
+        c.execution(),
         SessionSecret::parse(session_secret.expose().into())?,
         deadline(),
     ))
@@ -579,7 +584,7 @@ pub(super) async fn operation_proof(
         Box::pin(webauthn.begin_authentication(session, generation, context, deadline())).await?;
     let response = authenticator.do_authentication(origin, challenge.options)?;
     let session = Box::pin(c.authority.inspect_session(
-        c.sessions.binding(),
+        c.execution(),
         SessionSecret::parse(session_secret.expose().into())?,
         deadline(),
     ))
@@ -634,7 +639,10 @@ async fn directory_http(
         .await??;
         let page = material::success::<serde_json::Value>(
             client
-                .get(format!("{origin}/api/v1/devices/{}/device-access", device))
+                .get(format!(
+                    "{origin}/api/v1/tenants/{}/devices/{}/device-access",
+                    c.tenant, device
+                ))
                 .header(
                     "cookie",
                     format!("__Host-identity-session={}", secret.expose()),
@@ -657,7 +665,10 @@ async fn directory_http(
         assert_eq!(page["items"][0]["id"], binding.to_string());
         let missing = material::success::<serde_json::Value>(
             client
-                .get(format!("{origin}/api/v1/devices/{}/device-access", device))
+                .get(format!(
+                    "{origin}/api/v1/tenants/{}/devices/{}/device-access",
+                    c.tenant, device
+                ))
                 .header(
                     "cookie",
                     format!("__Host-identity-session={}", secret.expose()),
@@ -672,7 +683,8 @@ async fn directory_http(
         let page = material::success::<serde_json::Value>(
             client
                 .get(format!(
-                    "{origin}/api/v1/device-access/enterprise/configuration"
+                    "{origin}/api/v1/tenants/{}/device-access/enterprise/configuration",
+                    c.tenant
                 ))
                 .header(
                     "cookie",

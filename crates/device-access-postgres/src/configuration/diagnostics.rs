@@ -67,7 +67,7 @@ impl Service {
                 let refs: crate::evidence::Mandatory = serde_json::from_value(value).map_err(|_| Error::Corrupt)?;
                 for (policy, fields_by_artifact) in refs {
                   for (field, artifact) in fields_by_artifact {
-                    let config = signing.read_on(c, artifact).await?.decode().map_err(|_| Error::Corrupt)?;
+                    let config = signing.read_on(p.binding(), c, artifact).await?.decode().map_err(|_| Error::Corrupt)?;
                     if config.id != policy || !config.permits(&identity, device)
                         || config.delivery != da::DeliveryPermission::ManagedMandatory
                         || !config.managed_fields.contains(&field) {
@@ -81,11 +81,11 @@ impl Service {
             let mut state = da::SourceState::Missing;
             let mut managed = Vec::new();
             let mut evidence = None;
-            let observations = authorities.configurations_on(c, service.tenant, service.service_id()?, &anchor).await;
+            let observations = authorities.configurations_on(c, p.binding().tenant(), service.service_id()?, &anchor).await;
             match observations {
                 Ok(values) => for o in values {
                     let Some(proof) = o.configuration else { continue };
-                    let artifact = signing.read_on(c, proof.artifact).await?;
+                    let artifact = signing.read_on(p.binding(), c, proof.artifact).await?;
                     let mut config = artifact.decode().map_err(|_| Error::Corrupt)?;
                     if artifact.digest != proof.digest || config.native.digest != proof.native_digest
                         || config.delivery != proof.delivery || config.id != o.policy

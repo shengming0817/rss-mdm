@@ -16,12 +16,14 @@ fn admitted<T>(result: Result<T, Error>) -> Result<bool, Error> {
 }
 
 pub async fn read(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+
     app: &Context,
     p: &DevicePrincipal,
     binding: Option<Uuid>,
 ) -> Result<Status, Error> {
     let rt = app.runtime()?;
-    if p.tenant() != app.tenant {
+    if p.binding() != execution {
         return Err(Error::Unauthorized);
     }
     let tenant = p.tenant().to_string();
@@ -45,7 +47,7 @@ pub async fn read(
     if user.as_ref().is_some_and(|u| u.object != object) {
         return Err(Error::Unauthorized);
     }
-    store::current_object(app, &mut tx, &object).await?;
+    store::current_object(execution, &mut tx, &object).await?;
     if let Some(previous) = &user {
         let current = store::read(&mut tx, &tenant, previous.id).await?;
         if current.version != previous.version || current.revoked != previous.revoked {
@@ -53,8 +55,8 @@ pub async fn read(
         }
     }
     let now = store::now(&mut tx).await?;
-    let login = deployment::configuration_for_object(&mut tx, app.tenant, &object).await?;
-    let qualified = admitted(deployment::ready(app, &mut tx, &object, now).await)?;
+    let login = deployment::configuration_for_object(&mut tx, execution.tenant(), &object).await?;
+    let qualified = admitted(deployment::ready(execution, app, &mut tx, &object, now).await)?;
     let application_observed = qualified;
     let profile_observed = qualified;
     let device_id:Option<Uuid>=sqlx::query_scalar("SELECT id FROM rss_da.psso_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND kind = 'device'")
@@ -71,13 +73,21 @@ pub async fn read(
     });
     let user_registered = match &user {
         Some(u) => {
-            identity_current && admitted(store::current_user(app, &mut tx, u.id, false).await)?
+            identity_current
+                && admitted(store::current_user(execution, app, &mut tx, u.id, false).await)?
         }
         None => false,
     };
     let login_ready = if user_registered && application_observed && profile_observed {
         admitted(
-            store::current_user(app, &mut tx, user_id.ok_or(Error::Unauthorized)?, true).await,
+            store::current_user(
+                execution,
+                app,
+                &mut tx,
+                user_id.ok_or(Error::Unauthorized)?,
+                true,
+            )
+            .await,
         )?
     } else {
         false

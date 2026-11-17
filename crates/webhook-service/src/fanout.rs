@@ -34,7 +34,7 @@ struct Candidate {
 }
 pub struct Completed(());
 pub struct Fanout<H> {
-    pub binding: rss_transactional_messaging::fence::ExecutionBinding,
+    pub storage: rss_transactional_messaging::fence::StorageIdentity,
     pub runtime: Arc<PgRuntime>,
     pub host: Arc<H>,
 }
@@ -80,13 +80,21 @@ impl<H: Eligibility> Publisher<Vec<u8>> for Fanout<H> {
         let Ok(tenant) = TenantId::parse(&t.to_string()) else {
             return failure();
         };
-        if tenant != self.binding.tenant() {
+        let Some(epoch) = message
+            .metadata()
+            .attributes()
+            .find(|(key, _)| *key == "executionEpoch")
+            .and_then(|(_, value)| value.parse::<i64>().ok())
+            .and_then(|value| rss_transactional_messaging::fence::Epoch::new(value).ok())
+        else {
             return failure();
-        }
+        };
+        let binding =
+            rss_transactional_messaging::fence::ExecutionBinding::new(self.storage, tenant, epoch);
         let host = self.host.clone();
         // One page per relay attempt. Partial durable progress is never an acceptance receipt.
         self.runtime
-            .local_tx(self.binding, deadline, move |tx| {
+            .local_tx(binding, deadline, move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
@@ -130,7 +138,7 @@ async fn compliance_step<H: Eligibility>(
     host: &H,
     source: &events::CompliancePublication,
 ) -> Result<bool, Error> {
-    let row=sqlx::query("SELECT document,cursor,complete FROM mdm_webhook.compliance_sources WHERE tenant_id=$1 AND id=$2 FOR UPDATE").bind(source.tenant).bind(source.id).fetch_one(&mut *c).await?;
+    let row=sqlx::query("SELECT document,cursor,complete FROM mdm_webhook.compliance_sources WHERE tenant_id=$1 AND id=$2 AND expected_epoch=current_setting('rss.execution_epoch')::bigint FOR UPDATE").bind(source.tenant).bind(source.id).fetch_one(&mut *c).await?;
     if row.try_get::<serde_json::Value, _>("document")? != serde_json::to_value(source)? {
         return Err(Error::Conflict);
     }
@@ -262,12 +270,14 @@ pub async fn queue(
             .fetch_one(&mut *c)
             .await?;
     let pending = events::message(
+        c,
         id,
         event.tenant_id,
         event.occurred_at,
         events::DELIVERY_DOMAIN,
         body,
-    )?;
+    )
+    .await?;
     let target = transport::Target::new(
         transport::TargetId::parse(&subscription.id.to_string()).map_err(|_| Error::Invalid)?,
         transport::TargetVersion::new(version.try_into().map_err(|_| Error::Invalid)?)

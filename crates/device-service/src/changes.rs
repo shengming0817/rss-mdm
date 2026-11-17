@@ -28,15 +28,12 @@ impl Associations {
         proof: &AuthorizedPrincipal,
         query: &rss_mdm_query::window::Query,
     ) -> Result<rss_mdm_query::Page<ChangeEntry>> {
-        if proof.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
         let token = query.cursor().as_deref();
         query
             .require_schema(&SCHEMA)
             .map_err(|_| Error::Malformed)?;
         let budget = AuditBudget::new(Duration::from_secs(5));
-        self.audit.read(self.tenant,&budget.control(),(self,proof,token,query.limit()),|(service,proof,token,limit),tx|Box::pin(async move {
+        self.audit.read(proof.binding().tenant(),&budget.control(),(self,proof,token,query.limit()),|(service,proof,token,limit),tx|Box::pin(async move {
             let snapshot=tx.with_connection_context(proof,|proof,c|Box::pin(read::authorization(c,proof))).await?;
             snapshot.inventory_devices(proof)?;
             let binding=json!({"kind":"device-association-changes-v2","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":snapshot.query_binding(proof)?});
@@ -44,14 +41,14 @@ impl Associations {
                 let decoded=service.decode(token)?;
                 if decoded.context["binding"]!=binding{return Err(Error::CursorInvalidated);}
                 let position: Position=serde_json::from_value(decoded.context["position"].clone()).map_err(|_|Error::Malformed)?;
-                let head=tx.read_page(rss_audit_postgres::Cursor::start(service.tenant),rss_audit_postgres::ReadLimit::new(1,8388608).map_err(|_|Error::Storage)?).await.map_err(|e|Error::Audit(e.into()))?;
+                let head=tx.read_page(rss_audit_postgres::Cursor::start(proof.binding().tenant()),rss_audit_postgres::ReadLimit::new(1,8388608).map_err(|_|Error::Storage)?).await.map_err(|e|Error::Audit(e.into()))?;
                 let through=head.next().and_then(|c|c.continuation()).map(|(_,through)|through).or_else(||head.records().last().map(|r|r.position()));
                 let Some(through)=through.filter(|through|*through>position.navigation_after) else {
                     proof.check_live()?;
                     return Ok(rss_mdm_query::Page {items:vec![],next_cursor:None});
                 };
-                rss_audit_postgres::Cursor::resume(service.tenant,position.navigation_after,through).map_err(|_|Error::Malformed)?
-            }else{rss_audit_postgres::Cursor::start(service.tenant)};
+                rss_audit_postgres::Cursor::resume(proof.binding().tenant(),position.navigation_after,through).map_err(|_|Error::Malformed)?
+            }else{rss_audit_postgres::Cursor::start(proof.binding().tenant())};
             let page=tx.read_page(cursor,rss_audit_postgres::ReadLimit::new(*limit as u32,8388608).map_err(|_|Error::Storage)?).await.map_err(|e|Error::Audit(e.into()))?;
             let mut items=Vec::new();
             for record in page.records(){

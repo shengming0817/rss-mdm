@@ -1,5 +1,5 @@
 //! Read projections from the existing publication, Resource and admission authorities.
-use super::{config::Driver, service::PublicationService, storage as db, *};
+use super::{config::Driver, service::PublicationOperation, storage as db, *};
 use rss_mdm_software_release as rel;
 use rss_request_context::Deadline;
 use sqlx::Row;
@@ -15,14 +15,14 @@ pub struct PublishedSoftware {
     pub artifacts: Vec<PublicArtifact>,
     pub snapshot: Option<String>,
 }
-impl PublicationService {
+impl PublicationOperation<'_> {
     /// Read a management summary in the caller's audit/catalog-locked transaction.
     pub(crate) async fn record_status_in(
         &self,
         tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
         id: &rel::PublicationKey,
     ) -> InTransaction<(rel::Publication, Option<Withdrawal>)> {
-        if id.tenant() != self.tenant() {
+        if id.tenant() != tx.tenant_id() {
             return Ok(Err(Error::Identity));
         }
         let record = input!(
@@ -56,8 +56,9 @@ impl PublicationService {
     pub fn native_read_allowed(&self, token: Option<&str>) -> bool {
         match &self.sources.binding().driver {
             Driver::Winget { .. } => true,
-            Driver::Brew { access, .. } => token
-                .is_some_and(|token| access.permits(self.tenant(), &self.sources.logical, token)),
+            Driver::Brew { access, .. } => token.is_some_and(|token| {
+                access.permits(self.binding.tenant(), &self.sources.logical, token)
+            }),
         }
     }
     pub fn native_winget(&self) -> bool {

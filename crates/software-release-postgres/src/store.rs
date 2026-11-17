@@ -32,8 +32,7 @@ pub struct HistoricalAttempt {
 /// Tenant-bound sole persistence owner of publications, publication bindings, attempts and publication results.
 pub struct ReleaseStore {
     runtime: Arc<PgRuntime>,
-    tenant: TenantId,
-    binding: ExecutionBinding,
+
     writer: PgOutboxWriter,
 }
 impl ReleaseStore {
@@ -41,11 +40,12 @@ impl ReleaseStore {
     /// The outer transaction declares every partition once, before any business locks.
     pub fn partition(
         &self,
+        tenant: TenantId,
         id: &str,
     ) -> Result<rss_transactional_messaging::message::PartitionIdentity, PgError> {
         use rss_transactional_messaging::message::{PartitionIdentity, PartitionKey};
         Ok(PartitionIdentity::new(
-            self.tenant,
+            tenant,
             event::domain(),
             STORAGE.invalid("store::partition", PartitionKey::parse(id))?,
         ))
@@ -58,7 +58,6 @@ impl ReleaseStore {
         binding: ExecutionBinding,
         d: OperationDeadline,
     ) -> Result<Self, Error> {
-        let tenant = binding.tenant();
         settle(
             runtime
                 .local_tx(binding, d, |tx| {
@@ -72,37 +71,28 @@ impl ReleaseStore {
         Ok(Self {
             writer: PgOutboxWriter::new(runtime.clone(), event::domain()),
             runtime,
-            tenant,
-            binding,
         })
-    }
-    /// Return the tenant permanently bound to this store.
-    pub fn tenant(&self) -> TenantId {
-        self.tenant
     }
     fn check(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
         self.writer.validate_transaction(tx)?;
-        Ok(if tx.tenant_id() == self.tenant {
-            Ok(())
-        } else {
-            Err(Rejection::TenantMismatch)
-        })
+        Ok(Ok(()))
     }
-    /// Read and validate the current aggregate for this store tenant. Missing identities return `None`.
+    /// Read and validate the current aggregate for the supplied execution binding. Missing identities return `None`.
     pub async fn get(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         id: &PublicationKey,
         d: OperationDeadline,
     ) -> Result<Option<Publication>, Error> {
         settle(
             self.runtime
-                .local_tx_with_context(self.binding, d, (self, id), |(s, id), tx| {
+                .local_tx_with_context(binding, d, (self, id), |(s, id), tx| {
                     Box::pin(async move { s.get_in(tx, id).await })
                 })
                 .await,
         )
     }
-    /// Read through a borrowed transaction after runtime-owner and tenant validation.
+    /// Read through a borrowed transaction after runtime-owner validation.
     /// Never commits; propagate outer errors to the transaction owner.
     pub async fn get_in(
         &self,
@@ -110,7 +100,7 @@ impl ReleaseStore {
         id: &PublicationKey,
     ) -> InTransaction<Option<Publication>> {
         input!(self.check(tx)?);
-        if id.tenant() != self.tenant {
+        if id.tenant() != tx.tenant_id() {
             return Ok(Err(Rejection::TenantMismatch));
         }
         read_publication_in(tx, id).await
@@ -122,7 +112,7 @@ impl ReleaseStore {
         id: &PublicationKey,
     ) -> InTransaction<Publication> {
         input!(self.check(tx)?);
-        if id.tenant() != self.tenant {
+        if id.tenant() != tx.tenant_id() {
             return Ok(Err(Rejection::TenantMismatch));
         }
         STORAGE.lock(tx, "publication", id.value()).await?;
@@ -132,16 +122,19 @@ impl ReleaseStore {
     /// Reuse the identical request after an unconfirmed commit; changed content under an existing identity is rejected.
     pub async fn create(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         id: &RequestId,
         c: &Publication,
         d: OperationDeadline,
     ) -> Result<OperationReceipt, Error> {
         settle(
             self.runtime
-                .local_tx_with_context(self.binding, d, (self, id, c), |(s, id, c), tx| {
+                .local_tx_with_context(binding, d, (self, id, c), |(s, id, c), tx| {
                     Box::pin(async move {
-                        tx.prepare_outbox_partitions(&[s.partition(c.snapshot().id.value())?])
-                            .await?;
+                        tx.prepare_outbox_partitions(&[
+                            s.partition(tx.tenant_id(), c.snapshot().id.value())?
+                        ])
+                        .await?;
                         s.create_in(tx, id, c).await
                     })
                 })
@@ -158,7 +151,7 @@ impl ReleaseStore {
         c: &Publication,
     ) -> InTransaction<OperationReceipt> {
         input!(self.check(tx)?);
-        if id.tenant() != self.tenant || c.snapshot().id.tenant() != self.tenant {
+        if id.tenant() != tx.tenant_id() || c.snapshot().id.tenant() != tx.tenant_id() {
             return Ok(Err(Rejection::TenantMismatch));
         }
         if c.snapshot().revision != 0
@@ -227,15 +220,15 @@ impl ReleaseStore {
                 request,
                 STORAGE.encode(&json!([
                     0,
-                    [self.tenant.to_string(), c.snapshot().id.value()],
-                    [self.tenant.to_string(), id.value()]
+                    [tx.tenant_id().to_string(), c.snapshot().id.value()],
+                    [tx.tenant_id().to_string(), id.value()]
                 ]))?,
             )
             .await?;
         event::append(
             &self.writer,
             tx,
-            self.tenant,
+            tx.tenant_id(),
             c.snapshot().at,
             c.snapshot().id.value(),
             id.value(),
@@ -248,15 +241,16 @@ impl ReleaseStore {
     /// Replays return the original receipt rather than a new external Publish decision.
     pub async fn transition(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         id: &PublicationKey,
         r: &Request,
         d: OperationDeadline,
     ) -> Result<Transition, Error> {
         settle(
             self.runtime
-                .local_tx_with_context(self.binding, d, (self, id, r), |(s, id, r), tx| {
+                .local_tx_with_context(binding, d, (self, id, r), |(s, id, r), tx| {
                     Box::pin(async move {
-                        tx.prepare_outbox_partitions(&[s.partition(id.value())?])
+                        tx.prepare_outbox_partitions(&[s.partition(tx.tenant_id(), id.value())?])
                             .await?;
                         s.transition_in(tx, id, r).await
                     })
@@ -274,9 +268,9 @@ impl ReleaseStore {
         r: &Request,
     ) -> InTransaction<Transition> {
         input!(self.check(tx)?);
-        if id.tenant() != self.tenant
-            || r.id.tenant() != self.tenant
-            || r.actor.tenant() != self.tenant
+        if id.tenant() != tx.tenant_id()
+            || r.id.tenant() != tx.tenant_id()
+            || r.actor.tenant() != tx.tenant_id()
         {
             return Ok(Err(Rejection::TenantMismatch));
         }
@@ -341,7 +335,7 @@ impl ReleaseStore {
         event::append(
             &self.writer,
             tx,
-            self.tenant,
+            tx.tenant_id(),
             r.as_of,
             id.value(),
             r.id.value(),
@@ -353,16 +347,17 @@ impl ReleaseStore {
     /// Recover the complete original core request by identity for exact service-level replay.
     pub async fn original_request(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         id: &RequestId,
         d: OperationDeadline,
     ) -> Result<Option<(PublicationKey, Request)>, Error> {
-        if id.tenant() != self.tenant {
+        if id.tenant() != binding.tenant() {
             return Err(Rejection::TenantMismatch.into());
         }
         let key = id.value().to_owned();
         settle(
             self.runtime
-                .local_tx(self.binding, d, move |tx| {
+                .local_tx(binding, d, move |tx| {
                     Box::pin(async move {
                         let t = tx.tenant_id().to_string();
                         let row = tx
@@ -400,7 +395,7 @@ impl ReleaseStore {
         id: &RequestId,
     ) -> InTransaction<Option<OperationReceipt>> {
         input!(self.check(tx)?);
-        if id.tenant() != self.tenant {
+        if id.tenant() != tx.tenant_id() {
             return Ok(Err(Rejection::TenantMismatch));
         }
         Ok(Ok(STORAGE
@@ -413,15 +408,16 @@ impl ReleaseStore {
     /// Use this after an unconfirmed commit; absence alone is not permission to invent another request identity.
     pub async fn operation(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         id: &RequestId,
         d: OperationDeadline,
     ) -> Result<Option<OperationReceipt>, Error> {
-        if id.tenant() != self.tenant {
+        if id.tenant() != binding.tenant() {
             return Err(Rejection::TenantMismatch.into());
         }
         settle(
             self.runtime
-                .local_tx_with_context(self.binding, d, id, |id, tx| {
+                .local_tx_with_context(binding, d, id, |id, tx| {
                     Box::pin(async move {
                         Ok(Ok(STORAGE
                             .receipt(tx, id.value())
@@ -436,12 +432,13 @@ impl ReleaseStore {
     /// Read immutable publication attempts in bounded cursor order. Pass the last item cursor as `after`.
     pub async fn attempt_history(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         id: &PublicationKey,
         after: Option<String>,
         limit: usize,
         d: OperationDeadline,
     ) -> Result<Vec<HistoricalAttempt>, Error> {
-        if id.tenant() != self.tenant
+        if id.tenant() != binding.tenant()
             || limit == 0
             || limit > 1000
             || after.as_ref().is_some_and(|s| s.len() > 512)
@@ -451,7 +448,7 @@ impl ReleaseStore {
         let owner = id.value().to_owned();
         settle(
             self.runtime
-                .local_tx(self.binding, d, move |tx| {
+                .local_tx(binding, d, move |tx| {
                     Box::pin(async move {
                         let rows = query_attempts(tx, &owner, after, limit).await?;
                         let attempts = rows

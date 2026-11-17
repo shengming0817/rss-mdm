@@ -126,7 +126,7 @@ impl Events {
         run(
             audit_store,
             &p.runtime,
-            p.audit_store.binding(),
+            audit.binding()?,
             audit,
             (self, &caller, requester, proof, device, input, audit),
             |ctx, tx| {
@@ -225,7 +225,6 @@ impl Events {
                     let management_reader = rss_mdm_policy_postgres::PolicyReader::bind(
                         profile,
                         s.application.runtime.clone(),
-                        s.application.tenant,
                     );
                     let reader = &management_reader;
                     for id in ids {
@@ -454,6 +453,7 @@ impl Events {
 impl Application {
     pub(crate) async fn advance_event_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         execution: &dyn ExecutionEvents,
         tx: &mut PgTransaction<'_>,
         batch: Uuid,
@@ -464,7 +464,15 @@ impl Application {
         let audit_store = &self.audit_store;
         let row = rss_mdm_policy_postgres::events::pending_member_in(profile, tx, batch).await?;
         let Some(row) = row else {
-            return crate::worker::jobs::finish_job_in(profile, tx, audit_store, batch, None).await;
+            return crate::worker::jobs::finish_job_in(
+                binding,
+                profile,
+                tx,
+                audit_store,
+                batch,
+                None,
+            )
+            .await;
         };
         let member: Uuid = row.try_get("id")?;
         let id: Uuid = row.try_get("policy")?;
@@ -478,7 +486,7 @@ impl Application {
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             self.profile(),
-            self.tenant.to_string(),
+            binding,
             "policy_event_member",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -492,8 +500,7 @@ impl Application {
         audit.target_device(&target.device);
         audit_store.prepare_in(tx, &audit, &[]).await?;
         let now = crate::action_admission::now(tx).await?;
-        let reader =
-            rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone(), self.tenant);
+        let reader = rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone());
         let policy = policies::storage::read_in(&reader, tx, id).await?;
         let mut valid = event_device_current_in(profile, tx, &target).await?;
         for (permission, proof) in authority.permissions {
@@ -632,7 +639,7 @@ impl Application {
                 let id = policy.id;
                 let version = policy.version;
                 {
-                    let tenant = self.tenant;
+                    let tenant = tx.tenant_id();
                     let objects = self.objects.clone();
                     tx.with_connection(move |c| {
                         Box::pin(async move {
@@ -650,6 +657,7 @@ impl Application {
             }
             Action::UnmanageDevice { .. } => {
                 self.accept_event_retirement_in(
+                    audit.binding()?,
                     tx,
                     policy,
                     target,
@@ -667,6 +675,7 @@ impl Application {
 impl Application {
     async fn accept_event_retirement_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         policy: &rss_mdm_policy::Policy,
         target: &Target,
@@ -724,7 +733,7 @@ impl Application {
             }
         }
         let published = checked(
-            rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone(), self.tenant)
+            rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone())
                 .version_in(tx, policy.version)
                 .await?,
         )?
@@ -754,6 +763,7 @@ impl Application {
                         tenant,
                         reader.as_ref(),
                         &rss_mdm_device_service::lifecycle::Acceptance {
+                            execution: binding,
                             origin,
                             policy: id,
                             version,
@@ -777,6 +787,7 @@ impl Application {
     /// Called only after confirmed rollback, under the original job claim.
     pub(crate) async fn reject_event_member_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         audit_store: &rss_mdm_audit_integration::AuditStore,
         tx: &mut PgTransaction<'_>,
         batch: Uuid,
@@ -787,7 +798,7 @@ impl Application {
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             self.profile(),
-            self.tenant.to_string(),
+            binding,
             "policy_event_member",
             rss_mdm_audit_integration::AuditIntent::Management,
         );

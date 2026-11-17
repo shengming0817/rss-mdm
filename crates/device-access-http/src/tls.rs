@@ -43,7 +43,7 @@ pub fn registration(
     policy: rss_axum::Http1ServePolicy,
 ) -> std::io::Result<rss_runtime::ManagedTaskRegistration> {
     let config = ServerConfig::builder()
-        .with_client_cert_verifier(services.registrations.trust().enrollment_verifier())
+        .with_client_cert_verifier(rss_mdm_certificate::possession_verifier())
         .with_single_cert(certificates, key)
         .map_err(std::io::Error::other)?;
     let router = crate::router(Some(services))

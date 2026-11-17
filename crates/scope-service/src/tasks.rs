@@ -25,16 +25,32 @@ impl Scopes {
         scope: Uuid,
     ) -> transaction::Result<Uuid> {
         let id = self.store.enqueue_in(tx, id, scope).await?;
-        self.reconcile_messaging.wake_in(tx,&target(self.profile(),self.tenant,id), &rss_reconcile::ResourceSet::empty(self.tenant),(),|_,tx|Box::pin(async {
-            tx.with_connection(|c|Box::pin(async {
-                sqlx::query("SELECT pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'scopes')").execute(c).await?;
-                Ok(())
-            })).await
-        })).await?;
+        self.reconcile_messaging
+            .wake_in(
+                tx,
+                &target(self.profile(), tx.tenant_id(), id),
+                &rss_reconcile::ResourceSet::empty(tx.tenant_id()),
+                (),
+                |_, tx| {
+                    Box::pin(async {
+                        tx.with_connection(|c| {
+                            Box::pin(async {
+                                sqlx::query("SELECT pg_notify('mdm_work','scopes')")
+                                    .execute(c)
+                                    .await?;
+                                Ok(())
+                            })
+                        })
+                        .await
+                    })
+                },
+            )
+            .await?;
         Ok(id)
     }
     pub(crate) async fn finish_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         failure: Option<&str>,
@@ -51,7 +67,7 @@ impl Scopes {
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             self.profile(),
-            self.tenant.to_string(),
+            binding,
             action,
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -116,37 +132,32 @@ impl Scopes {
         id: Uuid,
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
-        crate::transaction::inspect(
-            &self.runtime,
-            self.audit_store.binding(),
-            (self, p),
-            |(s, p), tx| {
-                Box::pin(async move {
-                    crate::action_admission::current(tx, p).await?.require(
-                        p,
-                        rss_mdm_authorization_service::Permission::PolicyRead,
-                        None,
-                    )?;
-                    let task = s.store.task_in(tx, id).await?;
-                    let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
-                    value.object = Some(task.scope.to_string());
-                    value.accepted = Some(true);
-                    value.executions.push(id);
-                    value.state = Some(
-                        match task.failure.as_deref() {
-                            Some("superseded") => "superseded",
-                            Some(_) => "failed",
-                            None if task.completed => "completed",
-                            None if task.forwarded => "running",
-                            _ => "pending",
-                        }
-                        .into(),
-                    );
-                    p.check_live()?;
-                    Ok(Some(value))
-                })
-            },
-        )
+        crate::transaction::inspect(&self.runtime, p.binding(), (self, p), |(s, p), tx| {
+            Box::pin(async move {
+                crate::action_admission::current(tx, p).await?.require(
+                    p,
+                    rss_mdm_authorization_service::Permission::PolicyRead,
+                    None,
+                )?;
+                let task = s.store.task_in(tx, id).await?;
+                let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                value.object = Some(task.scope.to_string());
+                value.accepted = Some(true);
+                value.executions.push(id);
+                value.state = Some(
+                    match task.failure.as_deref() {
+                        Some("superseded") => "superseded",
+                        Some(_) => "failed",
+                        None if task.completed => "completed",
+                        None if task.forwarded => "running",
+                        _ => "pending",
+                    }
+                    .into(),
+                );
+                p.check_live()?;
+                Ok(Some(value))
+            })
+        })
         .await
     }
 }
@@ -158,15 +169,42 @@ pub async fn wake_inputs_in(
     tx: &mut PgTransaction<'_>,
 ) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
     let tenant = tx.tenant_id();
+    let epoch = tx.expected_epoch().get();
+    let t = tenant.to_string();
+    tx.with_connection(move |c| Box::pin(async move {
+        let (insert, read) = match profile {
+            rss_mdm_install_support::StorageProfile::Mdm => ("INSERT INTO mdm_scope.asset_dispatch(tenant_id,expected_epoch) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING", "SELECT expected_epoch FROM mdm_scope.asset_dispatch WHERE tenant_id=$1::uuid"),
+            rss_mdm_install_support::StorageProfile::Da => ("INSERT INTO rss_da.scope_asset_dispatch(tenant_id,expected_epoch) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING", "SELECT expected_epoch FROM rss_da.scope_asset_dispatch WHERE tenant_id=$1::uuid"),
+        };
+        sqlx::query(insert).bind(&t).bind(epoch).execute(&mut *c).await?;
+        let accepted: i64 = sqlx::query_scalar(read).bind(t).fetch_one(c).await?;
+        if accepted != epoch { return Err(sqlx::Error::Protocol("scope input epoch mismatch".into())); }
+        Ok(())
+    })).await?;
     let target = Target::new(
         Scope::new(tenant, domain(profile)).expect("constant scope"),
         "inputs",
     )
     .expect("constant target");
-    store.wake_in(tx, &target, &rss_reconcile::ResourceSet::empty(tenant), (), |_, tx| Box::pin(async move {
-        tx.with_connection(|c| Box::pin(async move {
-            sqlx::query("SELECT pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'scopes')").execute(c).await?;
-            Ok(())
-        })).await
-    })).await
+    store
+        .wake_in(
+            tx,
+            &target,
+            &rss_reconcile::ResourceSet::empty(tenant),
+            (),
+            |_, tx| {
+                Box::pin(async move {
+                    tx.with_connection(|c| {
+                        Box::pin(async move {
+                            sqlx::query("SELECT pg_notify('mdm_work','scopes')")
+                                .execute(c)
+                                .await?;
+                            Ok(())
+                        })
+                    })
+                    .await
+                })
+            },
+        )
+        .await
 }

@@ -69,14 +69,23 @@ impl AssetService {
             status: state.status,
             summary: state.summary,
             failure: state.failure,
-            result_url: state
-                .ready
-                .then(|| format!("/api/v1/device-queries/{task}/items")),
+            result_url: state.ready.then(|| {
+                format!(
+                    "/api/v1/tenants/{}/device-queries/{task}/items",
+                    tx.tenant_id()
+                )
+            }),
         })
     }
-    fn query_cursor(&self, token: &str, task: Uuid, scope: &ReadScope) -> Result<Position> {
+    fn query_cursor(
+        &self,
+        tenant: rss_request_context::TenantId,
+        token: &str,
+        task: Uuid,
+        scope: &ReadScope,
+    ) -> Result<Position> {
         let codec = CursorCodec::from_key(self.asset_cursor_key.clone());
-        let binding = digest(&("asset-results", self.tenant.to_string(), task, scope))?;
+        let binding = digest(&("asset-results", tenant.to_string(), task, scope))?;
         codec
             .decode(
                 &checked_input(rss_contract::PageCursor::parse(token))?,
@@ -86,12 +95,13 @@ impl AssetService {
     }
     fn next_query_cursor(
         &self,
+        tenant: rss_request_context::TenantId,
         task: Uuid,
         scope: &ReadScope,
         position: Position,
     ) -> Result<String> {
         let codec = CursorCodec::from_key(self.asset_cursor_key.clone());
-        let binding = digest(&("asset-results", self.tenant.to_string(), task, scope))?;
+        let binding = digest(&("asset-results", tenant.to_string(), task, scope))?;
         Ok(checked_input(codec.encode(&binding, &position))?
             .as_str()
             .to_owned())
@@ -115,14 +125,14 @@ impl AssetService {
         // within this signed task, rather than serializing a 1024-byte key as JSON
         // numbers (which can exceed PageCursor even for a valid stored result).
         let after_device = if let Some(token) = cursor {
-            match self.query_cursor(token, task, scope)? {
+            match self.query_cursor(tx.tenant_id(), token, task, scope)? {
                 Position::Items { device } => Some(device),
                 _ => return Err(Error::Conflict.into()),
             }
         } else {
             None
         };
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let metadata=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("SELECT device,octet_length(document) AS bytes FROM mdm_assets.asset_query_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND ($3::uuid IS NULL OR (sort_key,device)>(SELECT sort_key,device FROM mdm_assets.asset_query_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND device=$3)) ORDER BY sort_key,device LIMIT $4")
                 .bind(tenant).bind(task.to_string()).bind(after_device.map(|id|id.into_uuid())).bind((limit + 1) as i64).fetch_all(c).await
@@ -152,7 +162,7 @@ impl AssetService {
         if !more {
             next = None;
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let rows=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("SELECT r.device,r.document,r.digest FROM unnest($3::uuid[]) WITH ORDINALITY p(device,n) JOIN mdm_assets.asset_query_results r ON r.device=p.device WHERE r.tenant_id=$1::uuid AND r.run=$2::uuid ORDER BY p.n")
                 .bind(tenant).bind(task.to_string()).bind(ids.iter().map(|id|id.into_uuid()).collect::<Vec<_>>()).fetch_all(c).await
@@ -178,7 +188,7 @@ impl AssetService {
         Ok(Response::Page {
             items,
             next_cursor: next
-                .map(|position| self.next_query_cursor(task, scope, position))
+                .map(|position| self.next_query_cursor(tx.tenant_id(), task, scope, position))
                 .transpose()?,
             snapshot: task.to_string(),
             summary: state.summary,
@@ -200,7 +210,7 @@ impl AssetService {
             return Err(Error::Conflict.into());
         }
         let after = if let Some(token) = cursor {
-            match self.query_cursor(token, task, scope)? {
+            match self.query_cursor(tx.tenant_id(), token, task, scope)? {
                 Position::Facet {
                     facet: bound,
                     label,
@@ -210,7 +220,7 @@ impl AssetService {
         } else {
             None
         };
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let mut rows:Vec<(String,i64)>=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query_as("SELECT label,total FROM mdm_assets.asset_query_facets WHERE tenant_id=$1::uuid AND run=$2::uuid AND kind=$3 AND ($4::text IS NULL OR label>$4 COLLATE \"C\") ORDER BY label LIMIT $5")
                 .bind(tenant).bind(task.to_string()).bind(facet.as_str()).bind(after).bind((limit + 1) as i64).fetch_all(c).await
@@ -222,6 +232,7 @@ impl AssetService {
             .filter(|_| more)
             .map(|(label, _)| {
                 self.next_query_cursor(
+                    tx.tenant_id(),
                     task,
                     scope,
                     Position::Facet {

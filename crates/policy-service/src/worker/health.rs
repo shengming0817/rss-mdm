@@ -3,11 +3,12 @@ impl Application {
     /// A missing configuration participant has no suspended native input checkpoint.
     pub async fn configuration_input_suspended(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         cutoff: std::time::Instant,
     ) -> std::result::Result<bool, HealthFailure> {
         configuration_input_suspended(
             &self.runtime,
-            self.audit_store.binding(),
+            binding,
             self.configuration.as_deref(),
             cutoff,
         )
@@ -16,12 +17,13 @@ impl Application {
     /// Counts describe retained product job states, not managed task health or device effects.
     pub async fn queue_health(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         cutoff: std::time::Instant,
     ) -> std::result::Result<[u64; 5], HealthFailure> {
         queue_health(
             self.profile(),
             &self.runtime,
-            self.audit_store.binding(),
+            binding,
             self.configuration.as_deref(),
             cutoff,
         )
@@ -120,117 +122,93 @@ pub struct AttemptFailure {
 /// Owner-local facts; no task identity or input crosses the diagnostic boundary.
 #[derive(Clone, Copy, Debug)]
 pub struct AutomationHealth {
+    pub discovery: Option<RunObservation>,
+    pub recovery: rss_mdm_recovery_observation::Phase,
     pub scan: Option<RunObservation>,
     pub unresolved_attempts: u64,
     pub truncated: bool,
     pub latest_failure: Option<AttemptFailure>,
 }
-const FAILURE_LIMIT: usize = 1000;
-#[derive(Default)]
-pub(crate) struct AutomationObservation {
-    scans: [Option<RunObservation>; 2],
-    failures: std::collections::HashMap<rss_reconcile::Target, (u64, AttemptFailure)>,
-    sequence: u64,
-    // Discarded identities cannot subsequently be proven recovered. A restart
-    // begins a new observation window; never invent recovery after truncation.
-    truncated: bool,
-}
-impl AutomationObservation {
-    fn scanned(
-        &mut self,
-        profile: rss_mdm_install_support::StorageProfile,
-        scope: &rss_reconcile::Scope,
-        observation: RunObservation,
-    ) {
-        let index = match scope.reconciler() {
-            domain if domain == crate::worker::jobs::domain(profile) => 0,
-            domain if domain == crate::worker::jobs::event_domain(profile) => 1,
-            _ => return,
-        };
-        self.scans[index] = Some(observation);
-    }
-    fn failed(&mut self, target: rss_reconcile::Target, failure: AttemptFailure) {
-        self.sequence = self.sequence.saturating_add(1);
-        if self.failures.contains_key(&target) || self.failures.len() < FAILURE_LIMIT {
-            self.failures.insert(target, (self.sequence, failure));
-        } else {
-            self.truncated = true;
-        }
-    }
-    fn settled(&mut self, target: &rss_reconcile::Target, completion: rss_reconcile::Completion) {
-        if matches!(
-            completion,
-            rss_reconcile::Completion::Converged | rss_reconcile::Completion::Reobserve(_)
-        ) {
-            self.failures.remove(target);
-        }
-    }
-    fn snapshot(&self) -> AutomationHealth {
-        AutomationHealth {
-            // A healthy scan can clear only its own scope. Prefer an unresolved
-            // failure to a newer successful observation from the other runner.
-            scan: self
-                .scans
-                .into_iter()
-                .flatten()
-                .max_by_key(|o| (o.failure.is_some(), o.observed_at)),
-            unresolved_attempts: self.failures.len() as u64,
-            truncated: self.truncated,
-            latest_failure: self
-                .failures
-                .values()
-                .max_by_key(|(seq, _)| seq)
-                .map(|(_, f)| *f),
-        }
-    }
-}
 impl Application {
     pub fn automation_health(&self) -> AutomationHealth {
+        let snapshot = self
+            .automation_observation
+            .lock()
+            .expect("automation observation")
+            .snapshot();
+        let scan = |value: rss_mdm_recovery_observation::Scan| RunObservation {
+            failure: value.failure.map(reconcile_kind),
+            observed_at: value.observed_at,
+        };
+        AutomationHealth {
+            discovery: snapshot.discovery.map(scan),
+            recovery: snapshot.recovery,
+            scan: snapshot.scan.map(scan),
+            unresolved_attempts: snapshot.unresolved_attempts,
+            truncated: snapshot.truncated,
+            latest_failure: snapshot.latest_failure.map(|failure| AttemptFailure {
+                stage: failure.stage,
+                failure: reconcile_kind(failure.failure),
+                observed_at: failure.observed_at,
+            }),
+        }
+    }
+    pub(crate) fn record_discovery(
+        &self,
+        domain: &str,
+        outcome: std::result::Result<(), rss_reconcile::ErrorKind>,
+    ) {
         self.automation_observation
             .lock()
             .expect("automation observation")
-            .snapshot()
+            .discovery(domain, outcome, self.clock.unix_seconds().ok());
     }
     pub(crate) fn record_scan(
         &self,
         scope: &rss_reconcile::Scope,
         result: std::result::Result<(), &rss_reconcile::Error>,
     ) {
-        let observed_at = self.clock.unix_seconds().ok();
         self.automation_observation
             .lock()
             .expect("automation observation")
-            .scanned(
-                self.profile(),
+            .scan(
                 scope,
-                RunObservation {
-                    failure: result.err().map(reconcile_failure),
-                    observed_at,
-                },
+                result.map_err(|error| error.kind()),
+                self.clock.unix_seconds().ok(),
             );
     }
+
+    pub(crate) fn record_relay(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        result: &std::result::Result<usize, Error>,
+    ) {
+        let scope = rss_reconcile::Scope::new(
+            binding.tenant(),
+            crate::worker::jobs::domain(self.profile()),
+        )
+        .expect("fixed relay domain");
+        let outcome = result.as_ref().map(|_| ()).map_err(|error| match error {
+            Error::CommitUnknown => rss_reconcile::ErrorKind::CommitUnknown,
+            Error::RollbackFailed => rss_reconcile::ErrorKind::RollbackFailed,
+            _ => rss_reconcile::ErrorKind::Transient,
+        });
+        self.automation_observation
+            .lock()
+            .expect("automation observation")
+            .relay(
+                &scope,
+                binding.epoch().get(),
+                outcome,
+                self.clock.unix_seconds().ok(),
+            );
+    }
+
     pub(crate) fn record_runner_failure(&self, event: rss_reconcile::Observation) {
-        match event {
-            rss_reconcile::Observation::Deferred { .. } => {}
-            rss_reconcile::Observation::ScanFailed { scope, error } => {
-                self.record_scan(&scope, Err(&error))
-            }
-            rss_reconcile::Observation::AttemptFailed {
-                target,
-                stage,
-                error,
-            } => {
-                let failure = AttemptFailure {
-                    stage,
-                    failure: reconcile_failure(&error),
-                    observed_at: self.clock.unix_seconds().ok(),
-                };
-                self.automation_observation
-                    .lock()
-                    .expect("automation observation")
-                    .failed(target, failure);
-            }
-        }
+        self.automation_observation
+            .lock()
+            .expect("automation observation")
+            .observe(&event, self.clock.unix_seconds().ok());
     }
     pub(crate) fn record_settled(
         &self,
@@ -243,9 +221,9 @@ impl Application {
             .settled(target, completion);
     }
 }
-fn reconcile_failure(error: &rss_reconcile::Error) -> AutomationFailure {
+fn reconcile_kind(kind: rss_reconcile::ErrorKind) -> AutomationFailure {
     use rss_reconcile::ErrorKind;
-    match error.kind() {
+    match kind {
         ErrorKind::Transient | ErrorKind::StorageContract => AutomationFailure::StorageUnavailable,
         ErrorKind::Deadline => AutomationFailure::Deadline,
         ErrorKind::CommitUnknown | ErrorKind::RollbackFailed => {
@@ -270,161 +248,16 @@ fn health_deadline(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn target(entity: &str) -> rss_reconcile::Target {
-        rss_reconcile::Target::new(
-            rss_reconcile::Scope::new(
-                TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap(),
-                "mdm.policy",
-            )
-            .unwrap(),
-            entity,
-        )
-        .unwrap()
-    }
-    fn failure(stage: rss_reconcile::Stage) -> AttemptFailure {
-        AttemptFailure {
-            stage,
-            failure: AutomationFailure::SettlementUnknown,
-            observed_at: Some(9),
-        }
-    }
     #[test]
-    fn recovery_is_per_target_and_requires_acknowledged_success() {
-        use rss_reconcile::{Completion, Stage};
-        let mut observations = AutomationObservation::default();
-        let a = target("job:a");
-        let b = target("job:b");
-        observations.failed(a.clone(), failure(Stage::Apply));
-        observations.failed(b.clone(), failure(Stage::Finish));
-        observations.scanned(
-            rss_mdm_install_support::StorageProfile::Mdm,
-            a.scope(),
-            RunObservation {
-                failure: None,
-                observed_at: Some(10),
-            },
-        );
-        observations.settled(&b, Completion::Converged);
-        let snapshot = observations.snapshot();
-        assert_eq!(snapshot.unresolved_attempts, 1);
-        assert_eq!(snapshot.latest_failure.unwrap().stage, Stage::Apply);
-        observations.settled(
-            &a,
-            Completion::Retry {
-                after: Duration::from_secs(1),
-                failures: 1,
-            },
-        );
-        observations.settled(&a, Completion::Suspended { failures: 2 });
-        assert_eq!(observations.snapshot().unresolved_attempts, 1);
-        observations.settled(&a, Completion::Reobserve(Duration::from_secs(1)));
-        assert_eq!(observations.snapshot().unresolved_attempts, 0);
-    }
-    #[test]
-    fn scan_recovery_requires_success_from_the_failed_scope() {
-        let assets = target("changes");
-        let events = rss_reconcile::Scope::new(
-            assets.scope().tenant(),
-            crate::worker::jobs::event_domain(rss_mdm_install_support::StorageProfile::Mdm),
-        )
-        .unwrap();
-        let mut observations = AutomationObservation::default();
-        observations.scanned(
-            rss_mdm_install_support::StorageProfile::Mdm,
-            &events,
-            RunObservation {
-                failure: Some(AutomationFailure::StorageUnavailable),
-                observed_at: Some(1),
-            },
-        );
-        observations.scanned(
-            rss_mdm_install_support::StorageProfile::Mdm,
-            assets.scope(),
-            RunObservation {
-                failure: None,
-                observed_at: Some(2),
-            },
-        );
-        assert!(matches!(
-            observations.snapshot().scan.unwrap().failure,
-            Some(AutomationFailure::StorageUnavailable)
-        ));
-        observations.scanned(
-            rss_mdm_install_support::StorageProfile::Mdm,
-            &events,
-            RunObservation {
-                failure: None,
-                observed_at: Some(3),
-            },
-        );
-        assert!(observations.snapshot().scan.unwrap().failure.is_none());
-        observations.scanned(
-            rss_mdm_install_support::StorageProfile::Mdm,
-            assets.scope(),
-            RunObservation {
-                failure: Some(AutomationFailure::SettlementUnknown),
-                observed_at: Some(4),
-            },
-        );
-        observations.scanned(
-            rss_mdm_install_support::StorageProfile::Mdm,
-            &events,
-            RunObservation {
-                failure: None,
-                observed_at: Some(5),
-            },
-        );
-        assert!(matches!(
-            observations.snapshot().scan.unwrap().failure,
-            Some(AutomationFailure::SettlementUnknown)
-        ));
-        observations.scanned(
-            rss_mdm_install_support::StorageProfile::Mdm,
-            assets.scope(),
-            RunObservation {
-                failure: None,
-                observed_at: Some(6),
-            },
-        );
-        assert!(observations.snapshot().scan.unwrap().failure.is_none());
-    }
-    #[test]
-    fn all_runner_failure_stages_and_uncertain_settlement_remain_visible() {
-        use rss_reconcile::{ErrorKind, Stage};
-        let mut observations = AutomationObservation::default();
-        for (i, stage) in [Stage::Observe, Stage::Apply, Stage::Renew, Stage::Finish]
-            .into_iter()
-            .enumerate()
-        {
-            observations.failed(target(&format!("job:{i}")), failure(stage));
-            assert_eq!(observations.snapshot().latest_failure.unwrap().stage, stage);
-        }
-        assert_eq!(observations.snapshot().unresolved_attempts, 4);
-        for kind in [ErrorKind::CommitUnknown, ErrorKind::RollbackFailed] {
+    fn uncertain_settlement_keeps_the_product_failure_category() {
+        for kind in [
+            rss_reconcile::ErrorKind::CommitUnknown,
+            rss_reconcile::ErrorKind::RollbackFailed,
+        ] {
             assert!(matches!(
-                reconcile_failure(&rss_reconcile::Error::new(kind)),
+                reconcile_kind(kind),
                 AutomationFailure::SettlementUnknown
             ));
         }
-    }
-    #[test]
-    fn bounded_failure_retention_never_claims_unobserved_recovery() {
-        let mut observations = AutomationObservation::default();
-        for i in 0..=FAILURE_LIMIT {
-            observations.failed(
-                target(&format!("job:{i}")),
-                failure(rss_reconcile::Stage::Finish),
-            );
-        }
-        assert_eq!(observations.snapshot().unresolved_attempts, 1000);
-        assert!(observations.snapshot().truncated);
-        for i in 0..=FAILURE_LIMIT {
-            observations.settled(
-                &target(&format!("job:{i}")),
-                rss_reconcile::Completion::Converged,
-            );
-        }
-        assert_eq!(observations.snapshot().unresolved_attempts, 0);
-        assert!(observations.snapshot().truncated);
     }
 }

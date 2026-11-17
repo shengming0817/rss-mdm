@@ -4,14 +4,18 @@ use rss_mdm_audit_integration::{AuditIntent, Fact, RequestAudit};
 use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 use uuid::Uuid;
 impl Delivery {
-    pub async fn wake(&self, configuration: &[u8; 32]) -> Result<Option<Wake>, Error> {
+    pub async fn wake(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        configuration: &[u8; 32],
+    ) -> Result<Option<Wake>, Error> {
         let configuration = *configuration;
         let facts = self.facts.clone();
-        let tenant = self.tenant.to_string();
+        let tenant = execution.tenant().to_string();
         let discovered = self
             .runtime
             .local_tx(
-                self.audit.binding(),
+                execution,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     std::time::Duration::from_secs(6),
                 ),
@@ -41,7 +45,7 @@ impl Delivery {
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            self.tenant.to_string(),
+            execution,
             "apple_push",
             AuditIntent::Management,
         );
@@ -50,7 +54,7 @@ impl Delivery {
             .run(&audit, (self, &audit), |ctx, tx| {
                 Box::pin(async move {
                     let (s, audit) = *ctx;
-                    let tenant = s.tenant.to_string();
+                    let tenant = tx.tenant_id().to_string();
                     let facts = s.facts.clone();
                     let rows = tx
                         .with_connection(move |c| {
@@ -72,7 +76,7 @@ impl Delivery {
                     for (row, needed) in prepared {
                         let device = row.device;
                         let user_key = row.user_key.clone();
-                        let tenant = s.tenant.to_string();
+                        let tenant = tx.tenant_id().to_string();
                         let facts = s.facts.clone();
                         let (token, magic) = match row.disposition {
                             PushDisposition::Invalid { scope } => {
@@ -130,6 +134,7 @@ impl Delivery {
                             )
                             .await?;
                         return Ok(Some(Wake {
+                            execution,
                             id,
                             device: device.to_owned(),
                             revision: row.revision,
@@ -161,7 +166,7 @@ impl Delivery {
         if user.is_empty() {
             let facts = self.facts.clone();
             let business = self.business.clone();
-            let tenant = self.tenant.to_string();
+            let tenant = tx.tenant_id().to_string();
             if tx
                 .with_connection(move |c| {
                     Box::pin(async move {
@@ -185,7 +190,7 @@ impl Delivery {
                 }
                 if user.is_empty() && !target.is_empty() {
                     let facts = self.facts.clone();
-                    let tenant = self.tenant.to_string();
+                    let tenant = tx.tenant_id().to_string();
                     if tx
                         .with_connection(move |c| {
                             Box::pin(
@@ -205,7 +210,7 @@ impl Delivery {
             }
         }
         let facts = self.facts.clone();
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let user = user.to_owned();
         let rows = tx
             .with_connection(move |c| {
@@ -223,10 +228,11 @@ impl Delivery {
         status: Option<u16>,
         outcome: PushOutcome,
     ) -> Result<(), Error> {
+        let execution = wake.execution;
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            self.tenant.to_string(),
+            execution,
             "apple_push",
             AuditIntent::Management,
         );
@@ -237,7 +243,7 @@ impl Delivery {
         let result=self.run(&audit,(self,wake,&audit),|ctx,tx|Box::pin(async move {
    let (s,wake,audit)=*ctx;s.business.prepare_wake(tx,Vec::new(),audit).await?;
    let fact=Fact::observation(audit,&format!("apple-push:{}:settle",wake.id),200,"success",None)?.with_details(serde_json::json!({"outcome":outcome.as_str(),"status":status,"tokenRevision":wake.revision}))?;
-   let facts=s.facts.clone();let tenant=s.tenant.to_string();let wake=wake.clone();
+   let facts=s.facts.clone();let tenant=tx.tenant_id().to_string();let wake=wake.clone();
    let changed=tx.with_connection(move|c|Box::pin(async move {let changed=facts.settle_push(c,tenant,wake,status,outcome).await; if matches!(changed,Ok(Some(1))) {crate::notify(c,"apple").await?;} Ok(changed)})).await.map_err(storage)??;
    match changed {Some(0)=>{},Some(1)=>s.audit.append_in(tx,&fact).await?,Some(_)=>return Err(Error::Conflict),None=>audit.require_final_request()}
    Ok(())

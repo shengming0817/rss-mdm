@@ -22,13 +22,13 @@ fn policy() -> Result<rss_reconcile::Policy> {
 pub(super) async fn wake(h: &Harness, collection: bool, policy: Uuid) -> Result<()> {
     let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         h.a.resources.storage.runtime.clone(),
-        h.c.audit.binding(),
+        h.c.execution(),
         script::transaction::deadline(),
     ))
     .await?;
     script::transaction::inspect(
         &h.a.resources.storage.runtime,
-        h.c.audit.binding(),
+        h.c.execution(),
         (messaging, collection, policy),
         |ctx, tx| {
             Box::pin(async move {
@@ -75,7 +75,7 @@ async fn seed_runs(h: &Harness, collection: bool) -> Result<(Uuid, Vec<Uuid>)> {
     cancelled.cancel();
     let mut tx = command::seed_transaction(&h.c).await?;
     sqlx::query(if collection {"UPDATE mdm_inventory.collection_tasks SET agent_state=$3 WHERE tenant_id=$1::uuid AND id=$2"} else {"UPDATE mdm_script.runs SET state=$3 WHERE tenant_id=$1::uuid AND id=$2"}).bind(h.c.tenant.to_string()).bind(first).bind(serde_json::to_value(cancelled)?).execute(&mut *tx).await?;
-    sqlx::query(if collection {"INSERT INTO mdm_inventory.collection_tasks (tenant_id, id, occurrence, policy_version, channel, origin, source_objects, device, created_at, available_at, deadline, agent_state, dispatch_fingerprint) SELECT tenant_id, gen_random_uuid(), 'page:' || n, policy_version, channel, origin, source_objects, device, created_at, available_at, deadline, agent_state, dispatch_fingerprint FROM mdm_inventory.collection_tasks CROSS JOIN generate_series(1, 32) AS n WHERE tenant_id = CAST($1 AS uuid) AND id = $2"} else {"INSERT INTO mdm_script.runs (tenant_id, id, occurrence, policy_version, resource_id, origin, source_objects, device, created_at, available_at, deadline, state, dispatch_fingerprint) SELECT tenant_id, gen_random_uuid(), 'page:' || n, policy_version, resource_id, origin, source_objects, device, created_at, available_at, deadline, state, dispatch_fingerprint FROM mdm_script.runs CROSS JOIN generate_series(1, 32) AS n WHERE tenant_id = CAST($1 AS uuid) AND id = $2"}).bind(h.c.tenant.to_string()).bind(first).execute(&mut *tx).await?;
+    sqlx::query(if collection {"INSERT INTO mdm_inventory.collection_tasks (expected_epoch,tenant_id, id, occurrence, policy_version, channel, origin, source_objects, device, created_at, available_at, deadline, agent_state, dispatch_fingerprint) SELECT expected_epoch,tenant_id, gen_random_uuid(), 'page:' || n, policy_version, channel, origin, source_objects, device, created_at, available_at, deadline, agent_state, dispatch_fingerprint FROM mdm_inventory.collection_tasks CROSS JOIN generate_series(1, 32) AS n WHERE tenant_id = CAST($1 AS uuid) AND id = $2"} else {"INSERT INTO mdm_script.runs (expected_epoch,tenant_id, id, occurrence, policy_version, resource_id, origin, source_objects, device, created_at, available_at, deadline, state, dispatch_fingerprint) SELECT expected_epoch,tenant_id, gen_random_uuid(), 'page:' || n, policy_version, resource_id, origin, source_objects, device, created_at, available_at, deadline, state, dispatch_fingerprint FROM mdm_script.runs CROSS JOIN generate_series(1, 32) AS n WHERE tenant_id = CAST($1 AS uuid) AND id = $2"}).bind(h.c.tenant.to_string()).bind(first).execute(&mut *tx).await?;
     tx.commit().await?;
     let ids: Vec<Uuid> = sqlx::query_scalar(if collection {
         "SELECT id FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid ORDER BY id"
@@ -203,7 +203,7 @@ async fn checkpoint_restart(collection: bool) -> Result<()> {
     let (policy, ids) = seed_runs(&h, collection).await?;
     wake(&h, collection, policy).await?;
     let scope = first_page(&h, collection, policy, &ids).await?;
-    let a = Fixture::open(&h.c, true).await?;
+    let a = Fixture::open(&h.c).await?;
     let (audit, delivery) = super::delivery(&h.c, &a).await?;
     drop(std::mem::replace(&mut h.delivery, delivery));
     drop(std::mem::replace(&mut h.audit, audit));
@@ -272,6 +272,7 @@ async fn drain_native(h: &Harness, task: Uuid) -> Result<()> {
 #[ignore = "T2: an independently timed-out native report emits its terminal event atomically and recovery converges"]
 async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result<()> {
     let h = Harness::open().await?;
+    let execution_binding = h.c.execution();
     let (_, task, _) = super::retirement::native(&h, None).await?;
     let mut tx = command::seed_transaction(&h.c).await?;
     sqlx::query("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=(SELECT collection_run FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2)")
@@ -280,7 +281,7 @@ async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result
     script::transaction::run(
         &h.audit,
         &h.a.resources.storage.runtime,
-        h.c.audit.binding(),
+        h.c.execution(),
         &request(&h.c),
         &h.audit,
         |audit, tx| {
@@ -291,6 +292,7 @@ async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result
                         Box::pin(async move {
                             let mut facts = Vec::new();
                             let count = rss_mdm_inventory_service::collection::store::expire_timed(
+                                execution_binding,
                                 rss_mdm_install_support::StorageProfile::Mdm,
                                 c,
                                 &mut facts,
@@ -313,12 +315,12 @@ async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result
     let failed: std::result::Result<(), _> = script::transaction::run(
         &h.audit,
         &h.a.resources.storage.runtime,
-        h.c.audit.binding(),
+        h.c.execution(),
         &request(&h.c),
-        &h.a.collections,
-        |collections, tx| {
+        (&h.a.collections, h.c.execution()),
+        |(collections, execution), tx| {
             Box::pin(async move {
-                collection::recovery::recover_one(collections, tx, task).await?;
+                collection::recovery::recover_one(*execution, collections, tx, task).await?;
                 Err(script::Error::Conflict.into())
             })
         },
@@ -341,6 +343,7 @@ async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result
 async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()> {
     use rss_mdm_recovery_observation::Phase;
     let h = Harness::open().await?;
+    let other = Harness::open().await?;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
         .acquire_timeout(Duration::from_millis(500))
@@ -355,6 +358,8 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
     let store = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
     let worker = script::worker::Worker::new(
+        h.c.database.archive_pool(),
+        h.c.execution().storage(),
         h.a.scripts.clone(),
         store,
         Arc::new(tokio::sync::Semaphore::new(1)),
@@ -383,6 +388,21 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
     worker.record_relay_health(&Ok(0));
     assert_eq!(worker.health().recovery, failed);
     drop(held);
+    worker
+        .recovery_store()
+        .claim_due(
+            &script::wake::scope(other.c.tenant),
+            1,
+            64,
+            Duration::from_secs(30),
+            &control,
+        )
+        .await?;
+    assert_eq!(
+        worker.health().recovery,
+        failed,
+        "another tenant scan cannot clear this failure"
+    );
     assert!(
         worker
             .recovery_store()
@@ -394,5 +414,145 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
     assert_eq!(worker.health().recovery, Phase::Healthy);
     drop(worker);
     pool.close().await;
+    for host in [&h, &other] {
+        let input = w::TaskClaimRequest::new(
+            Uuid::new_v4(),
+            vec![w::ExecutorProfile::PowerShell7],
+            context(),
+        )?;
+        host.delivery
+            .claim(&host.p, &input, &request(&host.c))
+            .await?;
+    }
+    // The same worker must move past an old epoch and deliver another tenant's real outbox work.
+    let (blocked, ready) = if h.c.tenant.to_string() < other.c.tenant.to_string() {
+        (&h, &other)
+    } else {
+        (&other, &h)
+    };
+    let (_, old_version) = blocked.policy("relay-old").await?;
+    let old = Uuid::new_v4();
+    assert!(matches!(
+        blocked.admit(old_version, old).await?,
+        w::PolicyEventDecision::Accepted { .. }
+    ));
+    let (_, version) = ready.policy("relay-current").await?;
+    let pending = Uuid::new_v4();
+    assert!(matches!(
+        ready.admit(version, pending).await?,
+        w::PolicyEventDecision::Accepted { .. }
+    ));
+    let accepted = || async {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT gateway_accepted FROM mdm_script.runs WHERE tenant_id=$1::uuid AND id=$2",
+        )
+        .bind(ready.c.tenant.to_string())
+        .bind(pending)
+        .fetch_one(&ready.c.operator)
+        .await
+    };
+    assert!(!accepted().await?);
+    assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2 WHERE tenant_id=$1::uuid AND epoch=1")
+        .bind(blocked.c.tenant.to_string()).execute(&blocked.c.operator).await?.rows_affected(), 1);
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let _ = h.a.script_work.relay_once().await;
+            if accepted().await? {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
+    let epoch: i64 = sqlx::query_scalar(
+        "SELECT expected_epoch FROM mdm_script.runs WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(blocked.c.tenant.to_string())
+    .bind(old)
+    .fetch_one(&blocked.c.operator)
+    .await?;
+    assert_eq!(epoch, 1, "relay does not retag old work");
+    other.close().await?;
+
     h.close().await
 }
+
+#[tokio::test]
+#[ignore = "T2: the registered Script worker survives a real claim pool timeout and advances another tenant"]
+async fn recoverable_batch_scan_failure_does_not_stop_other_tenants() -> Result<()> {
+    let h = Harness::open().await?;
+    let other = Harness::open().await?;
+    let (first, second) = if h.c.tenant.to_string() < other.c.tenant.to_string() {
+        (&h, &other)
+    } else {
+        (&other, &h)
+    };
+    for host in [first, second] {
+        let (policy, _) = host.policy("scan-failure").await?;
+        wake(host, false, policy).await?;
+    }
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_millis(500))
+        .connect_with(
+            h.c.inputs
+                .database("shared", "mdm_scheduler_runtime")
+                .options()?,
+        )
+        .await?;
+    let timer = rss_mdm_device_service::control::recovery::Timer::new();
+    let force = CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &force);
+    let store = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
+    let worker = Arc::new(script::worker::Worker::new(
+        h.c.database.archive_pool(),
+        h.c.execution().storage(),
+        h.a.scripts.clone(),
+        store,
+        Arc::new(tokio::sync::Semaphore::new(1)),
+    )?);
+    let held = pool.acquire().await?;
+    let mut stack = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(25))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut launch = stack.startup()?.commit();
+    let status = launch.stage_deferred_task_with_token(
+        worker
+            .clone()
+            .registration(
+                policy()?,
+                Duration::from_secs(20),
+                Arc::new(tokio::sync::Notify::new()),
+            )
+            .critical(),
+    );
+    launch.finish();
+    let failed = tokio::time::timeout(Duration::from_secs(10), async {
+        while !matches!(
+            worker.health().recovery,
+            rss_mdm_recovery_observation::Phase::Failed(_)
+        ) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    drop(held);
+    let progressed = converged(second, script::wake::scope(second.c.tenant).reconciler(), 1).await;
+    let shutdown = stack.shutdown().join().await?;
+    assert!(shutdown.is_clean());
+    assert_eq!(
+        status.wait_stopped().await,
+        rss_runtime::TaskExit::Cancelled
+    );
+    failed?;
+    progressed?;
+    drop(worker);
+    pool.close().await;
+    other.close().await?;
+    h.close().await
+}
+
+#[path = "discovery.rs"]
+mod discovery;

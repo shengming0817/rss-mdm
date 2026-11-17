@@ -1,10 +1,13 @@
 use super::*;
 use rss_mdm_inventory_service::{assets as a, inventory_runtime as rt};
-pub(super) struct Fixture {
+pub(crate) struct Fixture {
     pub assets: Arc<a::AssetService>,
 }
 impl Fixture {
     pub async fn open(c: &Context) -> Result<Self> {
+        Self::with_discovery(c, c.database.archive_pool()).await
+    }
+    pub(crate) async fn with_discovery(c: &Context, discovery: sqlx::PgPool) -> Result<Self> {
         let clock = rt::Clock::new(
             crate::clock::monotonic(),
             crate::authority_t2_support::inventory_policy()?,
@@ -27,28 +30,30 @@ impl Fixture {
             projection.store.clone(),
             c.database.inventory(),
             c.audit.clone(),
-            c.tenant,
+            c.execution().storage(),
+            c.execution().epoch(),
             clock,
             Arc::new(rt::Readiness::default()),
         ));
         let owner = planning::owner(c, "mdm_inventory_runtime").await?;
         let groups = rss_mdm_group_postgres::GroupStore::new(
             owner.runtime.clone(),
-            c.audit.binding(),
+            c.execution(),
             rss_mdm_inventory_service::transaction::deadline(),
         )
         .await?;
         let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             owner.runtime.clone(),
-            c.audit.binding(),
+            c.execution(),
             rss_mdm_inventory_service::transaction::deadline(),
         ))
         .await?;
+
         let tenant = c.tenant;
         owner
             .runtime
             .local_tx(
-                c.audit.binding(),
+                c.execution(),
                 rss_mdm_inventory_service::transaction::deadline(),
                 |tx| {
                     Box::pin(async move {
@@ -77,10 +82,11 @@ impl Fixture {
             )?;
         Ok(Self {
             assets: Arc::new(a::AssetService::new(a::AssetDependencies {
+                read_pool: discovery,
                 inventory,
                 audit_store: owner.audit,
                 runtime: owner.runtime,
-                tenant: c.tenant,
+                probe: c.execution(),
                 clock: Arc::new(crate::clock::SystemClock),
                 cursor_key: vec![7; 32],
                 reconcile_messaging: messaging,
@@ -153,11 +159,8 @@ impl Http {
         fixture: &Fixture,
         proof: Arc<rss_mdm_authorization_service::context::AuthorizedPrincipal>,
     ) -> Result<Self> {
-        let tenant = c.tenant.to_string();
-        let sessions = rss_mdm_authorization_service::session::SessionAuthority::new(
-            c.authority.clone(),
-            c.audit.binding(),
-        );
+        let sessions =
+            rss_mdm_authorization_service::session::SessionAuthority::new(c.authority.clone());
         let router = rss_mdm_management_http::assets::routes()
             .into_axum()
             .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
@@ -166,7 +169,7 @@ impl Http {
             .layer(axum::middleware::from_fn(
                 move |mut request: axum::extract::Request, next: axum::middleware::Next| {
                     let proof = proof.clone();
-                    let tenant = tenant.clone();
+
                     let auth = {
                         let request_budget =
                             Arc::new(rss_mdm_audit_integration::budget::AuditBudget::new(
@@ -183,7 +186,7 @@ impl Http {
                         let audit = rss_mdm_audit_integration::RequestAudit::new(
                             rss_mdm_audit_integration::Origin::Request,
                             rss_mdm_install_support::StorageProfile::Mdm,
-                            tenant,
+                            proof.binding(),
                             "software-assets-t2",
                             rss_mdm_audit_integration::AuditIntent::Management,
                         );
@@ -194,8 +197,13 @@ impl Http {
                     }
                 },
             ));
+        let router = axum::Router::new().nest("/api/v1/tenants/{tenant}", router);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let base = format!("http://{}", listener.local_addr()?);
+        let base = format!(
+            "http://{}/api/v1/tenants/{}",
+            listener.local_addr()?,
+            c.tenant
+        );
         let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         Ok(Self {
             base,
@@ -223,6 +231,17 @@ impl Http {
     pub async fn get(&self, path: &str) -> Result<Value> {
         let (status, value) = self.call(reqwest::Method::GET, path, None).await?;
         anyhow::ensure!(status == 200, "GET {path}: {status} {value}");
+        Ok(value)
+    }
+    pub async fn follow(&self, path: &str) -> Result<Value> {
+        let url = url::Url::parse(&self.base)?.join(path)?;
+        let response = self.client.get(url).send().await?;
+        let status = response.status();
+        let value: Value = response.json().await?;
+        anyhow::ensure!(
+            status.is_success(),
+            "response link {path}: {status} {value}"
+        );
         Ok(value)
     }
     pub async fn close(self) {

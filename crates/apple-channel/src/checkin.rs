@@ -19,13 +19,17 @@ pub async fn checkin(
 ) -> Result<axum::response::Response, Error> {
     let Extension(peer) = peer.ok_or(Error::Unauthorized)?;
     use axum::response::IntoResponse;
-    let apple = app.apple()?;
+    let execution = app.certificate_binding(&peer).await?;
+    let apple = app.apple(execution).await?;
     let leaf = apple.authority.verify(
         peer.chain(),
         app.clock
             .unix_seconds()
             .ok_or(Error::Unavailable(Failure::Clock))?,
     )?;
+    audit
+        .bind_scope(execution)
+        .map_err(|_| Error::Unauthorized)?;
     let dictionary = protocol::decode(&bytes)?;
     let input = protocol::checkin(&dictionary)?;
     let udid = match input {
@@ -45,12 +49,13 @@ pub async fn checkin(
             .transpose()?,
     };
     if let Some(udid) = udid {
-        super::renewal::activate(&app, &leaf, udid).await?;
+        super::renewal::activate(&app, execution, &apple, &leaf, udid).await?;
     }
-    let credential = app.mount.credential(leaf.fingerprint())?;
+    let credential = app.mount.credential(execution, leaf.fingerprint())?;
     if matches!(input, CheckIn::Authenticate { .. })
         && authenticate(
             &app,
+            &apple,
             &leaf,
             udid.ok_or(Error::Malformed)?,
             &audit,
@@ -60,13 +65,14 @@ pub async fn checkin(
     {
         return Ok(StatusCode::OK.into_response());
     }
-    bound(&app, &leaf).await?;
+    bound(&app, execution, &apple, &leaf).await?;
     let principal = app.devices.management_principal(&credential).await?;
     audit.identify_device(principal.device());
     audit.target_device(principal.device());
     let user_access = if protocol::user(&dictionary)?.is_some() {
         match crate::account_enrollment::authorize_user(
             &app,
+            execution,
             leaf.enrollment(),
             &headers,
             control.deadline(),
@@ -136,7 +142,7 @@ pub async fn checkin(
     let attempt = app
         .audit_store
         .write(
-            principal.tenant(),
+            audit.binding()?,
             &budget.source_control(),
             (
                 &app.audit_store,
@@ -270,6 +276,7 @@ async fn checkin_on(
                 .await
                 .map_err(|_| crate::Error::Unavailable(crate::Failure::AppleStorage))?;
             rss_mdm_registration_service::retire(
+                principal.binding(),
                 rss_mdm_install_support::StorageProfile::Mdm,
                 tx,
                 facts,
@@ -395,26 +402,31 @@ pub async fn manage(
 ) -> Result<axum::response::Response, Error> {
     let Extension(peer) = peer.ok_or(Error::Unauthorized)?;
     use axum::response::IntoResponse;
-    let apple = app.apple()?;
+    let execution = app.certificate_binding(&peer).await?;
+    let apple = app.apple(execution).await?;
     let leaf = apple.authority.verify(
         peer.chain(),
         app.clock
             .unix_seconds()
             .ok_or(Error::Unavailable(Failure::Clock))?,
     )?;
+    audit
+        .bind_scope(execution)
+        .map_err(|_| Error::Unauthorized)?;
     let dictionary = protocol::decode(&bytes)?;
     let message = protocol::management(&dictionary)?;
     if message.user.is_none() {
-        super::renewal::activate(&app, &leaf, message.udid).await?;
+        super::renewal::activate(&app, execution, &apple, &leaf, message.udid).await?;
     }
-    let credential = app.mount.credential(leaf.fingerprint())?;
-    bound(&app, &leaf).await?;
+    let credential = app.mount.credential(execution, leaf.fingerprint())?;
+    bound(&app, execution, &apple, &leaf).await?;
     let principal = app.devices.management_principal(&credential).await?;
     audit.identify_device(principal.device());
     audit.target_device(principal.device());
     let user_access = if message.user.is_some() {
         match crate::account_enrollment::authorize_user(
             &app,
+            execution,
             leaf.enrollment(),
             &headers,
             control.deadline(),
@@ -469,11 +481,13 @@ pub async fn manage(
 
 async fn bound(
     app: &HttpState,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    apple: &Arc<crate::Apple>,
     leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
 ) -> Result<(), Error> {
-    let tenant = app.identity.tenant().to_string();
+    let tenant = execution.tenant().to_string();
     let mut tx = app.access.begin(&tenant).await?;
-    let row = enrollment::attempt(&mut tx, &tenant, app.apple()?, leaf).await?;
+    let row = enrollment::attempt(&mut tx, execution, apple, leaf).await?;
     if row.try_get::<String, _>("state").map_err(db)? != "bound" {
         return Err(Error::Unauthorized);
     }
@@ -483,18 +497,20 @@ async fn bound(
 
 async fn authenticate(
     app: &HttpState,
+    apple: &Arc<crate::Apple>,
     leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
     udid: &str,
     audit: &RequestAudit,
     cutoff: rss_request_context::Deadline,
 ) -> Result<bool, Error> {
-    let tenant = app.identity.tenant().to_string();
+    let execution = audit.binding()?;
+    let tenant = execution.tenant().to_string();
     let mut tx = app.access.begin(&tenant).await?;
-    let row = enrollment::attempt(&mut tx, &tenant, app.apple()?, leaf).await?;
+    let row = enrollment::attempt(&mut tx, execution, apple, leaf).await?;
     let consumed = row.try_get::<String, _>("state").map_err(db)? == "consumed";
     tx.rollback().await.map_err(db)?;
     if consumed {
-        enrollment::bind(app, leaf, udid, audit, cutoff).await?;
+        enrollment::bind(app, apple, leaf, udid, audit, cutoff).await?;
     }
     Ok(consumed)
 }

@@ -149,12 +149,16 @@ fn input<T>(value: Result<Json<T>, axum::extract::rejection::JsonRejection>) -> 
     value.map(|v| v.0).map_err(Error::from)
 }
 async fn state(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
 ) -> Result<Json<archive::VaultState>, Error> {
     s.state(&a.proof).await.map(Json).map_err(Error::from)
 }
 async fn initialize(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -168,6 +172,8 @@ async fn initialize(
         .map_err(Error::from)
 }
 async fn unlock(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     body: Result<Json<archive::PasswordInput>, axum::extract::rejection::JsonRejection>,
@@ -178,6 +184,8 @@ async fn unlock(
         .map_err(Error::from)
 }
 async fn lock(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
 ) -> Result<Json<Locked>, Error> {
@@ -185,6 +193,8 @@ async fn lock(
     Ok(Json(Locked { locked: true }))
 }
 async fn password(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -198,6 +208,8 @@ async fn password(
         .map_err(Error::from)
 }
 async fn list(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     Extension(cursor): Extension<rss_mdm_query::cursor::CursorCodec>,
@@ -218,7 +230,7 @@ async fn list(
 async fn detail(
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
-    Path(entry): Path<Uuid>,
+    Path((_tenant, entry)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<archive::Entry>, Error> {
     s.entry(&a.proof, entry)
         .await
@@ -228,7 +240,7 @@ async fn detail(
 async fn history(
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
-    Path(entry): Path<Uuid>,
+    Path((_tenant, entry)): Path<(uuid::Uuid, Uuid)>,
     Extension(cursor): Extension<rss_mdm_query::cursor::CursorCodec>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<HistoryQuery>,
@@ -248,6 +260,8 @@ async fn history(
     .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn import(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -261,6 +275,8 @@ async fn import(
         .map_err(Error::from)
 }
 async fn generate(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -274,6 +290,8 @@ async fn generate(
         .map_err(Error::from)
 }
 async fn export(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -289,7 +307,7 @@ async fn export(
 async fn operation(
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<archive::Receipt>, Error> {
     s.operation(&a.proof, id)
         .await
@@ -297,12 +315,16 @@ async fn operation(
         .map_err(Error::from)
 }
 async fn settings(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
 ) -> Result<Json<archive::SettingsView>, Error> {
     s.settings(&a.proof).await.map(Json).map_err(Error::from)
 }
 async fn change_settings(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -319,7 +341,7 @@ async fn manage(
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(entry): Path<Uuid>,
+    Path((_tenant, entry)): Path<(uuid::Uuid, Uuid)>,
     headers: crate::api::WriteHeaders,
     body: Result<Json<archive::ManageEntry>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<archive::Receipt>, Error> {
@@ -334,7 +356,7 @@ async fn metadata(
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(entry): Path<Uuid>,
+    Path((_tenant, entry)): Path<(uuid::Uuid, Uuid)>,
     headers: crate::api::WriteHeaders,
     body: Result<Json<archive::ChangeMetadata>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<archive::Receipt>, Error> {

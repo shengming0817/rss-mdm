@@ -20,7 +20,7 @@ MDM 嵌入 rss-identity 公共组件，由 Identity 持有账户、认证与会�
 
 账户通过 `POST /api/v1/identity/tenants/{tenant}/bearer/login` 提交本地 `login/password`，取得 `accessToken` 后使用 `Authorization: Bearer ...`。Token 由 Identity 签发并持有，延用账户当前权限；账户停用、会话撤销后失效。空闲期限为 15 分钟、绝对期限为 4 小时，成功认证请求（包括 GET）刷新空闲期限，不延长绝对期限；没有 refresh token，过期重新登录。`POST .../bearer/logout` 撤销当前 Token，账户的全部会话撤销同时覆盖 Cookie 与 Bearer。
 
-API Key 属于业务租户，由具有 `authorization_read/write` 的租户账户管理。创建者仅为审计信息，创建者停用或退出不撤销 Key。`/api/v1/api-keys` 提供列表和创建，`/{id}` 提供详情和更新，`/{id}/rotate`、`/{id}/revoke` 用于轮换和永久撤销。创建时客户端预先生成 `id` 和 `operationId`；修改带 `expectedRevision`。名称、启用状态、可选到期时间和显式 grants 由管理者维护，字段以 [HTTP 定义](../../crates/management-http/src/api_access.rs) 和 [权限模型](../../crates/authorization-service/src/model.rs) 为准。
+API Key 属于业务租户，由具有 `authorization_read/write` 的租户账户管理。创建者仅为审计信息，创建者停用或退出不撤销 Key。`/api/v1/tenants/{tenant}/api-keys` 提供列表和创建，`/{id}` 提供详情和更新，`/{id}/rotate`、`/{id}/revoke` 用于轮换和永久撤销。创建时客户端预先生成 `id` 和 `operationId`；修改带 `expectedRevision`。名称、启用状态、可选到期时间和显式 grants 由管理者维护，字段以 [HTTP 定义](../../crates/management-http/src/api_access.rs) 和 [权限模型](../../crates/authorization-service/src/model.rs) 为准。
 
 每租户累计最多保留 1000 个 Key ID，元数据及创建者信息总计最多 2 MiB。撤销保留 ID 和审计历史，不释放额度；轮换沿用 ID，不增加 Key 数量。
 
@@ -34,7 +34,7 @@ Key 通过 `X-API-Key` 传递；完整随机密钥仅在创建或轮换成功的
 
 每请求读取一致的规则/成员快照，不跨请求缓存。异步执行、注册续接和最终绑定重新核对当前授权。规则与成员写入在实例/租户事务内串行化并重验权限，成员维护还要求授权管理权，不能成为隐式委派。
 
-通过 `/api/v1/authorization` 读取当前权限，通过对应 rules、user-groups、departments 入口维护规则与主体。写入携带稳定 operationId 与 expectedRevision；删除保留墓碑，UUID 不复用。提交未知按原身份精确重放；历史回执不会恢复已删除权限。分页版本变化时重新读取，禁止混合成员快照。
+通过 `/api/v1/tenants/{tenant}/authorization` 读取当前权限，通过对应 rules、user-groups、departments 入口维护规则与主体。写入携带稳定 operationId 与 expectedRevision；删除保留墓碑，UUID 不复用。提交未知按原身份精确重放；历史回执不会恢复已删除权限。分页版本变化时重新读取，禁止混合成员快照。
 
 `initialize-authorization` 仅显式执行一次，核对真实 Identity 主体后初始化管理规则。`serve` 不补种子；删除前必须先交接另一条有效管理员授权。当前没有内建的授权恢复或重新种子入口，重启、重放初始化和密码恢复都不能恢复已删除的 MDM grant。
 
@@ -54,29 +54,29 @@ Key 通过 `X-API-Key` 传递；完整随机密钥仅在创建或轮换成功的
 
 ## 管理审计检索
 
-`GET /api/v1/audit-events` 与设备时间线使用 `audit_read` 权限及正常请求上下文。支持按设备、operation、主体、动作、结果和记录时间检索；租户/实例来自可信会话，客户端不能覆盖。响应仅包含安全事实投影，不返回凭据、原始 payload、任意 details 或执行输出。普通审计读取不表示已完成密码学账本验证。
+`GET /api/v1/tenants/{tenant}/audit-events` 与设备时间线使用 `audit_read` 权限及正常请求上下文。支持按设备、operation、主体、动作、结果和记录时间检索；租户/实例来自可信会话，客户端不能覆盖。响应仅包含安全事实投影，不返回凭据、原始 payload、任意 details 或执行输出。普通审计读取不表示已完成密码学账本验证。
 ## 运行诊断
 
-运行诊断通过 `GET /api/v1/runtime/diagnostics` 查询；使用现有授权规则，为获准运维主体显式授予
+运行诊断通过 `GET /api/v1/tenants/{tenant}/runtime/diagnostics` 查询；使用现有授权规则，为获准运维主体显式授予
 `{"operation":"runtime_diagnostics_read","scope":{"kind":"tenant"}}`。设备范围无效，既有管理权限不隐式包含此权限。
 撤回规则后后续请求重新加载授权并拒绝查询；查询绑定当前宿主实例和租户。
 诊断语义与认证或审计依赖失败时的处理见[运维与恢复](../deployment/operations.md)。
 
-资源审计查询 `/api/v1/audit-events` 支持 `targetId/targetType` 精确组合筛选，目标响应为 `{type,id}`。
+资源审计查询 `/api/v1/tenants/{tenant}/audit-events` 支持 `targetId/targetType` 精确组合筛选，目标响应为 `{type,id}`。
 时间范围继续使用录入时间 recordedAt 的 `[from,until)`，observedAt 独立保留。
 游标绑定筛选、主体和有效授权依据；变更条件或权限后从首页开始，不接受旧游标。源事实中已有的 mdm 类型保持原值，不根据当前资源补猜历史类型。
 
 
 ## 登录资料与业务字段
 
-资料由 Identity 保存，MDM 只持有字段定义并在读取时投影，不复制属性值。本人 `GET /api/v1/user-profiles/me`
+资料由 Identity 保存，MDM 只持有字段定义并在读取时投影，不复制属性值。本人 `GET /api/v1/tenants/{tenant}/user-profiles/me`
 读取本次登录绑定的观察；同一来源后续登录替换观察后，旧会话仍可有效，但资料返回 unavailable。
-`?view=latest` 显式读取本人最近观察；`/api/v1/user-profiles/{principalId}` 使用 latest 语义并要求
+`?view=latest` 显式读取本人最近观察；`/api/v1/tenants/{tenant}/user-profiles/{principalId}` 使用 latest 语义并要求
 `user_profiles_read`。latest 按目标账户实际观察分页发现来源，不依赖查看者登录来源或先建立业务字段映射。API Key 不提供自然人资料上下文。固定资料、映射字段、来源、观察期限和完整性由这一个产品响应组合。
 必填只表示资料完整性，不阻止基础登录。过期或无效资料不沿用旧值，refresh 和 GET 不更新采集时间。
 
 设置中的用户字段入口由 `user_attribute_definitions_read/write` 独立控制；写定义不授予样本读取、账户管理或本地资料写入。
-定义及批准来源元数据通过 `GET /api/v1/user-attribute-definitions` 读取，使用 `filter/sort/fields/limit/cursor`，响应为 `items/nextCursor/sources`；将 `nextCursor` 原样作为 `cursor`。
+定义及批准来源元数据通过 `GET /api/v1/tenants/{tenant}/user-attribute-definitions` 读取，使用 `filter/sort/fields/limit/cursor`，响应为 `items/nextCursor/sources`；将 `nextCursor` 原样作为 `cursor`。
 字段投影和续页规则见[统一目录查询](groups-scopes-policies.md)。
 详情与写入位于 `/{fieldId}`；PUT 携带 `operationId/expectedRevision/value`，value 为 null 表示删除。
 最多同时启用 128 个字段。来源、路径或类型约束变化默认等待下一次登录；明确选择使用已有观察仅重投影仍有效的观察，不延长其期限。
@@ -87,7 +87,7 @@ Key 通过 `X-API-Key` 传递；完整随机密钥仅在创建或轮换成功的
 修改只更新本地来源，重新登录才产生新观察。
 
 收到 409 后重新读取定义；提交结果未知或响应丢失时，以原 operationId 查询
-`GET /api/v1/user-attribute-operations/{operationId}`，不要自动重放写入。操作回执绑定租户、实例和调用主体，当前权限仍须有效。
+`GET /api/v1/tenants/{tenant}/user-attribute-operations/{operationId}`，不要自动重放写入。操作回执绑定租户、实例和调用主体，当前权限仍须有效。
 会话的 issuedAt 只表示签发时间；Apple/WNS/存储/邮件/任务签名/Webhook 和设置的近期认证判断均使用真实认证时间，未知、未来或过旧时拒绝。
 
 MDM 不暴露 Identity 的原始 `/api/v1/identity/tenants/{tenant}/profile` 观察读取；本人及他人资料统一经过 MDM 字段投影。本地资料管理仍使用受账户管理策略保护的 accounts 路径。`profiles[]` 的 `providerConfigVersion/sourceRevision` 是该观察接受时的来源版本（不适用为 null），不会替换为读取时的最新版本。
@@ -97,6 +97,6 @@ MDM 不暴露 Identity 的原始 `/api/v1/identity/tenants/{tenant}/profile` 观
 
 规则、用户组、成员与 API Key 列表使用 `filter`、`sort`、`fields`、`limit`、`cursor`，返回 `items` 与 `nextCursor`；排序、筛选在数据库完整授权候选上执行。游标与租户、主体和当前授权绑定，改变查询或授权后重新读取第一页。组成员游标还绑定组 revision。
 
-编辑使用 `GET /api/v1/authorization/rules/{id}` 或 `GET /api/v1/authorization/user-groups/{id}` 获取完整 `id/revision/value`，写入继续使用原 `expectedRevision` CAS；墓碑 `value:null` 与不存在的 404 分开表达。列表投影不能作为完整写回值。Key 列表只公开安全元数据，秘密继续由专用创建/轮换流程披露。
+编辑使用 `GET /api/v1/tenants/{tenant}/authorization/rules/{id}` 或 `GET /api/v1/tenants/{tenant}/authorization/user-groups/{id}` 获取完整 `id/revision/value`，写入继续使用原 `expectedRevision` CAS；墓碑 `value:null` 与不存在的 404 分开表达。列表投影不能作为完整写回值。Key 列表只公开安全元数据，秘密继续由专用创建/轮换流程披露。
 
 本次直接替换旧分页参数，匹配浏览器客户端由 #2907 接续；旧前端与本后端不能作为完成组合发布。可信部门入口读取 Identity 的有界来源快照，保留来源、到期及不可用语义。

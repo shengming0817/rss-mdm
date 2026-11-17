@@ -73,18 +73,64 @@ impl Service {
         p: &rss_mdm_registration_service::DevicePrincipal,
         audit: &RequestAudit,
     ) -> Result<(), Error> {
-        if p.profile() != self.signing.profile
-            || p.tenant() != self.tenant
-            || audit.profile() != self.signing.profile
-            || audit.tenant() != self.tenant.to_string()
-        {
+        if p.profile() != self.signing.profile || audit.profile() != self.signing.profile {
             return Err(Error::Forbidden);
         }
-        Ok(())
+        audit.bind_scope(p.binding()).map_err(|_| Error::Forbidden)
     }
-    /// Current process signer identity; active authority must still be checked separately.
-    pub fn loaded_task_signing_key(&self) -> Option<&str> {
-        self.signing.loaded_key()
+
+    /// Inspect the same current private material used by an operation, without a startup selection.
+    pub async fn signing_material(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<Option<(String, u64)>, Error> {
+        let budget = AuditBudget::new(Duration::from_secs(5));
+        self.audit
+            .write(
+                execution,
+                &budget.source_control(),
+                (&self.signing, execution),
+                |context, tx| {
+                    Box::pin(async move {
+                        tx.with_connection_context(context, |(signing, execution), c| {
+                            Box::pin(async move {
+                                let current = match trust::current(
+                                    signing.profile,
+                                    signing.usage,
+                                    c,
+                                    execution.tenant(),
+                                )
+                                .await
+                                {
+                                    Ok(value) => value,
+                                    Err(Error::NotFound | Error::Unsupported) => return Ok(None),
+                                    Err(error) => return Err(error),
+                                };
+                                let loaded = trust::load(
+                                    signing.profile,
+                                    signing.usage,
+                                    c,
+                                    execution.tenant(),
+                                    current.revision,
+                                    &signing.protection,
+                                )
+                                .await?;
+                                Ok(Some((loaded.task.key_id().to_owned(), current.revision)))
+                            })
+                        })
+                        .await
+                    })
+                },
+            )
+            .await
+            .fold(
+                Ok,
+                |e| Err(failure(e)),
+                |e| Err(failure(e)),
+                |_| Err(Error::RollbackFailed),
+                |_| Err(Error::CommitUnknown),
+                |e| Err(failure(e)),
+            )
     }
 
     pub async fn task_trust(
@@ -96,7 +142,7 @@ impl Service {
             self.signing.profile,
             self.signing.usage,
             &self.audit,
-            self.tenant,
+            p.binding().tenant(),
             p,
             audit,
             None,
@@ -113,7 +159,7 @@ impl Service {
             self.signing.profile,
             self.signing.usage,
             &self.audit,
-            self.tenant,
+            p.binding().tenant(),
             p,
             audit,
             Some(operation),
@@ -130,7 +176,7 @@ impl Service {
         let profile = self.signing.profile;
         let usage = self.signing.usage;
 
-        if p.profile() != profile || p.tenant_id() != self.tenant.to_string() {
+        if p.profile() != profile {
             return Err(Error::Forbidden);
         }
         p.require(Permission::RegistrationConfigurationWrite, None)?;
@@ -144,7 +190,8 @@ impl Service {
         );
         audit.require_final_request();
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let result=self.audit.write(self.tenant,&budget.source_control(),(self,p,audit,operation,change),|(service,p,audit,operation,change),tx|Box::pin(async move {
+        let result=self.audit.write(
+            p.binding(),&budget.source_control(),(self,p,audit,operation,change),|(service,p,audit,operation,change),tx|Box::pin(async move {
             let mut context=(*service,*p,*operation,*change);
             let (value,replayed)=tx.with_connection_context(&mut context,|(service,p,operation,change),c|Box::pin(async move {
                 let now:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
@@ -152,12 +199,12 @@ impl Service {
                 rss_mdm_authorization_service::lock_shared_on(p.authority_profile(),  c,p.tenant_id(),p.instance_id()).await?;
                 let rules=rss_mdm_authorization_service::snapshot_on(p.authority_profile(),  c,p.tenant_id(),p.instance_id()).await?;
                 rules.require(p,Permission::RegistrationConfigurationWrite,None)?;
-                let replayed:bool=sqlx::query_scalar(crate::storage_profile::sql(profile, usage).service_change_task_trust_1).bind(service.tenant.to_string()).bind(*operation).fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
+                let replayed:bool=sqlx::query_scalar(crate::storage_profile::sql(profile, usage).service_change_task_trust_1).bind(p.binding().tenant().to_string()).bind(*operation).fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
                 let actor=format!("{}:{}:{}",p.tenant_id(),p.instance_id(),p.principal_id());
                 let value=match change {
-                    Change::Prepare{expected_revision}=>trust::prepare(profile, usage, c,service.tenant,*operation,*expected_revision,&service.protection,&actor).await?,
-                    Change::Retire{expected_revision,key_id}=>trust::retire(profile, usage, c,service.tenant,*operation,*expected_revision,key_id,&service.protection,&actor,service.retirement.as_deref()).await?,
-                    Change::Activate{expected_revision,key_id}=>trust::activate(profile, usage, c,service.tenant,*operation,*expected_revision,key_id,&service.protection,&actor).await?,
+                    Change::Prepare{expected_revision}=>trust::prepare(profile, usage, c,p.binding().tenant(),*operation,*expected_revision,&service.protection,&actor).await?,
+                    Change::Retire{expected_revision,key_id}=>trust::retire(profile, usage, c,p.binding().tenant(),*operation,*expected_revision,key_id,&service.protection,&actor,service.retirement.as_deref()).await?,
+                    Change::Activate{expected_revision,key_id}=>trust::activate(profile, usage, c,p.binding().tenant(),*operation,*expected_revision,key_id,&service.protection,&actor).await?,
                 };
                 p.check_live()?;Ok::<_,Error>((value,replayed))
             })).await?;
@@ -182,17 +229,17 @@ impl Service {
         let result = self
             .audit
             .write(
-                self.tenant,
+                audit.binding()?,
                 &budget.source_control(),
                 (self, p),
                 |(service, p), tx| {
                     Box::pin(async move {
                         let mut context = (*service, *p);
-                        tx.with_connection_context(&mut context, |(service, p), c| {
+                        tx.with_connection_context(&mut context, |(_, p), c| {
                             Box::pin(async move {
                                 rss_mdm_registration_service::device::require_use_in(c, p, usage)
                                     .await?;
-                                trust::current(profile, usage, c, service.tenant).await
+                                trust::current(profile, usage, c, p.binding().tenant()).await
                             })
                         })
                         .await
@@ -224,7 +271,7 @@ impl Service {
         let result = self
             .audit
             .write(
-                self.tenant,
+                audit.binding()?,
                 &budget.source_control(),
                 (self, p, audit, input),
                 |(service, p, audit, input), tx| {
@@ -307,7 +354,7 @@ impl Service {
         let result = self
             .audit
             .write(
-                self.tenant,
+                audit.binding()?,
                 &budget.source_control(),
                 (self, p, audit, input),
                 |(service, p, audit, input), tx| {
@@ -363,7 +410,7 @@ impl Service {
         let profile = self.signing.profile;
         let usage = self.signing.usage;
 
-        if p.profile() != profile || p.tenant_id() != self.tenant.to_string() {
+        if p.profile() != profile {
             return Err(Error::Forbidden);
         }
         p.require(Permission::InventoryRead, Some(device))?;
@@ -372,20 +419,20 @@ impl Service {
         let result = self
             .audit
             .read(
-                self.tenant,
+                p.binding().tenant(),
                 &budget.control(),
                 (self, p, device),
-                |(service, p, device), tx| {
+                |(_, p, device), tx| {
                     Box::pin(async move {
-                        let mut context = (*service, *device);
+                        let mut context = (*p, *device);
                         let value = tx
-                            .with_connection_context(&mut context, |(service, device), c| {
+                            .with_connection_context(&mut context, |(p, device), c| {
                                 Box::pin(async move {
                                     super::observations::latest_in(
                                         profile,
                                         usage,
                                         c,
-                                        &service.tenant.to_string(),
+                                        &p.binding().tenant().to_string(),
                                         device,
                                     )
                                     .await
@@ -455,7 +502,11 @@ mod tests {
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            uuid::Uuid::new_v4().to_string(),
+            rss_transactional_messaging::fence::ExecutionBinding::new(
+                rss_transactional_messaging::fence::StorageIdentity::new([1; 16], [2; 16]).unwrap(),
+                rss_request_context::TenantId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
+                rss_transactional_messaging::fence::Epoch::new(1).unwrap(),
+            ),
             "task-trust",
             rss_mdm_audit_integration::AuditIntent::Management,
         );

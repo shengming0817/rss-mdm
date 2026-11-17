@@ -70,11 +70,13 @@ class CandidatePublication(unittest.TestCase):
                 with mock.patch.object(release, "copy_source", side_effect=copy_inputs), \
                      mock.patch.object(release.subprocess, "run", side_effect=docker_command), \
                      mock.patch.object(release, "oci_identity", return_value=("sha256:fixture", {"os":"linux", "architecture":"arm64"})), \
-                     mock.patch.object(release, "run", side_effect=['{}', '{}', 'version']), \
+                     mock.patch.object(release, "run", side_effect=['{}', '{}', 'version', '{"routes":[]}']), \
                      mock.patch.object(release, "snapshot_ui", side_effect=snapshot) as ui:
                     release.build_staged(output, header, web_image)
                 manifest = json.loads((output / "candidate.json").read_text())
                 self.assertTrue((output / "server.oci.tar").is_file())
+                self.assertEqual(manifest['deployment']['http-contract.json'],release.sha(output/'http-contract.json'))
+                self.assertEqual((output/'http-contract.json').read_text(),'{"routes":[]}\n')
                 self.assertEqual("ui" in manifest, web_image is not None)
                 self.assertEqual((output / "identity-ui.image.tar").exists(), web_image is not None)
                 if web_image is None:

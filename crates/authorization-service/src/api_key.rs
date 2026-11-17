@@ -74,10 +74,12 @@ pub(crate) struct KeyProof {
 impl crate::Store {
     pub async fn authenticate_key(
         &self,
-        tenant: &str,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         secret: &crate::credential::ApiKeySecret,
     ) -> Result<crate::context::Principal, Error> {
         let profile = self.authority_profile();
+        let tenant_text = binding.tenant().to_string();
+        let tenant = tenant_text.as_str();
 
         use sqlx::{Acquire, Row};
         let start = self.clock.now();
@@ -124,7 +126,7 @@ impl crate::Store {
                 deadline: start + std::time::Duration::from_secs_f64(seconds),
             };
             tx.rollback().await.map_err(crate::database::db)?;
-            let principal = crate::context::Principal::from_key(proof);
+            let principal = crate::context::Principal::from_key(proof, binding);
             principal.check_live()?;
             Ok(principal)
         })

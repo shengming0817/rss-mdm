@@ -2,7 +2,7 @@
 use crate::{ConfigIssue, Error};
 use rss_mdm_registration_service::certificate_issuance::DeviceIssuer;
 use serde::Deserialize;
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::sync::Arc;
 #[derive(serde::Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Config {
@@ -11,8 +11,6 @@ pub enum Config {
         endpoint: Box<crate::native::PublicEndpoint>,
         #[serde(default)]
         additional_origins: Vec<String>,
-        #[serde(default)]
-        trust_file: PathBuf,
         #[serde(default)]
         bootstrap: Option<BootstrapConfig>,
         #[serde(default)]
@@ -43,16 +41,14 @@ impl Lifetime {
 #[serde(deny_unknown_fields)]
 pub struct BootstrapConfig {
     #[serde(default)]
-    pub trust_file: PathBuf,
-    #[serde(default)]
     pub webhooks: Vec<crate::ca_webhooks::Credentials>,
 }
 pub(crate) struct AgentPki {
     pub issuer: Arc<DeviceIssuer>,
-    pub bootstrap: Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>,
+    pub bootstrap: Option<Arc<rss_mdm_pki_service::scep::Verifier>>,
     pub origins: Vec<String>,
     pub pki_clock: Arc<dyn rss_mdm_registration_service::certificate_issuance::Clock>,
-    clock: Arc<dyn crate::clock::Clock>,
+
     required_seconds: i64,
 }
 impl Config {
@@ -62,12 +58,12 @@ impl Config {
         _audit: Arc<rss_mdm_audit_integration::AuditStore>,
         clock: Arc<dyn crate::clock::Clock>,
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
-        bootstrap: Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>,
+        registry: Arc<rss_mdm_pki_service::registry::Registry>,
+        bootstrap: Option<Arc<rss_mdm_pki_service::scep::Verifier>>,
     ) -> Result<Option<Arc<AgentPki>>, Error> {
         let Self::StepCa {
             endpoint,
             additional_origins,
-            trust_file,
             lifetime,
             ..
         } = self
@@ -95,33 +91,14 @@ impl Config {
             rss_mdm_agent_wire::connections::validate_origin(value).map_err(|_| invalid())?;
         }
         let days = lifetime.days()?;
-        let device_trust = crate::device_pki::load(
-            trust_file,
-            rss_mdm_agent_wire::pki::Purpose::Agent,
-            clock.unix_seconds()?,
-        )?;
-        if device_trust
-            .public()
-            .map_err(|_| invalid())?
-            .service_id
-            .to_string()
-            != service_id
-        {
-            return Err(invalid());
-        }
-        let trust = Arc::new(
-            rss_mdm_device_trust::device_identity::DeviceIdentityTrust::from_trust(
-                device_trust,
-                days,
-            )
-            .map_err(|_| invalid())?,
-        );
         let issuer = DeviceIssuer::new(
             rss_mdm_install_support::StorageProfile::Mdm,
             providers,
             days,
             matches!(lifetime, Lifetime::Development { .. }),
-            trust,
+            rss_mdm_agent_wire::pki::Purpose::Agent,
+            registry,
+            uuid::Uuid::parse_str(service_id).map_err(|_| invalid())?,
             Arc::new(PkiClock(clock.clone())),
         )
         .map_err(|_| invalid())?;
@@ -130,7 +107,7 @@ impl Config {
             pki_clock: Arc::new(PkiClock(clock.clone())),
             issuer: Arc::new(issuer),
             bootstrap,
-            clock,
+
             required_seconds: i64::from(days) * 86400,
         })))
     }
@@ -144,39 +121,34 @@ impl rss_mdm_registration_service::certificate_issuance::Clock for PkiClock {
     }
 }
 impl AgentPki {
-    pub(crate) fn remove_bootstrap(&mut self) -> Result<(), Error> {
-        self.bootstrap = None;
-        Ok(())
+    pub(crate) async fn issuance_ready_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        now: i64,
+    ) -> Result<bool, Error> {
+        let trust = self
+            .issuer
+            .trust_on(c, execution)
+            .await
+            .map_err(Error::from)?;
+        Ok(!matches!(
+            health(trust.expires(), now, self.required_seconds),
+            "expired" | "issuance_unavailable"
+        ))
     }
-
-    pub(crate) fn issuance_ready(&self, now: i64) -> bool {
+    pub(crate) async fn issuance_ready(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        now: i64,
+    ) -> bool {
+        let Ok(trust) = self.issuer.trust(execution).await else {
+            return false;
+        };
         !matches!(
-            health(self.issuer.trust().expires(), now, self.required_seconds),
+            health(trust.expires(), now, self.required_seconds),
             "expired" | "issuance_unavailable"
         )
-    }
-
-    pub(crate) fn registration(self: Arc<Self>) -> rss_runtime::ManagedTaskRegistration {
-        let (task, _) =
-            rss_runtime::ManagedTask::prepare("agent-pki-expiry", Duration::from_secs(2));
-        task.into_registration(move |token| async move {
-            let mut previous = None;
-            loop {
-                let level = match self.clock.unix_seconds() {
-                    Ok(now) => health(self.issuer.trust().expires(), now, self.required_seconds),
-                    Err(_) => "clock_unavailable",
-                };
-                if previous != Some(level) {
-                    eprintln!("{}", serde_json::json!({"event":"agent_certificate_health","purpose":"issuer","level":level}));
-                    previous = Some(level);
-                }
-                tokio::select! {
-                    biased;
-                    () = token.cancelled() => return Ok(()),
-                    () = tokio::time::sleep(Duration::from_secs(60)) => {}
-                }
-            }
-        })
     }
 }
 fn health(expires: i64, now: i64, required: i64) -> &'static str {
@@ -197,11 +169,10 @@ fn health(expires: i64, now: i64, required: i64) -> &'static str {
 impl Config {
     pub(crate) fn bootstrap_materials(
         &self,
-        service_id: &str,
-        providers: &rss_mdm_pki_service::providers::Providers,
-        now: i64,
-    ) -> Result<Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>, Error>
-    {
+        _service_id: &str,
+        _providers: &rss_mdm_pki_service::providers::Providers,
+        _now: i64,
+    ) -> Result<Option<Arc<rss_mdm_pki_service::scep::Verifier>>, Error> {
         let Self::StepCa {
             bootstrap: Some(input),
             ..
@@ -209,30 +180,11 @@ impl Config {
         else {
             return Ok(None);
         };
-        let invalid = || Error::Configuration(ConfigIssue::AgentPki);
-        let trust = crate::device_pki::load(
-            &input.trust_file,
-            rss_mdm_agent_wire::pki::Purpose::AgentBootstrap,
-            now,
-        )?;
-        if trust
-            .public()
-            .map_err(|_| invalid())?
-            .service_id
-            .to_string()
-            != service_id
-        {
-            return Err(invalid());
-        }
-        for issuer in trust.public().map_err(|_| invalid())?.issuers {
-            providers
-                .bootstrap_scep(&issuer.digest)
-                .map_err(|_| invalid())?;
-        }
-        let webhooks = crate::ca_webhooks::load(&input.webhooks, &trust)?;
-        let configuration =
-            rss_mdm_registration_service::agent::bootstrap::Configuration { trust, webhooks };
-        Ok(Some(Arc::new(configuration)))
+        Ok(if input.webhooks.is_empty() {
+            None
+        } else {
+            Some(Arc::new(crate::ca_webhooks::load(&input.webhooks)?))
+        })
     }
 }
 

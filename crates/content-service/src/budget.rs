@@ -9,6 +9,19 @@ pub struct UploadBudget {
     pub(crate) operation: Deadline,
 }
 impl UploadBudget {
+    /// Preserve the caller cutoff while retaining the existing settlement reserve.
+    pub fn shortened_to(self, cutoff: Deadline) -> Self {
+        let total = self.total.shortened_to(cutoff.instant());
+        let remaining = total
+            .remaining(rss_mdm_audit_integration::budget::RuntimeTimer.now())
+            .unwrap_or_default();
+        Self {
+            total,
+            operation: self
+                .operation
+                .shortened_to(total.instant() - Duration::from_secs(6).min(remaining / 4)),
+        }
+    }
     pub fn operation_deadline(self) -> Deadline {
         self.operation
     }
@@ -45,6 +58,7 @@ impl Store {
 
 /// The exact lease is known before claim may commit; cancellation never loses its identity.
 pub(crate) struct UploadLease {
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     store: Store,
     key: uuid::Uuid,
     epoch: uuid::Uuid,
@@ -55,6 +69,7 @@ pub(crate) struct UploadLease {
 }
 impl UploadLease {
     pub(crate) fn new(
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         store: &Store,
         key: uuid::Uuid,
         epoch: uuid::Uuid,
@@ -62,6 +77,7 @@ impl UploadLease {
         admission: std::sync::Arc<crate::gate::Permit>,
     ) -> Self {
         Self {
+            execution,
             store: store.clone(),
             key,
             epoch,
@@ -83,7 +99,8 @@ impl UploadLease {
     pub(crate) async fn release(mut self) -> Result<(), Error> {
         let result = tokio::time::timeout(
             Duration::from_secs(6),
-            self.store.release(self.key, self.epoch, self.temporary),
+            self.store
+                .release(self.execution, self.key, self.epoch, self.temporary),
         )
         .await
         .map_err(|_| Error::Cleanup)
@@ -98,6 +115,7 @@ impl UploadLease {
 }
 impl Drop for UploadLease {
     fn drop(&mut self) {
+        let execution = self.execution;
         if self.released {
             return;
         }
@@ -110,7 +128,7 @@ impl Drop for UploadLease {
             self.store.cleanup_tasks.spawn(async move {
                 let _permit = permit;
                 let _admission = admission;
-                if !matches!(tokio::time::timeout(Duration::from_secs(6), store.release(key, epoch, temporary)).await, Ok(Ok(()))) {
+                if !matches!(tokio::time::timeout(Duration::from_secs(6), store.release(execution,key, epoch, temporary)).await, Ok(Ok(()))) {
                     tracing::warn!(upload=%key, epoch=%epoch, "cancelled upload cleanup unconfirmed");
                 }
             });

@@ -11,12 +11,12 @@ impl AssetService {
         owner: &Owner,
         at: Timepoint,
     ) -> Result<Response> {
-        let catalog = catalog_in(tx, self.tenant).await?;
+        let catalog = catalog_in(tx, tx.tenant_id()).await?;
         let definition = checked_input(catalog.definition(field))?;
         if !definition.manual || change.expected_revision >= i64::MAX as u64 {
             return Err(Error::Malformed.into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let id = device.to_owned();
         let exists: bool = tx
             .with_connection(move |c| {
@@ -54,7 +54,7 @@ impl AssetService {
             received_at: at.unix_seconds(),
             actor: Some(format!("{}:{}", owner.instance, owner.principal)),
         };
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         let id = device.to_owned();
         let expected = change.expected_revision as i64;
         let revision = tx
@@ -85,7 +85,7 @@ impl AssetService {
         owner: &Owner,
         id: Uuid,
     ) -> Result<SavedView> {
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let owner = owner.clone();
         let row=tx.with_connection(move |c|Box::pin(async move {sqlx::query("SELECT revision,document::text FROM mdm_assets.saved_queries WHERE tenant_id=$1::uuid AND instance=$2::uuid AND owner=$3::uuid AND id=$4::uuid").bind(tenant).bind(owner.instance).bind(owner.principal).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::NotFound)?;
         Ok(SavedView {
@@ -114,9 +114,9 @@ impl AssetService {
             SavedChange::Delete {} => None,
             SavedChange::Put { definition } => {
                 crate::authorization::exact_id(&definition.name)?;
-                let catalog = catalog_in(tx, self.tenant).await?;
+                let catalog = catalog_in(tx, tx.tenant_id()).await?;
                 let compiled = rsql::StoredDefinition::compile(definition, &catalog)?;
-                self.validate_query(compiled.query(), &catalog)?;
+                self.validate_query(tx.tenant_id(), compiled.query(), &catalog)?;
                 // Returned definitions must also fit a subsequent Put request.
                 if checked_input(serde_json::to_vec(definition))?.len() > 16384
                     || checked_input(serde_json::to_vec(&compiled.clone().into_view()?))?.len()
@@ -127,7 +127,7 @@ impl AssetService {
                 Some(compiled)
             }
         };
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let owner = owner.clone();
         let expected = change.expected_revision as i64;
         let document = definition

@@ -47,18 +47,19 @@ fn failure(error: Error) -> PlatformError {
     }
 }
 async fn current(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     app: &Context,
     c: &mut PgConnection,
     id: Uuid,
 ) -> Result<PlatformBinding, PlatformError> {
-    let candidate = store::read(c, &app.tenant.to_string(), id)
+    let candidate = store::read(c, &execution.tenant().to_string(), id)
         .await
         .map_err(failure)?;
     service::admit(app, c, &candidate).await.map_err(failure)?;
-    let (user, _, binding) = store::current_user(app, c, id, true)
+    let (user, _, binding) = store::current_user(execution, app, c, id, true)
         .await
         .map_err(failure)?;
-    let subject = service::subject(app, &binding, id, user.version).map_err(failure)?;
+    let subject = service::subject(execution, &binding, id, user.version).map_err(failure)?;
     if user.subject.as_ref() != Some(&subject)
         || candidate.subject != user.subject
         || candidate.subject_version != user.subject_version
@@ -93,12 +94,13 @@ impl PlatformVerifier for Verifier {
     ) -> Pending<'a, PlatformBinding> {
         Box::pin(async move {
             let app = self.app()?;
-            if tenant != app.tenant || instance != app.instance {
+            let execution = app.execution(tenant);
+            if instance != app.instance {
                 return Err(PlatformError::Rejected);
             }
             let id:Option<Uuid>=sqlx::query_scalar("SELECT id FROM rss_da.psso_sources WHERE tenant_id=$1::uuid AND binding=$2 AND kind='user' AND NOT revoked")
             .bind(tenant.to_string()).bind(binding).fetch_optional(&mut *c).await.map_err(|_|PlatformError::Unavailable)?;
-            current(&app, c, id.ok_or(PlatformError::Rejected)?).await
+            current(execution, &app, c, id.ok_or(PlatformError::Rejected)?).await
         })
     }
     fn verify<'a>(
@@ -108,27 +110,27 @@ impl PlatformVerifier for Verifier {
     ) -> Pending<'a, PlatformEvidence> {
         Box::pin(async move {
             let app = self.app()?;
-            if challenge.binding.account.tenant != app.tenant || challenge.audience != self.audience
-            {
+            let execution = app.execution(challenge.binding.account.tenant);
+            if challenge.audience != self.audience {
                 return Err(PlatformError::Rejected);
             }
             let token = std::str::from_utf8(evidence).map_err(|_| PlatformError::Rejected)?;
             let mut tx = app
                 .access
-                .begin(&app.tenant.to_string())
+                .begin(&execution.tenant().to_string())
                 .await
                 .map_err(|_| PlatformError::Unavailable)?;
             // No host authority lock is taken before Identity's guard.
-            let subject = current(&app, &mut tx, challenge.binding.source_id).await?;
+            let subject = current(execution, &app, &mut tx, challenge.binding.source_id).await?;
             if subject != challenge.binding {
                 return Err(PlatformError::Rejected);
             }
-            let user = store::read(&mut tx, &app.tenant.to_string(), subject.source_id)
+            let user = store::read(&mut tx, &execution.tenant().to_string(), subject.source_id)
                 .await
                 .map_err(failure)?;
             let parent = store::read(
                 &mut tx,
-                &app.tenant.to_string(),
+                &execution.tenant().to_string(),
                 user.parent.ok_or(PlatformError::Rejected)?,
             )
             .await
@@ -172,7 +174,7 @@ impl PlatformVerifier for Verifier {
                 return Err(PlatformError::Rejected);
             }
             let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM rss_da.psso_tokens WHERE tenant_id=$1::uuid AND digest=$2 AND source=$3 AND version=$4 AND expires_at>floor(extract(epoch FROM clock_timestamp()))::bigint)")
-            .bind(app.tenant.to_string()).bind(crypto::digest(access.expose())).bind(user.id).bind(user.version).fetch_one(&mut *tx).await.map_err(|_|PlatformError::Unavailable)?;
+            .bind(execution.tenant().to_string()).bind(crypto::digest(access.expose())).bind(user.id).bind(user.version).fetch_one(&mut *tx).await.map_err(|_|PlatformError::Unavailable)?;
             if !valid {
                 return Err(PlatformError::Rejected);
             }
@@ -193,9 +195,8 @@ impl PlatformVerifier for Verifier {
     ) -> Pending<'a, ()> {
         Box::pin(async move {
             let app = self.app()?;
-            if binding.account.tenant != app.tenant
-                || current(&app, c, binding.source_id).await? != *binding
-            {
+            let execution = app.execution(binding.account.tenant);
+            if current(execution, &app, c, binding.source_id).await? != *binding {
                 return Err(PlatformError::Rejected);
             }
             Ok(())

@@ -21,7 +21,7 @@ use rss_transactional_messaging::{
     fence::{Epoch, ExecutionBinding, StorageIdentity},
     policy::OperationDeadline,
 };
-use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa, PgRuntime};
+use rss_transactional_messaging_postgres::{PgConfig, PgError, PgPassword, PgPrivateCa, PgRuntime};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
 // MDM owns attribute visibility. The component's raw observation endpoint must
@@ -66,11 +66,96 @@ impl IdentityRoutes {
 
 #[derive(Clone)]
 struct HttpExecution {
-    business: ExecutionBinding,
+    storage: crate::owner_storage::StorageBinding,
+    runtime: Arc<PgRuntime>,
+
     management: ExecutionBinding,
     rp: rss_identity_postgres::RpGeneration,
     timeout: Duration,
     federation: Option<rss_identity_postgres::Federation>,
+}
+const TENANT_PREFIXES: [&str; 3] = [
+    "/api/v1/identity/tenants/",
+    "/api/v1/identity-host/tenants/",
+    "/api/v1/tenants/",
+];
+#[derive(Clone, Copy)]
+enum ScopeFailure {
+    Malformed,
+    Forbidden,
+    Unavailable,
+    Deadline,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(tag = "code", rename_all = "snake_case")]
+enum IdentityScopeFailure {
+    IdentityUnavailable,
+}
+impl ScopeFailure {
+    fn product_error(self) -> rss_mdm_management_http::Error {
+        use rss_mdm_management_http::{Error, Failure};
+        match self {
+            Self::Malformed => Error::Malformed,
+            Self::Forbidden => Error::Forbidden,
+            Self::Unavailable => Error::Unavailable(Failure::IdentityStorage),
+            Self::Deadline => Error::Unavailable(Failure::RequestDeadline),
+        }
+    }
+    fn identity(self, path: &str) -> bool {
+        matches!(self, Self::Unavailable | Self::Deadline) && path.starts_with("/api/v1/identity/")
+    }
+    fn response(self, path: &str) -> Response {
+        let response = if self.identity(path) {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(IdentityScopeFailure::IdentityUnavailable),
+            )
+                .into_response()
+        } else {
+            self.product_error().into_response()
+        };
+        let mut response = response;
+        if matches!(self, Self::Deadline) && self.identity(path) {
+            response
+                .extensions_mut()
+                .insert(rss_identity_http_axum::HttpFailure::RequestTimeout);
+        }
+        let request_id = uuid::Uuid::new_v4();
+        let failure = match self {
+            Self::Malformed => "malformed_scope",
+            Self::Forbidden => "scope_denied",
+            Self::Unavailable => "scope_unavailable",
+            Self::Deadline => "scope_deadline",
+        };
+        tracing::warn!(target: "rss_mdm_app::http_scope", event = "mdm_request", %request_id,
+            stage = "execution_scope", status = response.status().as_u16(), failure);
+        rss_mdm_management_http::boundary::secure(response, request_id)
+    }
+    fn contract(self, path: &str) -> rss_mdm_http_contract::signature::Response {
+        let response = if self.identity(path) {
+            rss_mdm_http_contract::signature::Response::json::<IdentityScopeFailure>(503)
+        } else {
+            self.product_error().response_contract()
+        };
+        rss_mdm_management_http::boundary::rejection_contract(response)
+    }
+}
+pub(crate) fn scope_rejections(
+    _: &str,
+    path: &str,
+) -> Vec<rss_mdm_http_contract::signature::Response> {
+    let mut responses = vec![ScopeFailure::Unavailable.contract(path)];
+    if TENANT_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+        || path.starts_with("/api/v1/tenant-administration/")
+    {
+        responses.extend([
+            ScopeFailure::Malformed.contract(path),
+            ScopeFailure::Forbidden.contract(path),
+        ]);
+    }
+    responses
 }
 // Product-installed coordinates select the SDK scope. The route only identifies which
 // installed product context is requested; it cannot author storage, lineage or epoch.
@@ -79,35 +164,57 @@ async fn execution_scope(
     request: Request,
     next: Next,
 ) -> Response {
-    use axum::extract::{FromRequestParts, Path};
     let (mut parts, body) = request.into_parts();
     let Ok(mut cutoff) =
         rss_request_context::Deadline::from_timeout(&crate::lifecycle::RuntimeTimer, scope.timeout)
     else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        return ScopeFailure::Deadline.response(parts.uri.path());
     };
     if let Some(parent) = parts.extensions.get::<rss_request_context::Deadline>() {
         cutoff = cutoff.shortened_to(parent.instant());
     }
     parts.extensions.insert(cutoff);
     parts.extensions.insert(scope.rp);
-    if let Ok(Path(parameters)) =
-        Path::<BTreeMap<String, String>>::from_request_parts(&mut parts, &()).await
-        && let Some(raw) = parameters.get("tenant")
-    {
-        let Ok(tenant) = TenantId::parse(raw) else {
-            return StatusCode::BAD_REQUEST.into_response();
-        };
-        let binding = if tenant == scope.business.tenant() {
-            scope.business
-        } else if tenant == scope.management.tenant() {
+    let path = parts.uri.path();
+    let tenant = if path.starts_with("/api/v1/tenant-administration/") {
+        Some(scope.management.tenant())
+    } else {
+        let locator = TENANT_PREFIXES
+            .iter()
+            .find_map(|prefix| path.strip_prefix(prefix))
+            .and_then(|rest| rest.split('/').next());
+        match locator {
+            Some(raw) => match TenantId::parse(raw) {
+                Ok(tenant) if tenant.to_string() == raw => Some(tenant),
+                _ => return ScopeFailure::Malformed.response(path),
+            },
+            None => None,
+        }
+    };
+    if let Some(tenant) = tenant {
+        let binding = if tenant == scope.management.tenant() {
             scope.management
         } else {
-            return StatusCode::FORBIDDEN.into_response();
+            match scope.storage.execution(tenant) {
+                Ok(binding) => binding,
+                Err(_) => return ScopeFailure::Forbidden.response(path),
+            }
         };
+        // A missing tenant has no execution fence. Only a confirmed fenced outcome is
+        // denied; storage faults and uncertain settlement retain availability semantics.
+        let admitted = scope.runtime.local_tx(binding, OperationDeadline::from_cutoff(cutoff, &crate::lifecycle::RuntimeTimer), move |tx| Box::pin(async move {
+            tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM public.mdm_tenants WHERE tenant_id=$1::uuid AND NOT deleted)")
+                    .bind(binding.tenant().to_string()).fetch_one(c).await
+            })).await
+        })).await.fold(Ok, Err, Err, |_| Err(PgError::from(sqlx::Error::Protocol("scope rollback unconfirmed".into()))), |_| Err(PgError::from(sqlx::Error::Protocol("scope commit unconfirmed".into()))), |_| Ok(false));
+        match admitted {
+            Ok(true) => (),
+            Ok(false) => return ScopeFailure::Forbidden.response(path),
+            Err(_) => return ScopeFailure::Unavailable.response(path),
+        }
         parts.extensions.insert(binding);
-        let path = parts.uri.path();
-        if binding == scope.business
+        if tenant != scope.management.tenant()
             && (path.contains("/oidc/")
                 || path.ends_with("/login-options")
                 || path.ends_with("/session/security"))
@@ -119,13 +226,14 @@ async fn execution_scope(
                 )
                 .await
         {
-            let mut response = StatusCode::SERVICE_UNAVAILABLE.into_response();
+            let mut response = ScopeFailure::Unavailable.response(path);
             response
                 .extensions_mut()
                 .insert(rss_identity_http_axum::HttpFailure::Authority(error));
             return response;
         }
     }
+    // OIDC callback carries its original binding in authenticated state, never a fresh locator.
     next.run(Request::from_parts(parts, body)).await
 }
 pub(crate) struct Identity {
@@ -143,8 +251,8 @@ pub(crate) struct Identity {
         Option<Arc<rss_mdm_device_access_postgres::platform_sso::bridge::Verifier>>,
     pub(crate) instance: InstanceId,
     pub(crate) authority: Authority,
-    pub(crate) tenant: TenantId,
-    pub(crate) binding: ExecutionBinding,
+    pub(crate) storage: crate::owner_storage::StorageBinding,
+
     pub(crate) management_binding: ExecutionBinding,
     pub(crate) rp_generation: rss_identity_postgres::RpGeneration,
     pub(crate) management_tenant: TenantId,
@@ -165,8 +273,9 @@ impl Identity {
             authority: self.authority.clone(),
             webauthn: self.webauthn.clone(),
             http: self.http.clone(),
-            tenant: self.tenant,
-            binding: self.binding,
+            storage: self.storage.identity().expect("admitted storage identity"),
+            expected_epoch: rss_transactional_messaging::fence::Epoch::new(self.storage.epoch)
+                .expect("admitted epoch"),
             rp_generation: self.rp_generation,
         })
     }
@@ -176,21 +285,10 @@ impl Identity {
             authority: self.authority.clone(),
             webauthn: self.webauthn.clone(),
             http: self.http.clone(),
-            tenant: self.tenant,
-            binding: self.binding,
             rp_generation: self.rp_generation,
         })
     }
-    pub(crate) fn management_browser(&self) -> Arc<rss_mdm_management_http::identity::Identity> {
-        Arc::new(rss_mdm_management_http::identity::Identity {
-            authority: self.authority.clone(),
-            webauthn: self.webauthn.clone(),
-            http: self.http.clone(),
-            tenant: self.management_tenant,
-            binding: self.management_binding,
-            rp_generation: self.rp_generation,
-        })
-    }
+
     pub(crate) async fn connect(
         config: &Config,
         compiled: &policy::Compiled,
@@ -203,19 +301,19 @@ impl Identity {
             compiled.startup,
         )
         .map_err(|_| invalid())?;
-        let tenant = TenantId::parse(&config.identity.tenant_id).map_err(|_| invalid())?;
         let instance = InstanceId::parse(&config.identity.instance_id).map_err(|_| invalid())?;
         let management_tenant = management_tenant(&config.identity.database, instance).await?;
-        let management_epoch = rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH;
-        if tenant == management_tenant && config.storage_binding.epoch != management_epoch {
+        if management_tenant.to_string() != config.identity.management_tenant {
             return Err(invalid());
         }
-        let binding = config.storage_binding.execution(tenant)?;
         let management_binding = ExecutionBinding::new(
-            binding.storage(),
+            config.storage_binding.identity()?,
             management_tenant,
-            Epoch::new(management_epoch).map_err(|_| invalid())?,
+            Epoch::new(rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH)
+                .map_err(|_| invalid())?,
         );
+        let binding = management_binding;
+
         let rp_generation = compiled.rp;
         let runtime = open_runtime(
             &config.identity.database,
@@ -248,8 +346,7 @@ impl Identity {
             }
             let transport = compiled.transport;
             for input in &deployment.clients {
-                let client =
-                    enterprise::Backend::load(input, tenant, transport).map_err(|_| invalid())?;
+                let client = enterprise::Backend::load(input, transport).map_err(|_| invalid())?;
                 if enterprise_clients
                     .insert(input.target.id.clone(), Arc::new(client))
                     .is_some()
@@ -311,7 +408,7 @@ impl Identity {
         }
         let target_fingerprints = enterprise_clients
             .iter()
-            .map(|(id, c)| (id.clone(), c.fingerprint().to_owned()))
+            .map(|(id, c)| (id.clone(), (c.tenant(), c.fingerprint().to_owned())))
             .collect();
         let apple = platform
             .as_ref()
@@ -320,7 +417,14 @@ impl Identity {
             Arc::new(
                 rss_mdm_device_access_postgres::enterprise::platform::Verifier::new(
                     &config.product_origin,
-                    binding,
+                    rss_transactional_messaging::fence::ExecutionBinding::new(
+                        binding.storage(),
+                        management_tenant,
+                        rss_transactional_messaging::fence::Epoch::new(
+                            config.storage_binding.epoch,
+                        )
+                        .expect("compiled positive epoch"),
+                    ),
                     runtime.clone(),
                     apple,
                     target_fingerprints,
@@ -372,12 +476,10 @@ impl Identity {
             .map_err(failure)?;
         let mut configured_federation = None;
         if let Some(oidc) = &config.identity.oidc {
-            oidc.require_business_tenant(&config.identity.tenant_id)?;
             let federation = oidc.federation(
                 authority.clone(),
                 &config.product_origin,
                 instance,
-                tenant,
                 compiled.transport,
             )?;
             configured_federation = Some(federation.clone());
@@ -385,7 +487,7 @@ impl Identity {
                 rss_identity_http_axum::federated_router(federation, http.clone())
                     .map_err(failure)?
                     .route_layer(axum::middleware::from_fn_with_state(
-                        config.identity.tenant_id.clone(),
+                        management_tenant.to_string(),
                         business_federation,
                     )),
             );
@@ -400,9 +502,9 @@ impl Identity {
             platform,
             instance,
             authority,
-            tenant,
+            storage: config.storage_binding.clone(),
+
             management_tenant,
-            binding,
             management_binding,
             rp_generation,
             tenant_administration,
@@ -430,23 +532,26 @@ impl Identity {
                 rss_mdm_management_http::api_access::admit_bearer,
             ));
         IdentityRoutes(rss_mdm_management_http::authentication_routes(
-            self.routes
-                .clone()
-                .merge(bearer)
-                .route_layer(axum::middleware::from_fn_with_state(
-                    HttpExecution {
-                        business: self.binding,
-                        management: self.management_binding,
-                        rp: self.rp_generation,
-                        timeout: self.request_timeout,
-                        federation: self.federation.clone(),
-                    },
-                    execution_scope,
-                )),
+            self.routes.clone().merge(bearer),
             envelope,
         ))
     }
+    pub(crate) fn scope_browser(&self, router: Router) -> Router {
+        router.layer(axum::middleware::from_fn_with_state(
+            HttpExecution {
+                storage: self.storage.clone(),
+                runtime: self.runtime.clone(),
+
+                management: self.management_binding,
+                rp: self.rp_generation,
+                timeout: self.request_timeout,
+                federation: self.federation.clone(),
+            },
+            execution_scope,
+        ))
+    }
 }
+
 pub(crate) async fn open_runtime(
     database: &config::Database,
     target: &[u8; 16],
@@ -571,17 +676,12 @@ pub struct PrivateProvider {
 impl OidcConfig {
     pub(crate) fn validate_deployment(
         &self,
-        tenant: &str,
         origin: &str,
         transport: &policy::Transport,
     ) -> Result<(), Error> {
-        self.require_business_tenant(tenant)?;
         rss_identity_core::groups::GroupFactsMaxAge::new(self.group_facts_max_age_seconds)
             .map_err(|_| invalid())?;
-        self.transport(
-            TenantId::parse(tenant).map_err(|_| invalid())?,
-            transport.build()?,
-        )?;
+        self.transport(transport.build()?)?;
         key(&self.state_key_file)?;
         rss_identity_postgres::FederationConfig {
             callback: format!("{origin}/api/v1/identity/oidc/callback"),
@@ -600,31 +700,11 @@ impl OidcConfig {
         rss_identity_postgres::CredentialKeys::new(self.active_credential_key.clone(), keys)
             .map_err(failure)
     }
-    fn require_business_tenant(&self, tenant: &str) -> Result<(), Error> {
-        if self
-            .assurance_profiles
-            .iter()
-            .any(|profile| profile.tenant_id != tenant)
-            || self
-                .private_providers
-                .iter()
-                .any(|provider| provider.tenant_id != tenant)
-        {
-            return Err(invalid());
-        }
-        Ok(())
-    }
-    fn private_access(
-        &self,
-        tenant: TenantId,
-    ) -> Result<Vec<rss_identity_oidc::PrivateProviderAccess>, Error> {
+    fn private_access(&self) -> Result<Vec<rss_identity_oidc::PrivateProviderAccess>, Error> {
         self.private_providers
             .iter()
             .map(|p| {
                 let owner = TenantId::parse(&p.tenant_id).map_err(|_| invalid())?;
-                if owner != tenant {
-                    return Err(invalid());
-                }
                 Ok(rss_identity_oidc::PrivateProviderAccess {
                     tenant: owner,
                     issuer: p.issuer.clone(),
@@ -640,10 +720,9 @@ impl OidcConfig {
     }
     fn transport(
         &self,
-        tenant: TenantId,
         policy: rss_identity_oidc::TransportPolicy,
     ) -> Result<rss_identity_oidc::HttpOidc, Error> {
-        rss_identity_oidc::HttpOidc::new(self.profiles()?, self.private_access(tenant)?, policy)
+        rss_identity_oidc::HttpOidc::new(self.profiles()?, self.private_access()?, policy)
             .map_err(|_| invalid())
     }
 
@@ -652,10 +731,9 @@ impl OidcConfig {
         authority: Authority,
         origin: &str,
         instance: InstanceId,
-        tenant: TenantId,
         policy: rss_identity_oidc::TransportPolicy,
     ) -> Result<rss_identity_postgres::Federation, Error> {
-        let oidc = self.transport(tenant, policy)?;
+        let oidc = self.transport(policy)?;
         self.federation_using(authority, origin, instance, Arc::new(oidc))
     }
     fn profiles(&self) -> Result<Vec<rss_identity_oidc::TrustedAssuranceProfile>, Error> {
@@ -717,7 +795,7 @@ async fn business_federation(
         .uri()
         .path()
         .strip_prefix("/api/v1/identity/tenants/")
-        && path.split('/').next() != Some(tenant.as_str())
+        && path.split('/').next() == Some(tenant.as_str())
     {
         return StatusCode::FORBIDDEN.into_response();
     }

@@ -6,7 +6,7 @@ mod wire;
 pub use crate::catalog::{Error, Result};
 use crate::{
     catalog::{FrozenSoftware, Reader},
-    publication::ExportReader,
+    publication::PublicationService,
 };
 use rss_mdm_agent_wire::runtime as w;
 use rss_mdm_resource as r;
@@ -43,14 +43,14 @@ pub struct FreezeRequest<'a> {
 }
 pub struct Preparation {
     catalog: Reader,
-    exports: BTreeMap<String, Arc<ExportReader>>,
+    exports: BTreeMap<String, Arc<PublicationService>>,
 }
 impl Preparation {
     pub async fn lock_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
         self.catalog.read_lock_in(tx).await
     }
 
-    pub fn new(catalog: Reader, exports: BTreeMap<String, Arc<ExportReader>>) -> Self {
+    pub fn new(catalog: Reader, exports: BTreeMap<String, Arc<PublicationService>>) -> Self {
         Self { catalog, exports }
     }
     /// Resolve and freeze every selected variant against the current lifecycle closure.
@@ -269,7 +269,7 @@ impl Preparation {
     async fn closure_on(
         &self,
         c: &mut sqlx::PgConnection,
-        _tenant: rss_request_context::TenantId,
+        tenant: rss_request_context::TenantId,
         binding: &Selection<'_>,
         target: Target,
         locked: bool,
@@ -301,7 +301,7 @@ impl Preparation {
             }
             let resolved = match self
                 .catalog
-                .version_on(c, &resource, &version, locked)
+                .version_on(tenant, c, &resource, &version, locked)
                 .await
             {
                 Ok(v) => v,
@@ -326,6 +326,7 @@ impl Preparation {
             let selected = self
                 .catalog
                 .resolve_admitted_on(
+                    tenant,
                     c,
                     &resource,
                     &version,

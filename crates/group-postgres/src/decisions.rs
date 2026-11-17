@@ -181,7 +181,7 @@ impl GroupStore {
         if !build.ready {
             return Ok(Err(Rejection::IncompleteSnapshot));
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let mut rows=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("SELECT object_kind,object_id,added FROM mdm_group.member_changes WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND ($3::smallint IS NULL OR (object_kind,object_id)>($3,$4::uuid)) ORDER BY object_kind,object_id LIMIT $5")
                 .bind(tenant).bind(id.to_string()).bind(after.map(|o|o.kind())).bind(after.map(|o|o.uuid())).bind((limit+1) as i64).fetch_all(c).await

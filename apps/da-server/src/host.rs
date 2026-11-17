@@ -317,7 +317,7 @@ pub async fn assemble(
             return Err(Error::Configuration);
         }
         for c in &enterprise.clients {
-            let client = da::enterprise::Backend::load(c, tenant, compiled.identity.transport)
+            let client = da::enterprise::Backend::load(c, compiled.identity.transport)
                 .map_err(|_| Error::Configuration)?;
 
             if clients
@@ -382,7 +382,7 @@ pub async fn assemble(
             Some(platform.clone()),
             clients
                 .iter()
-                .map(|(id, c)| (id.clone(), c.fingerprint().to_owned()))
+                .map(|(id, c)| (id.clone(), (tenant, c.fingerprint().to_owned())))
                 .collect(),
         ),
     );
@@ -426,8 +426,8 @@ pub async fn assemble(
         authority: authority.clone(),
         webauthn: webauthn.clone(),
         http: http_config.clone(),
-        tenant,
-        binding,
+        storage: binding.storage(),
+        expected_epoch: binding.epoch(),
         rp_generation: compiled.identity.rp,
     });
 
@@ -467,7 +467,7 @@ pub async fn assemble(
         .platform_sso
         .as_ref()
         .map(|p| {
-            p.load(&config.browser.origin, tenant, &evidence)
+            p.load(&config.browser.origin, &evidence)
                 .map_err(|_| Error::Configuration)
         })
         .transpose()?;
@@ -496,21 +496,13 @@ pub async fn assemble(
         DA,
         pool.clone(),
         audit.clone(),
-        vec![trust.clone()],
+        binding,
         providers.clone(),
     ));
 
-    pki.admit(tenant, now())
+    pki.admit(binding, public.clone(), now())
         .await
         .map_err(|_| Error::AdmissionAt("PKI registry"))?;
-
-    let trust = Arc::new(
-        rss_mdm_device_trust::device_identity::DeviceIdentityTrust::from_trust(
-            trust,
-            r.certificate_days,
-        )
-        .map_err(|_| Error::Configuration)?,
-    );
 
     let issuer = Arc::new(
         rss_mdm_registration_service::certificate_issuance::DeviceIssuer::new(
@@ -518,38 +510,13 @@ pub async fn assemble(
             providers,
             r.certificate_days,
             false,
-            trust,
+            rss_mdm_agent_wire::pki::Purpose::DaDevice,
+            pki.clone(),
+            config.installation.instance,
             Arc::new(Timer),
         )
         .map_err(|_| Error::Configuration)?,
     );
-
-    let loaded = if let Some(revision) = r.configuration_revision {
-        let mut tx = pool.begin().await.map_err(|_| Error::Storage)?;
-
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-            .bind(tenant.to_string())
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| Error::Storage)?;
-
-        let loaded = rss_mdm_task_trust::trust::load(
-            DA,
-            rss_mdm_task_trust::Use::DaConfiguration,
-            &mut tx,
-            tenant,
-            revision,
-            &protection,
-        )
-        .await
-        .map_err(|_| Error::AdmissionAt("configuration signing trust"))?;
-
-        tx.rollback().await.map_err(|_| Error::Storage)?;
-
-        Some(loaded)
-    } else {
-        None
-    };
 
     let inputs = da::Registration {
         issuer,
@@ -558,8 +525,7 @@ pub async fn assemble(
             rss_mdm_task_trust::Signing::new(
                 DA,
                 rss_mdm_task_trust::Use::DaConfiguration,
-                tenant,
-                loaded,
+                protection.clone(),
             )
             .map_err(|_| Error::Configuration)?,
         ),
@@ -569,7 +535,7 @@ pub async fn assemble(
     let runtime = da::Runtime::assemble(
         da::Resources {
             report_limits: config.reports.clone(),
-            tenant,
+            probe: binding,
             installation: config.installation.instance,
             identity_instance: instance,
             pool: pool.clone(),
@@ -611,7 +577,6 @@ pub async fn assemble(
         });
 
     let platform_http = Arc::new(http::platform_sso::HttpState {
-        binding,
         context: runtime.platform.clone(),
         authority: authority.clone(),
         origin: config.browser.origin.clone(),
@@ -630,7 +595,6 @@ pub async fn assemble(
     let state = Arc::new(http::browser::Services {
         request_budget,
         vault: Arc::new(rss_mdm_vault_sync::Service::new(
-            tenant,
             config.installation.instance,
             proof_audit.clone(),
             cursor.clone(),
@@ -705,7 +669,7 @@ pub async fn assemble(
         configurations: runtime.configurations.ok_or(Error::Admission)?,
         authorization,
         sessions: Arc::new(
-            rss_mdm_authorization_service::session::SessionAuthority::new(authority, binding),
+            rss_mdm_authorization_service::session::SessionAuthority::new(authority),
         ),
         audit,
         host: r.listener.host()?,
@@ -784,10 +748,11 @@ pub async fn serve(
 
   startup.stage_task_with_token(http::tls::registration(tcp,chain,key,app.protocol,compiled.http.listener).map_err(|_|Error::Lifecycle)?.critical());
 
+  let execution=config.installation.execution(rss_request_context::TenantId::parse(&config.installation.tenant.to_string()).map_err(|_|Error::Configuration)?)?;
   let (task,_)=rss_runtime::ManagedTask::prepare("da-pki-maintenance",Duration::from_secs(10));
 
   startup.stage_task_with_token(task.into_registration(move|stop|async move{loop{tokio::select!{biased;
-()=stop.cancelled()=>return Ok(()),result=app.pki.sweep(||Ok(now()))=>{if result.is_err(){eprintln!("da_pki_maintenance_unavailable");
+()=stop.cancelled()=>return Ok(()),result=app.pki.sweep(execution,||Ok(now()))=>{if result.is_err(){eprintln!("da_pki_maintenance_unavailable");
 }}}tokio::select!{biased;
 ()=stop.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_secs(60))=>{}}}}));
 

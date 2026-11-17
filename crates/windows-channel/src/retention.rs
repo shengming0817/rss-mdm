@@ -6,6 +6,7 @@ use sqlx::Row;
 use std::{sync::Arc, time::Duration};
 
 pub async fn prune_management(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     database: &crate::Store,
     store: &rss_mdm_audit_integration::AuditStore,
     tenant: &str,
@@ -22,7 +23,7 @@ pub async fn prune_management(
     let audit = rss_mdm_audit_integration::RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        tenant.into(),
+        execution,
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -30,7 +31,7 @@ pub async fn prune_management(
     let budget = rss_mdm_audit_integration::budget::AuditBudget::retirement(None);
     let attempt = store
         .write(
-            rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
+            audit.binding()?,
             &budget.source_control(),
             (store, tenant, &audit),
             |(store, tenant, audit), tx| {
@@ -38,8 +39,10 @@ pub async fn prune_management(
                     let mut facts = Vec::new();
                     let count = tx
                         .with_connection_context(
-                            &mut (*tenant, &mut facts),
-                            |(tenant, facts), c| Box::pin(prune_on(c, tenant, facts)),
+                            &mut (audit.binding()?, *tenant, &mut facts),
+                            |(execution, tenant, facts), c| {
+                                Box::pin(prune_on(*execution, c, tenant, facts))
+                            },
                         )
                         .await?;
                     for fact in &facts {
@@ -61,11 +64,12 @@ pub async fn prune_management(
     result
 }
 async fn prune_on(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     tx: &mut sqlx::PgConnection,
     tenant: &str,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
 ) -> Result<u64, Error> {
-    let expired=sqlx::query("SELECT device,protocol_epoch,session_id FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND expires_at<clock_timestamp() ORDER BY expires_at,device,protocol_epoch,session_id LIMIT 32 FOR UPDATE SKIP LOCKED")
+    let expired=sqlx::query("SELECT device,protocol_epoch,session_id FROM mdm_access.management_sessions WHERE expected_epoch=current_setting('rss.execution_epoch')::bigint AND tenant_id=$1::uuid AND expires_at<clock_timestamp() ORDER BY expires_at,device,protocol_epoch,session_id LIMIT 32 FOR UPDATE SKIP LOCKED")
         .bind(tenant).fetch_all(&mut *tx).await.map_err(db)?;
     let mut devices = Vec::<rss_mdm_agent_wire::DeviceId>::new();
     let mut epochs = Vec::<uuid::Uuid>::new();
@@ -81,7 +85,7 @@ async fn prune_on(
         let epoch: uuid::Uuid = row.try_get("protocol_epoch").map_err(db)?;
         let session: String = row.try_get("session_id").map_err(db)?;
         crate::collection::terminate_session(
-            tx, facts, tenant, &device, epoch, &session, "timeout",
+            execution, tx, facts, tenant, &device, epoch, &session, "timeout",
         )
         .await?;
         devices.push(device);
@@ -104,30 +108,56 @@ async fn prune_on(
 }
 
 pub fn registration(
-    database: Arc<crate::Store>,
-    audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    tenant: String,
-    notify: std::sync::Arc<tokio::sync::Notify>,
+    app: Arc<crate::HttpState>,
+    notify: Arc<tokio::sync::Notify>,
 ) -> ManagedTaskRegistration {
     let (task, _) = ManagedTask::prepare("mdm-management-retention", Duration::from_secs(10));
-    task.into_registration(move |token| async move {
-        let mut failures = 0u64;
+    task.into_registration(move |stop| async move {
+        let mut after = None;
+        let mut nearest = None;
         loop {
-            if token.is_cancelled() { return Ok(()); }
-            let result = sweep(&database, &audit_store, &tenant).await;
-            match result {
-                Ok((count, nearest)) => {
-                    failures = 0;
-                    if count > 0 {
-                        eprintln!("{}", serde_json::json!({"event":"mdm_management_retention","sessions":count}));
-                        continue;
-                    }
-                    wait(&notify, &token, nearest).await;
-                }
+            if stop.is_cancelled() {
+                return Ok(());
+            }
+            let page = match app.access.retention_scopes(after).await {
+                Ok(page) => page,
                 Err(_) => {
-                    failures = failures.saturating_add(1);
-                    if failures.is_power_of_two() { eprintln!("{}",serde_json::json!({"event":"mdm_management_retention_failure","kind":"access_store","count":failures})); }
-                    tokio::select! { () = token.cancelled() => return Ok(()), () = tokio::time::sleep(Duration::from_secs(1)) => {} }
+                    eprintln!("mdm_retention_discovery_failed");
+                    Vec::new()
+                }
+            };
+            if page.is_empty() {
+                after = None;
+                wait(&notify, &stop, nearest).await;
+                nearest = None;
+                continue;
+            }
+            for (tenant, epoch) in page {
+                after = Some((tenant, epoch));
+                if stop.is_cancelled() {
+                    return Ok(());
+                }
+                let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
+                    .map_err(rss_runtime::ShutdownError::new)?;
+                let epoch = rss_transactional_messaging::fence::Epoch::new(epoch)
+                    .map_err(rss_runtime::ShutdownError::new)?;
+                let execution = rss_transactional_messaging::fence::ExecutionBinding::new(
+                    app.storage,
+                    tenant,
+                    epoch,
+                );
+                match sweep(execution, &app.access, &app.audit_store).await {
+                    Ok((count, next)) => {
+                        let delay = if count > 0 {
+                            Duration::from_millis(100)
+                        } else {
+                            next.unwrap_or(Duration::from_secs(5))
+                        };
+                        nearest = Some(nearest.map_or(delay, |old: Duration| old.min(delay)));
+                    }
+                    Err(_) => {
+                        eprintln!("mdm_management_retention_failed");
+                    }
                 }
             }
         }
@@ -143,13 +173,14 @@ async fn next_expiry(database: &crate::Store, tenant: &str) -> Result<Option<Dur
 }
 
 pub async fn sweep(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     database: &crate::Store,
     store: &rss_mdm_audit_integration::AuditStore,
-    tenant: &str,
 ) -> Result<(u64, Option<Duration>), Error> {
-    let count = prune_management(database, store, tenant).await?;
+    let tenant = execution.tenant().to_string();
+    let count = prune_management(execution, database, store, &tenant).await?;
     let nearest = if count == 0 {
-        next_expiry(database, tenant).await?
+        next_expiry(database, &tenant).await?
     } else {
         None
     };

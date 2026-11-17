@@ -42,7 +42,7 @@ pub(super) async fn seed(c: &Context) -> Result<Seed> {
     let audit = RequestAudit::new(
         Origin::Background,
         StorageProfile::Mdm,
-        c.tenant.to_string(),
+        c.execution(),
         "device_association_automatic",
         AuditIntent::Management,
     );
@@ -66,7 +66,7 @@ pub(super) async fn seed(c: &Context) -> Result<Seed> {
     let budget = AuditBudget::new(Duration::from_secs(5));
     c.audit
         .write(
-            c.tenant,
+            c.execution(),
             &budget.source_control(),
             (&c.audit, &fact),
             |(store, fact), tx| Box::pin(async move { store.append(tx, fact).await }),

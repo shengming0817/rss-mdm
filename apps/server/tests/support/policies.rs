@@ -15,14 +15,14 @@ pub struct Fixture {
 }
 impl Fixture {
     pub async fn open(c: &Context) -> Result<Self> {
-        let resources = fixture::Fixture::open(c, true).await?;
+        let resources = fixture::Fixture::open(c).await?;
         let owner = planning::owner(c, "mdm_policy_runtime").await?;
         let config = &resources.resources.config;
         let protection = resources.resources.protection.clone();
         let app = crate::assembly::policy::application(
             &resources.resources.background,
             &owner,
-            c.tenant,
+            c.execution(),
             &[7; 32],
             Arc::new(crate::clock::SystemClock),
             protection.clone(),
@@ -31,7 +31,7 @@ impl Fixture {
         .await?;
         let editor = crate::scopes::editor(
             owner.runtime.clone(),
-            c.tenant,
+            c.execution(),
             Arc::new(crate::clock::SystemClock),
             owner.audit.clone(),
             vec![7; 32],
@@ -39,11 +39,11 @@ impl Fixture {
         )
         .await?;
         let policies = crate::assembly::policy::management(
+            c.execution(),
             editor,
             &app,
             Arc::new(rss_mdm_software_service::deployment::Inputs::bind(
                 owner.runtime.clone(),
-                c.tenant,
                 resources.software.materials.inputs.clone(),
             )),
             config.enrollment_entries.clone(),
@@ -52,7 +52,6 @@ impl Fixture {
             protection,
             true,
             true,
-            false,
         )
         .await?;
         Ok(Self {

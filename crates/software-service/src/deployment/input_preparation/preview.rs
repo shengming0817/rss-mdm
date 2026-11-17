@@ -29,6 +29,7 @@ impl Inputs {
     }
     pub(crate) async fn recheck_preview_on(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut sqlx::PgConnection,
         _input: &PublicationInput<'_>,
         prepared: &PreparedPreview,
@@ -36,7 +37,7 @@ impl Inputs {
         if let Some(expected) = &prepared.resource {
             let mut facts = rss_mdm_resource_postgres::version_facts_on(
                 c,
-                self.tenant,
+                execution.tenant(),
                 &[(
                     expected.resource().as_str().to_owned(),
                     expected.label().as_str().to_owned(),
@@ -75,7 +76,7 @@ impl Inputs {
                         )),
                     })
                     .collect::<Vec<_>>();
-                if crate::catalog::bindings_many_on(c, self.tenant, &requests)
+                if crate::catalog::bindings_many_on(c, execution.tenant(), &requests)
                     .await?
                     .iter()
                     .any(Option::is_none)
@@ -85,7 +86,7 @@ impl Inputs {
             }
             PreviewInputs::Onboarding(Published::AgentInstall { action }) => {
                 for package in action.packages.values() {
-                    if !package.admitted_snapshot_on(c, self.tenant).await? {
+                    if !package.admitted_snapshot_on(c, execution.tenant()).await? {
                         return Err(Error::Conflict.into());
                     }
                 }

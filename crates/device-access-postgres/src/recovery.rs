@@ -146,7 +146,10 @@ impl AccessRecovery for AccessMaterials {
                     facts.recovery.version = current.version;
                     return Ok(wire::AccessWindowsPlan::Preserve { facts });
                 }
-                let recipient = self.protection.active_recipient();
+                let recipient = self
+                    .protection
+                    .selected_on(rss_mdm_install_support::StorageProfile::Da, c, b.tenant)
+                    .await?;
                 recipient.require_current(now)?;
                 let recipient = wire::CredentialRecipient {
                     key_id: recipient.id().into(),
@@ -357,9 +360,6 @@ impl crate::Service {
         input: &wire::AccessRecoveryUse,
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<(), crate::Error> {
-        if device.tenant() != self.tenant {
-            return Err(crate::Error::Forbidden);
-        }
         input.validate().map_err(|_| crate::Error::Malformed)?;
         audit.operation(
             input.operation_id,

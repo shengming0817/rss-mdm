@@ -79,6 +79,7 @@ CREATE TABLE mdm_devices.unmanage_receipts (
 ALTER TABLE ONLY mdm_devices.unmanage_receipts FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_devices.unmanage_runs (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     origin jsonb NOT NULL CHECK (origin IN ('"system"', '"policy"', '"human"', '"ai"'))
   , source_objects jsonb NOT NULL
   , tenant_id uuid NOT NULL
@@ -112,6 +113,7 @@ CREATE TABLE mdm_devices.unmanage_runs (
 ALTER TABLE ONLY mdm_devices.unmanage_runs FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_devices.control_recovery (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL,device uuid NOT NULL,authority_epoch bigint NOT NULL CHECK(authority_epoch>0),recovery_after text,
  PRIMARY KEY(tenant_id,device)
 );
@@ -127,6 +129,7 @@ GRANT SELECT,INSERT ON mdm_devices.control_recovery TO mdm_command_runtime;
 GRANT UPDATE(authority_epoch,recovery_after) ON mdm_devices.control_recovery TO mdm_command_runtime;
 
 CREATE TABLE mdm_devices.control_operations (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
   , device uuid NOT NULL
@@ -175,6 +178,7 @@ CREATE TABLE mdm_devices.control_operations (
 ALTER TABLE ONLY mdm_devices.control_operations FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_devices.unmanage_policy_recovery (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     input_revision bigint NOT NULL DEFAULT 1 CHECK(input_revision>0),
     input_consumed bigint NOT NULL DEFAULT 0 CHECK(input_consumed>=0),
     input_window bigint NOT NULL DEFAULT 0 CHECK(input_window>=input_consumed),

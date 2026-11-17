@@ -8,6 +8,7 @@ pub struct ConfigurationArtifact {
 impl Transactions {
     pub async fn apple_configuration_artifact_in(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         asset: &rss_mdm_apple_mdm::native::ddm::AssetInput,
     ) -> Result<ConfigurationArtifact> {
@@ -37,6 +38,7 @@ impl Transactions {
         let content = self.content.as_ref().ok_or(Error::Unsupported)?;
         let verified = content
             .verify_class(
+                execution,
                 artifact,
                 rss_mdm_content_service::StorageClass::NativeConfiguration,
                 content.upload_budget()?.operation_deadline(),

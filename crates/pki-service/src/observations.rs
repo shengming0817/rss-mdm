@@ -79,14 +79,6 @@ impl crate::registry::Registry {
             Some(device),
         )
         .map_err(|_| Error::Forbidden)?;
-        if self
-            .trust(rss_mdm_agent_wire::pki::Purpose::Agent)?
-            .tenant
-            .to_string()
-            != p.tenant_id()
-        {
-            return Err(Error::Forbidden);
-        }
         let mut tx = self.begin(p.tenant_id()).await?;
         let value = latest_in(profile, &mut tx, p.tenant_id(), device).await?;
         p.check_live().map_err(|_| Error::Forbidden)?;

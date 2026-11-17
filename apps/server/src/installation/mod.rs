@@ -15,7 +15,6 @@ pub mod host;
 pub mod install;
 #[cfg(unix)]
 use rss_mdm_install_support::maintenance::journal as local;
-pub mod model;
 #[cfg(unix)]
 mod postgres;
 #[cfg(unix)]
@@ -27,6 +26,4 @@ pub mod public_configuration;
 pub mod runtime_files;
 #[cfg(unix)]
 use rss_mdm_install_support::maintenance::snapshot_tree;
-#[cfg(unix)]
-pub mod tenant_hosts;
 pub use rss_mdm_install_support::maintenance::{Error, Result};

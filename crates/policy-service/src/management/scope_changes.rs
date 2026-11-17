@@ -1,13 +1,11 @@
 //! Policy reference checks and durable Scope publication acceptance.
 use crate::transaction::*;
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use std::sync::Arc;
 use uuid::Uuid;
 pub struct ScopeChanges {
     profile: rss_mdm_install_support::StorageProfile,
     runtime: Arc<PgRuntime>,
-    tenant: TenantId,
     reconcile: rss_reconcile_postgres::PgMessagingStore,
 }
 impl ScopeChanges {
@@ -17,21 +15,18 @@ impl ScopeChanges {
     pub fn new(
         profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
         reconcile: rss_reconcile_postgres::PgMessagingStore,
     ) -> Self {
         Self {
             profile,
             runtime,
-            tenant,
+
             reconcile,
         }
     }
     fn validate(&self, tx: &PgTransaction<'_>) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(crate::Error::Forbidden.into());
-        }
+
         Ok(())
     }
     pub async fn publication_recorded_in(

@@ -11,7 +11,7 @@ use uuid::Uuid;
 pub const API_VERSION: u8 = 1;
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_FINGERPRINT: &str =
-    "a8b262d5900094c5fb841c35072f7e32b9fac8cb83758a21e36b4c6fd9676eb6";
+    "b836ca9ae9de794e600ea7f7264a607eca6988c03c36ef3ffcf870ce12b20057";
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/enroll/manifest.json");
 /// A bounded runtime profile, frozen when a grant is consumed.
@@ -41,6 +41,11 @@ impl RuntimeProfile {
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GrantRequest {
+    /// Explicit organization from the enrollment configuration; approval still requires its live session.
+    #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
+    pub tenant_id: Uuid,
+
     /// Enrollment API version.
     #[serde(deserialize_with = "version")]
     #[schemars(schema_with = "crate::runtime::version_schema")]

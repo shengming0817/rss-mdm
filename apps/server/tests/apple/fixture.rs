@@ -12,8 +12,8 @@ pub(super) struct Fixture {
     pub(super) configuration: Arc<rss_mdm_policy_service::configuration::Transactions>,
 }
 impl Fixture {
-    pub(super) async fn open(c: &Context, signing: bool) -> Result<Self> {
-        let resources = Prepared::open(c, signing, |_| {}).await?;
+    pub(super) async fn open(c: &Context) -> Result<Self> {
+        let resources = Prepared::open(c, |_| {}).await?;
         let result: Result<_> = async {
             let config = &resources.config;
             let storage = &resources.storage;
@@ -22,7 +22,6 @@ impl Fixture {
 
             let authority = Arc::new(
                 rss_mdm_software_service::deployment::managed_registration::AuthorityReader {
-                    tenant: storage.tenant,
                     instance: config.identity.instance_id.clone(),
                     source: Arc::new(assembly::software_sources::Source(source.clone())),
                     inventory: Arc::new(assembly::software_sources::Inventory),
@@ -32,10 +31,11 @@ impl Fixture {
                 },
             );
             let registration = assembly::registration::assemble(
+                storage.discovery_pool.clone(),
                 config,
                 &resources.background,
                 storage.runtime.clone(),
-                storage.tenant,
+                c.execution(),
                 storage.audit.clone(),
                 protection.clone(),
                 source.clone(),
@@ -47,23 +47,23 @@ impl Fixture {
             )
             .await?;
             let software = assembly::software::assemble(
+                storage.discovery_pool.clone(),
                 config,
                 &resources.background,
                 storage.runtime.clone(),
-                storage.tenant,
+                c.execution(),
                 storage.audit.clone(),
                 protection.clone(),
                 Arc::new(assembly::software_sources::Source(source.clone())),
                 Arc::new(assembly::software_sources::Inventory),
                 Arc::new(assembly::software_sources::Lifecycle),
                 Arc::new(rss_mdm_software_service::preparation::Preparation::new(
-                    rss_mdm_software_service::catalog::Reader::new(storage.tenant),
+                    rss_mdm_software_service::catalog::Reader::new(),
                     Default::default(),
                 )),
                 authority,
                 registration.native_materials.clone(),
                 resources.channels.clone(),
-                resources.signing.loaded_key().is_some(),
                 resources.sessions.clone(),
                 storage.read_pool.clone(),
                 storage.reconcile.clone(),
@@ -75,7 +75,7 @@ impl Fixture {
                 &resources.background,
                 storage.runtime.clone(),
                 storage.audit.clone(),
-                storage.tenant,
+                c.execution(),
                 protection.clone(),
                 None,
             )
@@ -90,8 +90,13 @@ impl Fixture {
                 rss_device_command_postgres::CommandClock::Postgres,
             )
             .await?;
-            let (collections, _) =
-                assembly::collection::assemble(storage, source.clone(), protection.clone()).await?;
+            let (collections, _) = assembly::collection::assemble(
+                c.execution(),
+                storage,
+                source.clone(),
+                protection.clone(),
+            )
+            .await?;
             Ok((service, software, registration, collections, configuration))
         }
         .await;

@@ -27,7 +27,7 @@ impl Authorizer for Grant<'_> {
         let recovery::Target::Outbox(id) = m.target() else {
             return Err(recovery::Error::Unauthorized);
         };
-        if challenge.tenant() != self.backend.tenant
+        if challenge.tenant() != self.proof.binding().tenant()
             || id.as_str() != delivery.to_string()
             || m.operation().to_string() != operation.to_string()
             || m.version().get() as u64 != version
@@ -63,9 +63,6 @@ impl Service {
         };
         proof.manage(Permission::WebhookReplay)?;
         proof.bind_audit(&audit)?;
-        if proof.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Denied);
-        }
         // The authorization intent and RSS recovery settle in separate transactions.
         // Only the recovery attempt owns the request's write outcome.
         audit.require_final_request();
@@ -75,7 +72,7 @@ impl Service {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let request = recovery::Mutation::new(
-            self.tenant,
+            proof.binding().tenant(),
             recovery::OperationId::parse(&operation.to_string()).map_err(|_| Error::Invalid)?,
             recovery::Target::Outbox(
                 rss_transactional_messaging::message::MessageId::parse(&delivery.to_string())
@@ -92,7 +89,7 @@ impl Service {
         let authorized = recovery::authorize_mutation(
             &Grant {
                 backend: self,
-                proof,
+                proof: proof.clone(),
                 audit: audit.clone(),
                 command,
             },
@@ -109,7 +106,7 @@ impl Service {
         let attempt = self
             .recovery
             .mutate(
-                self.audit.binding(),
+                proof.binding(),
                 &authorized,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(remaining),
             )

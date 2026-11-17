@@ -37,7 +37,7 @@ pub fn router(state: Option<&Arc<Services>>) -> Router<(), impl Declaration + us
         pki: crate::pki::routes().bind_with(state.map(|s| &s.pki), Arc::clone),
     }
     .assemble();
-    rss_mdm_http_contract::route_module! {struct Protected for [Browser]{management at "/api/v1",vault,platform}}
+    rss_mdm_http_contract::route_module! {struct Protected for [Browser]{management at "/api/v1/tenants/{tenant}",vault,platform}}
     let mut protected = Protected {
         vault: crate::vault::routes(state.map(|s| s.vault.clone())),
         management,
@@ -89,10 +89,17 @@ async fn authenticate(
     } else {
         rss_identity_http_axum::SessionActivity::Active
     };
+    let Some(binding) = request
+        .extensions()
+        .get::<rss_transactional_messaging::fence::ExecutionBinding>()
+        .copied()
+    else {
+        return Error::Malformed.into_response();
+    };
     let authenticated = rss_identity_http_axum::authenticate_request(
         &s.identity.authority,
         &s.identity.http,
-        s.identity.binding,
+        binding,
         request.headers(),
         activity,
         rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
@@ -108,7 +115,7 @@ async fn authenticate(
     let audit = request.extensions().get::<RequestAudit>().cloned();
     let deadline = control.deadline().instant();
     let result = tokio::time::timeout_at(deadline.into(), async {
-        let principal = Principal::new(session)?;
+        let principal = Principal::new(session, binding)?;
         let proof = AuthorizedPrincipal::from_identity(&s.authorization, principal)?;
         let audit = audit
             .as_ref()
@@ -127,7 +134,6 @@ async fn authenticate(
                 proof: Arc::new(proof),
                 sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
                     s.identity.authority.clone(),
-                    s.identity.binding,
                 ),
                 deadline,
                 cancellation: Arc::new(control),
@@ -152,13 +158,36 @@ pub fn envelope(router: axum::Router, state: Arc<Services>) -> axum::Router {
         ))
 }
 async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: Next) -> Response {
-    let audit = RequestAudit::new(
-        rss_mdm_audit_integration::Origin::Request,
-        rss_mdm_install_support::StorageProfile::Da,
-        s.identity.tenant.to_string(),
-        "da_browser",
-        AuditIntent::Routine,
-    );
+    let locator = ["/api/v1/tenants/", "/api/v1/apple/platform-sso/"]
+        .into_iter()
+        .find_map(|prefix| {
+            request
+                .uri()
+                .path()
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.split('/').next())
+        });
+    let binding = locator
+        .and_then(|tenant| rss_request_context::TenantId::parse(tenant).ok())
+        .map(|tenant| s.identity.execution(tenant));
+    let audit = match binding {
+        Some(binding) => {
+            request.extensions_mut().insert(binding);
+            RequestAudit::new(
+                rss_mdm_audit_integration::Origin::Request,
+                rss_mdm_install_support::StorageProfile::Da,
+                binding,
+                "da_browser",
+                AuditIntent::Routine,
+            )
+        }
+        None => RequestAudit::unresolved(
+            rss_mdm_audit_integration::Origin::Request,
+            rss_mdm_install_support::StorageProfile::Da,
+            "da_browser",
+            AuditIntent::Routine,
+        ),
+    };
     let permit = match s.requests.clone().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {

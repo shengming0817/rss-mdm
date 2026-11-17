@@ -4,7 +4,6 @@ use crate::transaction::*;
 
 use rss_contract::Timepoint;
 use rss_mdm_audit_integration::RequestAudit;
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use serde_json::Value;
 use std::sync::Arc;
@@ -230,7 +229,7 @@ impl ResourceCatalog {
                 return Err(Error::Conflict.into());
             }
             let blueprint = r::blueprints::get(blueprint, version).ok_or(Error::Malformed)?;
-            let initial = checked_input(blueprint.instantiate(self.tenant, rid.clone()))?;
+            let initial = checked_input(blueprint.instantiate(tx.tenant_id(), rid.clone()))?;
             use sha2::Digest;
             let origin = r::BlueprintOrigin {
                 blueprint: blueprint.id.clone(),
@@ -290,7 +289,7 @@ impl ResourceCatalog {
                 kind,
                 variants,
             } => pg::Command::Insert(checked_input(r::Version::new(
-                self.tenant,
+                tx.tenant_id(),
                 rid.clone(),
                 id(version)?,
                 kind.core(),
@@ -430,7 +429,7 @@ pub struct ResourceCatalog {
     directory_cursor: rss_mdm_query::cursor::CursorCodec,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     runtime: Arc<PgRuntime>,
-    tenant: TenantId,
+
     clock: Arc<dyn crate::clock::Clock>,
     resources: pg::ResourceStore,
     references: Arc<dyn UsageReader<Error = Fault>>,
@@ -454,7 +453,7 @@ impl ResourceCatalog {
         let Dependencies {
             audit_store,
             runtime,
-            tenant,
+            probe,
             clock,
             references,
             cursor_key: key,
@@ -462,13 +461,14 @@ impl ResourceCatalog {
             telemetry,
             software,
         } = deps;
+
         let directory_cursor = rss_mdm_query::cursor::CursorCodec::new(&key)
             .map_err(|_| Error::Unavailable(Failure::ResourceAdmission))?;
-        let resources = pg::ResourceStore::new(runtime.clone(), audit_store.binding(), deadline())
+        let resources = pg::ResourceStore::new(runtime.clone(), probe, deadline())
             .await
             .map_err(|_| Error::Unavailable(Failure::ResourceAdmission))?;
         runtime
-            .local_tx(audit_store.binding(), deadline(), |tx| {
+            .local_tx(probe, deadline(), |tx| {
                 Box::pin(async move {
                     pg::admit_application_in(tx).await?;
                     Ok(())
@@ -487,7 +487,7 @@ impl ResourceCatalog {
             directory_cursor,
             audit_store,
             runtime,
-            tenant,
+
             clock,
             resources,
             references,
@@ -520,11 +520,22 @@ impl ResourceCatalog {
         proof.bind_audit(audit)?;
         proof.require_initialization_target(id)?;
         proof.manage(permission)?;
+        let budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
+        let cutoff = proof
+            .initialization_cutoff()
+            .map_or(budget.deadline(), |caller| {
+                budget.deadline().shortened_to(caller.instant())
+            });
         crate::transaction::run(
             &self.audit_store,
             &self.runtime,
-            self.audit_store.binding(),
+            audit.binding()?,
             audit,
+            rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                cutoff,
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
+            ),
             (self, command, audit, proof, permission),
             |ctx, tx| {
                 Box::pin(async move {
@@ -543,7 +554,11 @@ impl ResourceCatalog {
                     }
                     let partitions = match command {
                         Command::Resource { id, .. } => {
-                            vec![s.resources.partition(id).map_err(|_| Error::Malformed)?]
+                            vec![
+                                s.resources
+                                    .partition(tx.tenant_id(), id)
+                                    .map_err(|_| Error::Malformed)?,
+                            ]
                         }
                         _ => vec![],
                     };
@@ -638,7 +653,7 @@ async fn admit_in(tx: &mut PgTransaction<'_>) -> Result<()> {
 pub struct Dependencies {
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub runtime: Arc<PgRuntime>,
-    pub tenant: TenantId,
+    pub probe: rss_transactional_messaging::fence::ExecutionBinding,
     pub clock: Arc<dyn clock::Clock>,
     pub cursor_key: Vec<u8>,
     pub references: Arc<dyn UsageReader<Error = Fault>>,

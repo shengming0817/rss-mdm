@@ -4,7 +4,6 @@ use crate::{Error, Failure, database::db};
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit};
 use rss_mdm_registration_service::DevicePrincipal;
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgError, PgRuntime, PgTransaction};
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row};
@@ -80,7 +79,6 @@ pub trait Tasks: Send + Sync {
 }
 pub struct Delivery {
     pub runtime: Arc<PgRuntime>,
-    pub tenant: TenantId,
     pub audit: Arc<AuditStore>,
     pub signing: Arc<rss_mdm_task_trust::Signing>,
     pub tasks: Arc<dyn Tasks>,
@@ -99,14 +97,14 @@ impl Delivery {
     where
         F: for<'a> FnOnce(&'a mut C, &'a mut PgTransaction<'_>) -> Pending<'a, R> + Send,
     {
-        if audit.profile() != self.profile() || audit.tenant() != self.tenant.to_string() {
+        if audit.profile() != self.profile() {
             return Err(Error::Forbidden);
         }
         let failure = Mutex::new(None);
         let attempt = self
             .runtime
             .local_tx_with_context(
-                self.audit.binding(),
+                audit.binding()?,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     Duration::from_secs(6),
                 ),
@@ -155,10 +153,11 @@ impl Delivery {
         input: &wire::TaskClaimRequest,
         audit: &RequestAudit,
     ) -> Result<wire::TaskClaimResponse, Error> {
-        if self.tasks.profile() != self.profile()
-            || self.profile() != p.profile()
-            || self.tenant != p.tenant()
-        {
+        audit
+            .bind_scope(p.binding())
+            .map_err(|_| Error::Forbidden)?;
+
+        if self.tasks.profile() != self.profile() || self.profile() != p.profile() {
             return Err(Error::Forbidden);
         }
 
@@ -263,10 +262,11 @@ impl Delivery {
         input: &wire::TaskEventRequest,
         audit: &RequestAudit,
     ) -> Result<wire::TaskEventAck, Error> {
-        if self.tasks.profile() != self.profile()
-            || self.profile() != p.profile()
-            || self.tenant != p.tenant()
-        {
+        audit
+            .bind_scope(p.binding())
+            .map_err(|_| Error::Forbidden)?;
+
+        if self.tasks.profile() != self.profile() || self.profile() != p.profile() {
             return Err(Error::Forbidden);
         }
 
@@ -357,10 +357,7 @@ impl Delivery {
         p: &DevicePrincipal,
         payload: wire::TaskPayload,
     ) -> Result<wire::SignedTask, Error> {
-        if self.tasks.profile() != self.profile()
-            || self.profile() != p.profile()
-            || self.tenant != p.tenant()
-        {
+        if self.tasks.profile() != self.profile() || self.profile() != p.profile() {
             return Err(Error::Forbidden);
         }
 
@@ -381,10 +378,11 @@ impl Delivery {
         key: Option<&str>,
         audit: &RequestAudit,
     ) -> Result<rss_mdm_content_service::Verified, Error> {
-        if self.tasks.profile() != self.profile()
-            || self.profile() != p.profile()
-            || self.tenant != p.tenant()
-        {
+        audit
+            .bind_scope(p.binding())
+            .map_err(|_| Error::Forbidden)?;
+
+        if self.tasks.profile() != self.profile() || self.profile() != p.profile() {
             return Err(Error::Forbidden);
         }
 
@@ -393,7 +391,7 @@ impl Delivery {
             .content
             .as_ref()
             .ok_or(Error::Unsupported)?
-            .verify(&artifact)
+            .verify(p.binding(), &artifact)
             .await?;
         let current = self.authorize_content(p, task, attempt, key, audit).await?;
         if !verified.matches(&current) {
@@ -409,11 +407,14 @@ impl Delivery {
         key: Option<&str>,
         audit: &RequestAudit,
     ) -> Result<rss_mdm_resource::Artifact, Error> {
+        audit
+            .bind_scope(p.binding())
+            .map_err(|_| Error::Forbidden)?;
+
         if self.tasks.profile() != self.profile()
             || self.profile() != p.profile()
-            || self.tenant != p.tenant()
             || audit.profile() != self.profile()
-            || audit.tenant() != self.tenant.to_string()
+            || audit.binding()? != p.binding()
         {
             return Err(Error::Forbidden);
         }
@@ -421,7 +422,7 @@ impl Delivery {
         let failure = Mutex::new(None);
         self.runtime
             .local_tx_with_context(
-                self.audit.binding(),
+                audit.binding()?,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     Duration::from_secs(6),
                 ),

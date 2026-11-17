@@ -12,7 +12,7 @@ pub trait ChannelCopies: Send + Sync {
 }
 pub struct Copies {
     runtime: Arc<PgRuntime>,
-    tenant: TenantId,
+
     protection: Arc<rss_mdm_native_protection::Protector>,
     store: rss_device_command_postgres::PgStore<()>,
     channel: Arc<dyn ChannelCopies>,
@@ -25,7 +25,6 @@ impl Copies {
         protection: Arc<rss_mdm_native_protection::Protector>,
         channel: Arc<dyn ChannelCopies>,
     ) -> std::result::Result<Self, Error> {
-        let tenant = execution.tenant();
         let caller = runtime.clone();
         let (_, store) = runtime
             .local_tx(execution, deadline(), move |tx| {
@@ -50,7 +49,7 @@ impl Copies {
             )?;
         Ok(Self {
             runtime,
-            tenant,
+
             protection,
             store,
             channel,
@@ -58,9 +57,7 @@ impl Copies {
     }
     pub async fn purge_in(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
         self.runtime.validate_transaction(tx)?;
-        if self.tenant != tx.tenant_id() {
-            return Err(Error::Forbidden.into());
-        }
+
         let tenant = tx.tenant_id().to_string();
         tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT id FROM mdm_devices.control_operations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(tenant).bind(id).fetch_one(c).await.map(|_|())})).await?;
         let mut op = storage::load(tx, &self.protection, id).await?;
@@ -97,7 +94,7 @@ impl Copies {
         }
         let (_, sealed) = input_storage::seal(
             &self.protection,
-            self.tenant,
+            tx.tenant_id(),
             &input_storage::Identity {
                 operation: id,
                 device: &op.device,

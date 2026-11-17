@@ -40,11 +40,12 @@ impl Http {
             .layer(axum::Extension(c.request(&proof)?))
             .layer(axum::Extension(c.read_auth(proof)))
             .into_axum();
+        let router = axum::Router::new().nest("/api/v1/tenants/{tenant}", router);
         let response = tokio::time::timeout(
             Duration::from_secs(10),
             router.oneshot(
                 axum::http::Request::builder()
-                    .uri(format!("/devices/{device}"))
+                    .uri(format!("/api/v1/tenants/{}/devices/{device}", c.tenant))
                     .body(axum::body::Body::empty())?,
             ),
         )
@@ -56,7 +57,7 @@ impl Http {
 }
 async fn open() -> Result<(Context, Fixture, Http)> {
     let c = Context::open("shared", &[]).await?;
-    let a = match Fixture::open(&c, false).await {
+    let a = match Fixture::open(&c).await {
         Ok(a) => a,
         Err(e) => {
             c.close().await;
@@ -160,7 +161,7 @@ async fn detail_capabilities_are_authorized_read_only_facts() -> Result<()> {
         assert_eq!(capability(&body,"restart")["permission"]["allowed"], true);
         assert_eq!(capability(&body,"wipe")["permission"], json!({"allowed":false,"reason":"permission_denied"}));
         let document = crate::http_contract_document().map_err(|e| anyhow::anyhow!("{e:?}"))?;
-        let endpoint = document["endpoints"].as_array().unwrap().iter().find(|e| e["method"]=="GET" && e["path"]=="/api/v1/devices/{device}").unwrap();
+        let endpoint = document["endpoints"].as_array().unwrap().iter().find(|e| e["method"]=="GET" && e["path"]=="/api/v1/tenants/{tenant}/devices/{device}").unwrap();
         let response = endpoint["responses"].as_array().unwrap().iter().find(|r|r["status"]==200).unwrap();
         let schema = response["body"]["schema"]["schemaId"].as_str().unwrap();
         jsonschema::validator_for(&document["schemas"][schema])?.validate(&body).map_err(|e|anyhow::anyhow!(e.to_string()))?;
@@ -357,7 +358,7 @@ async fn lifecycle_and_dependency_failures_are_not_platform_unsupported() -> Res
         let p=Arc::new(c.authenticate(&account).await?);
         assert_eq!(http.get(&c,p.clone(),&other.device).await?.0,404);
         let outsider=foreign.account(&[Permission::InventoryRead]).await?;
-        assert_eq!(http.get(&foreign,Arc::new(foreign.authenticate(&outsider).await?),&n.device).await?.0,403);
+        assert_eq!(http.get(&foreign,Arc::new(foreign.authenticate(&outsider).await?),&n.device).await?.0,404);
         windows(&c,&n,"10.0.22631.0").await?;
         change(&c, "UPDATE mdm_windows.capabilities SET protocol_epoch = gen_random_uuid() WHERE tenant_id = CAST($1 AS uuid) AND device = $2", n.device.into_uuid()).await?;
         assert_eq!(capability(&read(&c,&http,&p,&n).await?,"wipe")["devicePrerequisite"]["state"],"unknown");
@@ -386,7 +387,7 @@ async fn lifecycle_and_dependency_failures_are_not_platform_unsupported() -> Res
 async fn snapshot_revalidates_authority_and_registration_before_return() -> Result<()> {
     use rss_mdm_registration_service::device::endpoints;
     let c = Context::open("shared", &[]).await?;
-    let a = Fixture::open(&c, false).await?;
+    let a = Fixture::open(&c).await?;
     let result=async {
         let n=native::seed(&c,"windows").await?;
         let account=c.account(&[Permission::InventoryRead]).await?;

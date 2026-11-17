@@ -59,7 +59,7 @@ async fn live_view_and_fixed_list_keep_distinct_read_semantics() -> Result<()> {
         let b=planning_t2_support::endpoint(&c).await?.members[0].device;
         let account=c.account(&[Permission::InventoryRead,Permission::InventorySensitiveRead]).await?;
         let proof=c.authenticate(&account).await?;
-        let service=Associations::new(c.audit.clone(),c.tenant,&[9;32])?;
+        let service=Associations::new(c.audit.clone(),&[9;32])?;
         let field=FieldKey::parse("custom.query_list")?;
         let definition:FieldDefinition=serde_json::from_value(json!({"key":field,"version":1,"valueType":{"kind":"array","items":{"kind":"integer"},"maxItems":1000},"nullable":true,"manual":true,"sources":{"manual":0},"platforms":["macos","windows"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null}))?;
         let mut tx=seed_transaction(&c).await?;
@@ -68,7 +68,7 @@ async fn live_view_and_fixed_list_keep_distinct_read_semantics() -> Result<()> {
         assign(&c,&a,field,0,vec![1,2,3],proof.principal_id()).await?;
         assign(&c,&b,field,0,vec![8],proof.principal_id()).await?;
         let timer=rss_mdm_audit_integration::budget::RuntimeTimer;
-        let personnel=Reader::new(&c.authority,c.audit.binding(),c.access().now()+Duration::from_secs(30),&timer,None);
+        let personnel=Reader::new(&c.authority,c.execution(),c.access().now()+Duration::from_secs(30),&timer,None);
         let reference=ObjectRef::Endpoint(a);
         let detail:Value=serde_json::to_value(service.view(&proof,&reference,&personnel).await?)?;
         let token=detail["lists"][field.as_str()]["sources"][0]["cursor"].as_str().expect("manual array source cursor");
@@ -129,6 +129,75 @@ async fn live_view_and_fixed_list_keep_distinct_read_semantics() -> Result<()> {
         sqlx::query("DELETE FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(account.rule).execute(&c.operator).await?;
         assert!(service.list_items(&proof,&reference,field,next,2,&personnel).await.is_err());
         Ok::<_,anyhow::Error>(())
+    }.await;
+    c.close().await;
+    result
+}
+
+#[tokio::test]
+#[ignore = "T2: non-manual array continuations execute source liveness SQL and reject a changed source epoch"]
+async fn non_manual_fixed_list_revalidates_source_epoch() -> Result<()> {
+    let c = Context::open("query_reads", &[]).await?;
+    let result = async {
+        let device = planning_t2_support::endpoint(&c).await?.members[0].device;
+        let account = c.account(&[Permission::InventoryRead]).await?;
+        let proof = c.authenticate(&account).await?;
+        let service = Associations::new(c.audit.clone(), &[9; 32])?;
+        let field = FieldKey::parse("custom.source_list")?;
+        let definition: FieldDefinition = serde_json::from_value(json!({"key":field,"version":1,"valueType":{"kind":"array","items":{"kind":"integer"},"maxItems":1000},"nullable":true,"manual":false,"sources":{"mdm.windows":0},"platforms":["windows"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null}))?;
+        let mut tx = seed_transaction(&c).await?;
+        let epoch: Uuid = sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND device=$2 AND source='mdm.windows'")
+            .bind(c.tenant.to_string()).bind(device.into_uuid()).fetch_one(&mut *tx).await?;
+        assert!(rss_mdm_inventory_postgres::publish_field_in(&mut tx, c.tenant, 0, &definition).await?);
+        // Seed an already projected native snapshot. The behavior under test starts
+        // at the public view/list API; manual assignment rejects this field by design.
+        use rss_mdm_inventory::{CollectionDefinition, CollectionField, CollectionScope};
+        use sha2::{Digest, Sha256};
+        let collection = CollectionDefinition::new("native-list", 1, Source::MdmWindows,
+            vec![CollectionField { definition: definition.clone(), scope: CollectionScope::Device }])?;
+        rss_mdm_inventory_postgres::register_collection_in(&mut tx, c.tenant, &collection).await?;
+        let scope = rss_mdm_registration_service::device::scope_dataset(
+            rss_mdm_install_support::StorageProfile::Mdm, c.tenant, &device, "mdm.windows", epoch, "native-list")?;
+        let items = [Scalar::Integer(1), Scalar::Integer(2)];
+        let bytes = serde_json::to_vec(&Scalar::Array(items.to_vec()))?;
+        let definition_bytes = serde_json::to_vec(&definition)?;
+        let definition_digest = format!("{:x}", Sha256::digest(&definition_bytes));
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        let version = format!("{:x}", Sha256::digest(serde_json::to_vec(&(1, &definition_digest, &digest))?));
+        sqlx::query("INSERT INTO mdm.array_versions(tenant_id,version,format,field,definition_digest,item_count,canonical_bytes,digest,definition) VALUES($1::uuid,$2,1,$3,$4,2,$5,$6,$7)")
+            .bind(c.tenant.to_string()).bind(&version).bind(field.as_str()).bind(&definition_digest)
+            .bind(bytes.len() as i64).bind(&digest).bind(definition_bytes).execute(&mut *tx).await?;
+        let mut end = 0i64;
+        for (ordinal, item) in items.iter().enumerate() {
+            let payload = serde_json::to_vec(item)?;
+            end += payload.len() as i64 + i64::from(ordinal > 0);
+            sqlx::query("INSERT INTO mdm.array_items(tenant_id,version,ordinal,payload,digest,prefix_bytes) VALUES($1::uuid,$2,$3,$4,sha256($4),$5)")
+                .bind(c.tenant.to_string()).bind(&version).bind(ordinal as i64).bind(payload).bind(end).execute(&mut *tx).await?;
+        }
+        let projection = rss_mdm_inventory_postgres::projection_scope(c.tenant);
+        sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope,value_version) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,1,2,'known',$8,'mdm.windows',$9,1,$10,$11)")
+            .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation())
+            .bind(scope.encode()?).bind(serde_json::to_string(&collection.coverage()?)?).bind(field.as_str())
+            .bind(Uuid::new_v4().to_string()).bind(device.into_uuid()).bind(epoch.to_string())
+            .bind(CollectionScope::Device.canonical()?).bind(version).execute(&mut *tx).await?;
+        tx.commit().await?;
+        let timer = rss_mdm_audit_integration::budget::RuntimeTimer;
+        let personnel = Reader::new(&c.authority, c.execution(), c.access().now() + Duration::from_secs(30), &timer, None);
+        let reference = ObjectRef::Endpoint(device);
+        let detail: Value = serde_json::to_value(service.view(&proof, &reference, &personnel).await?)?;
+        let token = detail["lists"][field.as_str()]["sources"][0]["cursor"].as_str().expect("native array cursor");
+        let first: Value = serde_json::to_value(service.list_items(&proof, &reference, field, token, 1, &personnel).await?)?;
+        assert_eq!(first["items"], json!([{"kind":"integer","value":1}]));
+        let next = first["nextCursor"].as_str().expect("second native item");
+        let second: Value = serde_json::to_value(service.list_items(&proof, &reference, field, next, 1, &personnel).await?)?;
+        assert_eq!(second["items"], json!([{"kind":"integer","value":2}]));
+        let mut tx = seed_transaction(&c).await?;
+        sqlx::query("UPDATE mdm_access.report_sources SET epoch=$3 WHERE tenant_id=$1::uuid AND device=$2 AND source='mdm.windows'")
+            .bind(c.tenant.to_string()).bind(device.into_uuid()).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+        tx.commit().await?;
+        assert!(matches!(service.list_items(&proof, &reference, field, next, 1, &personnel).await,
+            Err(rss_mdm_device_service::Error::CursorInvalidated)));
+        Ok::<_, anyhow::Error>(())
     }.await;
     c.close().await;
     result

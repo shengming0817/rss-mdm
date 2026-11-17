@@ -25,7 +25,7 @@ impl super::inputs::Inputs {
         let identity = binding.identity();
         let (version, state) = rss_mdm_resource_postgres::version_facts_on(
             c,
-            self.tenant,
+            proof.binding().tenant(),
             &[(identity.id().into(), identity.version().into())],
         )
         .await?
@@ -40,8 +40,12 @@ impl super::inputs::Inputs {
         if !verified.matches(super::inputs::artifact(selected, channel)?) {
             return Err(Error::Conflict.into());
         }
-        crate::collection::resource_authoring::validate_variant_on(c, self.tenant, selected)
-            .await?;
+        crate::collection::resource_authoring::validate_variant_on(
+            c,
+            proof.binding().tenant(),
+            selected,
+        )
+        .await?;
         match selected.declaration() {
             r::Declaration::AgentCollection { definition, .. } if channel == Channel::Agent => {
                 grant.require(proof, Permission::InventorySensitiveRead, None)?;
@@ -78,6 +82,7 @@ impl super::inputs::Inputs {
     }
     pub async fn eligible_on(
         &self,
+        tenant: rss_request_context::TenantId,
         c: &mut sqlx::PgConnection,
         preview: &Preview,
         store: std::sync::Arc<dyn super::agent_facts::Store>,
@@ -91,7 +96,7 @@ impl super::inputs::Inputs {
             } => {
                 super::eligibility::check_on(
                     c,
-                    self.tenant,
+                    tenant,
                     store,
                     target,
                     *platform,
@@ -101,9 +106,7 @@ impl super::inputs::Inputs {
                 .await
             }
             Preview::Native(definition) => {
-                self.native
-                    .eligible_on(c, self.tenant, target, definition)
-                    .await
+                self.native.eligible_on(c, tenant, target, definition).await
             }
         }
     }

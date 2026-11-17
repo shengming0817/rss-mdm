@@ -39,6 +39,7 @@ pub trait Retirement: Send + Sync {
     fn events(&self) -> Option<&dyn crate::EventSink>;
     fn retire<'a>(
         &'a self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &'a mut sqlx::PgConnection,
         facts: &'a mut Vec<rss_mdm_audit_integration::Fact>,
         tenant: &'a str,
@@ -46,7 +47,12 @@ pub trait Retirement: Send + Sync {
         state: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep execution scope and existing operation inputs explicit"
+)]
 pub async fn retire(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
@@ -59,7 +65,9 @@ pub async fn retire(
     // Credentials and protocol requests close with their device in this transaction.
     crate::device::store::retire_state_in(profile, tx, tenant, device, state, participant.events())
         .await?;
-    participant.retire(tx, facts, tenant, device, state).await
+    participant
+        .retire(execution, tx, facts, tenant, device, state)
+        .await
 }
 
 /// The product's single endpoint fence: registration, execution and all channels,

@@ -237,7 +237,7 @@ pub(crate) async fn insert_operation(
     let receipt = data(codec::encode(&op.receipt))?;
     let hash = digest(&receipt);
     tx.with_connection(move |c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_group.operations(tenant_id,id,group_id,digest,request,receipt,receipt_digest,as_of) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7,$8)")
+        sqlx::query("INSERT INTO mdm_group.operations(tenant_id,id,group_id,digest,request,receipt,receipt_digest,as_of,expected_epoch) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7,$8,current_setting('rss.execution_epoch')::bigint)")
             .bind(tenant).bind(op.id.to_string()).bind(op.group.to_string()).bind(op.digest).bind(op.request).bind(receipt).bind(hash).bind(op.as_of).execute(c).await?;Ok(())
     })).await
 }

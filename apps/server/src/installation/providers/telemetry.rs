@@ -66,9 +66,15 @@ impl Request {
     pub(in crate::installation) fn validate(&self) -> Result<rss_request_context::TenantId> {
         let tenant =
             rss_request_context::TenantId::parse(&self.tenant).map_err(|_| Error::Input)?;
-        self.configuration
-            .validate(tenant)
-            .map_err(|_| Error::Input)?;
+        if self
+            .configuration
+            .tenant()
+            .map_err(|_| Error::Input)?
+            .is_some_and(|owner| owner != tenant)
+        {
+            return Err(Error::Input);
+        }
+        self.configuration.validate().map_err(|_| Error::Input)?;
         identifier(&self.owner)?;
         identifier(&self.configuration.database().user)?;
         if self.operation_id.is_nil()
@@ -129,7 +135,7 @@ pub async fn prepare(input: Request) -> Result<Receipt> {
         .map_err(|_| Error::Storage)?
 }
 async fn prepare_inner(input: Request) -> Result<Receipt> {
-    let tenant = input.validate()?;
+    input.validate()?;
     let journal = Journal::open(&input.directory)?;
     let frozen = serde_json::to_value(&input).map_err(|_| Error::Input)?;
     if let Some(old) = journal.load::<serde_json::Value>("request.json")? {
@@ -140,14 +146,7 @@ async fn prepare_inner(input: Request) -> Result<Receipt> {
         journal.save("request.json", &frozen)?;
     }
     let binding = Sha256::digest(serde_json::to_vec(&frozen).map_err(|_| Error::Input)?).to_vec();
-    let identity = match journal.load::<Uuid>("identity.json")? {
-        Some(id) => id,
-        None => {
-            let id = Uuid::new_v4();
-            journal.save("identity.json", &id)?;
-            id
-        }
-    };
+    let identity = input.configuration.resource_id;
     if input.clickhouse.is_some() {
         clickhouse::check_version(&input).await?;
     }
@@ -157,7 +156,7 @@ async fn prepare_inner(input: Request) -> Result<Receipt> {
     }
     let store = input
         .configuration
-        .open_backend(tenant)
+        .open_backend()
         .await
         .map_err(|_| Error::Storage)?;
     let deadline = rss_request_context::Deadline::from_timeout(
@@ -355,11 +354,7 @@ async fn install_roles(c: &mut PgConnection, input: &Request, identity: Uuid) ->
     Ok(())
 }
 async fn install_objects(c: &mut PgConnection, input: &Request) -> Result<()> {
-    let source = match input
-        .configuration
-        .profile(rss_request_context::TenantId::parse(&input.tenant).map_err(|_| Error::Input)?)
-        .map_err(|_| Error::Input)?
-    {
+    let source = match input.configuration.profile().map_err(|_| Error::Input)? {
         Some(profile) => profile.installation_sql().map_err(|_| Error::Input)?,
         None => rss_timeseries_clickhouse::CONTROL_SQL.to_owned(),
     };
@@ -439,7 +434,7 @@ pub async fn maintain(input: PhysicalRequest) -> Result<serde_json::Value> {
         .map_err(|_| Error::Storage)?
 }
 async fn maintain_inner(input: PhysicalRequest) -> Result<serde_json::Value> {
-    let tenant = input.installation.validate()?;
+    input.installation.validate()?;
     if input.operation_id.is_nil() {
         return Err(Error::Input);
     }
@@ -498,7 +493,6 @@ async fn maintain_inner(input: PhysicalRequest) -> Result<serde_json::Value> {
         } => {
             convert_chunks(
                 &input,
-                tenant,
                 *start_micros,
                 *end_micros,
                 *max_chunks,
@@ -595,7 +589,7 @@ async fn prepare_partitions(
 
 async fn convert_chunks(
     input: &PhysicalRequest,
-    tenant: rss_request_context::TenantId,
+
     start_micros: i64,
     end_micros: i64,
     max_chunks: std::num::NonZeroU32,
@@ -616,7 +610,7 @@ async fn convert_chunks(
     let backend = input
         .installation
         .configuration
-        .open_backend(tenant)
+        .open_backend()
         .await
         .map_err(|_| Error::Storage)?;
     let deadline = rss_request_context::Deadline::from_timeout(
@@ -707,7 +701,7 @@ pub async fn prepare_tenant(input: TenantRequest) -> Result<TenantReceipt> {
 }
 async fn prepare_tenant_inner(input: TenantRequest) -> Result<TenantReceipt> {
     input.installation.validate()?;
-    let tenant = rss_request_context::TenantId::parse(&input.tenant).map_err(|_| Error::Input)?;
+    rss_request_context::TenantId::parse(&input.tenant).map_err(|_| Error::Input)?;
     if input.operation_id.is_nil() || input.tenant == input.installation.tenant {
         return Err(Error::Input);
     }
@@ -764,10 +758,7 @@ async fn prepare_tenant_inner(input: TenantRequest) -> Result<TenantReceipt> {
     target.tenant = input.tenant.clone();
     target.operation_id = input.operation_id;
     target.configuration.cursor_key_file = input.cursor_key_file.clone();
-    target
-        .configuration
-        .validate(tenant)
-        .map_err(|_| Error::Input)?;
+    target.configuration.validate().map_err(|_| Error::Input)?;
     let journal = Journal::open(
         &input
             .installation
@@ -797,7 +788,7 @@ async fn prepare_tenant_inner(input: TenantRequest) -> Result<TenantReceipt> {
     clickhouse::provision_users(&target).await?;
     let backend = target
         .configuration
-        .open_backend(tenant)
+        .open_backend()
         .await
         .map_err(|_| Error::Storage)?;
     let deadline = rss_request_context::Deadline::from_timeout(

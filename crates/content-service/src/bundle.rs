@@ -22,8 +22,15 @@ impl VerifiedContent for PinnedSoftware {
     }
 }
 impl ContentPort for Store {
-    fn verify<'a>(&'a self, version: &'a Version) -> catalog::ContentFuture<'a> {
+    fn verify<'a>(
+        &'a self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        version: &'a Version,
+    ) -> catalog::ContentFuture<'a> {
         Box::pin(async move {
+            if version.tenant() != execution.tenant() {
+                return Err(catalog::Error::Input);
+            }
             let mut materials = Vec::new();
             for variant in version.variants() {
                 let Declaration::Software { definition } = variant.declaration() else {
@@ -37,7 +44,7 @@ impl ContentPort for Store {
                 }
             }
             let files = self
-                .pin_materials(&materials)
+                .pin_materials(execution, &materials)
                 .await
                 .map_err(|_| catalog::Error::Content)?;
             for variant in version.variants() {
@@ -51,7 +58,7 @@ impl ContentPort for Store {
                         }
                         let artifact = evidence.artifact().map_err(|_| catalog::Error::Input)?;
                         let file = self
-                            .verify_ready_report(&artifact)
+                            .verify_ready_report(execution, &artifact)
                             .await
                             .map_err(|_| catalog::Error::Content)?;
                         #[derive(serde::Deserialize)]

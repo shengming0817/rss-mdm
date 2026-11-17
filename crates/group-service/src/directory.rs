@@ -58,7 +58,7 @@ impl Groups {
         proof.require_all_devices(Permission::InventoryRead)?;
         crate::transaction::inspect(
             &self.runtime,
-            self.audit_store.binding(),
+            proof.binding(),
             (self, proof, q, audit),
             |ctx, tx| {
                 Box::pin(async move {
@@ -120,7 +120,7 @@ impl Groups {
                                 let rule =
                                     group_checked(s.groups.rule_in(tx, group.id, version).await?)?
                                         .ok_or(Error::Conflict)?;
-                                let catalog = assets::catalog_in(tx, s.tenant).await?;
+                                let catalog = assets::catalog_in(tx, p.binding().tenant()).await?;
                                 match assets::filter::require_visible_rule(&catalog, &rule) {
                                     Err(
                                         rss_mdm_inventory_service::transaction::Fault::Request(
@@ -165,7 +165,7 @@ impl Groups {
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
         p.manage(Permission::GroupRead)?;
-        crate::transaction::inspect(&self.runtime,self.audit_store.binding(),(self,p),|(_,p),tx|Box::pin(async move {
+        crate::transaction::inspect(&self.runtime,p.binding(),(self,p),|(_,p),tx|Box::pin(async move {
             let grant=crate::transaction::query_authority(tx,p).await?;
             grant.require(p,Permission::GroupRead,None)?;
             grant.require_all_devices(p,Permission::InventoryRead)?;

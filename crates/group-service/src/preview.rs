@@ -57,9 +57,7 @@ impl Groups {
         request: &Request,
         audit: &RequestAudit,
     ) -> std::result::Result<Response, Error> {
-        if proof.tenant_id() != self.tenant.to_string()
-            || proof.initialization_authority().is_some()
-        {
+        if proof.initialization_authority().is_some() {
             return Err(Error::Forbidden);
         }
         proof.manage(Permission::GroupRead)?;
@@ -67,10 +65,11 @@ impl Groups {
         proof.bind_audit(audit)?;
         audit.set_action("management_read", AuditIntent::Routine);
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let candidate = assets::cut::capture(&self.audit_store, self.tenant, &budget).await?;
+        let candidate =
+            assets::cut::capture(&self.audit_store, proof.binding().tenant(), &budget).await?;
         let result = inspect_budget(
             &self.runtime,
-            self.audit_store.binding(),
+            proof.binding(),
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                 budget.control().total_remaining(),
             ),
@@ -84,7 +83,7 @@ impl Groups {
                     group_checked(s.groups.lock_graph_in(tx).await?)?;
                     let snapshot = if request.asset_context == AssetContext::AssociatedDevice {
                         let reader = s.objects.clone();
-                        let tenant = s.tenant;
+                        let tenant = proof.binding().tenant();
                         Some(
                             tx.with_connection(move |c| {
                                 Box::pin(async move { reader.capture(c, tenant, None).await })
@@ -96,14 +95,14 @@ impl Groups {
                     };
                     let cut = snapshot.as_ref().map_or(candidate, |s| &s.asset_cut);
                     request.criteria.validate()?;
-                    let catalog = assets::catalog_at_in(tx, s.tenant, cut).await?;
+                    let catalog = assets::catalog_at_in(tx, proof.binding().tenant(), cut).await?;
                     let rule = criteria::rule(
-                        s.tenant,
+                        proof.binding().tenant(),
                         Uuid::new_v4(),
                         &request.criteria.criteria,
                         &catalog,
                     )?;
-                    let current_catalog = assets::catalog_in(tx, s.tenant).await?;
+                    let current_catalog = assets::catalog_in(tx, proof.binding().tenant()).await?;
                     assets::filter::require_visible_rule(&current_catalog, &rule)?;
                     let mut targets = rule.groups().into_iter().collect::<BTreeSet<_>>();
                     if let Some(editing) = &request.editing {
@@ -132,7 +131,7 @@ impl Groups {
                         )
                         .await?;
                     // Current visibility and live authentication remain required even for a fixed cut.
-                    let current_catalog = assets::catalog_in(tx, s.tenant).await?;
+                    let current_catalog = assets::catalog_in(tx, proof.binding().tenant()).await?;
                     assets::filter::require_visible_rule(&current_catalog, &rule)?;
                     proof.check_live()?;
                     Ok(Response {
@@ -282,11 +281,11 @@ impl Groups {
             }
             let key = after
                 .as_ref()
-                .map(|s| checked_input(rss_mdm_group::ObjectKey::new(self.tenant, *s)))
+                .map(|s| checked_input(rss_mdm_group::ObjectKey::new(tx.tenant_id(), *s)))
                 .transpose()?;
             let evaluated = rule.evaluate_page(
                 &rss_mdm_group::PageInput {
-                    tenant: self.tenant,
+                    tenant: tx.tenant_id(),
                     id: if snapshot.is_some() {
                         "objects"
                     } else {

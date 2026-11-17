@@ -7,6 +7,7 @@ impl PolicyWork {
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error> {
         control.check()?;
+        let binding = self.binding_for(claim, control).await?;
         let service = self
             .service
             .configuration
@@ -14,7 +15,7 @@ impl PolicyWork {
             .ok_or_else(|| reconcile_error(Error::Unsupported))?;
         let pending = crate::transaction::inspect_budget(
             &self.service.runtime,
-            self.service.audit_store.binding(),
+            binding,
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                 control.remaining(),
             ),
@@ -34,26 +35,18 @@ impl PolicyWork {
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, rss_reconcile::Error> {
         control.check()?;
+        let binding = self.binding_for(claim, control).await?;
         let service = self
             .service
             .configuration
             .as_ref()
             .ok_or_else(|| reconcile_error(Error::Unsupported))?;
-        if claim.target().entity() == "configuration-relay" {
-            // The RSS outbox claim and idempotent gateway receipt protect this independent relay.
-            let count = service.relay_once(control).await.map_err(reconcile_error)?;
-            return Ok(if count == 0 {
-                ReconcileStep::Deferred(crate::worker_wake::RECOVERY)
-            } else {
-                ReconcileStep::Ready(())
-            });
-        }
         let cut = if claim.target().entity() == "configuration-inputs" {
             let budget = rss_mdm_audit_integration::budget::AuditBudget::new(control.remaining());
             Some(
                 rss_mdm_inventory_service::assets::cut::capture(
                     &self.service.audit_store,
-                    self.service.tenant,
+                    binding.tenant(),
                     &budget,
                 )
                 .await
@@ -65,7 +58,7 @@ impl PolicyWork {
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             self.profile(),
-            self.service.tenant.to_string(),
+            binding,
             "configuration_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -73,7 +66,7 @@ impl PolicyWork {
         let result = crate::transaction::run_budget(
             &self.service.audit_store,
             &self.service.runtime,
-            self.service.audit_store.binding(),
+            binding,
             &audit,
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                 control.remaining(),

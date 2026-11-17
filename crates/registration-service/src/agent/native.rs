@@ -109,9 +109,10 @@ struct Stored {
 pub(crate) async fn source(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
-    tenant: rss_request_context::TenantId,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     value: serde_json::Value,
 ) -> Result<Source, Error> {
+    let tenant = execution.tenant();
     let s: Stored = serde_json::from_value(value).map_err(|_| Error::Corrupt)?;
     if s.source.channel() != rss_mdm_inventory::Channel::Mdm || s.installation.is_nil() {
         return Err(Error::Corrupt);
@@ -156,14 +157,11 @@ pub(crate) async fn source(
             rss_mdm_pki_service::Error::Storage => Error::Storage,
             _ => Error::Forbidden,
         })?;
-    let mount = crate::device::ChannelMount::new(
-        profile,
-        tenant,
-        s.source,
-        crate::device::Purpose::Primary,
-    );
+    let mount =
+        crate::device::ChannelMount::new(profile, s.source, crate::device::Purpose::Primary);
     let principal =
-        crate::device::store::management_in(profile, c, &mount.credential(bytes)?).await?;
+        crate::device::store::management_in(profile, c, &mount.credential(execution, bytes)?)
+            .await?;
     if *principal.device() != s.device || principal.credential() != s.credential {
         return Err(Error::Forbidden);
     }

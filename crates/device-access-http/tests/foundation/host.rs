@@ -30,7 +30,7 @@ pub async fn verify(
     c.browser_origin
         .set(origin.clone())
         .expect("one host origin");
-    let trust = registration.trust().trust.public()?;
+    let trust = registration.trust(c.execution()).await?.trust.public()?;
     let trust_file = m.directory.join("host-trust.json");
     private(&trust_file, &serde_json::to_vec(&trust)?)?;
     let cursor = m.directory.join("host-cursor.key");
@@ -168,7 +168,10 @@ pub async fn verify(
             .next()
             .unwrap();
         let response = client
-            .get(format!("{origin}/api/v1/da/pki/da_device/trust"))
+            .get(format!(
+                "{origin}/api/v1/tenants/{}/da/pki/da_device/trust",
+                c.tenant
+            ))
             .header("cookie", cookie)
             .send()
             .await?;
@@ -278,7 +281,10 @@ async fn vault_user_http(c: &Context, client: &reqwest::Client, origin: &str) ->
     };
     let post = |path: &str| {
         client
-            .post(format!("{origin}/api/v1/da/vault/{path}"))
+            .post(format!(
+                "{origin}/api/v1/tenants/{}/da/vault/{path}",
+                c.tenant
+            ))
             .header("origin", origin)
             .header("cookie", &cookie)
             .header("x-identity-request", "1")

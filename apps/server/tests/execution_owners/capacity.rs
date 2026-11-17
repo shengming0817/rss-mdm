@@ -116,7 +116,6 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     .await?;
     let native = Arc::new(
         rss_mdm_software_service::deployment::managed_registration::AuthorityReader {
-            tenant: h.c.tenant,
             instance: resources.config.identity.instance_id.clone(),
             source: Arc::new(crate::assembly::software_sources::Source(
                 resources.source.clone(),
@@ -134,7 +133,8 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
             native,
             resources.protection.clone(),
             &materials,
-        )?,
+        )
+        .await?,
     );
     // A complete 4096-field projection is one atomic event; the configured pass must
     // cover its SQL work, including settlement, while still bounding lock contention.
@@ -157,7 +157,8 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
         projection.store.clone(),
         h.c.database.inventory(),
         h.c.audit.clone(),
-        h.c.tenant,
+        h.c.execution().storage(),
+        h.c.execution().epoch(),
         clock,
         Arc::new(rt::Readiness::default()),
     ));
@@ -176,7 +177,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
         host: "mdm.example.test".into(),
         clock: Arc::new(crate::Monotonic(std::time::Instant::now)),
         audit_store: h.c.audit.clone(),
-        tenant: h.c.tenant.to_string(),
+
         request_budget: rss_axum::RequestBudget::new(std::time::Duration::from_secs(30))?,
     };
     let mut lifecycle = rss_runtime::ShutdownStack::try_new(
@@ -195,6 +196,9 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     let (stream, _) = socket.accept().await?;
     let gateway =
         rss_mdm_certificate::GatewayConnection::from_stream(&stream, "127.0.0.1".parse()?)?;
+    let router = router.layer(axum::Extension(
+        gateway.request_origin("https://mdm.example.test".into()),
+    ));
     let certificate: String = sqlx::query_scalar("SELECT certificate_chain->>0 FROM mdm_access.certificate_issuances WHERE tenant_id=$1::uuid AND credential=$2")
         .bind(h.c.tenant.to_string()).bind(h.p.credential()).fetch_one(&h.c.operator).await?;
     let evidence = gateway.client_certificate(&format!(
@@ -262,19 +266,21 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     let delivery = collection::store::Delivery::new(h.c.database.inventory(), h.c.audit.clone());
     let prefix = delivery
         .pending_reports(
-            &h.c.tenant.to_string(),
+            h.c.execution(),
             rss_projection::BatchLimit::new(1024)?,
             charge,
         )
         .await?;
     assert_eq!(prefix.len(), 1);
     assert_eq!(prefix[0].batch().id().as_str(), id.to_string());
+    let total_charge: i64 = sqlx::query_scalar("SELECT sum(octet_length(attempts::text)::bigint+octet_length(batch)+octet_length(scope)+1024)::bigint FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND delivery_pending")
+        .bind(h.c.tenant.to_string()).fetch_one(&h.c.operator).await?;
     assert_eq!(
         delivery
             .pending_reports(
-                &h.c.tenant.to_string(),
+                h.c.execution(),
                 rss_projection::BatchLimit::new(1024)?,
-                charge * 2
+                total_charge
             )
             .await?
             .len(),
@@ -283,7 +289,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     assert!(matches!(
         delivery
             .pending_reports(
-                &h.c.tenant.to_string(),
+                h.c.execution(),
                 rss_projection::BatchLimit::new(1024)?,
                 charge - 1
             )
@@ -323,6 +329,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
             assert_eq!(status.current(), rss_runtime::TaskState::Running);
             let status = inventory
                 .inspect_report(
+                    h.c.tenant,
                     &stored.scope,
                     stored.batch().unwrap(),
                     budget.deadline(),

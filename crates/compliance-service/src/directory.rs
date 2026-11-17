@@ -29,7 +29,7 @@ impl Compliance {
         );
         crate::transaction::inspect(
             &self.runtime,
-            self.audit_store.binding(),
+            p.binding(),
             (self, p, q, audit),
             |ctx, tx| {
                 Box::pin(async move {
@@ -41,7 +41,7 @@ impl Compliance {
                         .map_err(crate::query_error)?;
                     let codec = CursorCodec::from_key(s.cursor_key.clone());
                     let after = q.after(&codec, &binding).map_err(crate::query_error)?;
-                    let tenant = s.tenant;
+                    let tenant = p.binding().tenant();
                     let query = q.clone();
                     let rows = tx
                         .with_connection(move |c| {

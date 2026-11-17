@@ -58,7 +58,7 @@ impl Groups {
             return Err(Error::Forbidden);
         }
         use rss_mdm_authorization_service::{OperationAuthority, Permission};
-        if proof.tenant_id() != self.tenant.to_string() {
+        if proof.tenant_id() != audit.binding()?.tenant().to_string() {
             return Err(Error::Forbidden);
         }
         proof.bind_audit(audit)?;
@@ -104,11 +104,17 @@ impl Groups {
         authorize()?;
         let budget =
             rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
+        let budget = match proof.initialization_cutoff() {
+            Some(cutoff) => rss_mdm_audit_integration::budget::AuditBudget::until(
+                budget.deadline().shortened_to(cutoff.instant()),
+            ),
+            None => budget,
+        };
         let candidate = if matches!(command, Command::Group { .. }) {
             Some(
                 rss_mdm_inventory_service::assets::cut::capture(
                     &self.audit_store,
-                    self.tenant,
+                    audit.binding()?.tenant(),
                     &budget,
                 )
                 .await?,
@@ -119,7 +125,7 @@ impl Groups {
         crate::transaction::run_budget(
             &self.audit_store,
             &self.runtime,
-            self.audit_store.binding(),
+            audit.binding()?,
             audit,
             (
                 self,
@@ -148,7 +154,7 @@ impl Groups {
                     let partitions = match command {
                         Command::Group { id, .. } => vec![
                             s.groups
-                                .partition(&id.to_string())
+                                .partition(tx.tenant_id(), &id.to_string())
                                 .map_err(|_| Error::Malformed)?,
                         ],
                         _ => vec![],

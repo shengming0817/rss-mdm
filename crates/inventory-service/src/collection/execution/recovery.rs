@@ -6,6 +6,7 @@ use rss_mdm_task_state::{Cancellation, Execution};
 use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;
 pub async fn audit_recovery(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     service: &CollectionService,
     tx: &mut PgTransaction<'_>,
     run: &Run,
@@ -16,6 +17,7 @@ pub async fn audit_recovery(
     {
         service
             .abandon_in(
+                binding,
                 tx,
                 attempt,
                 if run.state.cancellation != Cancellation::None {
@@ -30,7 +32,7 @@ pub async fn audit_recovery(
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            tx.tenant_id().to_string(),
+            binding,
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -76,13 +78,14 @@ pub async fn audit_recovery(
 impl CollectionService {
     pub async fn accept_action_dispatch(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         id: Uuid,
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), Error> {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            self.transactions.tenant.to_string(),
+            binding,
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -94,7 +97,7 @@ impl CollectionService {
         );
         audit.identify_service("collection-dispatch");
         audit.target(&id.to_string());
-        let result = crate::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.audit_store.binding(),&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
+        let result = crate::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,binding,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
             let (service,id,fingerprint,audit)=ctx;
             service.transactions.audit_store.prepare_in(tx,audit,&[]).await?;
             let tenant=tx.tenant_id().to_string();let id=*id;let fingerprint=fingerprint.clone();
@@ -118,6 +121,7 @@ impl CollectionService {
     }
 }
 pub async fn recover_one(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     service: &CollectionService,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
@@ -154,7 +158,7 @@ pub async fn recover_one(
         }
         run.state.expire(now);
         storage::save_run(&service.transactions, tx, &run).await?;
-        audit_recovery(service, tx, &run, &previous).await?;
+        audit_recovery(binding, service, tx, &run, &previous).await?;
     } else if channel == "mdm" {
         let mut run = storage::native_run(tx, id).await?;
         let plan = super::policy::read_in(&service.transactions, tx, run.policy_version).await?;
@@ -162,7 +166,12 @@ pub async fn recover_one(
         if revoked || now >= run.deadline {
             if let Some(report) = run.collection_run {
                 service
-                    .abandon_in(tx, report, if revoked { "revoked" } else { "timeout" })
+                    .abandon_in(
+                        binding,
+                        tx,
+                        report,
+                        if revoked { "revoked" } else { "timeout" },
+                    )
                     .await?;
             }
             if (revoked || run.collection_run.is_none())
@@ -172,7 +181,8 @@ pub async fn recover_one(
             }
             storage::save_native(&service.transactions, tx, &run).await?;
         } else {
-            super::native::advance_in(&service.transactions, tx, &mut run, &plan, now).await?;
+            super::native::advance_in(binding, &service.transactions, tx, &mut run, &plan, now)
+                .await?;
         }
         if let Some(report) = run.collection_run {
             let tenant = tx.tenant_id().to_string();

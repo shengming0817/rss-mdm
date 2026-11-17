@@ -62,11 +62,12 @@ pub async fn put(c: &mut PgConnection, tenant: &str, s: &Source) -> Result<(), E
     Ok(())
 }
 pub async fn current_object(
-    app: &Context,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+
     c: &mut PgConnection,
     object: &DaRegistration,
 ) -> Result<(), Error> {
-    let tenant = app.tenant;
+    let tenant = execution.tenant();
     crate::delivery::lock_da_target(c, &tenant.to_string(), &object.device, None).await?;
     fence(c, &tenant.to_string()).await?;
     if rss_mdm_registration_service::device::endpoints::current_da_in(
@@ -83,14 +84,16 @@ pub async fn current_object(
     Ok(())
 }
 pub async fn current_user(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+
     app: &Context,
     c: &mut PgConnection,
     id: Uuid,
     login: bool,
 ) -> Result<(Source, Source, Binding), Error> {
-    let tenant = app.tenant.to_string();
+    let tenant = execution.tenant().to_string();
     let candidate = read(c, &tenant, id).await?;
-    current_object(app, c, &candidate.object).await?;
+    current_object(execution, c, &candidate.object).await?;
     let user = source(c, &tenant, id).await?;
     if user.object != candidate.object || user.version != candidate.version {
         return Err(Error::ReadConflict);
@@ -101,22 +104,31 @@ pub async fn current_user(
     {
         return Err(Error::Unauthorized);
     }
-    current_object(app, c, &user.object).await?;
-    let desired = super::deployment::configuration_for_object(c, app.tenant, &user.object).await?;
+    current_object(execution, c, &user.object).await?;
+    let desired =
+        super::deployment::configuration_for_object(c, execution.tenant(), &user.object).await?;
     if desired.authentication == rss_mdm_agent_wire::platform_sso::AuthenticationMode::Password {
         app.runtime()?
             .password_provider(&desired)?
-            .check_on(c, app.tenant)
+            .check_on(c, execution.tenant())
             .await?;
     }
     if user.login_configuration != desired
-        || user.profile_uuid != app.runtime()?.profile(&desired)?.uuid
+        || user.profile_uuid
+            != app
+                .runtime()?
+                .profile(
+                    uuid::Uuid::parse_str(&execution.tenant().to_string())
+                        .map_err(|_| Error::Malformed)?,
+                    &desired,
+                )?
+                .uuid
     {
         return Err(Error::Unauthorized);
     }
     if login {
         let now = now(c).await?;
-        super::deployment::ready(app, c, &user.object, now).await?;
+        super::deployment::ready(execution, app, c, &user.object, now).await?;
     }
     let device = source(c, &tenant, user.parent.ok_or(Error::Unauthorized)?).await?;
     if device.kind != rss_mdm_agent_wire::platform_sso::Kind::Device
@@ -131,6 +143,7 @@ pub async fn current_user(
     }
     let binding = if login {
         app.active_binding_on(
+            execution,
             c,
             user.binding.ok_or(Error::Unauthorized)?,
             user.binding_generation,

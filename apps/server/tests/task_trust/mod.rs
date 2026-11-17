@@ -43,12 +43,10 @@ async fn rolling_activation_preserves_per_device_issuance_gate() -> Result<()> {
         ));
     }
     let da_service = rss_mdm_task_trust::Service::new(
-        c.tenant,
         std::sync::Arc::new(rss_mdm_task_trust::Signing::new(
             da,
             rss_mdm_task_trust::Use::AgentTask,
-            c.tenant,
-            None,
+            protection.clone(),
         )?),
         protection.clone(),
         c.audit.clone(),
@@ -187,21 +185,12 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
         .bind(c.tenant.to_string())
         .execute(&mut *tx)
         .await?;
-    let loaded = rss_mdm_task_trust::trust::load(
-        rss_mdm_install_support::StorageProfile::Mdm,
-        rss_mdm_task_trust::Use::AgentTask,
-        &mut tx,
-        c.tenant,
-        1,
-        &protection,
-    )
-    .await?;
+
     tx.commit().await?;
     let signing = rss_mdm_task_trust::Signing::new(
         rss_mdm_install_support::StorageProfile::Mdm,
         rss_mdm_task_trust::Use::AgentTask,
-        c.tenant,
-        Some(loaded),
+        protection.clone(),
     )?;
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let payload = w::TaskPayload::Unmanage(Box::new(w::UnmanageTaskSpec {
@@ -247,7 +236,7 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
     let audit = rss_mdm_audit_integration::RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        c.tenant.to_string(),
+        c.execution(),
         "task-trust",
         rss_mdm_audit_integration::AuditIntent::Management,
     );

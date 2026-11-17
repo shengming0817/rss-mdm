@@ -223,11 +223,11 @@ pub(super) async fn verify(
         binding_generation: binding.generation,
         sid: SID.into(),
     };
-    let escrow = envelope(&task, &subject, protection.active_recipient())?;
+    let escrow = envelope(&task, &subject, &recipient(c)?)?;
     let before = material_count(c, tenant).await?;
     let mut wrong_generation = task.clone();
     wrong_generation.device_id = rss_mdm_agent_wire::DeviceId::new_v4();
-    let wrong_envelope = envelope(&wrong_generation, &subject, protection.active_recipient())?;
+    let wrong_envelope = envelope(&wrong_generation, &subject, &recipient(c)?)?;
     let mut tx = transaction(&pool, tenant).await?;
     let stale = materials
         .escrow(&mut tx, &wrong_generation, &wrong_envelope)
@@ -399,14 +399,14 @@ async fn verify_access_recovery(
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
     let audit = Arc::new(
         c.audit
-            .on_runtime(runtime.clone(), c.audit.binding(), &budget.control())
+            .on_runtime(runtime.clone(), c.execution(), &budget.control())
             .await
             .context("bind Audit to the command worker runtime")?,
     );
     let service = execution::Service::new(
         execution::Transactions::bind(
             runtime.clone(),
-            c.tenant,
+            c.execution(),
             audit.clone(),
             Arc::new(execution::Materials {
                 accepting: true,
@@ -450,7 +450,7 @@ async fn verify_access_recovery(
     .await
     .context("prepare the RSS credential execution owner and frozen run")?;
     let mut tx = seed(c).await?;
-    sqlx::query("INSERT INTO rss_da.access_runs (tenant_id, id, policy_version, origin, access_binding, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint) VALUES ($1, $2, $3, '\"policy\"', $4, $5, $6, $7, $7, $8, $9, $10)")
+    sqlx::query("INSERT INTO rss_da.access_runs (expected_epoch,tenant_id, id, policy_version, origin, access_binding, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint) VALUES (current_setting('rss.execution_epoch')::bigint,$1, $2, $3, '\"policy\"', $4, $5, $6, $7, $7, $8, $9, $10)")
         .bind(binding.tenant).bind(id).bind(binding.policy_version).bind(serde_json::to_value(binding)?)
         .bind(agent.device().into_uuid()).bind(format!("binding:{}",binding.id))
         .bind(at).bind(at+600).bind(&original).bind(vec![7_u8;32]).execute(&mut *tx).await?;
@@ -459,18 +459,16 @@ async fn verify_access_recovery(
     let account = c
         .account(&[rss_mdm_authorization_service::Permission::OperationRead])
         .await?;
-    let proof = rss_mdm_authorization_service::session::SessionAuthority::new(
-        c.authority.clone(),
-        c.audit.binding(),
-    )
-    .authenticate(
-        &c.access().for_product(StorageProfile::Da),
-        account.credential()?,
-        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-            std::time::Duration::from_secs(8),
-        ),
-    )
-    .await?;
+    let proof = rss_mdm_authorization_service::session::SessionAuthority::new(c.authority.clone())
+        .authenticate(
+            c.execution(),
+            &c.access().for_product(StorageProfile::Da),
+            account.credential()?,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                std::time::Duration::from_secs(8),
+            ),
+        )
+        .await?;
     let mut locator = rss_mdm_audit_integration::operation::OperationLocator {
         product: StorageProfile::Da,
         owner: rss_mdm_audit_integration::operation::OperationOwner::CredentialTask,
@@ -530,19 +528,19 @@ async fn verify_access_recovery(
         let request = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Request,
             StorageProfile::Da,
-            c.tenant.to_string(),
+            c.execution(),
             "da-recovery-proof",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         execution::transaction::run(
             audit,
             runtime,
-            c.audit.binding(),
+            c.execution(),
             &request,
-            (service, id),
+            (service, id, c.execution()),
             |ctx, tx| {
                 Box::pin(async move {
-                    execution::recovery::recover_one(ctx.0, tx, ctx.1).await?;
+                    execution::recovery::recover_one(ctx.2, ctx.0, tx, ctx.1).await?;
                     Ok(execution::storage::read_run(tx, ctx.1).await?.state)
                 })
             },
@@ -662,7 +660,7 @@ async fn verify_access_recovery(
         signature: URL_SAFE_NO_PAD.encode(signature.as_ref()),
     };
     let mut setup = seed(c).await?;
-    sqlx::query("INSERT INTO rss_da.access_runs (tenant_id, id, policy_version, origin, access_binding, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint) VALUES ($1, $2, $3, '\"policy\"', $4, $5, $6, $7, $7, $8, $9, $10)")
+    sqlx::query("INSERT INTO rss_da.access_runs (expected_epoch,tenant_id, id, policy_version, origin, access_binding, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint) VALUES (current_setting('rss.execution_epoch')::bigint,$1, $2, $3, '\"policy\"', $4, $5, $6, $7, $7, $8, $9, $10)")
         .bind(binding.tenant).bind(task.task_id).bind(binding.policy_version).bind(serde_json::to_value(binding)?)
         .bind(agent.device().into_uuid()).bind("disabled-started-proof")
         .bind(at).bind(task.deadline).bind(serde_json::to_value(started)?).bind(vec![17_u8;32]).execute(&mut *setup).await?;
@@ -701,14 +699,14 @@ async fn verify_access_recovery(
         let request = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Request,
             StorageProfile::Da,
-            c.tenant.to_string(),
+            c.execution(),
             "disabled-host-settlement",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let result = execution::transaction::run(
             &audit,
             &runtime,
-            c.audit.binding(),
+            c.execution(),
             &request,
             (&service, agent, task.task_id, &input, &request, &audit),
             |(service, agent, id, input, request, audit), tx| {
@@ -780,7 +778,7 @@ async fn credential_runs<const N: usize>(
         tasks::Transactions::bind(
             StorageProfile::Da,
             runtime.clone(),
-            c.tenant,
+            c.execution(),
             audit.clone(),
             Arc::new(tasks::Materials {
                 accepting: true,
@@ -866,7 +864,7 @@ async fn credential_runs<const N: usize>(
         .bind(serde_json::to_value(rss_mdm_authorization_service::Actor::Account { user: c.user(binding.person.principal) })?).bind(at).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1,$2,$3,1,'credential',$4,$5)")
         .bind(binding.tenant).bind(version).bind(policy).bind(&frozen).bind(vec![11_u8;32]).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO rss_da.credential_runs(tenant_id,id,policy_version,device,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,origin,material_binding) VALUES($1,$2,$3,$4,'rss-recovery-proof',$5,$6,$7,$8,$5,'[]','\"policy\"',$9)")
+        sqlx::query("INSERT INTO rss_da.credential_runs(expected_epoch,tenant_id,id,policy_version,device,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,origin,material_binding) VALUES(current_setting('rss.execution_epoch')::bigint,$1,$2,$3,$4,'rss-recovery-proof',$5,$6,$7,$8,$5,'[]','\"policy\"',$9)")
         .bind(binding.tenant).bind(id).bind(version).bind(agent.device().into_uuid())
         .bind(at).bind(at+600).bind(state).bind(vec![13_u8;32]).bind(serde_json::to_value(&anchor)?).execute(&mut *tx).await?;
     }
@@ -884,19 +882,20 @@ async fn recover_credential(
     let request = rss_mdm_audit_integration::RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         StorageProfile::Da,
-        c.tenant.to_string(),
+        c.execution(),
         "rss-credential-recovery-proof",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     recovery::tasks::transaction::run(
         audit,
         runtime,
-        c.audit.binding(),
+        c.execution(),
         &request,
-        (service, id),
+        (service, id, c.execution()),
         |ctx, tx| {
             Box::pin(async move {
                 recovery::tasks::actions::recovery::recover_one(
+                    ctx.2,
                     StorageProfile::Da,
                     ctx.0,
                     tx,
@@ -1047,25 +1046,33 @@ async fn retire_credential(
     let request = rss_mdm_audit_integration::RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         StorageProfile::Da,
-        c.tenant.to_string(),
+        c.execution(),
         "rss-credential-retirement-proof",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     recovery::tasks::transaction::run(
         audit,
         runtime,
-        c.audit.binding(),
+        c.execution(),
         &request,
-        (audit, c.tenant.to_string(), registration.to_owned(), abort),
-        |(audit, tenant, registration, abort), tx| {
+        (
+            audit,
+            c.tenant.to_string(),
+            registration.to_owned(),
+            abort,
+            c.execution(),
+        ),
+        |(audit, tenant, registration, abort, execution), tx| {
             Box::pin(async move {
                 let tenant = tenant.clone();
                 let registration = *registration;
+                let execution = *execution;
                 let (outcome, facts) = tx
                     .with_connection(|c| {
                         Box::pin(async move {
                             let mut facts = Vec::new();
                             let outcome = recovery::tasks::retirement::retire_in(
+                                execution,
                                 StorageProfile::Da,
                                 c,
                                 &mut facts,

@@ -1,5 +1,11 @@
 BEGIN;
 CREATE SCHEMA mdm_apple_runtime;
+CREATE TABLE mdm_apple_runtime.identity (
+ tenant_id uuid PRIMARY KEY,challenge_id text NOT NULL CHECK(challenge_id ~ '^[A-Za-z0-9_-]{1,128}$'),notify_id text NOT NULL CHECK(notify_id ~ '^[A-Za-z0-9_-]{1,128}$'),CHECK(challenge_id<>notify_id)
+);
+ALTER TABLE mdm_apple_runtime.identity ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_apple_runtime.identity FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_apple_runtime.identity USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE TABLE mdm_apple_runtime.heads (
  tenant_id uuid NOT NULL,
  purpose text NOT NULL CHECK(purpose IN ('apns','profile','managed_account')),

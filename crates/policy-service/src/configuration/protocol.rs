@@ -51,8 +51,11 @@ pub async fn settle_windows_in(
                 == rss_mdm_windows_mdm::native::verification::EffectState::Verified))
         && !result.command.status().is_terminal()
     {
-        report.event =
-            dc::DeviceEvent::Reported(op.request.digest(&s.protection, s.tenant, &op.device)?);
+        report.event = dc::DeviceEvent::Reported(op.request.digest(
+            &s.protection,
+            op.scope.tenant(),
+            &op.device,
+        )?);
         if s.store.report(tx, &report).await?.outcome == dc::Outcome::OutOfOrder {
             return Err(Error::Conflict.into());
         }

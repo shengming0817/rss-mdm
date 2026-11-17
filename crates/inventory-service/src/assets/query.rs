@@ -6,6 +6,7 @@ use rss_mdm_inventory::State;
 impl AssetService {
     pub(super) fn validate_query(
         &self,
+        tenant: rss_request_context::TenantId,
         q: &Query,
         catalog: &rss_mdm_inventory::Catalog,
     ) -> Result<()> {
@@ -39,10 +40,14 @@ impl AssetService {
         }
         if let Some(criteria) = &q.criteria {
             criteria.validate()?;
-            rule(self.tenant, Uuid::nil(), &criteria.criteria, catalog)?;
+            rule(tenant, Uuid::nil(), &criteria.criteria, catalog)?;
         }
         Ok(())
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     pub(super) async fn asset_query(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -52,9 +57,9 @@ impl AssetService {
         at: Timepoint,
         cut: &AssetCut,
     ) -> Result<Response> {
-        let catalog = catalog_at_in(tx, self.tenant, cut).await?;
+        let catalog = catalog_at_in(tx, tx.tenant_id(), cut).await?;
         let q = &input.compile(&catalog)?;
-        self.validate_query(q, &catalog)?;
+        self.validate_query(tx.tenant_id(), q, &catalog)?;
         if let Some(criteria) = &q.criteria {
             filter::require_visible(&catalog, &criteria.criteria)?;
         }
@@ -79,11 +84,12 @@ impl AssetService {
         .await?;
         Ok(Response::Accepted {
             task,
-            status_url: format!("/api/v1/device-queries/{task}"),
+            status_url: format!("/api/v1/tenants/{}/device-queries/{task}", tx.tenant_id()),
         })
     }
     pub(super) async fn advance_asset_query_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         job: &QueryInput,
@@ -103,18 +109,17 @@ impl AssetService {
             ..
         } = job;
         let at = stored(Timepoint::try_from(*as_of))?;
-        let catalog = catalog_at_in(tx, self.tenant, cut).await?;
+        let catalog = catalog_at_in(tx, tx.tenant_id(), cut).await?;
         let rule = q
             .criteria
             .as_ref()
-            .map(|c| stored(rule(self.tenant, task, &c.criteria, &catalog)))
+            .map(|c| stored(rule(tx.tenant_id(), task, &c.criteria, &catalog)))
             .transpose()?;
         let mut limit = 128;
         let (page, decisions) = loop {
             let page = match (super::planning::SnapshotReader::bind(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 self.runtime.clone(),
-                self.tenant,
             ))
             .asset_page_in(tx, cut, after, limit, scope)
             .await
@@ -131,7 +136,7 @@ impl AssetService {
                 .as_ref()
                 .map(|s| {
                     stored(g::ObjectKey::new(
-                        self.tenant,
+                        tx.tenant_id(),
                         rss_mdm_agent_wire::ObjectRef::Endpoint(*s),
                     ))
                 })
@@ -141,7 +146,6 @@ impl AssetService {
                 let snapshot = super::planning::SnapshotReader::bind(
                     rss_mdm_install_support::StorageProfile::Mdm,
                     self.runtime.clone(),
-                    self.tenant,
                 )
                 .condition_inputs_in(
                     tx,
@@ -178,7 +182,7 @@ impl AssetService {
                 };
                 match rule.evaluate_page(
                     &g::PageInput {
-                        tenant: self.tenant,
+                        tenant: tx.tenant_id(),
                         id: "assets",
                         version: &cut.input_version(),
                         dictionary_version: rss_mdm_inventory::DICTIONARY,
@@ -274,7 +278,7 @@ impl AssetService {
             digests.push(Sha256::digest(&bytes).to_vec());
             documents.push(bytes);
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let matched = ids.len() as i64;
         let mut kinds = Vec::new();
         let mut labels = Vec::new();
@@ -300,7 +304,7 @@ impl AssetService {
         self.query_cursor_in(tx, task, last.map(rss_mdm_agent_wire::ObjectRef::Endpoint))
             .await?;
         if done {
-            self.finish_query_in(tx, task, None).await?;
+            self.finish_query_in(binding, tx, task, None).await?;
         }
         Ok(())
     }

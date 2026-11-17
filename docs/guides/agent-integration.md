@@ -12,29 +12,29 @@
 
 三种来源统一进入独立 Agent 证书链路：
 
-1. 普通用户在 Agent 内登录企业会话。Agent 先通过 `POST /api/v1/agent/enroll/requests` 提交稳定 operationId、独立随机 secret、platform 与本机私钥签名的 base64 DER CSR；桌面会话调用 `POST /api/v1/agent-requests/{id}/authorize` 授权这一个请求。Agent 和网页消费由各自仓库交付；服务端不提供网页注册、确认页或深链接。所有新请求都必须绑定 CSR，客户端不能选择期限、数量或不限量。
-2. 管理员调用 `POST /api/v1/agent-configurations` 创建一个完整签名 JSON 文件，必须明确 `quantity:{"kind":"finite","count":N}`（N > 0）或 `quantity:{"kind":"unlimited"}`，指定原生 targets；可选 lifetimeSeconds 最多 365 天，默认后台 24 小时。管理客户端生成并保留 32 字节随机 secret；响应文件包含 configuration 元数据、secret 与 signature。相同创建 operation 和完整输入可重新取得原文件，数据库与审计不保存 secret。网页在请求提交后清除本地 secret；响应丢失时用原 operationId 调用 `GET /api/v1/agent-configuration-operations/{operationId}`，仅原创建主体和实例可读到无秘密元数据。返回 null 表示仍未知（原创建可能迟到提交），不得自动重新创建或恢复 secret；找到旧配置后先确认撤销成功，再创建新配置。`GET /api/v1/agent-configurations/{id}` 只返回元数据、状态、reserved、consumed 和 remaining；有限数量的 remaining 为 count−reserved−consumed，无限数量为 null，期限和撤销状态仍独立生效；`POST .../{id}/revoke` 禁止新交换。独立权限为 `agent_enrollment_read` / `agent_enrollment_write`。
+1. 普通用户在 Agent 内登录企业会话。Agent 先通过 `POST /api/v1/agent/enroll/requests` 提交安装材料指定的 tenantId、稳定 operationId、独立随机 secret、platform 与本机私钥签名的 base64 DER CSR；桌面会话调用 `POST /api/v1/tenants/{tenant}/agent-requests/{id}/authorize` 授权这一个请求。Agent 和网页消费由各自仓库交付；服务端不提供网页注册、确认页或深链接。所有新请求都必须绑定 CSR，客户端不能选择期限、数量或不限量。
+2. 管理员调用 `POST /api/v1/tenants/{tenant}/agent-configurations` 创建一个完整签名 JSON 文件，必须明确 `quantity:{"kind":"finite","count":N}`（N > 0）或 `quantity:{"kind":"unlimited"}`，指定原生 targets；可选 lifetimeSeconds 最多 365 天，默认后台 24 小时。管理客户端生成并保留 32 字节随机 secret；响应文件包含 configuration 元数据、secret 与 signature。相同创建 operation 和完整输入可重新取得原文件，数据库与审计不保存 secret。网页在请求提交后清除本地 secret；响应丢失时用原 operationId 调用 `GET /api/v1/tenants/{tenant}/agent-configuration-operations/{operationId}`，仅原创建主体和实例可读到无秘密元数据。返回 null 表示仍未知（原创建可能迟到提交），不得自动重新创建或恢复 secret；找到旧配置后先确认撤销成功，再创建新配置。`GET /api/v1/tenants/{tenant}/agent-configurations/{id}` 只返回元数据、状态、reserved、consumed 和 remaining；有限数量的 remaining 为 count−reserved−consumed，无限数量为 null，期限和撤销状态仍独立生效；`POST .../{id}/revoke` 禁止新交换。独立权限为 `agent_enrollment_read` / `agent_enrollment_write`。
 3. 原生 MDM 安装使用专用短期引导证书，经 Nginx Agent 公开入口调用 `POST /api/v1/agent/enroll/native-grants`。提交 installationOperation、operationId、secret、独立日常密钥的 CSR 和 runtime；服务端从引导证书记录恢复来源注册、安装和 release，复查当前授权后返回 grant。Windows / Apple 原生协议路由不挂载此入口，MDM 日常证书不能交换授权。
 
 管理员配置使用配置自身的租户额度，默认责任人为 null；创建者仅作为审计身份，不占用其普通用户 20 台额度，也不构成终端 ownership。每台设备独立生成私钥、CSR、operation 和 grant secret，调用 `POST /api/v1/agent/enroll/configurations/exchange`，提交完整 file、runtime 和 installation（releaseId）。同一 operation 的精确重试只返回原授权；同一配置下换 operation 重用 CSR 公钥被拒绝。`POST .../configurations/status` 使用原 configurationId、operationId 和独立设备 secret 查回授权，不重新分配。
 
 有效、未签发 grant 预留配置名额；`POST /api/v1/agent/enroll/reservations/cancel` 以 grantId、原 creationOperationId、独立 secret 和稳定取消 operation 释放未消费名额。未签发授权到期也释放。第一次持久签发意图即永久计入 consumed，包含 Unknown，后续重装、撤销注册、重试或授权到期均不重置。配置到期或撤销只禁止新分配，已分配授权仍按冻结的短期 TTL 完成；已激活设备继续在线。
 
-后台 `GET /api/v1/agent-enrollment-settings` 与 CAS `PUT` 统一持有 grantSeconds（默认 86400，上限 604800）、configurationDefaultSeconds（默认 86400，上限 31536000）和启用 platforms；PUT 使用 operationId、expectedRevision、values。GET／PUT 响应另提供 configurationFilename=`rss-agent-enrollment.json`，创建响应使用相同 Content-Disposition 文件名；将此 UTF-8 JSON 放在 EXE／PKG 同一目录供独立 Agent #2634 读取，不改签名文件或 Agent V1 schema。设置随数据库安装持久化，不从 `agent_pki.policy` 或客户端参数读取。新普通请求、配置交换、续期、恢复及原生 grant 都读取此设置；已有授权不延长、不因平台关闭而改写冻结期限。
+后台 `GET /api/v1/tenants/{tenant}/agent-enrollment-settings` 与 CAS `PUT` 统一持有 grantSeconds（默认 86400，上限 604800）、configurationDefaultSeconds（默认 86400，上限 31536000）和启用 platforms；PUT 使用 operationId、expectedRevision、values。GET／PUT 响应另提供 configurationFilename=`rss-agent-enrollment.json`，创建响应使用相同 Content-Disposition 文件名；将此 UTF-8 JSON 放在 EXE／PKG 同一目录供独立 Agent #2634 读取，不改签名文件或 Agent V1 schema。设置随数据库安装持久化，不从 `agent_pki.policy` 或客户端参数读取。新普通请求、配置交换、续期、恢复及原生 grant 都读取此设置；已有授权不延长、不因平台关闭而改写冻结期限。
 
 持有 grant 的客户端调用 `POST /api/v1/agent/enroll/certificates`，提交 `wireVersion:1`、operationId、grantId、secret、CSR 和 runtime profile。服务端先持久化唯一签发意图，绑定 operation/CSR/SPKI，再请求 CA，并持久化已验证的候选证书链。精确重试返回相同候选；不同 operation、CSR 或 profile 拒绝。签发结果未知时保持同一个 issuanceId，不自动二次签发。
 
 候选还不是活跃设备身份。客户端持本机私钥，在真实 mTLS 下调用 `/api/v1/agent/enroll/activate`，提交 issuanceId 与稳定 operationId。服务端在一个审计事务内复查原授权、期限、来源与证书，并创建独立 DeviceId、Registration、一个活跃凭据及冻结采集定义。CA 信任、原生证书、DeviceId、主机名、HTTP 转发头都不能单独建立 Agent 身份。
 
-`POST /api/v1/agent/enroll/status` 用原 grantId/operationId/secret 查询持久进度。成功激活回执固定，ACK 丢失后重试原 operation；不能通过换 operation 绕开未知结果。普通用户取消未完成授权使用 `/api/v1/agent-requests/{id}/cancel`。注册后的撤销仍使用 `/api/v1/devices/{device}/registration/revoke`，要求资源级 credentials 权限。
+`POST /api/v1/agent/enroll/status` 用原 grantId/operationId/secret 查询持久进度。成功激活回执固定，ACK 丢失后重试原 operation；不能通过换 operation 绕开未知结果。普通用户取消未完成授权使用 `/api/v1/tenants/{tenant}/agent-requests/{id}/cancel`。注册后的撤销仍使用 `/api/v1/tenants/{tenant}/devices/{device}/registration/revoke`，要求资源级 credentials 权限。
 
 ## 同身份换证与未知签发恢复
 
-当前有效 mTLS 设备手动调用 `/api/v1/agent/enroll/renewal-grants`；证书已过期或私钥丢失时，管理员通过 `/api/v1/devices/{id}/registration/recovery` 创建短期恢复授权。两者复用同一候选签发和持有者激活路径，激活以原凭据为 CAS 前驱，仅替换凭据，保留 deviceId、epoch、能力、采集定义和执行日志。旧凭据立即成为 retired，不能继续运行或续期。
+当前有效 mTLS 设备手动调用 `/api/v1/agent/enroll/renewal-grants`；证书已过期或私钥丢失时，管理员通过 `/api/v1/tenants/{tenant}/devices/{id}/registration/recovery` 创建短期恢复授权。两者复用同一候选签发和持有者激活路径，激活以原凭据为 CAS 前驱，仅替换凭据，保留 deviceId、epoch、能力、采集定义和执行日志。旧凭据立即成为 retired，不能继续运行或续期。
 
 续期授权已提交但响应丢失时，客户端以原 `wireVersion:1`、`operationId` 和 `secret` 调用 `POST /api/v1/agent/enroll/renewal-grants/status`，无需旧客户端证书即可取回原授权回执，再沿原 `/status`、签发与激活操作继续。该入口仅查询当前租户已有的续期授权，不创建授权、不延长期限、不重新签发；未知 operation 与错误 secret 均返回 `invalid_identity`。过期与撤销状态仍保留，不能据查询回执恢复在线业务权限。请求只使用已安装签名连接配置中的 HTTPS origins，不发送 Bearer。
 
-未知签发由管理员找回 CA 中原始证书链，并通过 `/api/v1/agent-issuances/{id}/recover` 提交。服务端验证原 CSR、公钥、SAN 身份、签发窗口、直接签发者和 provisioner；禁止用重新签发的不同结果替代已保存候选。无法找回结果时不猜测成功，也不自动重签。
+未知签发由管理员找回 CA 中原始证书链，并通过 `/api/v1/tenants/{tenant}/agent-issuances/{id}/recover` 提交。服务端验证原 CSR、公钥、SAN 身份、签发窗口、直接签发者和 provisioner；禁止用重新签发的不同结果替代已保存候选。无法找回结果时不猜测成功，也不自动重签。
 
 ## 报告与状态
 
@@ -60,7 +60,7 @@ snapshot、partial、failed 分别表达完整快照、部分结果和失败。�
 
 ## 无兼容退出
 
-旧 `/api/agent/v1`–`/api/agent/v6`、`/api/agent/enroll/v1` 和 `/api/agent/runtime/v1` 路由、Agent Bearer 凭据、Agent Enrollment 口令及原生直接注册入口全部退出，不提供别名或认证降级。数据库使用当前完整 schema 的全新安装和重放，已登记租户通过明确绑定宿主消费。原生 Windows/Apple 的五分钟 Enrollment 口令及 credential_ref 保留。真实 Agent、安装器、网页消费与真机验收在各自后续任务完成，受控服务端测试不代替这些证据。
+旧 `/api/agent/v1`–`/api/agent/v6`、`/api/agent/enroll/v1` 和 `/api/agent/runtime/v1` 路由、Agent Bearer 凭据、Agent Enrollment 口令及原生直接注册入口全部退出，不提供别名或认证降级。数据库使用当前完整 schema 的全新安装和重放，已登记租户由共享安装按明确租户和执行材料消费，普通开通不生成专属运行配置或服务。原生 Windows/Apple 的五分钟 Enrollment 口令及 credential_ref 保留。真实 Agent、安装器、网页消费与真机验收在各自后续任务完成，受控服务端测试不代替这些证据。
 
 ## 当前 V1 软件执行上下文与结果
 
@@ -84,11 +84,11 @@ snapshot、partial、failed 分别表达完整快照、部分结果和失败。�
 
 管理客户端自动生成并保留稳定 operationId：
 
-1. `POST /api/v1/agent-packages/uploads` 提交 filename、length、sha256，取得系统生成的 package/resource/upload 坐标和上传 href。摘要只保证文件完整性，不证明作者可信。
-2. 沿现有 Content href 使用 GET 查询、PATCH `?offset=N` 续传和 POST `/complete` 完成；响应丢失先读取原上传状态，不换操作。`GET /api/v1/agent-packages/uploads/{packageId}` 读取持久解析状态和可选观察结果；GET 不触发解析。有效上传可显式 POST 同一路径请求解析（包括大文件），已存在结果直接复用。
-3. `POST /api/v1/agent-packages/save` 提交 operationId、packageId、可选 version、target 与可选完整 behavior（既有 SoftwareBehavior 合同，主安装材料键固定为 package）。behavior 与材料一次保存为不可变版本，由 Resource 校验格式、目标、引用、参数和检测规则；省略或 null 表示没有执行定义。系统保存既有 Software Resource、私有来源和版本，返回可回读的软件 href；文件原名归 Resource 展示，文件事实与软件生命周期仍由原 owner 持有。未提供安装执行定义不阻塞保存或发布；实际生成安装任务时才要求完整执行定义，不能猜测 EXE 静默参数。
-4. `POST /api/v1/agent-packages` 只提交 operationId、packageId，要求 release_publish；自动启用软件仍检查 software_write。发布绑定真实安装文件与当前软件生命周期，显式启用后的正常 ARM64 EXE 与 PKG 沿用同一链路；领域拒绝与权限拒绝分别返回闭合原因。首用采用 production。四个原生目标及同目标多个版本可共存，一个已发布包即可满足首用包条件。
-5. `GET /api/v1/agent-packages/operations/{operationId}` 查询原保存、发布或撤回结果；null 表示仍未知，不证明未提交。`POST /api/v1/agent-packages/{releaseId}/withdraw` 要求 software_withdraw，禁止该 release 的新交换与下载。
+1. `POST /api/v1/tenants/{tenant}/agent-packages/uploads` 提交 filename、length、sha256，取得系统生成的 package/resource/upload 坐标和上传 href。摘要只保证文件完整性，不证明作者可信。
+2. 沿现有 Content href 使用 GET 查询、PATCH `?offset=N` 续传和 POST `/complete` 完成；响应丢失先读取原上传状态，不换操作。`GET /api/v1/tenants/{tenant}/agent-packages/uploads/{packageId}` 读取持久解析状态和可选观察结果；GET 不触发解析。有效上传可显式 POST 同一路径请求解析（包括大文件），已存在结果直接复用。
+3. `POST /api/v1/tenants/{tenant}/agent-packages/save` 提交 operationId、packageId、可选 version、target 与可选完整 behavior（既有 SoftwareBehavior 合同，主安装材料键固定为 package）。behavior 与材料一次保存为不可变版本，由 Resource 校验格式、目标、引用、参数和检测规则；省略或 null 表示没有执行定义。系统保存既有 Software Resource、私有来源和版本，返回可回读的软件 href；文件原名归 Resource 展示，文件事实与软件生命周期仍由原 owner 持有。未提供安装执行定义不阻塞保存或发布；实际生成安装任务时才要求完整执行定义，不能猜测 EXE 静默参数。
+4. `POST /api/v1/tenants/{tenant}/agent-packages` 只提交 operationId、packageId，要求 release_publish；自动启用软件仍检查 software_write。发布绑定真实安装文件与当前软件生命周期，显式启用后的正常 ARM64 EXE 与 PKG 沿用同一链路；领域拒绝与权限拒绝分别返回闭合原因。首用采用 production。四个原生目标及同目标多个版本可共存，一个已发布包即可满足首用包条件。
+5. `GET /api/v1/tenants/{tenant}/agent-packages/operations/{operationId}` 查询原保存、发布或撤回结果；null 表示仍未知，不证明未提交。`POST /api/v1/tenants/{tenant}/agent-packages/{releaseId}/withdraw` 要求 software_withdraw，禁止该 release 的新交换与下载。
 
 Nginx Agent 路由公开 `GET /api/v1/agent/enroll/packages`、`GET .../packages/{id}` 与 `GET .../packages/{id}/content`，继续复用 Content 的长度、摘要、Range 和 ETag。包目录只描述已发布安装材料，不承载注册 origin、公钥或构建期候选声明。注册 installation 只引用不可变 releaseId；文件摘要由软件 owner 持有，不另交付候选 manifest。
 
@@ -161,21 +161,21 @@ Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。�
 
 服务身份固定为安装 `instance_id` 与 tenant，网络地址可变。注册文件包含当前 `connections::SignedConfiguration`；设备安装材料通过受保护的交付绑定该身份、配置验证公钥与 HTTPS CA。配置签名根归注册 owner 持有，复用原 Ed25519 与 Native 密文保护设施，独立于任务密钥轮换。
 
-管理员通过同源 `GET/PUT /api/v1/agent-connections` 读取和保存 draft，通过 `POST /api/v1/agent-connections/publish` 发布指定 revision；保存不表示部署或生效。写入使用原 operationId、CAS revision 和近期会话，未知结果先查询 `GET /api/v1/agent-connection-operations/{id}`，null 只表示仍未知。`GET /api/v1/registration-channels` 展示实际配置的各公开入口。Nginx 部署与逐 origin 的 HTTPS 观察由原宿主维护流程持有，发布要求观察对应当前 draft revision 且在最近五分钟内，网页不执行部署操作。
+管理员通过同源 `GET/PUT /api/v1/tenants/{tenant}/agent-connections` 读取和保存 draft，通过 `POST /api/v1/tenants/{tenant}/agent-connections/publish` 发布指定 revision；保存不表示部署或生效。写入使用原 operationId、CAS revision 和近期会话，未知结果先查询 `GET /api/v1/tenants/{tenant}/agent-connection-operations/{id}`，null 只表示仍未知。`GET /api/v1/tenants/{tenant}/registration-channels` 展示实际配置的各公开入口。Nginx 部署与逐 origin 的 HTTPS 观察由原宿主维护流程持有，发布要求观察对应当前 draft revision 且在最近五分钟内，网页不执行部署操作。
 
 设备通过已认证的 `GET /api/v1/agent/enroll/connections` 获取签名配置，使用已安装公钥验签，拒绝跨服务/租户、回滚、同 revision 异内容或非规范 origin，原子保存并读回后才使用。`POST .../connections/acknowledgements` 绑定 deviceId、revision、摘要与真实网关 origin；`POST .../connections/failures` 只记录闭合失败原因，不改变已安装 revision 或授权。管理端通过设备 observation 和带 target revision 的 `/agent-connections/devices` 分页分别读取实际 ACK、失败与未确认设备。
 
-发布采用 `A → A+B → B`，重叠阶段优先 B，设备经 B 确认后才允许移除 A。`connection_deployment_unobserved` 和 `connection_retirement_blocked` 为明确发布阻断。所有已知地址失联时，通过受保护的 `GET /api/v1/agent-connections/configuration` 下载和离线导入恢复。导入不能扩大 CA、凭据或业务权限；通信状态、密钥命名空间、执行 authority 与内容缓存都绑定稳定身份。正常入口和程序更新保留原注册、世代、执行日志及未决操作。Windows/Apple 原生 URL 由各自协议配置持有。
+发布采用 `A → A+B → B`，重叠阶段优先 B，设备经 B 确认后才允许移除 A。`connection_deployment_unobserved` 和 `connection_retirement_blocked` 为明确发布阻断。所有已知地址失联时，通过受保护的 `GET /api/v1/tenants/{tenant}/agent-connections/configuration` 下载和离线导入恢复。导入不能扩大 CA、凭据或业务权限；通信状态、密钥命名空间、执行 authority 与内容缓存都绑定稳定身份。正常入口和程序更新保留原注册、世代、执行日志及未决操作。Windows/Apple 原生 URL 由各自协议配置持有。
 
-管理员签发恢复的未知响应先查询 `GET /api/v1/agent-issuances/{id}/recovery-operations/{operation}`。查询复核当前设备凭据权限及原主体/实例，找到原回执才显示成功；null 不证明回滚，只能由用户显式原样重试。浏览器不签名、不持有 CA 或配置私钥。
+管理员签发恢复的未知响应先查询 `GET /api/v1/tenants/{tenant}/agent-issuances/{id}/recovery-operations/{operation}`。查询复核当前设备凭据权限及原主体/实例，找到原回执才显示成功；null 不证明回滚，只能由用户显式原样重试。浏览器不签名、不持有 CA 或配置私钥。
 
 ## 任务签名信任与安装确认
 
 任务签名信任独立于设备 PKI 的证书信任版本，复用已认证 Agent mTLS 通道。`GET /api/v1/agent/runtime/task-trust` 返回稳定服务身份和租户绑定的完整 Ed25519 公钥集合；Agent 先验证版本单调性、既有 key ID 的公钥不变、唯一 active key，再持久保存并读回。只有完成这些步骤后，才向同一路径 POST 安装 ACK。ACK 固定原 operation、deviceId、revision 和完整集合摘要；响应未知时重放同一 ACK，不能将收到响应正文等同于本地持久化成功。正式 DTO 与 schema 见 [任务信任](../../crates/agent-wire/src/task_trust.rs) 和 [manifest](../../crates/agent-wire/schema/task_trust/manifest.json)。
 
-租户管理通过 `GET/POST /api/v1/task-signing/trust` 读取、准备或激活密钥，写入使用 `Idempotency-Key`、`expectedRevision` 和近期真实管理员会话。准备新密钥只发布 prepared 公钥；管理员可滚动激活，不等待全体设备在线。任务与 telemetry 配置发放仍逐设备核对当前 active key，以及包含该键 prepared/active 状态的精确 revision/digest 安装 ACK；未确认设备可以获取信任、ACK、续期和恢复，但不能领取新签名内容。原键转为 verify_only，保留历史验证材料。退役仍等待实际当前消费者确认 verify_only，并清空原任务引用及配置验证窗口；telemetry 至少保留到 expires_at + backfill_seconds。新激活键由受控重启消费，旧进程不能继续用已退出 active 状态的键签发任务。准备阶段仍有效的旧签名权威可以重启加载。
+租户管理通过 `GET/POST /api/v1/tenants/{tenant}/task-signing/trust` 读取、准备或激活密钥，写入使用 `Idempotency-Key`、`expectedRevision` 和近期真实管理员会话。准备新密钥只发布 prepared 公钥；管理员可滚动激活，不等待全体设备在线。任务与 telemetry 配置发放仍逐设备核对当前 active key，以及包含该键 prepared/active 状态的精确 revision/digest 安装 ACK；未确认设备可以获取信任、ACK、续期和恢复，但不能领取新签名内容。原键转为 verify_only，保留历史验证材料。退役仍等待实际当前消费者确认 verify_only，并清空原任务引用及配置验证窗口；telemetry 至少保留到 expires_at + backfill_seconds。新激活键由受控重启消费，旧进程不能继续用已退出 active 状态的键签发任务。准备阶段仍有效的旧签名权威可以重启加载。
 
-`GET /api/v1/task-signing/operations/{id}` 查询原管理操作，后续轮换不会改写其结果。该服务端合同不代表 Agent 已实现持久安装；Agent 消费实现与真实设备资格由对应后续任务验收。
+`GET /api/v1/tenants/{tenant}/task-signing/operations/{id}` 查询原管理操作，后续轮换不会改写其结果。该服务端合同不代表 Agent 已实现持久安装；Agent 消费实现与真实设备资格由对应后续任务验收。
 
 
 设备分别向 `POST /api/v1/agent/runtime/task-trust/observations` 与
@@ -184,8 +184,8 @@ Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。�
 目标获取失败可不填目标版本和摘要；无法读回时不声称已应用。失败原因仅使用闭合枚举，不发送证书、秘密或原始错误。
 
 管理侧使用设备的 `InventoryRead` 权限查询
-`GET /api/v1/task-signing/trust/devices/{device}/observation` 或
-`GET /api/v1/pki/agent/trust/devices/{device}/observation`。
+`GET /api/v1/tenants/{tenant}/task-signing/trust/devices/{device}/observation` 或
+`GET /api/v1/tenants/{tenant}/pki/agent/trust/devices/{device}/observation`。
 结果只代表当前注册身份最后序号的设备观察，另带服务端接收时间；无记录返回 null，表示未知。
 迟到的旧报告不会覆盖新结果。同一操作或序号的异内容报告被拒绝。
 失联时只能展示最后观察及时间，不能据此宣称当前在线或仍然已应用。
@@ -275,20 +275,20 @@ Windows RSS 恢复后续轮换/核对使用既有 Credential task 的 `rotate_rs
 
 平台 verifier 的 resolve/recheck 必须在 Identity 提供的原 PG connection 上调用
 DA owner 的当前资格查询，同时核对当前 DA 注册、绑定代际、匹配的 DA 配置及有效部署证据。
-DA 配置由 `POST /api/v1/device-access/configurations` 发布，仅支持租户默认和单台 DA 设备覆盖；
+DA 配置由 `POST /api/v1/tenants/{tenant}/device-access/configurations` 发布，仅支持租户默认和单台 DA 设备覆盖；
 禁用设备覆盖会阻止回退到默认配置。完整配置/状态闭环及 MDM 强制配置优先级由 #3129 承接。
 普通 Binding JSON、清单或历史状态不能作为有效会话证明；Identity 继续独占账户/成员有效性与会话签发。
 
 ## 管理目录查询
 
-`GET /api/v1/agent-configurations` 返回 `items/nextCursor` 元数据页，使用
+`GET /api/v1/tenants/{tenant}/agent-configurations` 返回 `items/nextCursor` 元数据页，使用
 `filter/sort/fields/limit/cursor`，默认 64、最多 1000 条。可按 state、创建/到期时间、创建者及目标平台筛选；
 平台/架构是目标集合成员条件，不用于排序。createdAt/expiresAt 使用 UTC Unix 秒。
 列表与详情共用配置身份和 available/expired/revoked 状态规则；remaining 只代表数量。
 列表不返回 secret、签名、连接配置或可转移配置文件，也不提供原地修改签名配置的入口。
 
-`GET /api/v1/agent-packages` 使用同一分页契约，管理者可查询 published/withdrawn 元数据；
-`GET /api/v1/agent-packages/{id}` 读取同一元数据对象。管理目录可见不代表当前可安装。
+`GET /api/v1/tenants/{tenant}/agent-packages` 使用同一分页契约，管理者可查询 published/withdrawn 元数据；
+`GET /api/v1/tenants/{tenant}/agent-packages/{id}` 读取同一元数据对象。管理目录可见不代表当前可安装。
 `/api/v1/agent/enroll/packages` 及下载协议保持原数组/准入行为，只向公共消费者开放当前可用包。
 本批后端直接替换旧管理列表数组，前端消费者需另行同步。
 
@@ -296,8 +296,8 @@ DA 配置由 `POST /api/v1/device-access/configurations` 发布，仅支持租�
 ## 受控企业 RP 的 Broker 协议
 
 跨进程输入由 `rss-mdm-agent-wire::enterprise` 持有。先同源 POST
-`/api/v1/device-access/broker/browser` 建立 Secure/HttpOnly/SameSite=Strict 的浏览器绑定，
-再 POST `/api/v1/device-access/broker`，提交 `{operationId,bindingId,relyingParty}`。
+`/api/v1/tenants/{tenant}/device-access/broker/browser` 建立 Secure/HttpOnly/SameSite=Strict 的浏览器绑定，
+再 POST `/api/v1/tenants/{tenant}/device-access/broker`，提交 `{operationId,bindingId,relyingParty}`。
 客户端不选择回调、受众或身份；返回确切 `signingPayload`，原生 Broker 必须原样签署，
 不能重新编码 JSON。Windows 使用管理员已登记、绑定确切账户/因子代际的 P-256 key；
 Mac 使用当前 SE 用户 key，Password 模式使用设备 key，并提供有效原生 accessToken。
@@ -311,7 +311,7 @@ Preparing/Completing 中断须查询原 operation；120 秒准备窗口或原始
 不得重放可能已完成的 IdP 交换。取消后旧 continuation 和 RP 会话查询均拒绝。
 
 每个 RP 后端使用独立部署 bearer secret，POST
-`/api/v1/device-access/relying-parties/{rp}/consume`，提交 `{session:operationId,operationId:领取操作UUID,continuation}`。
+`/api/v1/tenants/{tenant}/device-access/relying-parties/{rp}/consume`，提交 `{session:operationId,operationId:领取操作UUID,continuation}`。
 同一领取操作可以恢复回执，但每次秘密释放都重新联合核验 Identity 会话、RP 配置、稳定人员映射、
 绑定和原生会话；其他 RP 或其他领取操作不能冒领。交接只在上游令牌最多 30 秒的窗口内有效。
 RP 自己建立应用会话，每次使用前调用 GET `/relying-parties/{rp}/sessions/{session}` 复核。
@@ -336,7 +336,7 @@ FileVault 托管身份独立于采集通道；MDM 与 Agent 可以分别使用�
 Agent 使用设备证书读取 `GET /api/v1/agent/runtime/management-activities`、
 `GET /api/v1/agent/runtime/management-activities/{id}` 和
 `GET /api/v1/agent/runtime/management-activities/changes`。读取不要求任务执行 capability，也不会触发领取、重试或执行。
-管理端对应 `GET /api/v1/devices/{device}/management-activities` 及其 `/{id}`，逐设备要求 `OperationRead`。
+管理端对应 `GET /api/v1/tenants/{tenant}/devices/{device}/management-activities` 及其 `/{id}`，逐设备要求 `OperationRead`。
 活动 `origin` 在执行接受时固定，后续投递、执行与结果保持同一来源；自助调用只产生一次任务接受活动。`links.retirement` 是退役操作的精确身份，连接批次与其 Agent 清理、卸管及原生回执；不得用相同 Policy/version 推断属于同一次退役。
 跨 Agent／MDM 通道仅使用当前已验证的逻辑设备配对；配对尚未发布时只返回本端点并标记 `association_pending`。
 
@@ -366,8 +366,8 @@ Agent 使用设备证书读取 `GET /api/v1/agent/runtime/management-activities`
 
 ### 从设备定位原申请与管理恢复回执
 
-`GET /api/v1/devices/{device}/agent-requests` 使用统一有界查询，范围覆盖该设备的原登记 grant 与 recovery／renewal grant。`GET /api/v1/agent-requests/{id}` 返回无秘密原对象，分别标识 grant、issuance、原操作、设备身份、前驱凭据和真实激活事实。`requirements` 描述继续所需的材料或当前阻断，不声称管理员已经取得或丢失设备材料。
+`GET /api/v1/tenants/{tenant}/devices/{device}/agent-requests` 使用统一有界查询，范围覆盖该设备的原登记 grant 与 recovery／renewal grant。`GET /api/v1/tenants/{tenant}/agent-requests/{id}` 返回无秘密原对象，分别标识 grant、issuance、原操作、设备身份、前驱凭据和真实激活事实。`requirements` 描述继续所需的材料或当前阻断，不声称管理员已经取得或丢失设备材料。
 
-原登记恢复提交结果通过 `GET /api/v1/devices/{id}/registration/recovery-operations/{operation}?actor=...&instance=...` 读取。原签发恢复操作从 `GET /api/v1/agent-issuances/{id}/recovery-operations` 分页发现，并沿已有 `GET /api/v1/agent-issuances/{id}/recovery-operations/{operation}?actor=...&instance=...` 查询。所有精确回执查询必须明确原 actor、instance；不提供当前登录人缺省。查询引用中的主体不是授权凭证，服务端仍按当前调用者的设备 Credentials 权限核验。
+原登记恢复提交结果通过 `GET /api/v1/tenants/{tenant}/devices/{id}/registration/recovery-operations/{operation}?actor=...&instance=...` 读取。原签发恢复操作从 `GET /api/v1/tenants/{tenant}/agent-issuances/{id}/recovery-operations` 分页发现，并沿已有 `GET /api/v1/tenants/{tenant}/agent-issuances/{id}/recovery-operations/{operation}?actor=...&instance=...` 查询。所有精确回执查询必须明确原 actor、instance；不提供当前登录人缺省。查询引用中的主体不是授权凭证，服务端仍按当前调用者的设备 Credentials 权限核验。
 
 授权管理员可以读回他人原操作，但写入继续使用当前认证主体。null 仅表示没有找到指定原回执；链已关联、该次管理操作已提交、设备已持证激活是不同事实。刷新、重新登录、超时或未知结果都不授权自动重放写入。查询不返回 secret、原始 CSR、签发配置，也不会重新签发或延长期限。

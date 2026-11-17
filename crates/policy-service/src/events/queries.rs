@@ -22,7 +22,7 @@ impl Events {
     {
         crate::transaction::inspect(
             &self.application.runtime,
-            self.application.audit_store.binding(),
+            p.binding(),
             (self, p, device),
             |ctx, tx| {
                 Box::pin(async move {
@@ -64,7 +64,7 @@ impl Events {
         let caller = Caller::Management { actor: p.actor() }.key()?;
         crate::transaction::inspect(
             &self.application.runtime,
-            self.application.audit_store.binding(),
+            p.binding(),
             (self, p, device, caller),
             |ctx, tx| {
                 Box::pin(async move {
@@ -124,9 +124,6 @@ impl Events {
         query: &rss_mdm_query::directory::Query,
         audit: &RequestAudit,
     ) -> std::result::Result<ReadResult, Error> {
-        if p.tenant() != self.application.tenant {
-            return Err(Error::Forbidden);
-        }
         self.read(
             Requester::Agent(p),
             p.device(),
@@ -162,10 +159,10 @@ impl Events {
             "policy_event_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        let p = &self.application;
+
         crate::transaction::inspect(
             &self.application.runtime,
-            p.audit_store.binding(),
+            audit.binding()?,
             (
                 self, proof, principal, agent, device, batch, members, &query,
             ),
@@ -189,13 +186,7 @@ impl Events {
                         json!(target)
                     };
                     let binding = q
-                        .binding(&(
-                            s.application.tenant.to_string(),
-                            identity,
-                            device,
-                            batch,
-                            members,
-                        ))
+                        .binding(&(tx.tenant_id().to_string(), identity, device, batch, members))
                         .map_err(crate::query_error)?;
                     let codec = CursorCodec::from_key(s.application.cursor_key.clone());
                     let after = q.after(&codec, &binding).map_err(crate::query_error)?;

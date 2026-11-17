@@ -16,32 +16,27 @@ pub struct Prepared {
     lifecycle: rss_runtime::ShutdownStack,
 }
 impl Prepared {
-    pub async fn open(
-        c: &Context,
-        signing: bool,
-        configure: fn(&mut serde_json::Value),
-    ) -> Result<Self> {
+    pub async fn open(c: &Context, configure: fn(&mut serde_json::Value)) -> Result<Self> {
         let mut config: serde_json::Value =
             serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))?;
-        config["identity"]["tenant_id"] = json!(c.tenant.to_string());
+        let management: uuid::Uuid =
+            sqlx::query_scalar("SELECT management_tenant_id FROM public.mdm_installation")
+                .fetch_one(&c.operator)
+                .await?;
+        config["identity"]["management_tenant"] = json!(management);
         config["identity"]["instance_id"] = json!(c.inputs.installation.instance_id);
         config["identity"]["database"] =
-            serde_json::to_value(c.inputs.database("shared", "mdm_identity_runtime"))?;
+            serde_json::to_value(c.inputs.database(&c.profile, "mdm_identity_runtime"))?;
         config["access_database"] =
-            serde_json::to_value(c.inputs.database("shared", "mdm_access"))?;
+            serde_json::to_value(c.inputs.database(&c.profile, "mdm_access"))?;
         config["device_access"]["database"] =
-            serde_json::to_value(c.inputs.database("shared", "da_access"))?;
+            serde_json::to_value(c.inputs.database(&c.profile, "da_access"))?;
         config["command_database"] =
-            serde_json::to_value(c.inputs.database("shared", "mdm_command_runtime"))?;
+            serde_json::to_value(c.inputs.database(&c.profile, "mdm_command_runtime"))?;
         config["storage_binding"] = json!({"target":c.inputs.installation.target,"lineage":c.inputs.installation.lineage,"epoch":1});
         config["native_protocols"] = json!({});
         config["device_pki"] = json!([]);
         config["agent_pki"] = json!({"mode":"disabled"});
-        config["task_signing"] = if signing {
-            json!({"revision":1})
-        } else {
-            serde_json::Value::Null
-        };
         config["content"] = serde_json::Value::Null;
         config["recovery_credentials"] = serde_json::Value::Null;
         configure(&mut config);
@@ -49,15 +44,12 @@ impl Prepared {
         let config: crate::config::Config = serde_json::from_value(config)?;
         let background = config.background.compile(&config)?;
         let protection = super::device_material_support::protection(c)?;
-        let channels = Arc::new(crate::channel_status::Channels::new(&config));
-        let (signing, _) = crate::assembly::task_trust::signing(
+        let channels = Arc::new(crate::channel_status::Channels::new(
             &config,
-            c.tenant,
             protection.clone(),
-            c.audit.clone(),
-            &channels,
-        )
-        .await?;
+        ));
+        let (signing, _) =
+            crate::assembly::task_trust::signing(protection.clone(), c.audit.clone())?;
         let mut lifecycle = rss_runtime::ShutdownStack::try_new(
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
             Arc::new(crate::lifecycle::RuntimeTimer),
@@ -65,6 +57,7 @@ impl Prepared {
         let mut startup = lifecycle.startup()?;
         let storage = Storage::open(
             &config,
+            c.database.archive_pool(),
             &background,
             c.audit.clone(),
             &protection,
@@ -95,10 +88,7 @@ impl Prepared {
                 Some(Arc::new(rss_mdm_device_service::planning::PlanningObjects)),
             )),
             sessions: Arc::new(
-                rss_mdm_authorization_service::session::SessionAuthority::new(
-                    c.authority.clone(),
-                    c.audit.binding(),
-                ),
+                rss_mdm_authorization_service::session::SessionAuthority::new(c.authority.clone()),
             ),
             lifecycle,
         })
@@ -123,8 +113,8 @@ impl Prepared {
 /// Triggers and security-definer functions require the same tenant coordinate as production.
 pub async fn seed_transaction(c: &Context) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
     let mut tx = c.operator.begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(c.tenant.to_string())
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('rss.execution_epoch',$2,true),set_config('rss.storage_target',$3,true),set_config('rss.storage_lineage',$4,true)")
+        .bind(c.tenant.to_string()).bind(c.execution().epoch().get().to_string()).bind(c.execution().storage().target().iter().map(|b|format!("{b:02x}")).collect::<String>()).bind(c.execution().storage().lineage().iter().map(|b|format!("{b:02x}")).collect::<String>())
         .execute(&mut *tx)
         .await?;
     Ok(tx)

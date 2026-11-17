@@ -3,7 +3,12 @@ use super::{Runtime, crypto, store::Source};
 use crate::Error;
 use rss_mdm_agent_wire::platform_sso::*;
 use serde_json::{Value, json};
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep execution scope and existing operation inputs explicit"
+)]
 pub fn verify(
+    tenant: uuid::Uuid,
     runtime: &Runtime,
     device: &PublicKey,
     user: &PublicKey,
@@ -26,11 +31,11 @@ pub fn verify(
     let client = runtime.configuration.client_id.to_string();
     if crypto::text(&outer, "iss")? != client
         || crypto::text(&outer, "client_id")? != client
-        || crypto::text(&outer, "aud")? != runtime.endpoints.token
+        || crypto::text(&outer, "aud")? != runtime.endpoints(tenant)?.token
         || crypto::text(&outer, "username")? != user_id.to_string()
         || crypto::text(&outer, "grant_type")? != GRANT
         || crypto::text(&inner, "iss")? != user_id.to_string()
-        || crypto::text(&inner, "aud")? != runtime.endpoints.issuer
+        || crypto::text(&inner, "aud")? != runtime.endpoints(tenant)?.issuer
     {
         return Err(Error::Unauthorized);
     }
@@ -54,7 +59,9 @@ pub fn response(
     refresh: &str,
 ) -> Result<Value, Error> {
     let subject = user.subject.as_ref().ok_or(Error::Unauthorized)?;
-    let id=runtime.signer().sign("JWT",&json!({"iss":runtime.endpoints.issuer,"aud":runtime.configuration.client_id,"sub":subject.account.principal.as_uuid(),"iat":now,"exp":now+TOKEN_SECONDS,"nonce":nonce}))?;
+    let tenant =
+        uuid::Uuid::parse_str(&subject.account.tenant.to_string()).map_err(|_| Error::Malformed)?;
+    let id=runtime.signer().sign("JWT",&json!({"iss":runtime.endpoints(tenant)?.issuer,"aud":runtime.configuration.client_id,"sub":subject.account.principal.as_uuid(),"iat":now,"exp":now+TOKEN_SECONDS,"nonce":nonce}))?;
     let payload = json!({"access_token":access,"token_type":"Bearer","expires_in":TOKEN_SECONDS,"refresh_token":refresh,"refresh_token_expires_in":SSO_SECONDS,"id_token":id,"scope":SCOPE});
     // Native refresh is another fresh SE login. An opaque refresh value carries no MFA state.
     Ok(Value::String(crypto::encrypt(
@@ -97,6 +104,7 @@ mod tests {
         let (server, _) = key(1);
         let (device, device_key) = key(2);
         let (user, user_key) = key(3);
+        let tenant = uuid::Uuid::new_v4();
         let rt = Runtime::new(
             Configuration {
                 team_id: "ABCDEFGHIJ".into(),
@@ -106,18 +114,18 @@ mod tests {
                 client_id: uuid::Uuid::new_v4(),
             },
             "https://mdm.example.test",
-            uuid::Uuid::new_v4(),
             "active".into(),
             [("active".into(), server)].into(),
         )
         .unwrap();
         let id = uuid::Uuid::new_v4();
-        let inner = json!({"iss":id,"sub":id,"aud":rt.endpoints.issuer,"iat":1000,"exp":1300,"scope":SCOPE,"nonce":"client-nonce-123456","request_nonce":"server-nonce"});
-        let mut outer = json!({"iss":rt.configuration.client_id,"client_id":rt.configuration.client_id,"aud":rt.endpoints.token,"sub":id,"username":id,"grant_type":GRANT,"iat":1000,"exp":1300,"scope":SCOPE,"nonce":"client-nonce-123456","request_nonce":"server-nonce","jwe_crypto":{"alg":"ECDH-ES","enc":"A256GCM","apv":"checked-at-encryption"}});
+        let inner = json!({"iss":id,"sub":id,"aud":rt.endpoints(tenant).unwrap().issuer,"iat":1000,"exp":1300,"scope":SCOPE,"nonce":"client-nonce-123456","request_nonce":"server-nonce"});
+        let mut outer = json!({"iss":rt.configuration.client_id,"client_id":rt.configuration.client_id,"aud":rt.endpoints(tenant).unwrap().token,"sub":id,"username":id,"grant_type":GRANT,"iat":1000,"exp":1300,"scope":SCOPE,"nonce":"client-nonce-123456","request_nonce":"server-nonce","jwe_crypto":{"alg":"ECDH-ES","enc":"A256GCM","apv":"checked-at-encryption"}});
         outer["assertion"] = json!(user.sign(ASSERTION_TYPE, &inner).unwrap());
         let request = device.sign(LOGIN_TYPE, &outer).unwrap();
         assert!(
             verify(
+                tenant,
                 &rt,
                 &device_key,
                 &user_key,
@@ -130,6 +138,7 @@ mod tests {
         );
         assert!(
             verify(
+                tenant,
                 &rt,
                 &user_key,
                 &device_key,
@@ -142,6 +151,7 @@ mod tests {
         );
         assert!(
             verify(
+                tenant,
                 &rt,
                 &device_key,
                 &user_key,
@@ -154,6 +164,7 @@ mod tests {
         );
         assert!(
             verify(
+                tenant,
                 &rt,
                 &device_key,
                 &user_key,
@@ -165,7 +176,7 @@ mod tests {
             .is_err()
         );
         for (field, value) in [
-            ("aud", json!(rt.endpoints.issuer)),
+            ("aud", json!(rt.endpoints(tenant).unwrap().issuer)),
             ("sub", json!(uuid::Uuid::new_v4())),
             ("client_id", json!(uuid::Uuid::new_v4())),
             ("scope", json!("openid")),
@@ -175,6 +186,7 @@ mod tests {
             bad[field] = value;
             assert!(
                 verify(
+                    tenant,
                     &rt,
                     &device_key,
                     &user_key,
@@ -188,7 +200,7 @@ mod tests {
             );
         }
         for (field, value) in [
-            ("aud", json!(rt.endpoints.token)),
+            ("aud", json!(rt.endpoints(tenant).unwrap().token)),
             ("iss", json!(uuid::Uuid::new_v4())),
             ("nonce", json!("different-nonce-123")),
             ("request_nonce", json!("different-server")),
@@ -200,6 +212,7 @@ mod tests {
             envelope["assertion"] = json!(user.sign(ASSERTION_TYPE, &bad).unwrap());
             assert!(
                 verify(
+                    tenant,
                     &rt,
                     &device_key,
                     &user_key,
@@ -216,6 +229,7 @@ mod tests {
         wrong_type["assertion"] = json!(user.sign("incorrect-purpose+jwt", &inner).unwrap());
         assert!(
             verify(
+                tenant,
                 &rt,
                 &device_key,
                 &user_key,

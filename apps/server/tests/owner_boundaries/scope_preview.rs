@@ -108,23 +108,21 @@ async fn draft_algebra_is_read_only_and_enforces_live_permissions() -> Result<()
     let da_access = c
         .access()
         .for_product(rss_mdm_audit_integration::StorageProfile::Da);
-    let da = rss_mdm_authorization_service::session::SessionAuthority::new(
-        c.authority.clone(),
-        c.audit.binding(),
-    )
-    .authenticate(
-        &da_access,
-        account.credential()?,
-        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-            std::time::Duration::from_secs(8),
-        ),
-    )
-    .await?;
+    let da = rss_mdm_authorization_service::session::SessionAuthority::new(c.authority.clone())
+        .authenticate(
+            c.execution(),
+            &da_access,
+            account.credential()?,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                std::time::Duration::from_secs(8),
+            ),
+        )
+        .await?;
     da.manage(P::PolicyRead)?;
     let da_audit = rss_mdm_audit_integration::RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Da,
-        c.tenant.to_string(),
+        c.execution(),
         "management_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
@@ -174,7 +172,6 @@ async fn http_preview_and_recompute_use_the_formal_contract() -> Result<()> {
                 proof: p.clone(),
                 sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
                     c.authority.clone(),
-                    c.audit.binding(),
                 ),
                 deadline: request_budget.deadline().instant(),
                 cancellation: request_budget,
@@ -182,14 +179,14 @@ async fn http_preview_and_recompute_use_the_formal_contract() -> Result<()> {
         }))
         .layer(axum::middleware::from_fn({
             let proof = p.clone();
-            let tenant = c.tenant;
+
             move |mut request: axum::extract::Request, next: axum::middleware::Next| {
                 let proof = proof.clone();
                 async move {
                     let audit = rss_mdm_audit_integration::RequestAudit::new(
                         rss_mdm_audit_integration::Origin::Request,
                         rss_mdm_audit_integration::StorageProfile::Mdm,
-                        tenant.to_string(),
+                        proof.binding(),
                         "management_read",
                         rss_mdm_audit_integration::AuditIntent::Routine,
                     );
@@ -201,8 +198,13 @@ async fn http_preview_and_recompute_use_the_formal_contract() -> Result<()> {
                 }
             }
         }));
+    let app = axum::Router::new().nest("/api/v1/tenants/{tenant}", app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let base = format!("http://{}", listener.local_addr()?);
+    let base = format!(
+        "http://{}/api/v1/tenants/{}",
+        listener.local_addr()?,
+        c.tenant
+    );
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let client = reqwest::Client::new();
     let body = json!({"definition":saved.definition.scope,"channel":"mdm","expectedRevision":1});
@@ -345,7 +347,7 @@ async fn frozen_membership_does_not_follow_current_heads() -> Result<()> {
     let published = planning::published(&c, &object).await?;
     let snapshot = Uuid::new_v4();
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
-    sqlx::query("INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through) VALUES($1::uuid,$2,$3,1)")
+    sqlx::query("INSERT INTO mdm_devices.object_cuts(expected_epoch,tenant_id,id,asset_cut,through) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,1)")
         .bind(c.tenant.to_string()).bind(snapshot).bind(published.cut.to_json()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object_kind,object_id,revision,input,devices) VALUES($1::uuid,$2,$3,1,$4,$5),($1::uuid,$2,$3,2,NULL,'{}')")
         .bind(c.tenant.to_string()).bind(object.object.kind()).bind(object.object.uuid()).bind(serde_json::to_value(&object)?).bind(vec![object.members[0].device.into_uuid()]).execute(&mut *tx).await?;
@@ -393,7 +395,7 @@ async fn frozen_membership_does_not_follow_current_heads() -> Result<()> {
     );
     let deleted_cut = Uuid::new_v4();
     let mut publication = crate::command_runtime_t2_support::seed_transaction(&c).await?;
-    sqlx::query("INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through) VALUES($1::uuid,$2,$3,2)")
+    sqlx::query("INSERT INTO mdm_devices.object_cuts(expected_epoch,tenant_id,id,asset_cut,through) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,2)")
         .bind(c.tenant.to_string()).bind(deleted_cut).bind(published.cut.to_json()).execute(&mut *publication).await?;
     publication.commit().await?;
     let deleted = reader
@@ -464,7 +466,7 @@ async fn frozen_set_absence_matches_formal_scope_publication() -> Result<()> {
     let id = saved.scopes[0].id;
     let task = saved.scopes[0].task.unwrap();
     for _ in 0..20 {
-        crate::scope_t2::advance(&scopes, task, &preview.asset_cut, false).await?;
+        crate::scope_t2::advance(c.execution(), &scopes, task, &preview.asset_cut, false).await?;
     }
     let page = scopes
         .page(
@@ -617,7 +619,7 @@ async fn uuid_object_pages_preserve_kind_and_tenant() -> Result<()> {
         ObjectRef::Endpoint(low),
     ];
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
-    sqlx::query("INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through) VALUES($1::uuid,$2,$3,1)")
+    sqlx::query("INSERT INTO mdm_devices.object_cuts(expected_epoch,tenant_id,id,asset_cut,through) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,1)")
         .bind(c.tenant.to_string()).bind(snapshot).bind(published.cut.to_json()).execute(&mut *tx).await?;
     for object in &expected {
         let input = DeviceObject {
@@ -634,7 +636,7 @@ async fn uuid_object_pages_preserve_kind_and_tenant() -> Result<()> {
         .bind(foreign.to_string())
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through) VALUES($1::uuid,$2,$3,1)")
+    sqlx::query("INSERT INTO mdm_devices.object_cuts(expected_epoch,tenant_id,id,asset_cut,through) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,1)")
         .bind(foreign.to_string()).bind(snapshot).bind(foreign_cut.to_json()).execute(&mut *tx).await?;
     let foreign_objects = [
         ObjectRef::Endpoint(low),

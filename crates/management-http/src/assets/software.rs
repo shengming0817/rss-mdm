@@ -187,6 +187,8 @@ fn page<Q: WindowOwner>(query: OwnedQuery<Window<Q>>) -> Result<model::Page, Err
     })
 }
 async fn standards(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -205,7 +207,7 @@ async fn standard(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<HttpResponse, Error> {
     invoke(&app, &auth, &audit, model::Command::Standard { id }).await
 }
@@ -213,7 +215,7 @@ async fn standard_write(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     payload: BodyInput<Operation<model::Change<model::Standard>>>,
 ) -> Result<HttpResponse, Error> {
     invoke(
@@ -228,6 +230,8 @@ async fn standard_write(
     .await
 }
 async fn mappings(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -246,7 +250,7 @@ async fn mapping(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<HttpResponse, Error> {
     invoke(&app, &auth, &audit, model::Command::Mapping { id }).await
 }
@@ -254,7 +258,7 @@ async fn mapping_write(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     payload: BodyInput<Operation<model::Change<model::Mapping>>>,
 ) -> Result<HttpResponse, Error> {
     invoke(
@@ -272,7 +276,7 @@ async fn receipt(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<HttpResponse, Error> {
     invoke(
         &app,
@@ -287,6 +291,8 @@ async fn receipt(
     .await
 }
 async fn search(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -306,7 +312,7 @@ async fn status(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<HttpResponse, Error> {
     invoke(&app, &auth, &audit, model::Command::Status { id }).await
 }
@@ -314,7 +320,7 @@ async fn buckets(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     query: OwnedQuery<Window<Buckets>>,
 ) -> Result<CollectionResponse<HttpResponse>, Error> {
     invoke(
@@ -333,7 +339,7 @@ async fn breakdowns(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, bucket, dimension)): Path<(Uuid, String, model::Dimension)>,
+    Path((_tenant, id, bucket, dimension)): Path<(uuid::Uuid, Uuid, String, model::Dimension)>,
     query: OwnedQuery<Window<Breakdowns>>,
 ) -> Result<CollectionResponse<HttpResponse>, Error> {
     invoke(
@@ -354,7 +360,7 @@ async fn devices(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, bucket)): Path<(Uuid, String)>,
+    Path((_tenant, id, bucket)): Path<(uuid::Uuid, Uuid, String)>,
     query: OwnedQuery<Window<Devices>>,
 ) -> Result<CollectionResponse<HttpResponse>, Error> {
     invoke(
@@ -374,7 +380,13 @@ async fn evidence(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, bucket, object_kind, object_id)): Path<(Uuid, String, String, String)>,
+    Path((_tenant, id, bucket, object_kind, object_id)): Path<(
+        uuid::Uuid,
+        Uuid,
+        String,
+        String,
+        String,
+    )>,
     query: OwnedQuery<Window<Evidence>>,
 ) -> Result<CollectionResponse<Json<AssetEnvelope<super::software_evidence::EvidenceAsset>>>, Error>
 {
@@ -401,7 +413,7 @@ async fn coverage(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     query: OwnedQuery<Window<Coverage>>,
 ) -> Result<CollectionResponse<HttpResponse>, Error> {
     invoke(
@@ -421,7 +433,7 @@ async fn release(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     payload: BodyInput<Operation<model::ReleaseInput>>,
 ) -> Result<HttpResponse, Error> {
     invoke(

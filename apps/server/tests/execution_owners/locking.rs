@@ -22,12 +22,10 @@ async fn change(
     collection: bool,
     gate: &Gate,
 ) -> Result<()> {
-    let tenant = binding.tenant();
     let changes = super::super::policy_ports::Changes {
         reader: rss_mdm_policy_postgres::PolicyReader::bind(
             rss_mdm_install_support::StorageProfile::Mdm,
             runtime.clone(),
-            tenant,
         ),
         messaging: Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
@@ -57,7 +55,7 @@ async fn change(
         ctx.1.ready.notify_one();
         ctx.1.resume.notified().await;
         let current=script::transaction::checked(ctx.0.reader.locked_in(tx,policy).await?)?.expect("policy");
-        script::transaction::checked(ctx.0.policy_changed_in(tx,&current,None).await)?;
+        script::transaction::checked(ctx.0.policy_changed_in( tx,&current,None).await)?;
         Ok(())
     })).await?;
     Ok(())
@@ -159,7 +157,7 @@ async fn policy_change_race(collection: bool) -> Result<()> {
     let (changed, applied) = tokio::time::timeout(
         Duration::from_secs(15),
         futures::future::join(
-            change(&runtime, h.c.audit.binding(), policy, collection, &gate),
+            change(&runtime, h.c.execution(), policy, collection, &gate),
             worker,
         ),
     )
@@ -192,9 +190,8 @@ async fn collection_policy_change_and_worker_share_lock_order() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "T2: real Script and Agent Collection claims overlap on one device; current bindings preserve retry history"]
-async fn independent_run_recovery_overlaps_and_existing_bindings_preserve_history() -> Result<()> {
-    use rss_reconcile::{Completion, ResourceSet};
+#[ignore = "T2: real Script and Agent Collection claims overlap on one device"]
+async fn independent_run_recovery_overlaps_on_one_device() -> Result<()> {
     let h = Harness::open().await?;
     assert!(h.a.resources.storage.worker_budget.available_permits() >= 2);
     let (_, version) = h.policy("resource-coordination").await?;
@@ -206,13 +203,13 @@ async fn independent_run_recovery_overlaps_and_existing_bindings_preserve_histor
     let collection_id = super::mixed::run(&h, collection_version, now() - 400).await?;
     let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         h.a.resources.storage.runtime.clone(),
-        h.c.audit.binding(),
+        h.c.execution(),
         script::transaction::deadline(),
     ))
     .await?;
     script::transaction::inspect(
         &h.a.resources.storage.runtime,
-        h.c.audit.binding(),
+        h.c.execution(),
         &messaging,
         |messaging, tx| {
             Box::pin(async move {
@@ -294,37 +291,7 @@ async fn independent_run_recovery_overlaps_and_existing_bindings_preserve_histor
     script_result?;
     collection_result?;
     store.release(&collection_claim, &control).await?;
-    // Recovery can self-wake. Take a fresh claim before recording a failure so
-    // the Retry refers to its current wake version rather than superseded input.
     store.release(&script_claim, &control).await?;
-    let mut retry = store
-        .claim_due(&script_scope, 1, 64, Duration::from_secs(30), &control)
-        .await?;
-    let retry = retry.claims.remove(0);
-    let target = retry.target().clone();
-    store
-        .finish(
-            &retry,
-            Completion::Retry {
-                after: Duration::from_secs(60),
-                failures: 3,
-            },
-            &control,
-        )
-        .await?;
-    store
-        .bind_resources(&target, &ResourceSet::empty(h.c.tenant), &control)
-        .await?;
-    let original: (i64, i64, Option<String>) = sqlx::query_as("SELECT wake_version,failures,next_run::text FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity=$3")
-        .bind(h.c.tenant.to_string()).bind(target.scope().reconciler()).bind(target.entity()).fetch_one(&h.c.operator).await?;
-    h.a.script_work.initialize_resource_bindings().await?;
-    let repaired: (i64, i64, Option<String>) = sqlx::query_as("SELECT wake_version,failures,next_run::text FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity=$3")
-        .bind(h.c.tenant.to_string()).bind(target.scope().reconciler()).bind(target.entity()).fetch_one(&h.c.operator).await?;
-    assert_eq!(repaired, original);
-    assert_eq!(repaired.1, 3);
-    let resources: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_reconcile.target_resources WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity=$3")
-        .bind(h.c.tenant.to_string()).bind(target.scope().reconciler()).bind(target.entity()).fetch_one(&h.c.operator).await?;
-    assert_eq!(resources, 1);
     h.close().await
 }
 

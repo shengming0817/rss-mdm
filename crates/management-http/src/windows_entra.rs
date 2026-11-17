@@ -40,12 +40,16 @@ fn service(app: &App) -> Result<&Management, Error> {
     app.as_ref().as_deref().ok_or(Error::Unsupported)
 }
 async fn read(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
 ) -> Result<Json<Settings>, Error> {
     Ok(Json(service(&app)?.settings(&auth.proof).await?))
 }
 async fn update(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,

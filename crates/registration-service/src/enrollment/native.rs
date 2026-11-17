@@ -295,6 +295,7 @@ impl Admission {
 }
 /// Load the persisted account locator, then recheck Identity with no MDM row lock held.
 pub async fn account(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     store: &crate::Store,
     sessions: &SessionAuthority,
     id: Uuid,
@@ -302,7 +303,7 @@ pub async fn account(
     challenge: Option<&str>,
     deadline: rss_transactional_messaging::policy::OperationDeadline,
 ) -> Result<Admission, Error> {
-    let tenant = sessions.tenant().to_string();
+    let tenant = execution.tenant().to_string();
     let mut tx = store.begin(&tenant).await?;
     let row = request(
         rss_mdm_install_support::StorageProfile::Mdm,
@@ -340,7 +341,7 @@ pub async fn account(
         source: ReportSource::MdmApple,
     };
     tx.rollback().await.map_err(db)?;
-    let proof = sessions.recheck(&reference, deadline).await?;
+    let proof = sessions.recheck(execution, &reference, deadline).await?;
     if proof.account().tenant.to_string() != data.tenant
         || proof.account().principal.as_uuid().to_string() != data.actor
         || proof.instance().to_string() != data.instance

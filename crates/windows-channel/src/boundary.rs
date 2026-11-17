@@ -22,7 +22,6 @@ pub struct Envelope {
     pub clock: Arc<dyn rss_observation::Clock>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub requests: Arc<tokio::sync::Semaphore>,
-    pub tenant: String,
 }
 pub fn wrap<M: rss_mdm_http_contract::module::Declaration>(
     router: Router<(), M>,
@@ -60,10 +59,9 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         .map(|p| p.as_str())
         .unwrap_or("");
     let soap = route.starts_with("/EnrollmentServer/");
-    let audit = RequestAudit::new(
+    let audit = RequestAudit::unresolved(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        envelope.tenant.clone(),
         route_action(route),
         rss_mdm_audit_integration::AuditIntent::Routine,
     );

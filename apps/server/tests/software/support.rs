@@ -15,7 +15,7 @@ pub fn audit(c: &Context) -> RequestAudit {
     RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        c.tenant.to_string(),
+        c.execution(),
         "software_admission",
         AuditIntent::Management,
     )
@@ -39,7 +39,7 @@ pub async fn software_with_export(
         json!([{"evidence":{"reference":"reviewed-signature","length":3,"sha256":vec![4;32]},"artifact":"package","mechanism":"authenticode","publisher":"Acme"}])
     };
     let definition: r::SoftwareDefinition = serde_json::from_value(
-        json!({"material":{"format":"msi","installer":"package"},"source":source.snapshot()?,"package":"Acme.App","version":"1.2","artifacts":{"package":{"reference":"app-msi","length":3,"sha256":vec![2;32]}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2"},"upgradeInvocation":invocation},"signatures":signatures,"provenance":{"kind":"private"},"export":export}),
+        json!({"material":{"format":"msi","installer":"package"},"source":source.snapshot()?,"package":"Acme.App","version":"1.2","artifacts":{"package":{"reference":"app-msi","length":3,"sha256":r::Digest::of(b"msi").bytes()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2"},"upgradeInvocation":invocation},"signatures":signatures,"provenance":{"kind":"private"},"export":export}),
     )?;
     let version = r::Version::new(
         c.tenant,
@@ -63,7 +63,7 @@ pub async fn software_with_export(
     let owner = planning::owner(c, "mdm_resource_runtime").await?;
     let store = rss_mdm_resource_postgres::ResourceStore::new(
         owner.runtime.clone(),
-        c.audit.binding(),
+        c.execution(),
         crate::authority_t2_support::deadline(),
     )
     .await?;
@@ -79,6 +79,7 @@ pub async fn software_with_export(
     ] {
         store
             .execute(
+                c.execution(),
                 &rss_mdm_resource_postgres::Request {
                     id: r::Id::new(Uuid::new_v4().to_string())?,
                     resource: r::Id::new(name)?,
@@ -167,13 +168,18 @@ pub async fn policy(
         };
         BTreeMap::from([(
             rss_mdm_policy::SoftwareTarget::WindowsX86_64,
-            owner::native::Package::compile(definition, "https://mdm.example.test".into())?,
+            owner::native::Package::compile(definition)?,
         )])
     } else {
         BTreeMap::new()
     };
     let action = owner::frozen::FrozenSoftwareAction {
-        native_packages: native,
+        native: (channel == rss_mdm_policy::SoftwareChannel::Mdm).then_some(
+            owner::native_download::NativeSoftware {
+                origin: "https://mdm.example.test".into(),
+                packages: native,
+            },
+        ),
         channel,
         delivery: rss_mdm_policy::SoftwareDelivery::Direct,
         resource: resource.resource().as_str().into(),
@@ -230,7 +236,7 @@ pub(super) async fn decision(
         c.audit
             .on_runtime(
                 a.resources.storage.runtime.clone(),
-                c.audit.binding(),
+                c.execution(),
                 &rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(6))
                     .control(),
             )
@@ -239,14 +245,13 @@ pub(super) async fn decision(
     let reader = rss_mdm_policy_postgres::PolicyReader::bind(
         rss_mdm_install_support::StorageProfile::Mdm,
         a.resources.storage.runtime.clone(),
-        c.tenant,
     );
     let request = audit_request(c);
     let saved = std::sync::Mutex::new(None);
     let result = owner::transaction::run(
         &audit,
         &a.resources.storage.runtime,
-        c.audit.binding(),
+        c.execution(),
         &request,
         (
             a.software.transactions.clone(),
@@ -308,7 +313,7 @@ pub(super) async fn verified(
     let prepare = a.software.materials.inputs.software.clone();
     let steps = owner::transaction::inspect(
         &a.resources.storage.runtime,
-        c.audit.binding(),
+        c.execution(),
         (
             prepare,
             resource.resource().as_str(),

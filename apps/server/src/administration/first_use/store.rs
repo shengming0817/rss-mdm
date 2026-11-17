@@ -144,7 +144,8 @@ pub(super) async fn update(
     observed: Option<&Progress>,
 ) -> Result<Receipt, Error> {
     let budget = AuditBudget::new(Duration::from_secs(8));
-    let attempt=store.write(tenant(p)?,&budget.source_control(),(store,p,audit,id,input,fingerprint,observed),|ctx,tx|Box::pin(async move {
+    let attempt=store.write(
+            p.binding(),&budget.source_control(),(store,p,audit,id,input,fingerprint,observed),|ctx,tx|Box::pin(async move {
         let (store,p,audit,id,input,fingerprint,observed)=*ctx;
         let mut sql=(p,id,input,fingerprint,observed);
         let (receipt,replayed)=tx.with_connection_context(&mut sql,|(p,id,input,fingerprint,observed),c|Box::pin(async move {

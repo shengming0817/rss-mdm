@@ -75,7 +75,7 @@ impl ScopeBinding {
         id: Uuid,
     ) -> Result<(), BindingError> {
         self.validate_in(tx)?;
-        let key = format!("scope:{}:{id}", self.tenant);
+        let key = format!("scope:{}:{id}", tx.tenant_id());
         let locked = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -156,7 +156,7 @@ impl ScopeBinding {
             self.lock_scope_in(tx, id).await?;
         }
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let row = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -202,7 +202,7 @@ impl ScopeBinding {
             .checked_add(1)
             .filter(|v| *v <= i64::MAX as u64)
             .ok_or(BindingError::Conflict)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let document = serde_json::to_value(definition).map_err(|_| BindingError::Invalid)?;
         let changed = tx
             .with_connection(move |c| {
@@ -260,7 +260,7 @@ impl ScopeBinding {
         if !owner.is_valid() {
             return Err(BindingError::Invalid);
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let profile = self.profile();
         let changed = tx
             .with_connection(move |c| {
@@ -291,7 +291,7 @@ impl ScopeBinding {
         id: Uuid,
     ) -> Result<ScopeOwner, BindingError> {
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let profile = self.profile();
         let row = tx
             .with_connection(move |c| {
@@ -322,7 +322,7 @@ impl ScopeBinding {
         if !owner.is_valid() {
             return Err(BindingError::Invalid);
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let profile = self.profile();
         let row = tx
             .with_connection(move |c| {
@@ -367,7 +367,7 @@ impl ScopeBinding {
                 rss_mdm_scope::Reference::Group(id) => ("group".into(), id),
             })
             .unzip();
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| {
             Box::pin(async move {
                 sqlx::query(crate::storage_profile::sql(profile).store_replace_sources_in_1)
@@ -396,7 +396,7 @@ impl ScopeBinding {
         let profile = self.profile();
 
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let id = run.id;
         let scope = run.scope;
         let revision = run.definition_revision as i64;
@@ -431,7 +431,7 @@ impl ScopeBinding {
         let profile = self.profile();
 
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let row = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -479,7 +479,7 @@ impl ScopeBinding {
         let profile = self.profile();
 
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let mut object_kinds = Vec::new();
         let mut objects = Vec::new();
         let mut unknown = Vec::new();
@@ -525,7 +525,7 @@ impl ScopeBinding {
         let profile = self.profile();
 
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let phase = phase.to_owned();
         tx.with_connection(move |c| {
             Box::pin(async move {
@@ -561,7 +561,7 @@ impl ScopeBinding {
         if head.revision != p.definition_revision || head.resolution != p.previous_resolution {
             return Err(BindingError::Conflict);
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let scope = p.scope;
         let id = p.run;
         let previous = head.resolution;
@@ -607,7 +607,7 @@ impl ScopeBinding {
         revision: u64,
     ) -> Result<ScopeDefinition, BindingError> {
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let sql = crate::storage_profile::sql(self.profile()).store_definition_at_1;
         let revision = i64::try_from(revision).map_err(|_| BindingError::Invalid)?;
         let value: Value = tx
@@ -632,7 +632,7 @@ impl ScopeBinding {
         scope: Uuid,
     ) -> Result<Option<Uuid>, BindingError> {
         self.head_in(tx, scope, true).await?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let sql = crate::storage_profile::sql(self.profile()).store_enqueue_in_1;
         Ok(tx
             .with_connection(move |c| {
@@ -652,10 +652,12 @@ impl ScopeBinding {
         id: Uuid,
         scope: Uuid,
     ) -> Result<Uuid, BindingError> {
+        let epoch = tx.expected_epoch().get();
+
         let profile = self.profile();
 
         self.head_in(tx, scope, true).await?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         Ok(tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -678,6 +680,7 @@ impl ScopeBinding {
                         .bind(tenant)
                         .bind(id)
                         .bind(scope)
+                        .bind(epoch)
                         .execute(c)
                         .await?;
                     Ok(id)
@@ -693,7 +696,7 @@ impl ScopeBinding {
         let profile = self.profile();
 
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let r = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -724,7 +727,7 @@ impl ScopeBinding {
         let profile = self.profile();
 
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let failure = failure.map(str::to_owned);
         Ok(tx
             .with_connection(move |c| {
@@ -749,7 +752,7 @@ impl ScopeBinding {
         let profile = self.profile();
 
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| {
             Box::pin(async move {
                 sqlx::query(crate::storage_profile::sql(profile).store_replace_task_in_1)
@@ -776,7 +779,7 @@ impl ScopeBinding {
         let profile = self.profile();
 
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let id = run.id;
         let after = run.evaluation_cursor;
         let limit = 1000usize.min(16000 / source_count.max(1));
@@ -815,7 +818,7 @@ impl ScopeBinding {
             .collect();
         let count = devices.len() as i64;
         let last = devices.last().cloned();
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let kinds = devices.iter().map(|o| o.kind()).collect::<Vec<_>>();
         let ids = devices.iter().map(|o| o.uuid()).collect::<Vec<_>>();
         tx.with_connection(move |c| {
@@ -862,14 +865,10 @@ impl ScopeBinding {
         let profile = self.profile();
 
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let row = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    sqlx::query(crate::storage_profile::sql(profile).store_asset_page_in_1)
-                        .bind(&tenant)
-                        .execute(&mut *c)
-                        .await?;
                     sqlx::query(crate::storage_profile::sql(profile).store_asset_page_in_2)
                         .bind(tenant)
                         .fetch_one(c)
@@ -887,7 +886,7 @@ impl ScopeBinding {
         let through: Option<i64> = match row.try_get::<Option<i64>, _>("page_through")? {
             Some(value) => Some(value),
             None => {
-                let tenant = self.tenant.to_string();
+                let tenant = tx.tenant_id().to_string();
                 let f = from.clone();
                 let t = to.clone();
                 tx.with_connection(move|c|Box::pin(async move {
@@ -897,7 +896,7 @@ impl ScopeBinding {
             }
         };
         let Some(through) = through else {
-            let tenant = self.tenant.to_string();
+            let tenant = tx.tenant_id().to_string();
             tx.with_connection(move |c| {
                 Box::pin(async move {
                     sqlx::query(crate::storage_profile::sql(profile).store_asset_page_in_3)
@@ -911,7 +910,7 @@ impl ScopeBinding {
             .await?;
             return Ok(None);
         };
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let frozen = to.clone();
         tx.with_connection(move |c| {
             Box::pin(async move {
@@ -925,7 +924,7 @@ impl ScopeBinding {
             })
         })
         .await?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let mut scopes = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -961,7 +960,7 @@ impl ScopeBinding {
         let profile = self.profile();
 
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let frozen = page.to_cut.to_json();
         let after = if page.more {
             page.event_after
@@ -1006,7 +1005,7 @@ impl ScopeBinding {
     ) -> Result<[u64; 5], BindingError> {
         let profile = self.profile();
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let row = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -1039,7 +1038,7 @@ impl ScopeBinding {
         let profile = self.profile();
 
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         Ok(tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -1063,14 +1062,10 @@ impl ScopeBinding {
         let profile = self.profile();
 
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let (consumed, mut watermark, mut position, mut cursor): (i64, i64, i64, Option<Uuid>) = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    sqlx::query(crate::storage_profile::sql(profile).store_relation_window_in_1)
-                        .bind(&tenant)
-                        .execute(&mut *c)
-                        .await?;
                     sqlx::query_as(crate::storage_profile::sql(profile).store_relation_window_in_2)
                         .bind(tenant)
                         .fetch_one(c)
@@ -1102,7 +1097,7 @@ impl ScopeBinding {
         let profile = self.profile();
 
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let cursor = window.cursor;
         Ok(tx
             .with_connection(move |c| {
@@ -1130,7 +1125,7 @@ impl ScopeBinding {
         let profile = self.profile();
 
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let more_scopes = scopes.len() > 32;
         let cursor = more_scopes.then(|| scopes[31]);
         let consumed = if more_scopes || more_changes {
@@ -1181,7 +1176,7 @@ impl ScopeBinding {
         cut: &rss_mdm_inventory::AssetCut,
     ) -> Result<i64, BindingError> {
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let profile = self.profile();
         let cut = cut.to_json();
         Ok(tx
@@ -1205,7 +1200,7 @@ impl ScopeBinding {
         covered: i64,
     ) -> Result<bool, BindingError> {
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let profile = self.profile();
         Ok(tx
             .with_connection(move |c| {
@@ -1227,7 +1222,7 @@ impl ScopeBinding {
     /// Retained input failure, independent from scheduler wake or process lifetime.
     pub async fn input_failed_in(&self, tx: &mut PgTransaction<'_>) -> Result<bool, BindingError> {
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let sql = crate::storage_profile::sql(self.profile()).store_input_failed;
         Ok(tx
             .with_connection(move |c| {
@@ -1242,7 +1237,7 @@ impl ScopeBinding {
         failed: bool,
     ) -> Result<(), BindingError> {
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let sql = crate::storage_profile::sql(self.profile()).store_set_input_failed;
         tx.with_connection(move |c| {
             Box::pin(async move {

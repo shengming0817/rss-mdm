@@ -23,8 +23,10 @@ impl Service {
     /// Read counts up to 4097 and probe the actual configured backend within one cutoff.
     pub async fn diagnostics(
         self: &Arc<Self>,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         cutoff: std::time::Instant,
     ) -> Result<Diagnostics, Error> {
+        let backend = self.backend(binding).await?;
         let remaining = cutoff
             .checked_duration_since(crate::backend::SystemClock.now())
             .ok_or(Error::Storage)?;
@@ -34,7 +36,7 @@ impl Service {
         // reserved namespace has no product samples and grants no user data access.
         let probe = Query::new(
             Selection::Resource {
-                scope: Scope::new(self.tenant, Id::new("mdm.telemetry.probe")?),
+                scope: Scope::new(binding.tenant(), Id::new("mdm.telemetry.probe")?),
                 subject: Id::new("readiness")?,
                 resource: Id::new("readiness")?,
                 keys: [Id::new("readiness")?].into(),
@@ -46,20 +48,20 @@ impl Service {
             },
             QueryMode::History,
         )?;
-        self.backend
+        backend
             .query(
                 &Authorized::<Query>::verify(&ProbeAuthority(probe.clone()), probe)?,
                 None,
                 deadline,
             )
             .await?;
-        let tenant = self.tenant;
+        let tenant = binding.tenant();
         let budget = rss_transactional_messaging::policy::OperationDeadline::from_remaining(
             cutoff
                 .checked_duration_since(crate::backend::SystemClock.now())
                 .ok_or(Error::Storage)?,
         );
-        let counts=self.runtime.local_tx(self.audit_store.binding(),budget,move|tx|Box::pin(async move {
+        let counts=self.runtime.local_tx(binding,budget,move|tx|Box::pin(async move {
             tx.with_connection(move|c|Box::pin(async move {
                 let mut counts=[0u64;4];
                 for (index,state) in ["pending","unknown","blocked"].into_iter().enumerate() {

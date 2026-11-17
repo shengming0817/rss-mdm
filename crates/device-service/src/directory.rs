@@ -79,30 +79,39 @@ impl Associations {
         budget: &AuditBudget,
     ) -> Result<Access> {
         self.audit
-            .write(self.tenant, &budget.source_control(), proof, |proof, tx| {
-                Box::pin(async move {
-                    tx.with_connection_context(proof, |proof, c| {
-                        Box::pin(async move {
-                            let snapshot = read::authorization(c, proof).await?;
-                            let (_, binding) = views::scope(&snapshot, proof)?;
-                            Ok(Access {
-                                allowed: snapshot
-                                    .inventory_devices(proof)?
-                                    .map(|s| s.into_iter().collect()),
-                                sensitive: permission_scope(
-                                    &snapshot,
-                                    proof,
-                                    Permission::InventorySensitiveRead,
-                                )?,
-                                owners: permission_scope(&snapshot, proof, Permission::Enrollment)?,
-                                binding,
-                                snapshot,
+            .write(
+                proof.binding(),
+                &budget.source_control(),
+                proof,
+                |proof, tx| {
+                    Box::pin(async move {
+                        tx.with_connection_context(proof, |proof, c| {
+                            Box::pin(async move {
+                                let snapshot = read::authorization(c, proof).await?;
+                                let (_, binding) = views::scope(&snapshot, proof)?;
+                                Ok(Access {
+                                    allowed: snapshot
+                                        .inventory_devices(proof)?
+                                        .map(|s| s.into_iter().collect()),
+                                    sensitive: permission_scope(
+                                        &snapshot,
+                                        proof,
+                                        Permission::InventorySensitiveRead,
+                                    )?,
+                                    owners: permission_scope(
+                                        &snapshot,
+                                        proof,
+                                        Permission::Enrollment,
+                                    )?,
+                                    binding,
+                                    snapshot,
+                                })
                             })
                         })
+                        .await
                     })
-                    .await
-                })
-            })
+                },
+            )
             .await
             .fold(
                 Ok,
@@ -140,9 +149,6 @@ impl Associations {
         personnel: &personnel::Reader<'_>,
         statistics: bool,
     ) -> Result<crate::view_response::DirectoryReply> {
-        if proof.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
         let budget = AuditBudget::new(Duration::from_secs(15));
         let access = self.directory_access(proof, &budget).await?;
         query

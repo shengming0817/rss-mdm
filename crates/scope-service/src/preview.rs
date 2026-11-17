@@ -64,10 +64,7 @@ impl Scopes {
         request: &Request,
         audit: &RequestAudit,
     ) -> std::result::Result<Response, Error> {
-        if audit.profile() != self.profile()
-            || proof.tenant_id() != self.tenant.to_string()
-            || proof.initialization_authority().is_some()
-        {
+        if audit.profile() != self.profile() || proof.initialization_authority().is_some() {
             return Err(Error::Forbidden);
         }
         proof.bind_audit(audit)?;
@@ -94,13 +91,13 @@ impl Scopes {
         let budget = AuditBudget::new(Duration::from_secs(6));
         let cut = rss_mdm_inventory_service::assets::cut::capture(
             &self.audit_store,
-            self.tenant,
+            proof.binding().tenant(),
             &budget,
         )
         .await?;
         let response = transaction::inspect_budget(
             &self.runtime,
-            self.audit_store.binding(),
+            proof.binding(),
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                 budget.control().total_remaining(),
             ),
@@ -154,7 +151,7 @@ impl Scopes {
                         }
                         if let Some(snapshot) = &source.snapshot {
                             let objects = s.objects.clone();
-                            let tenant = s.tenant;
+                            let tenant = proof.binding().tenant();
                             let snapshot = snapshot.clone();
                             let complete = tx
                                 .with_connection(move |c| {

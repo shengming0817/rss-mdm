@@ -16,7 +16,7 @@ async fn actor(
         anyhow::bail!("fixture account requires a real session")
     };
     Ok(authority
-        .inspect_session(c.audit.binding(), secret, deadline())
+        .inspect_session(c.execution(), secret, deadline())
         .await?)
 }
 
@@ -36,7 +36,7 @@ async fn configured_source_window_reaches_http_admission() -> Result<()> {
             Duration::from_secs(10),
         )?,
     )?
-    .layer(axum::Extension(c.audit.binding()))
+    .layer(axum::Extension(c.execution()))
     .layer(axum::Extension(rss_identity_postgres::RpGeneration::new(
         1,
     )?));
@@ -251,7 +251,7 @@ async fn complete_product_mapping(
         session::SessionSecret,
     };
     let issued = Box::pin(authority.login_local(
-        c.audit.binding(),
+        c.execution(),
         LoginKey::parse(&format!("foundation-{}", account.user.principal_id))?,
         Password::new("foundation-only-valid-password".into())?,
         rss_identity_postgres::AttemptSource::parse("profile-capacity")?,
@@ -259,21 +259,22 @@ async fn complete_product_mapping(
         deadline(),
     ))
     .await?;
-    let principal = rss_mdm_authorization_service::session::SessionAuthority::new(
-        authority.clone(),
-        c.audit.binding(),
-    )
-    .authenticate(
-        &c.access(),
-        RequestCredential::Cookie(SessionSecret::parse(issued.secret().expose().to_owned())?),
-        deadline(),
-    )
-    .await?;
+    let principal =
+        rss_mdm_authorization_service::session::SessionAuthority::new(authority.clone())
+            .authenticate(
+                c.execution(),
+                &c.access(),
+                RequestCredential::Cookie(SessionSecret::parse(
+                    issued.secret().expose().to_owned(),
+                )?),
+                deadline(),
+            )
+            .await?;
     let backend = Backend {
         source_page_size: 1024,
         cursor: rss_mdm_query::cursor::CursorCodec::new(&[39; 32])?,
         identity: authority.clone(),
-        tenant: c.tenant,
+
         instance: InstanceId::parse(&c.inputs.installation.instance_id)?,
         audit: c.audit.clone(),
     };

@@ -12,13 +12,13 @@
 python3 hack/enrollment-password.py
 ```
 
-把生成的随机口令安全交给设备。管理员 cookie/token 不能传给设备。创建请求为 `POST /api/v1/enrollments`，例如：
+把生成的随机口令安全交给设备。管理员 cookie/token 不能传给设备。创建请求为 `POST /api/v1/tenants/{tenant}/enrollments`，例如：
 
 ```json
 {"password":"调用端生成并保存的口令","source":"mdm.windows","windowsProfile":"Full"}
 ```
 
-原生 Enrollment 的 source 显式选择 mdm.windows 或 mdm.apple，不能由服务猜测。mdm.windows 必须显式提供 `windowsProfile: "Full" | "Device"`，其它来源不得提供此字段。此选择进入幂等输入并在授权后保持不变；设备 EnrollmentType 必须与授权一致。服务端在授权时分配并冻结 UUID v4 deviceId；同一请求精确重放返回同一身份，新注册始终产生新身份。Full 注册通过 `enrolledUser` 表示已注册用户上下文；Windows 配置使用 `target.kind="enrolled_user"`，不分配用户 UUID。查询 `/api/v1/enrollments/{id}` 获取当前状态；凭据管理使用 `GET /api/v1/devices/{device}/registration` 与 `POST /api/v1/devices/{device}/registration/revoke`。
+原生 Enrollment 的 source 显式选择 mdm.windows 或 mdm.apple，不能由服务猜测。mdm.windows 必须显式提供 `windowsProfile: "Full" | "Device"`，其它来源不得提供此字段。此选择进入幂等输入并在授权后保持不变；设备 EnrollmentType 必须与授权一致。服务端在授权时分配并冻结 UUID v4 deviceId；同一请求精确重放返回同一身份，新注册始终产生新身份。Full 注册通过 `enrolledUser` 表示已注册用户上下文；Windows 配置使用 `target.kind="enrolled_user"`，不分配用户 UUID。查询 `/api/v1/tenants/{tenant}/enrollments/{id}` 获取当前状态；凭据管理使用 `GET /api/v1/tenants/{tenant}/devices/{device}/registration` 与 `POST /api/v1/tenants/{tenant}/devices/{device}/registration/revoke`。
 
 原管理员重新登录后可向 `/enrollments/{id}/resume` 提交新口令与新操作键；同一请求重试保持原键和参数。恢复保留原注册意图和 deviceId，不复活撤销、取消或过期证书。未绑定授权可 cancel；已绑定设备走独立 revoke，撤销同时停用注册、凭据及来源。
 
@@ -26,12 +26,12 @@ python3 hack/enrollment-password.py
 
 ## 管理设备目录
 
-`GET /api/v1/devices` 返回管理身份目录，包含首次注册 pending、无资产和已撤销设备；
-`GET /api/v1/devices/{device}` 返回同一身份及注册、资产存在性和能力摘要。
+`GET /api/v1/tenants/{tenant}/devices` 返回管理身份目录，包含首次注册 pending、无资产和已撤销设备；
+`GET /api/v1/tenants/{tenant}/devices/{device}` 返回同一身份及注册、资产存在性和能力摘要。
 查询不会提前创建 pending 设备，也不改变 Group/Scope 的执行目标全集。
 列表与详情使用现有 `inventory_read` 策略；注册凭据管理继续使用原接口及权限。
 
-列表使用 `filter/sort/fields/limit/cursor`，`limit` 默认 64、范围 1–1000；例如 `filter=status==active&sort=-id`。响应为 `items/nextCursor`，不附带统计。`GET /api/v1/devices/statistics` 接受相同 `filter`，独立计算当前权限允许的精确统计并返回 `asOf`。分页每次重新检查权限并读取当前数据；注册或资产变化不作废普通续页，授权或查询上下文改变时重新读取首屏。完整语法见[目录查询](groups-scopes-policies.md)。
+列表使用 `filter/sort/fields/limit/cursor`，`limit` 默认 64、范围 1–1000；例如 `filter=status==active&sort=-id`。响应为 `items/nextCursor`，不附带统计。`GET /api/v1/tenants/{tenant}/devices/statistics` 接受相同 `filter`，独立计算当前权限允许的精确统计并返回 `asOf`。分页每次重新检查权限并读取当前数据；注册或资产变化不作废普通续页，授权或查询上下文改变时重新读取首屏。完整语法见[目录查询](groups-scopes-policies.md)。
 详情分别返回产品支持、设备前提和当前操作许可；未知能力不会作为执行许可。
 
 ## 原子性与报告来源
@@ -46,17 +46,17 @@ Agent 使用独立的持久授权与 mTLS 生命周期，见 [Agent 集成指南
 
 ## 自助注册与个人额度
 
-当前组织的有效用户可以直接创建自助注册，无需管理员批准。浏览器入口为“注册我的设备”；原生 MDM 使用 `POST /api/v1/self-enrollments`，参数与组织创建相同，均不提供 deviceId。服务端分配独立设备身份，设备上报标识不能选择或覆盖已有组织设备。Windows 保留首次签发时的终端协议标识供后续 SyncML、续证和关联通道校验；该标识不用于跨通道合并。Agent 授权使用 `POST /api/v1/self-enrollments/agent`，沿用 Agent 的持久授权和秘密交付契约。
+当前组织的有效用户可以直接创建自助注册，无需管理员批准。浏览器入口为“注册我的设备”；原生 MDM 使用 `POST /api/v1/tenants/{tenant}/self-enrollments`，参数与组织创建相同，均不提供 deviceId。服务端分配独立设备身份，设备上报标识不能选择或覆盖已有组织设备。Windows 保留首次签发时的终端协议标识供后续 SyncML、续证和关联通道校验；该标识不用于跨通道合并。Agent 授权使用 `POST /api/v1/tenants/{tenant}/self-enrollments/agent`，沿用 Agent 的持久授权和秘密交付契约。
 
-“注册额度”页面由具有 registration_configuration_read／registration_configuration_write 的管理员读取／配置。每个租户持有自己的默认值和按用户、渠道的覆盖；覆盖留空表示继承，全部清空恢复默认值。0 禁止新增。Agent 的 Windows/macOS 共用一个额度，Windows MDM 和 macOS MDM 各自独立，默认值由注册服务持有。`GET /api/v1/registration-quotas/me` 读取自己的有效额度和当前占用。
+“注册额度”页面由具有 registration_configuration_read／registration_configuration_write 的管理员读取／配置。每个租户持有自己的默认值和按用户、渠道的覆盖；覆盖留空表示继承，全部清空恢复默认值。0 禁止新增。Agent 的 Windows/macOS 共用一个额度，Windows MDM 和 macOS MDM 各自独立，默认值由注册服务持有。`GET /api/v1/tenants/{tenant}/registration-quotas/me` 读取自己的有效额度和当前占用。
 
 占用包括有效设备注册和已授权、未过期的待完成注册；授权重试、续证与凭据恢复不产生第二份占用。取消、过期或撤销后释放相应占用。降低额度保留已有设备与有效待完成注册，超过新额度时禁止新增。额度不足返回 registration_limit；不要将其当作短暂限流自动重试。
 
 ## 自助注册引导与当前进度
 
-`GET /api/v1/self-enrollments` 返回当前身份的租户、个人额度和实际配置的原生渠道。渠道的 `requiresLocalAdministrator` 表示本机权限前提，不代表服务端业务授权；没有配置的渠道不会出现在选项中。邀请入口与前端引导页面由后续任务实施。
+`GET /api/v1/tenants/{tenant}/self-enrollments` 返回当前身份的租户、个人额度和实际配置的原生渠道。渠道的 `requiresLocalAdministrator` 表示本机权限前提，不代表服务端业务授权；没有配置的渠道不会出现在选项中。邀请入口与前端引导页面由后续任务实施。
 
-唯一详情入口 `GET /api/v1/enrollments/{id}` 同时返回生命周期、`instructions` 和 `progress`。Windows 引导包含注册服务器、Discovery 地址、唯一规范用户名和固定的 Full／Device 选择；macOS 引导提供现有 `/api/v1/enrollments/{id}/profile` 地址，以创建时的口令 POST 下载签名 `.mobileconfig`。macOS 用户需在系统设置中确认安装，采用 profile-based device enrollment；用户身份授权不等于 Apple User Enrollment。没有管理员业务权限的员工只能查询／续接／取消自己在当前租户创建的注册。
+唯一详情入口 `GET /api/v1/tenants/{tenant}/enrollments/{id}` 同时返回生命周期、`instructions` 和 `progress`。Windows 引导包含注册服务器、Discovery 地址、唯一规范用户名和固定的 Full／Device 选择；macOS 引导提供现有 `/api/v1/enrollments/{id}/profile` 地址，以创建时的口令 POST 下载签名 `.mobileconfig`。macOS 用户需在系统设置中确认安装，采用 profile-based device enrollment；用户身份授权不等于 Apple User Enrollment。没有管理员业务权限的员工只能查询／续接／取消自己在当前租户创建的注册。
 
 `profilePrepared` 的 observed 表示服务器准备过当前交接的 profile；未绑定时按当前密码版本隔离，绑定后跟随当前注册及活动凭据对应的 profile／证书，合法续证或 resume 不会把已可管理设备回退为未注册。Windows 返回 not_applicable。`certificateIssued` 是服务器观察到的签发事实，丢失的 SCEP notify 在首次 Authenticate 补齐前仍为 false。下载 profile 或证书签发均不代表完成。`firstAuthenticatedCheckIn` 表示 Windows 双向 SyncML 认证完成，或 Apple Authenticate 已绑定设备；Apple 还必须收到 TokenUpdate。系统弹窗没有服务端观察来源，`systemConfirmation` 始终为 unknown。
 
@@ -68,7 +68,7 @@ Agent 使用独立的持久授权与 mTLS 生命周期，见 [Agent 集成指南
 
 ## 资产所有人与当前使用者
 
-资产所有人复用 `GET/PUT /api/v1/devices/{device}/registration-user`，适用于自助、组织及原生注册设备，也可在已签发的注册待完成时设置。目标设备的 enrollment 权限控制读取和修改；修改使用稳定操作键和 expectedRevision，冲突后重新读取并提交新操作。人员引用使用后端同一 User 坐标；用户选择沿用 Identity 账号查询及其原有权限。
+资产所有人复用 `GET/PUT /api/v1/tenants/{tenant}/devices/{device}/registration-user`，适用于自助、组织及原生注册设备，也可在已签发的注册待完成时设置。目标设备的 enrollment 权限控制读取和修改；修改使用稳定操作键和 expectedRevision，冲突后重新读取并提交新操作。人员引用使用后端同一 User 坐标；用户选择沿用 Identity 账号查询及其原有权限。
 
 自助注册初始化所有人为本人；管理员代注册、配置签发不把管理员设置为所有人，其余来源允许为空。为空时，后续首次登录 Agent 的企业用户填入；非空时不覆盖。管理员可以修改或清空，清空后新的 Agent 登录仍可填入；精确重放旧登录不重新赋值。历史注册授权人、来源与配额保持原事实，修改所有人也不授予设备管理权。
 
@@ -79,8 +79,8 @@ Agent 使用独立的持久授权与 mTLS 生命周期，见 [Agent 集成指南
 
 ## Windows 原证书申请读回
 
-具备设备 Credentials 权限的管理员通过 `GET /api/v1/devices/{device}/windows-certificate-requests` 定位现有登记或续期的原申请，按设备范围使用统一查询筛选；`/{attempt}` 读取原申请详情。原 signing issuer、attempt、期限与设备身份分别来自原 owner。已经被替代的 attempt 仍沿持久 successor 关系可定位，不会被当前申请冒充。
+具备设备 Credentials 权限的管理员通过 `GET /api/v1/tenants/{tenant}/devices/{device}/windows-certificate-requests` 定位现有登记或续期的原申请，按设备范围使用统一查询筛选；`/{attempt}` 读取原申请详情。原 signing issuer、attempt、期限与设备身份分别来自原 owner。已经被替代的 attempt 仍沿持久 successor 关系可定位，不会被当前申请冒充。
 
-对象下 `/recovery-operations` 提供原管理恢复操作引用；`/{operation}?actor=...&instance=...` 精确读回原提交结果，两个原主体参数必填。当前有设备凭据权限的管理员可查询他人回执。原 `POST /api/v1/pki/signing/recover` 仍要求全设备 Credentials，并核验原 CSR、公钥、登记身份、原签发者与有效期。
+对象下 `/recovery-operations` 提供原管理恢复操作引用；`/{operation}?actor=...&instance=...` 精确读回原提交结果，两个原主体参数必填。当前有设备凭据权限的管理员可查询他人回执。原 `POST /api/v1/tenants/{tenant}/pki/signing/recover` 仍要求全设备 Credentials，并核验原 CSR、公钥、登记身份、原签发者与有效期。
 
 `signing`、`linked` 和 `activated` 是独立事实：原 CA 链关联成功不证明设备领取或已完成持证通信。没有回执不能推断失败或回滚；所需原证书由现有受控运维流程取得。GET 无业务写入，也不调用 CA 或原生恢复流程。

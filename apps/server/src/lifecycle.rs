@@ -70,11 +70,10 @@ pub async fn serve(
                         listener,
                         app,
                         native_listeners,
-                        audit_store,
-                        access,
-                        tenant,
+                        _,
+                        _,
                         runtime,
-                        protocol_runtime, windows_business, protection, task_registrations,
+                        protocol_runtime, windows_business, _, task_registrations,
                         automation,
                         group_work,
                         scope_work,
@@ -102,10 +101,6 @@ pub async fn serve(
                             access.clone(),
                         )));
                         access
-                            .claim_tenant_use(&compiled.config)
-                            .await
-                            .map_err(|error| ProcessError::at("startup.tenant_binding", error))?;
-                        access
                             .authorization_store()
                             .require_management_initializer()
                             .await
@@ -118,15 +113,7 @@ pub async fn serve(
                                 .access_database
                                 .options()
                                 .map_err(|e| ProcessError::at("startup.notifications", e))?,
-                            rss_request_context::TenantId::parse(
-                                &compiled.config.identity.tenant_id,
-                            )
-                            .map_err(|_| {
-                                ProcessError::at(
-                                    "startup.notification_tenant",
-                                    crate::Error::Malformed,
-                                )
-                            })?,
+
                         );
                         startup.stage_resource(DynManagedResource::new_box(notifications.clone()));
                         use crate::inventory_runtime::{
@@ -154,11 +141,8 @@ pub async fn serve(
                         .map_err(|e| ProcessError::at("startup.projection", e.into()))?;
                         let projection_store = projection.store.clone();
                         startup.stage_resource(DynManagedResource::new_box(projection));
-                        let audit_tenant = rss_request_context::TenantId::parse(
-                            &compiled.config.identity.tenant_id,
-                        )
-                        .map_err(|_| assembly_error(Error::Configuration(ConfigIssue::Tenant)))?;
-                        let management_tenant = crate::identity::management_tenant(
+                        let probe=compiled.config.management_binding().map_err(assembly_error)?;
+                        crate::identity::management_tenant(
                             &compiled.config.identity.database,
                             rss_identity_core::InstanceId::parse(
                                 &compiled.config.identity.instance_id,
@@ -183,30 +167,17 @@ pub async fn serve(
                             AccessTransactionResource(source_runtime.clone()),
                         ));
                         let audit_store = access
-                            .audit_store(&compiled.config.audit, source_runtime.clone(), compiled.config.storage_binding.execution(audit_tenant).map_err(|e| ProcessError::at("startup.audit", e))?)
+                            .audit_store(&compiled.config.audit, source_runtime.clone(), probe)
                             .await
                             .map_err(|e| ProcessError::at("startup.audit", e))?;
-                        let management_binding = rss_transactional_messaging::fence::ExecutionBinding::new(
-                            compiled.config.storage_binding.identity().map_err(|e| ProcessError::at("startup.audit", e))?,
-                            management_tenant,
-                            rss_transactional_messaging::fence::Epoch::new(rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH)
-                                .map_err(|_| ProcessError::at("startup.audit", Error::Configuration(ConfigIssue::Budget)))?);
-                        let management_audit = Arc::new(audit_store.on_runtime(source_runtime.clone(), management_binding,
-                            &rss_mdm_audit_integration::budget::AuditBudget::with_cancellation(
-                                Duration::from_secs(compiled.config.identity.runtime.startup_seconds), startup_cancel.clone()).control())
-                            .await.map_err(|e| ProcessError::at("startup.management_audit", e.into()))?);
-
                         let runtime = Arc::new(InventoryRuntime::new(
                             observation_store,
                             projection_store,
                             access.inventory(),
                             audit_store.clone(),
-                            rss_request_context::TenantId::parse(
-                                &compiled.config.identity.tenant_id,
-                            )
-                            .map_err(|_| {
-                                assembly_error(Error::Configuration(ConfigIssue::Tenant))
-                            })?,
+                            probe.storage(),
+                            rss_transactional_messaging::fence::Epoch::new(compiled.config.storage_binding.epoch)
+                                .map_err(|_|assembly_error(Error::Configuration(ConfigIssue::IdentityConfiguration)))?,
                             clock,
                             readiness,
                         ));
@@ -225,22 +196,18 @@ pub async fn serve(
                                 crate::assembly::content::Resource(content.clone()),
                             ));
                         }
-                        let inventory_tenant = rss_request_context::TenantId::parse(
-                            &compiled.config.identity.tenant_id,
-                        )
-                        .map_err(|_| assembly_error(Error::Malformed))?;
 let application_clock:Arc<dyn crate::clock::Clock>=Arc::new(crate::clock::SystemClock);
-let cursor_key=crate::cursor_keys::load(&source_runtime,audit_store.binding()).await.map_err(assembly_error)?;
-let inventory_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.inventory),&compiled.config.storage_binding,inventory_tenant,compiled.background.inventory_connections,audit_store.clone(),"inventory-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
-let scope_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.scope),&compiled.config.storage_binding,inventory_tenant,compiled.background.scope_connections,audit_store.clone(),"scope-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
-let policy_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Runtime(&compiled.config.business_databases.policy),&compiled.config.storage_binding,inventory_tenant,compiled.background.policy_connections,audit_store.clone(),"policy-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
-let resource_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.resource),&compiled.config.storage_binding,inventory_tenant,2,audit_store.clone(),"resource-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
-let software_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.software),&compiled.config.storage_binding,inventory_tenant,2,audit_store.clone(),"software-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
-let inventory_services=crate::assembly::inventory::Services::new(runtime.clone(),access.archive_pool(),inventory_owner.runtime.clone(),inventory_owner.audit.clone(),inventory_tenant,&cursor_key,application_clock.clone()).await.map_err(assembly_error)?;
-let policy_application=crate::assembly::policy::application(&compiled.background,&policy_owner,inventory_tenant,&cursor_key,application_clock.clone(),protection.clone(),content.clone()).await.map_err(assembly_error)?;
-let publications=crate::assembly::publication::open(&compiled.config.publication,&compiled.config.storage_binding,&software_owner,inventory_tenant,&cursor_key,application_clock.clone(),content.clone(),|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
-let resource_catalog=crate::assembly::resource::catalog(resource_owner.audit.clone(),resource_owner.runtime.clone(),inventory_tenant,application_clock.clone(),cursor_key.clone()).await.map_err(assembly_error)?;
-let software_catalog=crate::assembly::software::catalog(&software_owner,inventory_tenant,&cursor_key,application_clock.clone(),content.clone()).await.map_err(assembly_error)?;
+let cursor_key=crate::cursor_keys::load(&source_runtime,probe).await.map_err(assembly_error)?;
+let inventory_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.inventory),probe,compiled.background.inventory_connections,audit_store.clone(),"inventory-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let scope_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.scope),probe,compiled.background.scope_connections,audit_store.clone(),"scope-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let policy_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Runtime(&compiled.config.business_databases.policy),probe,compiled.background.policy_connections,audit_store.clone(),"policy-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let resource_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.resource),probe,2,audit_store.clone(),"resource-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let software_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.software),probe,2,audit_store.clone(),"software-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let inventory_services=crate::assembly::inventory::Services::new(runtime.clone(),access.archive_pool(),inventory_owner.runtime.clone(),inventory_owner.audit.clone(),probe,&cursor_key,application_clock.clone()).await.map_err(assembly_error)?;
+let policy_application=crate::assembly::policy::application(&compiled.background,&policy_owner,probe,&cursor_key,application_clock.clone(),protection.clone(),content.clone()).await.map_err(assembly_error)?;
+let publications=crate::assembly::publication::open(access.archive_pool(),&compiled.config.publication,&compiled.config.storage_binding,&software_owner,probe,&cursor_key,application_clock.clone(),content.clone(),|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let resource_catalog=crate::assembly::resource::catalog(resource_owner.audit.clone(),resource_owner.runtime.clone(),probe,application_clock.clone(),cursor_key.clone()).await.map_err(assembly_error)?;
+let software_catalog=crate::assembly::software::catalog(rss_transactional_messaging::fence::Epoch::new(compiled.config.storage_binding.epoch).map_err(|_|assembly_error(Error::Malformed))?,&software_owner,probe,&cursor_key,application_clock.clone(),content.clone()).await.map_err(assembly_error)?;
 let scope_group_health=Arc::new(crate::local_delivery::Health::default());
 let asset_input_health=Arc::new(crate::local_delivery::Health::default());
                         let identity = crate::identity::Identity::connect(
@@ -263,19 +230,16 @@ let asset_input_health=Arc::new(crate::local_delivery::Health::default());
                                 startup_cancel.clone(),
                             );
                         let audit_control = audit_budget.control();
-                        for admitted_tenant in [identity.tenant, identity.management_tenant] {
-                            audit_store
-                                .validate_tenant(admitted_tenant, &audit_control)
-                                .await
-                                .map_err(|error| ProcessError::at("startup.audit", error.into()))?;
-                        }
+                        audit_store.validate_tenant(probe.tenant(), &audit_control).await.map_err(|error|ProcessError::at("startup.audit",error.into()))?;
+
 let content_access=if let Some(content)=&content {
-let content_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.content),&compiled.config.storage_binding,inventory_tenant,2,audit_store.clone(),"content-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let content_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.content),probe,2,audit_store.clone(),"content-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 Some(crate::assembly::content::access(&content_owner,&identity,access.authorization_store(),content.clone(),application_clock.clone()).await.map_err(assembly_error)?)
 }else{None};
                         let config = &compiled.config;
                         let commands = crate::assembly::host_storage::Storage::open(
                             config,
+                            access.archive_pool(),
                             &compiled.background,
                             audit_store.clone(),
                             &protection,
@@ -283,18 +247,15 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                         )
                         .await
                         .map_err(assembly_error)?;
-                        let channels = Arc::new(crate::channel_status::Channels::new(config));
+                        let channels = Arc::new(crate::channel_status::Channels::new(config,protection.clone()));
                         let providers =
                             crate::device_pki::prepare(&config.device_pki, &channels).map_err(assembly_error)?;
                         let (signing, task_trust) = crate::assembly::task_trust::signing(
-                            config,
-                            commands.tenant,
                             protection.clone(),
                             audit_store.clone(),
-                            &channels,
                         )
-                        .await
                         .map_err(assembly_error)?;
+                        channels.set(crate::channel_status::ChannelName::Signing,crate::channel_status::ChannelState::Ready,None).map_err(assembly_error)?;
                         let recovery_materials = config
                             .recovery_credentials
                             .as_ref()
@@ -331,7 +292,6 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                         let sessions = Arc::new(
                             rss_mdm_authorization_service::session::SessionAuthority::new(
                                 identity.authority.clone(),
-                                identity.binding,
                             ),
                         );
                         let (scripts, script_work) =
@@ -339,6 +299,7 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                                 .await
                                 .map_err(assembly_error)?;
                         let (collections, collection_work) = crate::assembly::collection::assemble(
+                            probe,
                             &commands,
                             source.clone(),
                             protection.clone(),
@@ -349,27 +310,23 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                             &compiled.background,
                             commands.runtime.clone(),
                             commands.audit.clone(),
-                            commands.tenant,
+                            probe,
                             protection.clone(),
                             content.clone(),
                         )
                         .await
                         .map_err(assembly_error)?;
                         let software = Arc::new(rss_mdm_software_service::preparation::Preparation::new(
-                            rss_mdm_software_service::catalog::Reader::new(commands.tenant),
+                            rss_mdm_software_service::catalog::Reader::new(),
                             publications
                                 .services
-                                .clone()
-                                .into_iter()
-                                .map(|(name, service)| (name, Arc::new(service.exports())))
-                                .collect(),
+                                .clone(),
                         ));
                         let software_source = Arc::new(crate::assembly::software_sources::Source(source.clone()));
                         let software_inventory = Arc::new(crate::assembly::software_sources::Inventory);
                         let software_lifecycle = Arc::new(crate::assembly::software_sources::Lifecycle);
                         let authority = Arc::new(
                             rss_mdm_software_service::deployment::managed_registration::AuthorityReader {
-                                tenant: commands.tenant,
                                 instance: config.identity.instance_id.clone(),
                                 source: software_source.clone(),
                                 inventory: software_inventory.clone(),
@@ -378,11 +335,11 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                                 software_distribution: config.software_distribution,
                             },
                         );
-                        let registration_owner = crate::assembly::registration::assemble(
+                        let registration_owner = crate::assembly::registration::assemble(commands.discovery_pool.clone(),
                             config,
                             &compiled.background,
                             commands.runtime.clone(),
-                            commands.tenant,
+                            probe,
                             commands.audit.clone(),
                             protection.clone(),
                             source.clone(),
@@ -395,9 +352,9 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                         .await
                         .map_err(assembly_error)?;
                         // Keep independent owner startup futures off the enclosing host startup stack.
-                        let access_execution = Box::pin(crate::assembly::access_execution::assemble(
+                        let access_execution = Box::pin(crate::assembly::access_execution::assemble(commands.discovery_pool.clone(),
                             commands.runtime.clone(),
-                            commands.tenant,
+                            probe,
                             commands.audit.clone(),
                             recovery_materials.clone(),
                             commands.reconcile.clone(),
@@ -408,11 +365,11 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                         .map_err(assembly_error)?;
                         let credential_execution = if let Some(credentials) = recovery_materials.clone() {
                             Some(
-                                Box::pin(crate::assembly::credential_execution::assemble(
+                                Box::pin(crate::assembly::credential_execution::assemble(commands.discovery_pool.clone(),
                                     config,
                             &compiled.background,
                                     commands.runtime.clone(),
-                                    commands.tenant,
+                                    probe,
                                     commands.audit.clone(),
                                     protection.clone(),
                                     credentials,
@@ -426,11 +383,11 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                         } else {
                             None
                         };
-                        let software_owner = crate::assembly::software::assemble(
+                        let software_owner = crate::assembly::software::assemble(commands.discovery_pool.clone(),
                             config,
                             &compiled.background,
                             commands.runtime.clone(),
-                            commands.tenant,
+                            probe,
                             commands.audit.clone(),
                             protection.clone(),
                             software_source,
@@ -440,7 +397,6 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                             authority,
                             registration_owner.native_materials.clone(),
                             channels.clone(),
-                            signing.loaded_key().is_some(),
                             sessions.clone(),
                             commands.read_pool.clone(),
                             commands.reconcile.clone(),
@@ -466,7 +422,6 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                         });
                         let self_service = Arc::new(crate::assembly::self_service::Requests::new(
                             commands.runtime.clone(),
-                            commands.tenant,
                             commands.audit.clone(),
                             config.identity.instance_id.clone(),
                             &cursor_key,
@@ -476,7 +431,6 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                             &commands,
                             protection.clone(),
                             content.clone(),
-                            signing.loaded_key().is_some(),
                             credential_execution.is_some(),
                             source,
                             configuration.clone(),
@@ -484,13 +438,12 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                             registration_owner.materials.clone(),
                             queries.clone(),
                         );
-                        let scope_editor = Box::pin(crate::scopes::editor(policy_owner.runtime.clone(), inventory_tenant, application_clock.clone(), policy_owner.audit.clone(), cursor_key.clone(), access.archive_pool())).await.map_err(assembly_error)?;
+                        let scope_editor = Box::pin(crate::scopes::editor(policy_owner.runtime.clone(), probe, application_clock.clone(), policy_owner.audit.clone(), cursor_key.clone(), access.archive_pool())).await.map_err(assembly_error)?;
                         let policies = crate::assembly::policy::management(
-                            scope_editor,
+            probe,                            scope_editor,
                             &policy_application,
                             Arc::new(rss_mdm_software_service::deployment::Inputs::bind(
                                 policy_owner.runtime.clone(),
-                                policy_application.tenant,
                                 software_owner.materials.inputs.clone(),
                             )),
                             compiled.config.enrollment_entries.clone(),
@@ -498,12 +451,12 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                             content.clone(),
                             protection.clone(),
                             compiled.config.software_distribution.mdm_enabled,
-                            signing.loaded_key().is_some(),
                             credential_execution.is_some(),
                         )
                         .await
                         .map_err(assembly_error)?;
                         let events = Box::pin(crate::assembly::policy::events(
+                            probe,
                             policy_application.clone(),
                             materials.clone(),
                             software_owner.materials.clone(),
@@ -512,26 +465,19 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                         ))
                         .await
                         .map_err(assembly_error)?;
-                        let telemetry = match &compiled.config.telemetry {
-                            Some(config) => {
-let telemetry_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.telemetry),&compiled.config.storage_binding,inventory_tenant,compiled.background.telemetry_control_connections,audit_store.clone(),"telemetry-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+                        let telemetry = if !compiled.config.telemetry.is_empty() {
+let telemetry_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.telemetry),probe,compiled.background.telemetry_control_connections,audit_store.clone(),"telemetry-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let dependencies=rss_mdm_telemetry_service::PolicyDependencies {
  agent_facts: Arc::new(crate::assembly::agent_facts::AgentFacts),
-                    read_pool: commands.read_pool.clone(),
+                    read_pool: access.archive_pool(),
 clock: Arc::new(crate::lifecycle::RuntimeTimer),
- audit_store:telemetry_owner.audit.clone(),policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(rss_mdm_install_support::StorageProfile::Mdm, telemetry_owner.runtime.clone(),inventory_tenant,Arc::new(rss_mdm_device_service::planning::PlanningObjects))),objects:Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+ audit_store:telemetry_owner.audit.clone(),policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(rss_mdm_install_support::StorageProfile::Mdm, telemetry_owner.runtime.clone(),Arc::new(rss_mdm_device_service::planning::PlanningObjects))),objects:Arc::new(rss_mdm_device_service::planning::PlanningObjects),
 };
-                                let service = config
-                                    .open(inventory_tenant, telemetry_owner.runtime, dependencies, signing.clone())
-                                    .await
-                                    .map_err(|e| ProcessError::at("startup.telemetry", e))?;
-                                startup.stage_resource(DynManagedResource::new_box(
-                                    crate::telemetry::Resource(service.clone()),
-                                ));
+
+                                let service = crate::telemetry::open(&compiled.config.telemetry,probe,telemetry_owner.runtime,dependencies,signing.clone(),|resource|startup.stage_resource(DynManagedResource::new_box(resource)))
+                                    .await.map_err(|e| ProcessError::at("startup.telemetry", e))?;
                                 Some(service)
-                            }
-                            None => None,
-                        };
+                            } else { None };
                         let scheduler = crate::scheduler::SchedulerStorage::open(
                             compiled.config.business_databases.scheduler
                                 .options()
@@ -542,13 +488,15 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                         startup.stage_resource(DynManagedResource::new_box(scheduler.clone()));
                         let automation =
                             crate::automation::Automation::new(crate::automation::PolicyWork::new(
+                                access.archive_pool(),
+                                probe.storage(),
                                 policy_application.clone(),
                                 events.clone(),
                                 scheduler.store.clone(),
                             ));
                         let scopes = crate::scopes::open(
                             scope_owner.runtime.clone(),
-                            identity.tenant,
+                            probe,
                             Arc::new(crate::clock::SystemClock),
                             scope_owner.audit.clone(),
                             cursor_key.clone(),
@@ -577,30 +525,29 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                             ),
                         );
                         let scope_delivery = crate::local_delivery::Delivery::open(
-                            &compiled.config, protection.clone(), scope_group_health.clone(),
+                            &compiled.config, commands.discovery_pool.clone(),protection.clone(), scope_group_health.clone(),
                             crate::local_delivery::Lane { database: &compiled.config.scope_group_database,
                                 role: "mdm_scope_group_consumer", domain: rss_mdm_scope_service::group_changes::DOMAIN,
-                                consumer: rss_mdm_scope_service::group_changes::CONSUMER, name: "scope-group-delivery" },
+                                consumer: rss_mdm_scope_service::group_changes::CONSUMER, name: "scope-group-delivery",scopes:"SELECT * FROM mdm_group.delivery_scopes($1,$2)" },
                             |runtime, binding, messaging| (rss_mdm_scope_service::group_changes::Receiver::new(
-                                rss_mdm_install_support::StorageProfile::Mdm, runtime, binding.tenant(), messaging),
-                                rss_mdm_scope_service::group_changes::Validator { binding }),
+                                rss_mdm_install_support::StorageProfile::Mdm, runtime, messaging),
+                                rss_mdm_scope_service::group_changes::Validator { storage:binding.storage() }),
                         ).await.map_err(|e| ProcessError::at("startup.scope_group_delivery", e))?;
                         startup.stage_resource(DynManagedResource::new_box(crate::local_delivery::Resource(scope_delivery.clone())));
                         let asset_delivery = crate::local_delivery::Delivery::open(
-                            &compiled.config, protection.clone(), asset_input_health.clone(),
+                            &compiled.config, commands.discovery_pool.clone(),protection.clone(), asset_input_health.clone(),
                             crate::local_delivery::Lane { database: &compiled.config.asset_input_database,
                                 role: "mdm_asset_ingress_consumer", domain: crate::asset_inputs::DOMAIN,
-                                consumer: crate::asset_inputs::CONSUMER, name: "asset-input-delivery" },
-                            |_, binding, messaging| (crate::asset_inputs::Receiver { messaging }, crate::asset_inputs::Validator { binding }),
+                                consumer: crate::asset_inputs::CONSUMER, name: "asset-input-delivery",scopes:"SELECT * FROM mdm_devices.asset_delivery_scopes($1,$2)" },
+                            |_, binding, messaging| (crate::asset_inputs::Receiver { messaging }, crate::asset_inputs::Validator { storage:binding.storage() }),
                         ).await.map_err(|e| ProcessError::at("startup.asset_input_delivery", e))?;
                         startup.stage_resource(DynManagedResource::new_box(crate::local_delivery::Resource(asset_delivery.clone())));
                         let listen = compiled.config.listen;
-                        let tenant = compiled.config.identity.tenant_id.clone();
                         let gateway = compiled.config.trusted_gateway;
                         let associations = Arc::new(
                             rss_mdm_device_service::Associations::new(
                                 audit_store.clone(),
-                                identity.tenant,
+
                                 &cursor_key,
                             )
                             .map_err(|_| {
@@ -611,11 +558,11 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                             })?,
                         );
                         let device_work=Arc::new(rss_mdm_device_service::worker::DeviceWork::new(
-                            associations.clone(),source_runtime.clone(),scheduler.store.clone(),
+                            commands.discovery_pool.clone(),probe,associations.clone(),source_runtime.clone(),scheduler.store.clone(),
                             rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(8)),
                         ).await.map_err(|_|ProcessError::at("startup.device_worker",Error::Unavailable(Failure::Database)))?);
                         let timeline = access
-                            .timeline(audit_store.clone(), identity.tenant, &cursor_key, compiled.audit_query)
+                            .timeline(audit_store.clone(), &cursor_key, compiled.audit_query)
                             .map_err(|e| ProcessError::at("startup.timeline", e))?;
                         let archive = crate::certificate_archive::assemble(
                             &access,
@@ -623,20 +570,15 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                             Arc::new(crate::clock::SystemClock),
                         );
                         // Resource declarations are corrected before any execution runner is exposed.
-                        automation.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
-                        control.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
-                        script_work.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
-                        collection_work.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
-                        software_owner.service.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
-                        registration_owner.native.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
-                        registration_owner.worker.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
-                        access_execution.worker.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
-                        if let Some(credentials) = &credential_execution {
-                            credentials.native.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
-                            for worker in &credentials.worker {
-                                worker.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
-                            }
-                        }
+
+
+
+
+
+
+
+
+
                         let task_registrations = {
                             use crate::worker_wake::Work;
                             let signals = &notifications.signals;
@@ -689,6 +631,7 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                     .registration(background.tasks, background.tasks_drain, signals.handle(Work::EnrollmentRecovery))
                                     .critical(),
                                 crate::assembly::task_relay::registration(
+                                    automation.work.clone(),
                                     control.clone(),
                                     script_work.clone(),
                                     collection_work.clone(),
@@ -716,11 +659,10 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                         let mut app = crate::assembly::from_compiled(
                             compiled,
                             crate::assembly::AssemblyDependencies {
-                                management_audit,
+                                baseline_wake: notifications.signals.handle(crate::worker_wake::Work::Baseline),
                                 da:da.clone(),
                                 script_work,
                                 collection_work,
-
                                 telemetry: telemetry.clone(),
                                 certificate_archive: archive.clone(),
                                 timeline: timeline.clone(),
@@ -769,12 +711,10 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                             .listeners
                             .iter()
                             .any(|(kind, _)| kind.windows_retention());
-                        let agent_enrollment = app.agent_enrollment.clone();
                         app.browser = crate::native::gateway::router(
                             app.browser,
                             std::mem::take(&mut app.listeners),
                             product_origin,
-                            agent_enrollment,
                         );
                         let listener =
                             tokio::net::TcpListener::bind(listen).await.map_err(|e| {
@@ -795,7 +735,6 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                             native_listeners,
                             audit_store,
                             access,
-                            tenant,
                             runtime,
                             protocol_runtime,
                             windows_business,
@@ -835,9 +774,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                     launch.stage_task_with_token(
                         crate::device_pki::registration("device-pki-maintenance",app.pki.clone()).critical(),
                     );
-                    if let Some(agent_pki) = app.agent_pki.clone() {
-                        launch.stage_task_with_token(agent_pki.registration().critical());
-                    }
+
                     launch.stage_task_with_token(notifications.registration().critical());
                     if app.apple.is_some() {
                         launch.stage_task_with_token(
@@ -848,19 +785,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                             .critical(),
                         );
                     }
-                    if let Some(apple) = app.apple {
-                        launch.stage_task_with_token(
-                            rss_mdm_apple_channel::push::registration(
-                                apple.channel.clone(),
-                                app.apple_control.delivery.clone(),
-                                access.apple_store(),
-                                audit_store.clone(),
-                                tenant.clone(),
-                                signals.handle(crate::worker_wake::Work::Apple),
-                            )
-                            .critical(),
-                        );
-                    }
+                    if app.apple.is_some(){launch.stage_task_with_token(rss_mdm_apple_channel::push::registration(app.apple_control.clone(),signals.handle(crate::worker_wake::Work::Apple)).critical());}
                     launch.stage_deferred_task_with_token(publications.registration().critical());
                     launch.stage_deferred_task_with_token(
                         device_work.registration(background.device, background.device_drain, signals.handle(crate::worker_wake::Work::Devices)),
@@ -897,27 +822,11 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                             .registration(signals.handle(crate::worker_wake::Work::Inventory))
                             .critical(),
                     );
-                    if let Some(windows) = app.windows.as_ref().filter(|w| w.channel.push.is_some())
-                    {
-                        launch.stage_task_with_token(
-                            rss_mdm_windows_channel::push::registration(
-                                windows.channel.clone(),
-                                windows_business.clone(),
-                                protection.clone(),
-                                access.windows_store(),
-                                audit_store.clone(),
-                                tenant.clone(),
-                                signals.handle(crate::worker_wake::Work::WindowsPush),
-                            )
-                            .critical(),
-                        );
-                    }
+                    if app.windows.is_some(){launch.stage_task_with_token(rss_mdm_windows_channel::push::registration(app.windows_control.clone(),windows_business.clone(),signals.handle(crate::worker_wake::Work::WindowsPush)).critical());}
                     if native_listeners {
                         launch.stage_task_with_token(
                             rss_mdm_windows_channel::retention::registration(
-                                access.windows_store(),
-                                audit_store.clone(),
-                                tenant.clone(),
+                                app.windows_control.clone(),
                                 signals.handle(crate::worker_wake::Work::Windows),
                             )
                             .critical(),
@@ -1048,23 +957,41 @@ impl ManagedResource for AccessTransactionResource {
 
 /// Initialization retries share RSS task ownership and the original durable receipts.
 pub(crate) fn baseline_registration(
-    state: crate::administration::baseline::Service,
+    state: Arc<crate::administration::baseline::Service>,
+    tenants: Option<Arc<crate::administration::tenants::service::Service>>,
+    wake: Arc<tokio::sync::Notify>,
 ) -> rss_runtime::ManagedTaskRegistration {
-    let (task, _) =
-        rss_runtime::ManagedTask::prepare("tenant-baseline", std::time::Duration::from_secs(10));
+    let (task, _) = rss_runtime::ManagedTask::prepare("tenant-baseline", Duration::from_secs(20));
     task.into_registration(move|cancel|async move {
-        let mut previous=None;
+        let Some(tenants)=tenants else {cancel.cancelled().await;return Ok(())};
+        let mut after=None;
+        let mut advanced=false;
         loop {
-            let result=tokio::select! {
-                _=cancel.cancelled()=>return Ok(()),
-                result=tokio::time::timeout(std::time::Duration::from_secs(120),crate::administration::baseline::resume(&state))=>result,
+            if cancel.is_cancelled() {return Ok(())}
+            let page=match tenants.pending_initializations(after).await {
+                Ok(page)=>page,
+                Err(error)=>{eprintln!("baseline discovery failed: {error}");Vec::new()},
             };
-            let failure=match result {Ok(Ok(()))=>None,Ok(Err(error))=>Some(error.to_string()),Err(_)=>Some("initialization outcome unknown".into())};
-            if failure!=previous {
-                if let Some(reason)=&failure {eprintln!("baseline initialization blocked: {reason}");}
-                previous=failure;
+            if page.is_empty() {
+                after=None;
+                if std::mem::take(&mut advanced) { continue; }
+                tokio::select! {()=cancel.cancelled()=>return Ok(()),()=wake.notified()=>{},()=tokio::time::sleep(crate::worker_wake::RECOVERY)=>{}}
+                continue;
             }
-            tokio::select! {_=cancel.cancelled()=>return Ok(()),_=tokio::time::sleep(std::time::Duration::from_secs(60))=>{}}
+            for tenant in page {
+                after=Some(tenant);
+                if cancel.is_cancelled() {return Ok(())}
+                let tenant=rss_request_context::TenantId::parse(&tenant.to_string()).map_err(ShutdownError::new)?;
+                let cutoff = rss_request_context::Deadline::from_timeout(&crate::lifecycle::RuntimeTimer, Duration::from_secs(120)).expect("fixed initialization budget");
+                let result=match crate::administration::baseline::resume(&state,tenant,&cancel,cutoff).await {
+                    Ok((binding, steps))=>{
+                        advanced |= steps > 0;
+                        match binding { Some(binding)=>tenants.complete_initialization(binding, cutoff).await, None=>Ok(()) }
+                    },
+                    Err(error)=>Err(error),
+                };
+                if let Err(error)=result {eprintln!("baseline initialization for {tenant} blocked: {error}");}
+            }
         }
     })
 }

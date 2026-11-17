@@ -32,7 +32,6 @@ pub async fn advance_in(
     tx.with_connection(|c| Box::pin(verify_storage(c))).await?;
     let tenant = tx.tenant_id().to_string();
     let row=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_planning.configuration_source_dispatch(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING").bind(&tenant).execute(&mut *c).await?;
         sqlx::query("SELECT from_cut,to_cut,event_after,page_through,cursor FROM mdm_planning.configuration_source_dispatch WHERE tenant_id=$1::uuid FOR UPDATE").bind(tenant).fetch_one(c).await
     })).await?;
     let from: Option<serde_json::Value> = row.try_get("from_cut")?;
@@ -92,18 +91,19 @@ pub async fn clear_failure_in(tx: &mut PgTransaction<'_>) -> Result<()> {
     Ok(())
 }
 pub async fn fail_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     tx: &mut PgTransaction<'_>,
     audit_store: &rss_mdm_audit_integration::AuditStore,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let generation=tx.with_connection(move |c|Box::pin(async move {
-        sqlx::query_scalar::<_,i64>("INSERT INTO mdm_planning.configuration_source_dispatch(tenant_id,failure,failure_generation) VALUES($1::uuid,'automation_suspended',1) ON CONFLICT(tenant_id) DO UPDATE SET failure=excluded.failure,failure_generation=configuration_source_dispatch.failure_generation+1 WHERE configuration_source_dispatch.failure IS NULL RETURNING failure_generation").bind(tenant).fetch_optional(c).await
+        sqlx::query_scalar::<_,i64>("UPDATE mdm_planning.configuration_source_dispatch SET failure='automation_suspended',failure_generation=failure_generation+1 WHERE tenant_id=$1::uuid AND failure IS NULL RETURNING failure_generation").bind(tenant).fetch_optional(c).await
     })).await?;
     if let Some(generation) = generation {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            tx.tenant_id().to_string(),
+            binding,
             "automation_failed",
             rss_mdm_audit_integration::AuditIntent::Management,
         );

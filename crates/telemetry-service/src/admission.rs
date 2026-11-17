@@ -13,6 +13,7 @@ use uuid::Uuid;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Accepted {
     pub tenant: String,
+    pub expected_epoch: i64,
     pub device: rss_mdm_agent_wire::DeviceId,
     pub credential: Uuid,
     #[schemars(with = "rss_mdm_agent_wire::runtime::Source")]
@@ -25,6 +26,18 @@ pub(crate) struct Accepted {
     pub input: TelemetryUpload,
 }
 impl Accepted {
+    pub(crate) fn execution(
+        &self,
+        storage: rss_transactional_messaging::fence::StorageIdentity,
+    ) -> Result<rss_transactional_messaging::fence::ExecutionBinding, Error> {
+        Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+            storage,
+            TenantId::parse(&self.tenant).map_err(|_| Error::Invalid)?,
+            rss_transactional_messaging::fence::Epoch::new(self.expected_epoch)
+                .map_err(|_| Error::Invalid)?,
+        ))
+    }
+
     pub fn stream(&self) -> Result<Stream, Error> {
         Ok(Stream::new(
             Scope::new(
@@ -53,28 +66,21 @@ pub(crate) async fn receive_on(
     input: &TelemetryUpload,
     wire_bytes: usize,
 ) -> Result<TelemetryReceipt, Error> {
-    if principal.tenant() != service.tenant {
-        return Err(Error::Denied);
-    }
     input.validate().map_err(|_| Error::Invalid)?;
+    let backend = service.backend_on(c, principal.tenant()).await?;
     if input
         .observations
         .iter()
         .map(|point| point.values.len())
         .sum::<usize>()
-        > service.storage_budget.points.get() as usize
+        > backend.budget.points.get() as usize
     {
         return Err(Error::Capacity);
     }
     let bytes = serde_json::to_vec(input)?;
     let digest = Sha256::digest(&bytes).to_vec();
     let accounted = wire_bytes.max(bytes.len());
-    if accounted
-        > service
-            .limits
-            .request_bytes
-            .min(service.storage_budget.bytes.get()) as usize
-    {
+    if accounted > service.limits.request_bytes.min(backend.budget.bytes.get()) as usize {
         return Err(Error::Capacity);
     }
     rss_mdm_registration_service::device::store::revalidate_management(
@@ -85,11 +91,15 @@ pub(crate) async fn receive_on(
     .await
     .map_err(|_| Error::Denied)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2815))")
-        .bind(format!("{}:{}", service.tenant, input.batch_id))
+        .bind(format!(
+            "{}:{}",
+            principal.binding().tenant(),
+            input.batch_id
+        ))
         .execute(&mut *c)
         .await?;
     if let Some(row) = sqlx::query("SELECT device, input_digest, received_at, delivery FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND id = $2")
-        .bind(service.tenant.to_string()).bind(input.batch_id).fetch_optional(&mut *c).await? {
+        .bind(principal.binding().tenant().to_string()).bind(input.batch_id).fetch_optional(&mut *c).await? {
         if row.try_get::<uuid::Uuid, _>("device").and_then(|id| rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e))))? != *principal.device()
             || row.try_get::<Vec<u8>,_>("input_digest")? != digest { return Err(Error::Conflict); }
         return Ok(TelemetryReceipt { batch_id: input.batch_id, received_at: row.try_get("received_at")?, replayed: true, delivery: delivery(row.try_get("delivery")?)? });
@@ -107,7 +117,12 @@ pub(crate) async fn receive_on(
     let configuration = input.configuration();
     let frozen = service
         .policies
-        .historical_on(c, configuration.policy, configuration.policy_version)
+        .historical_on(
+            principal.binding(),
+            c,
+            configuration.policy,
+            configuration.policy_version,
+        )
         .await
         .map_err(|e| match e {
             rss_mdm_policy_service::Error::Forbidden => Error::Denied,
@@ -159,9 +174,13 @@ pub(crate) async fn receive_on(
         .iter()
         .map(|f| rss_mdm_inventory::FieldKey::parse(f.key.as_str()).map_err(|_| Error::Invalid))
         .collect::<Result<Vec<_>, _>>()?;
-    if !rss_mdm_inventory_postgres::admit_time_series_fields_in(c, service.tenant, &keys)
-        .await
-        .map_err(|_| Error::Storage)?
+    if !rss_mdm_inventory_postgres::admit_time_series_fields_in(
+        c,
+        principal.binding().tenant(),
+        &keys,
+    )
+    .await
+    .map_err(|_| Error::Storage)?
     {
         return Err(Error::Denied);
     }
@@ -176,7 +195,7 @@ pub(crate) async fn receive_on(
             let reference = &field.time_series.as_ref().ok_or(Error::Invalid)?.retention;
             let policy = rss_mdm_inventory_postgres::retention_policy_in(
                 c,
-                service.tenant,
+                principal.binding().tenant(),
                 &reference.key,
                 reference.revision,
             )
@@ -191,7 +210,8 @@ pub(crate) async fn receive_on(
         }
     }
     let accepted = Accepted {
-        tenant: service.tenant.to_string(),
+        expected_epoch: principal.binding().epoch().get(),
+        tenant: principal.binding().tenant().to_string(),
         device: *principal.device(),
 
         credential: principal.credential(),
@@ -206,7 +226,7 @@ pub(crate) async fn receive_on(
     if accepted.profile.spec().projection != rss_mdm_resource::TelemetryProjection::History {
         crate::current::prepare(&accepted)?;
     }
-    admit_observations_on(c, service.tenant, &accepted).await?;
+    admit_observations_on(c, principal.binding().tenant(), &accepted).await?;
     let history = accepted.history()?;
     if let Some(history) = &history {
         let unique = history
@@ -214,21 +234,21 @@ pub(crate) async fn receive_on(
             .iter()
             .map(|s| s.input().series.digest().map(|d| *d.as_bytes()))
             .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
-        if history.samples().len() > service.storage_budget.points.get() as usize
-            || unique.len() > service.storage_budget.series.get() as usize
-            || history.encode()?.len() > service.storage_budget.bytes.get() as usize
+        if history.samples().len() > backend.budget.points.get() as usize
+            || unique.len() > backend.budget.series.get() as usize
+            || history.encode()?.len() > backend.budget.bytes.get() as usize
         {
             return Err(Error::Capacity);
         }
-        admit_resources_on(c, service.tenant, &accepted, history).await?;
-        crate::retention::register(c, service.tenant, history, now).await?;
+        admit_resources_on(c, principal.binding().tenant(), &accepted, history).await?;
+        crate::retention::register(c, principal.binding().tenant(), history, now).await?;
     }
     let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND delivery <> 'published'")
-        .bind(service.tenant.to_string()).bind(principal.device().into_uuid()).fetch_one(&mut *c).await?;
+        .bind(principal.binding().tenant().to_string()).bind(principal.device().into_uuid()).fetch_one(&mut *c).await?;
     if pending >= i64::from(service.limits.pending_batches) {
         return Err(Error::Capacity);
     }
-    admit_rate_on(service, c, now, accounted).await?;
+    admit_rate_on(principal.binding(), service, c, now, accounted).await?;
     let fields: Vec<_> = accepted
         .fields
         .iter()
@@ -264,9 +284,9 @@ pub(crate) async fn receive_on(
             quality.entry(field.as_str().into()).or_default()[index] += 1;
         }
     }
-    sqlx::query("INSERT INTO mdm_telemetry.batches (tenant_id,id,device,credential,source,epoch,policy,policy_version,input_digest,context_digest,fields,received_at,delivery,first_observed,last_observed,quality,observations,current_assets) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending',$13,$14,$15,$16,$17)")
-        .bind(service.tenant.to_string()).bind(input.batch_id).bind(principal.device().into_uuid()).bind(principal.credential())
-        .bind(accepted.source.as_str()).bind(epoch).bind(input.configuration().policy).bind(input.configuration().policy_version).bind(digest).bind(Sha256::digest(serde_json::to_vec(&accepted)?).to_vec()).bind(fields).bind(now).bind(first).bind(last).bind(serde_json::to_value(quality)?).bind(input.observations.iter().map(|v|v.id).collect::<Vec<_>>()).bind(accepted.profile.spec().projection!=rss_mdm_resource::TelemetryProjection::History).execute(&mut *c).await?;
+    sqlx::query("INSERT INTO mdm_telemetry.batches (tenant_id,id,device,credential,source,epoch,policy,policy_version,input_digest,context_digest,fields,received_at,delivery,first_observed,last_observed,quality,observations,current_assets,expected_epoch) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending',$13,$14,$15,$16,$17,$18)")
+        .bind(principal.binding().tenant().to_string()).bind(input.batch_id).bind(principal.device().into_uuid()).bind(principal.credential())
+        .bind(accepted.source.as_str()).bind(epoch).bind(input.configuration().policy).bind(input.configuration().policy_version).bind(digest).bind(Sha256::digest(serde_json::to_vec(&accepted)?).to_vec()).bind(fields).bind(now).bind(first).bind(last).bind(serde_json::to_value(quality)?).bind(input.observations.iter().map(|v|v.id).collect::<Vec<_>>()).bind(accepted.profile.spec().projection!=rss_mdm_resource::TelemetryProjection::History).bind(principal.binding().epoch().get()).execute(&mut *c).await?;
     crate::delivery::append_on(c, &accepted).await?;
     Ok(TelemetryReceipt {
         batch_id: input.batch_id,
@@ -286,7 +306,6 @@ pub(crate) fn delivery(s: &str) -> Result<TelemetryDelivery, Error> {
 }
 
 pub(crate) async fn status_on(
-    service: &Service,
     c: &mut PgConnection,
     principal: &DevicePrincipal,
     batch: Uuid,
@@ -303,11 +322,8 @@ pub(crate) async fn status_on(
     )
     .await
     .map_err(|_| Error::Denied)?;
-    if principal.tenant() != service.tenant {
-        return Err(Error::Denied);
-    }
     let row = sqlx::query("SELECT received_at, delivery FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND device = $3")
-        .bind(service.tenant.to_string()).bind(batch).bind(principal.device().into_uuid()).fetch_optional(c).await?.ok_or(Error::NotFound)?;
+        .bind(principal.binding().tenant().to_string()).bind(batch).bind(principal.device().into_uuid()).fetch_optional(c).await?.ok_or(Error::NotFound)?;
     Ok(TelemetryReceipt {
         batch_id: batch,
         received_at: row.try_get("received_at")?,
@@ -465,15 +481,14 @@ async fn admit_resources_on(
 }
 
 pub(crate) async fn current_on(
-    service: &Service,
     c: &mut PgConnection,
     principal: &DevicePrincipal,
     batch: Uuid,
     observation: Uuid,
 ) -> Result<crate::CurrentObservation, Error> {
-    status_on(service, c, principal, batch).await?;
+    status_on(c, principal, batch).await?;
     let row=sqlx::query("SELECT current_assets,delivery,source,epoch,policy FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND id=$2 AND $3=ANY(observations)")
-        .bind(service.tenant.to_string()).bind(batch).bind(observation).fetch_optional(&mut *c).await?.ok_or(Error::Denied)?;
+        .bind(principal.binding().tenant().to_string()).bind(batch).bind(observation).fetch_optional(&mut *c).await?.ok_or(Error::Denied)?;
     if !row.try_get::<bool, _>("current_assets")? {
         return Ok(crate::CurrentObservation::NotRequested);
     }
@@ -485,7 +500,7 @@ pub(crate) async fn current_on(
     let policy = row.try_get::<Uuid, _>("policy")?;
     let expected = rss_mdm_registration_service::device::scope_dataset(
         rss_mdm_install_support::StorageProfile::Mdm,
-        service.tenant,
+        principal.binding().tenant(),
         principal.device(),
         &source,
         epoch,
@@ -495,7 +510,7 @@ pub(crate) async fn current_on(
     let run = rss_mdm_inventory_service::collection::store::read_on(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
-        &service.tenant.to_string(),
+        &principal.binding().tenant().to_string(),
         observation,
     )
     .await
@@ -562,6 +577,7 @@ async fn admit_observations_on(
 
 /// Shared tenant ingress quota; callers must roll back every rejection.
 pub(crate) async fn admit_rate_on(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &Service,
     c: &mut PgConnection,
     now: i64,
@@ -569,7 +585,7 @@ pub(crate) async fn admit_rate_on(
 ) -> Result<(), Error> {
     let window = now / 60_000_000;
     let row = sqlx::query("INSERT INTO mdm_telemetry.rate_windows VALUES($1::uuid,$2,1,$3) ON CONFLICT(tenant_id) DO UPDATE SET minute=excluded.minute,batches=CASE WHEN mdm_telemetry.rate_windows.minute=excluded.minute THEN mdm_telemetry.rate_windows.batches+1 ELSE 1 END,bytes=CASE WHEN mdm_telemetry.rate_windows.minute=excluded.minute THEN mdm_telemetry.rate_windows.bytes+excluded.bytes ELSE excluded.bytes END RETURNING batches,bytes")
-        .bind(service.tenant.to_string()).bind(window).bind(accounted as i64).fetch_one(&mut *c).await?;
+        .bind(execution.tenant().to_string()).bind(window).bind(accounted as i64).fetch_one(&mut *c).await?;
     if row.try_get::<i64, _>("batches")? > i64::from(service.limits.batches_per_minute)
         || row.try_get::<i64, _>("bytes")? > i64::from(service.limits.bytes_per_minute)
     {

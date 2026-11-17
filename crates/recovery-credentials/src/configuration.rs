@@ -9,7 +9,6 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 pub struct Config {
     pub active_key: String,
     pub key_files: BTreeMap<String, PathBuf>,
-    pub active_recipient: String,
     pub recipients: Vec<RecipientConfig>,
 }
 #[derive(Deserialize)]
@@ -45,7 +44,7 @@ impl Config {
                 .map_err(|_| bad())
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        Protection::new(keys, self.active_recipient.clone(), recipients)
+        Protection::new(keys, recipients)
             .map(Arc::new)
             .map_err(|_| bad())
     }

@@ -42,7 +42,7 @@ pub struct ExportReader {
 impl ExportReader {
     pub(super) fn new(sources: super::config::ExportSources) -> Self {
         Self {
-            catalog: crate::catalog::Reader::new(sources.tenant),
+            catalog: crate::catalog::Reader::new(),
             sources,
         }
     }
@@ -190,7 +190,11 @@ impl ExportReader {
         root: &r::Version,
         locked: bool,
     ) -> InTransaction<Vec<r::Version>> {
-        match self.catalog.dependency_versions_on(c, root, locked).await {
+        match self
+            .catalog
+            .dependency_versions_on(self.tenant(), c, root, locked)
+            .await
+        {
             Ok(versions) => Ok(Ok(versions)),
             Err(crate::catalog::Error::Storage(e)) => Err(e),
             Err(crate::catalog::Error::Sql(e)) => Err(e.into()),
@@ -306,7 +310,13 @@ impl ExportReader {
             );
             let version = input!(
                 self.catalog
-                    .version_on(c, &subject.resource, &subject.version, locked)
+                    .version_on(
+                        self.tenant(),
+                        c,
+                        &subject.resource,
+                        &subject.version,
+                        locked
+                    )
                     .await
                     .map_err(|_| Error::Content)
             );
@@ -358,7 +368,13 @@ impl ExportReader {
         self.catalog_lock_on(c, locked).await?;
         let version = input!(
             self.catalog
-                .version_on(c, &subject.resource, &subject.version, locked)
+                .version_on(
+                    self.tenant(),
+                    c,
+                    &subject.resource,
+                    &subject.version,
+                    locked
+                )
                 .await
                 .map_err(|_| Error::Content)
         );

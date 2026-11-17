@@ -56,6 +56,8 @@ pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::De
 }
 
 async fn blueprints(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -76,6 +78,8 @@ async fn blueprints(
     .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn directory(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -143,7 +147,7 @@ async fn read(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<String>,
+    Path((_tenant, id)): Path<(uuid::Uuid, String)>,
 ) -> std::result::Result<Json<wire::Response>, Error> {
     run(&app, &auth, &audit, id, None).await
 }
@@ -152,7 +156,7 @@ async fn write(
     Extension(auth): Extension<RequestAuth>,
     Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<String>,
+    Path((_tenant, id)): Path<(uuid::Uuid, String)>,
     body: std::result::Result<Json<Operation<Change>>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<wire::Response>, Error> {
     let op = body.map_err(Error::from)?.0;
@@ -229,7 +233,7 @@ async fn references(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, version)): Path<(String, String)>,
+    Path((_tenant, id, version)): Path<(uuid::Uuid, String, String)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<ResourceReferences>,
     >,

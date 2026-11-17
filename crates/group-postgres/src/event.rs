@@ -29,6 +29,8 @@ pub enum GroupChangeKind {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// Current V1 Group event, atomically committed with the originating operation.
 pub struct GroupChanged {
+    /// Execution admitted by the original source transaction.
+    pub execution_epoch: i64,
     /// Frozen v of the originating Group operation.
     pub v: u8,
     /// Frozen kind of the originating Group operation.
@@ -65,12 +67,14 @@ pub(crate) fn domain() -> MessagingDomain {
 }
 pub(crate) fn message(
     tenant: TenantId,
+    execution_epoch: i64,
     at: Timepoint,
     kind: GroupChangeKind,
     r: &Receipt,
     authority_version: u64,
 ) -> Result<PendingMessage<Vec<u8>>, PgError> {
     let event = GroupChanged {
+        execution_epoch,
         v: 1,
         kind,
         group_id: r.group.id.to_string(),

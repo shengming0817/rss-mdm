@@ -34,3 +34,13 @@ pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
 #[cfg(unix)]
 pub mod backup;
+
+#[cfg(test)]
+pub(crate) fn test_binding(tenant: &str) -> rss_transactional_messaging::fence::ExecutionBinding {
+    use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
+    ExecutionBinding::new(
+        StorageIdentity::new([1; 16], [2; 16]).unwrap(),
+        rss_request_context::TenantId::parse(tenant).unwrap(),
+        Epoch::new(1).unwrap(),
+    )
+}

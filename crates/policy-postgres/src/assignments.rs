@@ -31,6 +31,8 @@ pub async fn upsert_in(
     tx: &mut PgTransaction<'_>,
     a: Assignment,
 ) -> Result<bool, PgError> {
+    let epoch = tx.expected_epoch().get();
+
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
@@ -47,6 +49,7 @@ pub async fn upsert_in(
                 .bind(a.target)
                 .bind(a.scope_result)
                 .bind(a.entry_revision)
+                .bind(epoch)
                 .execute(c)
                 .await
                 .map(|r| r.rows_affected() > 0)

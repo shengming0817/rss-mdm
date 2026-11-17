@@ -30,7 +30,7 @@ impl Operations {
                         let (s, p, device, q, _audit, codec) = *ctx;
                         authorization.require(p, Permission::OperationRead, Some(device))?;
                         let authority = authorization.query_binding(p)?;
-                        let tenant = s.tasks.tenant.to_string();
+                        let tenant = p.binding().tenant().to_string();
                         let device_owned = device.to_owned();
                         let registration =
                             rss_mdm_registration_service::device::endpoints::current_in(
@@ -55,7 +55,7 @@ impl Operations {
                         };
                         let binding = rss_mdm_query::cursor::fingerprint(&(
                             "live-device-ddm",
-                            s.tasks.tenant.to_string(),
+                            p.binding().tenant().to_string(),
                             p.instance_id(),
                             p.principal_id(),
                             device,
@@ -77,7 +77,7 @@ impl Operations {
                             })
                             .transpose()?;
                         let apple = s.apple.clone();
-                        let tenant = s.tasks.tenant.to_string();
+                        let tenant = p.binding().tenant().to_string();
                         let selected = registration.clone();
                         let limit = q.limit();
                         let keys = {

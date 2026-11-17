@@ -8,11 +8,13 @@ pub(crate) struct RuntimeDiagnostics {
     pub channels: Arc<crate::channel_status::Channels>,
     pub registration: Arc<dyn rss_mdm_management_http::enrollment::channels::Source>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
-    pub apple_store: Arc<rss_mdm_apple_channel::Store>,
+
     pub access: sqlx::PgPool,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
-    pub apple: Option<Arc<crate::apple::Apple>>,
+    pub apple: Arc<rss_mdm_apple_channel::HttpState>,
+    pub windows: Arc<rss_mdm_windows_channel::HttpState>,
+    pub task_trust: Arc<rss_mdm_task_trust::Service>,
     pub devices: Arc<rss_mdm_device_service::Associations>,
     pub planning: Arc<rss_mdm_policy_service::application::Application>,
     pub scopes: Arc<rss_mdm_scope_service::Scopes>,
@@ -36,7 +38,6 @@ pub(crate) struct RuntimeDiagnostics {
     pub first_use: Arc<crate::administration::first_use::FirstUse>,
     pub authorization: Arc<rss_mdm_authorization_service::Store>,
     pub clock: Arc<dyn crate::clock::Clock>,
-    pub tenant: rss_request_context::TenantId,
     pub instance: String,
 }
 // A retained input failure participates in lightweight readiness independently
@@ -63,13 +64,13 @@ impl Source for RuntimeDiagnostics {
         audit: &'a rss_mdm_audit_integration::RequestAudit,
         continuation: &'a rss_mdm_authorization_service::credential::RequestCredential,
     ) -> futures::future::BoxFuture<'a, Result<Snapshot, rss_mdm_management_http::Error>> {
+        let binding = auth.proof.binding();
+
         Box::pin(async move {
             use rss_mdm_authorization_service::{Error as AuthorizationError, Permission};
             use rss_mdm_management_http::Error;
             tokio::time::timeout_at(auth.deadline.into(), async {
-                if auth.proof.tenant_id() != self.tenant.to_string()
-                    || auth.proof.instance_id() != self.instance
-                {
+                if auth.proof.instance_id() != self.instance {
                     return Err(Error::Forbidden);
                 }
                 let before = rss_mdm_authorization_service::store::authorization_snapshot(
@@ -80,8 +81,8 @@ impl Source for RuntimeDiagnostics {
                 before
                     .require(&auth.proof, Permission::RuntimeDiagnosticsRead, None)
                     .map_err(AuthorizationError::from)?;
-                let binding = before.query_binding(&auth.proof)?;
-                let mut result = self.collect(auth.deadline, true).await;
+                let authorization_binding = before.query_binding(&auth.proof)?;
+                let mut result = self.collect(Some(binding), auth.deadline).await;
                 result.first_use = Some(
                     match before
                         .require(&auth.proof, Permission::RegistrationConfigurationRead, None)
@@ -98,7 +99,7 @@ impl Source for RuntimeDiagnostics {
                     &auth.proof,
                 )
                 .await?;
-                if auth.current_binding(&current, fresh.as_ref())? != binding {
+                if auth.current_binding(&current, fresh.as_ref())? != authorization_binding {
                     return Err(Error::QueryReadConflict);
                 }
                 current
@@ -114,13 +115,13 @@ impl Source for RuntimeDiagnostics {
 impl RuntimeDiagnostics {
     pub(crate) fn collect(
         &self,
+        binding: Option<rss_transactional_messaging::fence::ExecutionBinding>,
         cutoff: Instant,
-        detailed: bool,
     ) -> futures::future::BoxFuture<'_, Snapshot> {
         Box::pin(async move {
             let mut inventory = self.inventory_health();
-            if detailed {
-                self.enrich_inventory(cutoff, &mut inventory).await;
+            if let Some(binding) = binding {
+                self.enrich_inventory(binding, cutoff, &mut inventory).await;
             }
             let mut policy = worker_component(
                 ComponentName::Policy,
@@ -141,12 +142,13 @@ impl RuntimeDiagnostics {
                         observed_at: f.observed_at,
                     }),
                 },
+                health.recovery,
             );
             let health = self.groups.runner_health();
             let mut group = worker_component(
                 ComponentName::Group,
                 self.groups.task_state(),
-                health.scan.is_some(),
+                health.discovery.is_some() || health.scan.is_some(),
                 false,
             );
             apply_runner(
@@ -165,12 +167,13 @@ impl RuntimeDiagnostics {
                         observed_at: f.observed_at,
                     }),
                 },
+                health.recovery,
             );
             let health = self.scopes.runner_health();
             let mut scope = worker_component(
                 ComponentName::Scope,
                 self.scopes.task_state(),
-                health.scan.is_some(),
+                health.discovery.is_some() || health.scan.is_some(),
                 false,
             );
             apply_runner(
@@ -189,12 +192,13 @@ impl RuntimeDiagnostics {
                         observed_at: f.observed_at,
                     }),
                 },
+                health.recovery,
             );
             let health = self.assets.worker_status();
             let mut assets = worker_component(
                 ComponentName::AssetQuery,
                 health.task,
-                health.scan.is_some(),
+                health.discovery.is_some() || health.scan.is_some(),
                 false,
             );
             apply_runner(
@@ -213,12 +217,13 @@ impl RuntimeDiagnostics {
                         observed_at: f.observed_at,
                     }),
                 },
+                health.recovery,
             );
             let health = self.compliance.worker_status();
             let mut compliance = worker_component(
                 ComponentName::Compliance,
                 health.task,
-                health.scan.is_some(),
+                health.discovery.is_some() || health.scan.is_some(),
                 false,
             );
             apply_runner(
@@ -237,6 +242,7 @@ impl RuntimeDiagnostics {
                         observed_at: f.observed_at,
                     }),
                 },
+                health.recovery,
             );
             let health = self.devices.worker_health();
             let mut associations = worker_component(
@@ -258,101 +264,101 @@ impl RuntimeDiagnostics {
                 recovery_component(ComponentName::DeviceControl, &self.execution.health());
             let mut software =
                 recovery_component(ComponentName::SoftwareDeployment, &self.software.health());
-            let remaining = || {
-                cutoff.saturating_duration_since(rss_request_context::Clock::now(
-                    &crate::lifecycle::RuntimeTimer,
-                ))
-            };
-            let (
-                group_input,
-                scope_input,
-                compliance_input,
-                policy_input,
-                control_input,
-                software_input,
-            ) = tokio::join!(
-                self.groups.input_failed(remaining()),
-                self.scopes.input_failed(remaining()),
-                self.compliance.input_failed(remaining()),
-                self.planning.configuration_input_suspended(cutoff),
-                self.execution.ingress_health(cutoff),
-                self.software.ingress_health(cutoff)
-            );
-            apply_configuration_input(&mut group, group_input.map_err(|e| queue_failure(e.into())));
-            apply_configuration_input(&mut scope, scope_input.map_err(|e| queue_failure(e.into())));
-            apply_configuration_input(
-                &mut compliance,
-                compliance_input.map_err(|e| queue_failure(e.into())),
-            );
-            apply_configuration_input(&mut policy, policy_input);
-            match control_input.map_err(input_health_error) {
-                Ok(state) => {
-                    apply_configuration_input(&mut control, Ok(state.suspended));
-                    control.dispatch = Some(Dispatch {
-                        event_after: state.event_after,
-                        window_open: state.window_open,
-                    });
-                    control
-                        .dependencies
-                        .push(dependency(DependencyName::CommandStorage, None));
-                }
-                Err(error) => {
-                    apply_configuration_input(&mut control, Err(error));
-                    control.dependencies.push(dependency(
-                        DependencyName::CommandStorage,
-                        Some(health_failure(error)),
-                    ));
-                }
-            }
-            match software_input.map_err(software_health_error) {
-                Ok(state) => {
-                    apply_configuration_input(&mut software, Ok(state.suspended));
-                    software.dispatch = Some(Dispatch {
-                        event_after: state.event_after,
-                        window_open: state.window_open,
-                    });
-                    software
-                        .dependencies
-                        .push(dependency(DependencyName::CommandStorage, None));
-                }
-                Err(error) => {
-                    apply_configuration_input(&mut software, Err(error));
-                    software.dependencies.push(dependency(
-                        DependencyName::CommandStorage,
-                        Some(health_failure(error)),
-                    ));
-                }
-            }
-            if detailed {
-                let (p, g, s, a, c, control_inputs, software_inputs) = tokio::join!(
-                    self.planning.queue_health(cutoff),
-                    self.groups.queue_health(remaining()),
-                    self.scopes.queue_health(remaining()),
-                    self.assets.queue_health(remaining()),
-                    self.compliance.queue_health(remaining()),
-                    self.execution.input_pending_count(cutoff),
-                    self.software.input_pending_count(cutoff)
+            if let Some(binding) = binding {
+                let remaining = || {
+                    cutoff.saturating_duration_since(rss_request_context::Clock::now(
+                        &crate::lifecycle::RuntimeTimer,
+                    ))
+                };
+                let (
+                    group_input,
+                    scope_input,
+                    compliance_input,
+                    policy_input,
+                    control_input,
+                    software_input,
+                ) = tokio::join!(
+                    self.groups.input_failed(binding, remaining()),
+                    self.scopes.input_failed(binding, remaining()),
+                    self.compliance.input_failed(binding, remaining()),
+                    self.planning.configuration_input_suspended(binding, cutoff),
+                    self.execution.ingress_health(binding, cutoff),
+                    self.software.ingress_health(binding, cutoff)
                 );
-                apply_queues(&mut policy, p);
-                apply_queues(&mut group, g.map_err(|e| queue_failure(e.into())));
-                apply_queues(&mut scope, s.map_err(|e| queue_failure(e.into())));
-                apply_queues(&mut assets, a.map_err(|e| queue_failure(e.into())));
-                apply_queues(&mut compliance, c.map_err(|e| queue_failure(e.into())));
-                apply_input_queue(&mut control, control_inputs.map_err(input_health_error));
-                apply_input_queue(
-                    &mut software,
-                    software_inputs.map_err(software_health_error),
+                apply_configuration_input(
+                    &mut group,
+                    group_input.map_err(|e| queue_failure(e.into())),
                 );
+                apply_configuration_input(
+                    &mut scope,
+                    scope_input.map_err(|e| queue_failure(e.into())),
+                );
+                apply_configuration_input(
+                    &mut compliance,
+                    compliance_input.map_err(|e| queue_failure(e.into())),
+                );
+                apply_configuration_input(&mut policy, policy_input);
+                match control_input.map_err(input_health_error) {
+                    Ok(state) => {
+                        apply_configuration_input(&mut control, Ok(state.suspended));
+                        control.dispatch = Some(Dispatch {
+                            event_after: state.event_after,
+                            window_open: state.window_open,
+                        });
+                        control
+                            .dependencies
+                            .push(dependency(DependencyName::CommandStorage, None));
+                    }
+                    Err(error) => {
+                        apply_configuration_input(&mut control, Err(error));
+                        control.dependencies.push(dependency(
+                            DependencyName::CommandStorage,
+                            Some(health_failure(error)),
+                        ));
+                    }
+                }
+                match software_input.map_err(software_health_error) {
+                    Ok(state) => {
+                        apply_configuration_input(&mut software, Ok(state.suspended));
+                        software.dispatch = Some(Dispatch {
+                            event_after: state.event_after,
+                            window_open: state.window_open,
+                        });
+                        software
+                            .dependencies
+                            .push(dependency(DependencyName::CommandStorage, None));
+                    }
+                    Err(error) => {
+                        apply_configuration_input(&mut software, Err(error));
+                        software.dependencies.push(dependency(
+                            DependencyName::CommandStorage,
+                            Some(health_failure(error)),
+                        ));
+                    }
+                }
+                {
+                    let (p, g, s, a, c, control_inputs, software_inputs) = tokio::join!(
+                        self.planning.queue_health(binding, cutoff),
+                        self.groups.queue_health(binding, remaining()),
+                        self.scopes.queue_health(binding, remaining()),
+                        self.assets.queue_health(binding, remaining()),
+                        self.compliance.queue_health(binding, remaining()),
+                        self.execution.input_pending_count(binding, cutoff),
+                        self.software.input_pending_count(binding, cutoff)
+                    );
+                    apply_queues(&mut policy, p);
+                    apply_queues(&mut group, g.map_err(|e| queue_failure(e.into())));
+                    apply_queues(&mut scope, s.map_err(|e| queue_failure(e.into())));
+                    apply_queues(&mut assets, a.map_err(|e| queue_failure(e.into())));
+                    apply_queues(&mut compliance, c.map_err(|e| queue_failure(e.into())));
+                    apply_input_queue(&mut control, control_inputs.map_err(input_health_error));
+                    apply_input_queue(
+                        &mut software,
+                        software_inputs.map_err(software_health_error),
+                    );
+                }
             }
             let mut components = vec![
-                self.baseline_component(cutoff).await.unwrap_or_else(|| {
-                    let mut value = unmounted(ComponentName::Baseline);
-                    value.mounted = true;
-                    value
-                }),
-                self.telemetry_component(cutoff, detailed)
-                    .await
-                    .unwrap_or_else(|| unmounted(ComponentName::Telemetry)),
                 inventory,
                 policy,
                 group,
@@ -388,6 +394,14 @@ impl RuntimeDiagnostics {
                     })
                     .unwrap_or_else(|| unmounted(ComponentName::NativeRecoveryCredentials)),
             ];
+            if let Some(binding) = binding {
+                if let Some(baseline) = self.baseline_component(binding, cutoff).await {
+                    components.push(baseline);
+                }
+                if let Some(telemetry) = self.telemetry_component(binding, cutoff, true).await {
+                    components.push(telemetry);
+                }
+            }
             for name in [
                 ComponentName::MdmCredentialTasks,
                 ComponentName::DaCredentialTasks,
@@ -401,7 +415,10 @@ impl RuntimeDiagnostics {
                 );
             }
             Snapshot {
-                channels: self.channel_health(cutoff).await,
+                channels: match binding {
+                    Some(binding) => self.channel_health(binding, cutoff).await,
+                    None => Vec::new(),
+                },
                 alive: true,
                 ready: components
                     .iter()
@@ -411,10 +428,15 @@ impl RuntimeDiagnostics {
             }
         })
     }
-    async fn telemetry_component(&self, cutoff: Instant, detailed: bool) -> Option<Component> {
+    async fn telemetry_component(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        cutoff: Instant,
+        detailed: bool,
+    ) -> Option<Component> {
         let service = self.telemetry.as_ref()?;
         let mut telemetry = component(ComponentName::Telemetry, false);
-        match service.diagnostics(cutoff).await {
+        match service.diagnostics(binding, cutoff).await {
             Ok(state) => {
                 telemetry = component(ComponentName::Telemetry, state.running);
                 if !state.running {
@@ -453,10 +475,14 @@ impl RuntimeDiagnostics {
         }
         Some(telemetry)
     }
-    async fn baseline_component(&self, cutoff: Instant) -> Option<Component> {
+    async fn baseline_component(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        cutoff: Instant,
+    ) -> Option<Component> {
         match tokio::time::timeout_at(
             cutoff.into(),
-            crate::administration::baseline::status(&self.access, &self.tenant.to_string()),
+            crate::administration::baseline::status(&self.access, &binding.tenant().to_string()),
         )
         .await
         {
@@ -497,8 +523,13 @@ impl RuntimeDiagnostics {
             }
         }
     }
-    async fn enrich_inventory(&self, cutoff: Instant, inventory: &mut Component) {
-        let observations = self.inventory.diagnostics(cutoff).await;
+    async fn enrich_inventory(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        cutoff: Instant,
+        inventory: &mut Component,
+    ) {
+        let observations = self.inventory.diagnostics(binding, cutoff).await;
         inventory.dependencies.push(dependency(
             DependencyName::InventoryDelivery,
             observations
@@ -577,162 +608,137 @@ impl RuntimeDiagnostics {
         }
         inventory
     }
-    fn observe_trust(&self, channel: &mut ChannelStatus) -> Option<Reason> {
+    async fn observe_trust(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        channel: &mut ChannelStatus,
+        now: i64,
+    ) -> Option<Reason> {
         use rss_mdm_agent_wire::pki::Purpose;
         let purpose = match channel.name {
             ChannelName::Apple => Purpose::Apple,
             ChannelName::Windows => Purpose::Windows,
             ChannelName::Agent => Purpose::Agent,
             ChannelName::AgentBootstrap => Purpose::AgentBootstrap,
-            ChannelName::Signing | ChannelName::WindowsPush => return None,
+            _ => return None,
         };
-        // Registry rotation updates this running verifier. Report that loaded fact, not desired files.
-        let revision = self
-            .pki
-            .trust(purpose)
-            .ok()
-            .and_then(|trust| i64::try_from(trust.revision).ok());
-        match revision {
-            Some(revision) => {
-                channel.loaded_materials.insert("trust".into(), revision);
+        match self.pki.trust(binding, purpose).await {
+            Ok(trust) => {
+                let revision = trust.revision;
+                if rss_mdm_device_trust::DeviceTrust::new(trust, purpose, now).is_err() {
+                    return Some(Reason::MaterialInvalid);
+                }
+                channel
+                    .loaded_materials
+                    .insert("trust".into(), i64::try_from(revision).ok()?);
                 None
             }
-            None => {
-                channel.loaded_materials.remove("trust");
-                Some(Reason::MaterialInvalid)
-            }
+            Err(_) => Some(Reason::MaterialNotSelected),
         }
     }
-    async fn channel_health(&self, cutoff: Instant) -> Vec<ChannelStatus> {
+    async fn channel_health(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        cutoff: Instant,
+    ) -> Vec<ChannelStatus> {
         let mut channels: Vec<_> = self
             .channels
             .snapshot()
             .into_iter()
             .map(channel_projection)
             .collect();
-        project_dependents(&mut channels);
         for channel in &mut channels {
-            if channel.state != ChannelState::Ready {
+            if matches!(
+                channel.state,
+                ChannelState::Disabled | ChannelState::Degraded
+            ) {
                 continue;
             }
-            if let Some(reason) = self.observe_trust(channel) {
-                channel.state = ChannelState::Degraded;
-                channel.reasons = vec![reason];
-                continue;
-            }
-            let failure = match self.clock.unix_seconds() {
-                Ok(now) => match channel.name {
-                    ChannelName::Apple => self.apple_failure(now, cutoff).await,
-                    ChannelName::Signing | ChannelName::WindowsPush => {
-                        self.selected_material_failure(channel, cutoff).await
-                    }
-                    ChannelName::Windows | ChannelName::Agent => {
+            let now = match self.clock.unix_seconds() {
+                Ok(now) => now,
+                Err(_) => {
+                    channel.state = ChannelState::Degraded;
+                    channel.reasons = vec![Reason::ClockUnavailable];
+                    continue;
+                }
+            };
+            let check = async {
+                if let Some(reason) = self.observe_trust(binding, channel, now).await {
+                    return Some(reason);
+                }
+                match channel.name {
+                    ChannelName::Signing => match self.task_trust.signing_material(binding).await {
+                        Ok(Some((_, revision))) => {
+                            channel
+                                .loaded_materials
+                                .insert("signing".into(), i64::try_from(revision).ok()?);
+                            None
+                        }
+                        Ok(None) => Some(Reason::MaterialNotSelected),
+                        Err(_) => Some(Reason::DependencyUnavailable),
+                    },
+                    ChannelName::WindowsPush => match self.windows.windows(binding).await {
+                        Ok(windows) => match windows
+                            .push
+                            .as_ref()
+                            .and_then(|push| push.material_revision())
+                        {
+                            Some(revision) => {
+                                channel.loaded_materials.insert("wns".into(), revision);
+                                None
+                            }
+                            None => Some(Reason::MaterialNotSelected),
+                        },
+                        Err(_) => Some(Reason::MaterialInvalid),
+                    },
+                    ChannelName::Apple => match self.apple.apple(binding).await {
+                        Ok(apple) => {
+                            let selection = apple.material_selection();
+                            if let Some(revision) = selection.apns {
+                                channel.loaded_materials.insert("apns".into(), revision);
+                            }
+                            if let Some(revision) = selection.profile {
+                                channel.loaded_materials.insert("profile".into(), revision);
+                            }
+                            let health = apple.health(now);
+                            if health.certificates_expired() {
+                                Some(Reason::CertificateExpired)
+                            } else if !health.push_available {
+                                Some(Reason::PushUnavailable)
+                            } else {
+                                None
+                            }
+                        }
+                        Err(_) => Some(Reason::MaterialInvalid),
+                    },
+                    ChannelName::Agent | ChannelName::Windows => {
                         use rss_mdm_management_http::enrollment::channels::Availability;
-                        use rss_mdm_registration_service::quotas::Channel;
-                        let name = if channel.name == ChannelName::Windows {
-                            Channel::WindowsMdm
+                        let name = if channel.name == ChannelName::Agent {
+                            rss_mdm_registration_service::quotas::Channel::Agent
                         } else {
-                            Channel::Agent
+                            rss_mdm_registration_service::quotas::Channel::WindowsMdm
                         };
                         (!matches!(
-                            self.registration.status(name).availability,
+                            self.registration.status(binding, name).await.availability,
                             Availability::Ready
                         ))
                         .then_some(Reason::MaterialInvalid)
                     }
-                    ChannelName::AgentBootstrap => {
-                        let purpose = rss_mdm_agent_wire::pki::Purpose::AgentBootstrap;
-                        self.pki
-                            .trust(purpose)
-                            .ok()
-                            .and_then(|trust| {
-                                rss_mdm_device_trust::DeviceTrust::new(trust, purpose, now).ok()
-                            })
-                            .is_none()
-                            .then_some(Reason::MaterialInvalid)
-                    }
-                },
-                Err(_) => Some(Reason::ClockUnavailable),
+                    ChannelName::AgentBootstrap => None,
+                }
             };
-            if let Some(reason) = failure {
-                channel.state = ChannelState::Degraded;
-                channel.reasons = vec![reason];
-            }
+            let failure = tokio::time::timeout_at(cutoff.into(), check)
+                .await
+                .unwrap_or(Some(Reason::DependencyUnavailable));
+            channel.state = if failure.is_some() {
+                ChannelState::Degraded
+            } else {
+                ChannelState::Ready
+            };
+            channel.reasons = failure.into_iter().collect();
         }
         project_dependents(&mut channels);
         channels
-    }
-    async fn apple_failure(&self, now: i64, cutoff: Instant) -> Option<Reason> {
-        let apple = self.apple.as_ref()?;
-        let health = apple.channel.health(now);
-        if health.certificates_expired() {
-            return Some(Reason::CertificateExpired);
-        }
-        if !health.push_available {
-            return Some(Reason::PushUnavailable);
-        }
-        match tokio::time::timeout_at(
-            cutoff.into(),
-            apple
-                .channel
-                .check_materials(&self.apple_store, &self.tenant.to_string(), now),
-        )
-        .await
-        {
-            Ok(Ok(())) => None,
-            Ok(Err(rss_mdm_apple_channel::Error::Conflict)) => Some(Reason::MaterialInvalid),
-            _ => Some(Reason::DependencyUnavailable),
-        }
-    }
-    async fn selected_material_failure(
-        &self,
-        channel: &ChannelStatus,
-        cutoff: Instant,
-    ) -> Option<Reason> {
-        let key = match channel.name {
-            ChannelName::WindowsPush => "wns",
-            ChannelName::Signing => "signing",
-            _ => return None,
-        };
-        let Some(revision) = channel.loaded_materials.get(key) else {
-            return Some(Reason::MaterialNotSelected);
-        };
-        let check = async {
-            let mut tx = self.access.begin().await.map_err(|_| ())?;
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','1000',true)").bind(self.tenant.to_string()).execute(&mut *tx).await.map_err(|_| ())?;
-            let valid = match channel.name {
-                ChannelName::WindowsPush => rss_mdm_windows_channel::wns_materials::is_selected(
-                    &mut tx,
-                    &self.tenant.to_string(),
-                    *revision,
-                )
-                .await
-                .map_err(|_| ()),
-                ChannelName::Signing => {
-                    match rss_mdm_task_trust::trust::check_revision(
-                        rss_mdm_install_support::StorageProfile::Mdm,
-                        rss_mdm_task_trust::Use::AgentTask,
-                        &mut tx,
-                        self.tenant,
-                        *revision as u64,
-                    )
-                    .await
-                    {
-                        Ok(()) => Ok(true),
-                        Err(rss_mdm_task_trust::Error::Conflict) => Ok(false),
-                        Err(_) => Err(()),
-                    }
-                }
-                _ => Err(()),
-            };
-            tx.rollback().await.map_err(|_| ())?;
-            valid
-        };
-        match tokio::time::timeout_at(cutoff.into(), check).await {
-            Ok(Ok(true)) => None,
-            Ok(Ok(false)) => Some(Reason::MaterialRevoked),
-            _ => Some(Reason::DependencyUnavailable),
-        }
     }
 }
 // Only phases actually owned by each worker participate in readiness.
@@ -755,7 +761,7 @@ fn recovery_component(
         .chain(state.inputs.map(|phase| (PhaseName::Inputs, phase)))
     {
         let (state, reason) = match phase {
-            Phase::Initializing => (PhaseState::Unobserved, Some(Reason::Initializing)),
+            Phase::Unobserved => (PhaseState::Unobserved, Some(Reason::Unobserved)),
             Phase::Healthy => (PhaseState::Healthy, None),
             Phase::Failed(kind) => (PhaseState::Failed, Some(execution_failure(kind))),
         };
@@ -773,12 +779,12 @@ fn recovery_component(
         .any(|phase| matches!(phase, Phase::Failed(_)))
     {
         result.health = Health::Degraded;
-    } else if state.phases().any(|phase| phase == Phase::Initializing) {
+    } else if state.phases().any(|phase| phase == Phase::Unobserved) {
         result.health = Health::Unknown;
     }
     result.runner = Some(Runner {
         scan: match state.scan {
-            Phase::Initializing => None,
+            Phase::Unobserved => None,
             Phase::Healthy => Some(RunResult {
                 successful: true,
                 reason: None,
@@ -804,7 +810,7 @@ fn worker_component(
 ) -> Component {
     let mut value = component(
         name,
-        status == Some(rss_runtime::TaskState::Running) && observed && !failed,
+        status == Some(rss_runtime::TaskState::Running) && !failed,
     );
     value.task = Some(task(status));
     if status != Some(rss_runtime::TaskState::Running) {
@@ -838,7 +844,28 @@ fn attempt_stage(stage: rss_reconcile::Stage) -> AttemptStage {
         rss_reconcile::Stage::Finish => AttemptStage::Finish,
     }
 }
-fn apply_runner(value: &mut Component, runner: Runner) {
+fn apply_runner(
+    value: &mut Component,
+    runner: Runner,
+    recovery: rss_mdm_recovery_observation::Phase,
+) {
+    use rss_mdm_recovery_observation::Phase;
+    let (state, reason) = match recovery {
+        Phase::Unobserved => (PhaseState::Unobserved, Some(Reason::Unobserved)),
+        Phase::Healthy => (PhaseState::Healthy, None),
+        Phase::Failed(kind) => {
+            value.health = Health::Degraded;
+            value.readiness = Readiness::NotReady;
+            let reason = execution_failure(kind);
+            value.reasons.push(reason);
+            (PhaseState::Failed, Some(reason))
+        }
+    };
+    value.phases.push(PhaseObservation {
+        name: PhaseName::Recovery,
+        state,
+        reason,
+    });
     if runner.scan.as_ref().is_some_and(|scan| !scan.successful) || runner.unresolved_attempts > 0 {
         value.health = Health::Degraded;
         value.readiness = Readiness::NotReady;
@@ -850,9 +877,8 @@ fn apply_runner(value: &mut Component, runner: Runner) {
                 .or_else(|| runner.scan.as_ref().and_then(|s| s.reason))
                 .unwrap_or(Reason::DependencyUnavailable),
         );
-    } else if runner.scan.is_none() {
+    } else if runner.scan.is_none() && recovery == Phase::Unobserved {
         value.health = Health::Unknown;
-        value.readiness = Readiness::NotReady;
         value.reasons.push(Reason::Unobserved);
     }
     if runner.truncated {
@@ -1117,28 +1143,13 @@ fn channel_projection(value: crate::channel_status::Assembly) -> ChannelStatus {
     let reasons = value
         .reason
         .map(|reason| match reason {
-            assembly::Reason::MaterialNotSelected => Reason::MaterialNotSelected,
-            assembly::Reason::MaterialUnreadable => Reason::MaterialUnreadable,
-            assembly::Reason::MaterialInvalid => Reason::MaterialInvalid,
-            assembly::Reason::TrustConflict => Reason::TrustConflict,
-            assembly::Reason::MaterialRevoked => Reason::MaterialRevoked,
-            assembly::Reason::MaterialVersionMismatch => Reason::MaterialVersionMismatch,
-            assembly::Reason::CertificateExpired => Reason::CertificateExpired,
-            assembly::Reason::DependencyUnavailable => Reason::DependencyUnavailable,
+            assembly::Reason::NotSelected => Reason::MaterialNotSelected,
+            assembly::Reason::Unreadable => Reason::MaterialUnreadable,
+            assembly::Reason::Invalid => Reason::MaterialInvalid,
         })
         .into_iter()
         .collect();
-    let materials = value.materials;
-    let loaded_materials = [
-        ("trust", materials.trust),
-        ("apns", materials.apns),
-        ("profile", materials.profile),
-        ("wns", materials.wns),
-        ("signing", materials.signing),
-    ]
-    .into_iter()
-    .filter_map(|(name, revision)| revision.map(|v| (name.to_owned(), v)))
-    .collect();
+    let loaded_materials = Default::default();
     ChannelStatus {
         name,
         state,
@@ -1170,25 +1181,20 @@ fn input_health_error(e: rss_mdm_device_service::control::Error) -> HealthFailur
 mod channel_projection_tests {
     use super::*;
     #[test]
-    fn closed_parent_prevents_ready_bootstrap_and_preserves_loaded_material_identity() {
+    fn closed_parent_prevents_ready_bootstrap() {
         use crate::channel_status as assembly;
         let facts = [
             assembly::Assembly {
                 name: assembly::ChannelName::Agent,
                 state: assembly::ChannelState::Degraded,
-                reason: Some(assembly::Reason::DependencyUnavailable),
+                reason: Some(assembly::Reason::Unreadable),
                 mounted: false,
-                materials: Default::default(),
             },
             assembly::Assembly {
                 name: assembly::ChannelName::AgentBootstrap,
                 state: assembly::ChannelState::Ready,
                 reason: None,
                 mounted: false,
-                materials: assembly::LoadedMaterials {
-                    trust: Some(4),
-                    ..Default::default()
-                },
             },
         ];
         let mut values: Vec<_> = facts.iter().cloned().map(channel_projection).collect();
@@ -1196,9 +1202,8 @@ mod channel_projection_tests {
         assert_eq!(values[1].state, ChannelState::Degraded);
         assert!(matches!(
             values[1].reasons.as_slice(),
-            [Reason::DependencyUnavailable]
+            [Reason::MaterialUnreadable]
         ));
-        assert_eq!(values[1].loaded_materials["trust"], 4);
         assert!(facts[1].state == assembly::ChannelState::Ready);
         assert!(facts[1].reason.is_none());
         let mut without_reason = facts;

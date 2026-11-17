@@ -36,6 +36,8 @@ get_operation: rss_mdm_http_contract::module::Route::new("/smtp/operations/{id}"
     }
 }
 async fn read(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(service): State<Arc<Authority>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -47,12 +49,14 @@ async fn operation(
     State(service): State<Arc<Authority>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<Receipt>, Error> {
     audit.set_action("smtp_read", rss_mdm_audit_integration::AuditIntent::Routine);
     Ok(Json(service.operation(&auth.proof, &audit, id).await?))
 }
 async fn create(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(service): State<Arc<Authority>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -67,6 +71,8 @@ async fn create(
 }
 
 async fn history(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(service): State<Arc<Authority>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,

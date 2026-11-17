@@ -98,6 +98,14 @@
     {
       "name": "rss_transactional_messaging.append_outbox",
       "search_path": "search_path=pg_catalog, rss_transactional_messaging, pg_temp"
+    },
+    {
+      "name": "mdm_webhook.work_scopes",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "mdm_webhook.delivery_epoch",
+      "search_path": "search_path=pg_catalog, pg_temp"
     }
   ],
   "external_relations": [

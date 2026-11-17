@@ -170,6 +170,8 @@ pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::De
 }
 
 async fn managed_packages(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -202,7 +204,7 @@ async fn managed_package(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<uuid::Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, uuid::Uuid)>,
 ) -> Result<Json<rss_mdm_software_service::agent_packages::directory::Row>, Error> {
     rss_mdm_software_service::agent_packages::directory::get(&app, &auth.proof, &audit, id)
         .await
@@ -213,7 +215,7 @@ async fn versions(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<String>,
+    Path((_tenant, id)): Path<(uuid::Uuid, String)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Directory<VersionsQuery>,
     >,
@@ -241,7 +243,7 @@ async fn read_source(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, revision)): Path<(String, String)>,
+    Path((_tenant, id, revision)): Path<(uuid::Uuid, String, String)>,
 ) -> Result<Json<rss_mdm_software_service::catalog::SourceView>, Error> {
     rss_mdm_software_service::management::catalog::read_source(
         &app,
@@ -258,7 +260,7 @@ async fn write_source(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, revision)): Path<(String, String)>,
+    Path((_tenant, id, revision)): Path<(uuid::Uuid, String, String)>,
     body: Result<Json<Operation<SourceChange>>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<rss_mdm_software_service::catalog::SourceView>, Error> {
     let Json(op) = body.map_err(Error::from)?;
@@ -278,7 +280,7 @@ async fn read_version(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, version)): Path<(String, String)>,
+    Path((_tenant, id, version)): Path<(uuid::Uuid, String, String)>,
 ) -> Result<Json<rss_mdm_software_service::management::catalog::VersionDetail>, Error> {
     rss_mdm_software_service::management::catalog::read_version(
         &app,
@@ -295,7 +297,7 @@ async fn write_version(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, version)): Path<(String, String)>,
+    Path((_tenant, id, version)): Path<(uuid::Uuid, String, String)>,
     body: Result<Json<Operation<VersionChange>>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<rss_mdm_software_service::catalog::VersionReceipt>, Error> {
     let Json(op) = body.map_err(Error::from)?;
@@ -317,7 +319,7 @@ async fn download(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, version)): Path<(String, String)>,
+    Path((_tenant, id, version)): Path<(uuid::Uuid, String, String)>,
     axum::extract::Query(selection): axum::extract::Query<Selection>,
     crate::content::http::DownloadHeaders(headers): crate::content::http::DownloadHeaders,
 ) -> Result<rss_mdm_http_contract::download::Download, Error> {
@@ -334,6 +336,8 @@ async fn download(
 }
 
 async fn import(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -350,6 +354,8 @@ async fn import(
 }
 
 async fn begin_agent_upload(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     body: Result<
@@ -366,7 +372,7 @@ async fn begin_agent_upload(
 async fn inspect_agent_upload(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<uuid::Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, uuid::Uuid)>,
 ) -> Result<Json<rss_mdm_software_service::management::content::UploadInspection>, Error> {
     rss_mdm_software_service::management::installers::inspect(&app, &auth.proof, id)
         .await
@@ -376,7 +382,7 @@ async fn inspect_agent_upload(
 async fn parse_agent_upload(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<uuid::Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, uuid::Uuid)>,
 ) -> Result<Json<rss_mdm_software_service::management::content::UploadInspection>, Error> {
     rss_mdm_software_service::management::installers::parse(&app, &auth.proof, id)
         .await
@@ -384,6 +390,8 @@ async fn parse_agent_upload(
         .map_err(Into::into)
 }
 async fn save_agent_upload(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -407,7 +415,7 @@ async fn save_agent_upload(
 async fn agent_operation(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<uuid::Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, uuid::Uuid)>,
 ) -> Result<Json<Option<rss_mdm_software_service::catalog::OperationReceipt>>, Error> {
     rss_mdm_software_service::management::installers::operation(&app, &auth.proof, id)
         .await
@@ -415,6 +423,8 @@ async fn agent_operation(
         .map_err(Into::into)
 }
 async fn publish_agent(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
@@ -438,7 +448,7 @@ async fn withdraw_agent(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
-    Path(id): Path<uuid::Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, uuid::Uuid)>,
     body: Result<Json<AgentOperation>, axum::extract::rejection::JsonRejection>,
 ) -> Result<rss_mdm_http_contract::signature::WithStatus<204, ()>, Error> {
     let Json(input) = body.map_err(Error::from)?;
@@ -491,24 +501,46 @@ pub(crate) fn register_agent_packages()
         .assemble()
     }
 }
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PackageTarget {
+    tenant_id: uuid::Uuid,
+}
+impl PackageTarget {
+    fn execution(
+        &self,
+        app: &HttpState,
+    ) -> Result<rss_transactional_messaging::fence::ExecutionBinding, Error> {
+        let tenant = rss_request_context::TenantId::parse(&self.tenant_id.to_string())
+            .map_err(|_| Error::Malformed)?;
+        Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+            app.storage,
+            tenant,
+            app.expected_epoch,
+        ))
+    }
+}
 async fn agent_package_list(
+    axum::extract::Query(target): axum::extract::Query<PackageTarget>,
     State(app): State<Arc<HttpState>>,
 ) -> Result<Json<Vec<rss_mdm_agent_wire::enroll::configuration::Package>>, Error> {
-    rss_mdm_software_service::agent_packages::list(&app.runtime, app.audit.binding())
+    rss_mdm_software_service::agent_packages::list(&app.runtime, target.execution(&app)?)
         .await
         .map(Json)
         .map_err(Into::into)
 }
 async fn agent_package_metadata(
+    axum::extract::Query(target): axum::extract::Query<PackageTarget>,
     State(app): State<Arc<HttpState>>,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<rss_mdm_agent_wire::enroll::configuration::Package>, Error> {
-    rss_mdm_software_service::agent_packages::metadata_public(&app, id)
+    rss_mdm_software_service::agent_packages::metadata_public(&app, target.execution(&app)?, id)
         .await
         .map(Json)
         .map_err(Into::into)
 }
 async fn agent_package_content(
+    axum::extract::Query(target): axum::extract::Query<PackageTarget>,
     State(app): State<Arc<HttpState>>,
     Path(id): Path<uuid::Uuid>,
     crate::content::http::DownloadHeaders(headers): crate::content::http::DownloadHeaders,
@@ -516,7 +548,9 @@ async fn agent_package_content(
     rss_mdm_http_contract::download::Attachment<rss_mdm_http_contract::download::Download>,
     Error,
 > {
-    let (package, file) = rss_mdm_software_service::agent_packages::download(&app, id).await?;
+    let (package, file) =
+        rss_mdm_software_service::agent_packages::download(&app, target.execution(&app)?, id)
+            .await?;
     let body = crate::content::http::response(file, &headers).await?;
     let disposition = format!("attachment; filename=\"{}\"", package.filename)
         .parse()
@@ -525,6 +559,8 @@ async fn agent_package_content(
 }
 
 async fn sources(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,

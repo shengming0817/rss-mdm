@@ -30,12 +30,9 @@ async fn authorize<C: ManagementContentPort>(
 ) -> Result<(), Error> {
     p.manage(Permission::SoftwareWrite)?;
     p.manage(Permission::ResourceWrite)?;
-    if p.tenant_id() != app.tenant.to_string() {
-        return Err(Error::Forbidden);
-    }
     transaction::inspect(
         &app.runtime,
-        app.audit.binding(),
+        p.binding(),
         p,
         |p, tx| {
             Box::pin(async move {
@@ -81,6 +78,7 @@ pub async fn begin<C: ManagementContentPort>(
         .as_ref()
         .ok_or(Error::Unsupported)?
         .prepare_upload(
+            p.binding(),
             input,
             &input.operation_id.to_string(),
             input.operation_id,
@@ -98,7 +96,7 @@ pub async fn inspect<C: ManagementContentPort>(
         .content
         .as_ref()
         .ok_or(Error::Unsupported)?
-        .inspect_upload(id, &actor(p), &id.to_string())
+        .inspect_upload(p.binding(), id, &actor(p), &id.to_string())
         .await?;
     Ok(UploadInspection {
         package_id: id,
@@ -119,7 +117,7 @@ pub async fn parse<C: ManagementContentPort>(
     app.content
         .as_ref()
         .ok_or(Error::Unsupported)?
-        .parse_upload(id, &actor(p), &id.to_string())
+        .parse_upload(p.binding(), id, &actor(p), &id.to_string())
         .await?;
     inspect(app, p, id).await
 }
@@ -151,7 +149,7 @@ pub async fn save<C: ManagementContentPort>(
     .map_err(|_| Error::Malformed)?;
     let old = transaction::inspect(
         &app.runtime,
-        app.audit.binding(),
+        p.binding(),
         (&app, input.operation_id, &hash),
         |ctx, tx| {
             Box::pin(async move {
@@ -171,7 +169,7 @@ pub async fn save<C: ManagementContentPort>(
         return transaction::run(
             &app.audit,
             &app.runtime,
-            app.audit.binding(),
+            p.binding(),
             audit,
             (app, p, audit, value),
             |ctx, tx| {
@@ -195,7 +193,12 @@ pub async fn save<C: ManagementContentPort>(
         .content
         .as_ref()
         .ok_or(Error::Unsupported)?
-        .inspect_upload(input.package_id, &actor(p), &input.package_id.to_string())
+        .inspect_upload(
+            p.binding(),
+            input.package_id,
+            &actor(p),
+            &input.package_id.to_string(),
+        )
         .await?;
     use rss_mdm_agent_wire::runtime::{TaskArchitecture, TaskPlatform};
     let platform = match input.target.platform {
@@ -234,7 +237,7 @@ pub async fn save<C: ManagementContentPort>(
     transaction::run(
         &app.audit,
         &app.runtime,
-        app.audit.binding(),
+        p.binding(),
         audit,
         (
             app, p, audit, input, hash, file, declared, version, platform, arch, now,
@@ -282,13 +285,10 @@ pub async fn operation<C: ManagementContentPort>(
     id: Uuid,
 ) -> Result<Option<crate::catalog::OperationReceipt>, Error> {
     p.require(Permission::SoftwareRead, None)?;
-    if p.tenant_id() != app.tenant.to_string() {
-        return Err(Error::Forbidden);
-    }
-    transaction::inspect(&app.runtime, app.audit.binding(), (app, p, id), |ctx, tx| Box::pin(async move {
-        let (app, p, id) = *ctx;
+    transaction::inspect(&app.runtime, p.binding(), (app, p, id), |ctx, tx| Box::pin(async move {
+        let (_, p, id) = *ctx;
         let snapshot = transaction::current(tx, p).await?; snapshot.require(p, Permission::SoftwareRead, None)?;
-        let tenant = app.tenant.to_string();
+        let tenant = p.tenant_id().to_owned();
         // Actor is bound into stored request fingerprints; read visibility remains the tenant's software permission.
         Ok(tx.with_connection(move |c| Box::pin(async move { sqlx::query_scalar::<_,Value>("SELECT response FROM mdm_software.operations WHERE tenant_id=$1::uuid AND id=$2")
             .bind(tenant).bind(id).fetch_optional(c).await })).await?.unwrap_or(Value::Null))

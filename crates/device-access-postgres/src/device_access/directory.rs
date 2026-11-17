@@ -87,8 +87,9 @@ impl Service {
         device: &rss_mdm_agent_wire::DeviceId,
         id: uuid::Uuid,
     ) -> Result<BindingView, Error> {
+        let execution = request.proof.binding();
         let p = request.proof.as_ref();
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != execution.tenant().to_string() {
             return Err(Error::Forbidden);
         }
         let mut tx = self.store.snapshot(p.tenant_id()).await?;
@@ -104,7 +105,7 @@ impl Service {
         let before = authorization_binding(&mut tx, p).await?;
         let b = super::storage::get_in(
             &mut tx,
-            uuid::Uuid::parse_str(&self.tenant.to_string()).map_err(|_| Error::Corrupt)?,
+            uuid::Uuid::parse_str(&execution.tenant().to_string()).map_err(|_| Error::Corrupt)?,
             id,
         )
         .await?;
@@ -123,9 +124,10 @@ impl Service {
         q: &Query,
         codec: &CursorCodec,
     ) -> Result<Page<rss_mdm_query::directory::Projection<BindingView>>, Error> {
+        let execution = request.proof.binding();
         let p = request.proof.as_ref();
         q.require_schema(&SCHEMA).map_err(error)?;
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != execution.tenant().to_string() {
             return Err(Error::Forbidden);
         }
         let mut tx = self.store.snapshot(p.tenant_id()).await?;

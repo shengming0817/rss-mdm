@@ -121,26 +121,107 @@ impl Service {
         signals: &crate::control::worker_wake::Signals,
     ) -> std::result::Result<(), rss_runtime::ShutdownError> {
         let timer = Timer::new();
-        let stopped = cancel.child_token();
         let force = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::MAX, &force);
-        let scope = recovery_scope(self.transactions.tenant);
-        let recovery = async {
-            self.run_recovery(
-                &scope,
-                policy,
-                &control,
-                &stopped,
-                signals.command_recovery(),
+        let mut after: Option<Uuid> = None;
+        let mut worked = false;
+        loop {
+            if cancel.is_cancelled() {
+                self.readiness.stop();
+                return Ok(());
+            }
+            let discovered = tokio::select! { biased;
+                    () = cancel.cancelled() => { self.readiness.stop(); return Ok(()); },
+                    result = tokio::time::timeout(Duration::from_secs(5), sqlx::query_scalar(
+                "SELECT tenant_id FROM mdm_devices.control_work_scopes($1)",
             )
-            .await
-            .map(|_| ())
-            .map_err(rss_runtime::ShutdownError::new)
-        };
-        tokio::pin!(recovery);
-        let result = tokio::select! {result=&mut recovery=>result,()=cancel.cancelled()=>{stopped.cancel();recovery.await}};
-        self.readiness.stop();
-        result
+            .bind(after)
+            .fetch_all(&self.read_pool)) =>
+                        result.map_err(|_| rss_reconcile::ErrorKind::Deadline)
+                            .and_then(|page| page.map_err(|error| crate::discovery::classify(&error))),
+                };
+            if cancel.is_cancelled() {
+                {
+                    self.readiness.stop();
+                    return Ok(());
+                }
+            }
+            self.readiness
+                .discovery(discovered.as_ref().map(|_| ()).map_err(|kind| *kind));
+            let tenants: Vec<Uuid> = match discovered {
+                Ok(page) => page,
+                Err(rss_reconcile::ErrorKind::Transient | rss_reconcile::ErrorKind::Deadline) => {
+                    // A failed page is not empty. Keep its cursor and rate-limit retries even under wake storms.
+                    tokio::select! { biased;
+                        () = cancel.cancelled() => { self.readiness.stop(); return Ok(()); },
+                        () = tokio::time::sleep(Duration::from_secs(5)) => {},
+                    }
+                    continue;
+                }
+                Err(kind) => {
+                    return Err(rss_runtime::ShutdownError::new(rss_reconcile::Error::new(
+                        kind,
+                    )));
+                }
+            };
+            if tenants.is_empty() {
+                after = None;
+                if std::mem::take(&mut worked) {
+                    continue;
+                }
+
+                tokio::select! {()=cancel.cancelled()=>{self.readiness.stop();return Ok(())},()=signals.command_recovery().notified()=>{},()=tokio::time::sleep(Duration::from_secs(5))=>{}}
+                continue;
+            }
+            for tenant in tenants {
+                after = Some(tenant);
+                let tenant = TenantId::parse(&tenant.to_string())
+                    .map_err(rss_runtime::ShutdownError::new)?;
+                let scope = recovery_scope(tenant);
+
+                let report = match rss_reconcile::run_batch(
+                    &self.recovery_store(),
+                    self,
+                    &scope,
+                    policy,
+                    &control,
+                    cancel,
+                    |event| {
+                        self.readiness.observe(&event);
+                        diagnostic(event);
+                    },
+                )
+                .await
+                {
+                    Ok(report) => report,
+                    Err(error)
+                        if control.check().is_ok()
+                            && matches!(
+                                error.kind(),
+                                rss_reconcile::ErrorKind::Transient
+                                    | rss_reconcile::ErrorKind::Deadline
+                                    | rss_reconcile::ErrorKind::CommitUnknown
+                            ) =>
+                    {
+                        // The observer retained this scope's failure. Advance the tenant cursor;
+                        // an unconfirmed claim is not an empty or successfully drained batch.
+                        continue;
+                    }
+                    Err(error) => return Err(rss_runtime::ShutdownError::new(error)),
+                };
+                worked |= [
+                    report.converged,
+                    report.reobserve,
+                    report.deferred,
+                    report.retried,
+                    report.suspended,
+                    report.fenced,
+                    report.execution_failed,
+                ]
+                .into_iter()
+                .any(|count| count > 0);
+            }
+        }
     }
 
     pub async fn run_recovery<T: rss_reconcile::Timer>(
@@ -163,9 +244,9 @@ impl Service {
                 // The runner can expire and drop the claim future before the store returns.
                 self.readiness.observe(&event);
                 if let rss_reconcile::Observation::AttemptFailed { target, error, .. } = &event
-                    && target == &crate::control::source_changes::target(self.transactions.tenant)
+                    && target.entity() == "inputs"
                 {
-                    self.readiness.inputs(Err(error.kind()));
+                    self.readiness.inputs(target, Err(error.kind()));
                 }
                 diagnostic(event);
             },
@@ -180,21 +261,20 @@ impl Service {
         result
     }
     pub fn record_relay_health(&self, result: &std::result::Result<usize, Error>) {
-        self.readiness.relay(
+        self.readiness.relay_round(
             result
                 .as_ref()
                 .map(|_| ())
                 .map_err(|e| failure(e.clone()).kind()),
         );
     }
-    pub async fn relay_once(&self) -> std::result::Result<usize, Error> {
+    async fn relay_binding(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> std::result::Result<usize, Error> {
         let claims = self
             .outbox
-            .claim_partition_heads(
-                self.transactions.audit_store.binding(),
-                std::num::NonZeroUsize::MIN,
-                deadline(),
-            )
+            .claim_partition_heads(execution, std::num::NonZeroUsize::MIN, deadline())
             .await
             .map_err(|e| {
                 let e = provider(e.into());
@@ -203,12 +283,13 @@ impl Service {
             })?;
         let count = claims.len();
         for claim in claims {
-            self.relay_claim(claim).await?;
+            self.relay_claim(execution, claim).await?;
         }
         Ok(count)
     }
     pub async fn relay_claim(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         claim: rss_transactional_messaging_postgres::PgOutboxClaim,
     ) -> std::result::Result<(), Error> {
         let message = PgOutboxStore::<()>::message(&claim);
@@ -224,9 +305,10 @@ impl Service {
             })?;
         let fingerprint = message.fingerprint().as_bytes().to_vec();
         let result = if action {
-            self.accept_action_dispatch(id, fingerprint).await
+            self.accept_action_dispatch(execution, id, fingerprint)
+                .await
         } else {
-            self.accept_dispatch(id, fingerprint).await
+            self.accept_dispatch(execution, id, fingerprint).await
         };
         if let Err(e) = &result {
             relay_diagnostic("accept", Some(&message_id), e);
@@ -254,13 +336,14 @@ impl Service {
     }
     pub async fn accept_dispatch(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         id: Uuid,
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), Error> {
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            self.transactions.tenant.to_string(),
+            execution,
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -271,11 +354,11 @@ impl Service {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.identify_service("command-dispatch");
-        let result=crate::control::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.audit_store.binding(),&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
+        let result=crate::control::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,execution,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
             let (service,id,fingerprint,audit) = ctx;
             crate::control::transaction::prepare_audit_in(&service.transactions.audit_store,tx,audit,&[]).await?;
             let operation_id=*id;
-            let tenant=service.transactions.tenant.to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
+            let tenant=tx.tenant_id().to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move {
                 let old=sqlx::query_scalar::<_,bool>("SELECT gateway_accepted FROM mdm_devices.control_operations WHERE tenant_id=$1::uuid AND id=$2::uuid AND dispatch_fingerprint=$3 FOR UPDATE").bind(&tenant).bind(&id).bind(&fingerprint).fetch_optional(&mut *c).await?;
                 if old==Some(false) {sqlx::query("UPDATE mdm_devices.control_operations SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).execute(c).await?;}
@@ -447,14 +530,13 @@ pub(crate) async fn apply_prepared(
             service.advance_retirement_in(tx, batch, audit).await
         }
         PreparedRecovery::Native(work, run_id) => {
-            actions::run_recovery::step(service, tx, work, run_id).await
+            actions::run_recovery::step(audit.binding()?, service, tx, work, run_id).await
         }
         PreparedRecovery::Policy(id) => actions::recovery::discover_in(service, tx, id)
             .await
             .map(|()| false),
-
         PreparedRecovery::Device(name) => {
-            let tenant = service.transactions.tenant.to_string();
+            let tenant = tx.tenant_id().to_string();
             let key = name;
             let registration = storage::current_registration(
                 tx,
@@ -472,7 +554,7 @@ pub(crate) async fn apply_prepared(
             }
             let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT CAST(a.command_device AS text), a.generation, a.epoch, CASE WHEN r.authority_epoch = a.epoch THEN r.recovery_after END AS recovery_after FROM mdm_access.command_authorities AS a LEFT JOIN mdm_devices.control_recovery AS r USING (tenant_id, device) WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = $2 FOR UPDATE OF a").bind(tenant).bind(key.into_uuid()).fetch_one(c).await})).await?;
             let scope = dc::Scope::new(
-                service.transactions.tenant,
+                tx.tenant_id(),
                 stored(dc::DeviceId::parse(
                     &row.try_get::<String, _>("command_device")?,
                 ))?,
@@ -586,8 +668,8 @@ pub(crate) async fn apply_prepared(
                 })).await?;
             }
             let cursor = candidates.after;
-            let tenant = service.transactions.tenant.to_string();
-            tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_devices.control_recovery(tenant_id,device,authority_epoch,recovery_after) SELECT tenant_id,device,epoch,$3 FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND device=$2 ON CONFLICT(tenant_id,device) DO UPDATE SET authority_epoch=excluded.authority_epoch,recovery_after=excluded.recovery_after").bind(tenant).bind(name.into_uuid()).bind(cursor).execute(c).await?;Ok(())})).await?;
+            let tenant = tx.tenant_id().to_string();
+            tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_devices.control_recovery r SET authority_epoch=a.epoch,recovery_after=$3 FROM mdm_access.command_authorities a WHERE r.tenant_id=$1::uuid AND r.device=$2 AND (a.tenant_id,a.device)=(r.tenant_id,r.device)").bind(tenant).bind(name.into_uuid()).bind(cursor).execute(c).await?;Ok(())})).await?;
             Ok(false)
         }
     }
@@ -602,8 +684,9 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
         Output = std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error>,
     > + Send {
         Box::pin(async move {
+            let execution = self.binding_for(claim, control).await?;
             control.check()?;
-            if claim.target().scope() != &recovery_scope(self.transactions.tenant) {
+            if claim.target().scope().reconciler() != DOMAIN {
                 return Err(rss_reconcile::Error::new(
                     rss_reconcile::ErrorKind::Invariant,
                 ));
@@ -611,11 +694,11 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
             let audit = RequestAudit::new(
                 rss_mdm_audit_integration::Origin::Background,
                 rss_mdm_audit_integration::StorageProfile::Mdm,
-                self.transactions.tenant.to_string(),
+                execution,
                 "management_read",
                 rss_mdm_audit_integration::AuditIntent::Routine,
             );
-            let active=crate::control::transaction::inspect(&self.transactions.runtime,self.transactions.audit_store.binding(),(self,claim.target().entity()),|ctx,tx|Box::pin(async move {
+            let active=crate::control::transaction::inspect(&self.transactions.runtime,execution,(self,claim.target().entity()),|ctx,tx|Box::pin(async move {
             let (service,entity) = *ctx;
             if entity == "inputs" { return crate::control::source_changes::pending_in(tx, service.transactions.source.clone()).await; }
             if let Some(id)=crate::control::unmanage::operation(entity){return crate::control::unmanage::active_in(tx,id).await;}
@@ -624,7 +707,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
             if let Some(id)=actions::recovery::policy_id(entity){return actions::recovery::active(tx,id).await;}
 
             let Some(device)=device(tx,entity).await? else{return Ok(false)};
-            let tenant=service.transactions.tenant.to_string();
+            let tenant=tx.tenant_id().to_string();
             Ok(tx.with_connection(move |c| Box::pin(async move {
                 sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_devices.control_operations o LEFT JOIN rss_device_command.commands c ON(c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND(c.terminal_at IS NULL OR (c.command_id IS NULL OR c.version<>o.observed_command_version OR c.outbox_domain IS DISTINCT FROM $3 OR c.device_id IS DISTINCT FROM (SELECT a.command_device FROM mdm_access.command_authorities a WHERE a.tenant_id=o.tenant_id AND a.device=o.device)))) OR EXISTS(SELECT FROM rss_device_command.commands c JOIN mdm_access.command_authorities a ON(a.tenant_id,a.command_device)=(c.tenant_id,c.device_id) LEFT JOIN mdm_devices.control_operations o ON(o.tenant_id,o.id::text,o.device)=(c.tenant_id,c.command_id,a.device) WHERE c.tenant_id=$1::uuid AND a.device=$2 AND c.outbox_domain=$3 AND o.id IS NULL)")
                     .bind(tenant).bind(device.into_uuid()).bind(messaging_domain().as_str().to_owned()).fetch_one(c).await
@@ -651,23 +734,24 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
         Output = std::result::Result<ReconcileStep<()>, rss_reconcile::Error>,
     > + Send {
         Box::pin(async move {
+            let execution = self.binding_for(claim, control).await?;
             let Ok(_permit) = self.worker_budget.try_acquire() else {
                 return Ok(ReconcileStep::Deferred(Duration::from_millis(50)));
             };
 
-            if claim.target().scope() != &recovery_scope(self.transactions.tenant) {
+            if claim.target().scope().reconciler() != DOMAIN {
                 return Err(rss_reconcile::Error::new(
                     rss_reconcile::ErrorKind::Invariant,
                 ));
             }
             if claim.target().entity() == "inputs" {
-                return self.apply_inputs(claim, control).await;
+                return self.apply_inputs(execution, claim, control).await;
             }
             {
                 let audit = RequestAudit::new(
                     rss_mdm_audit_integration::Origin::Background,
                     rss_mdm_audit_integration::StorageProfile::Mdm,
-                    self.transactions.tenant.to_string(),
+                    execution,
                     "management_write",
                     rss_mdm_audit_integration::AuditIntent::Management,
                 );
@@ -677,7 +761,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
                     .transactions
                     .runtime
                     .local_tx_with_context(
-                        self.transactions.audit_store.binding(),
+                        execution,
                         rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                             control.remaining(),
                         ),
@@ -810,42 +894,79 @@ async fn command_candidates_in(
 }
 
 impl Service {
-    /// Calibrate every existing declaration before runners start, including delayed
-    /// and suspended work. Binding preserves wake identity and recovery history.
-    pub fn initialize_resource_bindings(
+    pub(super) async fn binding_for<T: rss_reconcile::Timer>(
         &self,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = std::result::Result<(), Error>> + Send + '_>,
+        claim: &rss_reconcile_postgres::PgClaim,
+        control: &rss_reconcile::Control<'_, T>,
+    ) -> std::result::Result<
+        rss_transactional_messaging::fence::ExecutionBinding,
+        rss_reconcile::Error,
     > {
-        Box::pin(async move {
-            let transactions = &self.transactions;
-            let tenant = transactions.tenant;
-            let scope = recovery_scope(tenant);
-            let mut after = String::new();
-            loop {
-                let page = crate::control::transaction::inspect(
-                &transactions.runtime, transactions.audit_store.binding(), (transactions, scope.clone(), after.clone()),
-                move |(transactions, scope, after), tx| Box::pin(async move {
-                    let t = tx.tenant_id().to_string();
-                    let domain = scope.reconciler().to_owned();
-                    let after = after.clone();
-                    let page: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
-                        sqlx::query_scalar("SELECT entity FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity>$3 ORDER BY entity LIMIT 64")
-                            .bind(t).bind(domain).bind(after).fetch_all(c).await
-                    })).await?;
-                    for entity in &page {
-                        let target = rss_reconcile::Target::new(scope.clone(), entity).map_err(|_| Error::Malformed)?;
-                        let resources = resources_in(tx, entity).await?;
-                        transactions.reconcile_messaging.bind_in(tx, &target, &resources).await?;
-                    }
-                    Ok(page)
-                }),
-            ).await?;
-                if page.len() < 64 {
-                    return Ok(());
-                }
-                after = page.last().expect("nonempty page").clone();
+        control.check()?;
+        let tenant = claim.target().scope().tenant();
+        let epoch: i64 = sqlx::query_scalar("SELECT mdm_devices.control_work_epoch($1::uuid,$2)")
+            .bind(tenant.to_string())
+            .bind(claim.target().entity())
+            .fetch_one(&self.read_pool)
+            .await
+            .map_err(|_| failure(Error::Unavailable(Failure::CommandStorage)))?;
+        let epoch = rss_transactional_messaging::fence::Epoch::new(epoch)
+            .map_err(|_| failure(Error::Unavailable(Failure::CommandInvariant)))?;
+        Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            tenant,
+            epoch,
+        ))
+    }
+    pub async fn relay_once(&self) -> std::result::Result<usize, Error> {
+        let after = *self
+            .relay_after
+            .lock()
+            .map_err(|_| Error::Unavailable(Failure::CommandInvariant))?;
+        let scopes: Vec<(Uuid, i64)> = sqlx::query_as(
+            "SELECT tenant_id,expected_epoch FROM mdm_devices.control_work_relay_scopes($1,$2)",
+        )
+        .bind(after.map(|x| x.0))
+        .bind(after.map(|x| x.1))
+        .fetch_all(&self.read_pool)
+        .await
+        .map_err(|_| Error::Unavailable(Failure::CommandStorage))?;
+        if scopes.is_empty() {
+            *self
+                .relay_after
+                .lock()
+                .map_err(|_| Error::Unavailable(Failure::CommandInvariant))? = None;
+            return Ok(0);
+        }
+        let mut count = 0;
+        for (tenant, epoch) in scopes {
+            let t = TenantId::parse(&tenant.to_string()).map_err(|_| Error::Malformed)?;
+            let e = rss_transactional_messaging::fence::Epoch::new(epoch)
+                .map_err(|_| Error::Malformed)?;
+            let result = self
+                .relay_binding(rss_transactional_messaging::fence::ExecutionBinding::new(
+                    self.storage,
+                    t,
+                    e,
+                ))
+                .await;
+            *self
+                .relay_after
+                .lock()
+                .map_err(|_| Error::Unavailable(Failure::CommandInvariant))? =
+                Some((tenant, epoch));
+            self.readiness.relay_scope(
+                &recovery_scope(t),
+                epoch,
+                result
+                    .as_ref()
+                    .map(|_| ())
+                    .map_err(|e| failure(e.clone()).kind()),
+            );
+            if let Ok(relayed) = result {
+                count += relayed;
             }
-        })
+        }
+        Ok(count)
     }
 }

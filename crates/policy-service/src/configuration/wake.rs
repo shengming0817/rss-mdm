@@ -6,6 +6,8 @@ impl Transactions {
         tx: &mut PgTransaction<'_>,
         devices: &[rss_mdm_agent_wire::DeviceId],
     ) -> Result<()> {
+        let epoch = tx.expected_epoch().get();
+
         self.runtime.validate_transaction(tx)?;
         if devices.len() > 1024 {
             return Err(Error::Malformed.into());
@@ -48,7 +50,7 @@ impl Transactions {
         }
         let names = interested.into_iter().collect::<Vec<_>>();
         let updated:Vec<rss_mdm_agent_wire::DeviceId>=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) SELECT $1::uuid,device FROM unnest($2::uuid[]) wanted(device) ORDER BY device ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=mdm_planning.configuration_devices.input_revision+1 RETURNING device").bind(tenant.to_string()).bind(names.iter().map(|id|id.into_uuid()).collect::<Vec<_>>()).fetch_all(c).await.and_then(crate::configuration::device_ids)
+            sqlx::query_scalar("INSERT INTO mdm_planning.configuration_devices(tenant_id,device,expected_epoch) SELECT $1::uuid,device,$3 FROM unnest($2::uuid[]) wanted(device) ORDER BY device ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=mdm_planning.configuration_devices.input_revision+1 RETURNING device").bind(tenant.to_string()).bind(names.iter().map(|id|id.into_uuid()).collect::<Vec<_>>()).bind(epoch).fetch_all(c).await.and_then(crate::configuration::device_ids)
         })).await?;
         for device in updated {
             self.reconcile_messaging
@@ -82,7 +84,7 @@ impl Transactions {
         if !current {
             return Err(Error::Conflict);
         }
-        sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=configuration_devices.input_revision+1").bind(&tenant).bind(p.device().into_uuid()).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device,expected_epoch) VALUES($1::uuid,$2,$3) ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=configuration_devices.input_revision+1").bind(&tenant).bind(p.device().into_uuid()).bind(p.binding().epoch().get()).execute(&mut *c).await.map_err(db)?;
         sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3,$4)")
             .bind(tenant)
             .bind("mdm.policy")
@@ -111,17 +113,41 @@ pub async fn inputs_in(
     store: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
 ) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
+    let epoch = tx.expected_epoch().get();
+
     let tenant = tx.tenant_id();
+    let t = tenant.to_string();
+    tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query("INSERT INTO mdm_planning.configuration_source_dispatch(tenant_id,expected_epoch) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&t).bind(epoch).execute(&mut *c).await?;
+        let expected: i64=sqlx::query_scalar("SELECT expected_epoch FROM mdm_planning.configuration_source_dispatch WHERE tenant_id=$1::uuid").bind(t).fetch_one(c).await?;
+        if expected!=epoch {return Err(sqlx::Error::Protocol("configuration input epoch mismatch".into()))}
+        Ok(())
+    })).await?;
     let target = rss_reconcile::Target::new(
         rss_reconcile::Scope::new(tenant, crate::worker::jobs::domain(profile))
             .expect("constant scope"),
         "configuration-inputs",
     )
     .expect("constant target");
-    store.wake_in(tx, &target, &rss_reconcile::ResourceSet::empty(tenant), (), |_, tx| Box::pin(async move {
-        tx.with_connection(|c| Box::pin(async move {
-            sqlx::query("SELECT pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'policy')").execute(c).await?;
-            Ok(())
-        })).await
-    })).await
+    store
+        .wake_in(
+            tx,
+            &target,
+            &rss_reconcile::ResourceSet::empty(tenant),
+            (),
+            |_, tx| {
+                Box::pin(async move {
+                    tx.with_connection(|c| {
+                        Box::pin(async move {
+                            sqlx::query("SELECT pg_notify('mdm_work','policy')")
+                                .execute(c)
+                                .await?;
+                            Ok(())
+                        })
+                    })
+                    .await
+                })
+            },
+        )
+        .await
 }

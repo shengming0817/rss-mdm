@@ -17,18 +17,21 @@ pub(super) struct Owners {
 }
 impl Owners {
     pub(super) async fn open(c: &Context) -> Result<Self> {
+        Self::with_discovery(c, c.database.archive_pool()).await
+    }
+    pub(super) async fn with_discovery(c: &Context, discovery: sqlx::PgPool) -> Result<Self> {
         let storage = planning::owner(c, "mdm_inventory_runtime").await?;
         let groups = Arc::new(
             rss_mdm_group_postgres::GroupStore::new(
                 storage.runtime.clone(),
-                c.audit.binding(),
+                c.execution(),
                 group::transaction::deadline(),
             )
             .await?,
         );
         let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             storage.runtime.clone(),
-            c.audit.binding(),
+            c.execution(),
             group::transaction::deadline(),
         ))
         .await?;
@@ -36,9 +39,9 @@ impl Owners {
             crate::clock::SystemClock,
         )));
         let service = group::Groups::new(group::Dependencies {
-            read_pool: c.inputs.pool("shared", "mdm_access").await?,
+            read_pool: discovery.clone(),
             objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
-            tenant: c.tenant,
+            probe: c.execution(),
             groups: groups.clone(),
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &[7; 32]),
             audit_store: storage.audit.clone(),
@@ -48,9 +51,10 @@ impl Owners {
         })
         .await?;
         let compliance = compliance::Compliance::new(compliance::Dependencies {
+            read_pool: discovery,
             audit_store: storage.audit.clone(),
             runtime: storage.runtime.clone(),
-            tenant: c.tenant,
+            probe: c.execution(),
             clock,
             groups,
             reconcile_messaging: messaging,
@@ -380,22 +384,17 @@ async fn fact_readers_reject_cross_runtime_and_tenant_and_keep_the_frozen_cut() 
     let reader = SnapshotReader::bind(
         rss_mdm_install_support::StorageProfile::Mdm,
         owners.storage.runtime.clone(),
-        c.tenant,
     );
     let wrong = SnapshotReader::bind(
         rss_mdm_install_support::StorageProfile::Mdm,
         other.runtime.clone(),
-        c.tenant,
     );
-    let foreign = SnapshotReader::bind(
-        rss_mdm_install_support::StorageProfile::Mdm,
-        owners.storage.runtime.clone(),
-        rss_request_context::TenantId::parse(&Uuid::new_v4().to_string())?,
-    );
+    let foreign_context = Context::open("shared", &[]).await?;
+    let foreign = cut::capture(&foreign_context.audit, foreign_context.tenant, &budget).await?;
     let refs = rss_mdm_resource_postgres::FieldReferences::bind(other.runtime.clone(), c.tenant);
     group::transaction::inspect(
         &owners.storage.runtime,
-        c.audit.binding(),
+        c.execution(),
         (reader, wrong, foreign, refs, before, at),
         |ctx, tx| {
             Box::pin(async move {
@@ -408,8 +407,8 @@ async fn fact_readers_reject_cross_runtime_and_tenant_and_keep_the_frozen_cut() 
                         .is_err()
                 );
                 assert!(
-                    ctx.2
-                        .summary_devices_in(tx, &ctx.5, &[], &catalog)
+                    ctx.0
+                        .summary_devices_in(tx, &ctx.2, &[first.members[0].device], &catalog)
                         .await
                         .is_err()
                 );
@@ -420,8 +419,8 @@ async fn fact_readers_reject_cross_runtime_and_tenant_and_keep_the_frozen_cut() 
                         .is_err()
                 );
                 assert!(
-                    ctx.2
-                        .changes_exist_in(tx, Some(&ctx.4), None)
+                    ctx.0
+                        .changes_exist_in(tx, Some(&ctx.2), None)
                         .await
                         .is_err()
                 );
@@ -448,6 +447,7 @@ async fn fact_readers_reject_cross_runtime_and_tenant_and_keep_the_frozen_cut() 
     .await?;
     drop(other);
     drop(owners);
+    foreign_context.close().await;
     c.close().await;
     Ok(())
 }

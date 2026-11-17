@@ -14,34 +14,51 @@ async fn scope(c: &mut PgConnection, tenant: Uuid) -> Result<()> {
         .map_err(|_| Error::Storage)?;
     Ok(())
 }
-pub async fn storage(
-    input: &Input,
-    config: &crate::config::Config,
-    c: &mut PgConnection,
-) -> Result<()> {
-    let mut ids = std::collections::BTreeSet::new();
-    if input.storage_profiles.iter().any(|p| !ids.insert(&p.id)) {
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Request {
+    pub installation: Input,
+    pub tenant: Uuid,
+}
+/// Explicit tenant material maintenance using the installation's shared keys and original owners.
+pub async fn run(request: Request) -> Result<()> {
+    let input = &request.installation;
+    if request.tenant.is_nil() {
         return Err(Error::Input);
     }
-    let tenants: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT tenant_id FROM public.mdm_tenants WHERE NOT deleted ORDER BY tenant_id",
+    let root = crate::installation::local::Journal::open(&input.directory)?;
+    let config: crate::config::Config =
+        serde_json::from_value(crate::installation::runtime_files::current(&root)?)
+            .map_err(|_| Error::Corrupt)?;
+    let mut c = PgConnection::connect_with(
+        &input
+            .database("mdm_owner")?
+            .options()
+            .map_err(|_| Error::Input)?,
     )
-    .fetch_all(&mut *c)
     .await
     .map_err(|_| Error::Storage)?;
-    for tenant in tenants {
-        storage_tenant(input, config, c, tenant).await?;
+    crate::migration::verify_identity(
+        &mut c,
+        &crate::migration::Installation {
+            instance_id: config.identity.instance_id.clone(),
+            target: config.storage_binding.target,
+            lineage: config.storage_binding.lineage,
+            audit_mode: config.audit.mode(),
+        },
+    )
+    .await
+    .map_err(|_| Error::Conflict)?;
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM public.mdm_tenants WHERE tenant_id=$1 AND NOT deleted AND tenant_id<>(SELECT management_tenant_id FROM public.mdm_installation))")
+        .bind(request.tenant).fetch_one(&mut c).await.map_err(|_|Error::Storage)?;
+    if !exists {
+        return Err(Error::Input);
     }
-    Ok(())
-}
-
-/// WNS 只对固定 Microsoft OAuth 入口验证；不把令牌取得等同于设备送达。
-pub async fn wns(input: &Input, c: &mut PgConnection) -> Result<()> {
-    let hosts:Vec<(Uuid,String)>=sqlx::query_as("SELECT tenant_id,receipt->'result'->>'hostId' FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='enabled' ORDER BY operation_id").fetch_all(&mut *c).await.map_err(|_|Error::Storage)?;
-    for (tenant, host) in hosts {
-        wns_host(input, c, tenant, host).await?;
-    }
-    Ok(())
+    storage_tenant(input, &config, &mut c, request.tenant).await?;
+    wns_tenant(&config, &mut c, request.tenant).await?;
+    super::mail::qualify_tenant(input, &config, &mut c, request.tenant).await?;
+    super::webhook::qualify_tenant(&config, &mut c, request.tenant).await?;
+    c.close().await.map_err(|_| Error::Storage)
 }
 
 async fn storage_tenant(
@@ -54,19 +71,7 @@ async fn storage_tenant(
     scope(&mut tx, tenant).await?;
     let operations: Vec<Uuid> = sqlx::query_scalar("SELECT operation_id FROM mdm_content_connections.versions WHERE tenant_id=$1 AND state='pending' AND NOT revoked ORDER BY attempted_at NULLS FIRST,revision LIMIT 8").bind(tenant).fetch_all(&mut *tx).await.map_err(|_| Error::Storage)?;
     tx.commit().await.map_err(|_| Error::Storage)?;
-    let host:Option<String>=sqlx::query_scalar("SELECT receipt->'result'->>'hostId' FROM public.mdm_tenant_operations WHERE tenant_id=$1 AND action='provision' AND receipt->'result'->>'phase'='enabled' ORDER BY operation_id LIMIT 1").bind(tenant).fetch_optional(&mut *c).await.map_err(|_|Error::Storage)?;
-    let protection = if let Some(host) = host {
-        let host = Uuid::parse_str(&host).map_err(|_| Error::Corrupt)?;
-        let journal = crate::installation::local::Journal::open(
-            &input.directory.join(format!("rss-mdm-{}", host.simple())),
-        )?;
-        let runtime: crate::config::Config = journal
-            .load("requested-runtime.json")?
-            .ok_or(Error::Corrupt)?;
-        runtime.native_protector().map_err(|_| Error::Corrupt)?
-    } else {
-        config.native_protector().map_err(|_| Error::Corrupt)?
-    };
+    let protection = config.native_protector().map_err(|_| Error::Corrupt)?;
     for operation in operations {
         if !storage_attempt(c, tenant, operation).await? {
             continue;
@@ -83,14 +88,11 @@ async fn storage_tenant(
     Ok(())
 }
 
-async fn wns_host(input: &Input, c: &mut PgConnection, tenant: Uuid, host: String) -> Result<()> {
-    let host = Uuid::parse_str(&host).map_err(|_| Error::Corrupt)?;
-    let journal = crate::installation::local::Journal::open(
-        &input.directory.join(format!("rss-mdm-{}", host.simple())),
-    )?;
-    let runtime: crate::config::Config = journal
-        .load("requested-runtime.json")?
-        .ok_or(Error::Corrupt)?;
+async fn wns_tenant(
+    runtime: &crate::config::Config,
+    c: &mut PgConnection,
+    tenant: Uuid,
+) -> Result<()> {
     let key = runtime.native_protector().map_err(|_| Error::Corrupt)?;
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     scope(&mut tx, tenant).await?;

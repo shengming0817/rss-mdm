@@ -5,39 +5,31 @@ use crate::{
 };
 use rss_identity_postgres::{Authority, AuthorityError};
 pub use rss_identity_postgres::{RevalidatedSession, SessionReference};
-use rss_request_context::TenantId;
-/// Configured at composition time; request bodies cannot select a tenant or authority.
+use rss_transactional_messaging::fence::ExecutionBinding;
+/// Shared authentication owner. Every operation supplies its original execution binding.
 #[derive(Clone)]
 pub struct SessionAuthority {
     authority: Authority,
-    binding: rss_transactional_messaging::fence::ExecutionBinding,
 }
 impl SessionAuthority {
-    pub fn new(
-        authority: Authority,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-    ) -> Self {
-        Self { authority, binding }
-    }
-    pub fn binding(&self) -> rss_transactional_messaging::fence::ExecutionBinding {
-        self.binding
-    }
-    pub fn tenant(&self) -> TenantId {
-        self.binding.tenant()
+    pub fn new(authority: Authority) -> Self {
+        Self { authority }
     }
     /// Recheck the trusted operation's locator without retaining credentials or renewing idle.
     pub async fn recheck(
         &self,
+        binding: ExecutionBinding,
         reference: &SessionReference,
         deadline: rss_transactional_messaging::policy::OperationDeadline,
     ) -> Result<RevalidatedSession, Error> {
         self.authority
-            .recheck_session_reference(self.binding, reference, deadline)
+            .recheck_session_reference(binding, reference, deadline)
             .await
             .map_err(authority_error)
     }
     pub async fn authenticate(
         &self,
+        binding: ExecutionBinding,
         store: &Store,
         credential: RequestCredential,
         deadline: rss_transactional_messaging::policy::OperationDeadline,
@@ -45,21 +37,19 @@ impl SessionAuthority {
         let principal = match credential {
             RequestCredential::Cookie(secret) => Principal::new(
                 self.authority
-                    .inspect_session(self.binding, secret, deadline)
+                    .inspect_session(binding, secret, deadline)
                     .await
                     .map_err(authority_error)?,
+                binding,
             )?,
             RequestCredential::Bearer(secret) => Principal::new(
                 self.authority
-                    .inspect_bearer(self.binding, secret, deadline)
+                    .inspect_bearer(binding, secret, deadline)
                     .await
                     .map_err(authority_error)?,
+                binding,
             )?,
-            RequestCredential::ApiKey(secret) => {
-                store
-                    .authenticate_key(&self.binding.tenant().to_string(), &secret)
-                    .await?
-            }
+            RequestCredential::ApiKey(secret) => store.authenticate_key(binding, &secret).await?,
         };
         AuthorizedPrincipal::from_identity(store, principal)?
             .load_authorization(store)

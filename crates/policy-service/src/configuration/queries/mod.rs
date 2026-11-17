@@ -16,14 +16,15 @@ impl Transactions {
         ids: Vec<Uuid>,
         _now: i64,
     ) -> Result<BTreeMap<Uuid, Authorization>> {
-        let operations = storage::load_many_on(c, self.tenant, &self.protection, ids).await?;
+        let operations =
+            storage::load_many_on(c, proof.binding().tenant(), &self.protection, ids).await?;
         let targets = operations
             .values()
             .map(|o| (o.id, o.device))
             .collect::<Vec<_>>();
         let lifecycle = rss_mdm_device_service::lifecycle::execution_permissions_in(
             c,
-            &self.tenant.to_string(),
+            &proof.binding().tenant().to_string(),
             &targets,
         )
         .await
@@ -47,7 +48,7 @@ impl Transactions {
             let rows = rss_mdm_registration_service::device::read::active_channel_in(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 c,
-                self.tenant.to_string(),
+                proof.binding().tenant().to_string(),
                 devices,
                 rss_mdm_inventory::Channel::Mdm,
                 purpose,
@@ -110,7 +111,7 @@ impl Transactions {
         id: Uuid,
     ) -> Result<Detail> {
         grant.require(proof, Permission::OperationRead, Some(device))?;
-        let op = storage::load_on(c, self.tenant, &self.protection, id).await?;
+        let op = storage::load_on(c, proof.binding().tenant(), &self.protection, id).await?;
         if op.device != *device {
             return Err(Error::Forbidden.into());
         }
@@ -119,10 +120,10 @@ impl Transactions {
             .await?
             .remove(&id)
             .ok_or(Error::Conflict)?;
-        let status = self.status_on(c, id).await?;
+        let status = self.status_on(proof.binding(), c, id).await?;
         let values = native_values(grant, proof, &op)?;
         let observation = self
-            .observations_on(c, &[(&op, status)], values)
+            .observations_on(proof.binding(), c, &[(&op, status)], values)
             .await?
             .remove(&id)
             .ok_or(Error::Conflict)?;
@@ -147,17 +148,20 @@ impl Transactions {
         grant: &Snapshot,
         ids: Vec<Uuid>,
     ) -> Result<BTreeMap<Uuid, Evidence>> {
-        let operations = storage::load_many_on(c, self.tenant, &self.protection, ids).await?;
+        let operations =
+            storage::load_many_on(c, proof.binding().tenant(), &self.protection, ids).await?;
         let mut statuses = BTreeMap::new();
         for op in operations.values() {
             grant.require(proof, Permission::OperationRead, Some(&op.device))?;
-            statuses.insert(op.id, self.status_on(c, op.id).await?);
+            statuses.insert(op.id, self.status_on(proof.binding(), c, op.id).await?);
         }
         let selected = operations
             .values()
             .map(|o| (o, statuses[&o.id]))
             .collect::<Vec<_>>();
-        let mut evidence = self.observations_on(c, &selected, false).await?;
+        let mut evidence = self
+            .observations_on(proof.binding(), c, &selected, false)
+            .await?;
         operations
             .into_iter()
             .map(|(id, op)| {
@@ -184,16 +188,17 @@ impl Transactions {
         let registration = &target.device;
 
         grant.require(proof, Permission::OperationRead, Some(device))?;
-        let operations = storage::load_many_on(c, self.tenant, &self.protection, ids).await?;
+        let operations =
+            storage::load_many_on(c, proof.binding().tenant(), &self.protection, ids).await?;
         let mut result = BTreeMap::new();
         for (id, op) in operations {
             if op.device != *device {
                 return Err(Error::Conflict.into());
             }
             let allowed = native_values(grant, proof, &op)?;
-            let status = self.status_on(c, id).await?;
+            let status = self.status_on(proof.binding(), c, id).await?;
             let observation = self
-                .observations_on(c, &[(&op, status)], allowed)
+                .observations_on(proof.binding(), c, &[(&op, status)], allowed)
                 .await?
                 .remove(&id)
                 .ok_or(Error::Conflict)?;
@@ -209,8 +214,13 @@ impl Transactions {
         }
         Ok(result)
     }
-    async fn status_on(&self, c: &mut PgConnection, id: Uuid) -> Result<dc::Status> {
-        let status:Option<String>=sqlx::query_scalar("SELECT status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2").bind(self.tenant.to_string()).bind(id.to_string()).fetch_optional(c).await?;
+    async fn status_on(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        c: &mut PgConnection,
+        id: Uuid,
+    ) -> Result<dc::Status> {
+        let status:Option<String>=sqlx::query_scalar("SELECT status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2").bind(binding.tenant().to_string()).bind(id.to_string()).fetch_optional(c).await?;
         stored(dc::Status::restore(
             &status.ok_or(Error::Unavailable(Failure::CommandInvariant))?,
         ))

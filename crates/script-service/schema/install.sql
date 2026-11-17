@@ -3,6 +3,7 @@ BEGIN;
 CREATE SCHEMA mdm_script;
 
 CREATE TABLE mdm_script.runs (
+    expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
     policy_version uuid NOT NULL,
@@ -59,6 +60,7 @@ CREATE POLICY tenant ON mdm_script.output_chunks
  WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 
 CREATE TABLE mdm_script.agent_admission (
+    expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     tenant_id uuid NOT NULL,
     device uuid NOT NULL,
     policy_after uuid,
@@ -71,6 +73,7 @@ CREATE POLICY tenant ON mdm_script.agent_admission
  WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 
 CREATE TABLE mdm_script.policy_recovery (
+    expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     tenant_id uuid NOT NULL,
     policy uuid NOT NULL,
     input_revision bigint NOT NULL DEFAULT 1,
@@ -93,3 +96,27 @@ CREATE INDEX script_offer ON mdm_script.runs(tenant_id,device,available_at,id)
  WHERE state->>'execution'='not_started' AND state->>'cancellation'='none';
 CREATE INDEX script_history ON mdm_script.runs(tenant_id,policy_version,available_at,id);
 COMMIT;
+
+-- Discover only original owner work coordinates through the shared read role.
+CREATE POLICY work_discovery ON mdm_script.runs FOR SELECT TO mdm_owner USING(true);
+CREATE POLICY work_discovery ON mdm_script.policy_recovery FOR SELECT TO mdm_owner USING(true);
+CREATE FUNCTION mdm_script.work_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT tenant_id FROM (SELECT tenant_id FROM mdm_script.runs UNION SELECT tenant_id FROM mdm_script.policy_recovery) work
+ WHERE after_tenant IS NULL OR tenant_id>after_tenant ORDER BY tenant_id LIMIT 32
+$$;
+CREATE FUNCTION mdm_script.work_epoch(t uuid, entity text) RETURNS bigint
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT expected_epoch FROM mdm_script.runs WHERE tenant_id=t AND 'run:'||id::text=entity
+ UNION ALL SELECT expected_epoch FROM mdm_script.policy_recovery WHERE tenant_id=t AND 'policy:'||policy::text=entity
+$$;
+CREATE FUNCTION mdm_script.relay_scopes(after_tenant uuid, after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT DISTINCT r.tenant_id,r.expected_epoch FROM mdm_script.runs r WHERE (after_tenant IS NULL OR (r.tenant_id,r.expected_epoch)>(after_tenant,after_epoch)) AND EXISTS (SELECT FROM rss_transactional_messaging.outbox o WHERE o.tenant_id=r.tenant_id AND o.domain='mdm.script.v1' AND o.message_id='script.'||r.id::text AND o.status NOT IN ('published','resolved')) ORDER BY tenant_id,expected_epoch LIMIT 32
+$$;
+ALTER FUNCTION mdm_script.work_scopes(uuid) OWNER TO mdm_owner;
+ALTER FUNCTION mdm_script.work_epoch(uuid,text) OWNER TO mdm_owner;
+ALTER FUNCTION mdm_script.relay_scopes(uuid,bigint) OWNER TO mdm_owner;
+REVOKE ALL ON FUNCTION mdm_script.work_scopes(uuid),mdm_script.work_epoch(uuid,text),mdm_script.relay_scopes(uuid,bigint) FROM PUBLIC;
+GRANT USAGE ON SCHEMA mdm_script TO mdm_access;
+GRANT EXECUTE ON FUNCTION mdm_script.work_scopes(uuid),mdm_script.work_epoch(uuid,text),mdm_script.relay_scopes(uuid,bigint) TO mdm_access;

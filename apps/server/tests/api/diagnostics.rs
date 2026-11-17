@@ -7,9 +7,13 @@ fn application_administration_routes_keep_original_authentication_boundaries() {
         .as_array()
         .expect("endpoint descriptions");
     for (method, path, alternatives) in [
-        ("GET", "/api/v1/user-attribute-definitions", 3),
-        ("GET", "/api/v1/settings/catalog", 3),
-        ("PUT", "/api/v1/settings/first-use", 3),
+        (
+            "GET",
+            "/api/v1/tenants/{tenant}/user-attribute-definitions",
+            3,
+        ),
+        ("GET", "/api/v1/tenants/{tenant}/settings/catalog", 3),
+        ("PUT", "/api/v1/tenants/{tenant}/settings/first-use", 3),
         ("GET", "/api/v1/tenant-administration/settings/catalog", 1),
     ] {
         let matches = endpoints

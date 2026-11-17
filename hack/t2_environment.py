@@ -2,7 +2,7 @@
 
 No business seed, test invocation or cross-domain preparation belongs here.
 """
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 import os
@@ -25,7 +25,7 @@ def prepared(root, modules, binary, command, resources):
     environment.root.mkdir(parents=True, exist_ok=True, mode=0o700)
     held = lock_file(environment.root / '.prepare.lock')
     require(held is not None, 'foundation environment is already in use')
-    with os.fdopen(held, 'r'):
+    with os.fdopen(held, 'r'), ExitStack() as isolated:
         with environment.phase('foundation-pg'):
             before = environment.compose('ps', '--all', '-q', 'postgres')
             environment.up()
@@ -61,7 +61,7 @@ def prepared(root, modules, binary, command, resources):
                 path.write_bytes(bytes([value]) * 32)
                 path.chmod(0o600)
 
-        if set(modules) & {'telemetry.query', 'execution.directory', 'policy.configuration', 'agent.foundation', 'registration.device_access', 'recovery.credentials', 'software.deployment', 'registration.installation', 'device.control', 'device.retirement', 'script.delivery', 'inventory.collection', 'inventory.preview', 'task.composition', 'task.locking', 'task.recovery', 'task_trust', 'agent.delivery', 'windows.protocol', 'apple.protocol'}:
+        if set(profiles(modules)) & {'shared', 'agent_foundation', 'da_foundation'}:
             from task_trust_materials import prepare
             material = directory / 'task-trust-ca'
             existed = material.exists()
@@ -78,6 +78,18 @@ def prepared(root, modules, binary, command, resources):
         values = {}
         try:
             for profile in profiles(modules):
+                if profile == 'installation':
+                    # The installer owns cluster roles as well as databases; an already
+                    # migrated shared foundation cannot prove a fresh installation.
+                    fresh = Environment(root, group='installation-t2')
+                    if fresh.root.exists():
+                        fresh.reset()
+                    isolated.callback(fresh.reset)
+                    fresh.up()
+                    values[profile] = {'postgres': dict(host='localhost', port=fresh.port(), name='postgres', user='postgres',
+                        ca_file=str(fresh.root/'ca.crt'), password_file=str(fresh.root/'pg/pg-password'))}
+                    resources.append(dict(kind='postgres', identity=fresh.container(), profile=profile, action='created'))
+                    continue
                 selected_installation = dict(installation, audit_mode='ledger') if profile == 'audit_ledger' else installation
                 shared = profile == 'shared'
                 name = 't2_foundation' if shared else 't2_' + uuid.uuid4().hex

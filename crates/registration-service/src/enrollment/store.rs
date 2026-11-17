@@ -17,6 +17,7 @@ pub fn authorization(row: PgRow) -> Result<Authorization, Error> {
         return Err(Error::Unauthorized);
     }
     Ok(Authorization {
+        expected_epoch: row.try_get("expected_epoch").map_err(db)?,
         self_service: row.try_get("self_service").map_err(db)?,
         id: uuid(&row, "id")?,
         device: row
@@ -98,8 +99,7 @@ pub async fn create_enrollment(
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let attempt = store
         .write(
-            rss_request_context::TenantId::parse(proof.tenant_id())
-                .map_err(|_| Error::Malformed)?,
+            audit.binding()?,
             &budget.source_control(),
             (
                 store,
@@ -307,8 +307,7 @@ pub async fn change_enrollment(
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let attempt = store
         .write(
-            rss_request_context::TenantId::parse(proof.tenant_id())
-                .map_err(|_| Error::Malformed)?,
+            audit.binding()?,
             &budget.source_control(),
             (
                 store,

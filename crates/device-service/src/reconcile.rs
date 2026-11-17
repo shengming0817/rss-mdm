@@ -103,6 +103,7 @@ pub(crate) async fn prepare(
 }
 /// Only relevant-input revalidation and publication hold the nonblocking tenant fence.
 pub(crate) async fn publish(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     c: &mut PgConnection,
     tenant: TenantId,
     prepared: Prepared,
@@ -138,7 +139,7 @@ pub(crate) async fn publish(
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        t.clone(),
+        execution,
         "device_association_automatic",
         rss_mdm_audit_integration::AuditIntent::Management,
     );

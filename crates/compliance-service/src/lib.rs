@@ -1,5 +1,6 @@
 //! Product composition: Inventory owns facts, Group owns predicates and membership,
 //! Compliance owns assessments. Existing automation owns all task progress.
+mod discovery;
 use crate::authorization::{Permission, Snapshot, context::AuthorizedPrincipal};
 use crate::transaction::*;
 
@@ -23,11 +24,12 @@ pub mod tasks;
 
 pub use model::*;
 pub struct Compliance {
-    worker_health: std::sync::Mutex<crate::worker_health::ObservationState>,
+    storage: rss_transactional_messaging::fence::StorageIdentity,
+    read_pool: sqlx::PgPool,
+    worker_health: std::sync::Mutex<rss_mdm_recovery_observation::Observations>,
     task_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    tenant: TenantId,
     clock: Arc<dyn rss_mdm_inventory_service::clock::Clock>,
     groups: Arc<rss_mdm_group_postgres::GroupStore>,
     asset_reader: rss_mdm_inventory_service::assets::planning::SnapshotReader,
@@ -35,9 +37,10 @@ pub struct Compliance {
     cursor_key: ring::hmac::Key,
 }
 pub struct Dependencies {
+    pub read_pool: sqlx::PgPool,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    pub tenant: TenantId,
+    pub probe: rss_transactional_messaging::fence::ExecutionBinding,
     pub clock: Arc<dyn rss_mdm_inventory_service::clock::Clock>,
     pub groups: Arc<rss_mdm_group_postgres::GroupStore>,
     pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
@@ -46,28 +49,26 @@ pub struct Dependencies {
 impl Compliance {
     pub fn new(d: Dependencies) -> Self {
         Self {
+            storage: d.probe.storage(),
+            read_pool: d.read_pool,
             task_status: Default::default(),
             worker_health: Default::default(),
             audit_store: d.audit_store,
             runtime: d.runtime.clone(),
-            tenant: d.tenant,
             clock: d.clock,
             groups: d.groups,
             reconcile_messaging: d.reconcile_messaging,
             asset_reader: rss_mdm_inventory_service::assets::planning::SnapshotReader::bind(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 d.runtime,
-                d.tenant,
             ),
             cursor_key: d.cursor_key,
         }
     }
-    fn tenant(&self) -> TenantId {
-        self.tenant
-    }
+
     async fn rule(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Rule> {
         self.lock_rule(tx, id).await?;
-        let t = self.tenant();
+        let t = tx.tenant_id();
         tx.with_connection(move |c| {
             Box::pin(async move {
                 pg::rule::<rss_mdm_inventory_service::assets::InventoryCondition>(c, t, id).await
@@ -77,7 +78,7 @@ impl Compliance {
         .ok_or_else(|| Error::NotFound.into())
     }
     async fn lock_rule(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<()> {
-        let key = format!("{}:compliance:{id}", self.tenant());
+        let key = format!("{}:compliance:{id}", tx.tenant_id());
         tx.with_connection(move |c| {
             Box::pin(async move {
                 sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,3032))")
@@ -112,7 +113,7 @@ impl Compliance {
             Some(
                 rss_mdm_inventory_service::assets::cut::capture(
                     &self.audit_store,
-                    self.tenant(),
+                    audit.binding()?.tenant(),
                     &budget,
                 )
                 .await?,
@@ -123,7 +124,7 @@ impl Compliance {
         crate::transaction::run_budget(
             &self.audit_store,
             &self.runtime,
-            self.audit_store.binding(),
+            audit.binding()?,
             audit,
             (self, command, audit, proof, candidate.as_ref()),
             |ctx, tx| {
@@ -141,7 +142,7 @@ impl Compliance {
                         command,
                     ))?;
                     let operation = command.operation();
-                    let t = s.tenant();
+                    let t = tx.tenant_id();
                     if let Some(id) = operation {
                         if id.is_nil() {
                             return Err(Error::Malformed.into());
@@ -212,7 +213,7 @@ impl Compliance {
         command: &Command,
         candidate: Option<&rss_mdm_inventory::AssetCut>,
     ) -> Result<Reply> {
-        let t = self.tenant();
+        let t = tx.tenant_id();
         match command {
             Command::Read { id } => Ok(Reply::Rule(Box::new(RuleView::from(
                 self.rule(tx, *id).await?,
@@ -312,7 +313,7 @@ impl Compliance {
     ) -> Result<Changed> {
         rss_mdm_inventory_service::collection::resource_authoring::fence_in(tx).await?;
         if request.expected_revision == 0 {
-            let key = format!("{}:compliance-catalog", self.tenant());
+            let key = format!("{}:compliance-catalog", tx.tenant_id());
             tx.with_connection(move |c| {
                 Box::pin(async move {
                     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,3032))")
@@ -325,7 +326,7 @@ impl Compliance {
             .await?;
         }
         self.lock_rule(tx, id).await?;
-        let t = self.tenant();
+        let t = tx.tenant_id();
         if id.is_nil() {
             return Err(Error::Malformed.into());
         }
@@ -434,16 +435,17 @@ fn authorize(
 
 impl Compliance {
     pub fn worker_status(&self) -> crate::WorkerStatus {
-        self.worker_health
-            .lock()
-            .expect("worker observation")
-            .status(self.task_status.get().map(rss_runtime::TaskStatus::current))
+        crate::worker_health::status(
+            &self.worker_health.lock().expect("worker observation"),
+            self.task_status.get().map(rss_runtime::TaskStatus::current),
+        )
     }
     pub async fn queue_health(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         budget: std::time::Duration,
     ) -> std::result::Result<[u64; 5], Error> {
-        self.runtime.local_tx(self.audit_store.binding(),rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),|tx|Box::pin(async move{
+        self.runtime.local_tx(execution,rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),|tx|Box::pin(async move{
             let t=tx.tenant_id().to_string();
             tx.with_connection(move|c|Box::pin(async move{
                 let row:(i64,i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM (SELECT 1 FROM mdm_compliance.runs WHERE tenant_id=$1::uuid AND NOT completed AND NOT started LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_compliance.runs WHERE tenant_id=$1::uuid AND NOT completed AND started LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_compliance.runs WHERE tenant_id=$1::uuid AND completed AND failure IS NULL LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_compliance.runs WHERE tenant_id=$1::uuid AND failure IS NOT NULL AND failure<>'superseded' LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_compliance.runs WHERE tenant_id=$1::uuid AND failure='superseded' LIMIT 1001) p)").bind(t).fetch_one(c).await?;
@@ -468,7 +470,7 @@ fn query_error(error: rss_mdm_query::Error) -> Error {
 }
 
 mod worker_health;
-pub use worker_health::{WorkerAttempt, WorkerScan, WorkerStatus};
+pub use worker_health::WorkerStatus;
 
 /// Fresh Compliance storage is provided by its PostgreSQL owner.
 pub const INSTALL_SQL: &str = rss_mdm_compliance_postgres::MIGRATION_SQL;
@@ -481,5 +483,3 @@ pub async fn admit_storage_in(
 ) -> std::result::Result<(), sqlx::Error> {
     rss_mdm_compliance_postgres::admit(c, tenant).await
 }
-
-pub mod input_wake;

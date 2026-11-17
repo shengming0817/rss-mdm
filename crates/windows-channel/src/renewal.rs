@@ -17,7 +17,7 @@ fn enrollment(value: &str) -> Result<EnrollmentType, Error> {
     }
 }
 fn provision(
-    app: &HttpState,
+    windows: &crate::Windows,
     certificate: &[u8],
     kind: &str,
     purpose: rss_mdm_registration_service::Purpose,
@@ -30,7 +30,7 @@ fn provision(
     provisioning::renewal(
         certificate,
         &thumbprint,
-        &app.windows()?.provider(purpose)?,
+        &windows.provider(purpose)?,
         enrollment(kind)?,
         &CodecLimits::default(),
     )
@@ -44,8 +44,12 @@ pub(crate) async fn issue(
     audit: &RequestAudit,
     purpose: rss_mdm_registration_service::Purpose,
 ) -> Result<Vec<u8>, Error> {
+    let execution = app.certificate_binding(peer).await?;
+    let windows = app.windows(execution).await?;
     let (principal, proof, digest, pending) = prepare_request(
         app,
+        &windows,
+        execution,
         peer.chain().first().ok_or(Error::Unauthorized)?.as_ref(),
         cms,
         audit,
@@ -61,14 +65,15 @@ pub(crate) async fn issue(
         .ok_or(Error::Unavailable(Failure::Clock))?;
     let certificate = crate::issuance::sign_profile(
         app,
-        &principal.tenant().to_string(),
+        execution,
+        &windows,
         pending.signing_attempt,
         proof.csr(),
         &profile,
         now,
     )
     .await?;
-    let leaf = app.windows()?.ca.validate_issued(
+    let leaf = windows.ca.validate_issued(
         &profile,
         &certificate::Csr::verify(proof.csr())?,
         &[certificate.clone().into()],
@@ -84,16 +89,24 @@ pub(crate) async fn issue(
     let outcome = app
         .audit_store
         .write(
-            principal.tenant(),
+            audit.binding()?,
             &budget.source_control(),
-            (app, &principal, &proof, &digest, audit, &issued),
-            |(app, p, proof, digest, audit, issued), tx| {
+            (app, &windows, &principal, &proof, &digest, audit, &issued),
+            |(app, windows, p, proof, digest, audit, issued), tx| {
                 Box::pin(async move {
                     let (id, certificate, kind, replayed) = tx
                         .with_connection_context(
-                            &mut (*app, *p, *proof, *digest, *issued),
-                            |(app, p, proof, digest, issued), c| {
-                                Box::pin(issue_on(c, app, p, proof, digest.as_slice(), issued))
+                            &mut (*app, *windows, *p, *proof, *digest, *issued),
+                            |(app, windows, p, proof, digest, issued), c| {
+                                Box::pin(issue_on(
+                                    c,
+                                    app,
+                                    windows,
+                                    p,
+                                    proof,
+                                    digest.as_slice(),
+                                    issued,
+                                ))
                             },
                         )
                         .await?;
@@ -117,7 +130,7 @@ pub(crate) async fn issue(
                             rss_mdm_audit_integration::ManagementResult::Replayed,
                         );
                     }
-                    let response = provision(app, &certificate, &kind, purpose)?;
+                    let response = provision(windows, &certificate, &kind, purpose)?;
                     audit.mark_commit_started();
                     Ok(response)
                 })
@@ -128,6 +141,8 @@ pub(crate) async fn issue(
 }
 pub(crate) async fn prepare_request(
     app: &HttpState,
+    windows: &crate::Windows,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     leaf: &[u8],
     cms: &[u8],
     audit: &RequestAudit,
@@ -145,22 +160,24 @@ pub(crate) async fn prepare_request(
         .clock
         .unix_seconds()
         .ok_or(Error::Unavailable(Failure::Clock))?;
-    let proof = app.windows()?.ca.renewal(cms, leaf, now)?;
+    let proof = windows.ca.renewal(cms, leaf, now)?;
     let principal = app
         .devices
         .management_principal(
             &crate::device::ChannelMount::new(
                 rss_mdm_install_support::StorageProfile::Mdm,
-                app.identity.tenant(),
                 rss_mdm_inventory::ReportSource::MdmWindows,
                 purpose,
             )
-            .credential(proof.fingerprint())?,
+            .credential(execution, proof.fingerprint())?,
         )
         .await?;
     if principal.purpose() == rss_mdm_registration_service::Purpose::WindowsDeclared {
-        crate::linked::current_parent(app, principal.device()).await?;
+        crate::linked::current_parent(app, windows, execution, principal.device()).await?;
     }
+    audit
+        .bind_scope(execution)
+        .map_err(|_| Error::Unauthorized)?;
     audit.identify_device(principal.device());
     audit.target_device(principal.device());
     let digest = app
@@ -174,13 +191,14 @@ pub(crate) async fn prepare_request(
             )?,
         )
         .map_err(|_| Error::Unavailable(Failure::Protocol))?;
-    let pending = prepare(app, &principal, &proof, &digest).await?;
+    let pending = prepare(app, windows, &principal, &proof, &digest).await?;
     Ok((principal, proof, digest, pending))
 }
 
 async fn issue_on(
     c: &mut sqlx::PgConnection,
     app: &HttpState,
+    windows: &crate::Windows,
     p: &DevicePrincipal,
     proof: &rss_mdm_device_trust::windows::RenewalProof,
     digest: &[u8],
@@ -197,10 +215,9 @@ async fn issue_on(
     .await?;
     crate::device::store::revalidate_management(rss_mdm_install_support::StorageProfile::Mdm, c, p)
         .await?;
-    let windows = app.windows()?;
-    if let Some(old)=sqlx::query("SELECT n.id, n.proof_digest, n.certificate, q.windows_profile AS enrollment_type, n.configuration FROM mdm_windows.renewals AS n INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (n.tenant_id, n.device) INNER JOIN mdm_access.requests AS q ON (q.tenant_id, q.id) = (r.tenant_id, r.request_id) WHERE n.tenant_id = CAST($1 AS uuid) AND n.device = $2 AND n.previous_credential = $3 FOR UPDATE OF n")
+    if let Some(old)=sqlx::query("SELECT n.id, n.proof_digest, n.certificate, q.windows_profile AS enrollment_type, n.configuration,n.expected_epoch FROM mdm_windows.renewals AS n INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (n.tenant_id, n.device) INNER JOIN mdm_access.requests AS q ON (q.tenant_id, q.id) = (r.tenant_id, r.request_id) WHERE n.tenant_id = CAST($1 AS uuid) AND n.device = $2 AND n.previous_credential = $3 FOR UPDATE OF n")
         .bind(&tenant).bind(p.device().into_uuid()).bind(p.credential()).fetch_optional(&mut *c).await.map_err(db)? {
-        if old.try_get::<Vec<u8>,_>("proof_digest").map_err(db)?!=digest || old.try_get::<String,_>("configuration").map_err(db)?!=windows.configuration {return Err(Error::Conflict)}
+        if old.try_get::<i64,_>("expected_epoch").map_err(db)?!=p.binding().epoch().get() || old.try_get::<Vec<u8>,_>("proof_digest").map_err(db)?!=digest || old.try_get::<String,_>("configuration").map_err(db)?!=windows.configuration {return Err(Error::Conflict)}
         return Ok((old.try_get("id").map_err(db)?,old.try_get("certificate").map_err(db)?,old.try_get("enrollment_type").map_err(db)?,true));
     }
     let request =
@@ -269,18 +286,19 @@ struct PendingCertificate {
 }
 async fn prepare(
     app: &HttpState,
+    windows: &crate::Windows,
     p: &DevicePrincipal,
     proof: &rss_mdm_device_trust::windows::RenewalProof,
     digest: &[u8],
 ) -> Result<Pending, Error> {
     crate::issuance::prepare_transaction(
         &app.audit_store,
-        p.tenant(),
-        (app, p, proof, digest),
+        p.binding(),
+        (app, windows, p, proof, digest),
         |ctx, c| {
             Box::pin(async move {
-                let (app, p, proof, digest) = ctx;
-                prepare_on(c, app, p, proof, digest).await
+                let (app, windows, p, proof, digest) = ctx;
+                prepare_on(c, app, windows, p, proof, digest).await
             })
         },
     )
@@ -289,6 +307,7 @@ async fn prepare(
 async fn prepare_on(
     connection: &mut sqlx::PgConnection,
     app: &HttpState,
+    windows: &crate::Windows,
     p: &DevicePrincipal,
     proof: &rss_mdm_device_trust::windows::RenewalProof,
     digest: &[u8],
@@ -309,11 +328,10 @@ async fn prepare_on(
         p,
     )
     .await?;
-    let windows = app.windows()?;
-    if let Some(row) = sqlx::query("SELECT id, signing_attempt, proof_digest, profile, configuration FROM mdm_windows.renewal_intents WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND previous_credential = $3")
+    if let Some(row) = sqlx::query("SELECT id, signing_attempt, proof_digest, profile, configuration,expected_epoch FROM mdm_windows.renewal_intents WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND previous_credential = $3")
         .bind(&tenant).bind(p.device().into_uuid()).bind(p.credential())
         .fetch_optional(&mut *tx).await.map_err(db)? {
-        if row.try_get::<Vec<u8>,_>("proof_digest").map_err(db)? != digest
+        if row.try_get::<i64,_>("expected_epoch").map_err(db)?!=p.binding().epoch().get() || row.try_get::<Vec<u8>,_>("proof_digest").map_err(db)? != digest
             || row.try_get::<String,_>("configuration").map_err(db)? != windows.configuration {
             return Err(Error::Conflict);
         }
@@ -374,11 +392,13 @@ async fn prepare_on(
 
 pub(crate) async fn activate(
     app: &HttpState,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    windows: &crate::Windows,
     leaf: &rss_mdm_device_trust::windows::CheckedLeaf,
     device: &str,
     purpose: rss_mdm_registration_service::Purpose,
 ) -> Result<(), Error> {
-    let tenant = app.identity.tenant();
+    let tenant = execution.tenant();
     // A hint avoids an empty write/ledger transaction for every ordinary certificate.
     // Activation still rechecks the pending row and current credential under the channel lock.
     let mut hint = app.access.begin_read(&tenant.to_string()).await?;
@@ -391,7 +411,7 @@ pub(crate) async fn activate(
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        tenant.to_string(),
+        execution,
         "windows_renewal",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -399,16 +419,18 @@ pub(crate) async fn activate(
     let outcome = app
         .audit_store
         .write(
-            tenant,
+            audit.binding()?,
             &budget.source_control(),
-            (app, leaf, device, &audit, purpose),
-            |(app, leaf, device, audit, purpose), tx| {
+            (app, windows, leaf, device, &audit, purpose),
+            |(app, windows, leaf, device, audit, purpose), tx| {
                 Box::pin(async move {
                     let id = tx
                         .with_connection_context(
-                            &mut (*app, *leaf, *device, *audit, *purpose),
-                            |(app, leaf, device, audit, purpose), c| {
-                                Box::pin(activate_on(c, app, leaf, device, audit, *purpose))
+                            &mut (*app, *windows, *leaf, *device, *audit, *purpose),
+                            |(app, windows, leaf, device, audit, purpose), c| {
+                                Box::pin(activate_on(
+                                    c, app, windows, leaf, device, audit, *purpose,
+                                ))
                             },
                         )
                         .await?;
@@ -444,12 +466,13 @@ pub(crate) async fn activate(
 async fn activate_on(
     c: &mut sqlx::PgConnection,
     app: &HttpState,
+    windows: &crate::Windows,
     leaf: &rss_mdm_device_trust::windows::CheckedLeaf,
     device: &str,
     audit: &RequestAudit,
     purpose: rss_mdm_registration_service::Purpose,
 ) -> Result<Option<Uuid>, Error> {
-    let tenant = app.identity.tenant().to_string();
+    let tenant = audit.binding()?.tenant().to_string();
     let original: Option<(Uuid,Uuid)> = sqlx::query_as("SELECT n.device,coalesce(k.protocol_request,r.request_id) AS request FROM mdm_windows.renewals n JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(n.tenant_id,n.device) JOIN mdm_access.credentials k ON(k.tenant_id,k.id,k.device)=(n.tenant_id,n.previous_credential,n.device) WHERE n.tenant_id=$1::uuid AND n.fingerprint=$2 AND n.activated_at IS NULL AND k.purpose=$3")
         .bind(&tenant).bind(leaf.fingerprint().as_slice()).bind(purpose.as_str()).fetch_optional(&mut *c).await.map_err(db)?;
     let Some((internal_device, request)) = original else {
@@ -469,10 +492,12 @@ async fn activate_on(
         rss_mdm_inventory::Channel::Mdm,
     )
     .await?;
-    let row=sqlx::query("SELECT id, device, previous_credential, configuration FROM mdm_windows.renewals WHERE tenant_id = CAST($1 AS uuid) AND fingerprint = $2 AND activated_at IS NULL FOR UPDATE")
+    let row=sqlx::query("SELECT id, device, previous_credential, configuration,expected_epoch FROM mdm_windows.renewals WHERE tenant_id = CAST($1 AS uuid) AND fingerprint = $2 AND activated_at IS NULL FOR UPDATE")
         .bind(&tenant).bind(leaf.fingerprint().as_slice()).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else { return Ok(None) };
-    if row.try_get::<String, _>("configuration").map_err(db)? != app.windows()?.configuration {
+    if row.try_get::<i64, _>("expected_epoch").map_err(db)? != audit.binding()?.epoch().get()
+        || row.try_get::<String, _>("configuration").map_err(db)? != windows.configuration
+    {
         return Err(Error::Unauthorized);
     }
     let id: Uuid = row.try_get("id").map_err(db)?;
@@ -484,11 +509,10 @@ async fn activate_on(
         row.try_get("previous_credential").map_err(db)?,
         &crate::device::ChannelMount::new(
             rss_mdm_install_support::StorageProfile::Mdm,
-            app.identity.tenant(),
             rss_mdm_inventory::ReportSource::MdmWindows,
             purpose,
         )
-        .credential(leaf.fingerprint())?,
+        .credential(audit.binding()?, leaf.fingerprint())?,
     )
     .await?;
     sqlx::query(

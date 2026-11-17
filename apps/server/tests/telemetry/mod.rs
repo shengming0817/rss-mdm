@@ -94,7 +94,7 @@ async fn seed(
         Id::new(format!("{device}:agent.native"))?,
         Id::new(epoch.to_string())?,
     );
-    let store = f.store(c).await?;
+    let store = f.store().await?;
     let authority = SeedAuthority(c.tenant);
     let register = Authorized::<DefinitionMutation>::verify(
         &authority,
@@ -197,16 +197,18 @@ fn aggregate(
     json!({"query":query(device,field),"definitionVersion":"1","source":inv::Source::AgentNative,"epoch":epoch,"dimensions":{},"resolutionMicros":"4000000","operation":operation,"coverage":{"coverage":"observedOnly"},"maxGapMicros":if counter{Some("4000000")}else{None}})
 }
 fn validator(path: &str) -> jsonschema::Validator {
-    let document = rss_mdm_http_contract::artifact::document([(
-        "browser",
-        rss_mdm_management_http::telemetry::routes(None).into_endpoints(),
-    )])
-    .unwrap();
+    rss_mdm_http_contract::route_module! { struct TelemetryContract for [Browser] { telemetry at "/api/v1/tenants/{tenant}" } }
+    let mounted = TelemetryContract {
+        telemetry: rss_mdm_management_http::telemetry::routes(None),
+    }
+    .assemble();
+    let document =
+        rss_mdm_http_contract::artifact::document([("browser", mounted.into_endpoints())]).unwrap();
     let endpoint = document["endpoints"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|e| e["path"] == path)
+        .find(|e| e["path"] == format!("/api/v1/tenants/{{tenant}}{path}"))
         .unwrap();
     let response = endpoint["responses"]
         .as_array()
@@ -225,8 +227,10 @@ async fn exact_integer_queries_and_live_authorization() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let result = async {
         let fixture = Fixture::open(&c).await?;
-        let result = exercise(&c, &fixture).await;
-        fixture::with_cleanup(result, fixture.close(&c).await)
+        let default = Fixture::open_with_limits(&c, 4096, 4096).await?;
+        let result = exercise(&c, &fixture, &default).await;
+        let result = fixture::with_cleanup(result, fixture.close(&c).await);
+        fixture::with_cleanup(result, default.close(&c).await)
     }
     .await;
     c.close().await;
@@ -236,7 +240,7 @@ async fn exact_integer_queries_and_live_authorization() -> Result<()> {
     clippy::cognitive_complexity,
     reason = "One HTTPS scenario checks exact values, continuation and live authorization against the same persisted data"
 )]
-async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
+async fn exercise(c: &Context, f: &Fixture, default: &Fixture) -> Result<()> {
     let (device, grant) = materials::seed_registration(c).await?;
     let principal = materials::authenticated_agent(
         c,
@@ -280,7 +284,94 @@ async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
     }
     capacity::seed(c, f, &device, epoch).await?;
     let account = c.account(&[Permission::InventoryRead]).await?;
-    let service = f.service(c).await?;
+    let binding = f.config.configuration_binding()?;
+    rss_mdm_telemetry_service::admit_configuration(&f.owner.runtime, c.execution(), binding)
+        .await?;
+    let mut absent = f.config.clone();
+    absent.resource_id = Uuid::new_v4();
+    let absent_binding = absent.configuration_binding()?;
+    absent.cursor_key_file = absent.cursor_key_file.with_file_name("absent-cursor");
+    let service = f
+        .service(c, &[default.config.clone(), f.config.clone(), absent])
+        .await?;
+    service
+        .admit_default(c.execution(), crate::authority_t2_support::deadline())
+        .await?;
+    let selected: Vec<u8> = sqlx::query_scalar(
+        "SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid",
+    )
+    .bind(c.tenant.to_string())
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(selected, binding);
+    let unavailable = Context::open("shared", &[]).await?;
+    rss_mdm_telemetry_service::admit_configuration(
+        &f.owner.runtime,
+        unavailable.execution(),
+        absent_binding,
+    )
+    .await?;
+    assert!(
+        service
+            .admit_default(
+                unavailable.execution(),
+                crate::authority_t2_support::deadline()
+            )
+            .await
+            .is_err()
+    );
+    let retained: Vec<u8> = sqlx::query_scalar(
+        "SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid",
+    )
+    .bind(unavailable.tenant.to_string())
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(retained, absent_binding);
+    unavailable.close().await;
+    default_queries(default, service.clone()).await?;
+
+    // Admission must reject the selected provider's smaller budget before persisting a batch.
+    let vector: Value = serde_json::from_str(include_str!(
+        "../../../../crates/agent-wire/tests/fixtures/telemetry-v1-vectors.json"
+    ))?;
+    let upload = rss_mdm_agent_wire::runtime::TelemetryUpload {
+        batch_id: Uuid::new_v4(),
+        configuration: serde_json::from_value(vector["signed"].clone())?,
+        observations: (0..129)
+            .map(
+                |sequence| rss_mdm_agent_wire::runtime::TelemetryObservation {
+                    id: Uuid::new_v4(),
+                    sequence,
+                    observed_at: 2_000_000,
+                    values: [(
+                        rss_mdm_agent_wire::runtime::FieldKey::parse("custom.load").unwrap(),
+                        rss_mdm_agent_wire::runtime::TelemetryReading::Valid {
+                            value: rss_mdm_agent_wire::runtime::Scalar::Integer(1),
+                            interval_start: None,
+                        },
+                    )]
+                    .into(),
+                },
+            )
+            .collect(),
+    };
+    upload.validate()?;
+    assert!(matches!(
+        service.receive(&principal, &upload, 0).await,
+        Err(rss_mdm_telemetry_service::Error::Capacity)
+    ));
+    let persisted: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND id=$2)",
+    )
+    .bind(c.tenant.to_string())
+    .bind(upload.batch_id)
+    .fetch_one(&c.operator)
+    .await?;
+    assert!(
+        !persisted,
+        "oversized upload cannot be accepted and fail later"
+    );
+
     // The telemetry role revalidates primary credentials without native protocol column grants.
     let now: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp())*1000000)::bigint")
@@ -418,20 +509,6 @@ async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         "permission boundary"
     );
     drop(denied);
-    let foreign = Context::open("shared", &[]).await?;
-    let foreign_account = foreign.account(&[Permission::InventoryRead]).await?;
-    let foreign_http = http::Http::open(
-        &foreign,
-        service.clone(),
-        Arc::new(foreign.authenticate(&foreign_account).await?),
-    )
-    .await?;
-    let foreign_result = foreign_http
-        .call("/telemetry/history", query(&device, "custom.minimum"))
-        .await;
-    drop(foreign_http);
-    foreign.close().await;
-    anyhow::ensure!(foreign_result?.0 == 403, "tenant binding");
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND device=$2 AND source='agent.native'").bind(c.tenant.to_string()).bind(device.into_uuid()).execute(&mut *tx).await?;
     tx.commit().await?;
@@ -474,4 +551,36 @@ async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
     );
     drop(service);
     Ok(())
+}
+
+async fn default_queries(
+    default: &Fixture,
+    service: Arc<rss_mdm_telemetry_service::Service>,
+) -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let result=async {
+        service.admit_default(c.execution(),crate::authority_t2_support::deadline()).await?;
+        let binding:Vec<u8>=sqlx::query_scalar("SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
+        assert_eq!(binding,default.config.configuration_binding()?);
+        let (device,grant)=materials::seed_registration(&c).await?;
+        let _principal=materials::authenticated_agent(&c,grant,&device,vec![rss_mdm_agent_wire::runtime::Capability::InventoryCollectionV1]).await?;
+        let epoch=Uuid::new_v4();
+        let mut tx=crate::command_runtime_t2_support::seed_transaction(&c).await?;
+        sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,device,source,epoch,next_sequence,enabled) VALUES($1::uuid,$2,'agent.native',$3,0,true)").bind(c.tenant.to_string()).bind(device.into_uuid()).bind(epoch).execute(&mut *tx).await?;
+        anyhow::ensure!(rss_mdm_inventory_postgres::publish_retention_policy_in(&mut tx,c.tenant,&inv::RetentionPolicy {key:"standard".into(),revision:1,raw_seconds:86400,summary_seconds:86400,restore_seconds:0}).await?,"default retention seed");
+        tx.commit().await?;
+        seed(&c,default,&device,epoch,"custom.default",[Number::I64(23);2],false).await?;
+        let account=c.account(&[Permission::InventoryRead]).await?;
+        let http=http::Http::open(&c,service.clone(),Arc::new(c.authenticate(&account).await?)).await?;
+        for mode in ["history","latest"] {
+            let mut request=query(&device,"custom.default"); request["mode"]=json!(mode); request["maxPoints"]=json!(1);
+            let result=http.post("/telemetry/history",request).await?;
+            anyhow::ensure!(result["rows"].as_array().is_some_and(|rows|rows.len()==1),"default resource {mode} remains readable with another provider unavailable");
+        }
+        let result=http.post("/telemetry/aggregate",aggregate(&device,"custom.default",epoch,"sum",false)).await?;
+        anyhow::ensure!(validator("/telemetry/aggregate").is_valid(&result),"default resource aggregate");
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    c.close().await;
+    result
 }

@@ -69,8 +69,6 @@ pub(crate) fn decide(
     })
 }
 
-/// Shared business preflight; caller still owns live permission, locks, CAS and confirmation.
-
 #[derive(Clone, Debug, Serialize)]
 pub struct Decision {
     pub authorization: Authorization,
@@ -98,7 +96,7 @@ pub(crate) async fn batch(
     if operations.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let tenant = queries.tenant.to_string();
+    let tenant = _proof.tenant_id().to_owned();
     let targets = operations
         .values()
         .map(|o| (o.id, o.device))

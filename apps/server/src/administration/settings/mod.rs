@@ -8,8 +8,6 @@ pub(crate) mod model;
 use std::{collections::BTreeMap, sync::Arc};
 #[derive(Clone)]
 pub(crate) struct Directory {
-    pub binding: rss_transactional_messaging::fence::ExecutionBinding,
-    pub tenant: rss_request_context::TenantId,
     pub management_tenant: rss_request_context::TenantId,
     pub identity: rss_identity_postgres::Authority,
     pub federation: Option<rss_identity_postgres::Federation>,
@@ -23,17 +21,15 @@ pub(crate) struct Directory {
     pub registration: Option<Arc<rss_mdm_registration_service::agent::Service>>,
     pub webhooks: Arc<rss_mdm_webhook_service::management::Service>,
     pub windows: Arc<rss_mdm_windows_channel::Store>,
-    pub windows_loaded: bool,
-    pub windows_push_revision: Option<i64>,
-    pub apple_materials: Option<rss_mdm_apple_channel::runtime_materials::runtime::Selection>,
+    pub windows_runtime: Arc<rss_mdm_windows_channel::HttpState>,
     pub content: Option<Arc<rss_mdm_content_service::Store>>,
-    pub signing_key: Option<String>,
+    pub task_trust: Arc<rss_mdm_task_trust::Service>,
     pub recovery: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub apple_store: Arc<rss_mdm_apple_channel::Store>,
-    pub apple: Option<Arc<rss_mdm_apple_channel::Apple>>,
+    pub apple: Arc<rss_mdm_apple_channel::HttpState>,
 }
-fn route(id: &str) -> Option<&'static str> {
-    Some(match id {
+fn route(id: &str, tenant: &str) -> Option<String> {
+    let path = match id {
         "apns-key" | "apns-cert" => "/api/v1/apple/materials/apns",
         "profile-key" | "profile-cert" => "/api/v1/apple/materials/profile",
         "managed-key" => "/api/v1/apple/materials/managed_account",
@@ -46,8 +42,15 @@ fn route(id: &str) -> Option<&'static str> {
         "agent-package" => "/api/v1/agent-packages",
         "webhook-own" => "/api/v1/webhooks/materials",
         "organization" => "/api/v1/tenant-administration/tenants",
-        "host-config" => "/api/v1/tenant-administration/provisionings",
         _ => return None,
+    };
+    Some(if path.starts_with("/api/v1/tenant-administration/") {
+        path.to_owned()
+    } else {
+        format!(
+            "/api/v1/tenants/{tenant}/{}",
+            path.strip_prefix("/api/v1/").expect("business route")
+        )
     })
 }
 fn configured(projection: &mut Projection, count: usize) {
@@ -76,29 +79,26 @@ impl Directory {
         items: Vec<Item>,
         cutoff: rss_request_context::Deadline,
     ) -> Result<Vec<Entry>, Error> {
-        let business = proof.tenant_id() == self.tenant.to_string();
-        if !business && proof.tenant_id() != self.management_tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
+        let business = proof.tenant_id() != self.management_tenant.to_string();
         proof.bind_audit(&audit)?;
         audit.set_action(
             "settings_catalog_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        let mut cache = BTreeMap::<&str, Projection>::new();
+        let mut cache = BTreeMap::<String, Projection>::new();
         let mut result = Vec::new();
         let mut organizations: Option<serde_json::Value> = None;
         for item in items {
             proof.check_live()?;
-            let href = route(item.id);
-            if let Some(cached) = href.and_then(|key| cache.get(key)) {
+            let href = route(item.id, proof.tenant_id());
+            if let Some(cached) = href.as_ref().and_then(|key| cache.get(key)) {
                 result.push(Entry {
                     item,
                     projection: cached.clone(),
                 });
                 continue;
             }
-            let mut projection = Projection::unknown(href);
+            let mut projection = Projection::unknown(href.as_deref());
             self.host_projection(&proof, business, item.id, &mut projection)
                 .await?;
             if business {
@@ -135,9 +135,7 @@ impl Directory {
                 projection.status = Status::Loaded;
                 projection.reason = Some("current_process_loaded_not_external_qualification");
             }
-            "organization" | "host-config" if !business => {
-                self.tenant_registry(proof, id, projection).await?
-            }
+            "organization" if !business => self.tenant_registry(proof, projection).await?,
             "audit" | "ledger" => {
                 projection.status = if id == "audit" || self.audit.uses_ledger() {
                     Status::Loaded
@@ -156,10 +154,10 @@ impl Directory {
                     Some("current_database_sessions_not_future_credential_validity");
             }
             "ca-root" | "ca-pass" | "provisioner" | "scep-decrypter" | "ca-webhook" => {
-                self.ca_custody(id, projection)?
+                self.ca_custody(proof, id, projection).await?
             }
             "windows-key" => {
-                projection.status = if self.windows_loaded {
+                projection.status = if self.windows_runtime.windows.is_some() {
                     Status::Loaded
                 } else {
                     Status::Unconfigured
@@ -195,7 +193,9 @@ impl Directory {
     ) -> Result<(), Error> {
         match id {
             "user-attributes" => self.user_attributes(proof, audit, projection).await?,
-            "recovery-key" | "recovery-rsa" => self.recovery_material(id, projection)?,
+            "recovery-key" | "recovery-rsa" => {
+                self.recovery_material(proof, id, projection).await?
+            }
             "oidc" => {
                 self.identity_providers(proof, continuation, projection, cutoff)
                     .await?
@@ -204,7 +204,7 @@ impl Directory {
                 self.apple_organizations(proof, id, organizations, projection)
                     .await?
             }
-            "agent-package" => self.agent_packages(projection).await?,
+            "agent-package" => self.agent_packages(proof, projection).await?,
             "s3-key" | "storage" => self.content_storage(proof, audit, projection).await?,
             "apns-key" | "apns-cert" | "profile-key" | "profile-cert" | "managed-key" => {
                 self.apple_materials(proof, id, projection).await?
@@ -213,7 +213,7 @@ impl Directory {
             "smtp" => self.mail(proof, audit, projection).await?,
             "wns" => self.windows_push(proof, projection).await?,
             "task-key" => self.task_signing(proof, audit, projection).await?,
-            "trust" | "crl" => self.pki_trust(proof, projection)?,
+            "trust" | "crl" => self.pki_trust(proof, projection).await?,
             "webhook-own" => self.webhook_materials(proof, audit, projection).await?,
             _ => (),
         }
@@ -271,25 +271,15 @@ impl Directory {
     async fn tenant_registry(
         &self,
         proof: &Arc<AuthorizedPrincipal>,
-        id: &str,
         projection: &mut Projection,
     ) -> Result<(), Error> {
         if let Some(service) = &self.tenant_administration {
-            match service.summary(proof, id == "host-config").await {
+            match service.summary(proof).await {
                 Ok(value) => {
                     configured(
                         projection,
                         value["count"].as_u64().ok_or(Error::Malformed)? as usize,
                     );
-                    if id == "host-config" {
-                        if value["blocked"] == true {
-                            projection.status = Status::Unavailable;
-                        } else if value["pending"] == true {
-                            projection.status = Status::Pending;
-                        }
-                        projection.reason =
-                            Some("operation_observations_not_current_process_health");
-                    }
                 }
                 Err(crate::Error::Forbidden | crate::Error::Unauthorized) => {
                     return Err(Error::Forbidden);
@@ -305,11 +295,20 @@ impl Directory {
         Ok(())
     }
 
-    fn ca_custody(&self, id: &str, projection: &mut Projection) -> Result<(), Error> {
+    async fn ca_custody(
+        &self,
+        proof: &AuthorizedPrincipal,
+        id: &str,
+        projection: &mut Projection,
+    ) -> Result<(), Error> {
         projection.reason = Some("external_ca_custody_requires_deployment_operator_observation");
         let mut count = 0;
-        for binding in self.pki.bindings() {
-            let trust = binding.public().map_err(|_| Error::Conflict)?;
+        for trust in self
+            .pki
+            .trusts(proof.binding())
+            .await
+            .map_err(|_| Error::Unavailable(crate::Failure::Database))?
+        {
             if matches!(id, "scep-decrypter" | "ca-webhook")
                 && !matches!(
                     trust.purpose,
@@ -328,24 +327,75 @@ impl Directory {
         Ok(())
     }
 
-    fn recovery_material(&self, id: &str, projection: &mut Projection) -> Result<(), Error> {
-        if let Some(protection) = self.recovery.as_ref() {
-            configured(projection, 1);
-            projection.status =
-                if id == "recovery-rsa"
-                    && self.clock.unix_seconds().ok().is_none_or(|now| {
-                        protection.active_recipient().require_current(now).is_err()
-                    })
-                {
-                    Status::Unavailable
-                } else {
-                    Status::Loaded
-                };
-            projection.reason = Some("deployment_application_not_device_escrow_confirmation");
-            projection.ready = matches!(projection.status, Status::Loaded);
-        } else {
+    async fn recovery_material(
+        &self,
+        proof: &AuthorizedPrincipal,
+        id: &str,
+        projection: &mut Projection,
+    ) -> Result<(), Error> {
+        let Some(protection) = &self.recovery else {
             configured(projection, 0);
-        }
+            return Ok(());
+        };
+        let tenant = uuid::Uuid::parse_str(proof.tenant_id()).map_err(|_| Error::Malformed)?;
+        let budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
+        let selected = self
+            .audit
+            .read(
+                proof.binding().tenant(),
+                &budget.control(),
+                tenant,
+                |tenant, tx| {
+                    Box::pin(async move {
+                        tx.with_connection_context(tenant, |tenant, c| {
+                            Box::pin(async move {
+                                match rss_mdm_recovery_credentials::Protection::selected_id_on(
+                                    rss_mdm_install_support::StorageProfile::Mdm,
+                                    c,
+                                    *tenant,
+                                )
+                                .await
+                                {
+                                    Ok(value) => Ok(Some(value)),
+                                    Err(rss_mdm_recovery_credentials::Error::Configuration) => {
+                                        Ok(None)
+                                    }
+                                    Err(_) => Err(Error::Unavailable(crate::Failure::Database)),
+                                }
+                            })
+                        })
+                        .await
+                    })
+                },
+            )
+            .await
+            .fold(
+                Ok,
+                |_| Err(Error::Unavailable(crate::Failure::Database)),
+                |_| Err(Error::Unavailable(crate::Failure::Database)),
+                |_| Err(Error::RollbackFailed),
+                |_| Err(Error::CommitUnknown),
+                |_| Err(Error::Unavailable(crate::Failure::Database)),
+            )?;
+        let Some(selected) = selected else {
+            configured(projection, 0);
+            return Ok(());
+        };
+        configured(projection, 1);
+        projection.ready = protection.recipient(&selected).is_ok_and(|recipient| {
+            id != "recovery-rsa"
+                || self
+                    .clock
+                    .unix_seconds()
+                    .is_ok_and(|now| recipient.require_current(now).is_ok())
+        });
+        projection.status = if projection.ready {
+            Status::Loaded
+        } else {
+            Status::Unavailable
+        };
+        projection.reason = Some("current_material_not_device_escrow_confirmation");
         Ok(())
     }
 
@@ -363,7 +413,7 @@ impl Directory {
                 RequestCredential::Cookie(secret) => {
                     self.identity
                         .inspect_session(
-                            self.binding,
+                            proof.binding(),
                             secret,
                             rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
                                 cutoff,
@@ -375,7 +425,7 @@ impl Directory {
                 RequestCredential::Bearer(secret) => {
                     self.identity
                         .inspect_bearer(
-                            self.binding,
+                            proof.binding(),
                             secret,
                             rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
                                 cutoff,
@@ -432,10 +482,11 @@ impl Directory {
         projection: &mut Projection,
     ) -> Result<(), Error> {
         if organizations.is_none() {
+            let apple = self.apple.apple(proof.binding()).await.ok();
             *organizations = Some(
                 match rss_mdm_apple_channel::management_query::summary(
                     &self.apple_store,
-                    self.apple.as_deref(),
+                    apple.as_deref(),
                     &crate::clock::InventoryClock(self.clock.clone()),
                     proof,
                 )
@@ -489,14 +540,21 @@ impl Directory {
         };
         projection.actions.push(model::Action {
             name: "inspect",
-            href: "/api/v1/apple/organizations".into(),
+            href: format!("/api/v1/tenants/{}/apple/organizations", proof.tenant_id()),
         });
         Ok(())
     }
 
-    async fn agent_packages(&self, projection: &mut Projection) -> Result<(), Error> {
-        match rss_mdm_software_service::agent_packages::list(&self.software_runtime, self.binding)
-            .await
+    async fn agent_packages(
+        &self,
+        proof: &AuthorizedPrincipal,
+        projection: &mut Projection,
+    ) -> Result<(), Error> {
+        match rss_mdm_software_service::agent_packages::list(
+            &self.software_runtime,
+            proof.binding(),
+        )
+        .await
         {
             Ok(packages) => {
                 configured(projection, packages.len());
@@ -515,14 +573,16 @@ impl Directory {
         projection: &mut Projection,
     ) -> Result<(), Error> {
         let authority = rss_mdm_content_service::connections::authority::Authority {
-            tenant: self.tenant,
             protection: self.protection.clone(),
             audit: self.audit.clone(),
             content: self.content.clone(),
         };
         let observed = async {
             let loaded = match &self.content {
-                Some(store) => store.active_s3_revision().await.map_err(Error::from)?,
+                Some(store) => store
+                    .active_s3_revision(proof.binding())
+                    .await
+                    .map_err(Error::from)?,
                 None => None,
             };
             let directory = authority.read(proof, audit).await.map_err(Error::from)?;
@@ -578,8 +638,13 @@ impl Directory {
             "profile-key" | "profile-cert" => Purpose::Profile,
             _ => Purpose::ManagedAccount,
         };
-        let loaded_versions: Vec<i64> = self
-            .apple_materials
+        let loaded_materials = self
+            .apple
+            .apple(proof.binding())
+            .await
+            .ok()
+            .map(|apple| apple.material_selection());
+        let loaded_versions: Vec<i64> = loaded_materials
             .as_ref()
             .map(|v| match purpose {
                 Purpose::Apns => v.apns.into_iter().collect(),
@@ -589,7 +654,7 @@ impl Directory {
             .unwrap_or_default();
         match directory(
             &self.apple_store,
-            self.tenant,
+            proof.binding().tenant(),
             proof,
             purpose,
             &loaded_versions,
@@ -605,8 +670,7 @@ impl Directory {
                 );
                 if purpose == Purpose::ManagedAccount {
                     let desired = &value.account_bindings;
-                    let loaded = self
-                        .apple_materials
+                    let loaded = loaded_materials
                         .as_ref()
                         .map(|materials| &materials.accounts);
                     projection.desired_revision = None;
@@ -624,14 +688,13 @@ impl Directory {
                         _ => "current_process_loaded_not_device_confirmation",
                     });
                 } else {
-                    let loaded =
-                        self.apple_materials
-                            .as_ref()
-                            .and_then(|materials| match purpose {
-                                Purpose::Apns => materials.apns,
-                                Purpose::Profile => materials.profile,
-                                Purpose::ManagedAccount => None,
-                            });
+                    let loaded = loaded_materials
+                        .as_ref()
+                        .and_then(|materials| match purpose {
+                            Purpose::Apns => materials.apns,
+                            Purpose::Profile => materials.profile,
+                            Purpose::ManagedAccount => None,
+                        });
                     projection.applied_revision = loaded;
                     if let Some(revision) = loaded {
                         let selected = value.materials.get(&revision);
@@ -708,7 +771,6 @@ impl Directory {
         projection: &mut Projection,
     ) -> Result<(), Error> {
         let service = rss_mdm_mail_service::authority::Authority {
-            tenant: self.tenant,
             protection: self.protection.clone(),
             audit: self.audit.clone(),
         };
@@ -744,18 +806,24 @@ impl Directory {
         proof: &Arc<AuthorizedPrincipal>,
         projection: &mut Projection,
     ) -> Result<(), Error> {
-        match rss_mdm_windows_channel::wns_materials::snapshot(
-            &self.windows,
-            proof,
-            self.windows_push_revision,
-        )
-        .await
+        let applied = self
+            .windows_runtime
+            .windows(proof.binding())
+            .await
+            .ok()
+            .and_then(|windows| {
+                windows
+                    .push
+                    .as_ref()
+                    .and_then(|push| push.material_revision())
+            });
+        match rss_mdm_windows_channel::wns_materials::snapshot(&self.windows, proof, applied).await
         {
             Ok(values) => {
                 configured(projection, values.version_count as usize);
                 projection.revision = Some(values.revision);
                 projection.desired_revision = values.desired_revision;
-                projection.applied_revision = self.windows_push_revision;
+                projection.applied_revision = applied;
                 if let Some(applied) = projection.applied_revision {
                     let valid = values.applied.as_ref().is_some_and(|v| {
                         v.revision == applied
@@ -795,7 +863,7 @@ impl Directory {
             rss_mdm_install_support::StorageProfile::Mdm,
             rss_mdm_task_trust::Use::AgentTask,
             &self.audit,
-            self.tenant,
+            proof.binding().tenant(),
             proof,
             audit,
             None,
@@ -805,11 +873,21 @@ impl Directory {
             Ok(trust) => {
                 configured(projection, trust.keys.len());
                 projection.revision = i64::try_from(trust.revision).ok();
-                projection.ready = self.signing_key.as_deref().is_some_and(|id| {
-                    trust.keys.iter().any(|k| {
-                        k.id == id && k.state == rss_mdm_agent_wire::task_trust::KeyState::Active
-                    })
-                });
+                projection.ready = self
+                    .task_trust
+                    .signing_material(proof.binding())
+                    .await
+                    .map_err(Error::from)?
+                    .as_ref()
+                    .is_some_and(|(id, revision)| {
+                        if *revision != trust.revision {
+                            return false;
+                        }
+                        trust.keys.iter().any(|k| {
+                            k.id == *id
+                                && k.state == rss_mdm_agent_wire::task_trust::KeyState::Active
+                        })
+                    });
                 projection.reason = Some("device_acknowledgements_gate_activation");
             }
             Err(error) => unavailable(projection, error.into())?,
@@ -817,23 +895,27 @@ impl Directory {
         Ok(())
     }
 
-    fn pki_trust(
+    async fn pki_trust(
         &self,
         proof: &Arc<AuthorizedPrincipal>,
         projection: &mut Projection,
     ) -> Result<(), Error> {
-        let trusts = self.pki.bindings();
+        let trusts = self
+            .pki
+            .trusts(proof.binding())
+            .await
+            .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
         configured(projection, trusts.len());
         projection.reason = Some("device_distribution_and_crl_publication_are_separate");
-        for binding in trusts {
-            let trust = binding.public().map_err(|_| Error::Conflict)?;
+        for trust in trusts {
             if trust.tenant.to_string() != proof.tenant_id() {
                 return Err(Error::Forbidden);
             }
             projection.actions.push(model::Action {
                 name: "inspect",
                 href: format!(
-                    "/api/v1/pki/{}/trust",
+                    "/api/v1/tenants/{}/pki/{}/trust",
+                    proof.tenant_id(),
                     rss_mdm_pki_service::registry::purpose(trust.purpose)
                 ),
             });
@@ -883,7 +965,10 @@ impl Directory {
                     Some("receiver_key_possession_is_not_business_delivery_confirmation");
                 projection.actions.push(model::Action {
                     name: "subscriptions",
-                    href: "/api/v1/webhooks/subscriptions".into(),
+                    href: format!(
+                        "/api/v1/tenants/{}/webhooks/subscriptions",
+                        proof.tenant_id()
+                    ),
                 });
             }
             Err(error) => unavailable(projection, error.into())?,

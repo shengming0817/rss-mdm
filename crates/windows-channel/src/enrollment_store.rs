@@ -4,7 +4,7 @@ pub async fn intent(
     tenant: &str,
     request: String,
 ) -> Result<Option<sqlx::postgres::PgRow>, sqlx::Error> {
-    sqlx::query("SELECT i.signing_attempt, q.windows_profile AS enrollment_type, i.protocol_device, i.csr, i.profile, i.issuer, i.configuration, i.device, CAST(i.credential AS text), CAST(i.epoch AS text), i.secrets FROM mdm_access.enrollment_intents AS i INNER JOIN mdm_access.requests AS q ON (q.tenant_id, q.id) = (i.tenant_id, i.request_id) WHERE i.tenant_id = CAST($1 AS uuid) AND i.request_id = CAST($2 AS uuid) FOR UPDATE OF i")
+    sqlx::query("SELECT i.signing_attempt, q.windows_profile AS enrollment_type, i.protocol_device, i.csr, i.profile, i.issuer, i.configuration, i.device, CAST(i.credential AS text), CAST(i.epoch AS text), i.secrets FROM mdm_access.enrollment_intents AS i INNER JOIN mdm_access.requests AS q ON (q.tenant_id, q.id) = (i.tenant_id, i.request_id) WHERE i.expected_epoch=current_setting('rss.execution_epoch')::bigint AND i.tenant_id = CAST($1 AS uuid) AND i.request_id = CAST($2 AS uuid) FOR UPDATE OF i")
             .bind(tenant).bind(request).fetch_optional(c).await
 }
 pub struct NewIntent<'a> {

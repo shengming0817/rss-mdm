@@ -21,7 +21,8 @@ const input=JSON.parse(fs.readFileSync(process.argv[2] || '/fixture/browser-inpu
 const origin=input.origin, other=input.otherOrigin;
 const faults=input.mode==='faults' ? await import('./auth_t3_faults.mjs') : null;
 const api=`/api/v1/identity/tenants/${input.tenant}`;
-const inventory='/api/v1/devices/device-1/inventory';
+const business=`/api/v1/tenants/${input.tenant}`;
+const inventory=business+'/devices/88888888-8888-4888-8888-888888888881/inventory';
 const checks={}, requests=[], privateValues=[];
 let stage='launch';
 const docker=(...args)=>{assert(faults,'fault control unavailable in normal mode');return faults.docker(...args)};
@@ -124,16 +125,16 @@ try{
 await localUsers();
   stage='inventory';let r=await request(member,inventory);
   assert(r.status===200&&r.value.asset.device.fields['device.model'].state.value.value==='Model-2364','real authorized inventory');
-  assert((await request(member,'/api/v1/devices/outside/inventory')).status===403,'device scope');checks.inventory=true;
+  assert((await request(member,business+'/devices/88888888-8888-4888-8888-888888888882/inventory')).status===403,'device scope');checks.inventory=true;
 
-  stage='permissions';const group=crypto.randomUUID(),groupPath='/api/v1/groups/'+group;
+  stage='permissions';const group=crypto.randomUUID(),groupPath=business+'/groups/'+group;
   const change={operationId:crypto.randomUUID(),expectedRevision:0,input:{action:'create',name:'T3-2364',description:'product authorization fixture',criteria:null}};
   assert((await post(member,groupPath,change)).status===403,'management deny');
   assert((await request(admin,groupPath)).status===404,'denied write had effect');
   if(faults)assert(sql(`SELECT count(*) FROM mdm_group.groups WHERE id='${group}'`)==='0','denied database write had effect');
   assert((await post(admin,groupPath,change)).status===200,'management permit');
   assert((await request(admin,groupPath)).status===200,'management read');
-  const publisher='/api/v1/software/publications/unconfigured-2364';
+  const publisher=business+'/software/publications/unconfigured-2364';
   assert((await request(member,publisher)).status===403,'publisher permission deny');
   assert((await request(admin,publisher)).status===404,'publisher permitted source lookup');
   assert((await request(member,api+'/accounts')).status===403,'hidden accounts not authoritative');checks.permissions=true;
@@ -153,7 +154,7 @@ await localUsers();
 
   stage='refresh';const stale=await cloneSession(member);
   assert((await post(member,api+'/session/refresh')).status===200,'refresh');
-  assert((await request(stale,'/api/v1/authorization')).status===401,'rotated credential');await stale.context().close();checks.refresh=true;
+  assert((await request(stale,business+'/authorization')).status===401,'rotated credential');await stale.context().close();checks.refresh=true;
   });
 
   if(faults) await scenario('restart',async()=>{await localUsers();stage='restart';const before=(await request(member,api+'/session')).value.session.id;await restart();
@@ -163,8 +164,8 @@ await localUsers();
 
   member=await pageAt();await login(member,'member',input.memberPassword);
   const isolated=await pageAt(other);
-  stage='isolation';assert((await request(isolated,'/api/v1/authorization')).status===401,'host cookie isolation');
-  const replay=await cloneSession(member,other);assert((await request(replay,'/api/v1/authorization')).status===401,'instance replay');
+  stage='isolation';assert((await request(isolated,`/api/v1/tenants/${input.otherTenant}/authorization`)).status===401,'host cookie isolation');
+  const replay=await cloneSession(member,other);assert((await request(replay,`/api/v1/tenants/${input.otherTenant}/authorization`)).status===401,'instance replay');
   assert((await request(member,`/api/v1/identity/tenants/${input.wrongTenant}/session`)).status===401,'tenant replay');
   assert((await request(member,`/api/v1/identity-host/tenants/${input.wrongTenant}/context`)).status===401,'context tenant replay');
   await replay.context().close();await isolated.context().close();checks.isolation=true;

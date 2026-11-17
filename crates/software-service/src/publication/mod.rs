@@ -18,14 +18,17 @@ pub use artifact::{ArtifactOrigin, ArtifactReader};
 pub use config::{BrewConfig, ServiceIdentity, SourceConfig, WingetConfig};
 pub use driver::{Withdrawal, WithdrawalExecution};
 use rss_transactional_messaging_postgres::PgError;
-pub use service::{PublicTarget, PublicationService, PublishInput, ServiceRequest, TargetProtocol};
+pub use service::{
+    PublicTarget, PublicationOperation, PublicationService, PublishInput, ServiceRequest,
+    TargetProtocol,
+};
 pub use spec::{
     BottleInput, BrewArtifact, BrewDependency, BrewPayload, BrewRecipe, CaskInstall,
     ExportDocument, PublicArtifact, WingetArchitecture, WingetDependencies, WingetDependency,
     WingetInstaller, WingetInstallerType, WingetLocale, WingetManifest, WingetScope,
     WingetSwitches, WingetVersion,
 };
-pub use worker::{PublicationWork, PublicationWorkPage};
+pub use worker::PublicationWork;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("software record not found")]
@@ -211,6 +214,7 @@ pub async fn withdrawal_records_in(
 /// Queue withdrawal for records discovered under the catalog lock.
 /// The caller must prepare all source partitions before invoking this operation.
 pub async fn withdraw_version_in(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     records: &[String],
     at: i64,
@@ -239,7 +243,7 @@ pub async fn withdraw_version_in(
         intent.base = None;
         intent.commit = None;
         intent.commit_at = at.max(c.snapshot().at.unix_seconds());
-        storage::queue_withdrawal_in(tx, audit, actor, &intent).await?;
+        storage::queue_withdrawal_in(execution, tx, audit, actor, &intent).await?;
     }
     Ok(())
 }

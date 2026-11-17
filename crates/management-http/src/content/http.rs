@@ -99,7 +99,7 @@ async fn begin(
     State(app): State<HttpState>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, upload)): Path<(String, Uuid)>,
+    Path((_tenant, id, upload)): Path<(uuid::Uuid, String, Uuid)>,
     Query(input): Query<Selection>,
 ) -> Result<Json<Upload>, Error> {
     let app = app.as_deref().ok_or(Error::Unsupported)?;
@@ -120,7 +120,7 @@ async fn status(
     State(app): State<HttpState>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, upload)): Path<(String, Uuid)>,
+    Path((_tenant, id, upload)): Path<(uuid::Uuid, String, Uuid)>,
 ) -> Result<Json<Upload>, Error> {
     let app = app.as_deref().ok_or(Error::Unsupported)?;
     Ok(Json(
@@ -145,7 +145,7 @@ async fn append(
     Extension(auth): Extension<RequestAuth>,
     Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, upload)): Path<(String, Uuid)>,
+    Path((_tenant, id, upload)): Path<(uuid::Uuid, String, Uuid)>,
     Query(offset): Query<Offset>,
     rss_mdm_http_contract::signature::BinaryBody(body): rss_mdm_http_contract::signature::BinaryBody,
 ) -> Result<AppendResponse, Error> {
@@ -173,7 +173,7 @@ async fn complete(
     Extension(auth): Extension<RequestAuth>,
     Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, upload)): Path<(String, Uuid)>,
+    Path((_tenant, id, upload)): Path<(uuid::Uuid, String, Uuid)>,
 ) -> Result<rss_mdm_http_contract::signature::WithStatus<201, ()>, Error> {
     let app = app.as_deref().ok_or(Error::Unsupported)?;
     rss_mdm_content_service::service::complete_upload(
@@ -191,7 +191,7 @@ async fn upload(
     Extension(auth): Extension<RequestAuth>,
     Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<String>,
+    Path((_tenant, id)): Path<(uuid::Uuid, String)>,
     Query(input): Query<Selection>,
     rss_mdm_http_contract::signature::BinaryBody(body): rss_mdm_http_contract::signature::BinaryBody,
 ) -> Result<rss_mdm_http_contract::signature::WithStatus<201, ()>, Error> {
@@ -211,6 +211,8 @@ async fn upload(
 }
 /// Explicit bounded maintenance; every candidate is pinned against new upload/download readers.
 async fn cleanup(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<HttpState>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -228,7 +230,7 @@ async fn mirror(
     Extension(auth): Extension<RequestAuth>,
     Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<String>,
+    Path((_tenant, id)): Path<(uuid::Uuid, String)>,
     Query(input): Query<Selection>,
 ) -> Result<rss_mdm_http_contract::signature::WithStatus<201, ()>, Error> {
     let app = app.as_deref().ok_or(Error::Unsupported)?;
@@ -291,7 +293,7 @@ async fn receipt(
     State(app): State<HttpState>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, operation)): Path<(String, Uuid)>,
+    Path((_tenant, id, operation)): Path<(uuid::Uuid, String, Uuid)>,
 ) -> Result<Json<rss_mdm_content_service::bindings::Receipt>, Error> {
     let app = app.as_deref().ok_or(Error::Unsupported)?;
     rss_mdm_content_service::service::receipt(app, &auth.proof, &audit, &id, operation)
@@ -305,7 +307,7 @@ async fn script(
     Extension(auth): Extension<RequestAuth>,
     Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, version)): Path<(String, String)>,
+    Path((_tenant, id, version)): Path<(uuid::Uuid, String, String)>,
     DownloadHeaders(headers): DownloadHeaders,
     query: Result<
         Query<rss_mdm_content_service::service::script::ScriptSelection>,

@@ -6,6 +6,7 @@ pub const SCHEMA: &str = include_str!("../schema/object-published-v1.json");
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ObjectPublished {
+    pub execution_epoch: i64,
     pub v: u8,
     pub tenant: Uuid,
     pub history_epoch: Uuid,
@@ -20,7 +21,8 @@ impl ObjectPublished {
         )
     }
     pub fn valid(&self) -> bool {
-        self.v == 1
+        self.execution_epoch > 0
+            && self.v == 1
             && !self.tenant.is_nil()
             && !self.history_epoch.is_nil()
             && !self.snapshot_id.is_nil()
@@ -34,6 +36,7 @@ mod tests {
     #[test]
     fn publication_identity_and_complete_watermark_are_required() {
         let mut event = ObjectPublished {
+            execution_epoch: 1,
             v: 1,
             tenant: Uuid::from_u128(1),
             history_epoch: Uuid::from_u128(2),

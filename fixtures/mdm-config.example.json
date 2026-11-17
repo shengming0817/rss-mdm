@@ -2,7 +2,6 @@
   "background": {
     "device_concurrency": 4,
     "database_connection_budget": 128,
-    "database_host_instances": 1,
     "scheduling": {
       "device": {
         "claim_batch_size": 64,
@@ -75,7 +74,6 @@
   "product_origin": "https://mdm.example.test",
   "identity": {
     "instance_id": "33333333-3333-4333-8333-333333333333",
-    "tenant_id": "11111111-1111-4111-8111-111111111111",
     "database": {
       "host": "postgres.example.test",
       "port": 5432,
@@ -134,7 +132,8 @@
         "refresh_cooldown_seconds": 1,
         "max_token_bytes": 32768
       }
-    }
+    },
+    "management_tenant": "22222222-2222-4222-8222-222222222222"
   },
   "access_database": {
     "host": "postgres.example.test",
@@ -163,23 +162,10 @@
         "historical_files": [],
         "fingerprint_file": "/run/mdm/protocol-fingerprint.key"
       },
-      "provider_id": "RSS-MDM",
       "management": {
         "origin": "https://mdm.example.test"
       },
-      "poll": {
-        "interval_for_first_set_of_retries": 15,
-        "number_of_first_retries": 10,
-        "interval_for_second_set_of_retries": 0,
-        "number_of_second_retries": 0,
-        "interval_for_remaining_scheduled_retries": 1440,
-        "number_of_remaining_scheduled_retries": 0,
-        "poll_on_login": false,
-        "all_users_poll_on_first_login": false
-      },
-      "additional_management": [],
-      "push": null,
-      "trust_file": "/run/mdm/windows-trust.json"
+      "additional_management": []
     }
   },
   "audit": {
@@ -194,7 +180,6 @@
     "ca_file": "/run/mdm/database-ca.pem"
   },
   "content": null,
-  "task_signing": null,
   "device_pki": [
     {
       "purpose": "windows",
@@ -412,5 +397,6 @@
     "projection_batch": 64,
     "projection_events": 64,
     "delivery_bytes": 67108864
-  }
+  },
+  "telemetry": []
 }

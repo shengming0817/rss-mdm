@@ -23,7 +23,7 @@ pub(super) async fn list(
     q.require_schema(&SCHEMA).map_err(error)?;
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(8));
-    let result=s.audit.read(s.tenant,&budget.control(),(s,p,q),|ctx,tx|Box::pin(async move{
+    let result=s.audit.read(p.binding().tenant(),&budget.control(),(s,p,q),|ctx,tx|Box::pin(async move{
   tx.with_connection_context(ctx,|(s,p,q),c|Box::pin(async move{
    rss_mdm_authorization_service::lock_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
    let current=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;

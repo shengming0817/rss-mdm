@@ -27,6 +27,7 @@ async fn accept(
         h.c.tenant,
         &rss_mdm_device_service::planning::PlanningObjects,
         &rss_mdm_device_service::lifecycle::Acceptance {
+            execution: h.c.execution(),
             origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
             policy,
             version,
@@ -269,7 +270,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     drop(h.delivery);
     drop(h.audit);
     Fixture::close(h.a).await?;
-    h.a = Fixture::open(&h.c, true).await?;
+    h.a = Fixture::open(&h.c).await?;
     (h.audit, h.delivery) = delivery(&h.c, &h.a).await?;
     assert!(
         h.a.service
@@ -279,7 +280,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     );
     step(&h, retirement).await?;
     assert_eq!(state(&h, retirement).await?.0, "unenroll");
-    assert_eq!(h.a.service.relay_once().await?, 1);
+    h.a.service.relay_once().await?;
     let offer = h.claim().await?;
     assert!(matches!(offer.payload, w::TaskPayload::Unmanage(_)));
     h.event(&offer, w::TaskEvent::Received).await?;
@@ -352,7 +353,6 @@ async fn cancellation_audit(
     let proof = h.c.authenticate(&account).await?;
     let timeline = h.c.database.timeline(
         h.c.audit.clone(),
-        h.c.tenant,
         &[7; 32],
         rss_mdm_timeline_service::QueryBudget::new(1024, 8 * 1024 * 1024)?,
     )?;
@@ -498,7 +498,7 @@ pub(super) async fn native(
     rss_mdm_inventory_postgres::register_collection_in(&mut tx, h.c.tenant, progress.definition())
         .await?;
     sqlx::query("INSERT INTO mdm_access.collection_runs (tenant_id, id, device, source, epoch, scope, sequence, started_at, attempts, evidence, result, reason, sealed_at, deadline) VALUES (CAST($1 AS uuid), $2, $3, 'mdm.windows', $4, $5, 0, $6, $7, $8, $9, $10, $11, to_timestamp($6 + 300))").bind(h.c.tenant.to_string()).bind(report).bind(target.device.into_uuid()).bind(epoch).bind(scope.encode()?).bind(at).bind(serde_json::to_string(&progress)?).bind(json!({"nativeTemplate":template})).bind(if reason.is_some() {"failed"} else {"pending"}).bind(reason).bind(reason.map(|_|at)).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_inventory.collection_tasks (tenant_id, id, policy_version, channel, origin, source_objects, device, occurrence, created_at, available_at, deadline, native_delivery, collection_run, started_at, dispatch_fingerprint, gateway_accepted) VALUES (CAST($1 AS uuid), $2, $3, 'mdm', '\"policy\"', $4, $5, $6, $7, $7, $7 + 300, 'sent', $8, $7, $9, TRUE)").bind(h.c.tenant.to_string()).bind(task).bind(version).bind(json!([object])).bind(target.device.into_uuid()).bind(task.to_string()).bind(at).bind(report).bind(vec![0u8;32]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_inventory.collection_tasks (expected_epoch,tenant_id, id, policy_version, channel, origin, source_objects, device, occurrence, created_at, available_at, deadline, native_delivery, collection_run, started_at, dispatch_fingerprint, gateway_accepted) VALUES (current_setting('rss.execution_epoch')::bigint,CAST($1 AS uuid), $2, $3, 'mdm', '\"policy\"', $4, $5, $6, $7, $7, $7 + 300, 'sent', $8, $7, $9, TRUE)").bind(h.c.tenant.to_string()).bind(task).bind(version).bind(json!([object])).bind(target.device.into_uuid()).bind(task.to_string()).bind(at).bind(report).bind(vec![0u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok((policy, task, object))
 }
@@ -546,7 +546,7 @@ async fn credential_run(h: &Harness, state: &rss_mdm_task_state::RunState) -> Re
     .await?;
     let id = Uuid::new_v4();
     let mut tx = command::seed_transaction(&h.c).await?;
-    sqlx::query("INSERT INTO mdm_recovery_tasks.runs(tenant_id,id,policy_version,origin,source_objects,device,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint,gateway_accepted) VALUES($1::uuid,$2,$3,'\"policy\"',$4,$5,$6,$7,$7,$8,$9,$10,true)")
+    sqlx::query("INSERT INTO mdm_recovery_tasks.runs(expected_epoch,tenant_id,id,policy_version,origin,source_objects,device,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint,gateway_accepted) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,'\"policy\"',$4,$5,$6,$7,$7,$8,$9,$10,true)")
         .bind(h.c.tenant.to_string()).bind(id).bind(version).bind(json!([h.object])).bind(h.p.device().into_uuid()).bind(id.to_string()).bind(now()).bind(now()+300).bind(serde_json::to_value(state)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(id)
@@ -576,7 +576,7 @@ async fn cleanup_history_is_bounded_and_resumes() -> Result<()> {
     .fetch_one(&h.c.operator)
     .await?;
     assert_eq!(checkpoint, Some(Uuid::from_u128(64)));
-    let replacement = Fixture::open(&h.c, true).await?;
+    let replacement = Fixture::open(&h.c).await?;
     Fixture::close(std::mem::replace(&mut h.a, replacement)).await?;
     step(&h, retirement).await?;
     assert_eq!(

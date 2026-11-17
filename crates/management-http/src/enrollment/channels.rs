@@ -40,8 +40,12 @@ pub struct Status {
 }
 /// App observes existing channel owners; admission never changes their runtime.
 pub trait Source: Send + Sync {
-    fn status(&self, channel: Channel) -> Status;
-    fn endpoints(&self) -> PublicEndpoints;
+    fn status<'a>(
+        &'a self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        channel: Channel,
+    ) -> futures::future::BoxFuture<'a, Status>;
+    fn endpoints(&self, tenant: rss_request_context::TenantId) -> PublicEndpoints;
 }
 /// Runtime public locators; they do not authorize browser sessions or change native device URLs.
 #[derive(schemars::JsonSchema, Clone, Serialize)]
@@ -93,28 +97,34 @@ pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::De
     }
 }
 async fn read(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
 ) -> Result<Json<Channels>, Error> {
     let settings = app.service.admission().read(&auth.proof).await?;
+    let mut channels = Vec::new();
+    for setting in settings {
+        channels.push(Entry {
+            status: app
+                .channels
+                .status(auth.proof.binding(), setting.channel)
+                .await,
+            setting,
+        });
+    }
     Ok(Json(Channels {
         tenant_id: auth.proof.tenant_id().into(),
         instance_id: auth.proof.instance_id().into(),
-        public_endpoints: app.channels.endpoints(),
-        channels: settings
-            .into_iter()
-            .map(|setting| Entry {
-                status: app.channels.status(setting.channel),
-                setting,
-            })
-            .collect(),
+        public_endpoints: app.channels.endpoints(auth.proof.binding().tenant()),
+        channels,
     }))
 }
 async fn change(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(channel): Path<Channel>,
+    Path((_tenant, channel)): Path<(uuid::Uuid, Channel)>,
     headers: crate::api::WriteHeaders,
     input: Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Setting>, Error> {

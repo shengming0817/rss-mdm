@@ -10,6 +10,7 @@ use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;
 
 pub(crate) async fn accept_for_device(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &crate::deployment::transactions::Transactions,
     tx: &mut PgTransaction<'_>,
     policy: &crate::deployment::sources::software::SoftwareExecutionPolicy,
@@ -25,6 +26,7 @@ pub(crate) async fn accept_for_device(
         return Ok(());
     };
     queue_run_in(
+        execution,
         service,
         tx,
         RunInput {
@@ -120,7 +122,10 @@ pub(crate) async fn slot_in(
         let package = policy
             .assignment
             .frozen
-            .native_packages
+            .native
+            .as_ref()
+            .ok_or(Error::Unsupported)?
+            .packages
             .get(&rss_mdm_policy::SoftwareTarget::new(p, a))
             .ok_or(Error::Unsupported)?;
         serde_json::json!({"channel":"mdm","resource":policy.assignment.frozen.resource,"version":policy.assignment.frozen.version,"digest":policy.assignment.frozen.resource_digest,"intent":"install","target":{"kind":"device"},"packages":[package.effect_identity()],"packageVersions":{(package.effect_identity()):package.effect_version()}})

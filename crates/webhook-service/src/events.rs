@@ -43,7 +43,9 @@ pub async fn compliance_in(
     }
     tx.with_connection(move|c|Box::pin(async move {Ok(async {
         sqlx::query("INSERT INTO mdm_webhook.compliance_sources(tenant_id,id,document) VALUES($1,$2,$3) ON CONFLICT(tenant_id,id) DO NOTHING").bind(source.tenant).bind(source.id).bind(serde_json::to_value(&source)?).execute(&mut *c).await?;
-        let pending=message(source.id,source.tenant,source.occurred_at,SOURCE_DOMAIN,serde_json::to_vec(&Source::Compliance(source))?)?;
+        let matches:bool=sqlx::query_scalar("SELECT document=$3 AND expected_epoch=current_setting('rss.execution_epoch')::bigint FROM mdm_webhook.compliance_sources WHERE tenant_id=$1 AND id=$2").bind(source.tenant).bind(source.id).bind(serde_json::to_value(&source)?).fetch_one(&mut *c).await?;
+        if !matches {return Err(Error::Conflict);}
+        let pending=message(c,source.id,source.tenant,source.occurred_at,SOURCE_DOMAIN,serde_json::to_vec(&Source::Compliance(source))?).await?;
         append_on(c,pending).await
     }.await)})).await??;
     Ok(())
@@ -59,7 +61,8 @@ pub fn identity(namespace: Uuid, value: &str) -> Uuid {
 pub fn domain(name: &str) -> MessagingDomain {
     MessagingDomain::parse(name).expect("constant webhook domain")
 }
-pub fn message(
+pub async fn message(
+    c: &mut PgConnection,
     id: Uuid,
     tenant: Uuid,
     at: i64,
@@ -71,6 +74,11 @@ pub fn message(
     } else {
         ("mdm.webhook.event", EVENT_SCHEMA, "mdm.webhook.v1")
     };
+    // Capture the caller's original execution scope, never a later tenant-epoch lookup.
+    let epoch: i64 = sqlx::query_scalar("SELECT current_setting('rss.execution_epoch')::bigint")
+        .fetch_one(c)
+        .await?;
+    rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| Error::Invalid)?;
     let metadata = MessageMetadata::new(
         AuthoredMessageMetadata::new(
             TenantId::parse(&tenant.to_string()).map_err(|_| Error::Invalid)?,
@@ -84,7 +92,12 @@ pub fn message(
                     .map_err(|_| Error::Invalid)?,
             ),
         ),
-        MessageMetadataExtensions::new(None, None, None, Default::default()),
+        MessageMetadataExtensions::new(
+            None,
+            None,
+            None,
+            [("executionEpoch".into(), epoch.to_string())].into(),
+        ),
     );
     Ok(PendingMessage::new(MessageEnvelope::new(
         MessageId::parse(&id.to_string()).map_err(|_| Error::Invalid)?,
@@ -142,7 +155,7 @@ pub(crate) async fn record_on(
         .rows_affected();
     if inserted == 0 {
         let old: Vec<u8> =
-            sqlx::query_scalar("SELECT body FROM mdm_webhook.events WHERE tenant_id=$1 AND id=$2")
+            sqlx::query_scalar("SELECT body FROM mdm_webhook.events WHERE tenant_id=$1 AND id=$2 AND expected_epoch=current_setting('rss.execution_epoch')::bigint")
                 .bind(event.tenant_id)
                 .bind(event.event_id)
                 .fetch_one(&mut *c)
@@ -157,17 +170,16 @@ pub(crate) async fn record_on(
 /// The webhook consumer materializes its own delivery record when it consumes it.
 pub async fn publish_on(c: &mut PgConnection, event: &Event) -> Result<(), Error> {
     event.validate()?;
-    append_on(
+    let pending = message(
         c,
-        message(
-            event.event_id,
-            event.tenant_id,
-            event.occurred_at,
-            SOURCE_DOMAIN,
-            serde_json::to_vec(&Source::Event(event.clone()))?,
-        )?,
+        event.event_id,
+        event.tenant_id,
+        event.occurred_at,
+        SOURCE_DOMAIN,
+        serde_json::to_vec(&Source::Event(event.clone()))?,
     )
-    .await
+    .await?;
+    append_on(c, pending).await
 }
 
 pub async fn emit_in(tx: &mut PgTransaction<'_>, event: Event) -> Result<(), Error> {

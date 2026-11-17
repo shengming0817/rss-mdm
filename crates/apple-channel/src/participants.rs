@@ -39,6 +39,7 @@ pub trait Business: Send + Sync {
     ) -> Pending<'a, ()>;
     fn artifact<'a>(
         &'a self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &'a mut PgTransaction<'_>,
         asset: &'a rss_mdm_apple_mdm::native::ddm::AssetInput,
     ) -> Pending<'a, ConfigurationArtifact>;

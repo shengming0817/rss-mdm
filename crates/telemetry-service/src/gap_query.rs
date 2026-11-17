@@ -49,9 +49,7 @@ impl Service {
         audit: &RequestAudit,
     ) -> Result<Page, Error> {
         proof.check_live().map_err(|_| Error::Denied)?;
-        if proof.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Denied);
-        }
+
         if input.received_from < 0
             || input.received_until <= input.received_from
             || input.limit.get() > 1024
@@ -70,23 +68,21 @@ impl Service {
         let failure = Arc::new(Mutex::new(None));
         let rejected = failure.clone();
         self.runtime
-            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
+            .local_tx(proof.binding(), crate::deadline(), move |tx| {
                 Box::pin(async move {
                     service
                         .audit_store
                         .bind_in(tx)
                         .await
                         .map_err(crate::storage_error)?;
-                    let read_service = service.clone();
+
                     let page = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
-                                read_on(&read_service, c, &proof, &input)
-                                    .await
-                                    .map_err(|e| {
-                                        *rejected.lock().expect("gap query rejection") = Some(e);
-                                        sqlx::Error::Protocol("gap query rejected".into())
-                                    })
+                                read_on(c, &proof, &input).await.map_err(|e| {
+                                    *rejected.lock().expect("gap query rejection") = Some(e);
+                                    sqlx::Error::Protocol("gap query rejected".into())
+                                })
                             })
                         })
                         .await?;
@@ -111,7 +107,6 @@ impl Service {
     }
 }
 async fn read_on(
-    service: &Service,
     c: &mut sqlx::PgConnection,
     proof: &AuthorizedPrincipal,
     input: &Request,
@@ -136,7 +131,7 @@ async fn read_on(
         .require(proof, Permission::InventoryRead, Some(&input.device))
         .map_err(|_| Error::Denied)?;
     let rows = sqlx::query("SELECT id,report,received_at FROM mdm_telemetry.gap_reports WHERE tenant_id=$1::uuid AND device=$2 AND received_at>=$3 AND received_at<$4 AND expires_at>floor(extract(epoch FROM clock_timestamp())*1000000)::bigint AND ($5::bigint IS NULL OR (received_at,id)>($5,$6)) ORDER BY received_at,id LIMIT $7")
-        .bind(service.tenant.to_string()).bind(input.device.into_uuid()).bind(input.received_from).bind(input.received_until)
+        .bind(proof.binding().tenant().to_string()).bind(input.device.into_uuid()).bind(input.received_from).bind(input.received_until)
         .bind(input.after.as_ref().map(|v| v.received_at)).bind(input.after.as_ref().map(|v| v.report_id))
         .bind(i64::from(input.limit.get()) + 1).fetch_all(c).await?;
     let more = rows.len() > input.limit.get() as usize;

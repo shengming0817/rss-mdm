@@ -5,7 +5,7 @@ impl Compliance {
         tx: &mut PgTransaction<'_>,
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<bool> {
-        let t = self.tenant();
+        let t = tx.tenant_id();
         let id = tx
             .with_connection(move |c| Box::pin(async move { pg::next_invalidated(c, t).await }))
             .await?;
@@ -42,13 +42,11 @@ impl Compliance {
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<bool> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant() {
-            return Err(Error::Forbidden.into());
-        }
+
         if self.dispatch_invalidated(tx, candidate).await? {
             return Ok(true);
         }
-        let t = self.tenant();
+        let t = tx.tenant_id();
         let cut = candidate.to_json();
         let mut page = tx
             .with_connection(move |c| {
@@ -139,10 +137,8 @@ impl Compliance {
 impl Compliance {
     pub(crate) async fn inputs_pending_in(&self, tx: &mut PgTransaction<'_>) -> Result<bool> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant() {
-            return Err(Error::Forbidden.into());
-        }
-        let tenant = self.tenant();
+
+        let tenant = tx.tenant_id();
         let state = tx
             .with_connection(move |c| {
                 Box::pin(async move { pg::tasks::input_state(c, tenant).await })

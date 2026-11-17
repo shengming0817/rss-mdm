@@ -64,10 +64,10 @@ impl Previews {
         else {
             return Err(Error::Unsupported);
         };
-        let verified = self.publications.prepare(resource).await?;
+        let verified = self.publications.prepare(proof.binding(), resource).await?;
         let expected = crate::transaction::inspect(
             &self.publications.runtime,
-            self.publications.execution,
+            proof.binding(),
             (self, proof, input, resource, *exit, &verified),
             |ctx, tx| {
                 Box::pin(async move {
@@ -95,17 +95,17 @@ impl Previews {
         let result=tokio::time::timeout(remaining(),async{
    let mut tx=connection.begin().await?;
    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY").execute(&mut *tx).await?;
-   sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.publications.execution.tenant().to_string()).bind(remaining().as_millis().max(1).to_string()).execute(&mut *tx).await?;
+   sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(proof.binding().tenant().to_string()).bind(remaining().as_millis().max(1).to_string()).execute(&mut *tx).await?;
    let grant=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),proof.instance_id()).await?;authorize(&grant,proof,input)?;
    let authority=grant.query_binding(proof)?;
-   let mut facts=rss_mdm_resource_postgres::version_facts_on(&mut tx,self.publications.execution.tenant(),&[(expected.resource().as_str().into(),expected.label().as_str().into())]).await?;
+   let mut facts=rss_mdm_resource_postgres::version_facts_on(&mut tx,proof.binding().tenant(),&[(expected.resource().as_str().into(),expected.label().as_str().into())]).await?;
    let(version,state)=facts.versions.pop().flatten().ok_or(Error::Conflict)?;
    if version.digest()!=expected.digest()||state!=rss_mdm_resource::State::Active{return Err(Error::Conflict.into())}
    let scope=input.definition.scope;let channel=rss_mdm_inventory::Channel::Mdm;
    let binding=rss_mdm_scope_service::window::binding_on(&self.source,&mut tx,proof,&authority,PREVIEW_SCHEMA.id,scope,&json!([input.definition,input.scope_result])).await?;
    let after=rss_mdm_scope_service::window::after(codec,query,&binding)?;
-   let mut objects=self.source.assignment_objects_on(&mut tx,self.publications.execution.tenant(),scope,channel,after,query.limit()).await?;
-   let result=self.source.preview_scope_on(&mut tx,self.publications.execution.tenant(),scope,channel,None).await?.result;
+   let mut objects=self.source.assignment_objects_on(&mut tx,proof.binding().tenant(),scope,channel,after,query.limit()).await?;
+   let result=self.source.preview_scope_on(&mut tx,proof.binding().tenant(),scope,channel,None).await?.result;
    if input.scope_result.is_some_and(|r|r!=result){return Err(Error::Conflict.into())}
    let more=objects.len()>query.limit();objects.truncate(query.limit());let next=if more{objects.last().map(|o|o.object)}else{None};
    let items=objects.into_iter().map(|o|Target{object:o.object,channel:o.channel,availability:o.availability,reason:o.reason,target:o.target,eligibility:o.admission,task_admission:None}).collect();
@@ -137,7 +137,7 @@ impl Previews {
         }
         crate::transaction::inspect_budget(
             &self.publications.runtime,
-            self.publications.execution,
+            proof.binding(),
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(remaining()),
             (proof, authority),
             |ctx, tx| {

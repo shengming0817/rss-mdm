@@ -1,5 +1,6 @@
 //! Apple owns receipt correlation and exact DDM scope/version persistence, independently of OS effect claims.
 mod fixture;
+mod renewal;
 use fixture::Fixture;
 pub(crate) mod support;
 use crate::{
@@ -15,7 +16,7 @@ fn audit(c: &Context) -> RequestAudit {
     RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        c.tenant.to_string(),
+        c.execution(),
         "apple_management",
         AuditIntent::Management,
     )
@@ -23,12 +24,12 @@ fn audit(c: &Context) -> RequestAudit {
 async fn delivery(c: &Context, a: &Fixture) -> Result<rss_mdm_apple_channel::delivery::Delivery> {
     Ok(rss_mdm_apple_channel::delivery::Delivery {
         runtime: a.resources.storage.runtime.clone(),
-        tenant: c.tenant,
+
         audit: Arc::new(
             c.audit
                 .on_runtime(
                     a.resources.storage.runtime.clone(),
-                    c.audit.binding(),
+                    c.execution(),
                     &rss_mdm_audit_integration::budget::AuditBudget::new(
                         std::time::Duration::from_secs(5),
                     )
@@ -117,7 +118,7 @@ async fn command_receipt_matches_device_and_user_without_inventing_os_effect() -
     };
     support::operation(&c, &n, &key, &input, authority, None).await?;
     let attempt = support::dispatched(&c, &n, &key, operation).await?;
-    let a = Fixture::open(&c, false).await?;
+    let a = Fixture::open(&c).await?;
     let d = delivery(&c, &a).await?;
     let state = || {
         sqlx::query_as::<_,(String,bool,Option<Vec<u8>>)>("SELECT state,accepted,response FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(attempt).fetch_one(&c.operator)
@@ -223,7 +224,7 @@ async fn ddm_sync_returns_only_committed_current_user_and_publication() -> Resul
     let (apple, p) = support::apple(&c, &n, key.clone(), &[user.clone(), other.clone()]).await?;
     let (id, version, token) = support::publication(&c, &n, &key, &user).await?;
     let (sentinel, _, old_token) = support::publication(&c, &n, &key, &other).await?;
-    let a = Fixture::open(&c, false).await?;
+    let a = Fixture::open(&c).await?;
     let d = delivery(&c, &a).await?;
     let stale = rss_mdm_apple_channel::ddm::prepare(
         apple.clone(),

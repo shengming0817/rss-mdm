@@ -55,6 +55,7 @@ $$;
 REVOKE ALL ON FUNCTION mdm_registration_tasks.save_retired_command(uuid,uuid,bigint,bigint) FROM PUBLIC;
 
 CREATE TABLE mdm_registration_tasks.device_recovery (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL,device uuid NOT NULL,authority_epoch bigint NOT NULL CHECK(authority_epoch>0),recovery_after text,
  PRIMARY KEY(tenant_id,device)
 );
@@ -70,6 +71,7 @@ GRANT SELECT,INSERT ON mdm_registration_tasks.device_recovery TO mdm_command_run
 GRANT UPDATE(authority_epoch,recovery_after) ON mdm_registration_tasks.device_recovery TO mdm_command_runtime;
 
 CREATE TABLE mdm_registration_tasks.operations (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
   , device uuid NOT NULL
@@ -187,3 +189,24 @@ GRANT EXECUTE ON FUNCTION mdm_registration_tasks.recovery_key(uuid) TO mdm_acces
 
 CREATE INDEX command_device_recovery ON mdm_registration_tasks.device_recovery(tenant_id,mdm_registration_tasks.recovery_key(device));
 COMMIT;
+
+-- Read-only discovery of original owner work; business execution remains fenced.
+CREATE POLICY work_discovery ON mdm_registration_tasks.device_recovery FOR SELECT TO mdm_owner USING(true);
+CREATE POLICY work_discovery ON mdm_registration_tasks.operations FOR SELECT TO mdm_owner USING(true);
+CREATE FUNCTION mdm_registration_tasks.native_work_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT tenant_id FROM ((SELECT DISTINCT tenant_id FROM mdm_registration_tasks.device_recovery WHERE after_tenant IS NULL OR tenant_id>after_tenant ORDER BY tenant_id LIMIT 32)) work ORDER BY tenant_id LIMIT 32
+$$;
+CREATE FUNCTION mdm_registration_tasks.native_work_epoch(t uuid,entity text) RETURNS bigint
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT min(expected_epoch) FROM (SELECT expected_epoch FROM mdm_registration_tasks.device_recovery WHERE tenant_id=t AND entity=mdm_registration_tasks.recovery_key(device)) original WHERE expected_epoch IS NOT NULL HAVING count(DISTINCT expected_epoch)=1
+$$;
+CREATE FUNCTION mdm_registration_tasks.native_work_relay_scopes(after_tenant uuid,after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT DISTINCT r.tenant_id,r.expected_epoch FROM mdm_registration_tasks.operations r WHERE (after_tenant IS NULL OR (r.tenant_id,r.expected_epoch)>(after_tenant,after_epoch)) AND EXISTS (SELECT FROM rss_transactional_messaging.outbox o WHERE o.tenant_id=r.tenant_id AND o.domain='mdm.registration.installation.v1' AND o.message_id='dispatch.'||r.id::text AND o.status NOT IN ('published','resolved')) ORDER BY tenant_id,expected_epoch LIMIT 32
+$$;
+ALTER FUNCTION mdm_registration_tasks.native_work_scopes(uuid) OWNER TO mdm_owner;
+ALTER FUNCTION mdm_registration_tasks.native_work_epoch(uuid,text) OWNER TO mdm_owner;
+ALTER FUNCTION mdm_registration_tasks.native_work_relay_scopes(uuid,bigint) OWNER TO mdm_owner;
+REVOKE ALL ON FUNCTION mdm_registration_tasks.native_work_scopes(uuid),mdm_registration_tasks.native_work_epoch(uuid,text),mdm_registration_tasks.native_work_relay_scopes(uuid,bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_registration_tasks.native_work_scopes(uuid),mdm_registration_tasks.native_work_epoch(uuid,text),mdm_registration_tasks.native_work_relay_scopes(uuid,bigint) TO mdm_access;

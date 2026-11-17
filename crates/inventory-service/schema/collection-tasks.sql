@@ -1,6 +1,6 @@
 -- Stable collection admission/dispatch. Per-attempt reports remain in collection_runs.
 BEGIN;
-CREATE TABLE mdm_inventory.collection_tasks (tenant_id uuid NOT NULL, id uuid NOT NULL, policy_version uuid NOT NULL, channel text NOT NULL CHECK (channel IN ('agent', 'mdm')), origin jsonb NOT NULL CHECK (origin IN ('"system"', '"policy"', '"human"', '"ai"')), source_objects jsonb NOT NULL, device uuid NOT NULL, occurrence text NOT NULL CHECK (octet_length(occurrence) BETWEEN 1 AND 256), triggered_at bigint CHECK (triggered_at IS NULL OR triggered_at >= 0), created_at bigint NOT NULL CHECK (created_at >= 0), available_at bigint NOT NULL CHECK (available_at >= 0), deadline bigint NOT NULL CHECK (deadline > available_at), gateway_accepted boolean NOT NULL DEFAULT FALSE, dispatch_fingerprint bytea NOT NULL CHECK (octet_length(dispatch_fingerprint) = 32), dispatch_failure jsonb CHECK (dispatch_failure IS NULL OR octet_length(CAST(dispatch_failure AS text)) <= 8192), agent_state jsonb CHECK (agent_state IS NULL OR octet_length(CAST(agent_state AS text)) <= 4096), agent_result jsonb CHECK (agent_result IS NULL OR octet_length(CAST(agent_result AS text)) <= 1114112), native_delivery text CHECK (native_delivery IN ('queued', 'prepared', 'sent', 'cancelled')), collection_run uuid, terminal_notified boolean NOT NULL DEFAULT FALSE, started_at bigint CHECK (started_at IS NULL OR started_at >= 0), CHECK (NOT terminal_notified OR (channel = 'mdm' AND collection_run IS NOT NULL)), CHECK ((channel = 'agent' AND agent_state IS NOT NULL AND native_delivery IS NULL AND collection_run IS NULL AND started_at IS NULL) OR (channel = 'mdm' AND agent_state IS NULL AND agent_result IS NULL AND native_delivery IS NOT NULL)), PRIMARY KEY (tenant_id, id), UNIQUE (tenant_id, policy_version, device, occurrence));
+CREATE TABLE mdm_inventory.collection_tasks (expected_epoch bigint NOT NULL CHECK(expected_epoch>0),tenant_id uuid NOT NULL, id uuid NOT NULL, policy_version uuid NOT NULL, channel text NOT NULL CHECK (channel IN ('agent', 'mdm')), origin jsonb NOT NULL CHECK (origin IN ('"system"', '"policy"', '"human"', '"ai"')), source_objects jsonb NOT NULL, device uuid NOT NULL, occurrence text NOT NULL CHECK (octet_length(occurrence) BETWEEN 1 AND 256), triggered_at bigint CHECK (triggered_at IS NULL OR triggered_at >= 0), created_at bigint NOT NULL CHECK (created_at >= 0), available_at bigint NOT NULL CHECK (available_at >= 0), deadline bigint NOT NULL CHECK (deadline > available_at), gateway_accepted boolean NOT NULL DEFAULT FALSE, dispatch_fingerprint bytea NOT NULL CHECK (octet_length(dispatch_fingerprint) = 32), dispatch_failure jsonb CHECK (dispatch_failure IS NULL OR octet_length(CAST(dispatch_failure AS text)) <= 8192), agent_state jsonb CHECK (agent_state IS NULL OR octet_length(CAST(agent_state AS text)) <= 4096), agent_result jsonb CHECK (agent_result IS NULL OR octet_length(CAST(agent_result AS text)) <= 1114112), native_delivery text CHECK (native_delivery IN ('queued', 'prepared', 'sent', 'cancelled')), collection_run uuid, terminal_notified boolean NOT NULL DEFAULT FALSE, started_at bigint CHECK (started_at IS NULL OR started_at >= 0), CHECK (NOT terminal_notified OR (channel = 'mdm' AND collection_run IS NOT NULL)), CHECK ((channel = 'agent' AND agent_state IS NOT NULL AND native_delivery IS NULL AND collection_run IS NULL AND started_at IS NULL) OR (channel = 'mdm' AND agent_state IS NULL AND agent_result IS NULL AND native_delivery IS NOT NULL)), PRIMARY KEY (tenant_id, id), UNIQUE (tenant_id, policy_version, device, occurrence));
 CREATE TABLE mdm_inventory.collection_admission (
     tenant_id uuid NOT NULL
   , device uuid NOT NULL
@@ -16,6 +16,7 @@ CREATE TABLE mdm_inventory.collection_output_chunks (
  PRIMARY KEY(tenant_id,attempt,chunk_index)
 );
 CREATE TABLE mdm_inventory.collection_policy_recovery (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL,
  policy uuid NOT NULL,
  input_revision bigint NOT NULL DEFAULT 1,
@@ -31,10 +32,14 @@ CREATE TABLE mdm_inventory.collection_native_checkins (
   , device uuid NOT NULL
   , active_event uuid
   , active_at bigint
+  , active_epoch bigint CHECK(active_epoch>0)
   , policy_after uuid
   , pending_event uuid
   , pending_at bigint
+  , pending_epoch bigint CHECK(pending_epoch>0)
+  , CHECK ((active_event IS NULL) = (active_epoch IS NULL))
   , CHECK ((active_event IS NULL) = (active_at IS NULL))
+  , CHECK ((pending_event IS NULL) = (pending_epoch IS NULL))
   , CHECK ((pending_event IS NULL) = (pending_at IS NULL))
   , CHECK (active_event IS NOT NULL
         OR policy_after IS NULL)
@@ -86,3 +91,28 @@ CREATE INDEX collection_native_delivery
   WHERE channel = 'mdm'
     AND native_delivery IN ('queued', 'prepared');
 COMMIT;
+
+CREATE POLICY work_discovery ON mdm_inventory.collection_tasks FOR SELECT TO mdm_owner USING(true);
+CREATE POLICY work_discovery ON mdm_inventory.collection_policy_recovery FOR SELECT TO mdm_owner USING(true);
+CREATE POLICY work_discovery ON mdm_inventory.collection_native_checkins FOR SELECT TO mdm_owner USING(true);
+CREATE FUNCTION mdm_inventory.collection_work_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT tenant_id FROM (SELECT tenant_id FROM mdm_inventory.collection_tasks UNION SELECT tenant_id FROM mdm_inventory.collection_policy_recovery UNION SELECT tenant_id FROM mdm_inventory.collection_native_checkins UNION SELECT a.tenant_id FROM mdm_policy.assignments a JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(a.tenant_id,a.version) WHERE v.action_kind='native_collection') work
+ WHERE after_tenant IS NULL OR tenant_id>after_tenant ORDER BY tenant_id LIMIT 32
+$$;
+CREATE FUNCTION mdm_inventory.collection_work_epoch(t uuid, entity text) RETURNS bigint
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT expected_epoch FROM mdm_inventory.collection_tasks WHERE tenant_id=t AND 'run:'||id::text=entity
+ UNION ALL SELECT expected_epoch FROM mdm_inventory.collection_policy_recovery WHERE tenant_id=t AND 'policy:'||policy::text=entity
+ UNION ALL SELECT coalesce(active_epoch,pending_epoch) FROM mdm_inventory.collection_native_checkins WHERE tenant_id=t AND 'checkin:'||device::text=entity
+ UNION ALL SELECT DISTINCT expected_epoch FROM mdm_policy.assignments WHERE tenant_id=t AND channel='mdm' AND 'scheduled:'||version::text||':'||(target->>'device')=entity
+$$;
+CREATE FUNCTION mdm_inventory.collection_work_relay_scopes(after_tenant uuid, after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ SELECT DISTINCT r.tenant_id,r.expected_epoch FROM mdm_inventory.collection_tasks r WHERE (after_tenant IS NULL OR (r.tenant_id,r.expected_epoch)>(after_tenant,after_epoch)) AND EXISTS (SELECT FROM rss_transactional_messaging.outbox o WHERE o.tenant_id=r.tenant_id AND o.domain='mdm.collection.v1' AND o.message_id='collection.'||r.id::text AND o.status NOT IN ('published','resolved')) ORDER BY tenant_id,expected_epoch LIMIT 32
+$$;
+ALTER FUNCTION mdm_inventory.collection_work_scopes(uuid) OWNER TO mdm_owner;
+ALTER FUNCTION mdm_inventory.collection_work_epoch(uuid,text) OWNER TO mdm_owner;
+ALTER FUNCTION mdm_inventory.collection_work_relay_scopes(uuid,bigint) OWNER TO mdm_owner;
+REVOKE ALL ON FUNCTION mdm_inventory.collection_work_scopes(uuid),mdm_inventory.collection_work_epoch(uuid,text),mdm_inventory.collection_work_relay_scopes(uuid,bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_inventory.collection_work_scopes(uuid),mdm_inventory.collection_work_epoch(uuid,text),mdm_inventory.collection_work_relay_scopes(uuid,bigint) TO mdm_access;

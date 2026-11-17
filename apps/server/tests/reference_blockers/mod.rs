@@ -38,14 +38,18 @@ impl Http {
                     proof: p,
                     sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
                         c.authority.clone(),
-                        c.audit.binding(),
                     ),
                     deadline: request_budget.deadline().instant(),
                     cancellation: request_budget,
                 }
             }));
+        let router = axum::Router::new().nest("/api/v1/tenants/{tenant}", router);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let base = format!("http://{}", listener.local_addr()?);
+        let base = format!(
+            "http://{}/api/v1/tenants/{}",
+            listener.local_addr()?,
+            c.tenant
+        );
         let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         Ok(Self { base, task })
     }
@@ -91,7 +95,7 @@ async fn catalog(
     let service = super::resource::catalog(
         owner.audit.clone(),
         owner.runtime.clone(),
-        c.tenant,
+        c.execution(),
         Arc::new(crate::clock::SystemClock),
         vec![7; 32],
     )
@@ -102,7 +106,7 @@ async fn version(c: &Context, v: r::Version) -> Result<()> {
     let owner = planning::owner(c, "mdm_resource_runtime").await?;
     let store = rss_mdm_resource_postgres::ResourceStore::new(
         owner.runtime.clone(),
-        c.audit.binding(),
+        c.execution(),
         crate::authority_t2_support::deadline(),
     )
     .await?;
@@ -112,6 +116,7 @@ async fn version(c: &Context, v: r::Version) -> Result<()> {
     ] {
         store
             .execute(
+                c.execution(),
                 &rss_mdm_resource_postgres::Request {
                     id: r::Id::new(Uuid::new_v4().to_string())?,
                     resource: v.resource().clone(),
@@ -275,7 +280,9 @@ async fn resource_http_retention_permissions_and_continuations() -> Result<()> {
                 &rss_mdm_resource_service::references::SCHEMA.parse("")?.0
             )
             .await,
-        Err(rss_mdm_resource_service::Error::Forbidden)
+        Err(rss_mdm_resource_service::Error::Resource(
+            rss_mdm_resource_service::error::ResourceError::Missing
+        ))
     ));
     other.close().await;
     let writer = c.account(&[P::ResourceRead, P::ResourceWrite]).await?;

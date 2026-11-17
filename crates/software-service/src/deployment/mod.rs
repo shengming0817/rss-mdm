@@ -2,6 +2,7 @@
 pub mod frozen;
 pub mod identity;
 pub mod native;
+pub mod native_download;
 
 /// Host-owned software admission, read once with the rest of product configuration.
 #[derive(Clone, Copy, Default, serde::Deserialize, serde::Serialize)]
@@ -90,6 +91,9 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
     rss_reconcile::Scope::new(tenant, DOMAIN).expect("fixed Software scope")
 }
 pub struct SoftwareService {
+    pub(crate) read_pool: sqlx::PgPool,
+    pub(crate) storage: rss_transactional_messaging::fence::StorageIdentity,
+    pub(crate) relay_after: Mutex<Option<(Uuid, i64)>>,
     pub(crate) worker_budget: Arc<tokio::sync::Semaphore>,
     pub(crate) recovery_batch: rss_device_command::BatchLimit,
     pub(crate) sessions: Arc<authorization::session::SessionAuthority>,
@@ -99,7 +103,13 @@ pub struct SoftwareService {
     pub(crate) transactions: Arc<Transactions>,
 }
 impl SoftwareService {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     pub fn new(
+        read_pool: sqlx::PgPool,
+        storage: rss_transactional_messaging::fence::StorageIdentity,
         transactions: Arc<Transactions>,
         sessions: Arc<authorization::session::SessionAuthority>,
         outbox: Arc<PgOutboxStore<()>>,
@@ -107,12 +117,11 @@ impl SoftwareService {
         worker_budget: Arc<tokio::sync::Semaphore>,
         recovery_batch: rss_device_command::BatchLimit,
     ) -> Self {
-        let readiness = rss_mdm_recovery_observation::Readiness::new(
-            recovery_scope(transactions.tenant),
-            true,
-            true,
-        );
+        let readiness = rss_mdm_recovery_observation::Readiness::new(DOMAIN, true, true);
         Self {
+            read_pool,
+            storage,
+            relay_after: Mutex::new(None),
             transactions,
             sessions,
             outbox,
@@ -133,7 +142,7 @@ impl SoftwareService {
 }
 pub struct Inputs {
     pub(crate) runtime: Arc<PgRuntime>,
-    pub(crate) tenant: TenantId,
+
     pub(crate) materials: Arc<InputMaterials>,
 }
 pub struct InputMaterials {
@@ -142,22 +151,14 @@ pub struct InputMaterials {
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub software: Arc<crate::preparation::Preparation>,
     pub bootstrap_configured: bool,
-    pub signing_enabled: bool,
     pub agent_installation: Arc<dyn crate::installation::inputs::Admission>,
 }
 impl Inputs {
-    pub fn bind(runtime: Arc<PgRuntime>, tenant: TenantId, materials: Arc<InputMaterials>) -> Self {
-        Self {
-            runtime,
-            tenant,
-            materials,
-        }
+    pub fn bind(runtime: Arc<PgRuntime>, materials: Arc<InputMaterials>) -> Self {
+        Self { runtime, materials }
     }
     fn validate_in(&self, tx: &PgTransaction<'_>) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::Forbidden.into());
-        }
         Ok(())
     }
     pub fn software_distribution(&self) -> SoftwareDistribution {

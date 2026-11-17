@@ -13,7 +13,6 @@ use std::sync::Arc;
 use uuid::Uuid;
 /// Runtime resources for the DA admission port. Agent delivery is optional.
 pub struct Admission {
-    pub tenant: TenantId,
     pub installation: Uuid,
     pub platform: Option<Arc<crate::platform_sso::Runtime>>,
     pub evidence: Arc<crate::evidence::Authorities>,
@@ -23,13 +22,14 @@ pub struct Admission {
 impl Admission {
     async fn session(
         &self,
+        tenant: TenantId,
         c: &mut PgConnection,
         anchor: &rss_mdm_registration_service::device::endpoints::DaRegistration,
     ) -> Result<AccessLocalSession, Error> {
         let now = crate::platform_sso::store::now(c).await?;
         let value = self
             .evidence
-            .native_on(c, self.tenant, self.installation, anchor, now)
+            .native_on(c, tenant, self.installation, anchor, now)
             .await?;
         match &value.deployment {
             rss_mdm_device_access::deployment::Deployment::Windows { .. }
@@ -39,15 +39,16 @@ impl Admission {
             }
             rss_mdm_device_access::deployment::Deployment::Macos { .. } => {
                 let rt = self.platform.as_deref().ok_or(Error::Forbidden)?;
-                let login = crate::platform_sso::deployment::configuration_for_object(
-                    c,
-                    self.tenant,
-                    anchor,
-                )
-                .await?;
+                let login =
+                    crate::platform_sso::deployment::configuration_for_object(c, tenant, anchor)
+                        .await?;
                 if !value.qualifies(
                     &rt.qualification_configuration()?,
-                    rt.profile(&login)?.uuid,
+                    rt.profile(
+                        uuid::Uuid::parse_str(&tenant.to_string()).map_err(|_| Error::Malformed)?,
+                        &login,
+                    )?
+                    .uuid,
                     now,
                 ) {
                     return Err(Error::Forbidden);
@@ -72,7 +73,7 @@ impl AdmissionPort for Admission {
         limit: u16,
     ) -> Pending<'a, (Vec<AccessPolicyOption>, Option<Uuid>)> {
         Box::pin(async move {
-            if tenant.to_string() != self.tenant.to_string() || limit == 0 || limit > 100 {
+            if limit == 0 || limit > 100 {
                 return Err(Error::Forbidden);
             }
             let ids:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM rss_da.policies WHERE tenant_id=$1 AND ($2::uuid IS NULL OR id>$2) AND rss_da.access_policy(id,$3,0)->>'state'='eligible' ORDER BY id LIMIT 2").bind(tenant).bind(after).bind(device.into_uuid()).fetch_all(&mut *c).await.map_err(db)?;
@@ -100,13 +101,16 @@ impl AdmissionPort for Admission {
         device: &'a rss_mdm_agent_wire::DeviceId,
         policy: Uuid,
     ) -> Pending<'a, PolicySelection> {
-        Box::pin(device_access::execution::admission::policy_on(
-            self.tenant,
-            c,
-            tenant,
-            device,
-            policy,
-        ))
+        Box::pin(async move {
+            device_access::execution::admission::policy_on(
+                TenantId::parse(&tenant.to_string()).map_err(|_| Error::Malformed)?,
+                c,
+                tenant,
+                device,
+                policy,
+            )
+            .await
+        })
     }
     fn local_session<'a>(
         &'a self,
@@ -114,19 +118,17 @@ impl AdmissionPort for Admission {
         p: &'a DevicePrincipal,
     ) -> Pending<'a, AccessLocalSession> {
         Box::pin(async move {
-            if p.tenant() != self.tenant {
-                return Err(Error::Forbidden);
-            }
             let target = crate::delivery::resolve_on(c, p).await?;
             if p.kind() == rss_mdm_registration_service::device::RegistrationKind::Agent {
                 let store = self.agent.as_ref().ok_or(Error::Unsupported)?;
                 let native = store
-                    .binding(c, self.tenant.to_string(), *p.device())
+                    .binding(c, p.tenant().to_string(), *p.device())
                     .await?
                     .ok_or(Error::Forbidden)?;
                 return device_access::execution::admission::native_local_session(native);
             }
             self.session(
+                p.tenant(),
                 c,
                 &rss_mdm_registration_service::device::endpoints::DaRegistration {
                     device: *target.device(),
@@ -142,7 +144,7 @@ impl AdmissionPort for Admission {
         b: &'a device_access::Binding,
     ) -> Pending<'a, AccessLocalSession> {
         Box::pin(async move {
-            if tenant.to_string() != self.tenant.to_string() || tenant != b.tenant {
+            if tenant != b.tenant {
                 return Err(Error::Forbidden);
             }
             device_access::storage::lock_registration(c, tenant, &b.device).await?;
@@ -150,12 +152,13 @@ impl AdmissionPort for Admission {
                 && let Some(delivery) = crate::delivery::for_binding_on(c, b).await?
             {
                 let native = store
-                    .binding(c, self.tenant.to_string(), delivery.device)
+                    .binding(c, tenant.to_string(), delivery.device)
                     .await?
                     .ok_or(Error::Forbidden)?;
                 device_access::execution::admission::native_local_session(native)?
             } else {
                 self.session(
+                    TenantId::parse(&tenant.to_string()).map_err(|_| Error::Malformed)?,
                     c,
                     &rss_mdm_registration_service::device::endpoints::DaRegistration {
                         device: b.device,

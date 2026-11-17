@@ -24,8 +24,12 @@ impl SoftwareContent {
     }
 }
 impl catalog::ContentPort for SoftwareContent {
-    fn verify<'a>(&'a self, version: &'a rss_mdm_resource::Version) -> catalog::ContentFuture<'a> {
-        catalog::ContentPort::verify(self.store.as_ref(), version)
+    fn verify<'a>(
+        &'a self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        version: &'a rss_mdm_resource::Version,
+    ) -> catalog::ContentFuture<'a> {
+        catalog::ContentPort::verify(self.store.as_ref(), execution, version)
     }
 }
 /// Uploaded originals awaiting batch verification.
@@ -57,6 +61,7 @@ impl ManagementContentPort for SoftwareContent {
     type ImportEvidence = ImportEvidence;
     async fn prepare_upload(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         input: &software::content::PrepareUpload,
         resource: &str,
         upload: uuid::Uuid,
@@ -75,6 +80,7 @@ impl ManagementContentPort for SoftwareContent {
         let result = self
             .store
             .begin(
+                execution,
                 upload,
                 binding,
                 self.now()?,
@@ -89,18 +95,22 @@ impl ManagementContentPort for SoftwareContent {
             offset: result.offset,
             length: result.binding.length,
             complete: result.complete,
-            href: format!("/api/v1/resources/{resource}/uploads/{upload}"),
+            href: format!(
+                "/api/v1/tenants/{}/resources/{resource}/uploads/{upload}",
+                execution.tenant()
+            ),
         })
     }
     async fn inspect_upload(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         id: uuid::Uuid,
         actor: &str,
         resource: &str,
     ) -> Result<software::content::InspectedUpload<Self::UploadPin>, Error> {
         let upload = self
             .store
-            .status(actor, id, self.now()?)
+            .status(execution, actor, id, self.now()?)
             .await
             .map_err(error)?;
         let crate::Purpose::Software {
@@ -117,7 +127,7 @@ impl ManagementContentPort for SoftwareContent {
         let artifact = upload.binding.artifact().map_err(error)?;
         let pin = self
             .store
-            .pin_ready(&artifact, crate::StorageClass::Artifact)
+            .pin_ready(execution, &artifact, crate::StorageClass::Artifact)
             .await
             .map_err(error)?;
         let inspection = pin
@@ -145,28 +155,39 @@ impl ManagementContentPort for SoftwareContent {
             _pin: pin,
         })
     }
-    async fn parse_upload(&self, id: uuid::Uuid, actor: &str, resource: &str) -> Result<(), Error> {
+    async fn parse_upload(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        id: uuid::Uuid,
+        actor: &str,
+        resource: &str,
+    ) -> Result<(), Error> {
         let upload = self
             .store
-            .status(actor, id, self.now()?)
+            .status(execution, actor, id, self.now()?)
             .await
             .map_err(error)?;
         if upload.binding.owner().map_err(error)? != resource {
             return Err(Error::Forbidden);
         }
         self.store
-            .parse_upload(actor, id, self.now()?)
+            .parse_upload(execution, actor, id, self.now()?)
             .await
             .map_err(error)
     }
     async fn verify_artifact(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         artifact: &rss_mdm_resource::Artifact,
     ) -> Result<Verified, Error> {
-        self.store.verify(artifact).await.map_err(error)
+        self.store.verify(execution, artifact).await.map_err(error)
     }
-    async fn stage_import(&self, input: StageImport<'_>) -> Result<StagedImport, Error> {
-        if input.version.tenant() != self.store.tenant {
+    async fn stage_import(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        input: StageImport<'_>,
+    ) -> Result<StagedImport, Error> {
+        if input.version.tenant() != execution.tenant() {
             return Err(Error::Forbidden);
         }
         let artifact = input.artifact.artifact().map_err(|_| Error::Malformed)?;
@@ -203,7 +224,7 @@ impl ManagementContentPort for SoftwareContent {
         let budget = self.store.upload_budget().map_err(error)?;
         let session = self
             .store
-            .begin(input.upload, binding, self.now()?, budget)
+            .begin(execution, input.upload, binding, self.now()?, budget)
             .await
             .map_err(error)?;
         if !session.complete {
@@ -212,6 +233,7 @@ impl ManagementContentPort for SoftwareContent {
             if !tail.is_empty() {
                 self.store
                     .append(
+                        execution,
                         input.actor,
                         input.upload,
                         session.offset,
@@ -225,17 +247,25 @@ impl ManagementContentPort for SoftwareContent {
         }
         let upload = self
             .store
-            .finish(input.actor, input.upload, self.now()?, budget)
+            .finish(execution, input.actor, input.upload, self.now()?, budget)
             .await
             .map_err(error)?;
         Ok(StagedImport { upload, artifact })
     }
-    async fn pin_imports(&self, staged: Vec<StagedImport>) -> Result<ImportEvidence, Error> {
+    async fn pin_imports(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        staged: Vec<StagedImport>,
+    ) -> Result<ImportEvidence, Error> {
         let artifacts = staged
             .iter()
             .map(|s| (s.artifact.clone(), crate::StorageClass::Artifact))
             .collect::<Vec<_>>();
-        let pins = self.store.pin_materials(&artifacts).await.map_err(error)?;
+        let pins = self
+            .store
+            .pin_materials(execution, &artifacts)
+            .await
+            .map_err(error)?;
         Ok(ImportEvidence {
             uploads: staged.into_iter().map(|s| s.upload).collect(),
             _pins: pins,

@@ -86,7 +86,7 @@ impl FilevaultService {
         let result = self
             .audit
             .write(
-                p.tenant(),
+            audit.binding()?,
                 &budget.source_control(),
                 (self, p, &source, input, audit, fact),
                 |ctx, tx| {
@@ -143,8 +143,7 @@ impl FilevaultService {
         let result = self
             .audit
             .write(
-                rss_request_context::TenantId::parse(p.tenant_id())
-                    .map_err(|_| Error::Malformed)?,
+            p.binding(),
                 &budget.source_control(),
                 (self, p, &source, input, audit, fact),
                 |ctx, tx| {
@@ -207,7 +206,8 @@ impl FilevaultService {
         );
         audit.target_device(device);
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(4));
-        let result=self.audit.write(rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_|Error::Malformed)?,&budget.source_control(),(self,p,device,input,audit),|ctx,tx|Box::pin(async move {
+        let result=self.audit.write(
+            p.binding(),&budget.source_control(),(self,p,device,input,audit),|ctx,tx|Box::pin(async move {
             let (value,replayed)=tx.with_connection_context(ctx,|ctx,c|Box::pin(async move {
                 use sha2::{Digest,Sha256};
                             crate::service::authorize(rss_mdm_install_support::StorageProfile::Mdm, c,ctx.1,ctx.2,Permission::SecurityOperate).await?;

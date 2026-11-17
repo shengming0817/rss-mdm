@@ -39,7 +39,7 @@ pub struct Mac {
 pub(crate) async fn templates(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
-    Path(id): Path<uuid::Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, uuid::Uuid)>,
     Query(options): Query<Options>,
 ) -> Result<Json<Templates>, Error> {
     let artifact = s

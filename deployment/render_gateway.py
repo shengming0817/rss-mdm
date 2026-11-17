@@ -66,16 +66,17 @@ def management(backend):
     # These exact ceilings mirror management-http/body_policy.rs; Rust checks methods too.
     routes = [
         ('~ ^/api/v1/identity/tenants/[^/]+/(login|session/reauthenticate)$', None),
-        ('~ ^/api/v1/(resources/[^/]+|policies/[^/]+)$', '8m'),
-        ('~ ^/api/v1/devices/[^/]+/operations$', '16m'),
-        ('~ ^/api/v1/devices/[^/]+/(inventory-scopes|inventory-lists/[^/]+)$', '384k'),
-        ('~ ^/api/v1/pki/(rotations|crls)$', '64m'),
-        ('= /api/v1/pki/signing/recover', '256k'),
-        ('~ ^/api/v1/agent-issuances/[^/]+/recover$', '256k'),
-        ('~ ^/api/v1/apple/(materials/|organizations)', '256k'),
-        ('= /api/v1/windows/entra-policy', '128k'),
-        ('~ ^/api/v1/(certificate-archive/import|authorization/(rules|user-groups)/[^/]+|tenant-administration/authorization/rules/[^/]+)$', '2m'),
-        ('~ ^/api/v1/(agent-packages(/[^/]+/withdraw)?|software/(imports|sources/[^/]+/revisions/[^/]+|resources/[^/]+/versions/[^/]+))$', '1m'),
+        ('~ ^/api/v1/tenants/[^/]+/(resources/[^/]+|policies/[^/]+)$', '8m'),
+        ('~ ^/api/v1/tenants/[^/]+/devices/[^/]+/operations$', '16m'),
+        ('~ ^/api/v1/tenants/[^/]+/devices/[^/]+/(inventory-scopes|inventory-lists/[^/]+)$', '384k'),
+        ('~ ^/api/v1/tenants/[^/]+/pki/(rotations|crls)$', '64m'),
+        ('~ ^/api/v1/tenants/[^/]+/pki/signing/recover$', '256k'),
+        ('~ ^/api/v1/tenants/[^/]+/agent-issuances/[^/]+/recover$', '256k'),
+        ('~ ^/api/v1/tenants/[^/]+/apple/(materials/|organizations)', '256k'),
+        ('~ ^/api/v1/tenants/[^/]+/windows/entra-policy$', '128k'),
+        ('~ ^/api/v1/tenants/[^/]+/(certificate-archive/import|authorization/(rules|user-groups)/[^/]+)$', '2m'),
+        ('~ ^/api/v1/tenant-administration/authorization/rules/[^/]+$', '2m'),
+        ('~ ^/api/v1/tenants/[^/]+/(agent-packages(/[^/]+/withdraw)?|software/(imports|sources/[^/]+/revisions/[^/]+|resources/[^/]+/versions/[^/]+))$', '1m'),
     ]
     result = ''
     for match, budget in routes:
@@ -210,7 +211,7 @@ def render(root, bind_ip='0.0.0.0'):
                 block += f'''        location = /api/v1/identity-host/config.json {{ alias /run/gateway/{host['hostId']}/ui.json; }}
         location = /api/v1/mdm-host/config.json {{ alias /run/gateway/{host['hostId']}/mdm.json; }}
 '''
-                block += location('~ ^/api/v1/resources/[^/]+/(content|uploads/[^/]+)$', backend, budget='8g', streaming=True)
+                block += location('~ ^/api/v1/tenants/[^/]+/resources/[^/]+/(content|uploads/[^/]+)$', backend, budget='8g', streaming=True)
                 block += management(backend) + scep_locations(host)
                 block += location('= /.well-known/apple-app-site-association', backend)
                 block += '''        location = /api { return 404; }

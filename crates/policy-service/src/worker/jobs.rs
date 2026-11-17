@@ -80,17 +80,20 @@ pub async fn enqueue_job_in(
             },
         )
         .await?;
-    Ok(accepted(id, input))
+    Ok(accepted(tx.tenant_id(), id, input))
 }
-pub fn accepted(id: Uuid, input: &Work) -> Value {
+pub fn accepted(tenant: TenantId, id: Uuid, input: &Work) -> Value {
     let status_url = match input {
-        Work::PolicyEvent { batch } => format!("/api/v1/policy-event-batches/{batch}"),
-        Work::Lifecycle { policy, .. } => format!("/api/v1/policies/{policy}"),
-        Work::PolicyReconcile { policy } => format!("/api/v1/policies/{policy}"),
+        Work::PolicyEvent { batch } => {
+            format!("/api/v1/tenants/{tenant}/policy-event-batches/{batch}")
+        }
+        Work::Lifecycle { policy, .. } => format!("/api/v1/tenants/{tenant}/policies/{policy}"),
+        Work::PolicyReconcile { policy } => format!("/api/v1/tenants/{tenant}/policies/{policy}"),
     };
     serde_json::json!({"task":id,"kind":input.kind(),"target":input.target(),"statusUrl":status_url})
 }
 pub async fn finish_job_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     store: &rss_mdm_audit_integration::AuditStore,
@@ -119,7 +122,7 @@ pub async fn finish_job_in(
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             profile,
-            tx.tenant_id().to_string(),
+            binding,
             action,
             rss_mdm_audit_integration::AuditIntent::Management,
         );

@@ -59,9 +59,6 @@ impl Associations {
         reference: &ObjectRef,
         personnel: &personnel::Reader<'_>,
     ) -> Result<crate::view_response::Detail> {
-        if proof.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
         let budget = AuditBudget::new(Duration::from_secs(15));
         let access = self.directory_access(proof, &budget).await?;
         let mut args = PgArguments::default();

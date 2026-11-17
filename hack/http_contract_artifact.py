@@ -224,24 +224,24 @@ def collection_projection(document):
         if needed:
             selected['$defs'] = needed
         return selected
-    field = carrier('GET', '/api/v1/asset-fields/{field}', 'response')
+    field = carrier('GET', '/api/v1/tenants/{tenant}/asset-fields/{field}', 'response')
     return {
-        'ResourceWrite': carrier('POST', '/api/v1/resources/{id}', 'request'),
-        'ResourceResponse': carrier('POST', '/api/v1/resources/{id}', 'response'),
-        'FieldWrite': carrier('PUT', '/api/v1/asset-fields/{field}', 'request'),
+        'ResourceWrite': carrier('POST', '/api/v1/tenants/{tenant}/resources/{id}', 'request'),
+        'ResourceResponse': carrier('POST', '/api/v1/tenants/{tenant}/resources/{id}', 'response'),
+        'FieldWrite': carrier('PUT', '/api/v1/tenants/{tenant}/asset-fields/{field}', 'request'),
         'FieldView': named(field, 'FieldView'),
-        'FieldReferenceQuery': carrier('GET', '/api/v1/asset-fields/{field}/references', 'query'),
-        'FieldReferences': carrier('GET', '/api/v1/asset-fields/{field}/references', 'response'),
-        'ResourceReferences': carrier('GET', '/api/v1/resources/{id}/versions/{version}/references', 'response'),
-        'GroupReferences': carrier('GET', '/api/v1/groups/{id}/references', 'response'),
-        'PolicyWrite': carrier('POST', '/api/v1/policies/{policy}', 'request'),
-        'PolicyView': carrier('GET', '/api/v1/policies/{policy}', 'response'),
-        'PolicyScopeRead': carrier('GET', '/api/v1/policies/{policy}/scope', 'response'),
-        'PolicyScopePreview': carrier('POST', '/api/v1/policies/{policy}/scope/previews', 'request'),
-        'PolicyScopePreviewResult': carrier('POST', '/api/v1/policies/{policy}/scope/previews', 'response'),
-        'PolicyScopeRecompute': carrier('POST', '/api/v1/policies/{policy}/scope/recomputations', 'request'),
-        'PolicyScopeReceipt': carrier('POST', '/api/v1/policies/{policy}/scope/recomputations', 'response'),
-        'GroupImpacts': carrier('GET', '/api/v1/groups/{id}/impacts', 'response'),
+        'FieldReferenceQuery': carrier('GET', '/api/v1/tenants/{tenant}/asset-fields/{field}/references', 'query'),
+        'FieldReferences': carrier('GET', '/api/v1/tenants/{tenant}/asset-fields/{field}/references', 'response'),
+        'ResourceReferences': carrier('GET', '/api/v1/tenants/{tenant}/resources/{id}/versions/{version}/references', 'response'),
+        'GroupReferences': carrier('GET', '/api/v1/tenants/{tenant}/groups/{id}/references', 'response'),
+        'PolicyWrite': carrier('POST', '/api/v1/tenants/{tenant}/policies/{policy}', 'request'),
+        'PolicyView': carrier('GET', '/api/v1/tenants/{tenant}/policies/{policy}', 'response'),
+        'PolicyScopeRead': carrier('GET', '/api/v1/tenants/{tenant}/policies/{policy}/scope', 'response'),
+        'PolicyScopePreview': carrier('POST', '/api/v1/tenants/{tenant}/policies/{policy}/scope/previews', 'request'),
+        'PolicyScopePreviewResult': carrier('POST', '/api/v1/tenants/{tenant}/policies/{policy}/scope/previews', 'response'),
+        'PolicyScopeRecompute': carrier('POST', '/api/v1/tenants/{tenant}/policies/{policy}/scope/recomputations', 'request'),
+        'PolicyScopeReceipt': carrier('POST', '/api/v1/tenants/{tenant}/policies/{policy}/scope/recomputations', 'response'),
+        'GroupImpacts': carrier('GET', '/api/v1/tenants/{tenant}/groups/{id}/impacts', 'response'),
     }
 
 

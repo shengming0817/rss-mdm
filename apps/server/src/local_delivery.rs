@@ -38,12 +38,15 @@ pub(crate) struct Lane<'a> {
     pub domain: &'static str,
     pub consumer: &'static str,
     pub name: &'static str,
+    pub scopes: &'static str,
 }
 pub(crate) struct Delivery<H, V> {
     name: &'static str,
     health: Arc<Health>,
     runtime: Arc<PgRuntime>,
-    binding: ExecutionBinding,
+    storage: rss_transactional_messaging::fence::StorageIdentity,
+    read_pool: sqlx::PgPool,
+    scopes: &'static str,
     projection: PgLocalProjection<H, rss_mdm_native_protection::Protector>,
     validator: V,
 }
@@ -60,6 +63,7 @@ where
 {
     pub(crate) fn open<'a>(
         config: &'a crate::config::Config,
+        read_pool: sqlx::PgPool,
         protection: Arc<rss_mdm_native_protection::Protector>,
         health: Arc<Health>,
         lane: Lane<'a>,
@@ -76,8 +80,7 @@ where
             if db.user != lane.role {
                 return Err(Error::Malformed);
             }
-            let tenant = rss_request_context::TenantId::parse(&config.identity.tenant_id)
-                .map_err(|_| Error::Malformed)?;
+            let binding = config.management_binding()?;
             let pg = PgConfig::new(
                 &db.host,
                 db.port,
@@ -90,7 +93,6 @@ where
                 .map_err(|_| Error::Malformed)?,
             )
             .with_pool_limits(0, 2);
-            let binding = config.storage_binding.execution(tenant)?;
             let runtime = Arc::new(
                 PgRuntime::connect_consumer(pg, crate::lifecycle::RuntimeTimer, binding.storage())
                     .await
@@ -130,7 +132,9 @@ where
                     name: lane.name,
                     health,
                     runtime: runtime.clone(),
-                    binding,
+                    storage: binding.storage(),
+                    read_pool,
+                    scopes: lane.scopes,
                     projection,
                     validator,
                 }))
@@ -145,11 +149,12 @@ where
 
     async fn poll(
         &self,
+        binding: ExecutionBinding,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<usize, PollFailure> {
         if self
             .projection
-            .has_dead_letters(self.binding, deadline())
+            .has_dead_letters(binding, deadline())
             .await
             .map_err(|_| PollFailure::Unavailable)?
         {
@@ -161,7 +166,7 @@ where
         let batch = self
             .projection
             .project_batch(
-                self.binding,
+                binding,
                 &self.validator,
                 NonZeroUsize::new(1).expect("one"),
                 OperationDeadline::from_remaining(Duration::from_secs(1)),
@@ -211,29 +216,42 @@ where
         let (task, status) = rss_runtime::ManagedTask::prepare(self.name, Duration::from_secs(8));
         let _ = self.health.task.set(status);
         task.into_registration(move |cancel|async move {
+            let mut after:Option<(uuid::Uuid,i64)>=None;
+            let mut failed=false;let mut delay=Duration::from_secs(60);
             loop {
-                if cancel.is_cancelled(){return Ok(());}
-                match self.poll(&cancel).await {
-                    Ok(count)=>{
-                        self.health.failed.store(false,std::sync::atomic::Ordering::Release);
-                        self.health.observed.store(true,std::sync::atomic::Ordering::Release);
-                        if count>0 {continue;}
-                    }
-                    Err(PollFailure::RecoveryRequired)=>return Err(rss_runtime::ShutdownError::new(std::io::Error::other("Product input event requires recovery"))),
-                    Err(PollFailure::Unavailable)=>{
-                        self.health.failed.store(true,std::sync::atomic::Ordering::Release);
-                        eprintln!("{}",serde_json::json!({"event":"local_delivery_unavailable","worker":self.name}));
-                    }
-                }
-                let delay = match self.projection.next_wakeup(self.binding, deadline()).await {
-                    Ok(wakeup) if wakeup.due_now() => Duration::from_millis(100),
-                    Ok(wakeup) => wakeup.next_deadline().map_or(Duration::from_secs(60), |at| {
-                        at.instant().saturating_duration_since(rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer))
-                            .min(Duration::from_secs(60)).max(Duration::from_millis(100))
-                    }),
-                    Err(_) => { self.health.failed.store(true,std::sync::atomic::Ordering::Release); Duration::from_secs(5) }
+                if cancel.is_cancelled(){return Ok(())}
+                let page=sqlx::query_as::<_,(uuid::Uuid,i64)>(self.scopes).bind(after.map(|v|v.0)).bind(after.map(|v|v.1)).fetch_all(&self.read_pool).await;
+                let rows=match page {
+                    Ok(rows)=>rows,
+                    Err(_)=>{failed=true;delay=Duration::from_secs(5);Vec::new()},
                 };
-                tokio::select!{()=cancel.cancelled()=>return Ok(()),()=notify.notified()=>{},()=tokio::time::sleep(delay)=>{}}
+                if rows.is_empty(){
+                    self.health.failed.store(failed,std::sync::atomic::Ordering::Release);
+                    self.health.observed.store(true,std::sync::atomic::Ordering::Release);
+                    after=None;failed=false;
+                    tokio::select!{()=cancel.cancelled()=>return Ok(()),()=notify.notified()=>{},()=tokio::time::sleep(delay)=>{}}
+                    delay=Duration::from_secs(60);continue;
+                }
+                for (tenant,epoch) in rows {
+                    after=Some((tenant,epoch));
+                    let tenant=rss_request_context::TenantId::parse(&tenant.to_string()).map_err(rss_runtime::ShutdownError::new)?;
+                    let epoch=rss_transactional_messaging::fence::Epoch::new(epoch).map_err(rss_runtime::ShutdownError::new)?;
+                    let binding=ExecutionBinding::new(self.storage,tenant,epoch);
+                    match self.poll(binding,&cancel).await {
+                        Ok(count)=>{if count>0{delay=Duration::from_millis(100)}},
+                        Err(error)=>{
+                            failed=true;
+                            self.health.failed.store(true,std::sync::atomic::Ordering::Release);
+                            eprintln!("{}",serde_json::json!({"event":"local_delivery_unavailable","worker":self.name,"tenant":tenant.to_string(),"recoveryRequired":matches!(error,PollFailure::RecoveryRequired)}));
+                        },
+                    }
+                    let wakeup=match self.projection.next_wakeup(binding,deadline()).await {
+                        Ok(wakeup) if wakeup.due_now()=>Duration::from_millis(100),
+                        Ok(wakeup)=>wakeup.next_deadline().map_or(Duration::from_secs(60),|at|at.instant().saturating_duration_since(rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)).max(Duration::from_millis(100))),
+                        Err(_)=>{failed=true;Duration::from_secs(5)},
+                    };
+                    delay=delay.min(wakeup);
+                }
             }
         })
     }

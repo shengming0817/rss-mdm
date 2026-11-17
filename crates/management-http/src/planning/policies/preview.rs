@@ -12,7 +12,7 @@ pub async fn preview(
     State(s): State<Arc<StateServices>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    axum::extract::Path(policy): axum::extract::Path<Uuid>,
+    axum::extract::Path((_tenant, policy)): axum::extract::Path<(Uuid, Uuid)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<PreviewQuery>,
     >,

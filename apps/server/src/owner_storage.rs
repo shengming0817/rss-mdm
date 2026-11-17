@@ -74,8 +74,7 @@ pub(crate) struct OwnerRuntime {
 impl OwnerRuntime {
     pub(crate) async fn open(
         messaging: Messaging<'_>,
-        binding: &StorageBinding,
-        tenant: TenantId,
+        binding: ExecutionBinding,
         connections: u32,
         audit: Arc<rss_mdm_audit_integration::AuditStore>,
         name: &'static str,
@@ -85,7 +84,6 @@ impl OwnerRuntime {
             Messaging::Producer(database) | Messaging::Runtime(database) => database,
         };
         let invalid = || Error::Configuration(ConfigIssue::BusinessDatabase);
-        let binding = binding.execution(tenant)?;
         let pg = PgConfig::new(
             &database.host,
             database.port,

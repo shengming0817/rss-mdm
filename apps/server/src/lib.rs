@@ -24,7 +24,6 @@ mod registration_lifecycle;
 
 mod publication_config;
 
-mod task_signing;
 use database::Database;
 
 mod channel_status;

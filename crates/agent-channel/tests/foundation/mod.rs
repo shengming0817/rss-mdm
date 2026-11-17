@@ -117,7 +117,7 @@ async fn accepted(c: &Context, p: &registration::DevicePrincipal) -> Result<Uuid
     let mut tx = c.seed().await?;
     sqlx::query("INSERT INTO rss_da.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'enabled',$4,$5,$6)").bind(c.tenant.to_string()).bind(policy).bind(version).bind(serde_json::to_value(definition)?).bind(serde_json::to_value(actor)?).bind(at).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_da.policy_versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'request_mdm_enrollment',$4,$5)").bind(c.tenant.to_string()).bind(version).bind(policy).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO rss_da.enrollment_runs (tenant_id, id, policy_version, origin, source_objects, device, occurrence, created_at, available_at, deadline, state, gateway_accepted, dispatch_fingerprint) VALUES (CAST($1 AS uuid), $2, $3, '\"policy\"', $4, $5, 'once', $6, $6, $7, $8, TRUE, $9)").bind(c.tenant.to_string()).bind(run).bind(version).bind(json!([object])).bind(p.device().into_uuid()).bind(at).bind(at+300).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(at+300,at)?)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO rss_da.enrollment_runs (expected_epoch,tenant_id, id, policy_version, origin, source_objects, device, occurrence, created_at, available_at, deadline, state, gateway_accepted, dispatch_fingerprint) VALUES (current_setting('rss.execution_epoch')::bigint,CAST($1 AS uuid), $2, $3, '\"policy\"', $4, $5, 'once', $6, $6, $7, $8, TRUE, $9)").bind(c.tenant.to_string()).bind(run).bind(version).bind(json!([object])).bind(p.device().into_uuid()).bind(at).bind(at+300).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(at+300,at)?)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(run)
 }
@@ -171,39 +171,11 @@ async fn exercise(c: &Context) -> Result<()> {
         )
         .await?;
     assert_eq!(binding.device_id, device);
-    let loaded = rss_mdm_task_trust::trust::load(
-        DA,
-        rss_mdm_task_trust::Use::AgentTask,
-        &mut tx,
-        c.tenant,
-        1,
-        &protection,
-    )
-    .await?;
     let signing = Arc::new(rss_mdm_task_trust::Signing::new(
         DA,
         rss_mdm_task_trust::Use::AgentTask,
-        c.tenant,
-        Some(loaded),
+        protection.clone(),
     )?);
-    let mismatch = rss_mdm_task_trust::trust::load(
-        DA,
-        rss_mdm_task_trust::Use::AgentTask,
-        &mut tx,
-        c.tenant,
-        1,
-        &protection,
-    )
-    .await?;
-    assert!(
-        rss_mdm_task_trust::Signing::new(
-            StorageProfile::Mdm,
-            rss_mdm_task_trust::Use::AgentTask,
-            c.tenant,
-            Some(mismatch)
-        )
-        .is_err()
-    );
     tx.commit().await?;
     audit_boundaries::task_trust(c, &p, signing.clone(), protection.clone(), &trust).await?;
     observation::enrollment(c, &p).await?;
@@ -226,7 +198,7 @@ async fn exercise(c: &Context) -> Result<()> {
     let transactions = registration::enrollment::tasks::Transactions::bind(
         DA,
         c.runtime.clone(),
-        c.tenant,
+        c.execution(),
         c.audit.clone(),
         materials,
     )
@@ -237,7 +209,7 @@ async fn exercise(c: &Context) -> Result<()> {
     ));
     let delivery = rss_mdm_agent_channel::delivery::Delivery {
         runtime: c.runtime.clone(),
-        tenant: c.tenant,
+
         audit: c.audit.clone(),
         signing,
         tasks: Arc::new(
@@ -249,7 +221,7 @@ async fn exercise(c: &Context) -> Result<()> {
         RequestAudit::new(
             rss_mdm_audit_integration::Origin::Request,
             DA,
-            c.tenant.to_string(),
+            c.execution(),
             "agent_claim",
             AuditIntent::Management,
         )

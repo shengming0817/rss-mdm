@@ -1,7 +1,6 @@
 //! Scope definitions, immutable sources/results, tasks and consumer checkpoints.
 //! No connection, migration, commit or worker is created here.
 use rss_mdm_scope::ScopeDefinition;
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgError, PgRuntime, PgTransaction};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -21,7 +20,6 @@ pub struct Publication {
 pub struct ScopeBinding {
     profile: rss_mdm_install_support::StorageProfile,
     runtime: Arc<PgRuntime>,
-    tenant: TenantId,
 }
 #[derive(Debug, thiserror::Error)]
 pub enum BindingError {
@@ -40,23 +38,12 @@ impl ScopeBinding {
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
         self.profile
     }
-    pub fn new(
-        profile: rss_mdm_install_support::StorageProfile,
-        runtime: Arc<PgRuntime>,
-        tenant: TenantId,
-    ) -> Self {
-        Self {
-            profile,
-            runtime,
-            tenant,
-        }
+    pub fn new(profile: rss_mdm_install_support::StorageProfile, runtime: Arc<PgRuntime>) -> Self {
+        Self { profile, runtime }
     }
     /// Validate the actual runtime instance and tenant without acquiring a connection.
     pub fn validate_in(&self, tx: &PgTransaction<'_>) -> Result<(), BindingError> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(BindingError::TenantMismatch);
-        }
         Ok(())
     }
 }
@@ -86,13 +73,23 @@ impl ScopeBinding {
 
         self.validate_in(tx)?;
         self.admit_group_changes_in(tx, true).await?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let event = event.to_owned();
-        tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query(crate::storage_profile::sql(profile).lib_accept_group_change_in_1).bind(tenant).bind(event).bind(group).execute(&mut *c).await?;
-            sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'scopes')").execute(c).await?;
-            Ok(())
-        })).await?;
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query(crate::storage_profile::sql(profile).lib_accept_group_change_in_1)
+                    .bind(tenant)
+                    .bind(event)
+                    .bind(group)
+                    .execute(&mut *c)
+                    .await?;
+                sqlx::query("SELECT pg_notify('mdm_work','scopes')")
+                    .execute(c)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await?;
         Ok(())
     }
     /// Lock one pending event and read at most 64 dependent Scopes.
@@ -104,7 +101,7 @@ impl ScopeBinding {
 
         self.validate_in(tx)?;
         self.admit_group_changes_in(tx, false).await?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let row = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -120,7 +117,7 @@ impl ScopeBinding {
         let Some((event, group, cursor)) = row else {
             return Ok(None);
         };
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let mut scopes = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -153,7 +150,7 @@ impl ScopeBinding {
 
         self.validate_in(tx)?;
         self.admit_group_changes_in(tx, false).await?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let event = page.event.clone();
         let cursor = page.scopes.last().copied();
         let done = !page.more;
@@ -257,7 +254,7 @@ impl ScopeBinding {
         let profile = self.profile();
 
         self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         Ok(tx
             .with_connection(move |c| {
                 Box::pin(async move {

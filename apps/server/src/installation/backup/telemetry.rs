@@ -10,15 +10,8 @@ fn coordinate(database: &crate::config::Database) -> (String, u16, String) {
 fn target(journal: &Journal, index: usize) -> Result<Journal> {
     Journal::open(&journal.path(&format!("telemetry-{index}"))?)
 }
-fn configured(host: &Host) -> Result<Option<crate::telemetry::Config>> {
-    let value = &host.runtime["telemetry"];
-    if value.is_null() {
-        Ok(None)
-    } else {
-        serde_json::from_value(value.clone())
-            .map(Some)
-            .map_err(|_| Error::Corrupt)
-    }
+fn configured(runtime: &Value) -> Result<Vec<crate::telemetry::Config>> {
+    serde_json::from_value(runtime["telemetry"].clone()).map_err(|_| Error::Corrupt)
 }
 pub(super) fn validate(frozen: &Frozen) -> Result<()> {
     if frozen.request.telemetry.len() > 64 {
@@ -31,7 +24,7 @@ pub(super) fn validate(frozen: &Frozen) -> Result<()> {
         let database = profile.configuration.database();
         if coordinate(database) == coordinate(&primary)
             || coordinate(database) != coordinate(&profile.administrator)
-            || !supplied.insert(coordinate(database))
+            || !supplied.insert(profile.configuration.resource_id)
         {
             return Err(Error::Input);
         }
@@ -42,16 +35,19 @@ pub(super) fn validate(frozen: &Frozen) -> Result<()> {
         }
     }
     let mut required = BTreeSet::new();
-    for host in &frozen.hosts {
-        if let Some(config) = configured(host)? {
-            let key = coordinate(config.database());
-            required.insert(key.clone());
+    {
+        for config in configured(&frozen.runtime)? {
+            let key = config.resource_id;
+            required.insert(key);
             let profile = frozen
                 .request
                 .telemetry
                 .iter()
-                .find(|p| coordinate(p.configuration.database()) == key)
+                .find(|p| p.configuration.resource_id == key)
                 .ok_or(Error::Input)?;
+            if coordinate(config.database()) != coordinate(profile.configuration.database()) {
+                return Err(Error::Conflict);
+            }
             match (&config.backend, &profile.configuration.backend) {
                 (Storage::Postgres { .. }, Storage::Postgres { .. }) => {}
                 (
@@ -97,12 +93,16 @@ async fn ch_fence_all(frozen: &Frozen, profile: &StorageRequest, enable: bool) -
     if profile.clickhouse.is_none() {
         return Ok(());
     }
-    for host in &frozen.hosts {
-        if let Some(config) = configured(host)?
-            && coordinate(config.database()) == coordinate(profile.configuration.database())
+    for config in configured(&frozen.runtime)? {
+        if coordinate(config.database()) == coordinate(profile.configuration.database())
+            && matches!(config.backend, Storage::ClickHouse { .. })
         {
             let mut current = profile.clone();
-            current.tenant = host.tenant.to_string();
+            current.tenant = config
+                .tenant()
+                .map_err(|_| Error::Corrupt)?
+                .ok_or(Error::Corrupt)?
+                .to_string();
             current.configuration = config;
             ch_fence(&current, enable).await?;
         }
@@ -474,35 +474,32 @@ async fn restore_clickhouse(
         )
         .await?;
     }
-    for host in &frozen.hosts {
-        if let Some(config) = configured(host)?
-            && coordinate(config.database()) == coordinate(profile.configuration.database())
+    for config in configured(&frozen.runtime)? {
+        if coordinate(config.database()) == coordinate(profile.configuration.database())
+            && matches!(config.backend, Storage::ClickHouse { .. })
         {
-            let mut tenant_profile = profile.clone();
-            tenant_profile.tenant = host.tenant.to_string();
-            tenant_profile.configuration = config;
-            clickhouse::provision_users(&tenant_profile).await?;
-            ch_fence(&tenant_profile, true).await?;
+            let mut selected = profile.clone();
+            selected.tenant = config
+                .tenant()
+                .map_err(|_| Error::Corrupt)?
+                .ok_or(Error::Corrupt)?
+                .to_string();
+            selected.configuration = config;
+            clickhouse::provision_users(&selected).await?;
+            ch_fence(&selected, true).await?;
         }
     }
     Ok(())
 }
 pub(super) async fn admit(frozen: &Frozen) -> Result<()> {
-    for host in &frozen.hosts {
-        if let Some(config) = configured(host)? {
-            let tenant = rss_request_context::TenantId::parse(&host.tenant.to_string())
-                .map_err(|_| Error::Corrupt)?;
-            let backend = config
-                .open_backend(tenant)
-                .await
-                .map_err(|_| Error::Corrupt)?;
-            let deadline = rss_request_context::Deadline::from_timeout(
-                &rss_mdm_telemetry_service::backend::SystemClock,
-                std::time::Duration::from_secs(10),
-            )
-            .map_err(|_| Error::Storage)?;
-            backend.close(deadline).await.map_err(|_| Error::Storage)?;
-        }
+    for config in configured(&frozen.runtime)? {
+        let backend = config.open_backend().await.map_err(|_| Error::Corrupt)?;
+        let deadline = rss_request_context::Deadline::from_timeout(
+            &rss_mdm_telemetry_service::backend::SystemClock,
+            std::time::Duration::from_secs(10),
+        )
+        .map_err(|_| Error::Storage)?;
+        backend.close(deadline).await.map_err(|_| Error::Storage)?;
     }
     Ok(())
 }

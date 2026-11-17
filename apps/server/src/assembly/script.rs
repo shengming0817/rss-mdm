@@ -14,10 +14,11 @@ pub(crate) async fn assemble(
     ),
     Error,
 > {
+    let probe = config.management_binding()?;
     let scripts = Arc::new(rss_mdm_script_service::ScriptService::new(
         rss_mdm_script_service::Transactions::bind(
             storage.runtime.clone(),
-            storage.tenant,
+            probe,
             storage.audit.clone(),
             Arc::new(rss_mdm_script_service::Materials {
                 agent_store: Arc::new(super::agent_facts::AgentFacts),
@@ -32,6 +33,8 @@ pub(crate) async fn assemble(
     ));
     let script_work = Arc::new(
         rss_mdm_script_service::worker::Worker::new(
+            storage.discovery_pool.clone(),
+            storage.storage,
             scripts.clone(),
             storage.reconcile.clone(),
             storage.worker_budget.clone(),

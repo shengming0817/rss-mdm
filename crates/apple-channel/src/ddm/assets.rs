@@ -56,16 +56,20 @@ pub async fn asset(
 ) -> Result<axum::response::Response, Error> {
     use axum::response::IntoResponse;
     let axum::Extension(peer) = peer.ok_or(crate::Error::Unauthorized)?;
-    let apple = app.apple()?;
+    let execution = app.certificate_binding(&peer).await?;
+    let apple = app.apple(execution).await?;
     let leaf = apple.authority.verify(
         peer.chain(),
         app.clock
             .unix_seconds()
             .ok_or(Error::Unavailable(Failure::Clock))?,
     )?;
+    audit
+        .bind_scope(execution)
+        .map_err(|_| Error::Unauthorized)?;
     let p = app
         .devices
-        .management_principal(&app.mount.credential(leaf.fingerprint())?)
+        .management_principal(&app.mount.credential(execution, leaf.fingerprint())?)
         .await?;
     audit.identify_device(p.device());
     audit.target_device(p.device());
@@ -76,6 +80,7 @@ pub async fn asset(
     let user_access = if user.as_deref().is_some_and(|u| !u.is_empty()) {
         match crate::account_enrollment::authorize_user(
             &app,
+            execution,
             leaf.enrollment(),
             &headers,
             control.deadline(),

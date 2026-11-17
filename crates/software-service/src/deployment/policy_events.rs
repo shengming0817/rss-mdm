@@ -92,9 +92,7 @@ impl crate::deployment::transactions::Transactions {
     /// Bind Policy participation to this exact admitted runtime and tenant.
     pub fn validate_policy_transaction_in(&self, tx: &PgTransaction<'_>) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(crate::deployment::Error::Forbidden.into());
-        }
+
         Ok(())
     }
     /// A batch member has one immutable operation identity. Scope and execution rules remain owner-owned.
@@ -198,6 +196,7 @@ impl crate::deployment::transactions::Transactions {
                     return Ok(Decision::Expired);
                 }
                 production::queue_run_in(
+                    audit.binding()?,
                     self,
                     tx,
                     production::RunInput {
@@ -365,13 +364,13 @@ impl PolicyEvents {
     /// Admit the Policy caller profile and create only bindings on its existing runtime.
     pub async fn bind(
         runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
-        tenant: rss_request_context::TenantId,
+        probe: rss_transactional_messaging::fence::ExecutionBinding,
         audit: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
         materials: std::sync::Arc<crate::deployment::Materials>,
     ) -> std::result::Result<Self, crate::deployment::Error> {
         Ok(Self {
             transactions: crate::deployment::transactions::Transactions::bind(
-                runtime, tenant, audit, materials,
+                runtime, probe, audit, materials,
             )
             .await?,
         })

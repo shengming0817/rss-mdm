@@ -19,11 +19,9 @@ impl Associations {
         q: &Query,
     ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<AssociationRow>>> {
         q.require_schema(&SCHEMA).map_err(|_| Error::Malformed)?;
-        if p.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
+
         let budget = AuditBudget::new(Duration::from_secs(15));
-        let (page,grants)=self.audit.read(self.tenant,&budget.control(),(self,p,q),|ctx,tx|Box::pin(async move {
+        let (page,grants)=self.audit.read(p.binding().tenant(),&budget.control(),(self,p,q),|ctx,tx|Box::pin(async move {
             tx.with_connection_context(ctx,|(s,p,q),c|Box::pin(async move {
                 let current=read::authorization(c,p).await?;
                 let allowed=current.inventory_devices(p)?;
@@ -41,7 +39,7 @@ impl Associations {
                 sql.push("))");
                 let raw:serde_json::Value=sql.build_query_scalar().fetch_one(c).await?;
                 let ids=raw["world"]["endpoints"].as_array().ok_or(Error::Storage)?.iter().map(|v|serde_json::from_value::<rss_mdm_agent_wire::DeviceId>(v["id"].clone()).map_err(|_|Error::Storage)).collect::<Result<Vec<_>>>()?;
-                let (world,_,_,_)=crate::snapshot::decode_world(&raw["world"],s.tenant,&ids)?;
+                let (world,_,_,_)=crate::snapshot::decode_world(&raw["world"],p.binding().tenant(),&ids)?;
                 let mut by_id=world.associations.iter().map(|a| { let a=world.effective(a.clone());(a.id,AssociationRow{id:a.id,version:a.version,confirmed_at:a.confirmed_at,association:a}) }).collect::<std::collections::BTreeMap<_,_>>();
                 let selected: Vec<Uuid> = serde_json::from_value(raw["ids"].clone()).map_err(|_|Error::Storage)?;
                 let rows=selected.into_iter().map(|id|by_id.remove(&id).ok_or(Error::Storage)).collect::<Result<Vec<_>>>()?;

@@ -2,27 +2,27 @@
 use std::sync::Arc;
 pub(crate) async fn open(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    tenant: rss_request_context::TenantId,
+    probe: rss_transactional_messaging::fence::ExecutionBinding,
     clock: Arc<dyn crate::clock::Clock>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
     cursor_key: Vec<u8>,
     read_pool: sqlx::PgPool,
 ) -> Result<Arc<rss_mdm_scope_service::Scopes>, crate::Error> {
-    bind(runtime, tenant, clock, audit, cursor_key, read_pool, false).await
+    bind(runtime, probe, clock, audit, cursor_key, read_pool, false).await
 }
 pub(crate) async fn editor(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    tenant: rss_request_context::TenantId,
+    probe: rss_transactional_messaging::fence::ExecutionBinding,
     clock: Arc<dyn crate::clock::Clock>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
     cursor_key: Vec<u8>,
     read_pool: sqlx::PgPool,
 ) -> Result<Arc<rss_mdm_scope_service::Scopes>, crate::Error> {
-    bind(runtime, tenant, clock, audit, cursor_key, read_pool, true).await
+    bind(runtime, probe, clock, audit, cursor_key, read_pool, true).await
 }
 async fn bind(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    tenant: rss_request_context::TenantId,
+    probe: rss_transactional_messaging::fence::ExecutionBinding,
     clock: Arc<dyn crate::clock::Clock>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
     cursor_key: Vec<u8>,
@@ -30,17 +30,16 @@ async fn bind(
     editing: bool,
 ) -> Result<Arc<rss_mdm_scope_service::Scopes>, crate::Error> {
     let deadline = rss_mdm_scope_service::transaction::deadline();
-    let groups =
-        rss_mdm_group_postgres::GroupSources::bind(runtime.clone(), audit.binding(), deadline)
-            .await
-            .map_err(|_| {
-                crate::Error::Scope(rss_mdm_scope_service::Error::Unavailable(
-                    rss_mdm_scope_service::Failure::Admission,
-                ))
-            })?;
+    let groups = rss_mdm_group_postgres::GroupSources::bind(runtime.clone(), probe, deadline)
+        .await
+        .map_err(|_| {
+            crate::Error::Scope(rss_mdm_scope_service::Error::Unavailable(
+                rss_mdm_scope_service::Failure::Admission,
+            ))
+        })?;
     let reconcile_messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         runtime.clone(),
-        audit.binding(),
+        probe,
         deadline,
     ))
     .await
@@ -56,7 +55,6 @@ async fn bind(
             rss_mdm_policy_service::management::scope_changes::ScopeChanges::new(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 runtime.clone(),
-                tenant,
                 reconcile_messaging.clone(),
             ),
         )),
@@ -71,7 +69,7 @@ async fn bind(
         rss_mdm_scope_service::Scopes::bind_policy(
             rss_mdm_install_support::StorageProfile::Mdm,
             runtime,
-            tenant,
+            probe,
             clock,
             dependencies,
         )
@@ -80,7 +78,7 @@ async fn bind(
         rss_mdm_scope_service::Scopes::new(
             rss_mdm_install_support::StorageProfile::Mdm,
             runtime,
-            tenant,
+            probe,
             clock,
             dependencies,
         )

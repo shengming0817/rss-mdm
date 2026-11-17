@@ -69,6 +69,7 @@ pub fn routes(
     .bind_with(runtime.as_ref(), Clone::clone)
 }
 async fn access_begin(
+    origin: Option<Extension<rss_mdm_certificate::GatewayOrigin>>,
     Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
@@ -77,7 +78,15 @@ async fn access_begin(
     input: Body<wire::AccessBegin>,
 ) -> Result<NoStore<Json<wire::AccessChallenge>>, AgentError> {
     bounded(async {
-        let p = principal(&app, &headers, peer.as_ref().map(|v| &v.0), &audit, false).await?;
+        let p = principal(
+            origin.as_ref().map(|v| &v.0),
+            &app,
+            &headers,
+            peer.as_ref().map(|v| &v.0),
+            &audit,
+            false,
+        )
+        .await?;
         let employee = employee(&app, &headers, &audit, &control)
             .await?
             .ok_or(Error::Unauthorized)?;
@@ -97,6 +106,7 @@ async fn access_begin(
     .await
 }
 async fn access_confirm(
+    origin: Option<Extension<rss_mdm_certificate::GatewayOrigin>>,
     Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
@@ -105,7 +115,15 @@ async fn access_confirm(
     input: Body<wire::AccessConfirm>,
 ) -> Result<Json<wire::AccessBindingStatus>, AgentError> {
     bounded(async {
-        let p = principal(&app, &headers, peer.as_ref().map(|v| &v.0), &audit, false).await?;
+        let p = principal(
+            origin.as_ref().map(|v| &v.0),
+            &app,
+            &headers,
+            peer.as_ref().map(|v| &v.0),
+            &audit,
+            false,
+        )
+        .await?;
         let employee = employee(&app, &headers, &audit, &control)
             .await?
             .ok_or(Error::Unauthorized)?;
@@ -121,6 +139,7 @@ async fn access_confirm(
 }
 
 async fn access_recovery_use(
+    origin: Option<Extension<rss_mdm_certificate::GatewayOrigin>>,
     State(app): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -128,7 +147,15 @@ async fn access_recovery_use(
     input: Body<wire::AccessRecoveryUse>,
 ) -> Result<Json<RecoveryUseAccepted>, AgentError> {
     bounded(async {
-        let p = principal(&app, &headers, peer.as_ref().map(|v| &v.0), &audit, false).await?;
+        let p = principal(
+            origin.as_ref().map(|v| &v.0),
+            &app,
+            &headers,
+            peer.as_ref().map(|v| &v.0),
+            &audit,
+            false,
+        )
+        .await?;
         app.business
             .record_access_recovery_use(&p, &body(input)?, &audit)
             .await
@@ -139,6 +166,7 @@ async fn access_recovery_use(
 }
 
 async fn access_directory(
+    origin: Option<Extension<rss_mdm_certificate::GatewayOrigin>>,
     State(app): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     Extension(control): Extension<rss_axum::RequestControl>,
@@ -151,7 +179,15 @@ async fn access_directory(
     let deadline = control.deadline().instant();
     bounded(async {
         let (page, _) = query.parse().map_err(|_| Error::Malformed)?;
-        let p = principal(&app, &headers, peer.as_ref().map(|v| &v.0), &audit, false).await?;
+        let p = principal(
+            origin.as_ref().map(|v| &v.0),
+            &app,
+            &headers,
+            peer.as_ref().map(|v| &v.0),
+            &audit,
+            false,
+        )
+        .await?;
         let employee = employee(&app, &headers, &audit, &control)
             .await?
             .ok_or(Error::Unauthorized)?;
@@ -184,6 +220,7 @@ struct RecoveryUseAccepted {
 }
 
 async fn principal(
+    origin: Option<&rss_mdm_certificate::GatewayOrigin>,
     app: &Services,
     headers: &axum::http::HeaderMap,
     peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,
@@ -195,9 +232,12 @@ async fn principal(
     }
     let p = app
         .authentication
-        .authenticate(peer.ok_or(Error::Unauthorized)?)
+        .authenticate(peer.ok_or(Error::Unauthorized)?, origin)
         .await
         .map_err(|e| AgentError::Enrollment(e.code))?;
+    audit
+        .bind_scope(p.binding())
+        .map_err(|_| Error::Forbidden)?;
     audit.identify_device(p.device());
     audit.target_device(p.device());
     Ok(p)
@@ -222,6 +262,7 @@ async fn employee(
     let p = app
         .identity
         .authenticate(
+            audit.binding().map_err(|_| Error::Forbidden)?,
             &app.authorization,
             rss_mdm_authorization_service::credential::RequestCredential::Cookie(secret),
             rss_transactional_messaging::policy::OperationDeadline::from_cutoff(

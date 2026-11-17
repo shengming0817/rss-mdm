@@ -6,6 +6,7 @@ pub mod changes;
 mod cursor;
 pub mod directory;
 mod directory_filter;
+mod discovery;
 pub mod lifecycle;
 pub mod lifecycle_management;
 mod model;
@@ -47,10 +48,11 @@ pub struct Associations {
     worker_failures:
         std::sync::Mutex<std::collections::BTreeMap<String, Arc<rss_reconcile::ErrorKind>>>,
     audit: Arc<AuditStore>,
-    tenant: TenantId,
+
     key: ring::hmac::Key,
 }
 pub struct WorkerHealth {
+    pub discovery: rss_mdm_recovery_observation::Phase,
     pub task: Option<rss_runtime::TaskState>,
     pub observed: bool,
     pub unresolved_attempts: u64,
@@ -82,7 +84,23 @@ impl Associations {
                 )
             })
             .unwrap_or((0, true, Some(rss_reconcile::ErrorKind::Invariant)));
+        let discovery = match self.worker_failures.lock() {
+            Ok(failures) => match failures.get("!discovery") {
+                Some(kind) => rss_mdm_recovery_observation::Phase::Failed(**kind),
+                None if self
+                    .worker_observed
+                    .load(std::sync::atomic::Ordering::Acquire) =>
+                {
+                    rss_mdm_recovery_observation::Phase::Healthy
+                }
+                None => rss_mdm_recovery_observation::Phase::Unobserved,
+            },
+            Err(_) => {
+                rss_mdm_recovery_observation::Phase::Failed(rss_reconcile::ErrorKind::Invariant)
+            }
+        };
         WorkerHealth {
+            discovery,
             task: self
                 .worker_status
                 .get()
@@ -101,7 +119,7 @@ impl Associations {
             && health.task == Some(rss_runtime::TaskState::Running)
             && health.failure.is_none()
     }
-    pub fn new(audit: Arc<AuditStore>, tenant: TenantId, secret: &[u8]) -> Result<Self> {
+    pub fn new(audit: Arc<AuditStore>, secret: &[u8]) -> Result<Self> {
         if secret.len() != 32 {
             return Err(Error::Malformed);
         }
@@ -114,7 +132,7 @@ impl Associations {
             worker_status: Default::default(),
             worker_failures: Default::default(),
             audit,
-            tenant,
+
             key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret.as_ref()),
         })
     }

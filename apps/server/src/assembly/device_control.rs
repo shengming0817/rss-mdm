@@ -18,11 +18,12 @@ pub(crate) async fn assemble(
     ),
     Error,
 > {
+    let probe = config.management_binding()?;
     let supersede_batch = storage.command_supersede_batch;
     let caller = storage.runtime.clone();
     let (outbox, store) = storage
         .runtime
-        .local_tx(storage.audit.binding(), deadline(), move |tx| {
+        .local_tx(probe, deadline(), move |tx| {
             Box::pin(super::host_storage::bind_command_in(
                 caller,
                 tx,
@@ -62,7 +63,6 @@ pub(crate) async fn assemble(
             apple_results: apple_store.clone(),
 
             runtime: storage.runtime.clone(),
-            binding: storage.audit.binding(),
         },
     ));
     let configuration_cleanup =
@@ -70,6 +70,7 @@ pub(crate) async fn assemble(
 
     let service = Arc::new(Service::new(
         rss_mdm_device_service::control::Dependencies {
+            read_pool: storage.discovery_pool.clone(),
             retirement: Arc::new(crate::registration_lifecycle::Bridge),
             worker_budget: storage.worker_budget.clone(),
             capacity: Arc::new(super::capacity::Capacity),
@@ -92,7 +93,6 @@ pub(crate) async fn assemble(
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 storage.runtime.clone(),
-                storage.tenant,
             ),
             audit_store: storage.audit.clone(),
             runtime: storage.runtime.clone(),
@@ -101,12 +101,12 @@ pub(crate) async fn assemble(
             reconcile: storage.reconcile.clone(),
             reconcile_messaging: Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
                 storage.runtime.clone(),
-                storage.audit.binding(),
+                probe,
                 deadline(),
             ))
             .await
             .map_err(|_| Error::Configuration(crate::ConfigIssue::CommandStorage))?,
-            tenant: storage.tenant,
+            probe,
             instance: config.identity.instance_id.clone(),
         },
     ));

@@ -113,11 +113,14 @@ MODULES = {
 
     "registration.device_access": dict(prefix="assembly::credential_owners_t2::registration::", profiles=("shared",), inputs=('crates/agent-wire/src/identity.rs', "crates/device-access*/*", "crates/recovery-credentials/*", "apps/server/schema/da-*", "apps/server/src/migration/device_access.rs", "apps/server/src/assembly/device_access/*", "apps/server/tests/credential_owners/*", "apps/server/src/assembly/access_execution.rs", "apps/server/src/assembly/registration_agent_facts.rs", "apps/server/src/assembly/registration_sources.rs", "crates/agent-channel/src/bindings.rs", "apps/server/tests/support/planning.rs", "apps/server/tests/task_trust/support.rs", "hack/task_trust_materials.py")),
     "recovery.credentials": dict(prefix="assembly::credential_owners_t2::credentials::", profiles=("shared", "recovery_maintenance", "recovery_audit"), inputs=('crates/agent-wire/src/identity.rs', "crates/recovery-credentials/*", "apps/server/tests/credential_owners/*", "apps/server/src/assembly/credential*", "crates/device-service/src/control/credential_inputs.rs", "crates/apple-channel/src/recovery_credentials.rs", "crates/apple-channel/src/flow_store.rs", "crates/apple-channel/src/protection.rs", "apps/server/tests/support/native_identity.rs", "apps/server/tests/task_trust/support.rs", "hack/native_protocol_materials.py", "hack/task_trust_materials.py")),
-    'software.deployment': dict(prefix='assembly::software_t2::', profiles=('shared',),
+    'software.deployment': dict(prefix='assembly::software_t2::', profiles=('shared', 'native_download'),
         inputs=('crates/agent-wire/src/identity.rs', 'crates/software-service/*', 'crates/device-service/src/control/source_changes.rs',
                 'apps/server/src/assembly/software*', 'apps/server/src/assembly/host_storage.rs',
                 'apps/server/src/assembly/registration.rs', 'apps/server/src/assembly/task_trust.rs',
                 'apps/server/tests/software/*', 'apps/server/tests/support/command_runtime.rs',
+                'apps/server/tests/support/host.rs', 'apps/server/src/assembly/http.rs',
+                'crates/management-http/src/software_content.rs', 'crates/management-http/src/boundary.rs',
+                'crates/management-http/src/router.rs', 'crates/content-service/*', 'crates/http-contract/*',
                 'apps/server/tests/support/planning.rs', 'hack/task_trust_materials.py')),
     'registration.installation': dict(prefix='assembly::registration_installation_t2::', profiles=('shared',),
         inputs=('crates/agent-wire/src/identity.rs', 'crates/registration-service/src/installation/*', 'crates/registration-service/src/agent*',
@@ -140,7 +143,6 @@ MODULES = {
                 'apps/server/tests/execution_owners/*', 'apps/server/tests/support/planning.rs',
                 'apps/server/tests/support/command_runtime.rs', 'apps/server/tests/task_trust/support.rs',
                 'hack/task_trust_materials.py')),
-    'inventory.preview': dict(prefix='assembly::execution_owners_t2::mixed::', profiles=('shared',), inputs=('crates/inventory-service/*','apps/server/tests/execution_owners/*','apps/server/src/assembly/*')),
     'inventory.collection': dict(prefix='assembly::execution_owners_t2::inventory::', profiles=('shared',),
         inputs=('crates/agent-wire/*', 'crates/inventory/*', 'crates/inventory-postgres/*', 'crates/inventory-service/src/inventory_runtime*', 'apps/server/src/config.rs', 'apps/server/src/background.rs', 'fixtures/mdm-config.example.json', 'crates/script-service/*', 'crates/inventory-service/src/collection/*',
                 'crates/inventory-service/schema/*', 'crates/agent-channel/*',
@@ -187,7 +189,7 @@ MODULES = {
                 'apps/server/tests/support/command_runtime.rs', 'apps/server/tests/task_trust/support.rs',
                 'hack/task_trust_materials.py')),
     'task.recovery': dict(prefix='assembly::execution_owners_t2::workers::', profiles=('shared',),
-        inputs=('crates/agent-wire/src/identity.rs', 'crates/script-service/*', 'crates/inventory-service/src/collection/*',
+        inputs=('crates/group-service/*', 'crates/scope-service/*', 'crates/compliance-service/*', 'crates/policy-service/*', 'crates/recovery-credentials/*', 'crates/registration-service/*', 'crates/device-access-postgres/*', 'crates/device-service/src/discovery.rs', 'crates/device-service/src/worker.rs', 'crates/device-service/src/control/recovery.rs', 'crates/software-service/src/discovery.rs', 'crates/software-service/src/deployment/recovery.rs', 'crates/inventory-service/src/discovery.rs', 'crates/inventory-service/src/assets/runtime.rs', 'crates/inventory-service/src/worker_health.rs', 'crates/agent-wire/src/identity.rs', 'crates/script-service/*', 'crates/inventory-service/src/collection/*',
                 'crates/inventory-service/schema/*', 'crates/agent-channel/*',
                 'crates/device-service/src/control/capacity.rs', 'crates/task-state/*', 'crates/recovery-observation/*',
                 'crates/device-service/src/control/actions/history.rs', 'crates/device-service/src/control/unmanage.rs',
@@ -233,7 +235,7 @@ MODULES = {
     'apple.protocol': dict(prefix='apple_t2::', profiles=('shared',),
         inputs=('crates/agent-wire/src/identity.rs', 'crates/recovery-credentials/src/native/storage.rs','crates/recovery-credentials/src/native/policy-access.sql','crates/recovery-credentials/schema/task-relations.sql','crates/policy-service/src/configuration/*','crates/apple-channel/src/configuration-access.sql','crates/apple-channel/*',
                 'crates/policy-service/src/configuration/apple.rs', 'crates/policy-service/src/configuration/assets.rs', 'crates/policy-service/src/configuration/protocol.rs', 'crates/policy-service/src/configuration/storage.rs', 'crates/policy-service/src/configuration/authority.rs', 'crates/policy-service/schema/*', 'crates/registration-service/src/command_authority.rs', 'crates/registration-service/schema/command-authorities.sql', 'apps/server/src/assembly/native_ownership.rs', 'apps/server/src/assembly/configuration_channels.rs', 'crates/device-service/schema/control-*', 'crates/device-service/src/control/apple*',
-                'apps/server/src/assembly/apple_*', 'apps/server/tests/apple/*',
+                'apps/server/src/assembly/apple_*', 'apps/server/src/enrollment_progress.rs', 'apps/server/tests/apple/*',
                 'apps/server/tests/support/native_identity.rs', 'apps/server/src/assembly/command*', 'apps/server/src/assembly/host_storage.rs',
                 'apps/server/src/assembly/device_control.rs', 'apps/server/src/assembly/collection.rs',
                 'apps/server/src/assembly/software.rs', 'apps/server/src/assembly/registration.rs',
@@ -249,13 +251,13 @@ MODULES = {
                 'crates/device-service/src/control/actions/agent.rs',
                 'crates/registration-service/src/device.rs',
                 'crates/registration-service/src/device/*',
-                'crates/agent-channel/src/tasks.rs', 'apps/server/src/task_signing.rs')),
+                'crates/agent-channel/src/tasks.rs')),
 
     'foundation.authorization': dict(
-        prefix='foundation_t2::authorization::', profiles=('shared', 'transaction'),
+        prefix='foundation_t2::authorization::', profiles=('shared', 'transaction', 'http_scope'),
         inputs=('crates/agent-wire/src/identity.rs', 'apps/server/src/identity.rs', 'apps/server/src/identity/*', 'apps/server/src/maintenance.rs', 'apps/server/src/authorization_bootstrap.rs', 'apps/server/src/installation/backup/accounts.rs', 'crates/audit-integration/src/*', 'crates/authorization-service/src/*', 'crates/authorization-service/schema/*',
                 'crates/management-http/src/authorization/http.rs', 'crates/device-access-http/src/browser.rs',
-                'crates/http-contract/*', 'crates/management-http/src/identity_contract.rs',
+                'crates/http-contract/*', 'crates/management-http/src/identity_contract.rs', 'crates/management-http/src/boundary.rs', 'crates/management-http/src/response.rs', 'apps/server/src/assembly/http.rs', 'apps/server/tests/support/host.rs', 'apps/server/tests/foundation/http_scope.rs', 'apps/server/src/diagnostic.rs',
                 'apps/server/src/assembly/device_access/*', 'apps/server/tests/foundation/authorization.rs', 'apps/server/tests/foundation/identity_capacity.rs', 'apps/server/src/administration/user_profiles/*')),
     'foundation.account_recovery': dict(
         prefix='installation::backup::accounts::t2::', profiles=('account_recovery',),
@@ -275,7 +277,7 @@ MODULES = {
                 'crates/inventory-postgres/migrations/install.sql',
                 'apps/server/tests/foundation/recovery.rs')),
     'foundation.lifecycle': dict(
-        prefix='foundation_t2::lifecycle::', profiles=('lifecycle',),
+        prefix='foundation_t2::lifecycle::', profiles=('lifecycle','installation'),
         inputs=('apps/server/src/lifecycle.rs', 'apps/server/src/identity.rs',
                 'apps/server/src/database.rs', 'apps/server/src/owner_storage.rs',
                 'apps/server/src/worker_wake.rs', 'apps/server/src/scheduler.rs',
@@ -283,7 +285,7 @@ MODULES = {
                 'crates/policy-service/src/worker/completion.rs', 'crates/policy-service/src/configuration/source_changes.rs',
                 'crates/policy-service/schema/configuration-source-changes.sql',
                 'apps/server/src/local_delivery.rs','apps/server/src/asset_inputs.rs', 'apps/server/src/assembly/*',
-                'apps/server/tests/foundation/lifecycle.rs','apps/server/tests/support/host.rs')),
+                'apps/server/tests/foundation/lifecycle*.rs','apps/server/tests/support/host.rs', 'apps/server/src/installation/*', 'apps/server/src/administration/baseline/*', 'apps/server/src/administration/tenants/*')),
 }
 SUPPORT = ('apps/server/tests/support/authority.rs',)
 

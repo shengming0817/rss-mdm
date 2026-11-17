@@ -146,21 +146,23 @@ pub(crate) fn routes<
     }
 }
 pub(crate) async fn authenticate(
+    origin: &rss_mdm_certificate::GatewayOrigin,
     app: &TaskState,
     headers: &HeaderMap,
     peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,
     audit: &RequestAudit,
 ) -> Result<crate::device::DevicePrincipal, crate::AgentError> {
-    authenticate_for(app, headers, peer, audit, true).await
+    authenticate_for(origin, app, headers, peer, audit, true).await
 }
 async fn authenticate_for(
+    origin: &rss_mdm_certificate::GatewayOrigin,
     app: &TaskState,
     headers: &HeaderMap,
     peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,
     audit: &RequestAudit,
     task_required: bool,
 ) -> Result<crate::device::DevicePrincipal, crate::AgentError> {
-    let principal = crate::authenticate(&app.enrollment, headers, peer).await?;
+    let principal = crate::authenticate(origin, &app.enrollment, headers, peer).await?;
     let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
     let binding = crate::Bindings::new(principal.profile())
         .binding(&mut tx, principal.tenant().to_string(), *principal.device())
@@ -169,6 +171,7 @@ async fn authenticate_for(
     if !binding.is_some_and(|b| b.inventory() && (!task_required || b.task())) {
         return Err(task_error(Error::Forbidden));
     }
+    audit.bind_scope(principal.binding()).map_err(Error::from)?;
     audit.identify_device(principal.device());
     audit.target_device(principal.device());
     Ok(principal)
@@ -181,6 +184,7 @@ fn task_error(error: impl Into<Error>) -> crate::AgentError {
     }
 }
 async fn claim(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -189,7 +193,14 @@ async fn claim(
 ) -> Result<Json<wire::TaskClaimResponse>, crate::AgentError> {
     crate::bounded(async {
         let input = body(input)?;
-        let principal = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let principal = Box::pin(authenticate(
+            &origin,
+            &app,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+        ))
+        .await?;
         audit.operation(
             input.operation_id(),
             "command_read",
@@ -205,6 +216,7 @@ async fn claim(
     .await
 }
 async fn event(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -214,7 +226,14 @@ async fn event(
 ) -> Result<Json<wire::TaskEventAck>, crate::AgentError> {
     crate::bounded(async {
         let input = body(input)?;
-        let principal = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let principal = Box::pin(authenticate(
+            &origin,
+            &app,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+        ))
+        .await?;
         audit.operation(
             input.operation_id(),
             "command_accept",
@@ -236,6 +255,7 @@ struct Download {
     artifact: Option<String>,
 }
 async fn download(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -244,7 +264,14 @@ async fn download(
     Query(query): Query<Download>,
 ) -> Result<rss_mdm_http_contract::download::Download, crate::AgentError> {
     crate::bounded(async {
-        let principal = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let principal = Box::pin(authenticate(
+            &origin,
+            &app,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+        ))
+        .await?;
         audit.operation(
             id,
             "command_read",
@@ -281,10 +308,8 @@ pub struct TaskState {
     pub authorization: Arc<rss_mdm_authorization_service::Store>,
 }
 
-pub(crate) fn installation_routes() -> Router<
-    Arc<dyn crate::participants::Installation>,
-    impl rss_mdm_http_contract::module::Declaration + use<>,
-> {
+pub(crate) fn installation_routes()
+-> Router<Arc<TaskState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
         rss_mdm_http_contract::route_module! { struct InstallationRoutesModule1 for [Agent] { get_installation_package } }
         InstallationRoutesModule1 {
@@ -302,12 +327,21 @@ pub(crate) fn installation_routes() -> Router<
 }
 
 async fn installation_package(
-    State(execution): State<Arc<dyn crate::participants::Installation>>,
+    State(app): State<Arc<TaskState>>,
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     crate::content::DownloadHeaders(headers): crate::content::DownloadHeaders,
 ) -> Result<rss_mdm_http_contract::download::Download, crate::AgentError> {
-    let content = execution.content(id, &audit).await.map_err(task_error)?;
+    let content = app
+        .installation
+        .content(id, &audit)
+        .await
+        .map_err(task_error)?;
+    app.enrollment
+        .require_connection_origin(audit.binding().map_err(Error::from)?, &origin)
+        .await
+        .map_err(|e| crate::AgentError::Enrollment(e.code))?;
     crate::content::response(content, &headers)
         .await
         .map_err(task_error)
@@ -340,6 +374,7 @@ pub(crate) async fn employee(
     let proof = app
         .identity
         .authenticate(
+            audit.binding().map_err(Error::from)?,
             &app.authorization,
             rss_mdm_authorization_service::credential::RequestCredential::Cookie(secret),
             rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
@@ -353,6 +388,7 @@ pub(crate) async fn employee(
     Ok(Some(proof))
 }
 async fn resolve(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
@@ -361,8 +397,15 @@ async fn resolve(
     input: Body<wire::SelfServiceResolve>,
 ) -> Result<Json<wire::SelfServiceDirectoryItem>, crate::AgentError> {
     crate::bounded(async {
-        let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
-        let proof = employee(&app, &headers, &audit, &control).await?;
+        let p = Box::pin(authenticate(
+            &origin,
+            &app,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+        ))
+        .await?;
+        let proof = Box::pin(employee(&app, &headers, &audit, &control)).await?;
         app.self_service
             .resolve(&p, proof.as_ref(), &body(input)?, &audit)
             .await
@@ -380,6 +423,7 @@ async fn directory<
         + Sync
         + 'static,
 >(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
@@ -388,8 +432,15 @@ async fn directory<
     query: rss_mdm_http_contract::query::OwnedQuery<Q>,
 ) -> Result<Json<wire::SelfServiceDirectoryResponse>, crate::AgentError> {
     crate::bounded(async {
-        let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
-        let proof = employee(&app, &headers, &audit, &control).await?;
+        let p = Box::pin(authenticate(
+            &origin,
+            &app,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+        ))
+        .await?;
+        let proof = Box::pin(employee(&app, &headers, &audit, &control)).await?;
         app.self_service
             .directory(
                 &p,
@@ -404,6 +455,7 @@ async fn directory<
     .await
 }
 async fn invoke(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
@@ -413,8 +465,15 @@ async fn invoke(
 ) -> Result<WithStatus<202, Json<wire::SelfServiceAccepted>>, crate::AgentError> {
     crate::bounded(async {
         let input = body(input)?;
-        let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
-        let proof = employee(&app, &headers, &audit, &control).await?;
+        let p = Box::pin(authenticate(
+            &origin,
+            &app,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+        ))
+        .await?;
+        let proof = Box::pin(employee(&app, &headers, &audit, &control)).await?;
         let response = app
             .self_service
             .invoke(&p, proof.as_ref(), &input, &audit)
@@ -425,6 +484,7 @@ async fn invoke(
     .await
 }
 async fn invocation_status(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
@@ -433,8 +493,15 @@ async fn invocation_status(
     Path(id): Path<Uuid>,
 ) -> Result<Json<wire::SelfServiceStatus>, crate::AgentError> {
     crate::bounded(async {
-        let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
-        let proof = employee(&app, &headers, &audit, &control).await?;
+        let p = Box::pin(authenticate(
+            &origin,
+            &app,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+        ))
+        .await?;
+        let proof = Box::pin(employee(&app, &headers, &audit, &control)).await?;
         app.self_service
             .status(&p, proof.as_ref(), id, &audit)
             .await
@@ -445,6 +512,7 @@ async fn invocation_status(
 }
 
 async fn native_enrollment(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -454,7 +522,14 @@ async fn native_enrollment(
 ) -> Result<Json<rss_mdm_agent_wire::enroll::NativeEnrollmentReceipt>, crate::AgentError> {
     crate::bounded(async {
         let input = body(input)?;
-        let principal = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let principal = Box::pin(authenticate(
+            &origin,
+            &app,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+        ))
+        .await?;
         audit.operation(
             input.operation_id,
             "agent_native_enrollment",
@@ -471,14 +546,22 @@ async fn native_enrollment(
 }
 
 async fn task_trust(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
 ) -> Result<Json<rss_mdm_agent_wire::task_trust::Trust>, crate::AgentError> {
     crate::bounded(async {
-        let p =
-            authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
+        let p = authenticate_for(
+            &origin,
+            &app,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+            false,
+        )
+        .await?;
         app.task_trust
             .device_trust(&p, &audit)
             .await
@@ -488,6 +571,7 @@ async fn task_trust(
     .await
 }
 async fn acknowledge_task_trust(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -496,8 +580,15 @@ async fn acknowledge_task_trust(
 ) -> Result<Json<rss_mdm_agent_wire::task_trust::Acknowledgement>, crate::AgentError> {
     crate::bounded(async {
         let input = body(input)?;
-        let p =
-            authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
+        let p = authenticate_for(
+            &origin,
+            &app,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+            false,
+        )
+        .await?;
         app.task_trust
             .acknowledge_task_trust(&p, &audit, &input)
             .await
@@ -508,6 +599,7 @@ async fn acknowledge_task_trust(
 }
 
 async fn observe_task_trust(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -516,8 +608,15 @@ async fn observe_task_trust(
 ) -> Result<Json<rss_mdm_agent_wire::task_trust::Observation>, crate::AgentError> {
     crate::bounded(async {
         let input = body(input)?;
-        let p =
-            authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
+        let p = authenticate_for(
+            &origin,
+            &app,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+            false,
+        )
+        .await?;
         app.task_trust
             .observe_task_trust(&p, &audit, &input)
             .await
@@ -528,14 +627,22 @@ async fn observe_task_trust(
 }
 
 async fn current_user(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
 ) -> Result<Json<wire::CurrentUser>, crate::AgentError> {
     crate::bounded(async {
-        let p =
-            authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
+        let p = authenticate_for(
+            &origin,
+            &app,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+            false,
+        )
+        .await?;
         app.enrollment
             .current_user(&p, &app.identity)
             .await
@@ -545,6 +652,7 @@ async fn current_user(
     .await
 }
 async fn login_user(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
@@ -555,8 +663,15 @@ async fn login_user(
     let input = body(input)?;
     let (p, user) = crate::bounded(async {
         current_user_stage(&audit, "device_authentication");
-        let p =
-            authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
+        let p = authenticate_for(
+            &origin,
+            &app,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+            false,
+        )
+        .await?;
         current_user_stage(&audit, "employee_authentication");
         let user = employee(&app, &headers, &audit, &control)
             .await?
@@ -574,6 +689,7 @@ async fn login_user(
     result.map(Json).map_err(|e| Error::from(e).into())
 }
 async fn logout_user(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -582,6 +698,7 @@ async fn logout_user(
 ) -> Result<Json<wire::CurrentUser>, crate::AgentError> {
     let input = body(input)?;
     let p = crate::bounded(authenticate_for(
+        &origin,
         &app,
         &headers,
         peer.as_ref().map(|p| &p.0),

@@ -335,6 +335,8 @@ fn field_access(
     }
 }
 async fn field_layout(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -343,6 +345,8 @@ async fn field_layout(
     run(&app, &auth, &audit, Command::FieldLayoutRead { access }).await
 }
 async fn field_layout_write(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -359,6 +363,8 @@ async fn field_layout_write(
     .await
 }
 async fn fields(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -386,7 +392,7 @@ async fn field_read(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(key): Path<String>,
+    Path((_tenant, key)): Path<(uuid::Uuid, String)>,
 ) -> std::result::Result<HttpResponse, Error> {
     audit.set_action(
         "inventory_read",
@@ -399,6 +405,8 @@ async fn field_read(
     ))
 }
 async fn search(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -424,7 +432,7 @@ async fn detail(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
     parameters: ParamInput<CollectionSelector>,
 ) -> std::result::Result<HttpResponse, Error> {
     let selector = params(parameters)?;
@@ -435,7 +443,7 @@ async fn manual(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, key)): Path<(rss_mdm_agent_wire::DeviceId, String)>,
+    Path((_tenant, device, key)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId, String)>,
     payload: BodyInput<Operation<ManualChange>>,
 ) -> std::result::Result<HttpResponse, Error> {
     let change = body(payload)?;
@@ -454,6 +462,8 @@ async fn manual(
     .await
 }
 async fn saved_list(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -479,7 +489,7 @@ async fn saved_read(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> std::result::Result<HttpResponse, Error> {
     run(
         &app,
@@ -496,7 +506,7 @@ async fn saved_write(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     payload: BodyInput<Operation<SavedChange>>,
 ) -> std::result::Result<HttpResponse, Error> {
     let change = body(payload)?;
@@ -516,7 +526,7 @@ async fn saved_execute(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     payload: BodyInput<Operation<Empty>>,
 ) -> std::result::Result<HttpResponse, Error> {
     let request = body(payload)?;
@@ -539,7 +549,7 @@ async fn query_status(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(task): Path<Uuid>,
+    Path((_tenant, task)): Path<(uuid::Uuid, Uuid)>,
 ) -> std::result::Result<HttpResponse, Error> {
     run(
         &app,
@@ -556,7 +566,7 @@ async fn query_items(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(task): Path<Uuid>,
+    Path((_tenant, task)): Path<(uuid::Uuid, Uuid)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<QueryItemsQuery>,
     >,
@@ -583,7 +593,7 @@ async fn query_facets(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((task, facet)): Path<(Uuid, Facet)>,
+    Path((_tenant, task, facet)): Path<(uuid::Uuid, Uuid, Facet)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<QueryFacetsQuery>,
     >,
@@ -616,7 +626,7 @@ async fn field_write(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(key): Path<String>,
+    Path((_tenant, key)): Path<(uuid::Uuid, String)>,
     payload: BodyInput<Operation<FieldChange>>,
 ) -> std::result::Result<HttpResponse, Error> {
     let field = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
@@ -635,7 +645,7 @@ async fn field_references(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(key): Path<String>,
+    Path((_tenant, key)): Path<(uuid::Uuid, String)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<FieldReferencesQuery>,
     >,
@@ -665,7 +675,7 @@ async fn inventory_scopes(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
     payload: std::result::Result<PageBody<ScopePageRequest>, Error>,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<HttpResponse>, Error> {
     let request = payload?.0;
@@ -707,7 +717,7 @@ async fn collection_run(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
+    Path((_tenant, device, id)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId, Uuid)>,
     parameters: ParamInput<CollectionSelector>,
 ) -> std::result::Result<HttpResponse, Error> {
     let selector = params(parameters)?;
@@ -729,7 +739,7 @@ async fn list_items(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, key)): Path<(rss_mdm_agent_wire::DeviceId, String)>,
+    Path((_tenant, device, key)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId, String)>,
     payload: std::result::Result<PageBody<ListPageRequest>, Error>,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<HttpResponse>, Error> {
     let request = payload?.0;
@@ -757,7 +767,12 @@ async fn collection_items(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id, key)): Path<(rss_mdm_agent_wire::DeviceId, Uuid, String)>,
+    Path((_tenant, device, id, key)): Path<(
+        uuid::Uuid,
+        rss_mdm_agent_wire::DeviceId,
+        Uuid,
+        String,
+    )>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<CollectionItemsQuery>,
     >,
@@ -786,6 +801,8 @@ async fn collection_items(
 }
 
 async fn retention_write(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -805,7 +822,7 @@ async fn retention_read(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((key, revision)): Path<(String, u64)>,
+    Path((_tenant, key, revision)): Path<(uuid::Uuid, String, u64)>,
 ) -> std::result::Result<HttpResponse, Error> {
     run(
         &app,

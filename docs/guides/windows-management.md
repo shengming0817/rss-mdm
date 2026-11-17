@@ -8,7 +8,7 @@
 
 ## 证书与会话
 
-Windows 使用固定版本 step-ca，宿主只加载公开 `trust_file` 与受保护的 JWK provisioner 凭据，不加载 CA 根或中间签名私钥。CA 代次由 `device_pki` 显式配置；TLS 与协议保护密钥分别管理，并与数据库一起保护和备份。issuer 通过受控信任轮换切换；改变协议保护密钥或稳定注册配置须走明确恢复/重新注册流程。
+Windows 使用固定版本 step-ca，运行时按明确租户和执行材料读取 PKI owner 当前 Trust。安装持有公开入口、受保护的 provider 凭据和协议保护钥，不加载 CA 根或中间签名私钥；TLS 与协议保护密钥分别管理，并与数据库一起保护和备份。issuer 通过受控信任轮换切换；改变协议保护密钥或稳定注册配置须走明确恢复/重新注册流程。
 
 Windows UsernameToken 只接受 `<enrollmentId>@<注册 origin 的主机名>` 与一次性口令，主机名不含端口；纯 UUID、错误域和非规范 UUID 均拒绝。从注册详情的 `instructions.username` 复制该值。用户以本机管理员身份打开“设置 → 账户 → 访问工作或学校 → 连接 → 仅注册到设备管理”，输入用户名、口令及详情提供的注册服务器；Full／Device 必须与授权一致。Discovery 支持无响应体的 GET／HEAD 连通性探测和原生 SOAP POST。签发期间持续核对原管理员授权，最终绑定提交后证书才可准入。响应丢失沿原意图恢复；重启后由原管理员重新登录、resume。证书安装位置及 Full/Device 注册须在对应 Windows 版本上单独验收，EntDMID 不能替代 mTLS 身份。
 
@@ -28,7 +28,7 @@ Windows 的两条管理精确路径分别持有认证前 IP、已认证设备及
 
 ## 用户任务与配置输入
 
-用户配置通过 Resource 的 NativeConfiguration 内容和 Policy 消费。有权管理员从 `GET /api/v1/devices/{device}/registration` 的 Full 活动注册读取 `enrolledUser`，配置使用 `target.kind="enrolled_user"`；`apply` / `remove` 属于当前注册的用户 scope。Policy 冻结资源版本，配置示例如下：
+用户配置通过 Resource 的 NativeConfiguration 内容和 Policy 消费。有权管理员从 `GET /api/v1/tenants/{tenant}/devices/{device}/registration` 的 Full 活动注册读取 `enrolledUser`，配置使用 `target.kind="enrolled_user"`；`apply` / `remove` 属于当前注册的用户 scope。Policy 冻结资源版本，配置示例如下：
 
 ```json
 {"target":{"kind":"enrolled_user"},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./User/Vendor/MSFT/Policy/Config/Experience/AllowThirdPartySuggestionsInWindowsSpotlight","instance":[],"operation":"replace","value":{"type":"integer","value":"1"}}}},"remove":null}
@@ -84,7 +84,7 @@ CollectionRun 拥有命令关联、完整性与报告封存。Status 或 Final �
 
 Access token 只接受 Entra v2、RS256、appId audience、明确允许的客户端与 delegated scopes、`idtyp=user`，并验证签名、issuer 和时间。应用需配置 include_user_token optional claim。实际 WSTEP 注册必须有非空设备 UUID claim；TOU 阶段允许缺少该 claim。Token 不创建浏览器会话，也不充当设备证书；续证与管理仍使用已建立的设备证书和现有协议认证。
 
-`GET /api/v1/windows/entra-policy` 与 `PUT` 使用产品管理认证及 registration_configuration_read／registration_configuration_write；写入包含 `expectedRevision`、`operationId` 和 `policy`。策略字段为 enabled、allUsers、users（明确的 oid 列表）、termsVersion、termsText（最多 32768 字节的纯文本）、allowBackground。缺少策略时默认关闭；组织用户范围、条款版本和非交互注册授权均由 MDM 持有。没有 Graph 查询或隐式 group/scope 推断。
+`GET /api/v1/tenants/{tenant}/windows/entra-policy` 与 `PUT` 使用产品管理认证及 registration_configuration_read／registration_configuration_write；写入包含 `expectedRevision`、`operationId` 和 `policy`。策略字段为 enabled、allUsers、users（明确的 oid 列表）、termsVersion、termsText（最多 32768 字节的纯文本）、allowBackground。缺少策略时默认关闭；组织用户范围、条款版本和非交互注册授权均由 MDM 持有。没有 Graph 查询或隐式 group/scope 推断。
 
 产品浏览器 HTTPS origin 提供 `GET /api/v1/windows/entra/terms` 原生入口。Windows 在 Authorization 中传入 Entra Bearer token，查询包含 redirect_uri、client-request-id、api-version=1.0；组织加入另带 mode=azureadjoin。入口校验完整回调 allowlist、token 和当前策略后设置 Secure／HttpOnly 的短期流程 cookie，并重定向到同源 `/enrollment/windows/entra/terms`。注册监听器不再提供旧的 JSON 条款 GET／POST。
 
@@ -143,4 +143,4 @@ Windows 标准蓝图版本为 `2`，通过普通 Resource 实例化并绑定 `na
 
 安全字段保留原生语义：Firewall 0 表示 enabled；Antivirus SignatureStatus 0 表示过期或缺失；DeviceGuard 的 0 表示运行，不能按普通布尔值转换。BitLocker 字段是 `DeviceEncryptionStatus` 合规错误位数组，0 为空错误集，不代表每个卷已经加密；未知位拒绝。TotalRAM 按文档的可用 MB 转为 `available_memory_bytes`，不冒充物理内存容量。Update 清单只读 UpdateID、RevisionNumber 及原生状态，没有 KB 补丁推断、扫描触发、批准或安装动作，不采集恢复密钥。
 
-实例化示例：Resource `instantiate` 使用 `blueprint:"windows.software.win32", version:"2"`，激活后按既有 Policy 绑定。查询 run 使用 `GET /api/v1/devices/{device}/collections/{run}`；软件列表使用 `GET /api/v1/devices/{device}/inventory-lists/device.software.windows.win32?limit=100`，分页游标保留AssetCut与来源。Group 可对上表对应字段建立规则；Missing、Unsupported、Partial 与来源冲突保持未知，不能当作“未安装”或“安全”。
+实例化示例：Resource `instantiate` 使用 `blueprint:"windows.software.win32", version:"2"`，激活后按既有 Policy 绑定。查询 run 使用 `GET /api/v1/tenants/{tenant}/devices/{device}/collections/{run}`；软件列表使用 `GET /api/v1/tenants/{tenant}/devices/{device}/inventory-lists/device.software.windows.win32?limit=100`，分页游标保留AssetCut与来源。Group 可对上表对应字段建立规则；Missing、Unsupported、Partial 与来源冲突保持未知，不能当作“未安装”或“安全”。

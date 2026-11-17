@@ -36,7 +36,6 @@ pub(super) fn read(proof: &AuthorizedPrincipal, event: &Event) -> Result<(), Err
     Ok(())
 }
 pub(super) struct Host {
-    pub tenant: Uuid,
     pub policies: crate::network::Policies,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub clock: Arc<dyn Clock>,
@@ -50,9 +49,6 @@ impl webhooks::fanout::Eligibility for Host {
         event: &'a Event,
     ) -> futures::future::BoxFuture<'a, Result<bool, Error>> {
         Box::pin(async move {
-            if event.tenant_id != self.tenant {
-                return Ok(false);
-            }
             match &s.settings.selection {
                 Selection::AllDevices => Ok(true),
                 Selection::Devices { ids } => Ok(ids.contains(&event.device_id)),
@@ -60,7 +56,7 @@ impl webhooks::fanout::Eligibility for Host {
                     self.sources
                         .group_member(
                             c,
-                            TenantId::parse(&self.tenant.to_string())
+                            TenantId::parse(&event.tenant_id.to_string())
                                 .map_err(|_| Error::Invalid)?,
                             ids,
                             &event.device_id,

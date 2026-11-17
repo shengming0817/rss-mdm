@@ -162,8 +162,7 @@ impl Credentials {
         };
         let attempt = source
             .write(
-                rss_request_context::TenantId::parse(principal.tenant_id())
-                    .map_err(|_| Error::Malformed)?,
+            principal.binding(),
                 &budget.source_control(),
                 (self, principal, device, id, version, audit, fact, access, replay, source),
                 |context, tx| {
@@ -264,8 +263,7 @@ impl Credentials {
         let attempt = self
             .audit
             .write(
-                rss_request_context::TenantId::parse(principal.tenant_id())
-                    .map_err(|_| Error::Malformed)?,
+                principal.binding(),
                 &budget.source_control(),
                 (self, principal, device, id, version, audit, fact),
                 |context, tx| {

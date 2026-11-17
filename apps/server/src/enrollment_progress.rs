@@ -5,8 +5,8 @@ use rss_mdm_registration_service::{Error, enrollment::read::*};
 use std::sync::Arc;
 pub(crate) struct EnrollmentProgress {
     pub(crate) sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
-    pub(crate) windows: Option<Arc<rss_mdm_windows_channel::Windows>>,
-    pub(crate) apple: Option<Arc<rss_mdm_apple_channel::Apple>>,
+    pub(crate) windows: Option<Arc<rss_mdm_windows_channel::runtime_materials::Runtime>>,
+    pub(crate) apple: bool,
 }
 impl NativeProgress for EnrollmentProgress {
     fn channels(&self) -> Vec<ChannelOption> {
@@ -17,7 +17,7 @@ impl NativeProgress for EnrollmentProgress {
                 requires_local_administrator: true,
             });
         }
-        if self.apple.is_some() {
+        if self.apple {
             channels.push(ChannelOption {
                 source: ReportSource::MdmApple,
                 requires_local_administrator: true,
@@ -27,6 +27,7 @@ impl NativeProgress for EnrollmentProgress {
     }
     fn read<'a>(
         &'a self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         c: &'a mut sqlx::PgConnection,
         context: &'a Context,
     ) -> std::pin::Pin<
@@ -35,7 +36,7 @@ impl NativeProgress for EnrollmentProgress {
         Box::pin(async move {
             let mut details = match context.source {
                 ReportSource::MdmWindows => self.windows(c, context).await?,
-                ReportSource::MdmApple => self.apple(c, context).await?,
+                ReportSource::MdmApple => self.apple(execution, c, context).await?,
                 ReportSource::AgentBuiltin => return Err(Error::Corrupt),
             };
             if let Some(registration) = &context.registration {
@@ -111,10 +112,11 @@ impl EnrollmentProgress {
     }
     async fn apple(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut sqlx::PgConnection,
         context: &Context,
     ) -> Result<NativeDetails, Error> {
-        if self.apple.is_none() {
+        if !self.apple {
             return Ok(unavailable());
         }
         let evidence = rss_mdm_apple_channel::enrollment::progress_in(c, context)
@@ -129,9 +131,14 @@ impl EnrollmentProgress {
             )
         } else if context.account_driven {
             let (managed_account, required) =
-                rss_mdm_apple_channel::account_enrollment::progress_in(c, &self.sessions, context)
-                    .await
-                    .map_err(|_| Error::Storage)?;
+                rss_mdm_apple_channel::account_enrollment::progress_in(
+                    execution,
+                    c,
+                    &self.sessions,
+                    context,
+                )
+                .await
+                .map_err(|_| Error::Storage)?;
             (
                 Instructions::MacosAccount {
                     managed_account,

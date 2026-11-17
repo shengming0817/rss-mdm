@@ -43,8 +43,7 @@ impl Quotas {
         let result = self
             .audit
             .write(
-                rss_request_context::TenantId::parse(p.tenant_id())
-                    .map_err(|_| Error::Malformed)?,
+                p.binding(),
                 &budget.source_control(),
                 (&self.audit, p, &subject, change, &op, audit),
                 |ctx, tx| {

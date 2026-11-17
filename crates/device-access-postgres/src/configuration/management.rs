@@ -239,11 +239,11 @@ impl Service {
                     let mut mac = None;
                     if let Some(login) = &publication.configuration.mac {
                         let platform = platform.ok_or(Error::Unsupported)?;
-                        let mut profile = platform.profile(login)?;
+                        let mut profile = platform.profile(tenant, login)?;
                         rss_mdm_apple_mdm::da::bind(&mut profile)
                             .map_err(|_| Error::Configuration)?;
                         let origin = platform
-                            .endpoints
+                            .endpoints(tenant)?
                             .base
                             .split("/api/")
                             .next()
@@ -349,10 +349,10 @@ impl Service {
                     });
                 }
                 let artifact = match id {
-                    Some(id) => Some(signing.read_on(c, id).await?),
+                    Some(id) => Some(signing.read_on(p.binding(), c, id).await?),
                     None => {
                         signing
-                            .current_on(c, publication.id, publication.revision)
+                            .current_on(p.binding(), c, publication.id, publication.revision)
                             .await?
                     }
                 };

@@ -9,7 +9,7 @@ impl AssetService {
         tx: &mut PgTransaction<'_>,
         lock: bool,
     ) -> Result<u64> {
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let value: Option<i64> = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -44,14 +44,14 @@ impl AssetService {
         tx: &mut PgTransaction<'_>,
     ) -> Result<Configuration> {
         let revision = self.software_revision(tx, false).await?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let (count,bytes):(i64,i64)=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query_as("SELECT count(*),coalesce(sum(bytes),0)::bigint FROM (SELECT octet_length(document::text)::bigint bytes FROM mdm_assets.software_records WHERE tenant_id=$1::uuid AND document IS NOT NULL LIMIT 4097) bounded").bind(tenant).fetch_one(c).await
         })).await?;
         if count > 4096 || bytes > 768 * 1024 {
             return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let rows=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query("SELECT kind,id,revision,document FROM mdm_assets.software_records WHERE tenant_id=$1::uuid AND document IS NOT NULL ORDER BY kind,id LIMIT 4096").bind(tenant).fetch_all(c).await
         })).await?;
@@ -75,7 +75,7 @@ impl AssetService {
         kind: &'static str,
         id: Uuid,
     ) -> Result<Record<T>> {
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let row = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query("SELECT id,revision,document FROM mdm_assets.software_records WHERE tenant_id=$1::uuid AND kind=$2 AND id=$3")
                 .bind(tenant).bind(kind).bind(id).fetch_optional(c).await
@@ -103,7 +103,7 @@ impl AssetService {
         {
             return Err(Error::Malformed.into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let expected = change.expected_revision as i64;
         let revision: i64 = tx.with_connection(move |c| Box::pin(async move {
             let revision = if expected == 0 && document.is_some() {
@@ -129,6 +129,7 @@ impl AssetService {
     }
     pub(in crate::assets) async fn software_dispatch(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         command: &Command,
         access: &Access,
@@ -157,7 +158,7 @@ impl AssetService {
                         }
                     }
                 } else {
-                    let tenant = self.tenant.to_string();
+                    let tenant = tx.tenant_id().to_string();
                     let id = id.to_string();
                     let referenced: bool = tx.with_connection(move |c| Box::pin(async move {
                         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_assets.software_records WHERE tenant_id=$1::uuid AND kind='mapping' AND document->>'standard'=$2)")
@@ -205,12 +206,12 @@ impl AssetService {
                 actor,
                 instance,
             } => {
-                let tenant = self.tenant.to_string();
+                let tenant = tx.tenant_id().to_string();
                 let actor = actor.clone();
                 let instance = instance.clone();
                 let operation = *id;
                 let response: Option<serde_json::Value> = tx.with_connection(move |c| Box::pin(async move {
-                    sqlx::query_scalar("SELECT CASE WHEN response->'asset'->>'kind'='accepted' THEN response->'asset' ELSE response->'asset'->'response'->'receipt' END FROM mdm_assets.operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3 AND instance=$4::uuid AND ((response->'asset'->>'kind'='software' AND response->'asset'->'response'->>'kind'='mutation') OR (response->'asset'->>'kind'='accepted' AND response->'asset'->>'statusUrl' LIKE '/api/v1/software-asset-queries/%'))")
+                    sqlx::query_scalar("SELECT CASE WHEN o.response->'asset'->>'kind'='accepted' THEN o.response->'asset' ELSE o.response->'asset'->'response'->'receipt' END FROM mdm_assets.operations o WHERE o.tenant_id=$1::uuid AND o.actor=$2 AND o.id=$3 AND o.instance=$4::uuid AND ((o.response->'asset'->>'kind'='software' AND o.response->'asset'->'response'->>'kind'='mutation') OR (o.response->'asset'->>'kind'='accepted' AND EXISTS(SELECT 1 FROM mdm_assets.software_progress p WHERE p.tenant_id=o.tenant_id AND p.run=o.id AND p.run::text=o.response->'asset'->>'task')))")
                         .bind(tenant).bind(actor).bind(operation).bind(instance).fetch_optional(c).await
                 })).await?;
                 Ok(Response::Receipt {
@@ -222,6 +223,7 @@ impl AssetService {
             }
             Command::Search { change } => {
                 self.software_search(
+                    binding,
                     tx,
                     access,
                     change,
@@ -229,7 +231,9 @@ impl AssetService {
                 )
                 .await
             }
-            Command::Release { id, change } => self.software_release(tx, scope, *id, change).await,
+            Command::Release { id, change } => {
+                self.software_release(binding, tx, scope, *id, change).await
+            }
             _ => self.software_read(tx, scope, command).await,
         }
     }

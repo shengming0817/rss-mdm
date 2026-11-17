@@ -217,9 +217,44 @@
       "read_only": true,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "enrollment_configuration",
+      "read_write": true,
+      "updates": [
+        "provider_id",
+        "poll",
+        "lifetime",
+        "entra_provider",
+        "entra_token",
+        "entra_callbacks"
+      ],
+      "delete_policy": null
     }
   ],
-  "functions": [],
+  "functions": [
+    {
+      "name": "mdm_windows.entra_flow_scopes",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_windows.renewal_certificate_tenants",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "mdm_windows.entra_profile_tenants",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_windows.push_work_page",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_windows.retention_scopes",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
   "external_relations": [],
   "verified_schemas": []
 }

@@ -4,7 +4,6 @@ use rss_mdm_device_access_postgres::platform_sso::{
 };
 use std::sync::Arc;
 pub struct HttpState {
-    pub binding: rss_transactional_messaging::fence::ExecutionBinding,
     pub context: Arc<Context>,
     pub authority: rss_identity_postgres::Authority,
     pub origin: String,
@@ -98,7 +97,7 @@ pub fn management_routes()
         rss_mdm_http_contract::route_module! { struct ManagementRoutesModule1 for [Browser] { get_configuration } }
         ManagementRoutesModule1 {
             get_configuration: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/apple/platform-sso/configuration",
+                "/api/v1/tenants/{tenant}/apple/platform-sso/configuration",
                 get(
                     configuration,
                     &contracts::PLATFORM_SSO_CONFIGURATION,
@@ -109,14 +108,20 @@ pub fn management_routes()
         .assemble()
     }
 }
-fn tenant(app: &HttpState, t: Uuid) -> Result<(), Error> {
-    if app.context.tenant.to_string() != t.to_string() {
+fn tenant(
+    app: &HttpState,
+    t: Uuid,
+) -> Result<rss_transactional_messaging::fence::ExecutionBinding, Error> {
+    if t.is_nil() {
         return Err(Error::Unauthorized);
     }
     runtime(app)?;
-    Ok(())
+    let tenant =
+        rss_request_context::TenantId::parse(&t.to_string()).map_err(|_| Error::Malformed)?;
+    Ok(app.context.execution(tenant))
 }
 async fn principal(
+    origin: Option<&rss_mdm_certificate::GatewayOrigin>,
     s: &AgentState,
     h: &HeaderMap,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -127,22 +132,27 @@ async fn principal(
     }
     let p = s
         .service
-        .authenticate(&peer.ok_or(Error::Unauthorized)?.0)
+        .authenticate(&peer.ok_or(Error::Unauthorized)?.0, origin)
         .await
         .map_err(|e| e.source.map(Error::from).unwrap_or(Error::Unavailable))?;
+    audit
+        .bind_scope(p.binding())
+        .map_err(|_| Error::Unavailable)?;
     audit.identify_device(p.device());
     audit.target_device(p.device());
     Ok(p)
 }
 async fn bootstrap(
+    origin: Option<Extension<rss_mdm_certificate::GatewayOrigin>>,
     State(s): State<AgentState>,
     AgentHeaders(headers): AgentHeaders,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
     body: Result<Json<Bootstrap>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<rss_mdm_agent_wire::platform_sso::BootstrapResponse>, Error> {
-    let p = principal(&s, &headers, peer, &audit).await?;
+    let p = principal(origin.as_ref().map(|v| &v.0), &s, &headers, peer, &audit).await?;
     service::mutate(
+        p.binding(),
         s.app.context.as_ref(),
         Some(&p),
         &audit,
@@ -154,6 +164,7 @@ async fn bootstrap(
     .map_err(Into::into)
 }
 async fn register(
+    origin: Option<Extension<rss_mdm_certificate::GatewayOrigin>>,
     State(s): State<AgentState>,
     AgentHeaders(headers): AgentHeaders,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -163,8 +174,9 @@ async fn register(
         axum::extract::rejection::JsonRejection,
     >,
 ) -> Result<Json<rss_mdm_agent_wire::platform_sso::RegistrationReceipt>, Error> {
-    let p = principal(&s, &headers, peer, &audit).await?;
+    let p = principal(origin.as_ref().map(|v| &v.0), &s, &headers, peer, &audit).await?;
     service::mutate(
+        p.binding(),
         s.app.context.as_ref(),
         Some(&p),
         &audit,
@@ -176,6 +188,7 @@ async fn register(
     .map_err(Into::into)
 }
 async fn revoke(
+    origin: Option<Extension<rss_mdm_certificate::GatewayOrigin>>,
     State(s): State<AgentState>,
     Path(id): Path<Uuid>,
     AgentHeaders(headers): AgentHeaders,
@@ -186,8 +199,9 @@ async fn revoke(
         axum::extract::rejection::JsonRejection,
     >,
 ) -> Result<Json<rss_mdm_agent_wire::platform_sso::RevocationReceipt>, Error> {
-    let p = principal(&s, &headers, peer, &audit).await?;
+    let p = principal(origin.as_ref().map(|v| &v.0), &s, &headers, peer, &audit).await?;
     service::mutate(
+        p.binding(),
         s.app.context.as_ref(),
         Some(&p),
         &audit,
@@ -210,8 +224,8 @@ async fn nonce(
     Path(t): Path<Uuid>,
     Extension(audit): Extension<RequestAudit>,
 ) -> Result<Json<service::Nonce>, Error> {
-    tenant(&app, t)?;
-    service::mutate(app.context.as_ref(), None, &audit, Action::Nonce)
+    let execution = tenant(&app, t)?;
+    service::mutate(execution, app.context.as_ref(), None, &audit, Action::Nonce)
         .await
         .and_then(service::Outcome::nonce)
         .map(Json)
@@ -236,19 +250,25 @@ async fn token(
     Extension(audit): Extension<RequestAudit>,
     body: Result<Form<Token>, axum::extract::rejection::FormRejection>,
 ) -> Result<JoseResponse, NativeError> {
-    tenant(&app, t)?;
+    let execution = tenant(&app, t)?;
     let mut input = body.map_err(|_| Error::Malformed)?.0;
     if input.platform_sso_version != "1.0" || input.grant_type != GRANT {
         return Err(Error::Malformed.into());
     }
     let assertion = zeroize::Zeroizing::new(std::mem::take(&mut input.assertion));
     let context = app.context.as_ref();
-    let result = if psso::password::is_password(context, &assertion).await? {
-        psso::password::login(context, &audit, &assertion).await?
+    let result = if psso::password::is_password(execution, context, &assertion).await? {
+        psso::password::login(execution, context, &audit, &assertion).await?
     } else {
-        service::mutate(context, None, &audit, Action::Login(assertion.to_string()))
-            .await?
-            .login()?
+        service::mutate(
+            execution,
+            context,
+            None,
+            &audit,
+            Action::Login(assertion.to_string()),
+        )
+        .await?
+        .login()?
     };
     Ok(JoseResponse(
         result.as_str().ok_or(Error::Malformed)?.to_owned(),
@@ -357,14 +377,14 @@ async fn begin(
     BeginHeaders(headers): BeginHeaders,
     body: Result<Json<BrowserBegin>, axum::extract::rejection::JsonRejection>,
 ) -> Result<BrowserBeginResponse, Error> {
-    tenant(&app, t)?;
+    let execution = tenant(&app, t)?;
     origin(&app, &headers)?;
     let input = body.map_err(|_| Error::Malformed)?.0;
     let browser = crypto::random()?;
     let challenge = app
         .authority
         .begin_platform_login(
-            app.binding,
+            execution,
             input.binding_id,
             rss_identity_postgres::platform::PlatformPurpose::BrowserLogin,
             browser.clone(),
@@ -397,7 +417,7 @@ async fn complete(
     CompleteHeaders(headers): CompleteHeaders,
     body: Result<Json<BrowserComplete>, axum::extract::rejection::JsonRejection>,
 ) -> Result<IdentityCompletion, Error> {
-    tenant(&app, t)?;
+    let execution = tenant(&app, t)?;
     origin(&app, &headers)?;
     let input = body.map_err(|_| Error::Malformed)?.0;
     let mut cookies = headers
@@ -418,7 +438,7 @@ async fn complete(
     let session = app
         .authority
         .complete_platform_login(
-            app.binding,
+            execution,
             input.challenge_id,
             input.nonce,
             secret.into(),
@@ -445,6 +465,7 @@ struct ConfigurationQuery {
     device_id: rss_mdm_agent_wire::DeviceId,
 }
 async fn configuration(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
     axum::extract::Query(query): axum::extract::Query<ConfigurationQuery>,
@@ -453,21 +474,30 @@ async fn configuration(
         .manage(rss_mdm_authorization_service::Permission::RegistrationConfigurationRead)?;
     let rt = runtime(&app)?;
     let ctx = app.context.as_ref();
-    let mut tx = ctx.access.begin(&ctx.tenant.to_string()).await?;
+    let mut tx = ctx
+        .access
+        .begin(&auth.proof.binding().tenant().to_string())
+        .await?;
     let object = rss_mdm_registration_service::device::endpoints::current_da_in(
         &mut tx,
-        &ctx.tenant.to_string(),
+        &auth.proof.binding().tenant().to_string(),
         &query.device_id,
     )
     .await?
     .ok_or(Error::NotFound)?;
-    let login = psso::deployment::configuration_for_object(&mut tx, ctx.tenant, &object).await?;
-    let profile = rt.profile(&login)?;
+    let login =
+        psso::deployment::configuration_for_object(&mut tx, auth.proof.binding().tenant(), &object)
+            .await?;
+    let profile = rt.profile(
+        Uuid::parse_str(auth.proof.tenant_id()).map_err(|_| Error::Malformed)?,
+        &login,
+    )?;
     tx.rollback().await.map_err(|_| Error::Unavailable)?;
     auth.proof.check_live()?;
     Ok(Json(ConfigurationView {
         configuration: rt.configuration.clone(),
-        endpoints: rt.endpoints.clone(),
+        endpoints: rt
+            .endpoints(Uuid::parse_str(auth.proof.tenant_id()).map_err(|_| Error::Malformed)?)?,
         profile,
         protocol_version: "1.0",
         login_configuration: login,
@@ -486,14 +516,15 @@ async fn configuration(
 }
 
 async fn status(
+    origin: Option<Extension<rss_mdm_certificate::GatewayOrigin>>,
     State(s): State<AgentState>,
     axum::extract::Query(query): axum::extract::Query<StatusQuery>,
     AgentHeaders(headers): AgentHeaders,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
 ) -> Result<Json<rss_mdm_agent_wire::platform_sso::Status>, Error> {
-    let p = principal(&s, &headers, peer, &audit).await?;
-    psso::status::read(s.app.context.as_ref(), &p, query.binding_id)
+    let p = principal(origin.as_ref().map(|v| &v.0), &s, &headers, peer, &audit).await?;
+    psso::status::read(p.binding(), s.app.context.as_ref(), &p, query.binding_id)
         .await
         .map(Json)
         .map_err(Into::into)
@@ -716,9 +747,18 @@ impl Authentication {
     pub(crate) async fn authenticate(
         &self,
         peer: &rss_mdm_certificate::ClientCertificateEvidence,
+        origin: Option<&rss_mdm_certificate::GatewayOrigin>,
     ) -> Result<DevicePrincipal, rss_mdm_registration_service::agent::Failure> {
         match self {
-            Self::Agent(s) => s.authenticate(peer).await,
+            Self::Agent(s) => {
+                let p = s.authenticate(peer).await?;
+                s.require_connection_origin(
+                    p.binding(),
+                    origin.ok_or(rss_mdm_registration_service::Error::Unauthorized)?,
+                )
+                .await?;
+                Ok(p)
+            }
             Self::Da(s) => s.authenticate(peer).await,
         }
     }

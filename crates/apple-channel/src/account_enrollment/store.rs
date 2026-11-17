@@ -72,7 +72,7 @@ pub(super) async fn new_flow(
     if count >= 1024 {
         return Err(Error::Unavailable(Failure::Capacity));
     }
-    sqlx::query("INSERT INTO mdm_apple.account_flows(tenant_id,id,organization,organization_revision,target_enrollment,request_digest,expected_account,expires_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,clock_timestamp()+interval '300 seconds')")
+    sqlx::query("INSERT INTO mdm_apple.account_flows(tenant_id,id,organization,organization_revision,target_enrollment,request_digest,expected_account,expires_at,expected_epoch) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,clock_timestamp()+interval '300 seconds',current_setting('rss.execution_epoch')::bigint)")
         .bind(tenant).bind(input.id).bind(input.organization).bind(input.revision).bind(input.target).bind(input.request_digest).bind(input.expected_account).execute(c).await.map_err(db)?;
     Ok(())
 }

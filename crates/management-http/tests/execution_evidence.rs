@@ -189,7 +189,7 @@ fn page(evidence: Option<Evidence>, kind: KindOfOperation) -> Page<Item> {
             evidence,
             authorization: None,
             reauthorization: None,
-            detail_url: "/api/v1/devices/device-a/operations/1".into(),
+            detail_url: "/api/v1/tenants/{tenant}/devices/device-a/operations/1".into(),
         }],
         next_cursor: None,
     }
@@ -209,8 +209,11 @@ struct NativeEnvelope {
 #[test]
 fn native_owners_serialize_without_conflicting_tags_and_match_mounted_schemas() {
     let document = document();
-    let list = validator(&document, "/api/v1/operations");
-    let detail_schema = validator(&document, "/api/v1/devices/{device}/operations/{id}");
+    let list = validator(&document, "/api/v1/tenants/{tenant}/operations");
+    let detail_schema = validator(
+        &document,
+        "/api/v1/tenants/{tenant}/devices/{device}/operations/{id}",
+    );
     for (owner, detail) in native_details() {
         let bytes = serde_json::to_vec(&detail).unwrap();
         let detail_owner: Owner = serde_json::from_slice(&bytes).unwrap();
@@ -252,7 +255,7 @@ fn native_owners_serialize_without_conflicting_tags_and_match_mounted_schemas() 
 #[test]
 fn non_native_evidence_keeps_its_owner_and_projection_can_omit_evidence() {
     let document = document();
-    let list = validator(&document, "/api/v1/operations");
+    let list = validator(&document, "/api/v1/tenants/{tenant}/operations");
     for (owner, evidence) in other_evidence() {
         let bytes = serde_json::to_vec(&evidence).unwrap();
         let decoded: Owner = serde_json::from_slice(&bytes).unwrap();
@@ -270,7 +273,7 @@ fn non_native_evidence_keeps_its_owner_and_projection_can_omit_evidence() {
 fn registration_response_preserves_the_certificate_grant_field() {
     use rss_mdm_registration_service::enrollment::registration::Registration;
     let document = document();
-    let path = "/api/v1/devices/{device}/registration";
+    let path = "/api/v1/tenants/{tenant}/devices/{device}/registration";
     let grant = Uuid::from_u128(7);
     let row: Registration = serde_json::from_value(json!({
         "deviceId": Uuid::from_u128(4), "source": "agent.builtin",

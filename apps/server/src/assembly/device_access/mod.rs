@@ -54,7 +54,26 @@ pub(crate) async fn open(
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(4)
         .acquire_timeout(Duration::from_secs(2))
-        .connect_with(d.database.options()?)
+        .connect_with(
+            d.database.options()?.options([
+                (
+                    "rss.storage_target",
+                    uuid::Uuid::from_bytes(config.storage_binding.target)
+                        .simple()
+                        .to_string(),
+                ),
+                (
+                    "rss.storage_lineage",
+                    uuid::Uuid::from_bytes(config.storage_binding.lineage)
+                        .simple()
+                        .to_string(),
+                ),
+                (
+                    "rss.execution_epoch",
+                    config.storage_binding.epoch.to_string(),
+                ),
+            ]),
+        )
         .await
         .map_err(crate::database::db)?;
     acquire(rss_runtime::DynManagedResource::new_box(Pool(pool.clone())));
@@ -74,7 +93,7 @@ pub(crate) async fn open(
             pool.clone(),
             config.audit.integrity()?,
             runtime,
-            identity.binding,
+            identity.management_binding,
             &budget.control(),
         )
         .await?,
@@ -102,29 +121,17 @@ pub(crate) async fn open(
     let platform = d
         .platform_sso
         .as_ref()
-        .map(|p| p.load(&config.product_origin, identity.tenant, &evidence))
+        .map(|p| p.load(&config.product_origin, &evidence))
         .transpose()
         .map_err(|_| invalid())?;
     let mut pki = None;
     let inputs = if let Some(r) = &d.registration {
         use crate::clock::Clock as _;
-        let now = crate::clock::SystemClock.unix_seconds()?;
+        crate::clock::SystemClock.unix_seconds()?;
         if r.providers.is_empty()
             || r.providers
                 .iter()
                 .any(|p| p.purpose != rss_mdm_agent_wire::pki::Purpose::DaDevice)
-        {
-            return Err(invalid());
-        }
-        let trust = crate::device_pki::load(
-            &r.trust_file,
-            rss_mdm_agent_wire::pki::Purpose::DaDevice,
-            now,
-        )?;
-        let public = trust.public().map_err(|_| invalid())?;
-        if public.origin != r.origin
-            || public.tenant.to_string() != identity.tenant.to_string()
-            || public.service_id.to_string() != identity.instance.to_string()
         {
             return Err(invalid());
         }
@@ -133,54 +140,26 @@ pub(crate) async fn open(
             StorageProfile::Da,
             pool.clone(),
             audit.clone(),
-            vec![trust.clone()],
+            config
+                .storage_binding
+                .execution(identity.management_tenant)?,
             providers.clone(),
         ));
-        registry
-            .admit(identity.tenant, now)
-            .await
-            .map_err(|_| invalid())?;
-        pki = Some(registry);
-        let trust = Arc::new(
-            rss_mdm_device_trust::device_identity::DeviceIdentityTrust::from_trust(
-                trust,
-                r.certificate_days,
-            )
-            .map_err(|_| invalid())?,
-        );
+        pki = Some(registry.clone());
         let issuer = Arc::new(
             rss_mdm_registration_service::certificate_issuance::DeviceIssuer::new(
                 StorageProfile::Da,
                 providers,
                 r.certificate_days,
                 false,
-                trust,
+                rss_mdm_agent_wire::pki::Purpose::DaDevice,
+                registry,
+                uuid::Uuid::parse_str(&identity.instance.to_string()).map_err(|_| invalid())?,
                 Arc::new(Clock),
             )
             .map_err(|_| invalid())?,
         );
-        let loaded = if let Some(revision) = r.configuration_revision {
-            let mut tx = pool.begin().await.map_err(crate::database::db)?;
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-                .bind(identity.tenant.to_string())
-                .execute(&mut *tx)
-                .await
-                .map_err(crate::database::db)?;
-            let loaded = rss_mdm_task_trust::trust::load(
-                StorageProfile::Da,
-                rss_mdm_task_trust::Use::DaConfiguration,
-                &mut tx,
-                identity.tenant,
-                revision,
-                &protection,
-            )
-            .await
-            .map_err(|_| invalid())?;
-            tx.rollback().await.map_err(crate::database::db)?;
-            Some(loaded)
-        } else {
-            None
-        };
+
         Some(rss_mdm_device_access_runtime::Registration {
             issuer,
             clock: Arc::new(Clock),
@@ -188,8 +167,7 @@ pub(crate) async fn open(
                 rss_mdm_task_trust::Signing::new(
                     StorageProfile::Da,
                     rss_mdm_task_trust::Use::DaConfiguration,
-                    identity.tenant,
-                    loaded,
+                    protection.clone(),
                 )
                 .map_err(|_| invalid())?,
             ),
@@ -202,7 +180,7 @@ pub(crate) async fn open(
         audit
             .on_runtime(
                 identity.runtime.clone(),
-                identity.binding,
+                identity.management_binding,
                 &budget.control(),
             )
             .await?,
@@ -210,7 +188,9 @@ pub(crate) async fn open(
     let business = rss_mdm_device_access_runtime::Runtime::assemble(
         rss_mdm_device_access_runtime::Resources {
             report_limits: d.reports.clone(),
-            tenant: identity.tenant,
+            probe: config
+                .storage_binding
+                .execution(identity.management_tenant)?,
             installation: uuid::Uuid::parse_str(&identity.instance.to_string())
                 .map_err(|_| invalid())?,
             identity_instance: identity.instance,
@@ -292,7 +272,6 @@ pub(crate) fn browser(
     let state = runtime.map(|(s, _)| s);
     let psso = state.map(|s| {
         Arc::new(http::platform_sso::HttpState {
-            binding: s.identity.binding,
             context: s
                 .da
                 .as_ref()
@@ -350,7 +329,7 @@ pub(crate) fn browser(
             .bind_with(diagnostics.as_ref(), Arc::clone),
     }
     .assemble();
-    rss_mdm_http_contract::route_module! {struct DaProtected for [Browser]{access at "/api/v1",platform}}
+    rss_mdm_http_contract::route_module! {struct DaProtected for [Browser]{access at "/api/v1/tenants/{tenant}",platform}}
     let protected = DaProtected {
         access,
         platform: http::platform_sso::management_routes().bind_with(psso.as_ref(), Arc::clone),
@@ -414,7 +393,6 @@ pub(crate) async fn listener(
             service: assembly.runtime.business.clone(),
             admission: assembly.runtime.admission.clone(),
             platform: Arc::new(rss_mdm_device_access_http::platform_sso::HttpState {
-                binding: identity.binding,
                 context: assembly.runtime.platform.clone(),
                 authority: identity.authority.clone(),
                 origin: config.product_origin.clone(),
@@ -430,7 +408,6 @@ pub(crate) async fn listener(
         sessions: Arc::new(
             rss_mdm_authorization_service::session::SessionAuthority::new(
                 identity.authority.clone(),
-                identity.binding,
             ),
         ),
         audit: assembly.audit.clone(),

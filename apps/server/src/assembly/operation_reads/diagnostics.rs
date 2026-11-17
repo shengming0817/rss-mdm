@@ -149,7 +149,7 @@ impl Operations {
             query.push_bind(p.tenant_id()).push("::uuid),owned AS (").push(relation).push(") SELECT policy FROM owned WHERE id=").push_bind(id).push(" AND device=").push_bind(device.into_uuid()).push(" AND kind=").push_bind(kind);
             let row:Option<(Option<Uuid>,)>=query.build_query_as().fetch_optional(&mut *c).await.map_err(sql)?;
             let Some((policy,))=row else {return Ok(Diagnostic { original: None, execution: Ok(None) });};
-            let tenant=s.tasks.tenant.to_string();
+            let tenant=p.binding().tenant().to_string();
             let original=match owner {
                 O::DeviceControl=>rss_mdm_device_service::control::storage::read_on(c,&tenant,id,p.principal_id()).await.map_err(sql)?.filter(|r|r.instance.is_some_and(|v|v.to_string()==p.instance_id())).map(|r|(r.fingerprint,r.response)),
                 O::SoftwareDeployment=>rss_mdm_software_service::deployment::storage::read_on(c,&tenant,id,p.principal_id()).await.map_err(sql)?,
@@ -166,10 +166,10 @@ impl Operations {
             let evidence=async { Ok::<_,Error>(if let Some(native)=native {
                 Evidence::Native{detail:Box::new(s.detail_owned_on(c,p,grant,now,device,id,true,native).await?)}
             }else{match owner {
-                O::DeviceAction=>Evidence::Device(rss_mdm_device_service::control::directory::run_summaries_on(c,s.tasks.tenant,vec![id]).await.map_err(execution_fault)?.remove(&id).ok_or(Error::NotFound)?),
-                O::SoftwareAction=>Evidence::Software(rss_mdm_software_service::deployment::directory::run_summaries_on(c,s.tasks.tenant,vec![id]).await.map_err(software_fault)?.remove(&id).ok_or(Error::NotFound)?),
-                O::Script=>Evidence::Script(Box::new(rss_mdm_script_service::queries::run_summaries_on(c,s.tasks.tenant,vec![id]).await.map_err(super::super::task_reads::script_fault)?.remove(&id).ok_or(Error::NotFound)?)),
-                O::CollectionExecution=>Evidence::Collection(Box::new(rss_mdm_inventory_service::collection::execution::queries::run_summaries_on(c,s.tasks.tenant,vec![id]).await?.remove(&id).ok_or(Error::NotFound)?)),
+                O::DeviceAction=>Evidence::Device(rss_mdm_device_service::control::directory::run_summaries_on(c,p.binding().tenant(),vec![id]).await.map_err(execution_fault)?.remove(&id).ok_or(Error::NotFound)?),
+                O::SoftwareAction=>Evidence::Software(rss_mdm_software_service::deployment::directory::run_summaries_on(c,p.binding().tenant(),vec![id]).await.map_err(software_fault)?.remove(&id).ok_or(Error::NotFound)?),
+                O::Script=>Evidence::Script(Box::new(rss_mdm_script_service::queries::run_summaries_on(c,p.binding().tenant(),vec![id]).await.map_err(super::super::task_reads::script_fault)?.remove(&id).ok_or(Error::NotFound)?)),
+                O::CollectionExecution=>Evidence::Collection(Box::new(rss_mdm_inventory_service::collection::execution::queries::run_summaries_on(c,p.binding().tenant(),vec![id]).await?.remove(&id).ok_or(Error::NotFound)?)),
                 O::EnrollmentTask=>Evidence::Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::detail_on(rss_mdm_install_support::StorageProfile::Mdm,c,&tenant,policy.ok_or(Error::Conflict)?,id,p,grant).await.map_err(super::super::task_reads::enrollment_fault)?),
                 O::DeviceAccessTask=>Evidence::Access(rss_mdm_device_access_postgres::device_access::execution::queries::detail_on(c,&tenant,policy.ok_or(Error::Conflict)?,id,p,grant).await.map_err(super::super::task_reads::access_fault)?),
                 O::CredentialTask=>Evidence::Credential(rss_mdm_recovery_credentials::tasks::queries::detail_on(rss_mdm_install_support::StorageProfile::Mdm,c,&tenant,policy.ok_or(Error::Conflict)?,id,p,grant).await.map_err(super::super::task_reads::credential_fault)?),

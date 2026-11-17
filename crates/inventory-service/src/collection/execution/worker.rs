@@ -11,6 +11,9 @@ use std::{
 };
 use uuid::Uuid;
 pub struct Worker {
+    read_pool: sqlx::PgPool,
+    storage: rss_transactional_messaging::fence::StorageIdentity,
+    relay_after: Mutex<Option<(Uuid, i64)>>,
     readiness: rss_mdm_recovery_observation::Readiness,
     service: Arc<CollectionService>,
     store: rss_reconcile_postgres::PgStore,
@@ -19,6 +22,8 @@ pub struct Worker {
 }
 impl Worker {
     pub fn new(
+        read_pool: sqlx::PgPool,
+        storage: rss_transactional_messaging::fence::StorageIdentity,
         service: Arc<CollectionService>,
         store: rss_reconcile_postgres::PgStore,
         budget: Arc<tokio::sync::Semaphore>,
@@ -38,12 +43,12 @@ impl Worker {
             )
             .map_err(|_| Error::Unavailable(crate::Failure::CollectionQuery))?,
         );
-        let readiness = rss_mdm_recovery_observation::Readiness::new(
-            super::wake::scope(service.transactions.tenant),
-            true,
-            false,
-        );
+        let readiness =
+            rss_mdm_recovery_observation::Readiness::new("mdm.collection.v1", true, false);
         Ok(Self {
+            read_pool,
+            storage,
+            relay_after: Mutex::new(None),
             readiness,
             service,
             store,
@@ -59,14 +64,104 @@ impl Worker {
     ) -> rss_runtime::ManagedTaskRegistration {
         let (task, status) = rss_runtime::ManagedTask::prepare("mdm-collection-recovery", drain);
         self.readiness.bind(status);
-        task.into_registration(move|stop|async move {
-            let timer=Timer::new();let force=tokio_util::sync::CancellationToken::new();
-            let control=rss_reconcile::Control::new(&timer,Duration::MAX,&force);
-            let result = rss_reconcile::run_with_notify(&self.recovery_store(),self.as_ref(),&super::wake::scope(self.service.transactions.tenant),policy,&control,&stop,&notify,|event| {
-                self.readiness.observe(&event);
-                if let rss_reconcile::Observation::ScanFailed { scope, error } = &event { eprintln!("{}",serde_json::json!({"event":"mdm_collection_recovery_failure","phase":"scan","scope":scope.reconciler(),"reason":format!("{:?}",error.kind())})); }
-                if let rss_reconcile::Observation::AttemptFailed{target,error,..}=event {eprintln!("{}",serde_json::json!({"event":"mdm_collection_recovery_failure","target":target.entity(),"reason":format!("{:?}",error.kind())}));}
-            }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new);
+        task.into_registration(move |stop| async move {
+            let timer = Timer::new();
+            let force = tokio_util::sync::CancellationToken::new();
+            let control = rss_reconcile::Control::new(&timer, Duration::MAX, &force);
+            let mut after: Option<Uuid> = None;
+            let mut worked = false;
+            let result = async {
+                loop {
+                    if stop.is_cancelled() {
+                        return Ok(());
+                    }
+                    let discovered = tokio::select! { biased;
+                    () = stop.cancelled() => { self.readiness.stop(); return Ok(()); },
+                    result = tokio::time::timeout(Duration::from_secs(5), sqlx::query_scalar(
+                        "SELECT tenant_id FROM mdm_inventory.collection_work_scopes($1)",
+                    )
+                    .bind(after)
+                    .fetch_all(&self.read_pool)) =>
+                        result.map_err(|_| rss_reconcile::ErrorKind::Deadline)
+                            .and_then(|page| page.map_err(|error| crate::discovery::classify(&error))),
+                };
+                if stop.is_cancelled() { { self.readiness.stop(); return Ok(()); } }
+                self.readiness.discovery(discovered.as_ref().map(|_| ()).map_err(|kind| *kind));
+                let tenants: Vec<Uuid> = match discovered {
+                    Ok(page) => page,
+                    Err(rss_reconcile::ErrorKind::Transient | rss_reconcile::ErrorKind::Deadline) => {
+                        // A failed page is not empty. Keep its cursor and rate-limit retries even under wake storms.
+                        tokio::select! { biased;
+                            () = stop.cancelled() => { self.readiness.stop(); return Ok(()); },
+                            () = tokio::time::sleep(Duration::from_secs(5)) => {},
+                        }
+                        continue;
+                    }
+                    Err(kind) => return Err(rss_runtime::ShutdownError::new(rss_reconcile::Error::new(kind))),
+                };
+                if tenants.is_empty() {
+                        after = None;
+                        if std::mem::take(&mut worked) {
+                            continue;
+                        }
+
+                        tokio::select! { biased;
+                            () = stop.cancelled() => return Ok(()),
+                            () = notify.notified() => {},
+                            () = tokio::time::sleep(Duration::from_secs(5)) => {},
+                        }
+                        continue;
+                    }
+                    for tenant in tenants {
+                        after = Some(tenant);
+                        let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
+                            .map_err(rss_runtime::ShutdownError::new)?;
+                        let scope = super::wake::scope(tenant);
+
+                        let report = match rss_reconcile::run_batch(
+                            &self.recovery_store(),
+                            self.as_ref(),
+                            &scope,
+                            policy,
+                            &control,
+                            &stop,
+                            |event| {
+                                self.readiness.observe(&event);
+                            },
+                        )
+                        .await
+                        {
+                            Ok(report) => report,
+                            Err(error)
+                                if control.check().is_ok()
+                                    && matches!(
+                                        error.kind(),
+                                        rss_reconcile::ErrorKind::Transient
+                                            | rss_reconcile::ErrorKind::Deadline
+                                            | rss_reconcile::ErrorKind::CommitUnknown
+                                    ) =>
+                            {
+                                // The observer retained this scope's failure. Advance the tenant cursor;
+                                // an unconfirmed claim is not an empty or successfully drained batch.
+                                continue;
+                            }
+                            Err(error) => return Err(rss_runtime::ShutdownError::new(error)),
+                        };
+                        worked |= [
+                            report.converged,
+                            report.reobserve,
+                            report.deferred,
+                            report.retried,
+                            report.suspended,
+                            report.fenced,
+                            report.execution_failed,
+                        ]
+                        .into_iter()
+                        .any(|count| count > 0);
+                    }
+                }
+            }
+            .await;
             self.readiness.stop();
             result
         })
@@ -80,7 +175,7 @@ impl Worker {
         rss_mdm_recovery_observation::ObservedStore::new(&self.store, &self.readiness)
     }
     pub fn record_relay_health(&self, result: &std::result::Result<usize, Error>) {
-        self.readiness.relay(
+        self.readiness.relay_round(
             result
                 .as_ref()
                 .map(|_| ())
@@ -88,11 +183,14 @@ impl Worker {
         );
     }
     /// Host polls each concrete owner once in the single existing relay loop.
-    pub async fn relay_once(&self) -> std::result::Result<usize, Error> {
+    async fn relay_binding(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> std::result::Result<usize, Error> {
         let claims = self
             .outbox
             .claim_partition_heads(
-                self.service.transactions.audit_store.binding(),
+                binding,
                 std::num::NonZeroUsize::MIN,
                 crate::transaction::deadline(),
             )
@@ -109,7 +207,7 @@ impl Worker {
                 .ok_or(Error::Unavailable(crate::Failure::PlanningStorage))?;
             let result = self
                 .service
-                .accept_action_dispatch(id, message.fingerprint().as_bytes().to_vec())
+                .accept_action_dispatch(binding, id, message.fingerprint().as_bytes().to_vec())
                 .await;
             if result.as_ref().err().is_some_and(permanent) {
                 return result.map(|_| count);
@@ -154,14 +252,15 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error> {
+        let binding = self.execution(claim, control).await?;
         control.check()?;
-        if claim.target().scope() != &super::wake::scope(self.service.transactions.tenant) {
+        if claim.target().scope().reconciler() != ("mdm.collection.v1") {
             return Err(failure(Error::Unavailable(crate::Failure::PlanningStorage)));
         }
         let service = &self.service;
         let pending = crate::transaction::inspect_budget(
             &service.transactions.runtime,
-            service.transactions.audit_store.binding(),
+            binding,
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                 control.remaining(),
             ),
@@ -183,18 +282,19 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         _: ReconcileDiff<bool>,
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, rss_reconcile::Error> {
+        let binding = self.execution(claim, control).await?;
         control.check()?;
         let Ok(_permit) = self.budget.try_acquire() else {
             return Ok(ReconcileStep::Deferred(Duration::from_millis(50)));
         };
         let service = &self.service;
-        if claim.target().scope() != &super::wake::scope(service.transactions.tenant) {
+        if claim.target().scope().reconciler() != ("mdm.collection.v1") {
             return Err(failure(Error::Unavailable(crate::Failure::PlanningStorage)));
         }
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            service.transactions.tenant.to_string(),
+            binding,
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -204,7 +304,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
             .transactions
             .runtime
             .local_tx_with_context(
-                service.transactions.audit_store.binding(),
+                binding,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -269,7 +369,8 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
                                                 ),
                                             );
                                         }
-                                        match advance_in(service, tx, entity, ready).await {
+                                        match advance_in(binding, service, tx, entity, ready).await
+                                        {
                                             Ok(delay) => Ok(match delay {
                                                 Some(after) => {
                                                     rss_reconcile_postgres::ProtectedStep::Deferred(
@@ -381,6 +482,7 @@ async fn prepare_in(
     Ok(Prepared::Ready)
 }
 async fn advance_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     service: &CollectionService,
     tx: &mut PgTransaction<'_>,
     entity: &str,
@@ -399,11 +501,11 @@ async fn advance_in(
         };
     }
     if let Some(work) = super::scheduled::Work::parse(entity) {
-        super::scheduled::advance_in(service, tx, &work, Uuid::new_v4()).await?;
+        super::scheduled::advance_in(binding, service, tx, &work, Uuid::new_v4()).await?;
         return super::scheduled::delay_in(service, tx, &work).await;
     }
     if let Some(device) = checkin(entity) {
-        super::checkins::step(service, tx, device, Uuid::new_v4()).await?;
+        super::checkins::step(binding, service, tx, device, Uuid::new_v4()).await?;
         let tenant = tx.tenant_id().to_string();
         let active:bool=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_inventory.collection_native_checkins WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND (active_event IS NOT NULL OR pending_event IS NOT NULL))").bind(tenant).bind(device.into_uuid()).fetch_one(c).await})).await?;
         return Ok(active.then_some(Duration::from_millis(20)));
@@ -412,7 +514,7 @@ async fn advance_in(
         .strip_prefix("run:")
         .and_then(|s| Uuid::parse_str(s).ok())
     {
-        super::recovery::recover_one(service, tx, id).await?;
+        super::recovery::recover_one(binding, service, tx, id).await?;
         return Ok(pending_in(service, tx, entity)
             .await?
             .then_some(Duration::from_secs(5)));
@@ -491,42 +593,75 @@ fn checkin(entity: &str) -> Option<rss_mdm_agent_wire::DeviceId> {
 }
 
 impl Worker {
-    /// Calibrate every existing declaration before runners start, including delayed
-    /// and suspended work. Binding preserves wake identity and recovery history.
-    pub fn initialize_resource_bindings(
+    async fn execution<T: rss_reconcile::Timer>(
         &self,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = std::result::Result<(), Error>> + Send + '_>,
+        claim: &rss_reconcile_postgres::PgClaim,
+        control: &rss_reconcile::Control<'_, T>,
+    ) -> std::result::Result<
+        rss_transactional_messaging::fence::ExecutionBinding,
+        rss_reconcile::Error,
     > {
-        Box::pin(async move {
-            let transactions = &self.service.transactions;
-            let tenant = transactions.tenant;
-            let scope = super::wake::scope(tenant);
-            let mut after = String::new();
-            loop {
-                let page = crate::transaction::inspect(
-                &transactions.runtime, transactions.audit_store.binding(), (transactions, scope.clone(), after.clone()),
-                move |(transactions, scope, after), tx| Box::pin(async move {
-                    let t = tx.tenant_id().to_string();
-                    let domain = scope.reconciler().to_owned();
-                    let after = after.clone();
-                    let page: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
-                        sqlx::query_scalar("SELECT entity FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity>$3 ORDER BY entity LIMIT 64")
-                            .bind(t).bind(domain).bind(after).fetch_all(c).await
-                    })).await?;
-                    for entity in &page {
-                        let target = rss_reconcile::Target::new(scope.clone(), entity).map_err(|_| Error::Malformed)?;
-                        let resources = super::wake::resources_in(tx, entity).await?;
-                        transactions.reconcile_messaging.bind_in(tx, &target, &resources).await?;
-                    }
-                    Ok(page)
-                }), crate::transaction::TransactionOwner::Collections,
-            ).await?;
-                if page.len() < 64 {
-                    return Ok(());
-                }
-                after = page.last().expect("nonempty page").clone();
+        control.check()?;
+        let tenant = claim.target().scope().tenant();
+        let epoch: i64 =
+            sqlx::query_scalar("SELECT mdm_inventory.collection_work_epoch($1::uuid,$2)")
+                .bind(tenant.to_string())
+                .bind(claim.target().entity())
+                .fetch_one(&self.read_pool)
+                .await
+                .map_err(|_| failure(Error::Unavailable(crate::Failure::PlanningStorage)))?;
+        let epoch = rss_transactional_messaging::fence::Epoch::new(epoch)
+            .map_err(|_| failure(Error::Unavailable(crate::Failure::PlanningStorage)))?;
+        Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            tenant,
+            epoch,
+        ))
+    }
+    pub async fn relay_once(&self) -> std::result::Result<usize, Error> {
+        let after = *self
+            .relay_after
+            .lock()
+            .map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))?;
+        let scopes: Vec<(Uuid,i64)> = sqlx::query_as("SELECT tenant_id,expected_epoch FROM mdm_inventory.collection_work_relay_scopes($1,$2)")
+            .bind(after.map(|x|x.0)).bind(after.map(|x|x.1)).fetch_all(&self.read_pool).await.map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))?;
+        if scopes.is_empty() {
+            *self
+                .relay_after
+                .lock()
+                .map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))? = None;
+            return Ok(0);
+        }
+        let mut count = 0;
+        for (tenant, epoch) in scopes {
+            let t = rss_request_context::TenantId::parse(&tenant.to_string())
+                .map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))?;
+            let e = rss_transactional_messaging::fence::Epoch::new(epoch)
+                .map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))?;
+            let result = self
+                .relay_binding(rss_transactional_messaging::fence::ExecutionBinding::new(
+                    self.storage,
+                    t,
+                    e,
+                ))
+                .await;
+            *self
+                .relay_after
+                .lock()
+                .map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))? =
+                Some((tenant, epoch));
+            self.readiness.relay_scope(
+                &super::wake::scope(t),
+                epoch,
+                result
+                    .as_ref()
+                    .map(|_| ())
+                    .map_err(|e| failure(e.clone()).kind()),
+            );
+            if let Ok(relayed) = result {
+                count += relayed;
             }
-        })
+        }
+        Ok(count)
     }
 }

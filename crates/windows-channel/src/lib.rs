@@ -20,6 +20,7 @@ mod push_worker;
 mod renewal;
 pub mod results;
 pub mod retention;
+pub mod runtime_materials;
 mod unenrollment;
 pub mod wns_materials;
 pub use database::Store;
@@ -57,7 +58,7 @@ use uuid::Uuid;
 pub struct Windows {
     pub entra: Option<Arc<entra::Entra>>,
     pub poll: rss_mdm_windows_mdm::provisioning::Poll,
-    pub push: Option<push::Push>,
+    pub push: Option<Arc<push::Push>>,
     pub additional_management_origins: Vec<String>,
     pub enrollment_origin: String,
     pub management_origin: String,
@@ -95,14 +96,6 @@ impl Windows {
             .map_err(|_| Error::Malformed)?;
         let host = origin.host().ok_or(Error::Malformed)?;
         Ok(format!("{enrollment}@{host}"))
-    }
-    fn parse_enrollment_username(&self, username: &str) -> Result<Uuid, Error> {
-        let (local, _) = username.split_once('@').ok_or(Error::Unauthorized)?;
-        let id = Uuid::parse_str(local).map_err(|_| Error::Unauthorized)?;
-        if id.is_nil() || self.enrollment_username(id)? != username {
-            return Err(Error::Unauthorized);
-        }
-        Ok(id)
     }
 
     pub fn new(
@@ -311,11 +304,7 @@ pub fn mount_native(
             .map(|w| w.enrollment_origin.clone())
             .unwrap_or_default(),
         windows.map(|w| soap::DiscoverResponse {
-            auth_policy: if w.entra.is_some() {
-                soap::AuthPolicy::Federated
-            } else {
-                soap::AuthPolicy::OnPremise
-            },
+            auth_policy: soap::AuthPolicy::OnPremise,
             enrollment_version: "4.0".into(),
             policy_url: format!("{}/EnrollmentServer/Policy.svc", w.enrollment_origin),
             enrollment_url: format!("{}/EnrollmentServer/Enrollment.svc", w.enrollment_origin),
@@ -460,7 +449,7 @@ async fn discover(
     headers: HeaderMap,
     bytes: Bytes,
 ) -> Response {
-    let Some(discovery) = discovery else {
+    let Some(mut discovery) = discovery else {
         return fault(None, Error::Unsupported);
     };
     let message = match decode(
@@ -473,6 +462,31 @@ async fn discover(
         Ok(message) => message,
         Err(error) => return fault(None, error),
     };
+    let Body::Discover(request) = &message.body else {
+        return fault(Some(&message), Error::Malformed);
+    };
+    // MS-MDE2 DiscoveryRequest negotiates protocol support; the subsequent credential
+    // selects and authorizes its tenant. No tenant's cached Entra configuration is a host default.
+    // ref: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mde2/36e33def-59ab-484f-b0bc-701496346925
+    let password_request = request.email.0.split_once('@').is_some_and(|(id, domain)| {
+        uuid::Uuid::parse_str(id).is_ok_and(|id| !id.is_nil())
+            && origin
+                .parse::<axum::http::Uri>()
+                .ok()
+                .and_then(|u| u.host().map(str::to_owned))
+                .as_deref()
+                == Some(domain)
+    });
+    discovery.auth_policy =
+        if password_request && request.auth_policies.contains(&soap::AuthPolicy::OnPremise) {
+            soap::AuthPolicy::OnPremise
+        } else if request.auth_policies.contains(&soap::AuthPolicy::Federated) {
+            soap::AuthPolicy::Federated
+        } else if request.auth_policies.contains(&soap::AuthPolicy::OnPremise) {
+            soap::AuthPolicy::OnPremise
+        } else {
+            return fault(Some(&message), Error::Unsupported);
+        };
     response(Some(&message), Body::DiscoverResponse(discovery), 0)
         .unwrap_or_else(|error| fault(Some(&message), error))
 }
@@ -512,7 +526,10 @@ async fn enrollment(
         &bytes,
         &headers,
         op,
-        app.windows().map(|w| w.enrollment_origin.as_str()),
+        app.windows
+            .as_ref()
+            .map(|w| w.enrollment_origin.as_str())
+            .ok_or(Error::Unsupported),
         path,
     ) {
         Ok(m) => m,
@@ -548,23 +565,34 @@ async fn enrollment(
         }
         let token = security.username.as_ref().ok_or(Error::Unauthorized)?;
         let id = app
-            .windows()?
-            .parse_enrollment_username(&token.username.0)?;
+            .windows
+            .as_ref()
+            .ok_or(Error::Unsupported)?
+            .request_id(&token.username.0)?;
+        let execution = app.request_binding(id).await?;
+        let windows = app.windows(execution).await?;
+        audit
+            .bind_scope(execution)
+            .map_err(|_| Error::Unauthorized)?;
         let password = Password::new(token.password.0.clone()).map_err(|_| Error::Unauthorized)?;
-        if let Some(response) =
-            agent_enrollment::try_enrollment(&app, id, &password, &message, &audit, issuing).await?
+        if let Some(response) = agent_enrollment::try_enrollment(
+            &app, &windows, execution, id, &password, &message, &audit, issuing,
+        )
+        .await?
         {
             return Ok(response);
         }
         let auth = crate::enrollment::store::enrollment_authorization(
             rss_mdm_install_support::StorageProfile::Mdm,
             &app.access.registration(),
-            &app.identity.tenant().to_string(),
+            &execution.tenant().to_string(),
             id,
             &password,
         )
         .await?;
-        if auth.source != rss_mdm_inventory::ReportSource::MdmWindows {
+        if auth.expected_epoch != execution.epoch().get()
+            || auth.source != rss_mdm_inventory::ReportSource::MdmWindows
+        {
             return Err(Error::Unauthorized);
         }
         let credential = app.credentials.get(auth.credential_ref)?;
@@ -576,6 +604,7 @@ async fn enrollment(
         let proof = app
             .identity
             .authenticate(
+                execution,
                 &app.access.authorization,
                 credential,
                 rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
@@ -656,8 +685,7 @@ async fn enrollment(
         );
         let intent = crate::issuance::issuance_for_device(
             &app.audit_store,
-            &app.access,
-            app.windows()?,
+            &windows,
             &auth,
             &proof,
             (&csr.0, enrollment_type),
@@ -670,17 +698,13 @@ async fn enrollment(
             now,
         )
         .await?;
-        let certificate = issuance::sign(&app, proof.tenant_id(), &intent, now).await?;
-        let provisioning = issuance::provision(
-            app.windows()?,
-            &intent,
-            &certificate,
-            &auth,
-            proof.tenant_id(),
-        )?;
+        let certificate = issuance::sign(&app, proof.binding(), &windows, &intent, now).await?;
+        let provisioning =
+            issuance::provision(&windows, &intent, &certificate, &auth, proof.tenant_id())?;
         let proof = app
             .identity
             .authenticate(
+                execution,
                 &app.access.authorization,
                 app.credentials.get(auth.credential_ref)?,
                 rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
@@ -692,7 +716,7 @@ async fn enrollment(
         auth.authorize(&proof)?;
         crate::issuance::complete_issuance(
             &app.audit_store,
-            app.windows()?,
+            &windows,
             &auth,
             &proof,
             &intent,
@@ -720,6 +744,10 @@ async fn enrollment(
 }
 
 pub struct HttpState {
+    pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
+    pub providers: Arc<rss_mdm_pki_service::providers::Providers>,
+    pub storage: rss_transactional_messaging::fence::StorageIdentity,
+    pub expected_epoch: rss_transactional_messaging::fence::Epoch,
     pub query_cursor: rss_mdm_query::cursor::CursorCodec,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub mount: crate::device::ChannelMount,
@@ -734,11 +762,18 @@ pub struct HttpState {
     pub devices: std::sync::Arc<crate::device::DeviceService>,
     pub identity: std::sync::Arc<rss_mdm_authorization_service::session::SessionAuthority>,
     pub requests: std::sync::Arc<tokio::sync::Semaphore>,
-    pub windows: Option<std::sync::Arc<crate::Windows>>,
+    pub windows: Option<Arc<runtime_materials::Runtime>>,
 }
 impl HttpState {
-    pub fn windows(&self) -> std::result::Result<&Arc<crate::Windows>, crate::Error> {
-        self.windows.as_ref().ok_or(crate::Error::Unsupported)
+    pub async fn windows(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<Arc<Windows>, Error> {
+        self.windows
+            .as_ref()
+            .ok_or(Error::Unsupported)?
+            .load(self, execution)
+            .await
     }
 }
 
@@ -823,3 +858,46 @@ pub const NATIVE_COMMANDS_SQL: &str = include_str!("../schema/native-commands.sq
 #[cfg(test)]
 #[path = "../tests/collection_plan.rs"]
 mod collection_plan_tests;
+
+impl HttpState {
+    pub fn execution(
+        &self,
+        tenant: rss_request_context::TenantId,
+    ) -> rss_transactional_messaging::fence::ExecutionBinding {
+        rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            tenant,
+            self.expected_epoch,
+        )
+    }
+    pub async fn certificate_binding(
+        &self,
+        peer: &rss_mdm_certificate::ClientCertificateEvidence,
+    ) -> Result<rss_transactional_messaging::fence::ExecutionBinding, Error> {
+        use sha2::Digest;
+        let certificate = peer.chain().first().ok_or(Error::Unauthorized)?;
+        let fingerprint: [u8; 32] = sha2::Sha256::digest(certificate.as_ref()).into();
+        let tenant = self
+            .access
+            .locate_certificate(fingerprint)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        Ok(self.execution(tenant))
+    }
+    pub async fn request_binding(
+        &self,
+        request: uuid::Uuid,
+    ) -> Result<rss_transactional_messaging::fence::ExecutionBinding, Error> {
+        let (tenant, epoch) = self
+            .access
+            .registration
+            .locate_request(request)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            tenant,
+            epoch,
+        ))
+    }
+}

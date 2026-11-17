@@ -10,6 +10,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 #[serde(deny_unknown_fields)]
 pub struct Input {
     pub runtime_file: PathBuf,
+    pub tenant: uuid::Uuid,
     pub owner_database: crate::config::Database,
     pub operation_id: uuid::Uuid,
 }
@@ -19,7 +20,7 @@ pub async fn maintain(input: Input) -> Result<Receipt> {
     if input.owner_database.user != "mdm_owner" || input.operation_id.is_nil() {
         return Err(Error::Input);
     }
-    let tenant = TenantId::parse(&config.identity.tenant_id).map_err(|_| Error::Input)?;
+    let tenant = TenantId::parse(&input.tenant.to_string()).map_err(|_| Error::Input)?;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(4)
         .acquire_timeout(Duration::from_secs(6))
@@ -52,13 +53,13 @@ pub async fn maintain(input: Input) -> Result<Receipt> {
         let source = rss_mdm_content_service::Store::open(
             config.native_protector().map_err(|_| Error::Input)?,
             config.content.as_ref().ok_or(Error::Input)?,
-            &config.identity.tenant_id,
+            config.storage_binding.execution(tenant).map_err(|_|Error::Input)?,
             Arc::new(crate::lifecycle::RuntimeTimer),
             pool.clone(),
         )
         .await
         .map_err(|_| Error::Conflict)?;
-        let operation = migration::prepare(&source, input.operation_id)
+        let operation = migration::prepare(config.storage_binding.execution(tenant).map_err(|_|Error::Input)?, &source, input.operation_id)
             .await
             .map_err(|_| Error::Storage)?;
         if !matches!(operation.phase, Phase::Ready | Phase::Committed) {
@@ -91,7 +92,7 @@ pub async fn maintain(input: Input) -> Result<Receipt> {
             .map_err(|_| Error::Storage)?;
             let audit = RequestAudit::new(rss_mdm_audit_integration::Origin::Background,
                 rss_mdm_audit_integration::StorageProfile::Mdm,
-                tenant.to_string(),
+                config.storage_binding.execution(tenant).map_err(|_|Error::Input)?,
                 "storage_migration_commit",
                 AuditIntent::Management,
             );
@@ -103,7 +104,7 @@ pub async fn maintain(input: Input) -> Result<Receipt> {
             );
             let result = audit_store
                 .write(
-                    tenant,
+            audit.binding().map_err(|_|Error::Conflict)?,
                     &budget.source_control(),
                     (&audit_store, &audit, input.operation_id),
                     |(store, audit, operation), tx| {

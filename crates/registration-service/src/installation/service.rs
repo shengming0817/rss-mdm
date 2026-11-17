@@ -152,14 +152,15 @@ impl Transactions {
         fingerprint: Vec<u8>,
         audit: &RequestAudit,
     ) -> Result<AcceptedReceipt> {
+        let expected_epoch = audit.binding()?.epoch().get();
         // Every producer, including bootstrap cleanup, must durably wake command
         // publication; a relay notification alone does not advance queued commands.
         self.reconcile_messaging
             .wake_in(
                 tx,
-                &target(self.tenant, device),
+                &target(tx.tenant_id(), device),
                 &crate::lifecycle::resources::device(
-                    self.tenant,
+                    tx.tenant_id(),
                     device,
                     crate::lifecycle::resources::Work::Exclusive,
                 ),
@@ -183,7 +184,7 @@ impl Transactions {
         }
         let materials = self.materials.clone();
         let check = authority.clone();
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         if !tx
             .with_connection(move |c| {
                 Box::pin(async move { Ok(check.valid(&materials, c, tenant).await) })
@@ -199,17 +200,17 @@ impl Transactions {
             scope,
             checked_input(dc::CommandId::parse(&input.operation_id.to_string()))?,
             coordinate,
-            input.digest(&self.protection, self.tenant, device)?,
+            input.digest(&self.protection, tx.tenant_id(), device)?,
             input.deadline * 1_000_000,
         );
-        let message = dispatch(self.tenant, device, input, coordinate, now)?;
+        let message = dispatch(tx.tenant_id(), device, input, coordinate, now)?;
         let dispatch_fingerprint = message.fingerprint().as_bytes().to_vec();
         self.store.queue(tx, spec, message).await?;
         let binding = crate::command_authority::CommandBinding {
             operation: input.operation_id,
             device: registration,
         };
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         if matches!(input.task, Task::Windows { .. }) {
             let channel = self.windows_results.clone();
             tx.with_connection(move |c| {
@@ -224,12 +225,12 @@ impl Transactions {
             .await??;
         }
 
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let name = device.to_owned();
         let id = input.operation_id.to_string();
         let (input_context, request) = crate::installation::input_storage::seal(
             &self.protection,
-            self.tenant,
+            tx.tenant_id(),
             &crate::installation::input_storage::Identity {
                 operation: input.operation_id,
                 device,
@@ -248,7 +249,15 @@ impl Transactions {
         authority.bind_required(required.clone());
         let authority = checked_input(serde_json::to_string(&authority))?;
         let digest = fingerprint.clone();
-        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_registration_tasks.operations (tenant_id, id, device, request, fingerprint, generation, epoch, authority, dispatch_fingerprint, input_context) VALUES (CAST($1 AS uuid), CAST($2 AS uuid), $3, $4, $5, $6, $7, CAST($8 AS jsonb), $9, $10)").bind(tenant).bind(id).bind(name.into_uuid()).bind(request).bind(digest).bind(coordinate.generation()).bind(coordinate.epoch()).bind(authority).bind(dispatch_fingerprint).bind(input_context).execute(c).await?;Ok(())})).await?;
+        let recovery_tenant = tx.tenant_id().to_string();
+        let recovery_device = device.into_uuid();
+        tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query("INSERT INTO mdm_registration_tasks.device_recovery(tenant_id,device,authority_epoch,expected_epoch) SELECT tenant_id,device,epoch,$3 FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND device=$2 ON CONFLICT DO NOTHING").bind(&recovery_tenant).bind(recovery_device).bind(expected_epoch).execute(&mut *c).await?;
+            let original:i64=sqlx::query_scalar("SELECT expected_epoch FROM mdm_registration_tasks.device_recovery WHERE tenant_id=$1::uuid AND device=$2").bind(recovery_tenant).bind(recovery_device).fetch_one(c).await?;
+            if original!=expected_epoch {return Err(sqlx::Error::Protocol("native recovery epoch mismatch".into()))}
+            Ok(())
+        })).await?;
+        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_registration_tasks.operations (tenant_id, id, device, request, fingerprint, generation, epoch, authority, dispatch_fingerprint, input_context,expected_epoch) VALUES (CAST($1 AS uuid), CAST($2 AS uuid), $3, $4, $5, $6, $7, CAST($8 AS jsonb), $9, $10,$11)").bind(tenant).bind(id).bind(name.into_uuid()).bind(request).bind(digest).bind(coordinate.generation()).bind(coordinate.epoch()).bind(authority).bind(dispatch_fingerprint).bind(input_context).bind(expected_epoch).execute(c).await?;Ok(())})).await?;
         apple::own(tx, self.apple_profiles.clone(), device, input).await?;
         let response = created(tx, self, audit, input.operation_id, fingerprint).await?;
         crate::installation::worker_wake::notify_in(

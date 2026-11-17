@@ -125,6 +125,7 @@ pub(crate) async fn try_lock_device(
     Ok(true)
 }
 pub(crate) async fn step(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &SoftwareService,
     tx: &mut PgTransaction<'_>,
     work: Work,
@@ -132,7 +133,7 @@ pub(crate) async fn step(
 ) -> Result<bool> {
     match work {
         Work::Run(id) => {
-            super::recovery::recover_one(service, tx, id).await?;
+            super::recovery::recover_one(execution, service, tx, id).await?;
             Ok(false)
         }
     }

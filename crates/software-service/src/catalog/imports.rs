@@ -8,7 +8,7 @@ impl Catalog {
         check_operation(op.operation_id, op.expected_revision)?;
         fingerprint(&(
             "software-import-v1",
-            self.tenant.to_string(),
+            audit.binding()?.tenant().to_string(),
             actor(audit)?,
             op,
         ))
@@ -19,7 +19,6 @@ impl Catalog {
         audit: &RequestAudit,
         op: &Operation<ImportRequest>,
     ) -> Result<bool> {
-        self.reader().tenant(tx)?;
         Ok(
             storage::replay(tx, op.operation_id, &self.import_hash(audit, op)?)
                 .await?
@@ -47,7 +46,6 @@ impl Catalog {
         op: &Operation<ImportRequest>,
         prepared: Option<&PreparedImport>,
     ) -> Result<Value> {
-        self.reader().tenant(tx)?;
         let hash = self.import_hash(audit, op)?;
         let key = format!(
             "resource/{}/{}",
@@ -59,8 +57,8 @@ impl Catalog {
                 tx,
                 audit,
                 &[
-                    event::partition(self.tenant, &key)?,
-                    resources.partition(&op.input.resource)?,
+                    event::partition(tx.tenant_id(), &key)?,
+                    resources.partition(tx.tenant_id(), &op.input.resource)?,
                 ],
             )
             .await?;
@@ -90,7 +88,7 @@ impl Catalog {
             },
             _ => return Err(Error::Input),
         };
-        let checked = crate::imports::prepare(self.tenant, &source, &op.input, &documents)?;
+        let checked = crate::imports::prepare(tx.tenant_id(), &source, &op.input, &documents)?;
         if checked.version.digest() != prepared.version.digest() {
             return Err(Error::Input);
         }

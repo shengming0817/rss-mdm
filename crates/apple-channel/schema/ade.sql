@@ -22,6 +22,7 @@ CREATE TABLE mdm_apple.ade_devices (
  PRIMARY KEY(tenant_id,organization,serial), FOREIGN KEY(tenant_id,organization) REFERENCES mdm_apple.ade_servers(tenant_id,organization)
 );
 CREATE TABLE mdm_apple.ade_operations (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL, organization uuid NOT NULL, id uuid NOT NULL, kind text NOT NULL CHECK(kind IN('configuration','token','sync','profile','assign','clear','resolve','reconcile')),
  digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'), actor text NOT NULL, instance text NOT NULL,
  server_revision bigint NOT NULL, token_revision bigint NOT NULL, request jsonb NOT NULL CHECK(octet_length(request::text)<=262144),
@@ -76,3 +77,20 @@ GRANT UPDATE(revoked) ON mdm_apple.ade_enrollments TO mdm_access;
 GRANT SELECT(tenant_id,enrollment) ON mdm_apple.ade_enrollments TO mdm_command_runtime;
 GRANT UPDATE(revoked) ON mdm_apple.ade_enrollments TO mdm_command_runtime;
 COMMIT;
+
+CREATE POLICY protocol_locator ON mdm_apple.ade_servers FOR SELECT TO mdm_owner USING(true);
+CREATE INDEX ON mdm_apple.ade_servers(organization);
+CREATE FUNCTION mdm_apple.ade_server_tenants(target uuid) RETURNS TABLE(tenant_id uuid) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$ SELECT DISTINCT tenant_id FROM mdm_apple.ade_servers WHERE organization=target ORDER BY tenant_id LIMIT 2 $$;
+REVOKE ALL ON FUNCTION mdm_apple.ade_server_tenants(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_apple.ade_server_tenants(uuid) TO mdm_access;
+
+CREATE POLICY work_discovery ON mdm_apple.ade_operations FOR SELECT TO mdm_owner USING(true);
+CREATE FUNCTION mdm_apple.ade_work_scopes(after_tenant uuid,after_epoch bigint,fresh_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT tenant_id,expected_epoch FROM (
+ (SELECT DISTINCT tenant_id,expected_epoch FROM mdm_apple.ade_operations WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32)
+ UNION
+ (SELECT DISTINCT tenant_id,fresh_epoch AS expected_epoch FROM mdm_apple.ade_servers WHERE after_tenant IS NULL OR (tenant_id,fresh_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32)
+ ) work ORDER BY tenant_id,expected_epoch LIMIT 32
+$$;
+REVOKE ALL ON FUNCTION mdm_apple.ade_work_scopes(uuid,bigint,bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_apple.ade_work_scopes(uuid,bigint,bigint) TO mdm_access;

@@ -9,6 +9,7 @@ publish.workspace = true
 rss-mdm-agent-wire.workspace = true
 rss-reconcile.workspace = true
 rss-reconcile-postgres.workspace = true
+rss-transactional-messaging.workspace = true
 rss-transactional-messaging-postgres.workspace = true
 rss-mdm-query-postgres.workspace = true
 rss-mdm-query.workspace = true

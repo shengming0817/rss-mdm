@@ -274,12 +274,10 @@ pub async fn load(tx: &mut PgTransaction<'_>, delivery: Uuid) -> Result<Plan> {
 
 /// Reconcile bounded account revisions when the authenticated Agent polls existing tasks.
 pub(crate) async fn prepare_reconciliation_in(
-    service: &Transactions,
     tx: &mut PgTransaction<'_>,
     device: &rss_mdm_registration_service::DevicePrincipal,
 ) -> Result<PreparedReconciliation> {
     prepare_target_reconciliation_in(
-        service,
         tx,
         &Target {
             device: device.device().to_owned(),
@@ -290,7 +288,6 @@ pub(crate) async fn prepare_reconciliation_in(
 }
 
 pub(crate) async fn prepare_target_reconciliation_in(
-    service: &Transactions,
     tx: &mut PgTransaction<'_>,
     target: &Target,
     policy: Option<Uuid>,
@@ -325,7 +322,7 @@ pub(crate) async fn prepare_target_reconciliation_in(
     })).await?;
     let mut bindings = Vec::new();
     for document in documents {
-        let scope = service.tenant;
+        let scope = tx.tenant_id();
         let previous: access::Binding = stored(serde_json::from_value(document))?;
         let binding = tx
             .with_connection(move |c| {
@@ -379,7 +376,7 @@ pub(crate) async fn reconcile_in(
         blocked: prepared.blocked,
     };
     for (previous, delivery) in prepared.bindings {
-        let scope = service.tenant;
+        let scope = tx.tenant_id();
         let id = previous.id;
         let previous_revision = previous.revision;
         let binding = tx
@@ -515,6 +512,7 @@ pub(crate) async fn reconcile_in(
             continue;
         }
         production::queue_run_in(
+            audit.binding()?,
             service,
             tx,
             &binding,

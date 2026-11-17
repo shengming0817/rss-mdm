@@ -225,6 +225,7 @@ pub(crate) async fn dispatch_in(
 }
 
 pub(crate) async fn advance_in(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &SoftwareService,
     tx: &mut PgTransaction<'_>,
     work: &Work,
@@ -240,6 +241,7 @@ pub(crate) async fn advance_in(
     match &plan {
         db::ScheduledPolicy::Software(software) => {
             super::software::accept_for_device(
+                execution,
                 &service.transactions,
                 tx,
                 software,

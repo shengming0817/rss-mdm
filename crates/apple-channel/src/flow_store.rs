@@ -265,11 +265,18 @@ impl channels::AppleCollections for Store {
     fn prepare_native_collection<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,
-        tenant: String,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         id: Uuid,
     ) -> channels::Pending<'a, Vec<rss_mdm_audit_integration::Fact>> {
         Box::pin(async move {
-            crate::collection::prepare_native(c, &self.protection, &tenant, id).await
+            crate::collection::prepare_native(
+                execution,
+                c,
+                &self.protection,
+                &execution.tenant().to_string(),
+                id,
+            )
+            .await
         })
     }
 

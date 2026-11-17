@@ -15,11 +15,11 @@ use std::{
 type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, PlatformError>> + Send + 'a>>;
 pub struct Verifier {
     audience: String,
-    tenant: TenantId,
-    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    storage: rss_transactional_messaging::fence::StorageIdentity,
+    expected_epoch: rss_transactional_messaging::fence::Epoch,
     runtime: Arc<PgRuntime>,
     apple: Option<Arc<dyn PlatformVerifier>>,
-    targets: BTreeMap<String, String>,
+    targets: BTreeMap<String, (TenantId, String)>,
     admission: OnceLock<Weak<dyn Admission>>,
 }
 impl Verifier {
@@ -28,12 +28,12 @@ impl Verifier {
         execution: rss_transactional_messaging::fence::ExecutionBinding,
         runtime: Arc<PgRuntime>,
         apple: Option<Arc<dyn PlatformVerifier>>,
-        targets: BTreeMap<String, String>,
+        targets: BTreeMap<String, (TenantId, String)>,
     ) -> Self {
         Self {
             audience: format!("{origin}/login"),
-            tenant: execution.tenant(),
-            execution,
+            storage: execution.storage(),
+            expected_epoch: execution.epoch(),
             runtime,
             apple,
             targets,
@@ -57,13 +57,17 @@ impl Verifier {
             .and_then(Weak::upgrade)
             .ok_or(PlatformError::Unavailable)
     }
-    async fn binding(&self, c: &mut PgConnection, id: Uuid) -> Result<Binding, PlatformError> {
-        let tenant =
-            Uuid::parse_str(&self.tenant.to_string()).map_err(|_| PlatformError::Rejected)?;
+    async fn binding(
+        &self,
+        tenant: TenantId,
+        c: &mut PgConnection,
+        id: Uuid,
+    ) -> Result<Binding, PlatformError> {
+        let tenant = Uuid::parse_str(&tenant.to_string()).map_err(|_| PlatformError::Rejected)?;
         rss_mdm_registration_service::admission::lock_in(
             rss_mdm_install_support::StorageProfile::Da,
             c,
-            &self.tenant.to_string(),
+            &tenant.to_string(),
         )
         .await
         .map_err(|e| failure(e.into()))?;
@@ -123,7 +127,8 @@ impl Verifier {
             instance: InstanceId::parse(&binding.person.instance.to_string())
                 .map_err(|_| PlatformError::Rejected)?,
             account: rss_identity_core::account::AccountKey {
-                tenant: self.tenant,
+                tenant: TenantId::parse(&binding.tenant.to_string())
+                    .map_err(|_| PlatformError::Rejected)?,
                 principal: rss_identity_core::PrincipalId::parse(
                     &binding.person.principal.to_string(),
                 )
@@ -158,10 +163,7 @@ impl PlatformVerifier for Verifier {
         c: &'a mut PgConnection,
     ) -> Pending<'a, PlatformBinding> {
         Box::pin(async move {
-            if tenant != self.tenant {
-                return Err(PlatformError::Rejected);
-            }
-            let binding = self.binding(c, id).await?;
+            let binding = self.binding(tenant, c, id).await?;
             if binding.person.instance != instance.as_uuid() {
                 return Err(PlatformError::Rejected);
             }
@@ -182,10 +184,9 @@ impl PlatformVerifier for Verifier {
         c: &'a mut PgConnection,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            if subject.account.tenant != self.tenant {
-                return Err(PlatformError::Rejected);
-            }
-            let binding = self.binding(c, subject.binding_id).await?;
+            let binding = self
+                .binding(subject.account.tenant, c, subject.binding_id)
+                .await?;
             if binding.intent.platform() == rss_mdm_agent_wire::runtime::TaskPlatform::Windows {
                 if self.windows(c, &binding).await?.0 != *subject {
                     return Err(PlatformError::Rejected);
@@ -211,13 +212,15 @@ impl PlatformVerifier for Verifier {
             if let PlatformPurpose::EnterpriseRp(id) = purpose {
                 let rp = relying_party_on(
                     c,
-                    Uuid::parse_str(&self.tenant.to_string())
+                    Uuid::parse_str(&subject.account.tenant.to_string())
                         .map_err(|_| PlatformError::Rejected)?,
                     id,
                 )
                 .await
                 .map_err(failure)?;
-                let binding = self.binding(c, subject.binding_id).await?;
+                let binding = self
+                    .binding(subject.account.tenant, c, subject.binding_id)
+                    .await?;
                 let mode = if binding.configuration.mac.as_ref().is_some_and(|m| {
                     binding.intent.platform() == rss_mdm_agent_wire::runtime::TaskPlatform::Macos
                         && m.authentication
@@ -228,7 +231,8 @@ impl PlatformVerifier for Verifier {
                     ProofKind::NativeKey
                 };
                 if !rp.enabled
-                    || self.targets.get(id) != Some(&rp.target_fingerprint)
+                    || self.targets.get(id)
+                        != Some(&(subject.account.tenant, rp.target_fingerprint.clone()))
                     || !rp.capabilities.contains(&mode)
                 {
                     return Err(PlatformError::Rejected);
@@ -246,7 +250,11 @@ impl PlatformVerifier for Verifier {
             let attempt = self
                 .runtime
                 .local_tx_with_context(
-                    self.execution,
+                    rss_transactional_messaging::fence::ExecutionBinding::new(
+                        self.storage,
+                        challenge.binding.account.tenant,
+                        self.expected_epoch,
+                    ),
                     rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                         Duration::from_secs(5),
                     ),
@@ -275,8 +283,13 @@ impl PlatformVerifier for Verifier {
                                         }));
                                     }
                                     let result = async {
-                                        let binding =
-                                            this.binding(c, challenge.binding.binding_id).await?;
+                                        let binding = this
+                                            .binding(
+                                                challenge.binding.account.tenant,
+                                                c,
+                                                challenge.binding.binding_id,
+                                            )
+                                            .await?;
                                         if binding.intent.platform()
                                             == rss_mdm_agent_wire::runtime::TaskPlatform::Windows
                                         {

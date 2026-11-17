@@ -34,6 +34,7 @@ pub async fn read<I: DeserializeOwned>(
 }
 pub async fn enqueue<I: Serialize>(
     c: &mut PgConnection,
+    expected_epoch: i64,
     t: TenantId,
     id: Uuid,
     rule: Uuid,
@@ -41,15 +42,15 @@ pub async fn enqueue<I: Serialize>(
     input: &I,
 ) -> Result<()> {
     tenant(c, t).await?;
-    if id.is_nil() || rule.is_nil() || revision < 1 {
+    if id.is_nil() || rule.is_nil() || revision < 1 || expected_epoch < 1 {
         return Err(corrupt());
     }
     let input = serde_json::to_string(input).map_err(|_| corrupt())?;
     if input.len() > 1_048_576 {
         return Err(corrupt());
     }
-    sqlx::query("INSERT INTO mdm_compliance.runs(tenant_id,id,rule_id,rule_revision,input) VALUES($1::uuid,$2,$3,$4,$5::jsonb)")
-        .bind(t.to_string()).bind(id).bind(rule).bind(revision).bind(input).execute(c).await?;
+    sqlx::query("INSERT INTO mdm_compliance.runs(tenant_id,id,rule_id,rule_revision,input,expected_epoch) VALUES($1::uuid,$2,$3,$4,$5::jsonb,$6)")
+        .bind(t.to_string()).bind(id).bind(rule).bind(revision).bind(input).bind(expected_epoch).execute(c).await?;
     Ok(())
 }
 pub async fn finish(
@@ -116,12 +117,6 @@ pub async fn lock_dispatch(
     candidate: Value,
 ) -> Result<Dispatch> {
     tenant(c, t).await?;
-    sqlx::query(
-        "INSERT INTO mdm_compliance.dispatch(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
-    )
-    .bind(t.to_string())
-    .execute(&mut *c)
-    .await?;
     let (from_cut, to_cut, event_after, through, cursor): (Option<Value>, Option<Value>, i64, Option<i64>, Option<Uuid>) =
         sqlx::query_as("SELECT from_cut,to_cut,event_after,page_through,cursor FROM mdm_compliance.dispatch WHERE tenant_id=$1::uuid FOR UPDATE")
         .bind(t.to_string()).fetch_one(&mut *c).await?;
@@ -235,6 +230,10 @@ pub async fn input_failed(c: &mut PgConnection, t: TenantId) -> Result<bool> {
 /// Caller must hold the RSS input claim fence.
 pub async fn set_input_failed(c: &mut PgConnection, t: TenantId, failed: bool) -> Result<()> {
     tenant(c, t).await?;
-    sqlx::query("INSERT INTO mdm_compliance.dispatch(tenant_id,input_failed) VALUES($1::uuid,$2) ON CONFLICT(tenant_id) DO UPDATE SET input_failed=excluded.input_failed").bind(t.to_string()).bind(failed).execute(c).await?;
+    sqlx::query("UPDATE mdm_compliance.dispatch SET input_failed=$2 WHERE tenant_id=$1::uuid")
+        .bind(t.to_string())
+        .bind(failed)
+        .execute(c)
+        .await?;
     Ok(())
 }

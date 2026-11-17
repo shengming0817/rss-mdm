@@ -37,13 +37,30 @@ async fn execute() -> Result<serde_json::Value> {
         _ => return Err(failure::at("usage", anyhow::anyhow!("invalid arguments"))),
     }
     let options = rss_mdm_examples::options().map_err(|e| failure::at("config", e))?;
-    let scope: Scope = serde_json::from_slice(
-        &read_bounded(&std::env::var("MDM_SCOPE_FILE").map_err(|e| failure::at("scope", e))?)
-            .map_err(|e| failure::at("scope", e))?,
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ScopeInput {
+        scope: Scope,
+        target: [u8; 16],
+        lineage: [u8; 16],
+        epoch: i64,
+    }
+    let input: ScopeInput =
+        serde_json::from_slice(&read_bounded(&std::env::var("MDM_SCOPE_FILE")?)?)?;
+    use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
+    let binding = ExecutionBinding::new(
+        StorageIdentity::new(input.target, input.lineage)?,
+        input.scope.tenant(),
+        Epoch::new(input.epoch)?,
+    );
+    // Trusted operator configuration, never inferred from the submitted report or live database epoch.
+    let app = App::open(
+        binding,
+        &options,
+        FixtureAuthority::new(input.scope),
+        system_clock(),
     )
-    .map_err(|e| failure::at("scope", e))?;
-    // Trusted operator configuration, never inferred from the submitted report.
-    let app = App::open(&options, FixtureAuthority::new(scope), system_clock()).await?;
+    .await?;
     let cancel = CancellationToken::new();
     let operation = async {
         match command.as_str() {

@@ -71,6 +71,7 @@ impl AdmissionTrigger {
     reason = "task acceptance keeps independent authorization, target, deadline and signing evidence"
 )]
 pub(crate) async fn accept_for_device(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     service: &crate::tasks::Transactions,
     tx: &mut PgTransaction<'_>,
@@ -177,6 +178,7 @@ pub(crate) async fn accept_for_device(
         return Ok(());
     }
     queue_run_in(
+        binding,
         profile,
         service,
         tx,
@@ -210,6 +212,7 @@ pub struct RunInput<'a> {
     pub now: i64,
 }
 pub(crate) async fn queue_run_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     service: &crate::tasks::Transactions,
     tx: &mut PgTransaction<'_>,
@@ -292,6 +295,7 @@ pub(crate) async fn queue_run_in(
             .bind(evidence)
             .bind(origin)
             .bind(material)
+            .bind(binding.epoch().get())
             .execute(c)
             .await?;
             Ok(())
@@ -303,7 +307,7 @@ pub(crate) async fn queue_run_in(
     let audit = rss_mdm_audit_integration::RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         profile,
-        tx.tenant_id().to_string(),
+        binding,
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
     );

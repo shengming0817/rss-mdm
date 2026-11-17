@@ -192,24 +192,27 @@ fn bootstrap(headers: &HeaderMap) -> Result<(), Failure> {
     }
 }
 async fn request(
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAudit>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     input: Body<wire::GrantRequest>,
 ) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
     bootstrap(&headers)?;
-    Ok(Json(s.request(&body(input)?, &a).await?))
+    Ok(Json(s.request(&body(input)?, &a, &origin).await?))
 }
 async fn issue(
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAudit>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     input: Body<wire::CertificateRequest>,
 ) -> Result<Json<wire::Candidate>, HttpFailure> {
     bootstrap(&headers)?;
-    Ok(Json(s.issue(&body(input)?, &a).await?))
+    Ok(Json(s.issue(&body(input)?, &a, &origin).await?))
 }
 async fn activate(
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAudit>,
     peer: Option<Extension<ClientCertificateEvidence>>,
@@ -219,17 +222,20 @@ async fn activate(
     bootstrap(&headers)?;
     let peer =
         peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
-    Ok(Json(s.activate(&peer.0, &body(input)?, &a).await?))
+    Ok(Json(s.activate(&peer.0, &body(input)?, &a, &origin).await?))
 }
 async fn status(
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Service>>,
+    Extension(a): Extension<RequestAudit>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     input: Body<wire::StatusRequest>,
 ) -> Result<Json<wire::Progress>, HttpFailure> {
     bootstrap(&headers)?;
-    Ok(Json(s.poll(&body(input)?).await?))
+    Ok(Json(s.poll(&a, &body(input)?, &origin).await?))
 }
 async fn renew(
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAudit>,
     peer: Option<Extension<ClientCertificateEvidence>>,
@@ -239,15 +245,17 @@ async fn renew(
     bootstrap(&headers)?;
     let peer =
         peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
-    Ok(Json(s.renew(&peer.0, &body(input)?, &a).await?))
+    Ok(Json(s.renew(&peer.0, &body(input)?, &a, &origin).await?))
 }
 async fn renewal_status(
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Service>>,
+    Extension(a): Extension<RequestAudit>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     input: Body<wire::RenewalStatusRequest>,
 ) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
     bootstrap(&headers)?;
-    Ok(Json(s.renewal_status(&body(input)?).await?))
+    Ok(Json(s.renewal_status(&a, &body(input)?, &origin).await?))
 }
 pub struct HttpFailure(pub Failure);
 impl From<Failure> for HttpFailure {
@@ -317,6 +325,7 @@ impl rss_mdm_http_contract::signature::Output for HttpFailure {
 }
 
 async fn connections(
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Service>>,
     peer: Option<Extension<ClientCertificateEvidence>>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
@@ -324,8 +333,10 @@ async fn connections(
     bootstrap(&headers)?;
     let peer =
         peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
-    s.authenticate(&peer.0).await?;
-    Ok(Json(s.connection_configuration().await?))
+    let principal = s.authenticate(&peer.0).await?;
+    s.require_connection_origin(principal.binding(), &origin)
+        .await?;
+    Ok(Json(s.connection_configuration(principal.binding()).await?))
 }
 async fn acknowledge_connections(
     State(s): State<Arc<Service>>,
@@ -342,15 +353,29 @@ async fn acknowledge_connections(
         .await?;
     Ok(rss_mdm_http_contract::signature::WithStatus(()))
 }
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TrustTarget {
+    tenant_id: uuid::Uuid,
+}
 async fn trust(
+    axum::extract::Query(target): axum::extract::Query<TrustTarget>,
     State(s): State<Arc<Service>>,
     peer: Option<Extension<ClientCertificateEvidence>>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
 ) -> Result<Json<rss_mdm_agent_wire::pki::Trust>, HttpFailure> {
     bootstrap(&headers)?;
-    Ok(Json(s.device_trust(peer.as_ref().map(|v| &v.0)).await?))
+    Ok(Json(
+        s.device_trust(
+            rss_request_context::TenantId::parse(&target.tenant_id.to_string())
+                .map_err(|_| Failure::from(rss_mdm_registration_service::Error::Malformed))?,
+            peer.as_ref().map(|v| &v.0),
+        )
+        .await?,
+    ))
 }
 async fn acknowledge(
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAudit>,
     peer: Option<Extension<ClientCertificateEvidence>>,
@@ -360,38 +385,51 @@ async fn acknowledge(
     bootstrap(&headers)?;
     let peer =
         peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
+    s.require_connection_origin(s.authenticate(&peer.0).await?.binding(), &origin)
+        .await?;
     s.acknowledge_trust(&peer.0, &body(input)?, &a).await?;
     Ok(rss_mdm_http_contract::signature::WithStatus(()))
 }
 
 async fn exchange(
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAudit>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     input: Body<wire::configuration::Exchange>,
 ) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
     bootstrap(&headers)?;
-    Ok(Json(s.exchange_configuration(&body(input)?, &a).await?))
+    Ok(Json(
+        s.exchange_configuration(&body(input)?, &a, &origin).await?,
+    ))
 }
 async fn exchange_status(
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Service>>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     input: Body<wire::configuration::ExchangeStatus>,
 ) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
     bootstrap(&headers)?;
-    Ok(Json(s.configuration_exchange_status(&body(input)?).await?))
+    Ok(Json(
+        s.configuration_exchange_status(&body(input)?, &origin)
+            .await?,
+    ))
 }
 async fn cancel(
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAudit>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     input: Body<wire::configuration::Cancel>,
 ) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
     bootstrap(&headers)?;
-    Ok(Json(s.cancel_reservation(&body(input)?, &a).await?))
+    Ok(Json(
+        s.cancel_reservation(&body(input)?, &a, &origin).await?,
+    ))
 }
 
 async fn native_grant(
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAudit>,
     peer: Option<Extension<ClientCertificateEvidence>>,
@@ -401,16 +439,18 @@ async fn native_grant(
     bootstrap(&headers)?;
     let peer =
         peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
-    Ok(Json(s.native_grant(&peer.0, &body(input)?, &a).await?))
+    Ok(Json(
+        s.native_grant(&peer.0, &body(input)?, &a, &origin).await?,
+    ))
 }
 async fn bootstrap_challenge(
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAudit>,
     input: WebhookInput,
 ) -> Result<Json<rss_mdm_pki_service::scep::ChallengeResponse>, HttpFailure> {
-    let cfg = s.bootstrap_configuration()?;
+    let cfg = s.bootstrap_verifier()?;
     let input = cfg
-        .webhooks
         .verify(
             rss_mdm_pki_service::scep::Stage::Challenge,
             &input.headers,
@@ -418,16 +458,16 @@ async fn bootstrap_challenge(
             time::OffsetDateTime::now_utc().unix_timestamp(),
         )
         .map_err(|_| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
-    Ok(Json(s.bootstrap_challenge(input, &a).await?))
+    Ok(Json(s.bootstrap_challenge(input, &a, &origin).await?))
 }
 async fn bootstrap_notify(
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAudit>,
     input: WebhookInput,
 ) -> Result<Json<rss_mdm_pki_service::scep::NotifyResponse>, HttpFailure> {
-    let cfg = s.bootstrap_configuration()?;
+    let cfg = s.bootstrap_verifier()?;
     let input = cfg
-        .webhooks
         .verify(
             rss_mdm_pki_service::scep::Stage::Notify,
             &input.headers,
@@ -435,13 +475,14 @@ async fn bootstrap_notify(
             time::OffsetDateTime::now_utc().unix_timestamp(),
         )
         .map_err(|_| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
-    s.bootstrap_notify(input, &a).await?;
+    s.bootstrap_notify(input, &a, &origin).await?;
     Ok(Json(rss_mdm_pki_service::scep::NotifyResponse {
         allow: true,
     }))
 }
 
 async fn observe_trust(
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAudit>,
     peer: Option<Extension<ClientCertificateEvidence>>,
@@ -451,6 +492,8 @@ async fn observe_trust(
     bootstrap(&headers)?;
     let peer =
         peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
+    s.require_connection_origin(s.authenticate(&peer.0).await?.binding(), &origin)
+        .await?;
     let input = body(input)?;
     s.observe_trust(&peer.0, &input, &a).await?;
     Ok(Json(input))

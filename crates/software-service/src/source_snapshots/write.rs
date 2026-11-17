@@ -30,7 +30,7 @@ pub async fn replace<C: ManagementContentPort>(
     let fingerprint: [u8; 32] = Sha256::digest(
         serde_json::to_vec(&(
             "software-source-snapshot/v1",
-            app.tenant.to_string(),
+            proof.tenant_id(),
             actor(proof),
             &source,
             &op,
@@ -43,7 +43,7 @@ pub async fn replace<C: ManagementContentPort>(
     transaction::run(
         &app.audit,
         &app.runtime,
-        app.audit.binding(),
+        proof.binding(),
         audit,
         (
             app,

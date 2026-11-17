@@ -57,7 +57,7 @@ async fn device(
     State(service): State<Arc<Timeline>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
     params: rss_mdm_http_contract::query::OwnedQuery<DeviceQuery>,
 ) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Page>>, Error> {
     (async {
@@ -77,6 +77,8 @@ async fn device(
     .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn search(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(service): State<Arc<Timeline>>,
     Extension(audit): Extension<RequestAudit>,
     Extension(auth): Extension<RequestAuth>,
@@ -100,7 +102,7 @@ async fn activities(
     State(service): State<Arc<Timeline>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
     params: rss_mdm_http_contract::query::OwnedQuery<ActivityQuery>,
 ) -> Result<
     rss_mdm_http_contract::CollectionResponse<
@@ -130,7 +132,7 @@ async fn activity(
     State(service): State<Arc<Timeline>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, String)>,
+    Path((_tenant, device, id)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId, String)>,
 ) -> Result<Json<rss_mdm_agent_wire::activities::ManagementActivityDetail>, Error> {
     audit.set_action(
         "management_activity_read",

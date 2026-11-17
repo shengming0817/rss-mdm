@@ -36,7 +36,9 @@ pub async fn describe_in(
     let Some(basis) = access::select(config, proof)? else {
         return Ok(None);
     };
-    let Some(subject) = access::qualify_in(profile, service, tx, config, &basis).await? else {
+    let Some(subject) =
+        access::qualify_in(p.binding(), profile, service, tx, config, &basis).await?
+    else {
         return Ok(None);
     };
     if !matches!(

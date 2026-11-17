@@ -5,21 +5,16 @@ use super::{
     policy::{ExecutionInput, Frozen},
 };
 use rss_mdm_authorization_service::{Snapshot, context::AuthorizedPrincipal};
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use std::sync::Arc;
 pub struct Inputs {
     runtime: Arc<PgRuntime>,
-    tenant: TenantId,
+
     enabled: bool,
 }
 impl Inputs {
-    pub fn bind(runtime: Arc<PgRuntime>, tenant: TenantId, enabled: bool) -> Self {
-        Self {
-            runtime,
-            tenant,
-            enabled,
-        }
+    pub fn bind(runtime: Arc<PgRuntime>, enabled: bool) -> Self {
+        Self { runtime, enabled }
     }
     pub fn publish_in(
         &self,
@@ -29,9 +24,7 @@ impl Inputs {
         snapshot: &Snapshot,
     ) -> Result<Frozen> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::Forbidden.into());
-        }
+
         if !self.enabled {
             return Err(Error::Unsupported.into());
         }

@@ -9,7 +9,6 @@ use rss_mdm_query::{
     directory::{Query, Schema},
 };
 use rss_mdm_registration_service::DevicePrincipal;
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgError, PgRuntime, PgTransaction};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -34,7 +33,6 @@ pub(crate) struct Requests {
 impl Requests {
     pub(crate) fn new(
         runtime: Arc<PgRuntime>,
-        tenant: TenantId,
         audit: Arc<AuditStore>,
         instance: String,
         key: &[u8],
@@ -43,7 +41,6 @@ impl Requests {
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 runtime.clone(),
-                tenant,
             ),
             runtime,
             audit,
@@ -56,6 +53,7 @@ impl Requests {
     }
     async fn transaction<C: Send, R: Send, F>(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         audit: Option<&RequestAudit>,
         context: C,
         operation: F,
@@ -71,7 +69,7 @@ impl Requests {
         let attempt = self
             .runtime
             .local_tx_with_context(
-                self.audit.binding(),
+                execution,
                 rss_mdm_script_service::transaction::deadline(),
                 (context, Some(operation), &failure, audit, &self.audit),
                 |(context, operation, failure, audit, store), tx| {
@@ -122,7 +120,12 @@ impl Requests {
             |_| Err(Error::Unavailable(Failure::Database)),
         )
     }
-    async fn inspect<C: Send, R: Send, F>(&self, context: C, operation: F) -> Result<R>
+    async fn inspect<C: Send, R: Send, F>(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+        context: C,
+        operation: F,
+    ) -> Result<R>
     where
         F: for<'a> FnOnce(
                 &'a mut C,
@@ -130,7 +133,7 @@ impl Requests {
             ) -> rss_mdm_agent_channel::delivery::Pending<'a, R>
             + Send,
     {
-        self.transaction(None, context, operation).await
+        self.transaction(execution, None, context, operation).await
     }
 }
 fn reject(e: Error, failure: &Mutex<Option<Error>>) -> PgError {
@@ -292,7 +295,7 @@ impl AgentTasks {
             _ => return Err(Error::Malformed),
         };
         let query = Query::new(&SCHEMA, parameters).map_err(|_| Error::Malformed)?;
-        self.requests.inspect( (self, p, proof, &query, audit), |ctx, tx| Box::pin(async move {
+        self.requests.inspect(p.binding(), (self, p, proof, &query, audit), |ctx, tx| Box::pin(async move {
             let (service, p, proof, query, _audit) = *ctx;
             super::agent_tasks::prepare(tx,p).await?;
             let subject = if let Some(proof) = proof {
@@ -331,7 +334,7 @@ impl AgentTasks {
     ) -> std::result::Result<wire::SelfServiceDirectoryItem, Error> {
         bind(p, proof, audit)?;
         self.requests
-            .inspect((self, p, proof, input, audit), |ctx, tx| {
+            .inspect(p.binding(), (self, p, proof, input, audit), |ctx, tx| {
                 Box::pin(async move {
                     let (service, p, proof, input, _audit) = *ctx;
                     super::agent_tasks::prepare(tx, p).await?;
@@ -390,85 +393,90 @@ impl AgentTasks {
         );
         let response = self
             .requests
-            .transaction(Some(audit), (self, p, proof, input, audit), |ctx, tx| {
-                Box::pin(async move {
-                    let (service, p, proof, input, audit) = *ctx;
-                    super::agent_tasks::prepare(tx, p).await?;
-                    let actors = actors(p, proof)?;
-                    for actor in &actors {
-                        rss_mdm_script_service::storage::lock_request(
-                            tx,
-                            actor,
-                            input.operation_id,
-                        )
-                        .await
-                        .map_err(script_fault)?;
-                    }
-                    for actor in &actors {
-                        let script = service
-                            .scripts
-                            .replay_self_service_in(tx, p, actor, input)
+            .transaction(
+                p.binding(),
+                Some(audit),
+                (self, p, proof, input, audit),
+                |ctx, tx| {
+                    Box::pin(async move {
+                        let (service, p, proof, input, audit) = *ctx;
+                        super::agent_tasks::prepare(tx, p).await?;
+                        let actors = actors(p, proof)?;
+                        for actor in &actors {
+                            rss_mdm_script_service::storage::lock_request(
+                                tx,
+                                actor,
+                                input.operation_id,
+                            )
                             .await
                             .map_err(script_fault)?;
-                        let software = service
-                            .software
-                            .replay_self_service_in(tx, p, actor, input)
-                            .await
-                            .map_err(software_fault)?;
-                        let enrollment = service
-                            .registration
-                            .replay_self_service_in(tx, p, actor, input)
-                            .await
-                            .map_err(registration_fault)?;
-                        use rss_mdm_audit_integration::operation::OperationOwner as O;
-                        let mut receipts = [
-                            (O::ScriptInvocation, script),
-                            (O::SoftwareInvocation, software),
-                            (O::EnrollmentInvocation, enrollment),
-                        ]
-                        .into_iter()
-                        .filter_map(|(owner, value)| value.map(|value| (owner, value)));
-                        if let Some((owner, receipt)) = receipts.next() {
-                            if receipts.next().is_some() {
-                                return Err(Error::Unavailable(Failure::Business));
-                            }
-                            if let Some(proof) = proof {
-                                proof.check_live()?;
-                            }
-                            audit.owned_operation(
-                                owner,
-                                input.operation_id,
-                                "self_service_invoke",
-                                rss_mdm_audit_integration::AuditIntent::Management,
-                            );
-                            audit.receipt_actor(actor);
-                            audit.target_device(p.device());
-                            audit.management_result(
-                                rss_mdm_audit_integration::ManagementResult::Replayed,
-                            );
-                            return Ok(receipt);
                         }
-                    }
-                    match policy_owner(service, tx, input.policy_id).await? {
-                        rss_mdm_policy::ActionKind::Execution => service
-                            .scripts
-                            .invoke_self_service_in(tx, p, proof, input, audit)
-                            .await
-                            .map_err(script_fault),
-                        rss_mdm_policy::ActionKind::Software => service
-                            .software
-                            .invoke_self_service_in(tx, p, proof, input, audit)
-                            .await
-                            .map_err(software_fault),
-                        rss_mdm_policy::ActionKind::RequestMdmEnrollment => service
-                            .registration
-                            .invoke_self_service_in(tx, p, proof, input, audit)
-                            .await
-                            .map_err(registration_fault),
-                        _ => Err(Error::Forbidden),
-                    }
-                })
-            })
+                        for actor in &actors {
+                            let script = service
+                                .scripts
+                                .replay_self_service_in(tx, p, actor, input)
+                                .await
+                                .map_err(script_fault)?;
+                            let software = service
+                                .software
+                                .replay_self_service_in(tx, p, actor, input)
+                                .await
+                                .map_err(software_fault)?;
+                            let enrollment = service
+                                .registration
+                                .replay_self_service_in(tx, p, actor, input)
+                                .await
+                                .map_err(registration_fault)?;
+                            use rss_mdm_audit_integration::operation::OperationOwner as O;
+                            let mut receipts = [
+                                (O::ScriptInvocation, script),
+                                (O::SoftwareInvocation, software),
+                                (O::EnrollmentInvocation, enrollment),
+                            ]
+                            .into_iter()
+                            .filter_map(|(owner, value)| value.map(|value| (owner, value)));
+                            if let Some((owner, receipt)) = receipts.next() {
+                                if receipts.next().is_some() {
+                                    return Err(Error::Unavailable(Failure::Business));
+                                }
+                                if let Some(proof) = proof {
+                                    proof.check_live()?;
+                                }
+                                audit.owned_operation(
+                                    owner,
+                                    input.operation_id,
+                                    "self_service_invoke",
+                                    rss_mdm_audit_integration::AuditIntent::Management,
+                                );
+                                audit.receipt_actor(actor);
+                                audit.target_device(p.device());
+                                audit.management_result(
+                                    rss_mdm_audit_integration::ManagementResult::Replayed,
+                                );
+                                return Ok(receipt);
+                            }
+                        }
+                        match policy_owner(service, tx, input.policy_id).await? {
+                            rss_mdm_policy::ActionKind::Execution => service
+                                .scripts
+                                .invoke_self_service_in(tx, p, proof, input, audit)
+                                .await
+                                .map_err(script_fault),
+                            rss_mdm_policy::ActionKind::Software => service
+                                .software
+                                .invoke_self_service_in(tx, p, proof, input, audit)
+                                .await
+                                .map_err(software_fault),
+                            rss_mdm_policy::ActionKind::RequestMdmEnrollment => service
+                                .registration
+                                .invoke_self_service_in(tx, p, proof, input, audit)
+                                .await
+                                .map_err(registration_fault),
+                            _ => Err(Error::Forbidden),
+                        }
+                    })
+                },
+            )
             .await?;
         stored(serde_json::from_value(response))
     }
@@ -484,7 +492,7 @@ impl AgentTasks {
             return Err(Error::Malformed);
         }
         self.requests
-            .inspect((self, p, proof, request, audit), |ctx, tx| {
+            .inspect(p.binding(), (self, p, proof, request, audit), |ctx, tx| {
                 Box::pin(async move {
                     let (service, p, proof, request, audit) = *ctx;
                     super::agent_tasks::prepare(tx, p).await?;

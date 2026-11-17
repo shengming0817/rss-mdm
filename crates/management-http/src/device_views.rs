@@ -142,6 +142,8 @@ fn reference(kind: String, id: String) -> Result<ObjectRef, Error> {
     ObjectRef::from_path(&kind, &id).map_err(|_| Error::Malformed)
 }
 async fn list(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<Associations>>,
     Extension(identity): Extension<rss_identity_postgres::Authority>,
     Extension(platform): Extension<
@@ -169,7 +171,7 @@ async fn list(
                 &query.parse().map_err(|_| Error::Malformed)?,
                 &rss_mdm_device_service::personnel::Reader::new(
                     &identity,
-                    a.sessions.binding(),
+                    a.proof.binding(),
                     a.deadline,
                     &rss_mdm_audit_integration::budget::RuntimeTimer,
                     platform.as_ref(),
@@ -182,6 +184,8 @@ async fn list(
     .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn statistics(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<Associations>>,
     Extension(identity): Extension<rss_identity_postgres::Authority>,
     Extension(platform): Extension<
@@ -204,7 +208,7 @@ async fn statistics(
             &query,
             &rss_mdm_device_service::personnel::Reader::new(
                 &identity,
-                a.sessions.binding(),
+                a.proof.binding(),
                 a.deadline,
                 &rss_mdm_audit_integration::budget::RuntimeTimer,
                 platform.as_ref(),
@@ -221,7 +225,7 @@ async fn detail(
     >,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((kind, id)): Path<(String, String)>,
+    Path((_tenant, kind, id)): Path<(uuid::Uuid, String, String)>,
 ) -> Result<Json<rss_mdm_device_service::view_response::Detail>, Error> {
     audit.set_action(
         "device_view_read",
@@ -238,7 +242,7 @@ async fn detail(
             &reference,
             &rss_mdm_device_service::personnel::Reader::new(
                 &identity,
-                a.sessions.binding(),
+                a.proof.binding(),
                 a.deadline,
                 &rss_mdm_audit_integration::budget::RuntimeTimer,
                 platform.as_ref(),
@@ -252,7 +256,7 @@ async fn items(
     Extension(identity): Extension<rss_identity_postgres::Authority>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((kind, id, field)): Path<(String, String, String)>,
+    Path((_tenant, kind, id, field)): Path<(uuid::Uuid, String, String, String)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<ItemsQuery>,
     >,
@@ -277,7 +281,7 @@ async fn items(
                 q.limit(),
                 &rss_mdm_device_service::personnel::Reader::new(
                     &identity,
-                    a.sessions.binding(),
+                    a.proof.binding(),
                     a.deadline,
                     &rss_mdm_audit_integration::budget::RuntimeTimer,
                     None,
@@ -293,7 +297,7 @@ async fn association(
     State(s): State<Arc<Associations>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<rss_mdm_device_service::Association>, Error> {
     audit.set_action(
         "device_association_read",
@@ -302,6 +306,8 @@ async fn association(
     Ok(Json(s.get(&a.proof, id).await?))
 }
 async fn confirm(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<Associations>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -320,7 +326,7 @@ async fn revoke(
     State(s): State<Arc<Associations>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     body: Result<Json<Revoke>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<rss_mdm_device_service::Association>, Error> {
     audit.set_action(
@@ -336,7 +342,7 @@ async fn candidates(
     State(s): State<Arc<Associations>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<CandidatesQuery>,
     >,
@@ -364,6 +370,8 @@ async fn candidates(
 }
 
 async fn changes(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<Associations>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -394,7 +402,7 @@ async fn retirement(
     State(s): State<Arc<Associations>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<rss_mdm_device_service::lifecycle::Retirement>, Error> {
     audit.set_action(
         "device_retirement_read",
@@ -406,7 +414,7 @@ async fn force_retirement(
     State(s): State<Arc<Associations>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     body: Result<
         Json<rss_mdm_device_service::lifecycle_management::ForceRevoke>,
         axum::extract::rejection::JsonRejection,
@@ -421,7 +429,7 @@ async fn asset_state(
     State(s): State<Arc<Associations>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((kind, id)): Path<(String, String)>,
+    Path((_tenant, kind, id)): Path<(uuid::Uuid, String, String)>,
     body: Result<
         Json<rss_mdm_device_service::lifecycle_management::AssetChange>,
         axum::extract::rejection::JsonRejection,
@@ -439,6 +447,8 @@ async fn asset_state(
 }
 
 async fn association_list(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<Associations>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,

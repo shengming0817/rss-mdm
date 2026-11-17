@@ -111,6 +111,7 @@ ALTER TABLE mdm_apple.channels FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_apple.channels USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 
 CREATE TABLE mdm_apple.scep_attempts (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     access_rights integer NOT NULL CHECK (access_rights BETWEEN 1 AND 8191
                                       AND (access_rights & 2 = 0
                                         OR access_rights & 1 = 1)
@@ -237,3 +238,27 @@ CREATE POLICY tenant ON mdm_apple.devices USING ((tenant_id = (NULLIF(current_se
 
 CREATE POLICY tenant ON mdm_apple.scep_attempts USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 COMMIT;
+
+-- Only a candidate tenant is exposed; SCEP, TLS and registration checks remain authoritative.
+CREATE INDEX ON mdm_apple.scep_attempts(id,enrollment);
+CREATE INDEX ON mdm_apple.scep_attempts(fingerprint);
+CREATE POLICY material_locator ON mdm_apple.scep_attempts FOR SELECT TO mdm_owner USING(true);
+CREATE FUNCTION mdm_apple.scep_attempt_tenants(attempt uuid,request uuid) RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$ SELECT DISTINCT tenant_id,expected_epoch FROM mdm_apple.scep_attempts WHERE id=attempt AND enrollment=request ORDER BY tenant_id LIMIT 2 $$;
+CREATE FUNCTION mdm_apple.scep_certificate_tenants(p_fingerprint bytea) RETURNS TABLE(tenant_id uuid)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$ SELECT DISTINCT tenant_id FROM mdm_apple.scep_attempts WHERE fingerprint=p_fingerprint ORDER BY tenant_id LIMIT 2 $$;
+ALTER FUNCTION mdm_apple.scep_attempt_tenants(uuid,uuid) OWNER TO mdm_owner;
+ALTER FUNCTION mdm_apple.scep_certificate_tenants(bytea) OWNER TO mdm_owner;
+REVOKE ALL ON FUNCTION mdm_apple.scep_attempt_tenants(uuid,uuid),mdm_apple.scep_certificate_tenants(bytea) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_apple.scep_attempt_tenants(uuid,uuid),mdm_apple.scep_certificate_tenants(bytea) TO mdm_access;
+
+CREATE POLICY push_work_discovery ON mdm_apple.channels FOR SELECT TO mdm_owner USING(true);
+CREATE FUNCTION mdm_apple.push_work_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT tenant_id FROM (
+ (SELECT DISTINCT tenant_id FROM mdm_apple.channels WHERE state='active' AND (after_tenant IS NULL OR tenant_id>after_tenant) ORDER BY tenant_id LIMIT 32)
+ UNION
+ (SELECT DISTINCT tenant_id FROM mdm_apple.scep_attempts WHERE state='bound' AND (after_tenant IS NULL OR tenant_id>after_tenant) ORDER BY tenant_id LIMIT 32)
+ ) work ORDER BY tenant_id LIMIT 32
+$$;
+REVOKE ALL ON FUNCTION mdm_apple.push_work_scopes(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_apple.push_work_scopes(uuid) TO mdm_access;

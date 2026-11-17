@@ -92,8 +92,60 @@ fn bearer(headers: &axum::http::HeaderMap) -> Result<Zeroizing<String>, Error> {
     }
     Ok(Zeroizing::new(value.into()))
 }
-fn owner(app: &HttpState) -> Result<&Arc<Entra>, Error> {
-    app.windows()?.entra.as_ref().ok_or(Error::Unsupported)
+async fn owner(
+    app: &HttpState,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+) -> Result<Arc<Entra>, Error> {
+    app.windows(execution)
+        .await?
+        .entra
+        .clone()
+        .ok_or(Error::Unsupported)
+}
+/// Claims only locate an installed verifier; signature, issuer, audience and policy are checked by Identity.
+async fn locate(
+    app: &HttpState,
+    token: &str,
+) -> Result<rss_transactional_messaging::fence::ExecutionBinding, Error> {
+    use base64::Engine;
+    if token.len() > 32768 {
+        return Err(Error::Unauthorized);
+    }
+    let parts = token.split('.').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        return Err(Error::Unauthorized);
+    }
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(parts[1])
+        .map_err(|_| Error::Unauthorized)?;
+    let claims: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|_| Error::Unauthorized)?;
+    let tenant = claims
+        .get("tid")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|v| uuid::Uuid::parse_str(v).ok())
+        .ok_or(Error::Unauthorized)?;
+    let audience = claims
+        .get("aud")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(Error::Unauthorized)?;
+    let tenant = app
+        .access
+        .locate_entra_profile(tenant, audience)
+        .await?
+        .ok_or(Error::Unauthorized)?;
+    Ok(app.execution(tenant))
+}
+async fn flow_scope(
+    app: &HttpState,
+    flow: Uuid,
+) -> Result<rss_transactional_messaging::fence::ExecutionBinding, Error> {
+    let (tenant, epoch) = app.access.locate_entra_flow(flow).await?;
+    Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+        app.storage,
+        tenant,
+        epoch,
+    ))
 }
 fn hash(value: &str) -> String {
     crate::enrollment::digest(&("windows.entra.consent/v1", value))

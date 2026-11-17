@@ -31,6 +31,10 @@ pub async fn der(kind: &str, path: &std::path::Path) -> Result<Vec<u8>> {
     );
     Ok(o.stdout)
 }
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one legal material fixture prepares the existing native protocol proof"
+)]
 pub async fn seed(c: &Context, purpose: &str) -> Result<Native> {
     let request = Uuid::new_v4();
     let attempt = Uuid::new_v4();
@@ -67,10 +71,26 @@ pub async fn seed(c: &Context, purpose: &str) -> Result<Native> {
     )
     .await?;
     let crl = der("crl", std::path::Path::new(paths["crl"].as_str().unwrap())).await?;
-    let trust = serde_json::from_value(
+    let trust: rss_mdm_agent_wire::pki::Trust = serde_json::from_value(
         json!({"version":1,"service_id":c.inputs.installation.instance_id,"origin":"https://localhost","tenant":c.tenant.to_string(),"purpose":purpose,"revision":1,"issuers":[{"digest":format!("{:x}",Sha256::digest(&root)),"mode":"active","certificate":STANDARD.encode(&root),"root":STANDARD.encode(&root),"crl":STANDARD.encode(&crl),"root_crl":STANDARD.encode(&crl),"provisioner":"rss-agent","kid":"task-trust"}]}),
     )?;
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
+    // Published fixture material is kept in its original owner; runtime readers verify it.
+    use x509_cert::der::Decode;
+    let root_certificate = x509_cert::Certificate::from_der(&root)?;
+    let expiry = i64::try_from(
+        root_certificate
+            .tbs_certificate
+            .validity
+            .not_after
+            .to_unix_duration()
+            .as_secs(),
+    )?;
+    sqlx::query("INSERT INTO mdm_pki.trust(tenant_id,purpose,revision,body) VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).bind(purpose).bind(trust.revision as i64).bind(serde_json::to_vec(&trust)?).execute(&mut *tx).await?;
+    for issuer in &trust.issuers {
+        sqlx::query("INSERT INTO mdm_pki.issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES($1::uuid,$2,$3,$4,$5,$6,'step_ca',$7) ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).bind(purpose).bind(&issuer.digest).bind(trust.revision as i64).bind(serde_json::to_value(issuer.mode)?.as_str().unwrap()).bind(serde_json::to_vec(issuer)?).bind(expiry).execute(&mut *tx).await?;
+    }
+
     sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES($1::uuid,$2,'native-fixture',$3,$4,'enrollment','consumed',clock_timestamp()+interval '4 minutes')").bind(c.tenant.to_string()).bind(grant).bind(&c.inputs.installation.instance_id).bind(device.into_uuid()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,source,state,grant_id,device,expires_at,issuance_operation,password_digest,password_version,credential_ref,windows_profile) VALUES($1::uuid,$2,$3,'bound',$4,$8,clock_timestamp()+interval '4 minutes',$5,repeat('a',64),1,$6,$7)").bind(c.tenant.to_string()).bind(request).bind(format!("mdm.{purpose}")).bind(grant).bind(attempt).bind(credential).bind(if purpose=="windows" {Some("Device")}else{None}).bind(device.into_uuid()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.devices (tenant_id, id, channel, request_id, state, purpose, epoch) VALUES (CAST($1 AS uuid), $2, 'mdm', $3, 'active', 'primary', $4)").bind(c.tenant.to_string()).bind(device.into_uuid()).bind(request).bind(epoch).execute(&mut *tx).await?;

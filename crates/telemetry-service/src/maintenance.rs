@@ -464,7 +464,7 @@ impl Service {
             std::time::Duration::from_secs(self.maintenance_policy.step_seconds),
         );
         operation(
-            self.tenant,
+            proof.binding().tenant(),
             input,
             self.maintenance_policy.rows,
             self.maintenance_policy.buckets,
@@ -496,9 +496,10 @@ impl Service {
         let settlement_audit = audit.clone();
         let rejection = Arc::new(Mutex::new(None));
         let rejected = rejection.clone();
-        self.runtime.local_tx(self.audit_store.binding(),rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff, &crate::backend::SystemClock),move|tx|Box::pin(async move {
+        let execution = proof.binding();
+        self.runtime.local_tx(execution,rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff, &crate::backend::SystemClock),move|tx|Box::pin(async move {
             service.audit_store.prepare_in(tx, &audit, &[]).await.map_err(crate::storage_error)?;
-            let tenant=service.tenant;
+            let tenant=execution.tenant();
             let replayed = tx.with_connection(move|c|Box::pin(async move {
                 let result=async {
                     authorize(c,tenant,&actor,&intent).await?;
@@ -522,7 +523,7 @@ impl Service {
         let rejected = rejection.clone();
         self.runtime
             .local_tx(
-                self.audit_store.binding(),
+                proof.binding(),
                 rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
                     cutoff,
                     &crate::backend::SystemClock,
@@ -566,14 +567,20 @@ async fn step_on(
     input: &Request,
     deadline: Deadline,
 ) -> Result<Progress, Error> {
-    authorize(c, service.tenant, proof, input).await?;
+    let backend = service.backend_on(c, proof.binding().tenant()).await?;
+    authorize(c, proof.binding().tenant(), proof, input).await?;
     let (stored, previous): (Json, Option<Json>) = sqlx::query_as("SELECT request,result FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
-        .bind(service.tenant.to_string()).bind(input.id).fetch_one(&mut *c).await?;
+        .bind(proof.binding().tenant().to_string()).bind(input.id).fetch_one(&mut *c).await?;
     let stored: Stored = serde_json::from_value(stored)?;
     if serde_json::to_value(&stored.input)? != serde_json::to_value(input)? {
         return Err(Error::Conflict);
     }
-    let request = operation(service.tenant, &stored.input, stored.rows, stored.buckets)?;
+    let request = operation(
+        proof.binding().tenant(),
+        &stored.input,
+        stored.rows,
+        stored.buckets,
+    )?;
     if previous.as_ref().is_some_and(|v| v["state"] == "complete") {
         return serde_json::from_value(previous.expect("confirmed result"))
             .map_err(|_| Error::Storage);
@@ -582,11 +589,7 @@ async fn step_on(
     // The backend resumes its durable current step by original identity, including after token expiry.
     let authorized =
         Authorized::<MaintenanceRequest>::verify(&MaintainAuthority(&request), request.clone())?;
-    let result = match service
-        .backend
-        .maintain(&authorized, None, deadline)
-        .await?
-    {
+    let result = match backend.maintain(&authorized, None, deadline).await? {
         Outcome::Unknown => return Err(Error::Unknown),
         Outcome::Accepted(progress) | Outcome::Replay(progress) => match progress {
             MaintenanceProgress::More { processed, next } => Progress::More {
@@ -604,12 +607,12 @@ async fn step_on(
         && let Action::Reclaim { target } = &input.action
     {
         sqlx::query("UPDATE mdm_telemetry.retention_targets SET phase=2,result=$3 WHERE tenant_id=$1::uuid AND stream=$2")
-                .bind(service.tenant.to_string()).bind(serde_json::to_value(target.stream(service.tenant, &input.device)?)?).bind(sqlx::types::Json(&result)).execute(&mut *c).await?;
+                .bind(proof.binding().tenant().to_string()).bind(serde_json::to_value(target.stream(proof.binding().tenant(), &input.device)?)?).bind(sqlx::types::Json(&result)).execute(&mut *c).await?;
     }
     sqlx::query(
         "UPDATE mdm_telemetry.maintenance SET result=$3 WHERE tenant_id=$1::uuid AND id=$2",
     )
-    .bind(service.tenant.to_string())
+    .bind(proof.binding().tenant().to_string())
     .bind(input.id)
     .bind(sqlx::types::Json(&result))
     .execute(c)

@@ -9,6 +9,7 @@ use rss_transactional_messaging_postgres::PgTransaction;
     reason = "native software receipt and effect transitions retain one original transaction"
 )]
 pub async fn advance_run(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &SoftwareService,
     tx: &mut PgTransaction<'_>,
     run: &mut db::Run,
@@ -107,40 +108,32 @@ pub async fn advance_run(
                         value("/Status") == Some("70")
                             && value("/Version") == Some(job.version.as_str())
                     }
-                    _ => {
-                        let actual =
-                            serde_json::to_value(&op.request.task).map_err(|_| Error::Malformed)?;
-                        policy
-                            .assignment
-                            .frozen
-                            .native_packages
-                            .values()
-                            .find(|p| {
-                                p.task(
-                                    run.id,
-                                    &service.transactions.protection,
-                                    service.transactions.tenant,
-                                )
-                                .ok()
-                                .and_then(|t| serde_json::to_value(t).ok())
-                                .as_ref()
-                                    == Some(&actual)
-                            })
-                            .is_some_and(|p| match &p.identity {
-                                crate::deployment::native::Identity::Msix { identity, .. } => {
-                                    matches!(value("/IsProvisioned"), Some("1" | "true"))
-                                        && value("/Version")
-                                            == Some(
-                                                identity
-                                                    .version
-                                                    .map(|v| v.to_string())
-                                                    .join(".")
-                                                    .as_str(),
-                                            )
-                                }
-                                _ => false,
-                            })
-                    }
+                    _ => policy
+                        .assignment
+                        .frozen
+                        .native
+                        .as_ref()
+                        .ok_or(Error::Unsupported)?
+                        .package_for_task(
+                            run.id,
+                            &service.transactions.protection,
+                            execution.tenant(),
+                            &op.request.task,
+                        )?
+                        .is_some_and(|p| match &p.identity {
+                            crate::deployment::native::Identity::Msix { identity, .. } => {
+                                matches!(value("/IsProvisioned"), Some("1" | "true"))
+                                    && value("/Version")
+                                        == Some(
+                                            identity
+                                                .version
+                                                .map(|v| v.to_string())
+                                                .join(".")
+                                                .as_str(),
+                                        )
+                            }
+                            _ => false,
+                        }),
                 };
                 if verified {
                     if !command.status().is_terminal() {
@@ -151,7 +144,7 @@ pub async fn advance_run(
                             event: crate::deployment::dc::DeviceEvent::Reported(
                                 op.request.digest(
                                     &service.transactions.protection,
-                                    service.transactions.tenant,
+                                    execution.tenant(),
                                     &op.device,
                                 )?,
                             ),
@@ -248,20 +241,25 @@ pub async fn advance_run(
     {
         return Ok(());
     }
-    let package = policy
+    let native = policy
         .assignment
         .frozen
-        .native_packages
+        .native
+        .as_ref()
+        .ok_or(Error::Unsupported)?;
+    let package = native
+        .packages
         .get(&rss_mdm_policy::SoftwareTarget::new(p, a))
         .ok_or(Error::Unsupported)?;
     let input = crate::deployment::Create {
         operation_id: run.id,
         input_version: policy.id.to_string(),
         target: crate::deployment::NativeTarget::Device,
-        task: package.task(
+        task: native.task(
+            package,
             run.id,
             &service.transactions.protection,
-            service.transactions.tenant,
+            execution.tenant(),
         )?,
         deadline: run.deadline,
     };
@@ -278,7 +276,7 @@ pub async fn advance_run(
     let audit = rss_mdm_audit_integration::RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        tx.tenant_id().to_string(),
+        execution,
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -292,7 +290,7 @@ pub async fn advance_run(
     audit.target_device(&run.target.device);
     let fingerprint = crate::deployment::protection::fingerprint(
         &service.transactions.protection,
-        service.transactions.tenant,
+        execution.tenant(),
         &run.target.device,
         "software-install-command/v1",
         &(&input, policy.id),

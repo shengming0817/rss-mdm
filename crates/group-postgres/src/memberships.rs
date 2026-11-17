@@ -7,6 +7,7 @@ impl GroupStore {
     /// Objects in the associated universe use their existing typed-key encoding.
     pub async fn memberships_on(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut PgConnection,
         endpoint: &rss_mdm_agent_wire::DeviceId,
         objects: &[rss_mdm_agent_wire::ObjectRef],
@@ -17,7 +18,7 @@ impl GroupStore {
             sqlx::query_scalar("SELECT current_setting('rss.tenant_id',true)")
                 .fetch_one(&mut *c)
                 .await?;
-        if bound.as_deref() != Some(self.tenant.to_string().as_str()) {
+        if bound.as_deref() != Some(binding.tenant().to_string().as_str()) {
             return Ok(Err(Rejection::TenantMismatch));
         }
         if !(1..=1024).contains(&limit)
@@ -26,7 +27,7 @@ impl GroupStore {
         {
             return Ok(Err(Rejection::InvalidInput));
         }
-        let tenant = self.tenant.to_string();
+        let tenant = binding.tenant().to_string();
         let endpoint = endpoint.to_owned();
         let kinds = objects.iter().map(|o| o.kind()).collect::<Vec<_>>();
         let ids = objects.iter().map(|o| o.uuid()).collect::<Vec<_>>();

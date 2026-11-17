@@ -17,9 +17,7 @@ impl Scopes {
             .page
             .require_schema(&SCHEMA)
             .map_err(|_| Error::Malformed)?;
-        if proof.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
+
         proof.manage(Permission::PolicyRead)?;
         proof.require_all_devices(Permission::InventoryRead)?;
         let authority = proof.authorization()?.query_binding(proof)?;
@@ -43,12 +41,12 @@ impl Scopes {
             let mut tx=connection.begin().await?;
             sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY").execute(&mut *tx).await?;
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true)")
-                .bind(self.tenant.to_string()).bind(budget.control().total_remaining().as_millis().max(1).to_string()).execute(&mut *tx).await?;
+                .bind(proof.binding().tenant().to_string()).bind(budget.control().total_remaining().as_millis().max(1).to_string()).execute(&mut *tx).await?;
             let current=rss_mdm_authorization_service::snapshot_on(profile, &mut tx,proof.tenant_id(),proof.instance_id()).await?;
             current.require(proof,Permission::PolicyRead,None)?;
             current.require_all_devices(proof,Permission::InventoryRead)?;
             if current.query_binding(proof)?!=authority {return Err(Error::Conflict.into());}
-            let result=self.page_on(&mut tx,request,&authority).await?;
+            let result=self.page_on(proof.binding(), &mut tx,request,&authority).await?;
             tx.rollback().await?;
             Ok::<_,crate::transaction::Fault>(result)
         }).await;
@@ -66,7 +64,7 @@ impl Scopes {
         // Release the page connection before revalidating current authority.
         self.audit_store
             .read(
-                self.tenant,
+                proof.binding().tenant(),
                 &budget.control(),
                 (proof, &authority),
                 |ctx, tx| {

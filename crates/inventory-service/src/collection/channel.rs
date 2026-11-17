@@ -153,7 +153,7 @@ pub async fn finish_in(
     let audit = rss_mdm_audit_integration::RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         profile,
-        p.tenant().to_string(),
+        p.binding(),
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -180,6 +180,7 @@ pub async fn finish_in(
 }
 /// End incomplete collection without turning a timeout into an absence observation.
 pub async fn abandon_in(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
@@ -220,7 +221,7 @@ pub async fn abandon_in(
     let audit = rss_mdm_audit_integration::RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         profile,
-        tenant.into(),
+        execution,
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,
     );

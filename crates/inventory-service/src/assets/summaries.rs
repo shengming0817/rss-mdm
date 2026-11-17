@@ -10,6 +10,7 @@ pub struct DeviceSummary {
 impl planning::SnapshotReader {
     pub(super) async fn scoped_summary_devices_on(
         &self,
+        tenant: rss_request_context::TenantId,
         c: &mut sqlx::PgConnection,
         cut: &AssetCut,
         ids: &[rss_mdm_agent_wire::DeviceId],
@@ -17,6 +18,6 @@ impl planning::SnapshotReader {
 
         scope: &CollectionScope,
     ) -> Result<Vec<DeviceSummary>> {
-        super::raw_snapshot::read_on(self.profile, c, self.tenant, cut, ids, catalog, scope).await
+        super::raw_snapshot::read_on(self.profile, c, tenant, cut, ids, catalog, scope).await
     }
 }

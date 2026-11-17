@@ -56,72 +56,83 @@ impl Initialize {
 
 /// Explicit operator command. The target must authenticate against this installed Identity.
 /// No caller-selected UUID can permanently seed a rule for an absent or foreign account.
-pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
-    let compiled = config.runtime.compile(
-        InstanceId::parse(&config.user.instance_id).map_err(|_| Error::Malformed)?,
-        config.audit.integrity()?,
-    )?;
-    let clock = crate::lifecycle::RuntimeTimer;
-    let deadline =
-        Deadline::from_timeout(&clock, compiled.maintenance).map_err(|_| Error::Malformed)?;
-    let audit = RequestAudit::new(
-        rss_mdm_audit_integration::Origin::Background,
-        config.profile,
-        config.user.tenant_id.clone(),
-        "authorization_initialize",
-        rss_mdm_audit_integration::AuditIntent::Management,
-    );
-    audit.operation(
-        config.operation_id,
-        "authorization_initialize",
-        rss_mdm_audit_integration::AuditIntent::Management,
-    );
-    let mut owned = Resources {
-        runtime: None,
-        source_runtime: None,
-        access: None,
-        kdf: compiled.kdf.clone(),
-    };
-    let drain = compiled.drain;
-    // The command and its cleanup each have an explicit, separate total budget.
-    let mut result = bounded(
-        &audit,
-        deadline,
-        initialize_owned(config, compiled.authority, &mut owned, &audit, deadline),
-    )
-    .await;
-    owned.kdf.close();
-    let cleanup = async {
-        tokio::join!(
-            owned.kdf.wait_closed(),
-            async {
-                if let Some(runtime) = &owned.runtime {
-                    runtime.close().await;
+pub fn initialize(
+    config: Initialize,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Receipt, Error>> + Send>> {
+    // The full Identity verification transaction stays heap-owned at this composition boundary.
+    Box::pin(async move {
+        let compiled = config.runtime.compile(
+            InstanceId::parse(&config.user.instance_id).map_err(|_| Error::Malformed)?,
+            config.audit.integrity()?,
+        )?;
+        let clock = crate::lifecycle::RuntimeTimer;
+        let deadline =
+            Deadline::from_timeout(&clock, compiled.maintenance).map_err(|_| Error::Malformed)?;
+        let audit = RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
+            config.profile,
+            config
+                .installation
+                .execution(
+                    TenantId::parse(&config.user.tenant_id).map_err(|_| Error::Malformed)?,
+                    config.expected_epoch,
+                )
+                .map_err(|_| Error::Malformed)?,
+            "authorization_initialize",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        audit.operation(
+            config.operation_id,
+            "authorization_initialize",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        let mut owned = Resources {
+            runtime: None,
+            source_runtime: None,
+            access: None,
+            kdf: compiled.kdf.clone(),
+        };
+        let drain = compiled.drain;
+        // The command and its cleanup each have an explicit, separate total budget.
+        let mut result = bounded(
+            &audit,
+            deadline,
+            initialize_owned(config, compiled.authority, &mut owned, &audit, deadline),
+        )
+        .await;
+        owned.kdf.close();
+        let cleanup = async {
+            tokio::join!(
+                owned.kdf.wait_closed(),
+                async {
+                    if let Some(runtime) = &owned.runtime {
+                        runtime.close().await;
+                    }
+                },
+                async {
+                    if let Some(runtime) = &owned.source_runtime {
+                        runtime.close().await;
+                    }
+                    if let Some(access) = &owned.access {
+                        access.close().await;
+                    }
                 }
-            },
-            async {
-                if let Some(runtime) = &owned.source_runtime {
-                    runtime.close().await;
-                }
-                if let Some(access) = &owned.access {
-                    access.close().await;
-                }
+            );
+        };
+        if tokio::time::timeout(drain, cleanup).await.is_err() {
+            eprintln!(
+                "{}",
+                serde_json::json!({"event":"mdm_authorization_shutdown_failure","operation_id":audit.snapshot().operation_id,"write_outcome":audit.snapshot().write_outcome})
+            );
+            if result.is_ok() {
+                result = Err(crate::error_projection::audit_deadline(
+                    audit.snapshot().write_outcome,
+                ));
             }
-        );
-    };
-    if tokio::time::timeout(drain, cleanup).await.is_err() {
-        eprintln!(
-            "{}",
-            serde_json::json!({"event":"mdm_authorization_shutdown_failure","operation_id":audit.snapshot().operation_id,"write_outcome":audit.snapshot().write_outcome})
-        );
-        if result.is_ok() {
-            result = Err(crate::error_projection::audit_deadline(
-                audit.snapshot().write_outcome,
-            ));
         }
-    }
-    audit.finalize(result.as_ref().err().map(|_| FailureReason::Transaction));
-    result
+        audit.finalize(result.as_ref().err().map(|_| FailureReason::Transaction));
+        result
+    })
 }
 struct Resources {
     source_runtime: Option<Arc<rss_transactional_messaging_postgres::PgRuntime>>,
@@ -152,13 +163,6 @@ async fn initialize_owned(
     let login = LoginKey::parse(&config.login).map_err(|_| invalid())?;
     let password =
         Password::new(config::secret(&config.password_file)?.to_string()).map_err(|_| invalid())?;
-    crate::administration::tenants::claim_database_use(
-        &config.identity_database,
-        &config.installation,
-        &config.user.tenant_id,
-        config.expected_epoch,
-    )
-    .await?;
     owned.runtime = Some(
         identity::open_runtime(
             &config.identity_database,
@@ -211,6 +215,16 @@ async fn initialize_owned(
         .as_ref()
         .ok_or(Error::Unavailable(Failure::Database))?;
     admit(database, &config).await?;
+    {
+        let mut c = database.acquire().await.map_err(crate::database::db)?;
+        crate::administration::tenants::claim_use(
+            &mut c,
+            &config.installation,
+            &config.user.tenant_id,
+            config.expected_epoch,
+        )
+        .await?;
+    }
     let source_runtime = identity::open_runtime(
         &config.database,
         &config.installation.target,
@@ -300,7 +314,11 @@ mod tests {
         let audit = super::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            uuid::Uuid::new_v4().to_string(),
+            rss_transactional_messaging::fence::ExecutionBinding::new(
+                rss_transactional_messaging::fence::StorageIdentity::new([1; 16], [2; 16]).unwrap(),
+                rss_request_context::TenantId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
+                rss_transactional_messaging::fence::Epoch::new(1).unwrap(),
+            ),
             "authorization_initialize",
             rss_mdm_audit_integration::AuditIntent::Management,
         );

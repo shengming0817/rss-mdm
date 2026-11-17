@@ -2,38 +2,21 @@
 use crate::native::{ChannelRouter, PublicEndpoint, admission};
 use crate::{ConfigIssue, Error};
 use axum::middleware;
-use rss_mdm_certificate::windows as certificate;
 use rss_mdm_windows_channel::boundary::Envelope;
 use serde::Deserialize;
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 #[derive(serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WindowsConfig {
-    pub entra: Option<rss_mdm_windows_channel::entra::Config>,
     pub enrollment: PublicEndpoint,
     pub management: PublicEndpoint,
-    pub trust_file: PathBuf,
+
     pub protocol_protection: crate::config::NativeProtection,
-    #[serde(default)]
-    pub lifetime: certificate::Lifetime,
-    pub provider_id: String,
-    pub poll: rss_mdm_windows_mdm::provisioning::Poll,
-    pub push: Option<WindowsPushConfig>,
+
     pub additional_management: Vec<PublicEndpoint>,
-}
-#[derive(serde::Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WindowsPushConfig {
-    pub revision: i64,
 }
 impl WindowsConfig {
     pub(crate) fn validate(&self, browser: SocketAddr) -> Result<(), Error> {
-        if self.push.as_ref().is_some_and(|p| p.revision < 1) {
-            return Err(Error::Configuration(ConfigIssue::WindowsPush));
-        }
-        self.poll
-            .validate()
-            .map_err(|_| Error::Configuration(ConfigIssue::WindowsPoll))?;
         let _ = browser;
         if self.additional_management.len() > 16 {
             return Err(Error::Configuration(ConfigIssue::WindowsListeners));
@@ -64,61 +47,29 @@ impl WindowsConfig {
 
 pub(crate) struct Windows {
     pub(crate) config: WindowsConfig,
-    pub(crate) channel: Arc<rss_mdm_windows_channel::Windows>,
+    pub(crate) channel: Arc<rss_mdm_windows_channel::runtime_materials::Runtime>,
 }
 impl Windows {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "App composition root injects the system monotonic clock into the WNS transport"
-    )]
     pub(crate) fn load(
         config: WindowsConfig,
-        now: i64,
-        providers: Arc<rss_mdm_pki_service::providers::Providers>,
-        push: Option<rss_mdm_windows_channel::push::Push>,
+        authority: rss_identity_postgres::Authority,
+        verifier: Arc<dyn rss_identity_core::entra::EntraTokenVerifier>,
+        clock: Arc<dyn rss_observation::Clock>,
     ) -> Result<Self, Error> {
-        let trust = crate::device_pki::load(
-            &config.trust_file,
-            rss_mdm_agent_wire::pki::Purpose::Windows,
-            now,
-        )?;
-        if trust
-            .public()
-            .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?
-            .origin
-            != config.management.origin
-        {
-            return Err(Error::Configuration(ConfigIssue::EnrollmentCa));
-        }
-        if matches!(config.lifetime, certificate::Lifetime::Development { .. }) {
-            return Err(Error::Configuration(ConfigIssue::EnrollmentCa));
-        }
-        let ca = rss_mdm_device_trust::windows::WindowsDeviceTrust::from_trust(trust)
-            .and_then(|ca| ca.with_lifetime(config.lifetime))
-            .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?;
-        let mut channel = rss_mdm_windows_channel::Windows::new(
+        let channel = Arc::new(rss_mdm_windows_channel::runtime_materials::Runtime::new(
             config.enrollment.origin.clone(),
             config.management.origin.clone(),
-            config.provider_id.clone(),
-            ca,
-            providers,
             config
-                .protocol_protection
-                .load()
-                .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?,
-            config.poll.clone(),
-        )
-        .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?;
-        channel.additional_management_origins = config
-            .additional_management
-            .iter()
-            .map(|e| e.origin.clone())
-            .collect();
-        channel.push = push;
-        Ok(Self {
-            config,
-            channel: Arc::new(channel),
-        })
+                .additional_management
+                .iter()
+                .map(|e| e.origin.clone())
+                .collect(),
+            config.protocol_protection.load()?,
+            authority,
+            verifier,
+            clock,
+        ));
+        Ok(Self { config, channel })
     }
 }
 pub(crate) fn routers(
@@ -135,7 +86,6 @@ pub(crate) fn routers(
         clock: clock.clone(),
         audit_store: app.audit_store.clone(),
         requests: app.requests.clone(),
-        tenant: app.identity.tenant().to_string(),
     };
     let (enrollment, management) = rss_mdm_windows_channel::routers(
         app.clone(),

@@ -16,6 +16,7 @@ pub(crate) const RECOVERY: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy)]
 pub(crate) enum Work {
+    Baseline,
     Inventory,
     Devices,
     Policy,
@@ -41,7 +42,8 @@ pub(crate) enum Work {
     Compliance,
 }
 impl Work {
-    const ALL: [Self; 23] = [
+    const ALL: [Self; 24] = [
+        Self::Baseline,
         Self::Inventory,
         Self::Devices,
         Self::Policy,
@@ -68,6 +70,7 @@ impl Work {
     ];
     fn payload(self) -> &'static str {
         match self {
+            Self::Baseline => "baseline",
             Self::Inventory => "inventory",
             Self::Devices => "devices",
             Self::Policy => "policy",
@@ -144,22 +147,20 @@ pub(crate) async fn wait(notify: &Notify, stop: &CancellationToken, nearest: Opt
 #[derive(Clone)]
 pub(crate) struct Listener {
     pool: PgPool,
-    channel: String,
     pub(crate) signals: Arc<Signals>,
 }
 impl Listener {
-    pub(crate) fn new(options: PgConnectOptions, tenant: rss_request_context::TenantId) -> Self {
+    pub(crate) fn new(options: PgConnectOptions) -> Self {
         Self {
             pool: PgPoolOptions::new()
                 .max_connections(1)
                 .acquire_timeout(RECOVERY)
                 .connect_lazy_with(options),
-            channel: format!("mdm_work_{}", tenant.to_string().replace('-', "")),
             signals: Arc::default(),
         }
     }
     fn received(&self, channel: &str, payload: &str) {
-        if channel == self.channel {
+        if channel == "mdm_work" {
             self.signals.received(payload);
         }
     }
@@ -181,9 +182,7 @@ impl Listener {
             loop {
                 let connect = async {
                     let mut listener = PgListener::connect_with(&self.pool).await?;
-                    listener.listen_all(std::iter::once(self.channel.as_str())
-
-                        ).await?;
+                    listener.listen("mdm_work").await?;
                     Ok::<_, sqlx::Error>(listener)
                 };
                 let mut listener = tokio::select! { biased;

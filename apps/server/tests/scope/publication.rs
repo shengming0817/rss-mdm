@@ -5,11 +5,13 @@ use rss_mdm_scope_service::{Scopes, transaction};
 use std::sync::Arc;
 use uuid::Uuid;
 pub(crate) async fn open(c: &Context) -> Result<Arc<Scopes>> {
+    with_discovery(c, c.database.archive_pool()).await
+}
+pub(crate) async fn with_discovery(c: &Context, pool: sqlx::PgPool) -> Result<Arc<Scopes>> {
     let owner = fixture::owner(c, "mdm_scope_runtime").await?;
-    let pool = c.inputs.pool("shared", "mdm_scope_runtime").await?;
     Ok(crate::scopes::open(
         owner.runtime,
-        c.tenant,
+        c.execution(),
         Arc::new(crate::clock::SystemClock),
         owner.audit,
         vec![7; 32],
@@ -18,6 +20,7 @@ pub(crate) async fn open(c: &Context) -> Result<Arc<Scopes>> {
     .await?)
 }
 pub(crate) async fn advance(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     s: &Scopes,
     id: Uuid,
     cut: &rss_mdm_inventory::AssetCut,
@@ -26,7 +29,7 @@ pub(crate) async fn advance(
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        s.tenant.to_string(),
+        execution,
         "scope_reconcile",
         AuditIntent::Management,
     );
@@ -34,13 +37,13 @@ pub(crate) async fn advance(
     transaction::run(
         &s.audit_store,
         &s.runtime,
-        s.audit_store.binding(),
+        execution,
         &audit,
         (s, id, cut, rollback, &audit),
         |ctx, tx| {
             Box::pin(async move {
                 ctx.0.audit_store.prepare_in(tx, ctx.4, &[]).await?;
-                ctx.0.advance_in(tx, ctx.1, ctx.2).await?;
+                ctx.0.advance_in(ctx.4.binding()?, tx, ctx.1, ctx.2).await?;
                 if ctx.3 {
                     tx.with_connection(|c| {
                         Box::pin(async move {
@@ -64,11 +67,12 @@ async fn snapshot(
     Ok(sqlx::query_as("SELECT s.resolution,s.resolution_revision,s.calculation_revision,p.phase,r.phase,t.completed,(SELECT count(*) FROM mdm_policy.work w WHERE w.tenant_id=s.tenant_id AND w.id=$3) FROM mdm_scope.scopes s JOIN mdm_scope.scope_projection_runs p ON(p.tenant_id,p.id)=(s.tenant_id,$3) JOIN mdm_scope.scope_runs r ON(r.tenant_id,r.id)=(p.tenant_id,p.id) JOIN mdm_scope.tasks t ON(t.tenant_id,t.id)=(s.tenant_id,p.id) WHERE s.tenant_id=$1::uuid AND s.id=$2").bind(c.tenant.to_string()).bind(scope).bind(run).fetch_one(&c.operator).await?)
 }
 async fn admission(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     s: &Scopes,
     scope: Uuid,
     device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<(serde_json::Value, serde_json::Value)> {
-    Ok(transaction::inspect(&s.runtime, s.audit_store.binding(), (scope, device.to_owned()), |ctx, tx| Box::pin(async move {
+    Ok(transaction::inspect(&s.runtime, execution, (scope, device.to_owned()), |ctx, tx| Box::pin(async move {
         let (scope, device) = *ctx;
         Ok(tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_as("SELECT mdm_scope.scope_state($1,NULL),mdm_scope.channel_admission($1,'mdm',$2)")
@@ -89,11 +93,21 @@ async fn publication_is_atomic_replayable_and_rejects_stale_definition() -> Resu
         serde_json::json!({"state":"fresh"}),
         serde_json::json!({"state":"eligible","entry":1}),
     );
-    assert_eq!(admission(&s, old.scope, device).await?, eligible);
+    assert_eq!(
+        admission(c.execution(), &s, old.scope, device).await?,
+        eligible
+    );
     let before = snapshot(&c, old.scope, run).await?;
-    assert!(advance(&s, run, &old.cut, true).await.is_err());
+    assert!(
+        advance(c.execution(), &s, run, &old.cut, true)
+            .await
+            .is_err()
+    );
     assert_eq!(snapshot(&c, old.scope, run).await?, before);
-    assert_eq!(admission(&s, old.scope, device).await?, eligible);
+    assert_eq!(
+        admission(c.execution(), &s, old.scope, device).await?,
+        eligible
+    );
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     sqlx::query("INSERT INTO mdm_scope.scope_versions SELECT tenant_id,id,2,definition FROM mdm_scope.scope_versions WHERE tenant_id=$1::uuid AND id=$2 AND revision=1").bind(c.tenant.to_string()).bind(old.scope).execute(&mut *tx).await?;
     sqlx::query("UPDATE mdm_scope.scopes SET revision=2 WHERE tenant_id=$1::uuid AND id=$2")
@@ -103,12 +117,12 @@ async fn publication_is_atomic_replayable_and_rejects_stale_definition() -> Resu
         .await?;
     tx.commit().await?;
     assert!(matches!(
-        advance(&s, run, &old.cut, false).await,
+        advance(c.execution(), &s, run, &old.cut, false).await,
         Err(rss_mdm_scope_service::Error::Conflict)
     ));
     assert_eq!(snapshot(&c, old.scope, run).await?, before);
     assert_eq!(
-        admission(&s, old.scope, device).await?,
+        admission(c.execution(), &s, old.scope, device).await?,
         (
             serde_json::json!({"state":"pending"}),
             serde_json::json!({"state":"pending"})
@@ -119,8 +133,11 @@ async fn publication_is_atomic_replayable_and_rejects_stale_definition() -> Resu
         .bind(old.scope)
         .execute(&c.operator)
         .await?;
-    advance(&s, run, &old.cut, false).await?;
-    assert_eq!(admission(&s, old.scope, device).await?, eligible);
+    advance(c.execution(), &s, run, &old.cut, false).await?;
+    assert_eq!(
+        admission(c.execution(), &s, old.scope, device).await?,
+        eligible
+    );
     let committed = snapshot(&c, old.scope, run).await?;
     assert_eq!(
         committed,
@@ -130,9 +147,12 @@ async fn publication_is_atomic_replayable_and_rejects_stale_definition() -> Resu
     assert_eq!(rows, 1);
     drop(s);
     let restarted = open(&c).await?;
-    advance(&restarted, run, &old.cut, false).await?;
+    advance(c.execution(), &restarted, run, &old.cut, false).await?;
     assert_eq!(snapshot(&c, old.scope, run).await?, committed);
-    assert_eq!(admission(&restarted, old.scope, device).await?, eligible);
+    assert_eq!(
+        admission(c.execution(), &restarted, old.scope, device).await?,
+        eligible
+    );
     drop(restarted);
     c.close().await;
     Ok(())
@@ -157,7 +177,7 @@ async fn recompute_replaces_inflight_tasks_without_changing_definition() -> Resu
     let editor_owner = fixture::owner(&c, "mdm_policy_runtime").await?;
     let editor = crate::scopes::editor(
         editor_owner.runtime.clone(),
-        c.tenant,
+        c.execution(),
         Arc::new(crate::clock::SystemClock),
         editor_owner.audit.clone(),
         vec![7; 32],
@@ -186,7 +206,7 @@ async fn recompute_replaces_inflight_tasks_without_changing_definition() -> Resu
             receipt,
             "lost response recovery must not create another task"
         );
-        advance(&s, unfinished, &old.cut, false).await?;
+        advance(c.execution(), &s, unfinished, &old.cut, false).await?;
         let before:(i64,Uuid,i64)=sqlx::query_as("SELECT revision,resolution,calculation_revision FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2")
             .bind(c.tenant.to_string()).bind(old.scope).fetch_one(&c.operator).await?;
         assert_eq!(before, (1, old.run, 1));
@@ -195,7 +215,7 @@ async fn recompute_replaces_inflight_tasks_without_changing_definition() -> Resu
             Err(rss_mdm_scope_service::Error::Conflict)
         ));
         for _ in 0..20 {
-            advance(&s, task, &old.cut, false).await?;
+            advance(c.execution(), &s, task, &old.cut, false).await?;
         }
         let completed:(i64,Uuid,i64,i64,bool)=sqlx::query_as("SELECT s.revision,s.resolution,s.calculation_revision,s.resolution_revision,t.completed FROM mdm_scope.scopes s JOIN mdm_scope.tasks t ON(t.tenant_id,t.id)=(s.tenant_id,$3) WHERE s.tenant_id=$1::uuid AND s.id=$2")
             .bind(c.tenant.to_string()).bind(old.scope).bind(task).fetch_one(&c.operator).await?;
@@ -207,7 +227,7 @@ async fn recompute_replaces_inflight_tasks_without_changing_definition() -> Resu
         let next = recompute(&editor, &c, &p, &old, Uuid::new_v4(), 1).await?;
         let next = Uuid::parse_str(next["task"].as_str().unwrap())?;
         for _ in 0..20 {
-            advance(&s, next, &old.cut, false).await?;
+            advance(c.execution(), &s, next, &old.cut, false).await?;
         }
         let current:(i64,i64,i64)=sqlx::query_as("SELECT revision,calculation_revision,resolution_revision FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2")
             .bind(c.tenant.to_string()).bind(old.scope).fetch_one(&c.operator).await?;
@@ -240,7 +260,7 @@ async fn recompute(
     transaction::run(
         &s.audit_store,
         &s.runtime,
-        s.audit_store.binding(),
+        p.binding(),
         &audit,
         (s, p, &audit, old),
         |(s, p, a, old), tx| {

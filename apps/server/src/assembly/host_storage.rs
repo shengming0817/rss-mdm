@@ -89,7 +89,6 @@ pub(super) async fn admit(
 }
 
 use crate::Error;
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgError, PgOutboxStore, PgRuntime};
 use std::{sync::Arc, time::Duration};
 /// Shared physical command resources; no business service is retained here.
@@ -98,7 +97,8 @@ pub(crate) struct Storage {
     pub command_supersede_batch: rss_device_command::BatchLimit,
     pub runtime: Arc<PgRuntime>,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub tenant: TenantId,
+    pub storage: rss_transactional_messaging::fence::StorageIdentity,
+    pub discovery_pool: sqlx::PgPool,
     pub reconcile: rss_reconcile_postgres::PgStore,
     pub read_pool: sqlx::PgPool,
     pub worker_budget: Arc<tokio::sync::Semaphore>,
@@ -106,13 +106,14 @@ pub(crate) struct Storage {
 impl Storage {
     pub(crate) async fn open(
         config: &crate::config::Config,
+        discovery_pool: sqlx::PgPool,
         background: &crate::background::Compiled,
         audit: Arc<rss_mdm_audit_integration::AuditStore>,
         protection: &rss_mdm_native_protection::Protector,
         mut acquire: impl FnMut(Box<rss_runtime::DynManagedResource<'static>>),
     ) -> Result<Self, Error> {
         let bad = || Error::Configuration(crate::ConfigIssue::CommandStorage);
-        let tenant = TenantId::parse(&config.identity.tenant_id).map_err(|_| bad())?;
+        let probe = config.management_binding()?;
         let (pg, binding) = crate::identity::runtime_inputs(
             &config.command_database,
             &config.storage_binding.target,
@@ -133,16 +134,12 @@ impl Storage {
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let audit = Arc::new(
             audit
-                .on_runtime(
-                    runtime.clone(),
-                    config.storage_binding.execution(tenant)?,
-                    &budget.control(),
-                )
+                .on_runtime(runtime.clone(), probe, &budget.control())
                 .await?,
         );
-        bind_native_key(&runtime, audit.binding(), protection.fingerprint_id()).await?;
+        bind_native_key(&runtime, probe, protection.fingerprint_id()).await?;
         runtime
-            .local_tx(audit.binding(), deadline(), move |tx| {
+            .local_tx(probe, deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(|c| {
                         Box::pin(async move {
@@ -215,7 +212,8 @@ impl Storage {
             command_supersede_batch: background.command_supersede_batch,
             runtime,
             audit,
-            tenant,
+            storage: probe.storage(),
+            discovery_pool,
             reconcile,
             read_pool,
             worker_budget: Arc::new(tokio::sync::Semaphore::new(

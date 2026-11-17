@@ -1,7 +1,7 @@
 use crate::budget::SourceControl;
 use crate::{AuditReadStore, Fact, InvalidFact, RequestAudit, SourceTransaction, TransactionError};
 use rss_audit_postgres::{Control, Integrity};
-use rss_request_context::{ExecutionTimer, TenantId};
+use rss_request_context::ExecutionTimer;
 use rss_transactional_messaging::{
     fence::ExecutionBinding, message::PartitionIdentity, policy::OperationDeadline,
     transaction::LocalTxAttempt,
@@ -62,7 +62,6 @@ pub struct AuditStore {
     read: AuditReadStore,
     pub(crate) runtime: Arc<PgRuntime>,
     integrity: Integrity,
-    binding: ExecutionBinding,
 }
 impl std::ops::Deref for AuditStore {
     type Target = AuditReadStore;
@@ -71,11 +70,6 @@ impl std::ops::Deref for AuditStore {
     }
 }
 impl AuditStore {
-    /// Exact host-supplied execution scope; never derived from request data or restored rows.
-    pub const fn binding(&self) -> ExecutionBinding {
-        self.binding
-    }
-
     pub fn integrity(&self) -> &Integrity {
         &self.integrity
     }
@@ -85,7 +79,7 @@ impl AuditStore {
         pool: PgPool,
         integrity: Integrity,
         runtime: Arc<PgRuntime>,
-        binding: ExecutionBinding,
+        probe: ExecutionBinding,
         control: &Control<'_, T>,
     ) -> Result<Self, Error> {
         let read = AuditReadStore::new(pool, integrity.clone(), control).await?;
@@ -93,31 +87,33 @@ impl AuditStore {
             read,
             integrity,
             runtime,
-            binding,
         };
-        store.admit(control).await?;
+        store.admit(probe, control).await?;
         Ok(store)
     }
     /// Construct a separate immutable producer capability for another admitted same-database owner.
     pub async fn on_runtime<T: ExecutionTimer>(
         &self,
         runtime: Arc<PgRuntime>,
-        binding: ExecutionBinding,
+        probe: ExecutionBinding,
         control: &Control<'_, T>,
     ) -> Result<Self, Error> {
         let store = Self {
             read: self.read.clone(),
             integrity: self.integrity.clone(),
             runtime,
-            binding,
         };
-        store.admit(control).await?;
+        store.admit(probe, control).await?;
         Ok(store)
     }
-    async fn admit<T: ExecutionTimer>(&self, control: &Control<'_, T>) -> Result<(), Error> {
+    async fn admit<T: ExecutionTimer>(
+        &self,
+        probe: ExecutionBinding,
+        control: &Control<'_, T>,
+    ) -> Result<(), Error> {
         self.runtime
             .local_tx_with_context(
-                self.binding,
+                probe,
                 OperationDeadline::from_remaining(control.total_remaining()),
                 self,
                 |store, tx| {
@@ -137,9 +133,6 @@ impl AuditStore {
 
     /// Admit the actual writer connection once at startup.
     pub async fn validate_in(&self, tx: &mut PgTransaction<'_>) -> Result<(), Error> {
-        if tx.tenant_id() != self.binding.tenant() {
-            return Err(Error::Admission);
-        }
         self.runtime
             .validate_transaction(tx)
             .map_err(rss_audit_postgres::Error::from)?;
@@ -161,9 +154,6 @@ impl AuditStore {
     }
     /// Borrow the original owner; acquire an optional Ledger chain before business locks.
     pub async fn bind_in(&self, tx: &mut PgTransaction<'_>) -> Result<(), Error> {
-        if tx.tenant_id() != self.binding.tenant() {
-            return Err(Error::Admission);
-        }
         self.runtime
             .validate_transaction(tx)
             .map_err(rss_audit_postgres::Error::from)?;
@@ -194,7 +184,7 @@ impl AuditStore {
     /// Audit-owned reads remain a separate read-only capability.
     pub async fn write<T: ExecutionTimer, C: Send, R: Send, E: Send + From<Error>, F>(
         &self,
-        tenant: TenantId,
+        binding: ExecutionBinding,
         control: &SourceControl<'_, T>,
         context: C,
         operation: F,
@@ -206,12 +196,9 @@ impl AuditStore {
             ) -> futures::future::BoxFuture<'a, Result<R, E>>
             + Send,
     {
-        if tenant != self.binding.tenant() {
-            return LocalTxAttempt::not_started(TransactionError::Storage(Error::Admission));
-        }
         crate::source_transaction::write(
             &self.runtime,
-            self.binding,
+            binding,
             control,
             (self, context, Some(operation)),
             |(store, context, operation), tx| {
@@ -239,9 +226,6 @@ impl AuditStore {
         tx: &mut SourceTransaction<'_, '_>,
         fact: &Fact,
     ) -> Result<(), Error> {
-        if tx.inner.tenant_id() != self.binding.tenant() {
-            return Err(Error::Admission);
-        }
         self.runtime
             .validate_transaction(tx.inner)
             .map_err(rss_audit_postgres::Error::from)?;
@@ -265,9 +249,6 @@ impl AuditStore {
         tx: &mut PgTransaction<'_>,
         facts: &[Fact],
     ) -> Result<(), Error> {
-        if tx.tenant_id() != self.binding.tenant() {
-            return Err(Error::Admission);
-        }
         self.runtime
             .validate_transaction(tx)
             .map_err(rss_audit_postgres::Error::from)?;
@@ -300,7 +281,7 @@ impl AuditStore {
     ) -> Result<(), Error> {
         let fact = Fact::request(request, status, result)?;
         self.write(
-            fact.identity().tenant(),
+            request.binding()?,
             control,
             (self, fact),
             |(store, fact), tx| Box::pin(async move { store.append(tx, fact).await }),

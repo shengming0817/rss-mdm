@@ -1,12 +1,11 @@
 //! Explicit Policy transaction bindings and foreign-owner adapters.
 use rss_mdm_policy_service::{application::Application, events::Events};
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::PgTransaction;
 use std::sync::Arc;
 pub(crate) async fn application(
     background: &crate::background::Compiled,
     owner: &crate::owner_storage::OwnerRuntime,
-    tenant: TenantId,
+    probe: rss_transactional_messaging::fence::ExecutionBinding,
     key: &[u8],
     clock: Arc<dyn crate::clock::Clock>,
     protection: Arc<rss_mdm_native_protection::Protector>,
@@ -16,18 +15,18 @@ pub(crate) async fn application(
         background,
         owner.runtime.clone(),
         owner.audit.clone(),
-        tenant,
+        probe,
         protection,
         content,
     )
     .await?;
-    let changes = changes(owner.runtime.clone(), owner.audit.binding()).await?;
+    let changes = changes(owner.runtime.clone(), probe).await?;
     Ok(Arc::new(
         Application::new(rss_mdm_policy_service::application::Dependencies {
             profile: rss_mdm_install_support::StorageProfile::Mdm,
             audit_store: owner.audit.clone(),
             runtime: owner.runtime.clone(),
-            tenant,
+            probe,
             clock: Arc::new(crate::clock::PolicyClock(clock)),
             cursor_key: key,
             objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
@@ -38,6 +37,7 @@ pub(crate) async fn application(
     ))
 }
 pub(crate) async fn events(
+    probe: rss_transactional_messaging::fence::ExecutionBinding,
     application: Arc<Application>,
     materials: Arc<EventInputs>,
     software_materials: Arc<rss_mdm_software_service::deployment::Materials>,
@@ -47,7 +47,7 @@ pub(crate) async fn events(
     let scripts = Arc::new(
         rss_mdm_script_service::Transactions::bind(
             application.runtime.clone(),
-            application.tenant,
+            probe,
             application.audit_store.clone(),
             Arc::new(rss_mdm_script_service::Materials {
                 agent_store: Arc::new(super::agent_facts::AgentFacts),
@@ -62,7 +62,7 @@ pub(crate) async fn events(
     let collections = Arc::new(
         rss_mdm_inventory_service::collection::execution::Transactions::bind(
             application.runtime.clone(),
-            application.tenant,
+            probe,
             application.audit_store.clone(),
             Arc::new(
                 rss_mdm_inventory_service::collection::execution::Materials {
@@ -80,7 +80,7 @@ pub(crate) async fn events(
     let software = Arc::new(
         Box::pin(rss_mdm_software_service::deployment::Transactions::bind(
             application.runtime.clone(),
-            application.tenant,
+            probe,
             application.audit_store.clone(),
             software_materials,
         ))
@@ -91,7 +91,7 @@ pub(crate) async fn events(
         rss_mdm_registration_service::enrollment::tasks::Transactions::bind(
             rss_mdm_install_support::StorageProfile::Mdm,
             application.runtime.clone(),
-            application.tenant,
+            probe,
             application.audit_store.clone(),
             enrollment_materials,
         )
@@ -109,7 +109,7 @@ pub(crate) async fn events(
             rss_mdm_recovery_credentials::tasks::Transactions::bind(
                 profile,
                 application.runtime.clone(),
-                application.tenant,
+                probe,
                 application.audit_store.clone(),
                 materials,
             )
@@ -139,6 +139,7 @@ pub(crate) async fn events(
     reason = "explicit owner participants and caller authority retain the borrowed connection and exact operation identity"
 )]
 pub(crate) async fn management(
+    probe: rss_transactional_messaging::fence::ExecutionBinding,
     scopes: Arc<rss_mdm_scope_service::Scopes>,
     application: &Arc<Application>,
     software_inputs: Arc<rss_mdm_software_service::deployment::Inputs>,
@@ -147,14 +148,13 @@ pub(crate) async fn management(
     content: Option<Arc<rss_mdm_content_service::Store>>,
     protection: Arc<rss_mdm_native_protection::Protector>,
     mdm_software_enabled: bool,
-    signing_enabled: bool,
     recovery_enabled: bool,
 ) -> Result<Arc<rss_mdm_policy_service::management::Policies>, crate::Error> {
     let store = Arc::new(
         rss_mdm_policy_postgres::PolicyStore::new(
             rss_mdm_install_support::StorageProfile::Mdm,
             application.runtime.clone(),
-            application.audit_store.binding(),
+            probe,
             rss_mdm_policy_service::transaction::deadline(),
         )
         .await
@@ -174,25 +174,20 @@ pub(crate) async fn management(
             inputs: Arc::new(super::policy_ports::Publication {
                 software: software_inputs,
                 enrollment_entries,
-                signing_enabled,
             }),
             credentials: Some(Arc::new(
                 rss_mdm_recovery_credentials::tasks::publication::Inputs::bind(
                     application.runtime.clone(),
-                    application.tenant,
-                    signing_enabled && recovery_enabled,
+                    recovery_enabled,
                 ),
             )),
             script: Some(Arc::new(rss_mdm_script_service::inputs::Inputs::bind(
                 application.runtime.clone(),
-                application.audit_store.binding(),
                 content.clone(),
-                signing_enabled,
             ))),
             collections: Some(Arc::new(
                 rss_mdm_inventory_service::collection::execution::inputs::Inputs::bind(
                     application.runtime.clone(),
-                    application.audit_store.binding(),
                     content.clone(),
                     Arc::new(super::collection_ports::Delivery {
                         protection: protection.clone(),
@@ -202,7 +197,6 @@ pub(crate) async fn management(
             configuration: Some(Arc::new(
                 rss_mdm_policy_service::configuration::publication::Publications {
                     runtime: application.runtime.clone(),
-                    execution: application.audit_store.binding(),
                     content,
                     protection,
                 },
@@ -255,7 +249,6 @@ pub(crate) async fn changes(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     execution: rss_transactional_messaging::fence::ExecutionBinding,
 ) -> Result<Arc<dyn rss_mdm_policy_service::inputs::ExecutionChanges>, crate::Error> {
-    let tenant = execution.tenant();
     let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         runtime.clone(),
         execution,
@@ -267,7 +260,6 @@ pub(crate) async fn changes(
         reader: rss_mdm_policy_postgres::PolicyReader::bind(
             rss_mdm_install_support::StorageProfile::Mdm,
             runtime,
-            tenant,
         ),
         messaging,
         targets: Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
@@ -280,16 +272,16 @@ pub(crate) async fn configuration(
     background: &crate::background::Compiled,
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
-    tenant: TenantId,
+    probe: rss_transactional_messaging::fence::ExecutionBinding,
     protection: Arc<rss_mdm_native_protection::Protector>,
     content: Option<Arc<rss_mdm_content_service::Store>>,
 ) -> Result<Arc<rss_mdm_policy_service::configuration::Transactions>, crate::Error> {
-    let changes = changes(runtime.clone(), audit.binding()).await?;
+    let changes = changes(runtime.clone(), probe).await?;
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
     let audit = Arc::new(
         audit
-            .on_runtime(runtime.clone(), audit.binding(), &budget.control())
+            .on_runtime(runtime.clone(), probe, &budget.control())
             .await?,
     );
     Ok(Arc::new(
@@ -298,7 +290,7 @@ pub(crate) async fn configuration(
                 supersede_batch: background.command_supersede_batch,
                 recovery_batch: background.command_recovery_batch,
                 runtime,
-                tenant,
+                probe,
                 audit_store: audit,
                 source: Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
                     rss_mdm_install_support::StorageProfile::Mdm,

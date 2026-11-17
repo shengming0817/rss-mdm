@@ -4,14 +4,11 @@ pub type TaskState = pg::tasks::Task<Input>;
 impl Compliance {
     fn check_task_transaction(&self, tx: &PgTransaction<'_>) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant() {
-            return Err(Error::Forbidden.into());
-        }
         Ok(())
     }
     pub async fn read_task_in(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<TaskState> {
         self.check_task_transaction(tx)?;
-        let t = self.tenant();
+        let t = tx.tenant_id();
         let state = tx
             .with_connection(move |c| {
                 Box::pin(async move { pg::tasks::read::<Input>(c, t, id).await })
@@ -27,13 +24,15 @@ impl Compliance {
         id: Uuid,
         input: &Input,
     ) -> Result<()> {
+        let epoch = tx.expected_epoch().get();
+
         self.check_task_transaction(tx)?;
         checked_input(input.validate())?;
-        let t = self.tenant();
+        let t = tx.tenant_id();
         let input = input.clone();
         tx.with_connection(move |c| {
             Box::pin(async move {
-                pg::tasks::enqueue(c, t, id, input.rule, input.revision, &input).await
+                pg::tasks::enqueue(c, epoch, t, id, input.rule, input.revision, &input).await
             })
         })
         .await?;
@@ -56,7 +55,7 @@ impl Compliance {
         cursor: Option<rss_mdm_agent_wire::DeviceId>,
     ) -> Result<()> {
         self.check_task_transaction(tx)?;
-        let t = self.tenant();
+        let t = tx.tenant_id();
         tx.with_connection(move |c| {
             Box::pin(async move { pg::tasks::cursor(c, t, id, cursor).await })
         })
@@ -70,7 +69,7 @@ impl Compliance {
         detail: crate::TaskDiagnostic,
     ) -> Result<()> {
         self.check_task_transaction(tx)?;
-        let t = self.tenant();
+        let t = tx.tenant_id();
         let detail = json(&detail)?;
         tx.with_connection(move |c| {
             Box::pin(async move { pg::tasks::detail(c, t, id, detail).await })
@@ -80,13 +79,14 @@ impl Compliance {
     }
     pub(crate) async fn finish_task_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         failure: Option<&str>,
     ) -> Result<()> {
         self.check_task_transaction(tx)?;
         let state = self.read_task_in(tx, id).await?;
-        let t = self.tenant();
+        let t = tx.tenant_id();
         let reason = failure.map(str::to_owned);
         let changed = tx
             .with_connection(move |c| {
@@ -105,7 +105,7 @@ impl Compliance {
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            t.to_string(),
+            binding,
             action,
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -156,7 +156,7 @@ impl Compliance {
         if !(1..=usize::from(rss_mdm_query::MAX_PAGE_LIMIT)).contains(&limit) {
             return Err(Error::Malformed.into());
         }
-        let t = self.tenant();
+        let t = tx.tenant_id();
         let device = device.to_owned();
         let rows = tx
             .with_connection(move |c| {

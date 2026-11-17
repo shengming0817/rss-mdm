@@ -115,7 +115,8 @@ async fn delivery_lifecycle(
         .bind(tenant.to_string())
         .execute(&mut *tx)
         .await?;
-    let da = device::authenticate_endpoint_in(StorageProfile::Da, &mut tx, c.tenant, &peer).await?;
+    let da =
+        device::authenticate_endpoint_in(StorageProfile::Da, &mut tx, c.execution(), &peer).await?;
     assert_eq!(da.kind(), device::RegistrationKind::DaDevice);
     assert_eq!(agent.kind(), device::RegistrationKind::Agent);
     assert_ne!(da.device(), agent.device());

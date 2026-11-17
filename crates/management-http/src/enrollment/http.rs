@@ -8,6 +8,8 @@ use axum::{
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use std::sync::Arc;
 async fn create_enrollment(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<Arc<HttpState>>,
     headers: crate::api::WriteHeaders,
     Extension(auth): Extension<RequestAuth>,
@@ -36,8 +38,10 @@ async fn enrollment_status(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
+    path: Result<Path<(uuid::Uuid, uuid::Uuid)>, axum::extract::rejection::PathRejection>,
 ) -> Result<Json<crate::enrollment::read::Status>, Error> {
+    let path = path.map(|axum::extract::Path((_tenant, value))| axum::extract::Path(value));
+
     let Path(id) = path.map_err(|_| Error::Malformed)?;
     app.service
         .status(&auth.proof, id, &audit, app.native.as_ref())
@@ -49,8 +53,13 @@ async fn registration(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    path: Result<Path<rss_mdm_agent_wire::DeviceId>, axum::extract::rejection::PathRejection>,
+    path: Result<
+        Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
+        axum::extract::rejection::PathRejection,
+    >,
 ) -> Result<Json<rss_mdm_registration_service::enrollment::registration::Registration>, Error> {
+    let path = path.map(|axum::extract::Path((_tenant, value))| axum::extract::Path(value));
+
     let Path(device) = path.map_err(|_| Error::Malformed)?;
     audit.target_device(&device);
     app.service
@@ -65,9 +74,11 @@ async fn resume_enrollment(
     Extension(auth): Extension<RequestAuth>,
     Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
-    path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
+    path: Result<Path<(uuid::Uuid, uuid::Uuid)>, axum::extract::rejection::PathRejection>,
     input: Result<Json<Resume>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
+    let path = path.map(|axum::extract::Path((_tenant, value))| axum::extract::Path(value));
+
     let Path(id) = path.map_err(|_| Error::Malformed)?;
     let key = write_key(&headers, &audit, "enrollment_resume")?;
     let input = input.map_err(Error::from)?.0;
@@ -91,9 +102,11 @@ async fn cancel_enrollment(
     headers: crate::api::WriteHeaders,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
+    path: Result<Path<(uuid::Uuid, uuid::Uuid)>, axum::extract::rejection::PathRejection>,
     input: Result<Json<EmptyRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
+    let path = path.map(|axum::extract::Path((_tenant, value))| axum::extract::Path(value));
+
     let Path(id) = path.map_err(|_| Error::Malformed)?;
     let Json(EmptyRequest {}) = input.map_err(Error::from)?;
     let key = write_key(&headers, &audit, "enrollment_cancel")?;
@@ -108,9 +121,14 @@ async fn revoke_registration(
     headers: crate::api::WriteHeaders,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    path: Result<Path<rss_mdm_agent_wire::DeviceId>, axum::extract::rejection::PathRejection>,
+    path: Result<
+        Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
+        axum::extract::rejection::PathRejection,
+    >,
     input: Result<Json<EmptyRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::device::RevocationReceipt>, Error> {
+    let path = path.map(|axum::extract::Path((_tenant, value))| axum::extract::Path(value));
+
     let Path(device) = path.map_err(|_| Error::Malformed)?;
     let Json(EmptyRequest {}) = input.map_err(Error::from)?;
     let key = write_key(&headers, &audit, "credential_revoke")?;

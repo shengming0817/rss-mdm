@@ -39,7 +39,7 @@ pub async fn list(
         "management_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    transaction::inspect(&s.runtime,s.audit_store.binding(),(s,p,audit,q),|ctx,tx|Box::pin(async move{
+    transaction::inspect(&s.runtime,p.binding(),(s,p,audit,q),|ctx,tx|Box::pin(async move{
   let(s,p,_audit,q)=ctx;let current=transaction::current(tx,p).await?;current.require(p,Permission::ReleaseRead,None)?;
   let binding=q.binding(&(p.tenant_id(),p.instance_id(),current.query_binding(p)?)).map_err(query_error)?;let after=q.after(&s.cursor,&binding).map_err(query_error)?;
   s.audit_store.bind_in(tx).await.map_err(Error::from)?;crate::catalog::storage::lock(tx).await.map_err(|_|Error::Conflict)?;
@@ -47,8 +47,8 @@ pub async fn list(
   rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),&*PUBLICATION_BINDINGS).map_err(query_error)?;
   let rows:Vec<(String,String,String,String,Value)>=tx.with_connection(move|c|Box::pin(async move{sql.build_query_as().fetch_all(c).await})).await?;
   let mut items=Vec::new();for(id,target,resource,version,projection)in rows{
-   let service=s.services.get(&target).ok_or(Error::Publication(super::error::PublicationError::MissingSource))?;
-   let key=rss_mdm_software_release::PublicationKey::new(s.tenant,&id).map_err(|_|Error::Malformed)?;
+   let service=s.services.get(&target).ok_or(Error::Publication(super::error::PublicationError::MissingSource))?.operation(p.binding()).map_err(failure)?;
+   let key=rss_mdm_software_release::PublicationKey::new(p.binding().tenant(),&id).map_err(|_|Error::Malformed)?;
    let(record,withdrawal)=service.record_status_in(tx,&key).await?.map_err(failure)?;
    if !rss_mdm_software_release_postgres::directory_matches(&record,&projection) { return Err(Error::Unavailable(crate::management::Failure::SoftwareCatalogStorage).into()); }
    items.push(view(id,(target,resource,version),&record,withdrawal,None)?.summary);
@@ -69,14 +69,19 @@ pub async fn targets(
     p.manage(Permission::ReleaseRead)?;
     transaction::inspect(
         &s.runtime,
-        s.audit_store.binding(),
+        p.binding(),
         (s, p, q),
         |ctx, tx| {
             Box::pin(async move {
                 let (s, p, q) = ctx;
                 let current = transaction::current(tx, p).await?;
                 current.require(p, Permission::ReleaseRead, None)?;
-                let rows = s.services.values().map(|s| s.target()).collect::<Vec<_>>();
+                let rows = s
+                    .services
+                    .values()
+                    .map(|s| s.target(p.binding().tenant()))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(failure)?;
                 let binding = q
                     .binding(&(
                         p.tenant_id(),

@@ -8,9 +8,8 @@ impl Groups {
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<bool> {
         self.check_task_transaction(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let row = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_assets.group_dispatch(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING").bind(&tenant).execute(&mut *c).await?;
             sqlx::query("SELECT from_cut,to_cut,event_after,page_through,cursor FROM mdm_assets.group_dispatch WHERE tenant_id=$1::uuid FOR UPDATE").bind(tenant).fetch_one(c).await
         })).await?;
         let from: Option<Value> = row.try_get("from_cut")?;
@@ -35,13 +34,13 @@ impl Groups {
                 .map(|change| change.revision);
         }
         let Some(through) = through else {
-            let tenant = self.tenant.to_string();
+            let tenant = tx.tenant_id().to_string();
             tx.with_connection(move |c|Box::pin(async move {
                 sqlx::query("UPDATE mdm_assets.group_dispatch SET from_cut=$2,to_cut=NULL,event_after=0,page_through=NULL,cursor=NULL WHERE tenant_id=$1::uuid").bind(tenant).bind(to).execute(c).await?;Ok(())
             })).await?;
             return Ok(false);
         };
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let frozen = to.clone();
         tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("UPDATE mdm_assets.group_dispatch SET to_cut=$2,page_through=$3 WHERE tenant_id=$1::uuid").bind(tenant).bind(frozen).bind(through).execute(c).await?;Ok(())
@@ -50,6 +49,10 @@ impl Groups {
             .await?;
         Ok(true)
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     async fn dispatch_groups_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -96,7 +99,7 @@ impl Groups {
                 )
                 .await?,
         )?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let fields: Vec<_> = fields.into_iter().collect();
         let affected: Vec<Uuid> = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_scalar("SELECT DISTINCT hit.group_id FROM unnest($2::text[]) changed(field) CROSS JOIN LATERAL (SELECT f.group_id FROM mdm_assets.group_fields f WHERE f.tenant_id=$1::uuid AND f.field=changed.field AND ($3::uuid IS NULL OR f.group_id>$3::uuid) ORDER BY f.group_id LIMIT 33) hit ORDER BY hit.group_id LIMIT 33")
@@ -140,7 +143,7 @@ impl Groups {
             return Ok(());
         }
         let id = stored(Uuid::parse_str(&group.to_string()))?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let revision = current.revision.get();
         let calculation = current.calculation_revision;
         let rule = current.rule_version.clone();
@@ -183,7 +186,7 @@ impl Groups {
         page_through: Option<i64>,
         cursor: Option<Uuid>,
     ) -> Result<()> {
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| Box::pin(async move {
             sqlx::query("UPDATE mdm_assets.group_dispatch SET event_after=$2,page_through=$3,cursor=$4 WHERE tenant_id=$1::uuid")
                 .bind(tenant).bind(event_after).bind(page_through).bind(cursor).execute(c).await?;
@@ -197,7 +200,7 @@ impl Groups {
     pub(crate) async fn inputs_pending_in(&self, tx: &mut PgTransaction<'_>) -> Result<bool> {
         self.check_task_transaction(tx)?;
         let objects = self.objects.clone();
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         let relation = tx
             .with_connection(move |c| Box::pin(async move { objects.change_head(c, tenant).await }))
             .await?;

@@ -4,7 +4,7 @@ use rss_mdm_audit_integration::{Fact, activity::*};
 use rss_transactional_messaging::outbox::{OutboxRelayStore, OutboxSettlement};
 use rss_transactional_messaging_postgres::PgOutboxStore;
 pub(crate) fn owns_entity(entity: &str) -> bool {
-    matches!(entity, "configuration-inputs" | "configuration-relay")
+    entity == "configuration-inputs"
         || entity
             .strip_prefix("configuration:")
             .is_some_and(|v| v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -29,9 +29,6 @@ impl Transactions {
         tx: &mut PgTransaction<'_>,
         entity: &str,
     ) -> Result<bool> {
-        if entity == "configuration-relay" {
-            return Ok(true);
-        }
         if entity == "configuration-inputs" {
             return source_changes::pending_in(tx, self.source.clone()).await;
         }
@@ -231,12 +228,13 @@ impl Transactions {
     }
     pub async fn relay_once<T: rss_reconcile::Timer>(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<usize, Error> {
         let claims = self
             .outbox
             .claim_partition_heads(
-                self.audit_store.binding(),
+                binding,
                 std::num::NonZeroUsize::MIN,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
@@ -256,6 +254,7 @@ impl Transactions {
             let fingerprint = message.fingerprint().as_bytes().to_vec();
             let result = self
                 .accept_dispatch(
+                    binding,
                     id,
                     fingerprint,
                     rss_transactional_messaging::policy::OperationDeadline::from_remaining(
@@ -292,6 +291,7 @@ impl Transactions {
     }
     async fn accept_dispatch(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         id: Uuid,
         fingerprint: Vec<u8>,
         budget: rss_transactional_messaging::policy::OperationDeadline,
@@ -299,7 +299,7 @@ impl Transactions {
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            self.tenant.to_string(),
+            binding,
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -310,7 +310,7 @@ impl Transactions {
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        let result=run_budget(&self.audit_store,&self.runtime,self.audit_store.binding(),&audit,budget,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
+        let result=run_budget(&self.audit_store,&self.runtime,binding,&audit,budget,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
             let (service,id,fingerprint,audit)=ctx;service.audit_store.prepare_in(tx,audit,&[]).await?;
             let tenant=tx.tenant_id().to_string();let operation=*id;let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move{
@@ -325,7 +325,7 @@ impl Transactions {
                 let fact=Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::Configuration,&format!("command:{}:dispatch",op.id),200,"success",None)?.with_activity(&dispatched)?;
                 service.audit_store.append_in(tx,&fact).await?;
                 // Channel consumers retain their existing durable candidate scans.
-                tx.with_connection(|c|Box::pin(async move{sqlx::query("SELECT pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'apple'),pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'windows_push')").execute(c).await?;Ok(())})).await?;
+                tx.with_connection(|c|Box::pin(async move{sqlx::query("SELECT pg_notify('mdm_work','apple'),pg_notify('mdm_work','windows_push')").execute(c).await?;Ok(())})).await?;
             }else{audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
             Ok(())
         })).await;

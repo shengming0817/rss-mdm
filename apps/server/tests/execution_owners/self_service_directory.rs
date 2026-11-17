@@ -41,7 +41,6 @@ async fn authenticated_self_service_filters_typed_fields_and_business_search() -
     .await?;
     let native = Arc::new(
         rss_mdm_software_service::deployment::managed_registration::AuthorityReader {
-            tenant: h.c.tenant,
             instance: resources.config.identity.instance_id.clone(),
             source: Arc::new(crate::assembly::software_sources::Source(
                 resources.source.clone(),
@@ -59,7 +58,8 @@ async fn authenticated_self_service_filters_typed_fields_and_business_search() -
             native,
             resources.protection.clone(),
             &materials,
-        )?,
+        )
+        .await?,
     );
     let tasks = Arc::new(crate::assembly::agent_tasks::AgentTasks {
         access: h.a.access_execution.service.clone(),
@@ -74,7 +74,7 @@ async fn authenticated_self_service_filters_typed_fields_and_business_search() -
     });
     let delivery = Arc::new(agent::delivery::Delivery {
         runtime: resources.storage.runtime.clone(),
-        tenant: h.c.tenant,
+
         audit: h.audit.clone(),
         signing: resources.signing.clone(),
         tasks: tasks.clone(),
@@ -98,7 +98,6 @@ async fn authenticated_self_service_filters_typed_fields_and_business_search() -
         host: "mdm.example.test".into(),
         clock: Arc::new(crate::Monotonic(std::time::Instant::now)),
         audit_store: h.audit.clone(),
-        tenant: h.c.tenant.to_string(),
     };
     let mut lifecycle = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(std::time::Duration::from_secs(15))?,
@@ -118,6 +117,9 @@ async fn authenticated_self_service_filters_typed_fields_and_business_search() -
     let (stream, _) = socket.accept().await?;
     let gateway =
         rss_mdm_certificate::GatewayConnection::from_stream(&stream, "127.0.0.1".parse()?)?;
+    let router = router.layer(axum::Extension(
+        gateway.request_origin("https://mdm.example.test".into()),
+    ));
     let certificate: String = sqlx::query_scalar("SELECT certificate_chain->>0 FROM mdm_access.certificate_issuances WHERE tenant_id=$1::uuid AND credential=$2")
         .bind(h.c.tenant.to_string()).bind(h.p.credential()).fetch_one(&h.c.operator).await?;
     let pem = format!("-----BEGIN CERTIFICATE-----\n{certificate}\n-----END CERTIFICATE-----\n");

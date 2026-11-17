@@ -94,13 +94,13 @@ pub(crate) fn routes()
 -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
  rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_history, get_status, post_key, post_certificate, post_apply, post_revoke, get_operation } }
- RoutesModule1 { get_history: rss_mdm_http_contract::module::Route::new("/api/v1/apple/materials/{purpose}/versions", get(history, &contracts::APPLE_MATERIAL_VERSIONS, &[RouteOperation::List])),
-get_status: rss_mdm_http_contract::module::Route::new("/api/v1/apple/materials/{purpose}", get(status, &contracts::APPLE_MATERIALS, &[RouteOperation::Get])),
-post_key: rss_mdm_http_contract::module::Route::new("/api/v1/apple/materials/{purpose}/keys", post(key, &contracts::APPLE_MATERIALS, &[RouteOperation::Update])),
-post_certificate: rss_mdm_http_contract::module::Route::new("/api/v1/apple/materials/{purpose}/certificates", post(certificate, &contracts::APPLE_MATERIALS, &[RouteOperation::Update])),
-post_apply: rss_mdm_http_contract::module::Route::new("/api/v1/apple/materials/{purpose}/apply", post(apply, &contracts::APPLE_MATERIALS, &[RouteOperation::Update])),
-post_revoke: rss_mdm_http_contract::module::Route::new("/api/v1/apple/materials/{purpose}/revoke", post(revoke, &contracts::APPLE_MATERIALS, &[RouteOperation::Update])),
-get_operation: rss_mdm_http_contract::module::Route::new("/api/v1/apple/material-operations/{operation}", get(operation, &contracts::APPLE_MATERIAL_OPERATIONS,
+ RoutesModule1 { get_history: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/apple/materials/{purpose}/versions", get(history, &contracts::APPLE_MATERIAL_VERSIONS, &[RouteOperation::List])),
+get_status: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/apple/materials/{purpose}", get(status, &contracts::APPLE_MATERIALS, &[RouteOperation::Get])),
+post_key: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/apple/materials/{purpose}/keys", post(key, &contracts::APPLE_MATERIALS, &[RouteOperation::Update])),
+post_certificate: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/apple/materials/{purpose}/certificates", post(certificate, &contracts::APPLE_MATERIALS, &[RouteOperation::Update])),
+post_apply: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/apple/materials/{purpose}/apply", post(apply, &contracts::APPLE_MATERIALS, &[RouteOperation::Update])),
+post_revoke: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/apple/materials/{purpose}/revoke", post(revoke, &contracts::APPLE_MATERIALS, &[RouteOperation::Update])),
+get_operation: rss_mdm_http_contract::module::Route::new("/api/v1/tenants/{tenant}/apple/material-operations/{operation}", get(operation, &contracts::APPLE_MATERIAL_OPERATIONS,
                 &[RouteOperation::Get])) }.assemble()
 }
         .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
@@ -116,9 +116,6 @@ fn proof<'a>(
     write: bool,
 ) -> Result<&'a AuthorizedPrincipal, Error> {
     let p = &auth.proof;
-    if p.tenant_id() != app.identity.tenant().to_string() {
-        return Err(Error::Forbidden);
-    }
     p.require(
         if write {
             Permission::RegistrationConfigurationWrite
@@ -158,11 +155,11 @@ fn request_aad(tenant: &str, id: Uuid) -> Result<DerivedAad, Error> {
 async fn status(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(purpose): Path<Purpose>,
+    Path((_tenant, purpose)): Path<(uuid::Uuid, Purpose)>,
 ) -> Result<Json<Directory>, Error> {
     directory(
         &app.access,
-        app.identity.tenant(),
+        auth.proof.binding().tenant(),
         &auth.proof,
         purpose,
         &[],
@@ -229,7 +226,7 @@ pub async fn directory(
 async fn operation(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(operation): Path<Uuid>,
+    Path((_tenant, operation)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<Receipt>, Error> {
     operation_receipt(&app, &auth.proof, operation)
         .await
@@ -241,9 +238,6 @@ pub async fn operation_receipt(
     p: &AuthorizedPrincipal,
     operation: Uuid,
 ) -> Result<Receipt, Error> {
-    if p.tenant_id() != app.identity.tenant().to_string() {
-        return Err(Error::Forbidden);
-    }
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     rss_mdm_authorization_service::lock_shared_on(
         p.authority_profile(),
@@ -274,7 +268,7 @@ async fn key(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(purpose): Path<Purpose>,
+    Path((_tenant, purpose)): Path<(uuid::Uuid, Purpose)>,
     crate::account_enrollment::management::WriteHeaders(headers): crate::account_enrollment::management::WriteHeaders,
     Json(input): Json<KeyRequest>,
 ) -> Result<Json<Receipt>, Error> {
@@ -313,7 +307,7 @@ async fn certificate(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(purpose): Path<Purpose>,
+    Path((_tenant, purpose)): Path<(uuid::Uuid, Purpose)>,
     crate::account_enrollment::management::WriteHeaders(headers): crate::account_enrollment::management::WriteHeaders,
     Json(input): Json<CertificateRequest>,
 ) -> Result<Json<Receipt>, Error> {
@@ -342,7 +336,7 @@ async fn apply(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(purpose): Path<Purpose>,
+    Path((_tenant, purpose)): Path<(uuid::Uuid, Purpose)>,
     crate::account_enrollment::management::WriteHeaders(headers): crate::account_enrollment::management::WriteHeaders,
     Json(input): Json<ApplyRequest>,
 ) -> Result<Json<Receipt>, Error> {
@@ -369,7 +363,7 @@ async fn revoke(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(purpose): Path<Purpose>,
+    Path((_tenant, purpose)): Path<(uuid::Uuid, Purpose)>,
     crate::account_enrollment::management::WriteHeaders(headers): crate::account_enrollment::management::WriteHeaders,
     Json(input): Json<ApplyRequest>,
 ) -> Result<Json<Receipt>, Error> {
@@ -427,7 +421,8 @@ async fn write(
         .mac(request, &request_aad(p.tenant_id(), id)?)
         .map_err(|_| Error::Conflict)?;
     let budget = AuditBudget::new(Duration::from_secs(10));
-    let outcome=app.audit_store.write(app.identity.tenant(),&budget.source_control(),(app,p,audit,id,purpose,expected,request,change,fingerprint),|ctx,tx|Box::pin(async move{
+    let outcome=app.audit_store.write(
+            p.binding(),&budget.source_control(),(app,p,audit,id,purpose,expected,request,change,fingerprint),|ctx,tx|Box::pin(async move{
         let(app,p,audit,id,purpose,expected,request,change,fingerprint)=ctx;
         let mut context=(*app,*p,*id,*purpose,*expected,*request,&*change,*fingerprint);
         let (value,replayed)=tx.with_connection_context(&mut context,|(app,p,id,purpose,expected,request,change,fingerprint),c|Box::pin(async move{
@@ -528,7 +523,7 @@ pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schem
 async fn history(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(purpose): Path<Purpose>,
+    Path((_tenant, purpose)): Path<(uuid::Uuid, Purpose)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<HistoryQuery>,
     >,

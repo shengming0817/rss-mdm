@@ -363,11 +363,35 @@ pub async fn record_deployment_on(
 }
 
 impl Service {
-    pub async fn connection_configuration(&self) -> Result<w::SignedConfiguration, Failure> {
+    pub async fn require_connection_origin(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        origin: &rss_mdm_certificate::GatewayOrigin,
+    ) -> Result<(), Failure> {
+        let tenant = binding.tenant().to_string();
+        let mut tx = self.store.begin(&tenant).await?;
+        let configuration = published_on(self.profile(), &mut tx, &tenant, None).await?;
+        tx.rollback().await.map_err(db)?;
+        // Until this tenant publishes a policy, the gateway's installed origins apply.
+        if configuration.is_some_and(|value| {
+            !value
+                .configuration
+                .origins
+                .iter()
+                .any(|value| value == origin.as_str())
+        }) {
+            return Err(Error::Unauthorized.into());
+        }
+        Ok(())
+    }
+    pub async fn connection_configuration(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<w::SignedConfiguration, Failure> {
         let profile = self.profile();
 
-        let mut tx = self.store.begin(&self.tenant.to_string()).await?;
-        let out = current_on(profile, &mut tx, &self.tenant.to_string()).await?;
+        let mut tx = self.store.begin(&binding.tenant().to_string()).await?;
+        let out = current_on(profile, &mut tx, &binding.tenant().to_string()).await?;
         if out.configuration.service_id != self.service_id()? {
             return Err(Error::Configuration.into());
         }
@@ -378,9 +402,7 @@ impl Service {
         let profile = self.profile();
 
         p.manage(Permission::RegistrationConfigurationRead)?;
-        if p.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden.into());
-        }
+
         let mut tx = self.store.begin(p.tenant_id()).await?;
         super::authorize_on(
             profile,
@@ -714,9 +736,7 @@ impl Service {
         let profile = self.profile();
 
         p.manage(Permission::RegistrationConfigurationRead)?;
-        if p.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden.into());
-        }
+
         let mut tx = self.store.begin(p.tenant_id()).await?;
         super::authorize_on(
             profile,
@@ -769,6 +789,9 @@ impl Service {
             return Err(Error::Forbidden.into());
         }
         let p = self.authenticate(peer).await?;
+        audit
+            .bind_scope(p.binding())
+            .map_err(|_| Error::Unauthorized)?;
         audit.identify_device(p.device());
         audit.target_device(p.device());
         audit.owned_operation(
@@ -780,9 +803,10 @@ impl Service {
 
         self.write(audit, (self, p, input), |ctx, c| {
             Box::pin(async move {
-                let (service, p, input) = ctx;
-                lock(profile, c, &service.tenant.to_string()).await?;
-                let current = current_on(profile, c, &service.tenant.to_string()).await?;
+                let (_, p, input) = ctx;
+                lock(profile, c, &audit.binding()?.tenant().to_string()).await?;
+                let current =
+                    current_on(profile, c, &audit.binding()?.tenant().to_string()).await?;
                 if !current.configuration.origins.contains(&input.origin) {
                     return Err(Error::Conflict);
                 }
@@ -796,7 +820,7 @@ impl Service {
                 let configuration = published_on(
                     profile,
                     c,
-                    &service.tenant.to_string(),
+                    &audit.binding()?.tenant().to_string(),
                     Some(input.revision),
                 )
                 .await?
@@ -808,7 +832,7 @@ impl Service {
                     crate::storage_profile::sql(profile)
                         .agent_connections_acknowledge_connections_1,
                 )
-                .bind(service.tenant.to_string())
+                .bind(audit.binding()?.tenant().to_string())
                 .bind(p.device().into_uuid())
                 .bind(input.operation_id)
                 .fetch_optional(&mut *c)
@@ -827,7 +851,7 @@ impl Service {
                     crate::storage_profile::sql(profile)
                         .agent_connections_acknowledge_connections_2,
                 )
-                .bind(service.tenant.to_string())
+                .bind(audit.binding()?.tenant().to_string())
                 .bind(p.device().into_uuid())
                 .fetch_one(&mut *c)
                 .await
@@ -839,7 +863,7 @@ impl Service {
                     crate::storage_profile::sql(profile)
                         .agent_connections_acknowledge_connections_3,
                 )
-                .bind(service.tenant.to_string())
+                .bind(audit.binding()?.tenant().to_string())
                 .bind(p.device().into_uuid())
                 .bind(input.operation_id)
                 .bind(input.revision as i64)
@@ -869,6 +893,11 @@ impl Service {
             return Err(Error::Malformed.into());
         }
         let principal = self.authenticate(peer).await?;
+        self.require_connection_origin(principal.binding(), origin)
+            .await?;
+        audit
+            .bind_scope(principal.binding())
+            .map_err(|_| Error::Unauthorized)?;
         audit.identify_device(principal.device());
         audit.target_device(principal.device());
         audit.owned_operation(
@@ -879,7 +908,7 @@ impl Service {
         );
         self.write(audit, (self, principal, input, origin), |ctx, c| {
             Box::pin(async move {
-                let (service, p, input, origin) = ctx;
+                let (_, p, input, origin) = ctx;
                 crate::device::store::revalidate_source(
                     profile,
                     c,
@@ -890,7 +919,7 @@ impl Service {
                 published_on(
                     profile,
                     c,
-                    &service.tenant.to_string(),
+                    &audit.binding()?.tenant().to_string(),
                     Some(input.revision),
                 )
                 .await?
@@ -899,7 +928,7 @@ impl Service {
                     crate::storage_profile::sql(profile)
                         .agent_connections_report_connection_failure_1,
                 )
-                .bind(service.tenant.to_string())
+                .bind(audit.binding()?.tenant().to_string())
                 .bind(p.device().into_uuid())
                 .bind(input.operation_id)
                 .fetch_optional(&mut *c)
@@ -923,7 +952,7 @@ impl Service {
                     crate::storage_profile::sql(profile)
                         .agent_connections_report_connection_failure_2,
                 )
-                .bind(service.tenant.to_string())
+                .bind(audit.binding()?.tenant().to_string())
                 .bind(p.device().into_uuid())
                 .bind(input.operation_id)
                 .bind(input.revision as i64)
@@ -950,9 +979,7 @@ impl Service {
         let profile = self.profile();
 
         p.manage(Permission::RegistrationConfigurationRead)?;
-        if p.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden.into());
-        }
+
         let mut tx = self.store.begin(p.tenant_id()).await?;
         super::authorize_on(
             profile,
@@ -1038,9 +1065,7 @@ impl Service {
         let profile = self.profile();
 
         p.check_live()?;
-        if p.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden.into());
-        }
+
         let mut tx = self.store.begin(p.tenant_id()).await?;
         rss_mdm_authorization_service::lock_on(
             p.authority_profile(),

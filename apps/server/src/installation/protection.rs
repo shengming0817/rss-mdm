@@ -3,7 +3,6 @@ use super::{Error, Result, install::Input, local::Journal, runtime_files};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::Connection;
-use std::collections::BTreeMap;
 use uuid::Uuid;
 
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -112,18 +111,12 @@ pub struct Receipt {
     pub historical_keys_retained: bool,
 }
 #[derive(Serialize, Deserialize)]
-struct Host {
-    id: Uuid,
-    tenant: Uuid,
-    slot: Option<usize>,
-    read: Value,
-    write: Value,
-}
-#[derive(Serialize, Deserialize)]
 struct Saved {
     receipt: Receipt,
     base: Value,
-    hosts: Vec<Host>,
+    read: Value,
+    write: Value,
+    tenants: Vec<Uuid>,
 }
 
 fn successor(mut runtime: Value, protection: Value, purpose: Purpose) -> Result<Value> {
@@ -155,12 +148,15 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
         "request.json",
         &serde_json::to_vec(&request).map_err(|_| Error::Input)?,
     )?;
-    let base: Value = journal.load("runtime.json")?.ok_or(Error::Corrupt)?;
+    let original: Option<Saved> = operation.load("rotation.json")?;
+    let base = match &original {
+        Some(saved) => saved.base.clone(),
+        None => runtime_files::current(&journal)?,
+    };
     let mut c = rotation_connection(input, &base).await?;
-    let mut saved: Saved = if let Some(saved) = operation.load("rotation.json")? {
-        saved
-    } else {
-        reserve_rotation(&request, &journal, &operation, &mut c, &base).await?
+    let mut saved = match original {
+        Some(saved) => saved,
+        None => reserve_rotation(&request, &journal, &operation, &mut c, &base).await?,
     };
     if saved.receipt.phase != Phase::Complete {
         let active = journal
@@ -179,7 +175,7 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
         distribute(input, &operation, &mut saved).await?;
     }
     if saved.receipt.phase == Phase::Activating {
-        activate_writers(input, &journal, &operation, &mut saved).await?;
+        activate_writers(input, &operation, &mut saved).await?;
     }
     if saved.receipt.phase == Phase::Rewrapping {
         rewrap_batch(&operation, &mut saved, &mut c).await?;
@@ -195,26 +191,12 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
     c.close().await.map_err(|_| Error::Storage)?;
     Ok(saved.receipt)
 }
-async fn apply(input: &Input, host: &Host, runtime: &Value) -> Result<bool> {
-    let config = match host.slot {
-        Some(index) => {
-            &input
-                .additional_hosts
-                .get(index)
-                .ok_or(Error::Corrupt)?
-                .deployment
-        }
-        None => &input.deployment,
-    };
-    let observed = match runtime_files::apply(&input.directory, config, runtime).await {
-        Ok(observed) => observed,
-        Err(Error::Storage | Error::Conflict) => return Ok(false),
-        Err(error) => return Err(error),
-    };
-    if observed.host_id != host.id || observed.tenant_id != host.tenant.to_string() {
-        return Err(Error::Conflict);
+async fn apply(input: &Input, runtime: &Value) -> Result<bool> {
+    match runtime_files::apply(&input.directory, &input.deployment, runtime).await {
+        Ok(_) => Ok(true),
+        Err(Error::Storage | Error::Conflict) => Ok(false),
+        Err(error) => Err(error),
     }
-    Ok(true)
 }
 
 fn key_stages(original: &Value, next: &std::path::Path) -> Result<(Value, Value)> {
@@ -243,8 +225,6 @@ async fn reserve_rotation(
     c: &mut sqlx::PgConnection,
     base: &Value,
 ) -> Result<Saved> {
-    let input = &request.installation;
-
     let existing = journal
         .load::<Option<Uuid>>("protection-operation.json")?
         .flatten();
@@ -280,62 +260,20 @@ async fn reserve_rotation(
         .map_err(|_| Error::Corrupt)?
         .id()
         .to_owned();
-    let write_protection = base
+    let tenants = sqlx::query_scalar(
+        "SELECT tenant_id FROM public.mdm_tenants WHERE NOT deleted ORDER BY tenant_id",
+    )
+    .fetch_all(&mut *c)
+    .await
+    .map_err(|_| Error::Storage)?;
+    let original = base
         .pointer(request.purpose.path())
-        .filter(|p| p.is_object())
-        .map(|p| {
-            request
-                .purpose
-                .stages(p, &next_path, &key_id)
-                .map(|(_, w)| w)
-        })
-        .transpose()?;
-    let capacity = super::tenant_hosts::Capacity::current(input, journal)?;
-    let slots: BTreeMap<Uuid, usize> = journal.load("host-reservations.json")?.unwrap_or_default();
-    let records:Vec<Value>=sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='enabled' ORDER BY operation_id").fetch_all(&mut *c).await.map_err(|_|Error::Storage)?;
-    let mut hosts = Vec::new();
-    for record in records {
-        let receipt: crate::administration::tenants::Receipt =
-            serde_json::from_value(record).map_err(|_| Error::Corrupt)?;
-        let crate::administration::tenants::ReceiptResult::Provisioning(progress) = receipt.result
-        else {
-            return Err(Error::Corrupt);
-        };
-        let root = Journal::open(
-            &input
-                .directory
-                .join(format!("rss-mdm-{}", progress.host_id.simple())),
-        )?;
-        let runtime: Value = root.load("requested-runtime.json")?.ok_or(Error::Corrupt)?;
-        capacity.require_current(&runtime)?;
-        // 存量租户可有不同旧钥；保留各自比较身份与历史读钥。
-        let Some(original) = runtime
-            .pointer(request.purpose.path())
-            .filter(|p| p.is_object())
-        else {
-            continue;
-        };
-        let (read_protection, write_protection) =
-            request.purpose.stages(original, &next_path, &key_id)?;
-        let read = successor(runtime, read_protection, request.purpose)?;
-        let write = successor(read.clone(), write_protection, request.purpose)?;
-        hosts.push(Host {
-            id: progress.host_id,
-            tenant: progress.tenant_id,
-            slot: slots.get(&progress.host_id).copied(),
-            read,
-            write,
-        });
-    }
-    if hosts.is_empty() {
-        return Err(Error::Conflict);
-    }
-    let mut next_base = base.clone();
-    if let Some(protection) = write_protection {
-        *next_base
-            .pointer_mut(request.purpose.path())
-            .ok_or(Error::Corrupt)? = protection;
-    }
+        .filter(|v| v.is_object())
+        .ok_or(Error::Conflict)?;
+    let (read_protection, write_protection_stage) =
+        request.purpose.stages(original, &next_path, &key_id)?;
+    let read = successor(base.clone(), read_protection, request.purpose)?;
+    let write = successor(read.clone(), write_protection_stage, request.purpose)?;
     let saved = Saved {
         receipt: Receipt {
             operation_id: request.operation_id,
@@ -345,8 +283,10 @@ async fn reserve_rotation(
             rewritten: 0,
             historical_keys_retained: true,
         },
-        base: next_base,
-        hosts,
+        base: base.clone(),
+        read,
+        write,
+        tenants,
     };
     operation.save("rotation.json", &saved)?;
     Ok(saved)
@@ -435,16 +375,21 @@ async fn rewrap_recovery(
     .map_err(|_| Error::Corrupt)
 }
 
-async fn rewrap_host(c: &mut sqlx::PgConnection, host: &Host, purpose: Purpose) -> Result<u64> {
+async fn rewrap_tenant(
+    c: &mut sqlx::PgConnection,
+    tenant_id: Uuid,
+    runtime: &Value,
+    purpose: Purpose,
+) -> Result<u64> {
     let mut rewritten = 0;
 
     let config: crate::config::Config =
-        serde_json::from_value(host.write.clone()).map_err(|_| Error::Corrupt)?;
-    let tenant = rss_request_context::TenantId::parse(&host.tenant.to_string())
-        .map_err(|_| Error::Corrupt)?;
+        serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
+    let tenant =
+        rss_request_context::TenantId::parse(&tenant_id.to_string()).map_err(|_| Error::Corrupt)?;
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(host.tenant.to_string())
+        .bind(tenant_id.to_string())
         .execute(&mut *tx)
         .await
         .map_err(|_| Error::Storage)?;
@@ -460,13 +405,13 @@ async fn rewrap_host(c: &mut sqlx::PgConnection, host: &Host, purpose: Purpose) 
                 .map_err(|_| Error::Corrupt)? as u64;
         }
         Purpose::Recovery => {
-            rewritten += rewrap_recovery(&mut tx, host.tenant, &config).await?;
+            rewritten += rewrap_recovery(&mut tx, tenant_id, &config).await?;
         }
         Purpose::Windows => {
             let protector = purpose.protector(&config)?;
             rewritten += rss_mdm_windows_channel::enrollment_store::rewrap_protocol(
                 &mut tx,
-                &host.tenant.to_string(),
+                &tenant_id.to_string(),
                 &protector,
             )
             .await
@@ -502,10 +447,7 @@ async fn admit_rotation(journal: &Journal) -> Result<()> {
 }
 
 async fn distribute(input: &Input, operation: &Journal, saved: &mut Saved) -> Result<()> {
-    let mut observed = true;
-    for host in &saved.hosts {
-        observed &= apply(input, host, &host.read).await?;
-    }
+    let observed = apply(input, &saved.read).await?;
     if !observed {
         return Ok(());
     }
@@ -515,21 +457,12 @@ async fn distribute(input: &Input, operation: &Journal, saved: &mut Saved) -> Re
     Ok(())
 }
 
-async fn activate_writers(
-    input: &Input,
-    journal: &Journal,
-    operation: &Journal,
-    saved: &mut Saved,
-) -> Result<()> {
-    let mut observed = true;
-    for host in &saved.hosts {
-        observed &= apply(input, host, &host.write).await?;
-    }
+async fn activate_writers(input: &Input, operation: &Journal, saved: &mut Saved) -> Result<()> {
+    let observed = apply(input, &saved.write).await?;
     if !observed {
         return Ok(());
     }
-    // 只有全部实际进程均加载新写钥和旧读钥后，才改变后续宿主的基础输入。
-    journal.save("runtime.json", &saved.base)?;
+    // apply has atomically retained the complete write input with its real observation.
     saved.receipt.phase = Phase::Rewrapping;
     operation.save("rotation.json", saved)?;
 
@@ -542,8 +475,8 @@ async fn rewrap_batch(
     c: &mut sqlx::PgConnection,
 ) -> Result<()> {
     let mut rewritten = 0;
-    for host in &saved.hosts {
-        rewritten += rewrap_host(&mut *c, host, saved.receipt.purpose).await?;
+    for tenant in &saved.tenants {
+        rewritten += rewrap_tenant(&mut *c, *tenant, &saved.write, saved.receipt.purpose).await?;
     }
     saved.receipt.rewritten = saved
         .receipt
@@ -559,10 +492,35 @@ async fn rewrap_batch(
 }
 
 fn verify_candidates(saved: &Saved) -> Result<()> {
-    for host in &saved.hosts {
+    let purpose = saved.receipt.purpose;
+    let original: crate::config::Config =
+        serde_json::from_value(saved.base.clone()).map_err(|_| Error::Corrupt)?;
+    let old_key = purpose.active_id(&original)?;
+    if old_key == saved.receipt.key_id {
+        return Err(Error::Conflict);
+    }
+    let write = saved.write.pointer(purpose.path()).ok_or(Error::Corrupt)?;
+    let next = match purpose {
+        Purpose::Native | Purpose::Windows => &write["active_file"],
+        Purpose::OidcCredentials => &write["credential_keys"][&saved.receipt.key_id],
+        Purpose::Recovery => &write["key_files"][&saved.receipt.key_id],
+    };
+    let (expected_read, expected_write) = purpose.stages(
+        saved.base.pointer(purpose.path()).ok_or(Error::Corrupt)?,
+        std::path::Path::new(next.as_str().ok_or(Error::Corrupt)?),
+        &saved.receipt.key_id,
+    )?;
+    if saved.read.pointer(purpose.path()) != Some(&expected_read) || write != &expected_write {
+        return Err(Error::Conflict);
+    }
+    for (runtime, active) in [
+        (&saved.read, &old_key),
+        (&saved.write, &saved.receipt.key_id),
+    ] {
         let candidate: crate::config::Config =
-            serde_json::from_value(host.write.clone()).map_err(|_| Error::Corrupt)?;
-        if saved.receipt.purpose.active_id(&candidate)? != saved.receipt.key_id {
+            serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
+        // Construction loads every retained key; exact stage equality preserves historical readers.
+        if purpose.active_id(&candidate)? != *active {
             return Err(Error::Conflict);
         }
     }
@@ -604,4 +562,95 @@ async fn rotation_connection(input: &Input, base: &Value) -> Result<sqlx::PgConn
         .await
         .map_err(|_| Error::Storage)?;
     Ok(c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn distribution_keeps_old_writer_and_both_stages_read_new_and_old_keys() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let old = root.join("old");
+        let next = root.join("next");
+        for (path, bytes) in [(&old, [1u8; 32]), (&next, [2u8; 32])] {
+            std::fs::write(path, bytes).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let new_id = rss_mdm_native_protection::Protector::new(&[2; 32])
+            .unwrap()
+            .id()
+            .to_owned();
+        for purpose in [Purpose::Native, Purpose::Windows] {
+            let mut base: Value =
+                serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))
+                    .unwrap();
+            let original = json!({"active_file":old,"historical_files":[],"fingerprint_file":old});
+            *base.pointer_mut(purpose.path()).unwrap() = original.clone();
+            let (read, write) = purpose.stages(&original, &next, &new_id).unwrap();
+            let saved = Saved {
+                receipt: Receipt {
+                    operation_id: Uuid::new_v4(),
+                    phase: Phase::Distributing,
+                    key_id: new_id.clone(),
+                    purpose,
+                    rewritten: 0,
+                    historical_keys_retained: true,
+                },
+                read: successor(base.clone(), read, purpose).unwrap(),
+                write: successor(base.clone(), write, purpose).unwrap(),
+                base,
+                tenants: vec![],
+            };
+            verify_candidates(&saved).unwrap();
+            let read = purpose
+                .protector(&serde_json::from_value(saved.read.clone()).unwrap())
+                .unwrap();
+            let write = purpose
+                .protector(&serde_json::from_value(saved.write.clone()).unwrap())
+                .unwrap();
+            let aad = rss_mdm_native_protection::ProtectionContext::new(
+                rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111")
+                    .unwrap(),
+                "rotation",
+                "phase-test",
+                1,
+            )
+            .unwrap()
+            .derive();
+            for sealed in [
+                read.seal_bytes(b"retained", &aad).unwrap(),
+                write.seal_bytes(b"retained", &aad).unwrap(),
+            ] {
+                assert_eq!(
+                    read.open_bytes(&sealed, &aad).unwrap().expose(),
+                    b"retained"
+                );
+                assert_eq!(
+                    write.open_bytes(&sealed, &aad).unwrap().expose(),
+                    b"retained"
+                );
+            }
+            let mut invalid = saved;
+            invalid.read = invalid.write.clone();
+            assert!(matches!(verify_candidates(&invalid), Err(Error::Conflict)));
+        }
+        for (purpose, keys, active) in [
+            (
+                Purpose::OidcCredentials,
+                "credential_keys",
+                "active_credential_key",
+            ),
+            (Purpose::Recovery, "key_files", "active_key"),
+        ] {
+            let original = json!({keys:{"old":old},active:"old"});
+            let (read, write) = purpose.stages(&original, &next, &new_id).unwrap();
+            assert_eq!(read[active], "old");
+            assert_eq!(write[active], new_id);
+            assert_eq!(read[keys], write[keys]);
+            assert_eq!(read[keys]["old"], json!(old));
+            assert_eq!(read[keys][&new_id], json!(next));
+        }
+    }
 }

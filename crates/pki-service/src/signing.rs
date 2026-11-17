@@ -7,6 +7,7 @@ use uuid::Uuid;
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Frozen {
+    pub expected_epoch: i64,
     pub version: u8,
     pub purpose: String,
     pub issuer: String,
@@ -34,12 +35,14 @@ impl Frozen {
     }
 }
 fn binding(
+    expected_epoch: i64,
     purpose: &str,
     issuer: &str,
     provider: &StepCa,
     intent: Sign<'_>,
 ) -> Result<Vec<u8>, Error> {
     let binding = serde_json::to_vec(&Frozen {
+        expected_epoch,
         version: 1,
         purpose: purpose.into(),
         issuer: issuer.into(),
@@ -66,6 +69,11 @@ pub async fn authorize_in(
     provider: &StepCa,
     intent: Sign<'_>,
 ) -> Result<(), Error> {
+    let expected_epoch: i64 =
+        sqlx::query_scalar("SELECT current_setting('rss.execution_epoch')::bigint")
+            .fetch_one(&mut *c)
+            .await
+            .map_err(|_| Error::Storage)?;
     if !matches!(purpose, "windows" | "agent" | "da_device")
         || issuer.len() != 64
         || intent.attempt.is_nil()
@@ -73,7 +81,7 @@ pub async fn authorize_in(
         return Err(Error::Request);
     }
     require_active_in(profile, c, tenant, purpose, issuer).await?;
-    let bytes = binding(purpose, issuer, provider, intent)?;
+    let bytes = binding(expected_epoch, purpose, issuer, provider, intent)?;
     sqlx::query(crate::storage_profile::sql(profile).signing_authorize_in_1)
         .bind(tenant)
         .bind(intent.attempt)
@@ -98,6 +106,11 @@ pub async fn supersede_expired_in(
     issuer: &str,
     successor: Uuid,
 ) -> Result<bool, Error> {
+    let expected_epoch: i64 =
+        sqlx::query_scalar("SELECT current_setting('rss.execution_epoch')::bigint")
+            .fetch_one(&mut *c)
+            .await
+            .map_err(|_| Error::Storage)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))")
         .bind(tenant.to_string())
         .execute(&mut *c)
@@ -114,7 +127,8 @@ pub async fn supersede_expired_in(
             .map_err(|_| Error::Storage)?,
     )
     .map_err(|_| Error::Storage)?;
-    if !frozen.matches("windows", issuer, previous)
+    if frozen.expected_epoch != expected_epoch
+        || !frozen.matches("windows", issuer, previous)
         || successor.is_nil()
         || successor == previous.attempt
     {
@@ -190,7 +204,7 @@ impl SigningStore {
     }
     pub async fn issue<F>(
         &self,
-        tenant: Uuid,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         generation: (&str, &str),
         provider: &StepCa,
         intent: Sign<'_>,
@@ -200,6 +214,7 @@ impl SigningStore {
     where
         F: FnOnce(&[Vec<u8>]) -> bool,
     {
+        let tenant = Uuid::from_bytes(execution.tenant().octets());
         let profile = self.profile();
 
         let (purpose, issuer) = generation;
@@ -212,12 +227,12 @@ impl SigningStore {
         let unknown = || Error::Unknown {
             attempt: intent.attempt,
         };
-        let binding = binding(purpose, issuer, provider, intent)?;
+        let binding = binding(execution.epoch().get(), purpose, issuer, provider, intent)?;
         let hash = Sha256::digest(&binding).to_vec();
         let a = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             self.profile(),
-            tenant.to_string(),
+            execution,
             "device_pki_signing_claim",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -231,8 +246,7 @@ impl SigningStore {
         let claim = crate::mutation::run(
             profile,
             &self.audit,
-            rss_request_context::TenantId::parse(&tenant.to_string())
-                .map_err(|_| Error::Request)?,
+            execution,
             &a,
             (tenant, purpose, issuer, intent, &binding, clock),
             |ctx, c| {
@@ -256,7 +270,9 @@ impl SigningStore {
                                 .map_err(|_| Error::Storage)?,
                         )
                         .map_err(|_| Error::Storage)?;
-                        if !frozen.matches(purpose, issuer, *intent) {
+                        if frozen.expected_epoch != execution.epoch().get()
+                            || !frozen.matches(purpose, issuer, *intent)
+                        {
                             return Err(Error::Conflict);
                         }
                         let state = row
@@ -333,21 +349,22 @@ impl SigningStore {
             Ok(chain) if validate(&chain) => chain,
             _ => {
                 // The original dispatch remains unknown; retain the canonical audit diagnosis.
-                self.settle(tenant, intent.attempt, &hash, None).await?;
+                self.settle(execution, intent.attempt, &hash, None).await?;
                 return Err(unknown());
             }
         };
-        self.settle(tenant, intent.attempt, &hash, Some(&chain))
+        self.settle(execution, intent.attempt, &hash, Some(&chain))
             .await?;
         Ok(chain)
     }
     async fn settle(
         &self,
-        tenant: Uuid,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         attempt: Uuid,
         hash: &[u8],
         chain: Option<&[Vec<u8>]>,
     ) -> Result<(), Error> {
+        let tenant = Uuid::from_bytes(execution.tenant().octets());
         let profile = self.profile();
 
         let bytes = chain
@@ -357,7 +374,7 @@ impl SigningStore {
         let a = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             self.profile(),
-            tenant.to_string(),
+            execution,
             "device_pki_signing_result",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -371,8 +388,7 @@ impl SigningStore {
         let result = crate::mutation::run(
             profile,
             &self.audit,
-            rss_request_context::TenantId::parse(&tenant.to_string())
-                .map_err(|_| Error::Request)?,
+            execution,
             &a,
             (tenant, attempt, hash, chain, bytes),
             |ctx, c| {

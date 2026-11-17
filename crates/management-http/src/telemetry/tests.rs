@@ -2,16 +2,18 @@ use super::*;
 use serde_json::json;
 use std::num::NonZeroU64;
 fn schema(path: &str, request: bool) -> serde_json::Value {
-    let doc = rss_mdm_http_contract::artifact::document([(
-        "browser",
-        super::super::routes(None).into_endpoints(),
-    )])
-    .unwrap();
+    rss_mdm_http_contract::route_module! { struct TelemetryContract for [Browser] { telemetry at "/api/v1/tenants/{tenant}" } }
+    let routes = TelemetryContract {
+        telemetry: super::super::routes(None),
+    }
+    .assemble();
+    let doc =
+        rss_mdm_http_contract::artifact::document([("browser", routes.into_endpoints())]).unwrap();
     let endpoint = doc["endpoints"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|v| v["path"] == path)
+        .find(|v| v["path"] == format!("/api/v1/tenants/{{tenant}}{path}"))
         .unwrap();
     let body = if request {
         &endpoint["request"]["body"]

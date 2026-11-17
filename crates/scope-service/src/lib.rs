@@ -1,5 +1,6 @@
 //! Scope definitions, calculation, publication and independent recovery.
 //! Participants borrow the initiating transaction; no service owns a second commit.
+mod discovery;
 use rss_mdm_scope::ScopeDefinition;
 use serde::{Deserialize, Serialize};
 

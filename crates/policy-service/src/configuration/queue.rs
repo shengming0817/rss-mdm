@@ -54,7 +54,8 @@ impl Transactions {
         audit: &RequestAudit,
     ) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        let tenant = self.tenant;
+        let expected_epoch = audit.binding()?.epoch().get();
+        let tenant = tx.tenant_id();
         let name = device.to_owned();
         let id = input.operation_id;
         let allowed = tx
@@ -166,7 +167,7 @@ impl Transactions {
         let name = device.to_owned();
         let digest = fingerprint.clone();
         tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_planning.configuration_operations (tenant_id, id, device, request, fingerprint, generation, epoch, authority, dispatch_fingerprint, policy_version, input_context) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)").bind(tenant.to_string()).bind(id).bind(name.into_uuid()).bind(request).bind(digest).bind(bound.coordinate.generation()).bind(bound.coordinate.epoch()).bind(authority).bind(dispatch_fingerprint).bind(policy_version).bind(input_context).execute(c).await?;
+            sqlx::query("INSERT INTO mdm_planning.configuration_operations (tenant_id, id, device, request, fingerprint, generation, epoch, authority, dispatch_fingerprint, policy_version, input_context, expected_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)").bind(tenant.to_string()).bind(id).bind(name.into_uuid()).bind(request).bind(digest).bind(bound.coordinate.generation()).bind(bound.coordinate.epoch()).bind(authority).bind(dispatch_fingerprint).bind(policy_version).bind(input_context).bind(expected_epoch).execute(c).await?;
             Ok(())
         })).await?;
         if input.profile_target().is_some() {

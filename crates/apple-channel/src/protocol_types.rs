@@ -70,7 +70,7 @@ pub trait AppleCollections: Send + Sync {
     fn prepare_native_collection<'a>(
         &'a self,
         c: &'a mut PgConnection,
-        tenant: String,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         id: Uuid,
     ) -> Pending<'a, Vec<Fact>>;
     fn pending_collections<'a>(
@@ -287,6 +287,7 @@ pub trait Apple: Send + Sync {
 
 #[derive(Clone)]
 pub struct Wake {
+    pub execution: rss_transactional_messaging::fence::ExecutionBinding,
     pub id: Uuid,
     pub device: rss_mdm_agent_wire::DeviceId,
     pub revision: i64,

@@ -6,14 +6,18 @@ pub fn rejected_audits(c: &Context) -> [RequestAudit; 2] {
         RequestAudit::new(
             rss_mdm_audit_integration::Origin::Request,
             StorageProfile::Mdm,
-            c.tenant.to_string(),
+            c.execution(),
             "boundary",
             AuditIntent::Management,
         ),
         RequestAudit::new(
             rss_mdm_audit_integration::Origin::Request,
             DA,
-            Uuid::new_v4().to_string(),
+            rss_transactional_messaging::fence::ExecutionBinding::new(
+                c.execution().storage(),
+                rss_request_context::TenantId::parse(&Uuid::new_v4().to_string()).unwrap(),
+                c.execution().epoch(),
+            ),
             "boundary",
             AuditIntent::Management,
         ),
@@ -57,7 +61,6 @@ pub async fn task_trust(
 ) -> Result<()> {
     use rss_mdm_agent_wire::task_trust::{Acknowledgement, Observation, ObservationState};
     let service = rss_mdm_task_trust::Service::new(
-        c.tenant,
         signing,
         protection,
         c.access_audit.clone(),
@@ -105,7 +108,7 @@ pub async fn task_trust(
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         DA,
-        c.tenant.to_string(),
+        c.execution(),
         "task_trust",
         AuditIntent::Management,
     );
@@ -115,7 +118,7 @@ pub async fn task_trust(
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         DA,
-        c.tenant.to_string(),
+        c.execution(),
         "task_trust",
         AuditIntent::Management,
     );
@@ -152,7 +155,7 @@ pub async fn registration(
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         DA,
-        c.tenant.to_string(),
+        c.execution(),
         "pki_ack",
         AuditIntent::Management,
     );

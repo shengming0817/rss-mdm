@@ -6,8 +6,6 @@ use uuid::Uuid;
 
 // All restore paths use this shape before minting a Run or recovery capability.
 
-/// Recheck the principal inside the transaction accepting device input. Lock order matches revoke.
-
 #[derive(PartialEq, Eq)]
 pub struct Run {
     pub id: Uuid,
@@ -175,6 +173,7 @@ pub async fn save_attempts_in(
     Ok(())
 }
 pub async fn seal(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     run: &mut Run,
@@ -246,7 +245,7 @@ pub async fn seal(
     let audit = rss_mdm_audit_integration::RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         profile,
-        run.scope.tenant().to_string(),
+        execution,
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -282,6 +281,7 @@ pub async fn seal(
 }
 /// Terminalize accepted facts before disposing protocol state. Never accepts new device input.
 pub async fn terminate(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
@@ -296,17 +296,21 @@ pub async fn terminate(
         .await
         .map_err(db)?;
     for row in rows {
-        facts.extend(seal(profile, tx, &mut Run::from_row(row)?, reason).await?);
+        facts.extend(seal(execution, profile, tx, &mut Run::from_row(row)?, reason).await?);
     }
     Ok(())
 }
 /// Only a persisted server-authored sealed run can mint this recovery capability.
 /// It deliberately has no wire constructor or Deserialize implementation.
 pub struct DurableReport {
+    expected_epoch: rss_transactional_messaging::fence::Epoch,
     scope: Scope,
     batch: Batch,
 }
 impl DurableReport {
+    pub fn expected_epoch(&self) -> rss_transactional_messaging::fence::Epoch {
+        self.expected_epoch
+    }
     pub fn scope(&self) -> &Scope {
         &self.scope
     }
@@ -383,7 +387,14 @@ fn durable_report(row: PgRow) -> Result<DurableReport, Error> {
         return Err(corrupt());
     }
     let batch = batch.ok_or_else(corrupt)?;
-    Ok(DurableReport { scope, batch })
+    Ok(DurableReport {
+        expected_epoch: rss_transactional_messaging::fence::Epoch::new(
+            row.try_get("expected_epoch").map_err(db)?,
+        )
+        .map_err(|_| corrupt())?,
+        scope,
+        batch,
+    })
 }
 
 pub async fn load_on(
@@ -486,10 +497,12 @@ impl Delivery {
     }
     pub async fn pending_reports(
         &self,
-        tenant: &str,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         limit: rss_projection::BatchLimit,
         byte_limit: i64,
     ) -> Result<Vec<DurableReport>, Error> {
+        let tenant = binding.tenant().to_string();
+        let tenant = tenant.as_str();
         if byte_limit <= 0 {
             return Err(Error::Malformed);
         }
@@ -501,6 +514,7 @@ impl Delivery {
                 .bind(tenant)
                 .bind(i64::from(limit.get()))
                 .bind(byte_limit)
+                .bind(binding.epoch().get())
                 .fetch_all(&mut *tx)
                 .await
                 .map_err(db)?;
@@ -521,14 +535,19 @@ impl Delivery {
         }
         rows.into_iter().map(durable_report).collect()
     }
-    pub async fn expire_timed(&self, tenant: &str) -> Result<usize, Error> {
+    pub async fn expire_timed(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<usize, Error> {
         let profile = self.profile();
-
+        let tenant = binding.tenant().to_string();
+        let tenant = tenant.as_str();
         let mut hint = self.database.begin_read(tenant).await?;
         let due: bool = sqlx::query_scalar(
             crate::storage_profile::sql(profile).collection_store_expire_timed_1,
         )
         .bind(tenant)
+        .bind(binding.epoch().get())
         .fetch_one(&mut *hint)
         .await
         .map_err(db)?;
@@ -539,7 +558,7 @@ impl Delivery {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             profile,
-            tenant.into(),
+            binding,
             "collection_finish",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -548,7 +567,7 @@ impl Delivery {
         let attempt = self
             .audit_store
             .write(
-                rss_request_context::TenantId::parse(tenant).map_err(|_| corrupt())?,
+                binding,
                 &budget.source_control(),
                 (&self.audit_store, tenant, &audit),
                 |(store, tenant, audit), tx| {
@@ -559,7 +578,7 @@ impl Delivery {
                                 &mut (*tenant, &mut facts),
                                 |(tenant, facts), c| {
                                     Box::pin(async move {
-                                        expire_timed(profile, c, facts, tenant).await
+                                        expire_timed(binding, profile, c, facts, tenant).await
                                     })
                                 },
                             )
@@ -582,20 +601,40 @@ impl Delivery {
         );
         result
     }
-    pub async fn next_expiry(&self, tenant: &str) -> Result<Option<std::time::Duration>, Error> {
-        let profile = self.profile();
-
-        let mut tx = self.database.begin_read(tenant).await?;
-        let millis: Option<i64> =
-            sqlx::query_scalar(crate::storage_profile::sql(profile).collection_store_next_expiry_1)
-                .bind(tenant)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(db)?;
-        tx.rollback().await.map_err(db)?;
-        Ok(millis.map(|ms| std::time::Duration::from_millis(ms.max(1) as u64)))
+    pub(crate) async fn scopes(
+        &self,
+        after: Option<(Uuid, i64)>,
+    ) -> Result<Vec<(Uuid, i64)>, Error> {
+        self.database.delivery_scopes(after).await
     }
-    pub async fn delivered(&self, report: &DurableReport) -> Result<(), DeliveryError> {
+    pub(crate) async fn execution(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<sqlx::Transaction<'_, sqlx::Postgres>, DeliveryError> {
+        self.database
+            .begin_execution(binding)
+            .await
+            .map_err(|e| acknowledgement_error(e, false))
+    }
+    pub async fn delivered(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        report: &DurableReport,
+    ) -> Result<(), DeliveryError> {
+        if report.scope.tenant() != binding.tenant() || report.expected_epoch != binding.epoch() {
+            return Err(DeliveryError::Permanent(Error::Forbidden));
+        }
+        let mut tx = self.execution(binding).await?;
+        self.delivered_on(&mut tx, report).await?;
+        tx.commit()
+            .await
+            .map_err(|e| acknowledgement_error(e, true))
+    }
+    pub(crate) async fn delivered_on(
+        &self,
+        tx: &mut sqlx::PgConnection,
+        report: &DurableReport,
+    ) -> Result<(), DeliveryError> {
         let profile = self.profile();
 
         let digest = fingerprint(&report.batch, &report.scope).map_err(DeliveryError::Permanent)?;
@@ -603,11 +642,6 @@ impl Delivery {
             .scope
             .encode()
             .map_err(|_| DeliveryError::Permanent(corrupt()))?;
-        let mut tx = self
-            .database
-            .begin_delivery(&report.scope.tenant().to_string())
-            .await
-            .map_err(|e| acknowledgement_error(e, false))?;
         let row = sqlx::query(crate::storage_profile::sql(profile).collection_store_delivered_1)
             .bind(report.scope.tenant().to_string())
             .bind(report.batch.id().as_str())
@@ -616,9 +650,13 @@ impl Delivery {
             .map_err(|e| acknowledgement_error(e, false))?
             .ok_or_else(|| DeliveryError::Permanent(corrupt()))?;
         let matching = row
-            .try_get::<String, _>("scope")
+            .try_get::<i64, _>("expected_epoch")
             .map_err(|e| acknowledgement_error(e, false))?
-            == scope
+            == report.expected_epoch.get()
+            && row
+                .try_get::<String, _>("scope")
+                .map_err(|e| acknowledgement_error(e, false))?
+                == scope
             && row
                 .try_get::<i64, _>("sequence")
                 .map_err(|e| acknowledgement_error(e, false))?
@@ -637,10 +675,7 @@ impl Delivery {
             .try_get::<bool, _>("delivery_pending")
             .map_err(|e| acknowledgement_error(e, false))?
         {
-            return tx
-                .rollback()
-                .await
-                .map_err(|e| acknowledgement_error(e, false));
+            return Ok(());
         }
         sqlx::query(crate::storage_profile::sql(profile).collection_store_delivered_2)
             .bind(report.scope.tenant().to_string())
@@ -649,15 +684,12 @@ impl Delivery {
             .execute(&mut *tx)
             .await
             .map_err(|e| acknowledgement_error(e, false))?;
-        tx.commit()
-            .await
-            .map_err(|e| acknowledgement_error(e, true))?;
-
         Ok(())
     }
 }
 
 pub async fn expire_timed(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
@@ -675,6 +707,7 @@ pub async fn expire_timed(
         if dataset == rss_mdm_inventory::builtin::AGENT_INSTALLATION.as_str() {
             facts.extend(
                 super::channel::abandon_in(
+                    execution,
                     profile,
                     c,
                     tenant,
@@ -692,7 +725,7 @@ pub async fn expire_timed(
             Uuid::parse_str(&id).map_err(|_| super::corrupt())?,
         )
         .await?;
-        facts.extend(seal(profile, c, &mut run, "timeout").await?);
+        facts.extend(seal(execution, profile, c, &mut run, "timeout").await?);
     }
     Ok(count)
 }

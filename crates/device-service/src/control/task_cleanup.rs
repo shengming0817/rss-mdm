@@ -19,12 +19,14 @@ pub trait TaskCleanup: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<bool>> + Send + 'a>>;
     fn remove_software_in<'a>(
         &'a self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &'a mut PgTransaction<'_>,
         retirement: Uuid,
         target: &'a crate::control::Target,
     ) -> Pin<Box<dyn Future<Output = Result<bool>> + Send + 'a>>;
     fn advance_in<'a>(
         &'a self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &'a mut PgTransaction<'_>,
         devices: &'a [rss_mdm_agent_wire::DeviceId],
     ) -> Pin<Box<dyn Future<Output = Result<Progress>> + Send + 'a>>;

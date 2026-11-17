@@ -36,7 +36,7 @@ impl Compliance {
             Ok(serde_json::json!({"id":m.id,"revision":m.revision,"member_set":m.member_set,"member_version":m.member_version,"assetCut":cut}))
         }).collect::<Result<Vec<_>>>()?;
         let current = checked_input(serde_json::to_string(&current))?;
-        let tenant = self.tenant().to_string();
+        let tenant = tx.tenant_id().to_string();
         let document = checked_input(serde_json::to_string(inputs))?;
         let ids:Vec<String>=tx.with_connection(move|c|Box::pin(async move{
    sqlx::query_scalar(r#"

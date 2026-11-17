@@ -77,6 +77,7 @@ fn sources(refs: &[rss_mdm_scope::SourceRef]) -> transaction::Result<Vec<ScopeSo
 impl Scopes {
     pub(super) async fn page_on(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut sqlx::PgConnection,
         request: &PageRequest,
         authority: &str,
@@ -93,7 +94,7 @@ impl Scopes {
         let head = sqlx::query_as::<_, (i64, Option<Uuid>, bool)>(
             crate::storage_profile::sql(profile).pages_scope_page_on_1,
         )
-        .bind(self.tenant.to_string())
+        .bind(execution.tenant().to_string())
         .bind(scope)
         .fetch_optional(&mut *c)
         .await?
@@ -113,7 +114,7 @@ impl Scopes {
                 decode(
                     &self.cursor_key,
                     t,
-                    &self.tenant.to_string(),
+                    &execution.tenant().to_string(),
                     result,
                     &binding,
                 )
@@ -126,7 +127,7 @@ impl Scopes {
             })
             .transpose()?;
         let projection = &self.projection;
-        let tenant = self.tenant;
+        let tenant = execution.tenant();
         let channel = query.channel;
         let limit = query.page.limit();
         let page = projection
@@ -155,7 +156,7 @@ impl Scopes {
                     encode(
                         &self.cursor_key,
                         Cursor {
-                            tenant: self.tenant.to_string(),
+                            tenant: execution.tenant().to_string(),
                             result,
                             binding,
                             after: rss_mdm_agent_wire::ObjectRef::Endpoint(*after),

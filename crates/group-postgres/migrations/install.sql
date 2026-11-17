@@ -50,6 +50,7 @@ GRANT SELECT,INSERT ON mdm_group.groups,mdm_group.rules TO mdm_group_runtime;
 GRANT UPDATE(presentation,revision,member_version,member_count,rule_version,deleted,calculation_revision,input_revision,input_epoch,input_xid) ON mdm_group.groups TO mdm_group_runtime;
 
 CREATE TABLE mdm_group.operations (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL,id uuid NOT NULL,group_id uuid NOT NULL,digest bytea NOT NULL CHECK(octet_length(digest)=32),
  request bytea NOT NULL CHECK(octet_length(request)<=16777216),receipt bytea NOT NULL CHECK(octet_length(receipt)<=65536),
  receipt_digest bytea NOT NULL CHECK(octet_length(receipt_digest)=32),as_of bigint NOT NULL CHECK(as_of>=0),
@@ -221,6 +222,6 @@ BEGIN
 EXCEPTION WHEN lock_not_available THEN RAISE EXCEPTION 'group reference busy' USING ERRCODE='40001';
 END $$;
 REVOKE ALL ON FUNCTION mdm_group.lock_reference_target(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_group.lock_reference_target(uuid) TO mdm_group_runtime,mdm_scope_runtime,mdm_policy_runtime;
+GRANT EXECUTE ON FUNCTION mdm_group.lock_reference_target(uuid) TO mdm_group_runtime;
 GRANT USAGE ON SCHEMA mdm_group TO mdm_scope_runtime,mdm_policy_runtime;
 GRANT SELECT ON mdm_group.groups,mdm_group.source_state,mdm_group.member_runs,mdm_group.member_rows,mdm_group.member_changes TO mdm_scope_runtime,mdm_policy_runtime;

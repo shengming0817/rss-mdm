@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 pub(crate) const DOMAIN: &str = "mdm-assets";
 pub(crate) const CONSUMER: &str = "mdm-asset-inputs";
 pub(crate) struct Validator {
-    pub binding: rss_transactional_messaging::fence::ExecutionBinding,
+    pub storage: rss_transactional_messaging::fence::StorageIdentity,
 }
 impl IngressValidator<Vec<u8>> for Validator {
     fn validate(
@@ -29,9 +29,7 @@ impl IngressValidator<Vec<u8>> for Validator {
         } else {
             131_072
         };
-        if message.metadata().tenant_id() != self.binding.tenant()
-            || message.payload().len() > payload_limit
-        {
+        if message.payload().len() > payload_limit {
             return Err(EnvelopeValidationFailure::MalformedIdentity);
         }
         let (schema, expected_contract, tenant, identity) =
@@ -66,7 +64,8 @@ impl IngressValidator<Vec<u8>> for Validator {
                 }
                 _ => return Err(EnvelopeValidationFailure::UnsupportedContract),
             };
-        if tenant.as_bytes() != &self.binding.tenant().octets() || message.id().as_str() != identity
+        if tenant.as_bytes() != &message.metadata().tenant_id().octets()
+            || message.id().as_str() != identity
         {
             return Err(EnvelopeValidationFailure::MalformedIdentity);
         }
@@ -78,7 +77,8 @@ impl IngressValidator<Vec<u8>> for Validator {
         {
             return Err(EnvelopeValidationFailure::UnsupportedContract);
         }
-        Ok(challenge.verified(self.binding))
+        let execution = execution(message, self.storage)?;
+        Ok(challenge.verified(execution))
     }
 }
 pub(crate) struct Receiver {
@@ -99,7 +99,7 @@ impl PgConsumerEffect<Vec<u8>> for Receiver {
             rss_mdm_device_service::worker::wake_inputs_in(&self.messaging, tx)
                 .await
                 .map_err(PgConsumerEffectFailure::infrastructure)?;
-            rss_mdm_compliance_service::input_wake::wake_in(&self.messaging, tx)
+            rss_mdm_compliance_postgres::wake_inputs_in(&self.messaging, tx)
                 .await
                 .map_err(PgConsumerEffectFailure::infrastructure)?;
         }
@@ -125,4 +125,23 @@ impl PgConsumerEffect<Vec<u8>> for Receiver {
             .map_err(PgConsumerEffectFailure::infrastructure)?;
         Ok(TerminalDisposition::Succeeded)
     }
+}
+
+fn execution(
+    message: &MessageEnvelope<Vec<u8>>,
+    storage: rss_transactional_messaging::fence::StorageIdentity,
+) -> Result<rss_transactional_messaging::fence::ExecutionBinding, EnvelopeValidationFailure> {
+    let document: serde_json::Value = serde_json::from_slice(message.payload())
+        .map_err(|_| EnvelopeValidationFailure::MalformedMetadata)?;
+    let epoch = document
+        .get("executionEpoch")
+        .and_then(serde_json::Value::as_i64)
+        .ok_or(EnvelopeValidationFailure::MalformedMetadata)?;
+    let epoch = rss_transactional_messaging::fence::Epoch::new(epoch)
+        .map_err(|_| EnvelopeValidationFailure::MalformedMetadata)?;
+    Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+        storage,
+        message.metadata().tenant_id(),
+        epoch,
+    ))
 }

@@ -82,6 +82,7 @@ impl DurableStore for PolicyWork {
         let profile = self.profile();
 
         Box::pin(async move {
+            let binding = self.binding_for(claim, control).await?;
             self.check_claim(claim)?;
             // RSS settles with the runner's lifetime control, not the attempt control.
             // Never turn an unbounded process lifetime into PostgreSQL statement_timeout.
@@ -89,7 +90,7 @@ impl DurableStore for PolicyWork {
             let control = &settlement;
             let input = matches!(
                 claim.target().entity(),
-                "schedules" | "configuration-inputs" | "configuration-relay"
+                "schedules" | "configuration-inputs"
             );
             let configuration =
                 crate::configuration::recovery::owns_entity(claim.target().entity());
@@ -100,7 +101,7 @@ impl DurableStore for PolicyWork {
                     .service
                     .runtime
                     .local_tx_with_context(
-                        self.service.audit_store.binding(),
+                        binding,
                         rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                             control.remaining(),
                         ),
@@ -116,10 +117,12 @@ impl DurableStore for PolicyWork {
                                     .reconcile_messaging
                                     .protect_in(tx, claim, &service.audit_store, |audit, tx| {
                                         Box::pin(async move {
-                                            crate::configuration::source_changes::fail_in(tx, audit)
-                                                .await
-                                                .map(ProtectedStep::Ready)
-                                                .map_err(|e| fault(e, &Mutex::new(None)))
+                                            crate::configuration::source_changes::fail_in(
+                                                binding, tx, audit,
+                                            )
+                                            .await
+                                            .map(ProtectedStep::Ready)
+                                            .map_err(|e| fault(e, &Mutex::new(None)))
                                         })
                                     })
                                     .await
@@ -149,7 +152,7 @@ impl DurableStore for PolicyWork {
                     .work_owner(entity)?
                     .0
                     .local_tx_with_context(
-                        self.service.audit_store.binding(),
+                        binding,
                         rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                             control.remaining(),
                         ),
@@ -173,6 +176,7 @@ impl DurableStore for PolicyWork {
                                                 let result = match id {
                                                     Some(id) => {
                                                         crate::worker::jobs::finish_job_in(
+                                                            binding,
                                                             profile,
                                                             tx,
                                                             audit_store,
@@ -206,14 +210,13 @@ impl DurableStore for PolicyWork {
                     return Err(ReconcileError::new(ErrorKind::BindingChanged));
                 }
             }
-            let scheduled =
-                if matches!(claim.target().entity(), "schedules" | "configuration-relay")
-                    && completion == Completion::Converged
-                {
-                    Completion::Reobserve(crate::worker_wake::RECOVERY)
-                } else {
-                    completion
-                };
+            let scheduled = if matches!(claim.target().entity(), "schedules")
+                && completion == Completion::Converged
+            {
+                Completion::Reobserve(crate::worker_wake::RECOVERY)
+            } else {
+                completion
+            };
             self.store.finish(claim, scheduled, control).await?;
             self.service.record_settled(claim.target(), completion);
             if let Completion::Suspended { failures } = completion {

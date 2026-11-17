@@ -21,7 +21,6 @@ pub struct Envelope {
     pub clock: Arc<dyn rss_observation::Clock>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub requests: Arc<tokio::sync::Semaphore>,
-    pub tenant: String,
 }
 pub fn wrap<M: rss_mdm_http_contract::module::Declaration>(
     router: Router<(), M>,
@@ -116,10 +115,9 @@ pub async fn admit(
     } else {
         route_action(route)
     };
-    let audit = RequestAudit::new(
+    let audit = RequestAudit::unresolved(
         rss_mdm_audit_integration::Origin::Request,
         envelope.profile,
-        envelope.tenant.clone(),
         action,
         rss_mdm_audit_integration::AuditIntent::Routine,
     );

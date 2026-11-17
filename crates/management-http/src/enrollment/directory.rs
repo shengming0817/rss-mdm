@@ -35,6 +35,8 @@ pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::De
     }
 }
 async fn list(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -83,6 +85,8 @@ async fn list(
     .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn statistics(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -117,7 +121,7 @@ async fn detail(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
 ) -> Result<Json<DeviceDetail>, Error> {
     audit.set_action(
         "management_read",

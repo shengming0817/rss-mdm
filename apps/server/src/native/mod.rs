@@ -34,12 +34,13 @@ pub(crate) struct Routers {
     pub(crate) baseline: rss_runtime::ManagedTaskRegistration,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub webhooks: Arc<rss_mdm_webhook_service::management::Service>,
+    pub windows_control: Arc<rss_mdm_windows_channel::HttpState>,
     pub apple_control: Arc<rss_mdm_apple_channel::HttpState>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
-    pub agent_pki: Option<Arc<crate::agent_pki::AgentPki>>,
+
     pub windows: Option<Arc<crate::windows::Windows>>,
     pub apple: Option<Arc<crate::apple::Apple>>,
     pub browser: Router,
-    pub agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,
+
     pub listeners: Vec<(ChannelKind, ChannelRouter)>,
 }

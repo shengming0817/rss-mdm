@@ -9,7 +9,7 @@ impl SoftwareService {
         audit: &RequestAudit,
     ) -> Result<()> {
         self.transactions.runtime.validate_transaction(tx)?;
-        let tenant = self.transactions.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let instance = self.transactions.instance.clone();
         tx.with_connection(move |c| {
             Box::pin(async move {
@@ -123,7 +123,7 @@ pub async fn settle_one(
     {
         report.event = dc::DeviceEvent::Reported(op.request.digest(
             &s.transactions.protection,
-            s.transactions.tenant,
+            tx.tenant_id(),
             &op.device,
         )?);
         if s.transactions.store.report(tx, &report).await?.outcome == dc::Outcome::OutOfOrder {
@@ -233,7 +233,6 @@ fn read(op: &storage::Operation, values: bool) -> Result<crate::deployment::wind
     Ok(crate::deployment::windows_results::Read {
         id: op.id,
         device: op.device,
-
         request: request.clone(),
         values: values && !sensitive,
     })

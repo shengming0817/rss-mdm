@@ -30,14 +30,11 @@ pub fn target(tenant: TenantId, task: Uuid) -> rss_reconcile::Target {
 impl AssetService {
     fn check_query_transaction(&self, tx: &PgTransaction<'_>) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::Forbidden.into());
-        }
         Ok(())
     }
     pub async fn query_task_in(&self, tx: &mut PgTransaction<'_>, task: Uuid) -> Result<QueryTask> {
         self.check_query_transaction(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let row = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query("SELECT input,completed,failure,cursor_kind,cursor,started,total,matched,unknown FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(tenant).bind(task).fetch_optional(c).await
@@ -70,25 +67,27 @@ impl AssetService {
         task: Uuid,
         input: &QueryInput,
     ) -> Result<()> {
+        let epoch = tx.expected_epoch().get();
+
         self.check_query_transaction(tx)?;
-        if task.is_nil() || input.asset_cut.tenant().to_string() != self.tenant.to_string() {
+        if task.is_nil() || input.asset_cut.tenant().to_string() != tx.tenant_id().to_string() {
             return Err(Error::Malformed.into());
         }
         let document = checked_input(serde_json::to_string(input))?;
         if document.len() > 1_048_576 {
             return Err(Error::Malformed.into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_assets.asset_query_runs(tenant_id,id,input) VALUES($1::uuid,$2,$3::jsonb)")
-                .bind(tenant).bind(task).bind(document).execute(c).await?;
+            sqlx::query("INSERT INTO mdm_assets.asset_query_runs(tenant_id,id,input,expected_epoch) VALUES($1::uuid,$2,$3::jsonb,$4)")
+                .bind(tenant).bind(task).bind(document).bind(epoch).execute(c).await?;
             Ok(())
         })).await?;
         self.reconcile_messaging
             .wake_in(
                 tx,
-                &target(self.tenant, task),
-                &rss_reconcile::ResourceSet::empty(self.tenant),
+                &target(tx.tenant_id(), task),
+                &rss_reconcile::ResourceSet::empty(tx.tenant_id()),
                 (),
                 |_, _| Box::pin(async { Ok(()) }),
             )
@@ -103,7 +102,7 @@ impl AssetService {
         cursor: Option<rss_mdm_agent_wire::ObjectRef>,
     ) -> Result<()> {
         self.check_query_transaction(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let changed = tx.with_connection(move |c| Box::pin(async move {
             Ok(sqlx::query("UPDATE mdm_assets.asset_query_runs SET cursor_kind=$3,cursor=$4,started=true WHERE tenant_id=$1::uuid AND id=$2 AND NOT completed")
                 .bind(tenant).bind(task).bind(cursor.map(|o|o.kind())).bind(cursor.map(|o|o.uuid())).execute(c).await?.rows_affected())
@@ -115,12 +114,13 @@ impl AssetService {
     }
     pub(super) async fn finish_query_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         failure: Option<&str>,
     ) -> Result<()> {
         self.check_query_transaction(tx)?;
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let reason = failure.map(str::to_owned);
         let changed = tx.with_connection(move |c| Box::pin(async move {
             Ok(sqlx::query("UPDATE mdm_assets.asset_query_runs SET completed=true,failure=$3 WHERE tenant_id=$1::uuid AND id=$2 AND NOT completed")
@@ -128,7 +128,7 @@ impl AssetService {
         })).await?;
         self.clear_evaluation(tx, task).await?;
         if failure.is_some() {
-            let tenant = self.tenant.to_string();
+            let tenant = tx.tenant_id().to_string();
             tx.with_connection(move |c| Box::pin(async move {
                 sqlx::query("UPDATE mdm_assets.software_progress SET result_state='releasing' WHERE tenant_id=$1::uuid AND run=$2 AND result_state='retained'")
                     .bind(tenant).bind(task).execute(c).await?;
@@ -147,7 +147,7 @@ impl AssetService {
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
-            self.tenant.to_string(),
+            binding,
             action,
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -197,7 +197,7 @@ impl AssetService {
     {
         crate::transaction::inspect(
             &self.runtime,
-            self.audit_store.binding(),
+            p.binding(),
             (self, p),
             |(s, p), tx| {
                 Box::pin(async move {

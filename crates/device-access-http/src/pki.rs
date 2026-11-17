@@ -110,17 +110,22 @@ fn error(e: rss_mdm_pki_service::Error) -> Error {
 async fn trust(
     State(s): State<Arc<HttpState>>,
     Extension(a): Extension<RequestAuth>,
-    Path(value): Path<String>,
+    Path((_tenant, value)): Path<(uuid::Uuid, String)>,
 ) -> Result<Json<Trust>, Error> {
     a.proof
         .require_all_devices(rss_mdm_authorization_service::Permission::Credentials)?;
-    let trust = s.registry.trust(purpose(&value)?).map_err(error)?;
+    let trust = s
+        .registry
+        .trust(a.proof.binding(), purpose(&value)?)
+        .await
+        .map_err(error)?;
     if trust.tenant.to_string() != a.proof.tenant_id() {
         return Err(Error::Forbidden);
     }
     Ok(Json(trust))
 }
 async fn prepare(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
     State(s): State<Arc<HttpState>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -141,7 +146,7 @@ async fn transition(
     State(s): State<Arc<HttpState>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(value): Path<String>,
+    Path((_tenant, value)): Path<(uuid::Uuid, String)>,
     body: Result<Json<Transition>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Receipt>, Error> {
     let input = body.map_err(|_| Error::Malformed)?.0;
@@ -154,6 +159,7 @@ async fn transition(
 }
 
 async fn recover(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
     State(s): State<Arc<HttpState>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -172,6 +178,7 @@ async fn recover(
 }
 
 async fn publish(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
     State(s): State<Arc<HttpState>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -195,7 +202,7 @@ async fn publish(
 async fn latest_rotation(
     State(s): State<Arc<HttpState>>,
     Extension(a): Extension<RequestAuth>,
-    Path(value): Path<String>,
+    Path((_tenant, value)): Path<(uuid::Uuid, String)>,
 ) -> Result<Json<Option<rss_mdm_pki_service::rotation::View>>, Error> {
     let now = s.clock.unix_seconds().map_err(|_| Error::Unavailable)?;
     s.registry
@@ -207,7 +214,7 @@ async fn latest_rotation(
 async fn read_rotation(
     State(s): State<Arc<HttpState>>,
     Extension(a): Extension<RequestAuth>,
-    Path((value, id)): Path<(String, uuid::Uuid)>,
+    Path((_tenant, value, id)): Path<(uuid::Uuid, String, uuid::Uuid)>,
 ) -> Result<Json<rss_mdm_pki_service::rotation::View>, Error> {
     let now = s.clock.unix_seconds().map_err(|_| Error::Unavailable)?;
     s.registry
@@ -226,7 +233,7 @@ impl rss_mdm_http_contract::query::DirectoryOwner for BlockersQuery {
 async fn rotation_blockers(
     State(s): State<Arc<HttpState>>,
     Extension(a): Extension<RequestAuth>,
-    Path((value, id)): Path<(String, uuid::Uuid)>,
+    Path((_tenant, value, id)): Path<(uuid::Uuid, String, uuid::Uuid)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Directory<BlockersQuery>,
     >,

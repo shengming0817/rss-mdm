@@ -2,22 +2,23 @@
 use rss_mdm_software_service::Credentials;
 use std::{collections::BTreeMap, path::PathBuf};
 pub(crate) struct SourceCredentials {
-    tenant: rss_request_context::TenantId,
     source: String,
-    values: BTreeMap<String, zeroize::Zeroizing<String>>,
+    values: BTreeMap<uuid::Uuid, BTreeMap<String, zeroize::Zeroizing<String>>>,
 }
 impl SourceCredentials {
     pub(crate) fn load(
-        tenant: rss_request_context::TenantId,
         source: &str,
-        files: &BTreeMap<String, PathBuf>,
+        files: &BTreeMap<uuid::Uuid, BTreeMap<String, PathBuf>>,
     ) -> Result<Self, crate::Error> {
         let mut values = BTreeMap::new();
-        for (key, path) in files {
-            values.insert(key.clone(), crate::config::secret(path)?);
+        for (tenant, files) in files {
+            let mut credentials = BTreeMap::new();
+            for (key, path) in files {
+                credentials.insert(key.clone(), crate::config::secret(path)?);
+            }
+            values.insert(*tenant, credentials);
         }
         Ok(Self {
-            tenant,
             source: source.into(),
             values,
         })
@@ -32,13 +33,16 @@ impl Credentials for SourceCredentials {
     ) -> rss_mdm_software_service::publication::Result<rss_mdm_software_service::BrewReadAccess>
     {
         use rss_mdm_software_service::publication::Error;
-        if tenant != self.tenant || source != self.source {
+        if source != self.source {
             return Err(Error::Identity);
         }
         rss_mdm_software_service::BrewReadAccess::new(
             tenant,
             source,
-            self.values.get(reference).ok_or(Error::Identity)?,
+            self.values
+                .get(&uuid::Uuid::parse_str(&tenant.to_string()).map_err(|_| Error::Identity)?)
+                .and_then(|values| values.get(reference))
+                .ok_or(Error::Identity)?,
         )
         .map_err(|_| Error::Identity)
     }

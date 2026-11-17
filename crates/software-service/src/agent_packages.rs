@@ -148,7 +148,7 @@ async fn replay_in(
     operation: Uuid,
     hash: &[u8],
 ) -> transaction::Result<Option<w::Package>> {
-    crate::catalog::Reader::new(tx.tenant_id())
+    crate::catalog::Reader::new()
         .operation_receipt_in(tx, operation, hash)
         .await?
         .map(|value| serde_json::from_value(value).map_err(|_| storage().into()))
@@ -161,7 +161,7 @@ async fn prepare<C: ManagementContentPort>(
 ) -> Result<Prepared, Error> {
     let version = transaction::inspect(
         &app.runtime,
-        app.audit.binding(),
+        p.binding(),
         (app, p, i),
         |ctx, tx| {
             Box::pin(async move {
@@ -183,10 +183,10 @@ async fn prepare<C: ManagementContentPort>(
         .content
         .as_ref()
         .ok_or(Error::Unsupported)?
-        .verify(&version)
+        .verify(p.binding(), &version)
         .await
         .map_err(|_| invalid())?;
-    let (package, binding) = package_material(app.tenant, &version, i)?;
+    let (package, binding) = package_material(p.binding().tenant(), &version, i)?;
     Ok(Prepared {
         version,
         package,
@@ -355,7 +355,7 @@ pub async fn publish<C: ManagementContentPort>(
 ) -> Result<w::Package, Error> {
     p.manage(Permission::ReleasePublish)?;
     p.bind_audit(a)?;
-    if p.tenant_id() != app.tenant.to_string() || i.operation_id.is_nil() || i.package_id.is_nil() {
+    if i.operation_id.is_nil() || i.package_id.is_nil() {
         return Err(invalid());
     }
     a.owned_operation(
@@ -368,7 +368,7 @@ pub async fn publish<C: ManagementContentPort>(
     let hash = digest(&(p.principal_id(), p.instance_id(), i))?;
     let replay = transaction::inspect(
         &app.runtime,
-        app.audit.binding(),
+        p.binding(),
         (app, p, i, &hash),
         |ctx, tx| {
             Box::pin(async move {
@@ -386,7 +386,7 @@ pub async fn publish<C: ManagementContentPort>(
         let resource = i.package_id.to_string();
         let version = transaction::inspect(
             &app.runtime,
-            app.audit.binding(),
+            p.binding(),
             (app, p, &resource),
             |ctx, tx| {
                 Box::pin(async move {
@@ -433,7 +433,7 @@ pub async fn publish<C: ManagementContentPort>(
     transaction::run(
         &app.audit,
         &app.runtime,
-        app.audit.binding(),
+        p.binding(),
         a,
         (app, p, i, a, hash, prepared),
         |ctx, tx| {
@@ -443,7 +443,10 @@ pub async fn publish<C: ManagementContentPort>(
                 current.require(p, Permission::ReleasePublish, None)?;
                 let partitions = prepared
                     .as_ref()
-                    .map(|prepared| app.catalog.publication_partition(&prepared.version))
+                    .map(|prepared| {
+                        app.catalog
+                            .publication_partition(p.binding(), &prepared.version)
+                    })
                     .transpose()?
                     .into_iter()
                     .collect::<Vec<_>>();
@@ -640,18 +643,20 @@ pub async fn list(
 }
 pub async fn metadata_public<C: ManagementContentPort>(
     app: &management::catalog::Access<C>,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     id: Uuid,
 ) -> Result<w::Package, Error> {
-    Ok(inspect_package(app, id).await?.0)
+    Ok(inspect_package(app, execution, id).await?.0)
 }
 async fn inspect_package<C: ManagementContentPort>(
     app: &management::catalog::Access<C>,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     id: Uuid,
 ) -> Result<(w::Package, Binding), Error> {
     transaction::inspect(
         &app.runtime,
-        app.audit.binding(),
-        (app.tenant, id),
+        execution,
+        (execution.tenant(), id),
         |ctx, tx| {
             let (tenant, id) = *ctx;
             Box::pin(async move {
@@ -668,18 +673,19 @@ async fn inspect_package<C: ManagementContentPort>(
 }
 pub async fn download<C: ManagementContentPort>(
     app: &management::catalog::Access<C>,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     id: Uuid,
 ) -> Result<(w::Package, C::Download), Error> {
-    let (package, binding) = inspect_package(app, id).await?;
+    let (package, binding) = inspect_package(app, execution, id).await?;
     let artifact = binding.installer.artifact().map_err(|_| storage())?;
     let file = app
         .content
         .as_ref()
         .ok_or(Error::Unsupported)?
-        .verify_artifact(&artifact)
+        .verify_artifact(execution, &artifact)
         .await?;
     // File verification performs I/O outside the lifecycle transaction; recheck before exposing it.
-    let (current, current_binding) = inspect_package(app, id).await?;
+    let (current, current_binding) = inspect_package(app, execution, id).await?;
     if current.installer_sha256 != package.installer_sha256
         || current_binding.digest != binding.digest
     {
@@ -696,7 +702,7 @@ pub async fn withdraw<C: ManagementContentPort>(
 ) -> Result<(), Error> {
     p.manage(Permission::SoftwareWithdraw)?;
     p.bind_audit(a)?;
-    if p.tenant_id() != app.tenant.to_string() || operation.is_nil() {
+    if operation.is_nil() {
         return Err(invalid());
     }
     a.owned_operation(
@@ -712,12 +718,12 @@ pub async fn withdraw<C: ManagementContentPort>(
         id,
         operation,
     ))?;
-    transaction::run(&app.audit,&app.runtime,app.audit.binding(),a,(app,p,id,operation,a,hash),|ctx,tx|Box::pin(async move{
+    transaction::run(&app.audit,&app.runtime,p.binding(),a,(app,p,id,operation,a,hash),|ctx,tx|Box::pin(async move{
   let (app,p,id,operation,a,hash)=ctx;
   transaction::current(tx,p).await?.require(p,Permission::SoftwareWithdraw,None)?;
   app.catalog.reader().lock_in(tx).await?;
   app.audit.prepare_in(tx,a,&[]).await?;
-  let tenant=app.tenant.to_string();let id=*id;let op=*operation;let d=hash.clone();
+  let tenant=tx.tenant_id().to_string();let id=*id;let op=*operation;let d=hash.clone();
   let old=tx.with_connection(move|c|Box::pin(async move{
    if let Some(row)=sqlx::query("SELECT fingerprint FROM mdm_software.operations WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(op).fetch_optional(&mut *c).await?{return Ok(Some(row.try_get::<Vec<u8>,_>("fingerprint")?));}
    let n=sqlx::query("UPDATE mdm_agent_packages.releases SET state='withdrawn' WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(id).execute(&mut *c).await?.rows_affected();

@@ -42,7 +42,7 @@ async fn resources(c: &Context, cases: &mut Cases) -> Result<r::Version> {
     let owner = planning::owner(c, "mdm_resource_runtime").await?;
     let store = ResourceStore::new(
         owner.runtime.clone(),
-        c.audit.binding(),
+        c.execution(),
         crate::authority_t2_support::deadline(),
     )
     .await?;
@@ -55,7 +55,7 @@ async fn resources(c: &Context, cases: &mut Cases) -> Result<r::Version> {
         (r::Kind::TelemetryProfile, "telemetry_profile"),
     ];
     for (kind, name) in kinds {
-        resource_kind(&store, kind, name, cases).await?;
+        resource_kind(c.execution(), &store, kind, name, cases).await?;
     }
     foreign_resource(c).await?;
     resource_rollback(c, &store, &owner.runtime).await?;
@@ -68,8 +68,16 @@ async fn resources(c: &Context, cases: &mut Cases) -> Result<r::Version> {
                 .collect::<String>()
         })
         .collect::<String>();
-    resource_change(&store, "long-name", 0, Command::Create(r::Kind::Script)).await?;
     resource_change(
+        c.execution(),
+        &store,
+        "long-name",
+        0,
+        Command::Create(r::Kind::Script),
+    )
+    .await?;
+    resource_change(
+        c.execution(),
         &store,
         "long-name",
         1,
@@ -79,6 +87,7 @@ async fn resources(c: &Context, cases: &mut Cases) -> Result<r::Version> {
     )
     .await?;
     resource_change(
+        c.execution(),
         &store,
         "scripts/install",
         0,
@@ -86,6 +95,7 @@ async fn resources(c: &Context, cases: &mut Cases) -> Result<r::Version> {
     )
     .await?;
     resource_change(
+        c.execution(),
         &store,
         "scripts/install",
         1,
@@ -112,6 +122,7 @@ async fn foreign_resource(c: &Context) -> Result<()> {
     )
     .await?;
     resource_change(
+        c.inputs.installation.execution(foreign, 1)?,
         &foreign_store,
         "foreign-directory-hidden",
         0,
@@ -119,6 +130,7 @@ async fn foreign_resource(c: &Context) -> Result<()> {
     )
     .await?;
     resource_change(
+        c.inputs.installation.execution(foreign, 1)?,
         &foreign_store,
         "foreign-directory-hidden",
         1,
@@ -131,6 +143,7 @@ async fn foreign_resource(c: &Context) -> Result<()> {
     Ok(())
 }
 async fn resource_kind(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     store: &ResourceStore,
     kind: r::Kind,
     name: &str,
@@ -145,22 +158,29 @@ async fn resource_kind(
         let mut revision = if kind == r::Kind::Software && selected {
             2
         } else {
-            resource_change(store, &id, 0, Command::Create(kind)).await?;
+            resource_change(execution, store, &id, 0, Command::Create(kind)).await?;
             1
         };
-        resource_change(store, &id, revision, Command::Present(serde_json::from_value(json!({
+        resource_change(execution, store, &id, revision, Command::Present(serde_json::from_value(json!({
                 "name":if selected {"Zulu Éclair %_ O'Reilly\\工具"} else {"Earlier unrelated item"},
                 "category":if selected {"Tools"} else {"Other"}, "description":"A public description", "publisher":"Acme",
                 "vendor":{"unknown":true,"metric":1e18}
             }))?)).await?;
         revision += 1;
         if kind == r::Kind::Software && selected {
-            resource_change(store, &id, revision, Command::Activate(r::Id::new("1")?)).await?;
+            resource_change(
+                execution,
+                store,
+                &id,
+                revision,
+                Command::Activate(r::Id::new("1")?),
+            )
+            .await?;
         }
     }
     case(
         cases,
-        "/api/v1/resources",
+        "/resources",
         format!(
             "kind=={name};presentation.name=icontains=éclair;presentation.category=in=(Tools,Office);active=={}",
             kind == r::Kind::Software
@@ -176,6 +196,7 @@ async fn resource_rollback(
 ) -> Result<()> {
     let before = store
         .get(
+            c.execution(),
             &r::Id::new("a-directory-script")?,
             crate::authority_t2_support::deadline(),
         )
@@ -191,13 +212,15 @@ async fn resource_rollback(
     };
     let rollback = runtime
         .local_tx_with_context(
-            c.audit.binding(),
+            c.execution(),
             crate::authority_t2_support::deadline(),
             (store, &rollback_request),
             |(store, request), tx| {
                 Box::pin(async move {
-                    tx.prepare_outbox_partitions(&[store.partition(request.resource.as_str())?])
-                        .await?;
+                    tx.prepare_outbox_partitions(&[
+                        store.partition(tx.tenant_id(), request.resource.as_str())?
+                    ])
+                    .await?;
                     assert!(store.execute_in(tx, request).await?.is_ok());
                     tx.with_connection(|connection| {
                         Box::pin(async move {
@@ -215,6 +238,7 @@ async fn resource_rollback(
     assert_eq!(
         store
             .get(
+                c.execution(),
                 &r::Id::new("a-directory-script")?,
                 crate::authority_t2_support::deadline()
             )
@@ -266,12 +290,12 @@ async fn planning_rows(
         .bind(c.tenant.to_string()).bind(policy).execute(&mut *tx).await?;
     case(
         cases,
-        "/api/v1/groups",
+        "/groups",
         "presentation.description=icontains=éclair;kind==static".into(),
         group,
     );
-    case(cases,"/api/v1/policies","definition.alias==directory-target;definition.action.schedule.trigger.kind==manual;state==disabled".into(),policy);
-    case(cases,"/api/v1/policies","definition.alias==directory-target;definition.action.resource.variants.windows_x86_64==msi".into(),policy);
+    case(cases,"/policies","definition.alias==directory-target;definition.action.schedule.trigger.kind==manual;state==disabled".into(),policy);
+    case(cases,"/policies","definition.alias==directory-target;definition.action.resource.variants.windows_x86_64==msi".into(),policy);
     tx.commit().await?;
     Ok(group)
 }
@@ -394,27 +418,27 @@ async fn metadata_row(
     sqlx::query("INSERT INTO mdm_access.api_keys(tenant_id,instance,id,revision,authority_revision,credential_revision,metadata,secret_digest,created_by,created_at) VALUES($1,$2,$3,1,1,1,$4,$5,$6,1)")
             .bind(tenant).bind(instance).bind(key).bind(serde_json::to_value(metadata)?).bind(vec![9u8;32]).bind(serde_json::to_value(access::User {instance_id:p.instance_id().into(),tenant_id:p.tenant_id().into(),principal_id:p.principal_id().into()})?).execute(&mut *tx).await?;
     if selected {
-        case(cases,"/api/v1/certificate-archive/entries","latest.metadata.name=icontains=éclair;latest.metadata.labels=containsall=(managed,mac);retired==false".into(),certificate);
-        case(cases,"/api/v1/webhooks/subscriptions","settings.presentation.name=icontains=éclair;settings.eventTypes=containsany=(device.registered);enabled==true".into(),webhook);
-        case(cases,&format!("/api/v1/apple/organizations/{organization}/ade/profiles"),"configuration.name=icontains=éclair;configuration.skip=containsall=(Siri,AppleID);remoteUuid=isnull=true".into(),profile);
+        case(cases,"/certificate-archive/entries","latest.metadata.name=icontains=éclair;latest.metadata.labels=containsall=(managed,mac);retired==false".into(),certificate);
+        case(cases,"/webhooks/subscriptions","settings.presentation.name=icontains=éclair;settings.eventTypes=containsany=(device.registered);enabled==true".into(),webhook);
+        case(cases,&format!("/apple/organizations/{organization}/ade/profiles"),"configuration.name=icontains=éclair;configuration.skip=containsall=(Siri,AppleID);remoteUuid=isnull=true".into(),profile);
         case(
             cases,
-            "/api/v1/compliance-rules",
+            "/compliance-rules",
             format!(
                 "definition.presentation.name=icontains=éclair;definition.target.ids=containsany=({group})"
             ),
             compliance,
         );
-        case(cases,"/api/v1/saved-queries","name=icontains=éclair;definition.query.filter=icontains='device.name';definition.query.fields=containsall=(device.name)".into(),saved);
+        case(cases,"/saved-queries","name=icontains=éclair;definition.query.filter=icontains='device.name';definition.query.fields=containsall=(device.name)".into(),saved);
         case(
             cases,
-            "/api/v1/authorization/user-groups",
+            "/authorization/user-groups",
             "value.name=icontains=éclair;value.enabled==true".into(),
             user_group,
         );
         case(
             cases,
-            "/api/v1/api-keys",
+            "/api-keys",
             format!(
                 "metadata.name=icontains=éclair;createdBy.principalId=={principal};authorityRevision==1"
             ),
@@ -462,7 +486,7 @@ async fn device_row(c: &Context, _p: &AuthorizedPrincipal, cases: &mut Cases) ->
     ] {
         case(
             cases,
-            "/api/v1/device-views",
+            "/device-views",
             format!("search=icontains={term}"),
             endpoint.to_string(),
         );
@@ -550,12 +574,13 @@ async fn check_device_snapshot(c: &Context, device: &rss_mdm_agent_wire::DeviceI
 }
 
 async fn resource_change(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     store: &ResourceStore,
     id: &str,
     revision: u64,
     command: Command,
 ) -> Result<()> {
-    store.execute(&Request { id:r::Id::new(Uuid::new_v4().to_string())?,resource:r::Id::new(id)?,expected_storage_revision:revision,
+    store.execute(execution, &Request { id:r::Id::new(Uuid::new_v4().to_string())?,resource:r::Id::new(id)?,expected_storage_revision:revision,
         as_of:rss_contract::Timepoint::try_from(super::super::software_t2::support::now())?,command },crate::authority_t2_support::deadline()).await?;
     Ok(())
 }
@@ -743,11 +768,12 @@ pub(super) async fn literal_name(c: &Context, name: &str, revision: u64) -> Resu
     let owner = planning::owner(c, "mdm_resource_runtime").await?;
     let store = ResourceStore::new(
         owner.runtime.clone(),
-        c.audit.binding(),
+        c.execution(),
         crate::authority_t2_support::deadline(),
     )
     .await?;
     let result = resource_change(
+        c.execution(),
         &store,
         "scripts/install",
         revision,

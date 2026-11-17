@@ -30,6 +30,7 @@ CREATE TABLE mdm_apple.account_bindings (
  FOREIGN KEY(tenant_id,organization) REFERENCES mdm_apple.account_configuration(tenant_id,id)
 );
 CREATE TABLE mdm_apple.account_flows (
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL, id uuid NOT NULL, organization uuid NOT NULL, organization_revision bigint NOT NULL,
  request_digest text NOT NULL, account text, binding_revision bigint,
  expected_account text, target_enrollment uuid NOT NULL, cookie_hash text, enrollment uuid, authorization_version bigint, token_hash text, material bytea,
@@ -88,3 +89,18 @@ GRANT EXECUTE ON FUNCTION mdm_apple.account_current(uuid,uuid,bigint,uuid,text) 
 GRANT SELECT(tenant_id,enrollment) ON mdm_apple.account_flows TO mdm_command_runtime;
 GRANT UPDATE(revoked,material,profile) ON mdm_apple.account_flows TO mdm_command_runtime;
 COMMIT;
+
+CREATE POLICY protocol_locator ON mdm_apple.account_configuration FOR SELECT TO mdm_owner USING(true);
+CREATE INDEX ON mdm_apple.account_configuration(id);
+CREATE FUNCTION mdm_apple.account_configuration_tenants(target uuid) RETURNS TABLE(tenant_id uuid) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$ SELECT DISTINCT tenant_id FROM mdm_apple.account_configuration WHERE id=target ORDER BY tenant_id LIMIT 2 $$;
+REVOKE ALL ON FUNCTION mdm_apple.account_configuration_tenants(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_apple.account_configuration_tenants(uuid) TO mdm_access;
+CREATE FUNCTION mdm_apple.account_domain_tenants(target text) RETURNS TABLE(tenant_id uuid) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$ SELECT DISTINCT tenant_id FROM mdm_apple.account_configuration WHERE domain=target AND enabled ORDER BY tenant_id LIMIT 2 $$;
+REVOKE ALL ON FUNCTION mdm_apple.account_domain_tenants(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_apple.account_domain_tenants(text) TO mdm_access;
+
+CREATE POLICY protocol_locator ON mdm_apple.account_flows FOR SELECT TO mdm_owner USING(true);
+CREATE INDEX ON mdm_apple.account_flows(id);
+CREATE FUNCTION mdm_apple.account_flow_scopes(target uuid) RETURNS TABLE(tenant_id uuid,expected_epoch bigint) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$ SELECT DISTINCT tenant_id,expected_epoch FROM mdm_apple.account_flows WHERE id=target ORDER BY tenant_id LIMIT 2 $$;
+REVOKE ALL ON FUNCTION mdm_apple.account_flow_scopes(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_apple.account_flow_scopes(uuid) TO mdm_access;

@@ -1,20 +1,23 @@
 //! Shared real App configuration for lifecycle and HTTP consumer proofs.
 use crate::authority_t2_support::Inputs;
 use anyhow::Result;
-use rss_request_context::TenantId;
 use serde_json::{Value, json};
 use uuid::Uuid;
-pub(crate) fn configuration(
+pub(crate) async fn configuration(
     inputs: &Inputs,
     profile: &str,
-    tenant: TenantId,
     address: std::net::SocketAddr,
     host: Uuid,
 ) -> Result<Value> {
     let mut configuration: Value =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))?;
     configuration["listen"] = json!(address.to_string());
-    configuration["identity"]["tenant_id"] = json!(tenant.to_string());
+    let management = crate::identity::management_tenant(
+        &inputs.database(profile, "mdm_identity_runtime"),
+        rss_identity_core::InstanceId::parse(&inputs.installation.instance_id)?,
+    )
+    .await?;
+    configuration["identity"]["management_tenant"] = json!(management.to_string());
     configuration["identity"]["database"] =
         serde_json::to_value(inputs.database(profile, "mdm_identity_runtime"))?;
     configuration["access_database"] =
@@ -54,4 +57,77 @@ pub(crate) fn configuration(
     configuration["runtime_binding"]["host_id"] = json!(host);
     configuration["identity"]["instance_id"] = json!(inputs.installation.instance_id);
     Ok(configuration)
+}
+
+/// Exercise the final production App over TCP, and drain it even when the proof fails.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "host proof supplies the production monotonic clock"
+)]
+pub(crate) async fn run<F, Fut>(configuration: Value, proof: F) -> Result<()>
+where
+    F: FnOnce(reqwest::Client, String) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    use std::{sync::Arc, time::Duration};
+    let address = configuration["listen"].as_str().unwrap().to_owned();
+    let config = serde_json::from_value(configuration)?;
+    let mut headers = reqwest::header::HeaderMap::new();
+    for (name, value) in [
+        ("host", "mdm.example.test"),
+        ("x-rss-public-origin", "https://mdm.example.test"),
+        ("x-forwarded-for", "127.0.0.1"),
+    ] {
+        headers.insert(name, value.parse()?);
+    }
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .default_headers(headers)
+        .timeout(Duration::from_secs(10))
+        .build()?;
+    let base = format!("http://{address}");
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let mut server = tokio::spawn(crate::serve(
+        config,
+        async move {
+            stopped
+                .await
+                .map_err(|_| std::io::Error::other("test stop sender closed"))
+        },
+        Arc::new(crate::Monotonic(std::time::Instant::now)),
+    ));
+    let exercise = async {
+        tokio::time::timeout(Duration::from_secs(90), async {
+            loop {
+                if let Ok(response) = client.get(format!("{base}/readyz")).send().await
+                    && response.status().is_success()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await?;
+        Box::pin(proof(client, base)).await
+    };
+    let result = tokio::select! {
+        result = &mut server => anyhow::bail!("host exited during HTTP proof: {result:?}"),
+        result = exercise => result,
+    };
+    stop.send(())
+        .map_err(|_| anyhow::anyhow!("host lost stop receiver"))?;
+    tokio::time::timeout(Duration::from_secs(70), &mut server).await???;
+    result
+}
+
+pub(crate) async fn reject(response: reqwest::Response, status: u16, code: &str) -> Result<Value> {
+    assert_eq!(response.status().as_u16(), status);
+    assert_eq!(response.headers()["content-type"], "application/json");
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert_eq!(response.headers()["referrer-policy"], "no-referrer");
+    assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+    Uuid::parse_str(response.headers()["x-request-id"].to_str()?)?;
+    let body: Value = response.json().await?;
+    assert_eq!(body, json!({"code":code}));
+    Ok(body)
 }

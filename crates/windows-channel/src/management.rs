@@ -46,12 +46,17 @@ pub(crate) async fn manage(
     {
         return Err(Error::Malformed);
     }
-    let checked = app.windows()?.ca.verify(
+    let execution = app.certificate_binding(&peer).await?;
+    let windows = app.windows(execution).await?;
+    let checked = windows.ca.verify(
         peer.chain(),
         app.clock
             .unix_seconds()
             .ok_or(Error::Unavailable(Failure::Clock))?,
     )?;
+    audit
+        .bind_scope(execution)
+        .map_err(|_| Error::Unauthorized)?;
     let message = syncml::decode(&bytes, &CodecLimits::default()).map_err(|_| Error::Malformed)?;
     let purpose = match uri.path() {
         "/ManagementServer/MDM.svc" => rss_mdm_registration_service::Purpose::Primary,
@@ -59,8 +64,7 @@ pub(crate) async fn manage(
         _ => return Err(Error::Forbidden),
     };
     if message.header.target != format!("{}{}", endpoint.0, uri.path())
-        || !app
-            .windows()?
+        || !windows
             .management_urls(purpose)
             .contains(&message.header.target)
     {
@@ -75,14 +79,21 @@ pub(crate) async fn manage(
             }
         )
     });
-    crate::renewal::activate(&app, &checked, &message.header.source, purpose).await?;
+    crate::renewal::activate(
+        &app,
+        execution,
+        &windows,
+        &checked,
+        &message.header.source,
+        purpose,
+    )
+    .await?;
     let mount = crate::device::ChannelMount::new(
         rss_mdm_install_support::StorageProfile::Mdm,
-        app.identity.tenant(),
         rss_mdm_inventory::ReportSource::MdmWindows,
         purpose,
     );
-    let credential = mount.credential(checked.fingerprint())?;
+    let credential = mount.credential(execution, checked.fingerprint())?;
     let principal = match app
         .devices
         .management_principal(&credential)
@@ -101,14 +112,13 @@ pub(crate) async fn manage(
         Err(error) => return Err(error),
     };
     if principal.purpose() == rss_mdm_registration_service::Purpose::WindowsDeclared {
-        linked::current_parent(&app, principal.device()).await?;
+        linked::current_parent(&app, &windows, principal.binding(), principal.device()).await?;
     }
     audit.identify_device(principal.device());
     audit.target_device(principal.device());
     let protocol_device = crate::protocol_device::read(&app.access, &principal).await?;
     if message.header.source != protocol_device
-        || !app
-            .windows()?
+        || !windows
             .management_urls(purpose)
             .contains(&message.header.target)
     {
@@ -135,7 +145,7 @@ pub(crate) async fn manage(
         match app
             .delivery
             .management(
-                app.windows()?.clone(),
+                windows.clone(),
                 &principal,
                 &message,
                 &bytes,
@@ -196,6 +206,7 @@ async fn supersede_sessions(
             .bind(&tenant).bind(registration.into_uuid()).bind(principal.epoch()).fetch_all(&mut *tx).await.map_err(db)?;
         for session in sessions {
             crate::collection::terminate_session(
+                principal.binding(),
                 tx,
                 facts,
                 &tenant,
@@ -546,6 +557,8 @@ async fn session_decision(
 }
 
 pub(crate) async fn notify(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
-    sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'windows')").execute(c).await?;
+    sqlx::query("SELECT pg_notify('mdm_work','windows')")
+        .execute(c)
+        .await?;
     Ok(())
 }

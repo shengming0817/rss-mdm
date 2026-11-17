@@ -65,6 +65,7 @@ pub trait ManagementContentPort: ContentPort {
     type ImportEvidence: ImportedContent;
     fn prepare_upload(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         input: &PrepareUpload,
         resource: &str,
         upload: Uuid,
@@ -72,6 +73,7 @@ pub trait ManagementContentPort: ContentPort {
     ) -> impl Future<Output = Result<PreparedUpload, Error>> + Send;
     fn inspect_upload(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         upload: Uuid,
         actor: &str,
         resource: &str,
@@ -79,21 +81,25 @@ pub trait ManagementContentPort: ContentPort {
 
     fn parse_upload(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         upload: Uuid,
         actor: &str,
         resource: &str,
     ) -> impl Future<Output = Result<(), Error>> + Send;
     fn verify_artifact(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         artifact: &r::Artifact,
     ) -> impl Future<Output = Result<Self::Download, Error>> + Send;
     fn stage_import(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         input: StageImport<'_>,
     ) -> impl Future<Output = Result<Self::StagedImport, Error>> + Send;
     /// Pin all staged originals under one transfer permit through transaction settlement.
     fn pin_imports(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         staged: Vec<Self::StagedImport>,
     ) -> impl Future<Output = Result<Self::ImportEvidence, Error>> + Send;
 }

@@ -4,12 +4,21 @@ pub async fn execute() -> Result<(), ProcessError> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "rss-mdm install|maintain-content-storage|maintain-default-telemetry|prepare-telemetry|prepare-telemetry-tenant|maintain-telemetry-storage|prepare-hosts|rotate-protection|initialize-ca|configure-host|public-host-config|export-webhook-key|backup-installation|restore-installation|serve|migrate|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
+            "rss-mdm install|observe-installation|maintain-materials|maintain-content-storage|maintain-default-telemetry|prepare-telemetry|prepare-telemetry-tenant|maintain-telemetry-storage|rotate-protection|initialize-ca|configure-host|public-host-config|export-webhook-key|backup-installation|restore-installation|serve|migrate|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe|http-contract"
         );
         return Ok(());
     }
     if args == ["--describe"] {
         println!("{}", crate::migration::manifest());
+        return Ok(());
+    }
+    if args == ["http-contract"] {
+        let contract =
+            crate::assembly::http::http_contract_document().map_err(|_| ProcessError::Stage {
+                stage: "http.contract",
+                kind: "invalid mounted contract",
+            })?;
+        println!("{}", contract);
         return Ok(());
     }
     if args == ["--version"] {
@@ -116,8 +125,16 @@ async fn run(command: &str, path: &std::path::Path) -> Result<(), ProcessError> 
     }
 }
 
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "closed dispatch keeps each maintenance owner and its public receipt explicit"
+)]
 async fn installation(command: &str, path: &std::path::Path) -> Result<(), ProcessError> {
     match command {
+        #[cfg(unix)]
+        "maintain-materials" => crate::installation::providers::reconcile::run(config::load(path)?)
+            .await
+            .map_err(|e| setup_failure("installation.materials", e)),
         #[cfg(unix)]
         "maintain-content-storage" => {
             let receipt = crate::installation::content_storage::maintain(config::load(path)?)
@@ -179,6 +196,18 @@ async fn installation(command: &str, path: &std::path::Path) -> Result<(), Proce
             println!(
                 "{}",
                 serde_json::to_string(&receipt).expect("public installation receipt")
+            );
+            Ok(())
+        }
+        #[cfg(unix)]
+        "observe-installation" => {
+            let receipt =
+                crate::installation::runtime_files::observe_installation(config::load(path)?)
+                    .await
+                    .map_err(|error| setup_failure("installation.observation", error))?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).expect("public application observation")
             );
             Ok(())
         }
@@ -247,14 +276,6 @@ async fn installation(command: &str, path: &std::path::Path) -> Result<(), Proce
                 "{}",
                 serde_json::to_string(&receipt).expect("public protection receipt")
             );
-            Ok(())
-        }
-        #[cfg(unix)]
-        "prepare-hosts" => {
-            let completed = crate::installation::tenant_hosts::reconcile(&config::load(path)?)
-                .await
-                .map_err(|error| setup_failure("host.inputs", error))?;
-            println!("{}", serde_json::json!({"observedHosts":completed}));
             Ok(())
         }
 

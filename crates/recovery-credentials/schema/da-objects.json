@@ -8,10 +8,15 @@
     "rss_da.recovery_disclosures",
     "rss_da.credential_runs",
     "rss_da.credential_policy_recovery",
-    "rss_da.credential_agent_admission"
+    "rss_da.credential_agent_admission",
+    "rss_da.recovery_recipient_selection"
   ],
   "functions": [
-    "rss_da.credential_save_retired_run"
+    "rss_da.credential_save_retired_run",
+    "rss_da.credential_runs_work_scopes",
+    "rss_da.credential_runs_work_epoch",
+    "rss_da.credential_runs_work_relay_scopes",
+    "rss_da.recovery_versions_maintenance_scopes"
   ],
   "views": []
 }

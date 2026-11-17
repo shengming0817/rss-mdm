@@ -275,6 +275,7 @@ class Environment:
         # Publication defines the borrowed relay role required by subsequent role files.
         for source in sources:
             sql += source.read_text()
+        sql += "GRANT rss_tmsg_relay TO da_owner;"
         for role in ('mdm_policy_runtime','mdm_resource_runtime','mdm_software_release_runtime','mdm_group_runtime',
                      'mdm_inventory_runtime','mdm_scope_runtime','mdm_software_runtime','mdm_content_runtime','mdm_telemetry_runtime','mdm_scheduler_runtime','mdm_command_runtime','mdm_software_driver','mdm_webhook_operator','mdm_scope_group_consumer','mdm_asset_ingress_consumer'):
             sql += f"ALTER ROLE {role} LOGIN PASSWORD 'runtime-fixture';"
@@ -406,13 +407,13 @@ class Environment:
         private(operator/'account-password',password.read_text())
         private(operator/'migrate.json',dict(installation=installation(),database=database(operator,'mdm_owner'),device_access_database=database(operator,'da_owner')))
 
-        private(operator/'initialize.json',dict(audit={'mode':'plain'},installation=installation(),database=database(operator,'mdm_identity_maintenance'),
+        private(operator/'initialize.json',dict(runtime=config['identity']['runtime'],audit={'mode':'plain'},installation=installation(),database=database(operator,'mdm_identity_maintenance'),
                 tenant_id=TENANTS[0],expected_epoch=1,principal_id=ADMIN,login='admin',password_file=path(operator,'account-password')))
         auth=operator/'authorization.json'
         operation_file=self.root/'authorization-operation'
         if not operation_file.exists():private(operation_file,str(uuid.uuid4()))
         operation=operation_file.read_text()
-        private(auth,dict(profile='mdm',audit={'mode':'plain'},database=database(operator,'mdm_access'),identityDatabase=database(operator,'mdm_identity_runtime'),
+        private(auth,dict(runtime=config['identity']['runtime'],profile='mdm',audit={'mode':'plain'},database=database(operator,'mdm_access'),identityDatabase=database(operator,'mdm_identity_runtime'),
                          installation=installation(),expectedEpoch=1,login='admin',passwordFile=path(operator,'account-password'),operationId=operation,
                          user=dict(instanceId=INSTANCE,tenantId=TENANTS[0],principalId=ADMIN)))
         if self.sql("SELECT count(*) FROM pg_database WHERE datname='mdm_dev'")=='0':self.sql('CREATE DATABASE mdm_dev OWNER mdm_owner')

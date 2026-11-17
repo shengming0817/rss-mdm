@@ -4,6 +4,7 @@ pub mod agent;
 pub mod certificate_issuance;
 mod database;
 pub mod device;
+mod discovery;
 pub mod enrollment;
 mod error;
 pub mod lifecycle;

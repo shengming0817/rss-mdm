@@ -18,13 +18,14 @@ pub struct ComplianceWork {
 impl ComplianceWork {
     async fn capture<T: Timer>(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         control: &Control<'_, T>,
     ) -> std::result::Result<rss_mdm_inventory::AssetCut, ReconcileError> {
         control.check()?;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(control.remaining());
         rss_mdm_inventory_service::assets::cut::capture(
             &self.compliance.audit_store,
-            self.compliance.tenant,
+            binding.tenant(),
             &budget,
         )
         .await
@@ -38,7 +39,7 @@ impl ComplianceWork {
         }
     }
     fn check(&self, scope: &Scope) -> std::result::Result<(), ReconcileError> {
-        if scope.tenant() != self.compliance.tenant || scope.reconciler() != "mdm.compliance" {
+        if scope.reconciler() != "mdm.compliance" {
             return Err(ReconcileError::new(ErrorKind::Invariant));
         }
         Ok(())
@@ -63,10 +64,11 @@ impl ComplianceWork {
         reason: &str,
         control: &Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
+        let binding = self.execution(claim, control).await?;
         self.compliance
             .runtime
             .local_tx_with_context(
-                self.compliance.audit_store.binding(),
+                binding,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -87,7 +89,7 @@ impl ComplianceWork {
                                 |(compliance, reason), tx| {
                                     Box::pin(async move {
                                         compliance
-                                            .finish_task_in(tx, id, Some(reason))
+                                            .finish_task_in(binding, tx, id, Some(reason))
                                             .await
                                             .map_err(|e| fault(e, &Mutex::new(None)))?;
                                         Ok(ProtectedStep::Ready(()))
@@ -138,9 +140,10 @@ impl Reconciler<PgClaim> for ComplianceWork {
         claim: &PgClaim,
         control: &Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<ReconcileDiff<bool>>, ReconcileError> {
+        let binding = self.execution(claim, control).await?;
         control.check()?;
         let Some(id) = self.task(claim)? else {
-            let pending = self.inputs_pending(control).await?;
+            let pending = self.inputs_pending(binding, control).await?;
             return Ok(ReconcileStep::Ready(ReconcileDiff::between(
                 DesiredState::present(false),
                 ActualState::present(pending),
@@ -150,7 +153,7 @@ impl Reconciler<PgClaim> for ComplianceWork {
             .compliance
             .runtime
             .local_tx_with_context(
-                self.compliance.audit_store.binding(),
+                binding,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -185,17 +188,18 @@ impl Reconciler<PgClaim> for ComplianceWork {
         _: ReconcileDiff<bool>,
         control: &Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
+        let binding = self.execution(claim, control).await?;
         control.check()?;
         let Some(id) = self.task(claim)? else {
             return self.apply_inputs(claim, control).await;
         };
-        let candidate = self.capture(control).await?;
+        let candidate = self.capture(binding, control).await?;
         let failure = Mutex::new(None);
         let attempt = self
             .compliance
             .runtime
             .local_tx_with_context(
-                self.compliance.audit_store.binding(),
+                binding,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -223,6 +227,7 @@ impl Reconciler<PgClaim> for ComplianceWork {
                                             compliance.task_cursor_in(tx, id, state.cursor).await?;
                                             compliance
                                                 .advance(
+                                                    binding,
                                                     tx,
                                                     id,
                                                     &state.input,
@@ -321,7 +326,8 @@ impl DurableStore for ComplianceWork {
             .lock()
             .expect("worker observation")
             .scan(
-                result.as_ref().err().map(|e| e.kind()),
+                scope,
+                result.as_ref().map(|_| ()).map_err(|e| e.kind()),
                 self.compliance.clock.unix_seconds(),
             );
         result
@@ -409,18 +415,108 @@ impl ComplianceWork {
         let (task, status) = rss_runtime::ManagedTask::prepare("mdm-compliance-evaluation", drain);
         let _ = self.compliance.task_status.set(status);
         task.into_registration(move |cancel| async move {
-            #[allow(clippy::disallowed_methods, reason="monotonic execution clock boundary")]
-            let timer=ComplianceTimer(tokio::time::Instant::now());
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "monotonic execution clock boundary"
+            )]
+            let timer = ComplianceTimer(tokio::time::Instant::now());
             let force = tokio_util::sync::CancellationToken::new();
-            let control=Control::new(&timer,Duration::MAX,&force);
-            let scope=Scope::new(self.compliance.tenant,"mdm.compliance").expect("constant scope");
-                         rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,&cancel,&notify,|event| {
-                if !matches!(event, rss_reconcile::Observation::Deferred { .. }) {
-                    eprintln!("{}",serde_json::json!({"event":"mdm_compliance_task_failure","diagnostic":format!("{event:?}")}));
+            let control = Control::new(&timer, Duration::MAX, &force);
+            let mut after: Option<Uuid> = None;
+            let mut worked = false;
+            loop {
+                if cancel.is_cancelled() {
+                    return Ok(());
                 }
-                self.compliance.worker_health.lock().expect("worker observation").failure(event,self.compliance.clock.unix_seconds());
+                let discovered = tokio::select! { biased;
+                    () = cancel.cancelled() => return Ok(()),
+                    result = tokio::time::timeout(Duration::from_secs(5), sqlx::query_scalar(
+                    "SELECT tenant_id FROM mdm_compliance.compliance_work_scopes($1)",
+                )
+                .bind(after)
+                .fetch_all(&self.compliance.read_pool)) =>
+                        result.map_err(|_| rss_reconcile::ErrorKind::Deadline)
+                            .and_then(|page| page.map_err(|error| crate::discovery::classify(&error))),
+                };
+                if cancel.is_cancelled() { return Ok(()) }
+                self.compliance.worker_health.lock().expect("worker observation").discovery("mdm.compliance", discovered.as_ref().map(|_| ()).map_err(|kind| *kind), self.compliance.clock.unix_seconds());
+                let tenants: Vec<Uuid> = match discovered {
+                    Ok(page) => page,
+                    Err(rss_reconcile::ErrorKind::Transient | rss_reconcile::ErrorKind::Deadline) => {
+                        // A failed page is not empty. Keep its cursor and rate-limit retries even under wake storms.
+                        tokio::select! { biased;
+                            () = cancel.cancelled() => return Ok(()),
+                            () = tokio::time::sleep(Duration::from_secs(5)) => {},
+                        }
+                        continue;
+                    }
+                    Err(kind) => return Err(rss_runtime::ShutdownError::new(rss_reconcile::Error::new(kind))),
+                };
+                if tenants.is_empty() {
+                    after = None;
+                    if std::mem::take(&mut worked) {
+                        continue;
+                    }
 
-            }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)
+                    tokio::select! { biased;
+                        () = cancel.cancelled() => return Ok(()),
+                        () = notify.notified() => {},
+                        () = tokio::time::sleep(Duration::from_secs(5)) => {},
+                    }
+                    continue;
+                }
+                for tenant in tenants {
+                    after = Some(tenant);
+                    let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
+                        .map_err(rss_runtime::ShutdownError::new)?;
+                    let scope = Scope::new(tenant, "mdm.compliance").expect("constant scope");
+
+                    let report = match rss_reconcile::run_batch(
+                        self.as_ref(),
+                        self.as_ref(),
+                        &scope,
+                        policy,
+                        &control,
+                        &cancel,
+                        |event| {
+                            self.compliance
+                                .worker_health
+                                .lock()
+                                .expect("worker observation")
+                                .observe(&event, self.compliance.clock.unix_seconds());
+                        },
+                    )
+                    .await
+                    {
+                        Ok(report) => report,
+                        Err(error)
+                            if control.check().is_ok()
+                                && matches!(
+                                    error.kind(),
+                                    rss_reconcile::ErrorKind::Transient
+                                        | rss_reconcile::ErrorKind::Deadline
+                                        | rss_reconcile::ErrorKind::CommitUnknown
+                                ) =>
+                        {
+                            // The observer retained this scope's failure. Advance the tenant cursor;
+                            // an unconfirmed claim is not an empty or successfully drained batch.
+                            continue;
+                        }
+                        Err(error) => return Err(rss_runtime::ShutdownError::new(error)),
+                    };
+                    worked |= [
+                        report.converged,
+                        report.reobserve,
+                        report.deferred,
+                        report.retried,
+                        report.suspended,
+                        report.fenced,
+                        report.execution_failed,
+                    ]
+                    .into_iter()
+                    .any(|count| count > 0);
+                }
+            }
         })
     }
 }
@@ -428,12 +524,13 @@ impl ComplianceWork {
 impl ComplianceWork {
     async fn inputs_pending<T: Timer>(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         control: &Control<'_, T>,
     ) -> std::result::Result<bool, ReconcileError> {
         self.compliance
             .runtime
             .local_tx_with_context(
-                self.compliance.audit_store.binding(),
+                binding,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -462,11 +559,12 @@ impl ComplianceWork {
         claim: &PgClaim,
         control: &Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
-        let candidate = self.capture(control).await?;
+        let binding = self.execution(claim, control).await?;
+        let candidate = self.capture(binding, control).await?;
         self.compliance
             .runtime
             .local_tx_with_context(
-                self.compliance.audit_store.binding(),
+                binding,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -508,10 +606,11 @@ impl ComplianceWork {
         failed: bool,
         control: &Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
+        let binding = self.execution(claim, control).await?;
         self.compliance
             .runtime
             .local_tx_with_context(
-                self.compliance.audit_store.binding(),
+                binding,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
@@ -545,5 +644,32 @@ impl ComplianceWork {
                 |_| Err(unknown()),
                 |e| Err(storage(e)),
             )
+    }
+}
+
+impl ComplianceWork {
+    async fn execution<T: Timer>(
+        &self,
+        claim: &PgClaim,
+        control: &Control<'_, T>,
+    ) -> std::result::Result<rss_transactional_messaging::fence::ExecutionBinding, ReconcileError>
+    {
+        control.check()?;
+        let id = self.task(claim)?;
+        let tenant = claim.target().scope().tenant();
+        let epoch: i64 =
+            sqlx::query_scalar("SELECT mdm_compliance.compliance_work_epoch($1::uuid,$2)")
+                .bind(tenant.to_string())
+                .bind(id)
+                .fetch_one(&self.compliance.read_pool)
+                .await
+                .map_err(|e| storage(e.into()))?;
+        let epoch = rss_transactional_messaging::fence::Epoch::new(epoch)
+            .map_err(|_| ReconcileError::new(ErrorKind::Invariant))?;
+        Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.compliance.storage,
+            tenant,
+            epoch,
+        ))
     }
 }

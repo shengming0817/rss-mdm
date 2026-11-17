@@ -116,6 +116,10 @@ pub(crate) fn validate(pfn: &str, sid: &str, secret: &str) -> Result<(), Error> 
     Ok(())
 }
 impl Push {
+    pub fn material_revision(&self) -> Option<i64> {
+        self.material_revision
+    }
+
     pub fn new(
         pfn: String,
         sid: String,

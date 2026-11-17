@@ -24,10 +24,13 @@ impl DeviceReads for Devices {
                         Box::pin(async move {
                             let (s, p, device) = *ctx;
                             grant.require(p, Required::InventoryRead, Some(device))?;
-                            let mut item = s.devices.directory_device_on(c, device).await?;
+                            let mut item = s
+                                .devices
+                                .directory_device_on(p.tenant_id(), c, device)
+                                .await?;
                             let present = rss_mdm_inventory_service::assets::directory_presence_on(
                                 c,
-                                s.tasks.tenant,
+                                p.binding().tenant(),
                                 &[device.to_owned()],
                             )
                             .await
@@ -118,7 +121,7 @@ impl Devices {
         mdm: bool,
     ) -> Result<Vec<Capability>, Error> {
         use rss_mdm_registration_service::device::endpoints;
-        let tenant = self.tasks.tenant.to_string();
+        let tenant = proof.binding().tenant().to_string();
         let agent = endpoints::current_in(
             rss_mdm_install_support::StorageProfile::Mdm,
             c,
@@ -134,7 +137,7 @@ impl Devices {
         } else {
             None
         };
-        let supported = agent_support(self.tasks.signing_enabled, self.tasks.content_available);
+        let supported = self.tasks.content_available;
         let result = vec![
             capability(
                 current,
@@ -220,9 +223,6 @@ fn capability(
         },
     })
 }
-fn agent_support(signed: bool, content: bool) -> bool {
-    signed && content
-}
 
 impl Devices {
     async fn control_capabilities_on(
@@ -237,9 +237,10 @@ impl Devices {
         use rss_mdm_inventory::ReportSource;
         let kinds = [Kind::Restart, Kind::Lock, Kind::Wipe];
         let (source, states) = if let Some(registration) = registration {
-            let source = device_control::source_on(c, self.tasks.tenant, &registration.device)
-                .await
-                .map_err(super::task_reads::history::execution_fault)?;
+            let source =
+                device_control::source_on(c, proof.binding().tenant(), &registration.device)
+                    .await
+                    .map_err(super::task_reads::history::execution_fault)?;
             if let Some(source) = source {
                 let checks = kinds.map(|action| Check {
                     device: registration.device,
@@ -250,7 +251,7 @@ impl Devices {
                 let states = self
                     .tasks
                     .execution
-                    .control_applicability_on(c, &checks)
+                    .control_applicability_on(proof.binding(), c, &checks)
                     .await
                     .map_err(super::task_reads::history::execution_fault)?;
                 (Some(source), states)

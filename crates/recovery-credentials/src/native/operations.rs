@@ -104,15 +104,12 @@ impl Service {
         transaction::run(
             &self.transactions.audit_store,
             &self.transactions.runtime,
-            self.transactions.audit_store.binding(),
+            proof.binding(),
             audit,
             (self, proof, device, input, audit, protection),
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, proof, device, input, audit, protection) = *ctx;
-                    if proof.tenant_id() != service.transactions.tenant.to_string() {
-                        return Err(Error::Forbidden.into());
-                    }
 
                     let mut permissions = vec![Permission::SecurityOperate];
                     if matches!(input.action, Action::ConfigureFilevault) {
@@ -134,9 +131,9 @@ impl Service {
                         .reconcile_messaging
                         .wake_in(
                             tx,
-                            &super::service::target(service.transactions.tenant, device),
+                            &super::service::target(proof.binding().tenant(), device),
                             &rss_mdm_registration_service::lifecycle::resources::device(
-                                service.transactions.tenant,
+                                proof.binding().tenant(),
                                 device,
                                 rss_mdm_registration_service::lifecycle::resources::Work::Exclusive,
                             ),
@@ -149,7 +146,7 @@ impl Service {
 
                     let fingerprint = super::protection::fingerprint(
                         &service.transactions.protection,
-                        service.transactions.tenant,
+                        proof.binding().tenant(),
                         device,
                         "recovery-credential-create/v1",
                         &(proof.actor(), input),
@@ -175,7 +172,7 @@ impl Service {
                             return Err(Error::Conflict.into());
                         }
                     }
-                    let tenant = Uuid::parse_str(&service.transactions.tenant.to_string())
+                    let tenant = Uuid::parse_str(&proof.binding().tenant().to_string())
                         .map_err(|_| Error::Malformed)?;
                     let prepared_protection = protection.clone();
                     let prepared_device = device.to_owned();
@@ -274,7 +271,9 @@ async fn prepare(
     input: &Input,
 ) -> std::result::Result<(Request, vault::NativeAction), credentials::Error> {
     use credentials::Error as E;
-    let recipient = protection.active_recipient();
+    let recipient = protection
+        .selected_on(rss_mdm_install_support::StorageProfile::Mdm, c, tenant)
+        .await?;
     let now: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
             .fetch_one(&mut *c)

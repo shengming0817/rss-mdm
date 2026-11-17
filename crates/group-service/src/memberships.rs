@@ -42,7 +42,7 @@ impl Groups {
             let mut tx=connection.begin().await?;
             sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY").execute(&mut *tx).await?;
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true)")
-                .bind(self.tenant.to_string()).bind(budget.control().total_remaining().as_millis().max(1).to_string()).execute(&mut *tx).await?;
+                .bind(proof.binding().tenant().to_string()).bind(budget.control().total_remaining().as_millis().max(1).to_string()).execute(&mut *tx).await?;
             let current=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),proof.instance_id()).await?;
             current.require(proof,Permission::GroupRead,None)?;
             current.require_all_devices(proof,Permission::InventoryRead)?;
@@ -65,7 +65,7 @@ impl Groups {
         // Release the page connection before revalidating current authority.
         self.audit_store
             .read(
-                self.tenant,
+                proof.binding().tenant(),
                 &budget.control(),
                 (proof, &authority),
                 |ctx, tx| {
@@ -121,14 +121,17 @@ impl Groups {
         if !crate::device::read::registered(
             rss_mdm_install_support::StorageProfile::Mdm,
             c,
-            self.tenant.to_string(),
+            p.binding().tenant().to_string(),
             device.to_owned(),
         )
         .await?
         {
             return Err(Error::Group(GroupMissing::Device).into());
         }
-        let resolved = self.objects.memberships(c, self.tenant, device).await?;
+        let resolved = self
+            .objects
+            .memberships(c, p.binding().tenant(), device)
+            .await?;
         let codec = CursorCodec::from_key(self.cursor_key.clone());
         let binding = checked_input(rss_mdm_query::cursor::fingerprint(&(
             "device-groups",
@@ -153,7 +156,7 @@ impl Groups {
         let keys = resolved.objects;
         let mut items = group_checked(
             self.groups
-                .memberships_on(c, device, &keys, after, q.limit())
+                .memberships_on(p.binding(), c, device, &keys, after, q.limit())
                 .await?,
         )?;
         let more = items.len() > q.limit();
@@ -181,7 +184,10 @@ impl Groups {
                 rss_mdm_inventory_service::objects::ObjectSnapshot::from_group_input(input)
                     .map_err(|_| Error::Conflict)?
             {
-                let complete = self.objects.complete(c, self.tenant, &snapshot).await?;
+                let complete = self
+                    .objects
+                    .complete(c, p.binding().tenant(), &snapshot)
+                    .await?;
                 (snapshot.asset_cut, complete)
             } else {
                 (
@@ -191,7 +197,7 @@ impl Groups {
             };
             let id = item["id"].as_str().ok_or(Error::Conflict)?;
             let dirty:bool=sqlx::query_scalar("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)) SELECT EXISTS(SELECT FROM mdm.asset_changes e WHERE e.tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,e.source_epoch,e.writer_xid) FROM asset_cut_2),false) AND (e.kind IN('device','source','credential') OR EXISTS(SELECT FROM mdm_assets.group_fields f WHERE f.tenant_id=e.tenant_id AND f.group_id=$3::uuid AND f.field=ANY(e.fields))))")
-                .bind(self.tenant.to_string()).bind(cut.to_json()).bind(id).fetch_one(&mut *c).await?;
+                .bind(p.binding().tenant().to_string()).bind(cut.to_json()).bind(id).fetch_one(&mut *c).await?;
             let input_current = complete && !dirty;
             item["associationCurrent"] = if associated {
                 serde_json::json!(resolved.current)

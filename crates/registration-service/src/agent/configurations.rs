@@ -292,7 +292,7 @@ impl Service {
             .write(a, (self, p, input, d), |ctx, c| {
                 Box::pin(async move {
                     let (service, p, input, d) = ctx;
-                    let tenant = service.tenant.to_string();
+                    let tenant = a.binding()?.tenant().to_string();
                     authorize_on(profile, c, p, Permission::AgentEnrollmentWrite).await?;
                     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2674))")
                         .bind(format!("{tenant}:configuration:{}", input.operation_id))
@@ -410,9 +410,7 @@ impl Service {
         let profile = self.profile();
 
         p.manage(Permission::AgentEnrollmentRead)?;
-        if p.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden.into());
-        }
+
         let mut tx = self.store.snapshot(p.tenant_id()).await?;
         authorize_on(profile, &mut tx, p, Permission::AgentEnrollmentRead).await?;
         let row = read_row(profile, &mut tx, p.tenant_id(), id).await?;
@@ -428,9 +426,6 @@ impl Service {
         p: &AuthorizedPrincipal,
         operation: Uuid,
     ) -> Result<Option<Read>, Failure> {
-        if p.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden.into());
-        }
         configuration_operation(&self.store, p, operation).await
     }
     pub async fn revoke_configuration(
@@ -454,8 +449,8 @@ impl Service {
         let d = digest(&("configuration_revoke", id, operation))?;
         self.write(a, (self, p, id, d, operation, a), |ctx, c| {
             Box::pin(async move {
-                let (service, p, id, d, operation, a) = ctx;
-                let tenant = service.tenant.to_string();
+                let (_, p, id, d, operation, a) = ctx;
+                let tenant = a.binding()?.tenant().to_string();
                 authorize_on(profile, c, p, Permission::AgentEnrollmentWrite).await?;
                 let op = crate::operations::Operation {
                     actor: crate::operations::Actor::from_authorized(p),
@@ -492,19 +487,47 @@ impl Service {
         &self,
         input: &wire_config::Exchange,
         a: &RequestAudit,
+        origin: &rss_mdm_certificate::GatewayOrigin,
     ) -> Result<wire::GrantReceipt, Failure> {
         let profile = self.profile();
 
         version(input.file.configuration.wire_version, input.operation_id)?;
-        let mut verification = self.store.begin(&self.tenant.to_string()).await?;
+        let tenant =
+            rss_request_context::TenantId::parse(&input.file.configuration.tenant_id.to_string())
+                .map_err(|_| Error::Malformed)?;
+        let mut verification = self.store.begin(&tenant.to_string()).await?;
         let signer = super::connections::signer_on(
             profile,
             &mut verification,
-            &self.tenant.to_string(),
+            &tenant.to_string(),
             &self.protection,
         )
         .await?;
         signer.verify(&input.file)?;
+        let configured = row(
+            profile,
+            &mut verification,
+            &tenant.to_string(),
+            input.file.configuration.configuration_id,
+        )
+        .await?;
+        check_configuration_secret(&tenant.to_string(), &configured, &input.file.secret)?;
+        if serde_json::to_value(&input.file.configuration).map_err(|_| Error::Malformed)?
+            != configured
+                .try_get::<serde_json::Value, _>("document")
+                .map_err(db)?
+        {
+            return Err(Error::Unauthorized.into());
+        }
+        let epoch = rss_transactional_messaging::fence::Epoch::new(
+            configured.try_get("expected_epoch").map_err(db)?,
+        )
+        .map_err(|_| Error::Corrupt)?;
+        let execution =
+            rss_transactional_messaging::fence::ExecutionBinding::new(self.storage, tenant, epoch);
+        a.bind_scope(execution).map_err(Error::from)?;
+        self.require_connection_origin(a.binding().map_err(Error::from)?, origin)
+            .await?;
         verification.rollback().await.map_err(db)?;
         if input.secret.expose() == input.file.secret.expose() {
             return Err(Error::Malformed.into());
@@ -521,7 +544,7 @@ impl Service {
         self.write(a, (self, input, spki, d), |ctx, c| {
             Box::pin(async move {
                 let (service, input, spki, d) = ctx;
-                let tenant = service.tenant.to_string();
+                let tenant = a.binding()?.tenant().to_string();
                 let cfg = &input.file.configuration;
                 if cfg.tenant_id.to_string() != tenant
                     || cfg.connections.configuration.service_id != service.service_id()?
@@ -530,6 +553,11 @@ impl Service {
                 }
                 let config = row(profile, c, &tenant, cfg.configuration_id).await?;
                 check_configuration_secret(&tenant, &config, &input.file.secret)?;
+                if config.try_get::<i64, _>("expected_epoch").map_err(db)?
+                    != a.binding()?.epoch().get()
+                {
+                    return Err(Error::Conflict);
+                }
                 if serde_json::to_value(cfg).map_err(|_| Error::Malformed)?
                     != config
                         .try_get::<serde_json::Value, _>("document")
@@ -648,11 +676,17 @@ impl Service {
     pub async fn configuration_exchange_status(
         &self,
         input: &wire_config::ExchangeStatus,
+        origin: &rss_mdm_certificate::GatewayOrigin,
     ) -> Result<wire::GrantReceipt, Failure> {
         let profile = self.profile();
 
         version(input.wire_version, input.operation_id)?;
-        let tenant = self.tenant.to_string();
+        let (tenant, epoch) = self
+            .store
+            .locate_configuration(input.configuration_id)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        let tenant = tenant.to_string();
         let mut tx = self.store.begin(&tenant).await?;
         let row = sqlx::query(
             crate::storage_profile::sql(profile)
@@ -666,6 +700,18 @@ impl Service {
         .map_err(db)?
         .ok_or(Error::Unauthorized)?;
         check_secret(&tenant, &row, &input.secret)?;
+        self.require_connection_origin(
+            rss_transactional_messaging::fence::ExecutionBinding::new(
+                self.storage,
+                rss_request_context::TenantId::parse(&tenant).map_err(|_| Error::Malformed)?,
+                epoch,
+            ),
+            origin,
+        )
+        .await?;
+        if row.try_get::<i64, _>("expected_epoch").map_err(db)? != epoch.get() {
+            return Err(Error::Conflict.into());
+        }
         let out = receipt(&row)?;
         tx.commit().await.map_err(db)?;
         Ok(out)
@@ -674,10 +720,34 @@ impl Service {
         &self,
         input: &wire_config::Cancel,
         a: &RequestAudit,
+        origin: &rss_mdm_certificate::GatewayOrigin,
     ) -> Result<wire::GrantReceipt, Failure> {
         let profile = self.profile();
 
         version(input.wire_version, input.operation_id)?;
+        let (tenant, epoch) = self
+            .store
+            .locate_grant(input.grant_id)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        let mut verification = self.store.begin(&tenant.to_string()).await?;
+        let original = grant_row(
+            profile,
+            &mut verification,
+            &tenant.to_string(),
+            input.grant_id,
+        )
+        .await?;
+        check_secret(&tenant.to_string(), &original, &input.secret)?;
+        verification.rollback().await.map_err(db)?;
+        a.bind_scope(rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            tenant,
+            epoch,
+        ))
+        .map_err(Error::from)?;
+        self.require_connection_origin(a.binding().map_err(Error::from)?, origin)
+            .await?;
         a.owned_operation(
             rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
@@ -687,10 +757,15 @@ impl Service {
 
         self.write(a, (self, input), |ctx, c| {
             Box::pin(async move {
-                let (service, input) = ctx;
-                let tenant = service.tenant.to_string();
+                let (_, input) = ctx;
+                let tenant = a.binding()?.tenant().to_string();
                 let row = grant_row(profile, c, &tenant, input.grant_id).await?;
                 check_secret(&tenant, &row, &input.secret)?;
+                if row.try_get::<i64, _>("expected_epoch").map_err(db)?
+                    != a.binding()?.epoch().get()
+                {
+                    return Err(Error::Conflict);
+                }
                 if row.try_get::<Uuid, _>("operation_id").map_err(db)?
                     != input.creation_operation_id
                 {

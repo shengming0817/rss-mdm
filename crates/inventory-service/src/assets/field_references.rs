@@ -126,12 +126,12 @@ impl AssetService {
         field: FieldKey,
     ) -> Result<bool> {
         let resource =
-            rss_mdm_resource_postgres::FieldReferences::bind(self.runtime.clone(), self.tenant);
+            rss_mdm_resource_postgres::FieldReferences::bind(self.runtime.clone(), tx.tenant_id());
         if resource.used_in(tx, field.as_str()).await? {
             return Ok(true);
         }
         let sql = format!("SELECT EXISTS(SELECT FROM ({}) facts)", local_facts());
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let field = field.as_str().to_owned();
         Ok(tx
             .with_connection(move |c| {
@@ -153,14 +153,12 @@ impl AssetService {
     ) -> std::result::Result<Page<Entry>, Error> {
         q.require_schema(&SCHEMA).map_err(crate::query_error)?;
         proof.manage(Permission::InventoryFieldsWrite)?;
-        if proof.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
-        crate::transaction::inspect(&self.runtime,self.audit_store.binding(),(self,proof,field,q),|ctx,tx|Box::pin(async move{
+
+        crate::transaction::inspect(&self.runtime,proof.binding(),(self,proof,field,q),|ctx,tx|Box::pin(async move{
             let(s,p,field,q)=*ctx;let current=query_authority(tx,p).await?;
             current.require(p,Permission::InventoryFieldsWrite,None)?;
-            catalog_in(tx,s.tenant).await?.definition(field).map_err(|_|Error::NotFound)?;
-            let binding=fingerprint(&(SCHEMA.id,s.tenant.to_string(),p.instance_id(),p.principal_id(),current.query_binding(p)?,field,q.limit())).map_err(crate::query_error)?;
+            catalog_in(tx,p.binding().tenant()).await?.definition(field).map_err(|_|Error::NotFound)?;
+            let binding=fingerprint(&(SCHEMA.id,p.binding().tenant().to_string(),p.instance_id(),p.principal_id(),current.query_binding(p)?,field,q.limit())).map_err(crate::query_error)?;
             let codec=CursorCodec::from_key(s.asset_cursor_key.clone());
             let after:Option<Position>=q.cursor().as_ref().map(|token|{
                 let token=rss_contract::PageCursor::parse(token).map_err(|_|Error::Malformed)?;
@@ -169,7 +167,7 @@ impl AssetService {
             let sql=format!(r#"SELECT source,role FROM ({}) facts WHERE ($3::integer IS NULL OR
               (kind,id COLLATE "C",version COLLATE "C",instance COLLATE "C",owner COLLATE "C")>($3,$4,$5,$6,$7))
               ORDER BY kind,id COLLATE "C",version COLLATE "C",instance COLLATE "C",owner COLLATE "C" LIMIT $8"#,local_facts());
-            let tenant=s.tenant.to_string();let key=field.as_str().to_owned();let position=after.clone();let limit=q.limit()+1;
+            let tenant=p.binding().tenant().to_string();let key=field.as_str().to_owned();let position=after.clone();let limit=q.limit()+1;
             let rows=tx.with_connection(move|c|Box::pin(async move{
                 sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).bind(tenant).bind(key)
                   .bind(position.as_ref().map(|p|p.0)).bind(position.as_ref().map(|p|&p.1))
@@ -183,7 +181,7 @@ impl AssetService {
             }
             if after.as_ref().is_none_or(|p|p.0<=1) {
                 let key=after.as_ref().filter(|p|p.0==1).map(|p|(p.1.clone(),p.2.clone()));
-                for row in rss_mdm_resource_postgres::FieldReferences::bind(s.runtime.clone(),s.tenant).blockers_in(tx,field.as_str(),key,limit as u16).await? {
+                for row in rss_mdm_resource_postgres::FieldReferences::bind(s.runtime.clone(),p.binding().tenant()).blockers_in(tx,field.as_str(),key,limit as u16).await? {
                     if row.state==rss_mdm_resource::State::Archived {return Err(Error::Unavailable(Failure::AssetsStorage).into());}
                     items.push(Entry{source:Source::ResourceVersion{id:row.resource,version:row.version},
                         role:if row.telemetry{Role::TelemetryMapping}else{Role::CollectionMapping},release:Release::ArchiveReferencingVersion});

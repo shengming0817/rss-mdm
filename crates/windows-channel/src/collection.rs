@@ -5,7 +5,12 @@ use uuid::Uuid;
 fn corrupt() -> Error {
     Error::Unavailable(Failure::Database)
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep execution scope and existing operation inputs explicit"
+)]
 pub async fn terminate_session(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     tx: &mut sqlx::PgConnection,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     tenant: &str,
@@ -28,6 +33,7 @@ pub async fn terminate_session(
         if native || reason == "aborted" {
             facts.extend(
                 rss_mdm_inventory_service::collection::channel::abandon_in(
+                    execution,
                     rss_mdm_install_support::StorageProfile::Mdm,
                     tx,
                     tenant,
@@ -48,6 +54,7 @@ pub async fn terminate_session(
         if run.sealed_at.is_none() {
             facts.extend(
                 store::seal(
+                    execution,
                     rss_mdm_install_support::StorageProfile::Mdm,
                     tx,
                     &mut run,

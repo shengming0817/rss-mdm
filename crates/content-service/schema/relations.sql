@@ -61,11 +61,12 @@ REVOKE ALL ON FUNCTION mdm_content.observe_generation(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_content.observe_generation(uuid) TO mdm_content_runtime;
 CREATE FUNCTION mdm_content.cancel_migration(p_operation uuid) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $cancel$
-DECLARE tenant uuid := nullif(current_setting('rss.tenant_id',true),'')::uuid; state text;
+DECLARE tenant uuid := nullif(current_setting('rss.tenant_id',true),'')::uuid; state text; expected_epoch bigint;
 BEGIN
  IF NOT pg_try_advisory_xact_lock(hashtextextended(tenant::text,30042)) THEN RAISE EXCEPTION 'migration busy'; END IF;
- SELECT phase INTO state FROM mdm_content.migrations WHERE tenant_id=tenant AND operation_id=p_operation FOR UPDATE;
+ SELECT phase,(request->'value'->>'expectedEpoch')::bigint INTO state,expected_epoch FROM mdm_content.migrations WHERE tenant_id=tenant AND operation_id=p_operation FOR UPDATE;
  IF state='cancelled' THEN RETURN; END IF;
+ IF expected_epoch IS DISTINCT FROM current_setting('rss.execution_epoch')::bigint THEN RAISE EXCEPTION 'migration execution fenced' USING ERRCODE='PZ001'; END IF;
  IF state IS NULL OR state='committed' THEN RAISE EXCEPTION 'migration cannot be cancelled'; END IF;
  UPDATE mdm_content.settings SET maintenance='normal',operation=NULL WHERE tenant_id=tenant AND operation=p_operation;
  UPDATE mdm_content.migrations SET phase='cancelled',blocked_reason=NULL WHERE tenant_id=tenant AND operation_id=p_operation;
@@ -112,6 +113,7 @@ BEGIN
  SELECT * INTO m FROM mdm_content.migrations WHERE tenant_id=tenant AND operation_id=p_operation FOR UPDATE;
  IF NOT FOUND THEN RAISE EXCEPTION 'unknown migration'; END IF;
  IF m.phase='committed' THEN RETURN true; END IF;
+ IF (m.request->'value'->>'expectedEpoch')::bigint IS DISTINCT FROM current_setting('rss.execution_epoch')::bigint THEN RAISE EXCEPTION 'migration execution fenced' USING ERRCODE='PZ001'; END IF;
  IF m.phase<>'ready' THEN RAISE EXCEPTION 'migration not ready'; END IF;
  IF NOT EXISTS(SELECT 1 FROM mdm_content_connections.versions WHERE tenant_id=tenant AND revision=m.target_revision AND state='qualified' AND NOT revoked AND (expires_at IS NULL OR expires_at>extract(epoch FROM clock_timestamp()))) THEN RAISE EXCEPTION 'target not qualified'; END IF;
  UPDATE mdm_content.settings SET active_generation=m.target_generation,revision=revision+1,maintenance='switching'

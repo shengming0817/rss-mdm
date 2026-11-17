@@ -10,7 +10,6 @@ impl Inputs {
     fn installation_inputs(&self) -> crate::installation::inputs::Inputs {
         crate::installation::inputs::Inputs {
             runtime: self.runtime.clone(),
-            tenant: self.tenant,
             bootstrap_configured: self.materials.bootstrap_configured,
             admission: self.materials.agent_installation.clone(),
         }

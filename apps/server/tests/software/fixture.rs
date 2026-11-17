@@ -7,15 +7,14 @@ pub(super) struct Fixture {
     pub(super) software: crate::assembly::software::Assembly,
 }
 impl Fixture {
-    pub(super) async fn open(c: &Context, signing: bool) -> Result<Self> {
-        Self::open_with(c, signing, |_| {}).await
+    pub(super) async fn open(c: &Context) -> Result<Self> {
+        Self::open_with(c, |_| {}).await
     }
     pub(super) async fn open_with(
         c: &Context,
-        signing: bool,
         configure: fn(&mut serde_json::Value),
     ) -> Result<Self> {
-        let resources = Prepared::open(c, signing, configure).await?;
+        let resources = Prepared::open(c, configure).await?;
         let result: Result<_> = async {
             let config = &resources.config;
             let storage = &resources.storage;
@@ -24,7 +23,6 @@ impl Fixture {
 
             let authority = Arc::new(
                 rss_mdm_software_service::deployment::managed_registration::AuthorityReader {
-                    tenant: storage.tenant,
                     instance: config.identity.instance_id.clone(),
                     source: Arc::new(assembly::software_sources::Source(source.clone())),
                     inventory: Arc::new(assembly::software_sources::Inventory),
@@ -34,10 +32,11 @@ impl Fixture {
                 },
             );
             let registration = assembly::registration::assemble(
+                storage.discovery_pool.clone(),
                 config,
                 &resources.background,
                 storage.runtime.clone(),
-                storage.tenant,
+                c.execution(),
                 storage.audit.clone(),
                 protection.clone(),
                 source.clone(),
@@ -49,23 +48,23 @@ impl Fixture {
             )
             .await?;
             let software = assembly::software::assemble(
+                storage.discovery_pool.clone(),
                 config,
                 &resources.background,
                 storage.runtime.clone(),
-                storage.tenant,
+                c.execution(),
                 storage.audit.clone(),
                 protection.clone(),
                 Arc::new(assembly::software_sources::Source(source.clone())),
                 Arc::new(assembly::software_sources::Inventory),
                 Arc::new(assembly::software_sources::Lifecycle),
                 Arc::new(rss_mdm_software_service::preparation::Preparation::new(
-                    rss_mdm_software_service::catalog::Reader::new(storage.tenant),
+                    rss_mdm_software_service::catalog::Reader::new(),
                     Default::default(),
                 )),
                 authority,
                 registration.native_materials.clone(),
                 resources.channels.clone(),
-                resources.signing.loaded_key().is_some(),
                 resources.sessions.clone(),
                 storage.read_pool.clone(),
                 storage.reconcile.clone(),

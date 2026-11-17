@@ -10,11 +10,9 @@ use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use std::sync::Arc;
 
 pub struct Inputs {
-    execution: rss_transactional_messaging::fence::ExecutionBinding,
     pub(crate) runtime: Arc<PgRuntime>,
-    pub(crate) tenant: rss_request_context::TenantId,
+
     content: Option<Arc<Store>>,
-    pub(crate) signing_enabled: bool,
 }
 pub struct Publication<'a> {
     pub binding: &'a ExactResourceBinding,
@@ -24,38 +22,22 @@ pub struct Publication<'a> {
     pub lifetime: u32,
 }
 impl Inputs {
-    pub fn bind(
-        runtime: Arc<PgRuntime>,
-        execution: rss_transactional_messaging::fence::ExecutionBinding,
-        content: Option<Arc<Store>>,
-        signing_enabled: bool,
-    ) -> Self {
-        Self {
-            runtime,
-            tenant: execution.tenant(),
-            execution,
-            content,
-            signing_enabled,
-        }
+    pub fn bind(runtime: Arc<PgRuntime>, content: Option<Arc<Store>>) -> Self {
+        Self { runtime, content }
     }
     fn validate_in(&self, tx: &PgTransaction<'_>) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::Forbidden.into());
-        }
-        if !self.signing_enabled {
-            return Err(Error::Conflict.into());
-        }
         Ok(())
     }
     pub async fn prepare_resource(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         binding: &ExactResourceBinding,
         parameters: Parameters<'_>,
     ) -> std::result::Result<Verified, Error> {
         let artifact = inspect(
             &self.runtime,
-            self.execution,
+            execution,
             (self, binding, parameters),
             |ctx, tx| {
                 Box::pin(async move {
@@ -69,6 +51,7 @@ impl Inputs {
         let content = self.content.as_ref().ok_or(Error::Unavailable)?;
         Ok(content
             .verify_class(
+                execution,
                 &artifact,
                 StorageClass::Artifact,
                 content.upload_budget()?.operation_deadline(),
@@ -117,7 +100,7 @@ impl Inputs {
             action: Box::new(
                 crate::preparation::freeze_in(
                     tx,
-                    self.tenant,
+                    tx.tenant_id(),
                     &selected,
                     input.parameters.checked(selected.definition())?,
                     input.schedule.clone(),

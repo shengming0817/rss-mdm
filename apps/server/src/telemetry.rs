@@ -1,4 +1,4 @@
-//! Tenant-bound telemetry assembly. Runtime opens only already-installed, admitted stores.
+//! Installation-owned telemetry resources. Runtime opens only already-installed, admitted stores.
 use crate::{
     Error, Failure,
     config::{Database, read, secret},
@@ -19,6 +19,7 @@ use std::{
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Config {
+    pub resource_id: uuid::Uuid,
     pub backend: Storage,
     pub ingress: rss_mdm_telemetry_service::Limits,
     pub maintenance: rss_mdm_telemetry_service::maintenance::Policy,
@@ -59,6 +60,7 @@ pub enum Storage {
         resolutions: Vec<NonZeroU64>,
     },
     ClickHouse {
+        tenant: String,
         control: Database,
         endpoint: String,
         ca_file: PathBuf,
@@ -100,10 +102,13 @@ async fn pool(database: &Database, max: NonZeroU32) -> Result<sqlx::PgPool, Erro
         .map_err(|_| unavailable())
 }
 impl Config {
-    pub(crate) fn validate(&self, tenant: TenantId) -> Result<(), Error> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        if self.resource_id.is_nil() {
+            return Err(invalid());
+        }
         self.ingress.validate().map_err(|_| invalid())?;
         self.maintenance.validate().map_err(|_| invalid())?;
-        self.profile(tenant)?;
+        self.profile()?;
         if self.connections.get() > 64
             || self.limits.max_points.get() > 4096
             || self.limits.max_series.get() > 4096
@@ -130,7 +135,7 @@ impl Config {
         Ok(())
     }
 
-    pub(crate) fn profile(&self, tenant: TenantId) -> Result<Option<StorageProfile>, Error> {
+    pub(crate) fn profile(&self) -> Result<Option<StorageProfile>, Error> {
         use rss_timeseries_postgres::timescale::{DedicatedTenant, Hypertable};
         Ok(Some(match &self.backend {
             Storage::Postgres { .. } => StorageProfile::PostgreSQL,
@@ -143,9 +148,7 @@ impl Config {
                 resolutions,
                 ..
             } => {
-                if TenantId::parse(fixed).map_err(|_| invalid())? != tenant {
-                    return Err(invalid());
-                }
+                let tenant = TenantId::parse(fixed).map_err(|_| invalid())?;
                 StorageProfile::TimescaleDedicatedTenant(
                     DedicatedTenant::new(
                         tenant,
@@ -158,55 +161,8 @@ impl Config {
             Storage::ClickHouse { .. } => return Ok(None),
         }))
     }
-    pub(crate) async fn open(
-        &self,
-        tenant: TenantId,
-        runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-        dependencies: rss_mdm_telemetry_service::PolicyDependencies,
-        signing: Arc<rss_mdm_task_trust::Signing>,
-    ) -> Result<Arc<Service>, Error> {
-        let backend = self.open_backend(tenant).await?;
-        let admitted = async {
-            let binding =
-                tokio::time::timeout(Duration::from_secs(6), self.configuration_binding())
-                    .await
-                    .map_err(|_| unavailable())??;
-            rss_mdm_telemetry_service::admit_configuration(
-                &runtime,
-                dependencies.audit_store.binding(),
-                binding,
-            )
-            .await
-            .map_err(|_| invalid())
-        }
-        .await;
-        if let Err(error) = admitted {
-            let cutoff = Deadline::from_timeout(&SystemClock, Duration::from_secs(10))
-                .map_err(|_| unavailable())?;
-            backend.close(cutoff).await.map_err(|_| unavailable())?;
-            return Err(error);
-        }
-        match Service::new(
-            tenant,
-            runtime,
-            dependencies,
-            backend,
-            signing,
-            self.ingress.clone(),
-            self.maintenance,
-            rss_mdm_telemetry_service::StorageBudget {
-                points: self.limits.max_points,
-                series: self.limits.max_series,
-                bytes: self.limits.max_bytes,
-            },
-        ) {
-            Ok(service) => Ok(Arc::new(service)),
-            Err(_) => Err(invalid()),
-        }
-    }
-    async fn configuration_binding(&self) -> Result<[u8; 32], Error> {
+    pub(crate) fn configuration_binding(&self) -> Result<[u8; 32], Error> {
         use sha2::{Digest, Sha256};
-        use sqlx::Connection;
         let coordinate =
             |database: &Database| (database.host.clone(), database.port, database.name.clone());
         let backend = match &self.backend {
@@ -233,18 +189,13 @@ impl Config {
                 ])
             }
             Storage::ClickHouse {
-                control, endpoint, ..
+                tenant: _,
+                control,
+                endpoint,
+                ..
             } => serde_json::json!(["click_house", coordinate(control), endpoint]),
         };
-        let mut connection = sqlx::PgConnection::connect_with(&self.database().options()?)
-            .await
-            .map_err(|_| unavailable())?;
-        let identity: uuid::Uuid =
-            sqlx::query_scalar("SELECT id FROM public.mdm_telemetry_installation")
-                .fetch_one(&mut connection)
-                .await
-                .map_err(|_| unavailable())?;
-        connection.close().await.map_err(|_| unavailable())?;
+        let identity = self.resource_id;
         let cursor = Sha256::digest(read(&self.cursor_key_file, 32, true)?);
         Ok(Sha256::digest(
             serde_json::to_vec(&(
@@ -259,6 +210,14 @@ impl Config {
         )
         .into())
     }
+    pub(crate) fn tenant(&self) -> Result<Option<TenantId>, Error> {
+        match &self.backend {
+            Storage::TimescaleDedicated { tenant, .. } | Storage::ClickHouse { tenant, .. } => {
+                Ok(Some(TenantId::parse(tenant).map_err(|_| invalid())?))
+            }
+            _ => Ok(None),
+        }
+    }
     pub(crate) fn database(&self) -> &Database {
         match &self.backend {
             Storage::Postgres { database }
@@ -267,9 +226,13 @@ impl Config {
             Storage::ClickHouse { control, .. } => control,
         }
     }
-    pub(crate) async fn open_backend(&self, tenant: TenantId) -> Result<Backend, Error> {
-        self.validate(tenant)?;
-        let profile = self.profile(tenant)?;
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "selected backend admission preserves each backend error without fallback"
+    )]
+    pub(crate) async fn open_backend(&self) -> Result<Backend, Error> {
+        self.validate()?;
+        let profile = self.profile()?;
         let key: [u8; 32] = read(&self.cursor_key_file, 32, true)?
             .as_slice()
             .try_into()
@@ -288,6 +251,11 @@ impl Config {
             | Storage::TimescaleShared { database, .. }
             | Storage::TimescaleDedicated { database, .. } => {
                 let runtime = pool(database, self.connections).await?;
+                if !matches!(sqlx::query_scalar::<_,uuid::Uuid>("SELECT id FROM public.mdm_telemetry_installation").fetch_one(&runtime).await, Ok(id) if id==self.resource_id)
+                {
+                    runtime.close().await;
+                    return Err(unavailable());
+                }
                 let maintenance = if let Storage::TimescaleDedicated {
                     maintenance,
                     maintenance_owner,
@@ -332,6 +300,7 @@ impl Config {
                 }
             }
             Storage::ClickHouse {
+                tenant: _,
                 control,
                 endpoint,
                 ca_file,
@@ -351,6 +320,11 @@ impl Config {
                 )
                 .map_err(|_| invalid())?;
                 let runtime = pool(control, self.connections).await?;
+                if !matches!(sqlx::query_scalar::<_,uuid::Uuid>("SELECT id FROM public.mdm_telemetry_installation").fetch_one(&runtime).await, Ok(id) if id==self.resource_id)
+                {
+                    runtime.close().await;
+                    return Err(unavailable());
+                }
                 let limits = rss_timeseries_clickhouse::Limits {
                     max_points: limits.max_points,
                     max_series: limits.max_series,
@@ -362,7 +336,7 @@ impl Config {
                     max_memory_bytes: *max_memory_bytes,
                 };
                 match rss_timeseries_clickhouse::ChStore::new(
-                    tenant,
+                    self.tenant()?.ok_or_else(invalid)?,
                     runtime.clone(),
                     connections,
                     SystemClock,
@@ -383,7 +357,62 @@ impl Config {
         Ok(backend)
     }
 }
-pub(crate) struct Resource(pub Arc<Service>);
+/// Open only explicitly installed physical resources. A failed optional resource stays unavailable;
+/// tenant selection never falls back to another store or creates a pool.
+pub(crate) async fn open(
+    configurations: &[Config],
+    probe: rss_transactional_messaging::fence::ExecutionBinding,
+    runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    dependencies: rss_mdm_telemetry_service::PolicyDependencies,
+    signing: Arc<rss_mdm_task_trust::Signing>,
+    mut acquire: impl FnMut(Resource),
+) -> Result<Arc<Service>, Error> {
+    let default = configurations.first().ok_or_else(invalid)?;
+    if !matches!(default.backend, Storage::Postgres { .. }) {
+        return Err(invalid());
+    }
+    let mut resources = Vec::new();
+    for (index, configuration) in configurations.iter().enumerate() {
+        let opened = async {
+            let binding = configuration.configuration_binding()?;
+            let tenant = configuration.tenant()?;
+            let backend = Arc::new(configuration.open_backend().await?);
+            Ok::<_, Error>((binding, tenant, backend))
+        }
+        .await;
+        let (binding, tenant, backend) = match opened {
+            Ok(opened) => opened,
+            Err(error) if index == 0 => return Err(error),
+            Err(_) => {
+                tracing::warn!(resource_id = %configuration.resource_id, reason = "unavailable", "optional telemetry resource unavailable");
+                continue;
+            }
+        };
+        acquire(Resource(backend.clone()));
+        resources.push(rss_mdm_telemetry_service::backend::Resource {
+            binding,
+            tenant,
+            backend: Some(backend),
+            budget: rss_mdm_telemetry_service::StorageBudget {
+                points: configuration.limits.max_points,
+                series: configuration.limits.max_series,
+                bytes: configuration.limits.max_bytes,
+            },
+        });
+    }
+    Service::new(
+        probe,
+        runtime,
+        dependencies,
+        resources,
+        signing,
+        default.ingress.clone(),
+        default.maintenance,
+    )
+    .map(Arc::new)
+    .map_err(|_| invalid())
+}
+pub(crate) struct Resource(pub Arc<Backend>);
 impl rss_runtime::ManagedResource for Resource {
     fn name(&self) -> &str {
         "telemetry-storage"

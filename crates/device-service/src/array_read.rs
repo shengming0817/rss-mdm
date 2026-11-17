@@ -71,12 +71,10 @@ impl Associations {
         if !(1..=1024).contains(&limit) {
             return Err(Error::Malformed);
         }
-        if proof.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
+
         let budget = AuditBudget::new(Duration::from_secs(15));
         let subject = personnel.revalidate(proof).await?;
-        let (page,grant,cursor)=self.audit.read(self.tenant,&budget.control(),(self,proof,reference,field,token,subject.as_ref()),|ctx,tx|Box::pin(async move {
+        let (page,grant,cursor)=self.audit.read(proof.binding().tenant(),&budget.control(),(self,proof,reference,field,token,subject.as_ref()),|ctx,tx|Box::pin(async move {
             tx.with_connection_context(ctx,|ctx,c|Box::pin(async move{
                 let (s,p,reference,field,token,subject)=*ctx;
                 let current=read::authorization(c,p).await?;
@@ -86,9 +84,9 @@ impl Associations {
                 let binding=binding(p,&grant)?;
                 let cursor:ArrayCursor=codec.decode(&rss_contract::PageCursor::parse(token).map_err(|_|Error::Malformed)?,&binding).map_err(|_|Error::CursorInvalidated)?;
                 if &cursor.reference!=reference||cursor.field!=field{return Err(Error::CursorInvalidated);}
-                validate(c,s.tenant,p,&current,&cursor).await?;
+                validate(c,p.binding().tenant(),p,&current,&cursor).await?;
                 let version=cursor.version.as_ref().ok_or(Error::ResultUnavailable)?;
-                let page=rss_mdm_inventory_postgres::arrays::page(c,s.tenant,version,cursor.offset,limit,16*1024*1024).await.map_err(|error|page_error(error.as_ref()))?;
+                let page=rss_mdm_inventory_postgres::arrays::page(c,p.binding().tenant(),version,cursor.offset,limit,16*1024*1024).await.map_err(|error|page_error(error.as_ref()))?;
                 if page.metadata.field!=field{return Err(Error::ResultUnavailable);}
                 let next=page.next.map(|offset|codec.encode(&binding,&ArrayCursor{offset,..cursor.clone()})).transpose().map_err(|_|Error::Storage)?.map(|c|c.as_str().to_owned());
                 p.check_live()?;
@@ -98,7 +96,7 @@ impl Associations {
         let subject = personnel.revalidate(proof).await?;
         self.audit
             .write(
-                self.tenant,
+                proof.binding(),
                 &budget.source_control(),
                 (proof, grant, subject.as_ref(), cursor),
                 |ctx, tx| {
@@ -115,7 +113,8 @@ impl Associations {
                                 if binding != *grant {
                                     return Err(Error::ReadConflict);
                                 }
-                                validate(c, self.tenant, proof, &current, cursor).await?;
+                                validate(c, proof.binding().tenant(), proof, &current, cursor)
+                                    .await?;
                                 proof.check_live()?;
                                 Ok(())
                             })

@@ -112,7 +112,6 @@ impl Signing {
         configuration: rss_mdm_agent_wire::runtime::TelemetryConfiguration,
     ) -> Result<rss_mdm_agent_wire::runtime::SignedTelemetryConfiguration, Error> {
         if self.usage != Use::AgentTask
-            || p.tenant() != self.tenant
             || p.channel() != Some(rss_mdm_inventory::Channel::Agent)
             || p.purpose() != rss_mdm_registration_service::device::Purpose::Primary
             || configuration.tenant_id.to_string() != p.tenant().to_string()
@@ -120,7 +119,7 @@ impl Signing {
         {
             return Err(Error::Forbidden);
         }
-        let signer = self.signer.as_ref().ok_or(Error::Unsupported)?;
+        let signer = self.load_on(c, p.tenant()).await?;
         self.revalidate(c, p).await?;
         trust::require_issue(self.profile, self.usage, c, p, signer.key_id()).await?;
         let until = configuration
@@ -132,7 +131,7 @@ impl Signing {
             self.profile,
             self.usage,
             c,
-            self.tenant,
+            p.tenant(),
             signer.key_id(),
             until,
         )
@@ -152,14 +151,13 @@ impl Signing {
         use rss_mdm_agent_wire::task_trust::KeyState;
         let configuration = &signed.configuration;
         if self.usage != Use::AgentTask
-            || p.tenant() != self.tenant
             || configuration.tenant_id.to_string() != p.tenant().to_string()
             || configuration.device_id != *p.device()
         {
             return Err(Error::Forbidden);
         }
         self.revalidate(c, p).await?;
-        let trust = trust::current(self.profile, self.usage, c, self.tenant).await?;
+        let trust = trust::current(self.profile, self.usage, c, p.tenant()).await?;
         let key = trust
             .keys
             .iter()

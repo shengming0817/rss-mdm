@@ -94,6 +94,7 @@ pub(super) fn routes()
     }
 }
 async fn upload(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -102,7 +103,13 @@ async fn upload(
 ) -> Result<WithStatus<202, Json<wire::TelemetryReceipt>>, AgentError> {
     json_content_type(&headers)?;
     let service = service(&app)?;
-    let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
+    let principal = authenticate(
+        &origin,
+        &app.enrollment,
+        &headers,
+        peer.as_ref().map(|p| &p.0),
+    )
+    .await?;
     audit.set_action(
         "agent_telemetry_upload",
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -122,6 +129,7 @@ async fn upload(
     Ok(WithStatus(Json(result)))
 }
 async fn gap_upload(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -133,7 +141,13 @@ async fn gap_upload(
 ) -> Result<WithStatus<202, Json<wire::TelemetryGapReceipt>>, AgentError> {
     json_content_type(&headers)?;
     let service = service(&app)?;
-    let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
+    let principal = authenticate(
+        &origin,
+        &app.enrollment,
+        &headers,
+        peer.as_ref().map(|p| &p.0),
+    )
+    .await?;
     audit.set_action(
         "agent_telemetry_gap_upload",
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -156,13 +170,20 @@ async fn gap_upload(
     Ok(WithStatus(Json(result)))
 }
 async fn gap_receipt(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     Path(id): Path<Uuid>,
 ) -> Result<Json<wire::TelemetryGapReceipt>, AgentError> {
-    let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
+    let principal = authenticate(
+        &origin,
+        &app.enrollment,
+        &headers,
+        peer.as_ref().map(|p| &p.0),
+    )
+    .await?;
     audit.set_action(
         "agent_telemetry_gap_status",
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -180,13 +201,20 @@ async fn gap_receipt(
 }
 
 async fn receipt(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     Path(id): Path<Uuid>,
 ) -> Result<Json<wire::TelemetryReceipt>, AgentError> {
-    let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
+    let principal = authenticate(
+        &origin,
+        &app.enrollment,
+        &headers,
+        peer.as_ref().map(|p| &p.0),
+    )
+    .await?;
     audit.set_action(
         "agent_telemetry_status",
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -204,13 +232,20 @@ async fn receipt(
 }
 
 async fn configuration(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     Path((policy, version)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<wire::SignedTelemetryConfiguration>, AgentError> {
-    let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
+    let principal = authenticate(
+        &origin,
+        &app.enrollment,
+        &headers,
+        peer.as_ref().map(|p| &p.0),
+    )
+    .await?;
     audit.set_action(
         "agent_telemetry_configuration",
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -228,6 +263,7 @@ async fn configuration(
 }
 
 async fn current(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     Extension(control): Extension<rss_axum::RequestControl>,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
@@ -235,7 +271,13 @@ async fn current(
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     Path((id, observation)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<wire::TelemetryCurrentStatus>, AgentError> {
-    let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
+    let principal = authenticate(
+        &origin,
+        &app.enrollment,
+        &headers,
+        peer.as_ref().map(|p| &p.0),
+    )
+    .await?;
     audit.set_action(
         "agent_telemetry_current_status",
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -255,6 +297,7 @@ async fn current(
                 let (observation, projection) = projection_status(
                     app.inventory
                         .inspect(
+                            principal.binding(),
                             &run,
                             control.deadline(),
                             rss_request_context::Cancellation::observe(&control),
@@ -306,13 +349,20 @@ fn decode(headers: &HeaderMap, bytes: &Bytes, limit: usize) -> Result<Vec<u8>, A
 }
 
 async fn material(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     Path((policy, version)): Path<(Uuid, Uuid)>,
 ) -> Result<rss_mdm_http_contract::download::Download, AgentError> {
-    let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
+    let principal = authenticate(
+        &origin,
+        &app.enrollment,
+        &headers,
+        peer.as_ref().map(|p| &p.0),
+    )
+    .await?;
     audit.set_action(
         "agent_telemetry_material",
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -333,12 +383,19 @@ async fn material(
 }
 
 async fn directory(
+    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
 ) -> Result<Json<wire::TelemetryDirectory>, AgentError> {
-    let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
+    let principal = authenticate(
+        &origin,
+        &app.enrollment,
+        &headers,
+        peer.as_ref().map(|p| &p.0),
+    )
+    .await?;
     audit.set_action(
         "agent_telemetry_directory",
         rss_mdm_audit_integration::AuditIntent::Routine,

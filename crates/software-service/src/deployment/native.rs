@@ -25,15 +25,11 @@ pub enum Identity {
 pub struct Package {
     pub identity: Identity,
     pub artifact: r::SoftwareArtifact,
-    pub origin: String,
     pub timeout_seconds: u32,
     pub minimum_os: Option<[u16; 4]>,
 }
 impl Package {
-    pub fn compile(
-        definition: &r::SoftwareDefinition,
-        origin: String,
-    ) -> std::result::Result<Self, Error> {
+    pub fn compile(definition: &r::SoftwareDefinition) -> std::result::Result<Self, Error> {
         let spec = definition.spec();
         if !spec.dependencies.is_empty()
             || spec.reboot != r::SoftwareReboot::Report
@@ -134,7 +130,6 @@ impl Package {
         Ok(Self {
             identity,
             artifact: spec.artifacts.get(key).ok_or(Error::Input)?.clone(),
-            origin,
             timeout_seconds: invocation.timeout_seconds,
             minimum_os: match spec.behavior.as_ref().ok_or(Error::Unsupported)? {
                 r::SoftwareBehavior::Msix(m) => Some(m.minimum_os),
@@ -158,22 +153,9 @@ impl Package {
     pub fn task(
         &self,
         operation: Uuid,
-        protection: &rss_mdm_native_protection::Protector,
-        tenant: rss_request_context::TenantId,
+        download_url: &str,
     ) -> std::result::Result<crate::deployment::Task, Error> {
-        let token = protection
-            .mac(
-                &serde_json::to_vec(&self.artifact).map_err(|_| Error::Input)?,
-                &aad(tenant, "software.download", &operation)?,
-            )
-            .map_err(|_| Error::Integrity)?
-            .iter()
-            .map(|v| format!("{v:02x}"))
-            .collect::<String>();
-        let url = format!(
-            "{}/api/v1/software/installations/{operation}/package?token={token}",
-            self.origin.trim_end_matches('/')
-        );
+        let url = download_url.to_owned();
         Ok(match &self.identity {
             Identity::Msi { product, version } => crate::deployment::Task::Windows {
                 request: rss_mdm_windows_mdm::native::Execution::Msi {
@@ -226,14 +208,6 @@ impl Package {
             }
         })
     }
-}
-
-fn aad(
-    tenant: rss_request_context::TenantId,
-    purpose: &str,
-    identity: &Uuid,
-) -> Result<rss_mdm_native_protection::DerivedAad, Error> {
-    rss_mdm_native_protection::canonical::aad(tenant, purpose, identity).map_err(|_| Error::Input)
 }
 
 impl Package {

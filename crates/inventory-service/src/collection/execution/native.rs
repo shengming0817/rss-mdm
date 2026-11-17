@@ -11,6 +11,7 @@ use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 pub async fn advance_in(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
     run: &mut NativeRun,
@@ -53,11 +54,11 @@ pub async fn advance_in(
     })
     .await?;
     let native = service.native.clone();
-    let tenant = tx.tenant_id();
+
     let platform = action.input.platform;
     let facts = tx
         .with_connection(move |c| {
-            Box::pin(async move { Ok(native.prepare_on(c, tenant, id, platform).await) })
+            Box::pin(async move { Ok(native.prepare_on(c, binding, id, platform).await) })
         })
         .await??;
     service.audit_store.append_batch_in(tx, &facts).await?;
@@ -129,9 +130,6 @@ impl super::CollectionService {
         id: Uuid,
         delivery: bool,
     ) -> Result<bool> {
-        if p.tenant() != self.transactions.tenant {
-            return Err(Error::Unauthorized.into());
-        }
         if delivery
             && !rss_mdm_registration_service::lifecycle::work_allowed_in(
                 rss_mdm_install_support::StorageProfile::Mdm,
@@ -174,7 +172,7 @@ impl super::CollectionService {
             if run.target.device != *p.device() {
                 return Err(Error::Unauthorized.into());
             }
-            super::recovery::recover_one(self, tx, id).await?;
+            super::recovery::recover_one(p.binding(), self, tx, id).await?;
         }
         Ok(())
     }

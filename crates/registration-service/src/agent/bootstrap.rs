@@ -10,7 +10,7 @@ use x509_cert::{
 /// Prepared by application composition from the purpose-specific PKI trust and webhook keys.
 pub struct Configuration {
     pub trust: DeviceTrust,
-    pub webhooks: scep::Verifier,
+    pub webhooks: Arc<scep::Verifier>,
 }
 /// Public native certificate enrollment inputs. Secrets are generated per installation.
 #[derive(Clone, Serialize, Deserialize)]
@@ -52,20 +52,45 @@ impl Deployment {
     }
 }
 impl Service {
-    pub fn bootstrap_configuration(&self) -> Result<&Configuration, Failure> {
+    pub fn bootstrap_verifier(&self) -> Result<&scep::Verifier, Failure> {
         self.native.as_ref().ok_or(Error::Unsupported)?;
         self.bootstrap
             .as_deref()
             .ok_or_else(|| Error::Configuration.into())
     }
+    async fn bootstrap_configuration(
+        &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<Configuration, Failure> {
+        self.native.as_ref().ok_or(Error::Unsupported)?;
+        Ok(Configuration {
+            trust: self.issuer.bootstrap_trust(execution).await?,
+            webhooks: self.bootstrap.clone().ok_or(Error::Configuration)?,
+        })
+    }
+    async fn bootstrap_execution(
+        &self,
+        id: Uuid,
+    ) -> Result<rss_transactional_messaging::fence::ExecutionBinding, Failure> {
+        let (tenant, epoch) = self
+            .store
+            .locate_bootstrap(id)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            tenant,
+            epoch,
+        ))
+    }
     pub async fn bootstrap_challenge(
         &self,
         verified: scep::VerifiedRequest,
         audit: &RequestAudit,
+        origin: &rss_mdm_certificate::GatewayOrigin,
     ) -> Result<scep::ChallengeResponse, Failure> {
         let profile = self.profile();
 
-        let config = self.bootstrap_configuration()?;
         let input = verified.request();
         if input.x509_certificate.is_some() || input.scep_error_code.is_some() {
             return Err(Error::Unauthorized.into());
@@ -77,6 +102,13 @@ impl Service {
                 .map_err(|_| Error::Malformed)?,
         )
         .map_err(|_| Error::Unauthorized)?;
+        let execution = self.bootstrap_execution(csr.attempt()).await?;
+        let config = self.bootstrap_configuration(execution).await?;
+        audit
+            .bind_scope(execution)
+            .map_err(|_| Error::Unauthorized)?;
+        self.require_connection_origin(audit.binding().map_err(Error::from)?, origin)
+            .await?;
         let active = config
             .trust
             .public()
@@ -98,11 +130,11 @@ impl Service {
             |ctx, c| {
                 Box::pin(async move {
                     let (s, csr, input, challenge, active, now) = *ctx;
-                    let row = row(profile, c, s.tenant, csr.attempt()).await?;
+                    let row = row(profile, c, execution.tenant(), csr.attempt()).await?;
                     let retained = rss_mdm_pki_service::registry::retained_issuer_on(
                         profile,
                         c,
-                        s.tenant,
+                        execution.tenant(),
                         rss_mdm_agent_wire::pki::Purpose::AgentBootstrap,
                         &active.digest,
                     )
@@ -147,9 +179,9 @@ impl Service {
                         return Err(Error::Forbidden);
                     }
                     let source =
-                        native::source(profile, c, s.tenant, row.try_get("source").map_err(db)?)
+                        native::source(profile, c, execution, row.try_get("source").map_err(db)?)
                             .await?;
-                    require_delivery(profile, c, s.tenant, source.bootstrap()).await?;
+                    require_delivery(profile, c, execution.tenant(), source.bootstrap()).await?;
                     s.native
                         .as_ref()
                         .ok_or(Error::Unsupported)?
@@ -166,7 +198,7 @@ impl Service {
                             crate::storage_profile::sql(profile)
                                 .agent_bootstrap_bootstrap_challenge_1,
                         )
-                        .bind(s.tenant.to_string())
+                        .bind(execution.tenant().to_string())
                         .bind(csr.attempt())
                         .bind(&input.transaction)
                         .bind(csr.digest().as_slice())
@@ -205,10 +237,10 @@ impl Service {
         &self,
         verified: scep::VerifiedRequest,
         audit: &RequestAudit,
+        origin: &rss_mdm_certificate::GatewayOrigin,
     ) -> Result<(), Failure> {
         let profile = self.profile();
 
-        let config = self.bootstrap_configuration()?;
         let input = verified.request();
         if input.scep_error_code.is_some() {
             return Err(Error::Unauthorized.into());
@@ -219,6 +251,11 @@ impl Service {
             .ok_or(Error::Unauthorized)?
             .der()
             .map_err(|_| Error::Malformed)?;
+        let leaf = Certificate::from_der(&der).map_err(|_| Error::Malformed)?;
+        let (installation, id) = certificate::parse_subject(&leaf.tbs_certificate.subject)
+            .map_err(|_| Error::Unauthorized)?;
+        let execution = self.bootstrap_execution(id).await?;
+        let config = self.bootstrap_configuration(execution).await?;
         let now = self.clock.unix_seconds()?;
         let chain = [der.as_slice().into()];
         let issuer = config
@@ -228,9 +265,11 @@ impl Service {
         if issuer.digest != verified.issuer() {
             return Err(Error::Unauthorized.into());
         }
-        let leaf = Certificate::from_der(&der).map_err(|_| Error::Malformed)?;
-        let (installation, id) = certificate::parse_subject(&leaf.tbs_certificate.subject)
+        audit
+            .bind_scope(execution)
             .map_err(|_| Error::Unauthorized)?;
+        self.require_connection_origin(audit.binding().map_err(Error::from)?, origin)
+            .await?;
         let fingerprint: Vec<u8> = Sha256::digest(&der).to_vec();
         let spki = Sha256::digest(
             leaf.tbs_certificate
@@ -266,7 +305,7 @@ impl Service {
             |ctx, c| {
                 Box::pin(async move {
                     let (s, id, installation, issuer, input, der, fingerprint, spki, end) = *ctx;
-                    let row = row(profile, c, s.tenant, id).await?;
+                    let row = row(profile, c, execution.tenant(), id).await?;
                     if row.try_get::<Uuid, _>("installation").map_err(db)? != installation
                         || row.try_get::<String, _>("issuer").map_err(db)? != issuer.digest
                         || row
@@ -298,11 +337,12 @@ impl Service {
                         let source = native::source(
                             profile,
                             c,
-                            s.tenant,
+                            execution,
                             row.try_get("source").map_err(db)?,
                         )
                         .await?;
-                        require_delivery(profile, c, s.tenant, source.bootstrap()).await?;
+                        require_delivery(profile, c, execution.tenant(), source.bootstrap())
+                            .await?;
                         s.native
                             .as_ref()
                             .ok_or(Error::Unsupported)?
@@ -311,7 +351,7 @@ impl Service {
                         sqlx::query(
                             crate::storage_profile::sql(profile).agent_bootstrap_bootstrap_notify_1,
                         )
-                        .bind(s.tenant.to_string())
+                        .bind(execution.tenant().to_string())
                         .bind(id)
                         .bind(fingerprint)
                         .bind(der)
@@ -333,19 +373,26 @@ impl Service {
         peer: &ClientCertificateEvidence,
         input: &wire::NativeGrantRequest,
         audit: &RequestAudit,
+        origin: &rss_mdm_certificate::GatewayOrigin,
     ) -> Result<wire::GrantReceipt, Failure> {
         let profile = self.profile();
 
         input.validate().map_err(|_| Error::Malformed)?;
-        let config = self.bootstrap_configuration()?;
-        config
-            .trust
-            .verify(peer.chain(), self.clock.unix_seconds()?)
-            .map_err(|_| Error::Unauthorized)?;
         let bytes = peer.chain().first().ok_or(Error::Unauthorized)?;
         let leaf = Certificate::from_der(bytes).map_err(|_| Error::Unauthorized)?;
         let (installation, id) = certificate::parse_subject(&leaf.tbs_certificate.subject)
             .map_err(|_| Error::Unauthorized)?;
+        let execution = self.bootstrap_execution(id).await?;
+        let config = self.bootstrap_configuration(execution).await?;
+        config
+            .trust
+            .verify(peer.chain(), self.clock.unix_seconds()?)
+            .map_err(|_| Error::Unauthorized)?;
+        audit
+            .bind_scope(execution)
+            .map_err(|_| Error::Unauthorized)?;
+        self.require_connection_origin(audit.binding().map_err(Error::from)?, origin)
+            .await?;
         if installation != input.installation_operation {
             return Err(Error::Forbidden.into());
         }
@@ -363,18 +410,18 @@ impl Service {
         );
         self.write(audit,(self,id,input,&fingerprint),|ctx,c|Box::pin(async move {
             let(s,id,input,fingerprint)=*ctx;
-            let row=row(profile, c,s.tenant,id).await?;
+            let row=row(profile, c,execution.tenant(),id).await?;
             if !row.try_get::<bool,_>("active").map_err(db)? || !matches!(row.try_get::<String,_>("state").map_err(db)?.as_str(),"issued"|"consumed")
                 || row.try_get::<i64,_>("deadline").map_err(db)?<=s.clock.unix_seconds()?
                 || row.try_get::<Option<Vec<u8>>,_>("fingerprint").map_err(db)?.as_ref()!=Some(fingerprint) {return Err(Error::Forbidden);}
             let mut proof: serde_json::Value=row.try_get("source").map_err(db)?;
             proof["runtime"]=serde_json::to_value(&input.runtime).map_err(|_|Error::Malformed)?;
-            let source=native::source(profile, c,s.tenant,proof).await?;
+            let source=native::source(profile, c,execution,proof).await?;
             let authority = s.native.as_ref().ok_or(Error::Unsupported)?.validate(c, &source).await?;
             let native = serde_json::json!({"installation":source.installation(),"device":source.principal().device(),"credential":source.principal().credential(),"source":source.report_source(),"runtime":input.runtime,"bootstrap":source.bootstrap()});
             let (value,replay)=native::create_in(profile, c,authority,input,&native).await?;
             sqlx::query(crate::storage_profile::sql(profile).agent_bootstrap_native_grant_1)
-                .bind(s.tenant.to_string()).bind(id).execute(c).await.map_err(db)?;
+                .bind(execution.tenant().to_string()).bind(id).execute(c).await.map_err(db)?;
             Ok(Change {value, replay})
         })).await.map_err(Into::into)
     }

@@ -7,10 +7,8 @@ impl Compliance {
         id: Uuid,
     ) -> Result<Option<EvaluationProgress>> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant() {
-            return Err(Error::Forbidden.into());
-        }
-        let t = self.tenant();
+
+        let t = tx.tenant_id();
         let row = tx
             .with_connection(move |c| {
                 Box::pin(async move { pg::tasks::evaluation(c, t, id).await })
@@ -34,10 +32,8 @@ impl Compliance {
         progress: &EvaluationProgress,
     ) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant() {
-            return Err(Error::Forbidden.into());
-        }
-        let t = self.tenant();
+
+        let t = tx.tenant_id();
         let binding = progress.binding.clone();
         let arrays = progress
             .arrays
@@ -56,10 +52,8 @@ impl Compliance {
         id: Uuid,
     ) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant() {
-            return Err(Error::Forbidden.into());
-        }
-        let t = self.tenant();
+
+        let t = tx.tenant_id();
         tx.with_connection(move |c| {
             Box::pin(async move { pg::tasks::clear_evaluation(c, t, id).await })
         })

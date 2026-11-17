@@ -10,6 +10,10 @@ type Runtime<'a> = (
     &'a crate::boundary::Envelope,
     &'a rss_mdm_query::cursor::CursorCodec,
 );
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep execution scope and existing operation inputs explicit"
+)]
 pub fn router<
     D0: rss_mdm_http_contract::module::Declaration,
     D1: rss_mdm_http_contract::module::Declaration,
@@ -22,9 +26,11 @@ pub fn router<
     policy: Arc<Policy>,
     envelope: crate::boundary::Envelope,
     cursor: rss_mdm_query::cursor::CursorCodec,
+    management_tenant: &str,
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0, D1, D2>> {
     let routes = assemble(
         Some((&authentication, &policy, &envelope, &cursor)),
+        Some(management_tenant),
         registry,
         platform_settings,
         diagnostics,
@@ -40,7 +46,7 @@ pub fn contract_routes<
     platform_settings: Router<(), D1>,
     diagnostics: Router<(), D2>,
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0, D1, D2>> {
-    assemble(None, registry, platform_settings, diagnostics)
+    assemble(None, None, registry, platform_settings, diagnostics)
 }
 fn assemble<
     D0: rss_mdm_http_contract::module::Declaration,
@@ -48,6 +54,7 @@ fn assemble<
     D2: rss_mdm_http_contract::module::Declaration,
 >(
     runtime: Option<Runtime<'_>>,
+    management_tenant: Option<&str>,
     registry: Router<(), D0>,
     platform_settings: Router<(), D1>,
     diagnostics: Router<(), D2>,
@@ -88,15 +95,13 @@ platform_settings, diagnostics }.assemble()
         AssembleModule102 {
             base: routes,
             router_mount_management_identity_context:
-                crate::router::mount_management_identity_context(runtime.map(
-                    |(authentication, policy, envelope, _)| {
-                        (
-                            authentication.clone(),
-                            policy.clone(),
-                            envelope.tenant.as_str(),
-                        )
-                    },
-                )),
+                crate::router::mount_management_identity_context(
+                    runtime.zip(management_tenant).map(
+                        |((authentication, policy, _, _), tenant)| {
+                            (authentication.clone(), policy.clone(), tenant)
+                        },
+                    ),
+                ),
         }
         .assemble()
     }

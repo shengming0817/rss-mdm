@@ -102,6 +102,7 @@ async fn attest(
     next.run(request).await
 }
 struct Host {
+    state: Arc<rss_mdm_windows_channel::HttpState>,
     address: SocketAddr,
     stop: tokio::sync::oneshot::Sender<()>,
     task: tokio::task::JoinHandle<std::io::Result<()>>,
@@ -137,25 +138,59 @@ async fn host(
     n: &identity::Native,
     w: Arc<rss_mdm_windows_channel::Windows>,
 ) -> Result<Host> {
-    let a = Fixture::open(c, false).await?;
+    let a = Fixture::open(c).await?;
     let monotonic = Arc::new(crate::Monotonic(std::time::Instant::now));
     let audit = Arc::new(
         c.audit
             .on_runtime(
                 a.resources.storage.runtime.clone(),
-                c.audit.binding(),
+                c.execution(),
                 &rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5))
                     .control(),
             )
             .await?,
     );
     let requests = Arc::new(tokio::sync::Semaphore::new(16));
+    let providers = w.providers.clone();
+    let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c.database.archive_pool(),
+        c.audit.clone(),
+        c.execution(),
+        providers.clone(),
+    ));
+    // Original native fixture material, consumed by the same current-trust owner as production.
+    let material = command::seed_transaction(c).await?;
+
+    material.commit().await?;
+    let policy = crate::identity::policy::RuntimePolicy::installation();
+    let compiled = policy.compile(
+        rss_identity_core::InstanceId::parse(&c.inputs.installation.instance_id)?,
+        rss_audit_postgres::Integrity::Plain,
+    )?;
+    let verifier = Arc::new(rss_identity_oidc::entra::HttpEntra::new(
+        compiled.transport,
+        policy.jwks.max_token_bytes,
+        compiled.jwks,
+    )?);
+    let windows = Arc::new(rss_mdm_windows_channel::runtime_materials::Runtime::new(
+        w.enrollment_origin.clone(),
+        w.management_origin.clone(),
+        w.additional_management_origins.clone(),
+        a.resources.protection.clone(),
+        c.authority.clone(),
+        verifier,
+        monotonic.clone(),
+    ));
     let state = Arc::new(rss_mdm_windows_channel::HttpState {
+        pki,
+        providers,
+        storage: c.execution().storage(),
+        expected_epoch: c.execution().epoch(),
         query_cursor: rss_mdm_query::cursor::CursorCodec::new(&[7; 32])?,
         protection: a.resources.protection.clone(),
         mount: rss_mdm_registration_service::device::ChannelMount::new(
             rss_mdm_install_support::StorageProfile::Mdm,
-            c.tenant,
             rss_mdm_inventory::ReportSource::MdmWindows,
             rss_mdm_registration_service::Purpose::Primary,
         ),
@@ -164,7 +199,7 @@ async fn host(
         clock: Arc::new(identity::Clock),
         delivery: Arc::new(rss_mdm_windows_channel::management::exchange::Delivery {
             runtime: a.resources.storage.runtime.clone(),
-            tenant: c.tenant,
+
             audit,
             protection: a.resources.protection.clone(),
             business: Arc::new(crate::assembly::windows_business::WindowsBusiness(
@@ -189,17 +224,13 @@ async fn host(
         )),
         devices: Arc::new(crate::device::DeviceService::new(
             c.database.registration(),
-            c.tenant.to_string(),
             c.audit.clone(),
         )),
         identity: Arc::new(
-            rss_mdm_authorization_service::session::SessionAuthority::new(
-                c.authority.clone(),
-                c.audit.binding(),
-            ),
+            rss_mdm_authorization_service::session::SessionAuthority::new(c.authority.clone()),
         ),
         requests: requests.clone(),
-        windows: Some(w.clone()),
+        windows: Some(windows),
     });
     let boundary = || rss_mdm_windows_channel::boundary::Envelope {
         request_budget: rss_axum::RequestBudget::new(std::time::Duration::from_secs(8)).unwrap(),
@@ -208,9 +239,8 @@ async fn host(
         clock: monotonic.clone(),
         audit_store: c.audit.clone(),
         requests: requests.clone(),
-        tenant: c.tenant.to_string(),
     };
-    let (_, router) = rss_mdm_windows_channel::routers(state, boundary(), boundary());
+    let (_, router) = rss_mdm_windows_channel::routers(state.clone(), boundary(), boundary());
     let admission = crate::native::admission::Admission::new(monotonic, requests, "windows-t2");
     let mut lifecycle = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
@@ -250,6 +280,7 @@ async fn host(
         .await
     });
     Ok(Host {
+        state,
         address,
         stop,
         task,
@@ -357,6 +388,7 @@ pub(crate) async fn windows(
     .derive();
     let secrets=protection.seal_bytes(&serde_json::to_vec(&serde_json::json!({"client_password":"client-secret","server_password":"server-secret","server_nonce":vec![7u8;32]}))?,&aad)?;
     let mut tx = command::seed_transaction(c).await?;
+    sqlx::query("INSERT INTO mdm_windows.enrollment_configuration(tenant_id,provider_id,poll,lifetime,entra_callbacks) VALUES($1::uuid,'rss-t2',$2,$3,ARRAY[]::text[]) ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).bind(serde_json::to_value(&poll)?).bind(serde_json::to_value(rss_mdm_certificate::windows::Lifetime::Production)?).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.enrollment_intents (tenant_id, request_id, csr, profile, issuer, configuration, device, credential, epoch, secrets, signing_attempt, protocol_device) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)").bind(c.tenant.to_string()).bind(n.request).bind(&n.csr).bind(profile).bind(&n.root).bind(configuration).bind(n.device.into_uuid()).bind(n.credential).bind(n.epoch).bind(secrets).bind(n.attempt).bind(n.device.to_string()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.enrollment_certificates(tenant_id,request_id,certificate,server_nonce) VALUES($1::uuid,$2,$3,$4)").bind(c.tenant.to_string()).bind(n.request).bind(&n.certificate).bind(vec![7u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
@@ -373,7 +405,7 @@ pub(crate) async fn windows(
 }
 
 #[tokio::test]
-#[ignore = "T2: actual TLS/HTTP and persisted unfinished SyncML package across owner restart"]
+#[ignore = "T2: actual TLS/HTTP, WNS revocation and persisted unfinished SyncML package across owner restart"]
 async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let n = identity::seed(&c, "windows").await?;
@@ -390,6 +422,34 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
         message
     };
     let h = host(&c, &n, w.clone()).await?;
+    // WNS OAuth qualification is a precondition, not the seam exercised here.
+    // Persist the qualified material locally; this test sends no WNS network request.
+    let tenant = c.tenant.to_string();
+    let protection = &h.assembly.resources.protection;
+    let mut tx = command::seed_transaction(&c).await?;
+    let material = rss_mdm_windows_channel::wns_materials::prepare(
+        &mut tx,
+        &tenant,
+        uuid::Uuid::new_v4(),
+        "windows-protocol-test",
+        &rss_mdm_windows_channel::wns_materials::Request {
+            expected_revision: 0,
+            package_family_name: "Rss.Test_0123456789abc".into(),
+            sid: "ms-app://rss-test".to_owned().into(),
+            client_secret: "test-secret".to_owned().into(),
+        },
+        protection,
+    )
+    .await?;
+    sqlx::query("UPDATE mdm_wns.versions SET qualified_at=1,selected=true WHERE tenant_id=$1::uuid AND revision=$2")
+        .bind(&tenant).bind(material.revision).execute(&mut *tx).await?;
+    sqlx::query("UPDATE mdm_wns.heads SET desired_revision=$2 WHERE tenant_id=$1::uuid")
+        .bind(&tenant)
+        .bind(material.revision)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    assert!(h.state.windows(c.execution()).await?.push.is_some());
     let http = client(&n)?;
     let mut first = s::decode(
         include_bytes!("../../../../crates/windows-mdm/tests/fixtures/initialization.xml"),
@@ -429,6 +489,21 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
             .target,
         native_id
     );
+    let mut tx = command::seed_transaction(&c).await?;
+    rss_mdm_windows_channel::wns_materials::revoke(
+        &mut tx,
+        &tenant,
+        uuid::Uuid::new_v4(),
+        "windows-protocol-test",
+        &rss_mdm_windows_channel::wns_materials::RevokeRequest {
+            expected_revision: material.revision,
+            material_revision: material.revision,
+        },
+        protection,
+    )
+    .await?;
+    tx.commit().await?;
+    assert!(h.state.windows(c.execution()).await?.push.is_none());
     let substituted = s::encode(&next(&n, 2, 212, false), &CodecLimits::default())?;
     assert!(
         send(&http, &h, &substituted).await.is_err(),
@@ -441,6 +516,7 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
     drop(http);
     h.close().await?;
     let h = host(&c, &n, w).await?;
+    assert!(h.state.windows(c.execution()).await?.push.is_none());
     let http = client(&n)?;
     let third = s::encode(&native_next(3, 200, true), &CodecLimits::default())?;
     let response = send(&http, &h, &third).await?;
@@ -480,11 +556,7 @@ async fn windows_revocation_preserves_device_access_role_isolation() -> Result<(
         .account(&[rss_mdm_authorization_service::Permission::Credentials])
         .await?;
     let proof = c.authenticate(&account).await?;
-    let devices = crate::device::DeviceService::new(
-        c.database.registration(),
-        c.tenant.to_string(),
-        c.audit.clone(),
-    );
+    let devices = crate::device::DeviceService::new(c.database.registration(), c.audit.clone());
     let da_binding_access: bool = sqlx::query_scalar(
         "SELECT has_any_column_privilege('mdm_access','rss_da.bindings','SELECT,UPDATE')",
     )
@@ -532,7 +604,7 @@ async fn installation_facts_correlate_receipts_and_post_dispatch_collection() ->
     use uuid::Uuid;
     let c = Context::open("shared", &[]).await?;
     let n = identity::seed(&c, "windows").await?;
-    let a = Fixture::open(&c, false).await?;
+    let a = Fixture::open(&c).await?;
     let operation = Uuid::new_v4();
     let before = Uuid::new_v4();
     let after = Uuid::new_v4();
@@ -738,11 +810,12 @@ async fn declared_context_isolates_sessions_and_survives_exact_credential_replac
     let w = windows(&c, &n).await?;
     let old_child = protocol_peer(&c, &n, "declared-old").await?;
     let child = protocol_peer(&c, &n, "declared").await?;
-    let primary_mount = device::ChannelMount::new(Mdm, c.tenant, MdmWindows, Purpose::Primary);
-    let declared_mount =
-        device::ChannelMount::new(Mdm, c.tenant, MdmWindows, Purpose::WindowsDeclared);
-    let parent_evidence = primary_mount.credential(Sha256::digest(&n.certificate).into())?;
-    let child_evidence = declared_mount.credential(Sha256::digest(&child.certificate).into())?;
+    let primary_mount = device::ChannelMount::new(Mdm, MdmWindows, Purpose::Primary);
+    let declared_mount = device::ChannelMount::new(Mdm, MdmWindows, Purpose::WindowsDeclared);
+    let parent_evidence =
+        primary_mount.credential(c.execution(), Sha256::digest(&n.certificate).into())?;
+    let child_evidence =
+        declared_mount.credential(c.execution(), Sha256::digest(&child.certificate).into())?;
     let protection = crate::device_material_support::protection(&c)?;
     let aad = rss_mdm_native_protection::ProtectionContext::new(
         c.tenant,
@@ -774,7 +847,8 @@ async fn declared_context_isolates_sessions_and_survives_exact_credential_replac
     .execute(&mut *tx)
     .await?;
     let parent = store::management_in(Mdm, &mut tx, &parent_evidence).await?;
-    let old_evidence = declared_mount.credential(Sha256::digest(&old_child.certificate).into())?;
+    let old_evidence =
+        declared_mount.credential(c.execution(), Sha256::digest(&old_child.certificate).into())?;
     device::linked::request_in(Mdm, &mut tx, &parent, old_child.request, Uuid::new_v4()).await?;
     device::linked::bind_in(
         Mdm,
@@ -798,11 +872,7 @@ async fn declared_context_isolates_sessions_and_survives_exact_credential_replac
     assert_eq!(receipt.device, n.device);
     assert_ne!(receipt.epoch, n.epoch);
     // The primary enrollment query must select its credential while WinDC is also active.
-    sqlx::query("INSERT INTO mdm_pki.trust(tenant_id,purpose,revision,body) VALUES($1::uuid,'windows',1,$2)")
-        .bind(c.tenant.to_string()).bind(serde_json::to_vec(&n.trust)?).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_pki.issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES($1::uuid,'windows',$2,1,'active',$3,'step_ca',$4)")
-        .bind(c.tenant.to_string()).bind(&n.trust.issuers[0].digest).bind(&n.root)
-        .bind(time::OffsetDateTime::now_utc().unix_timestamp() + 86400).execute(&mut *tx).await?;
+
     for peer in [&n, &child] {
         rss_mdm_pki_service::certificates::record_in(
             Mdm,
@@ -965,7 +1035,7 @@ async fn declared_context_isolates_sessions_and_survives_exact_credential_replac
         "exact predecessor is single use"
     );
     let renewed_evidence =
-        declared_mount.credential(Sha256::digest(&renewed.certificate).into())?;
+        declared_mount.credential(c.execution(), Sha256::digest(&renewed.certificate).into())?;
     let active = store::management_in(Mdm, &mut tx, &renewed_evidence).await?;
     assert_eq!(*active.device(), n.device);
     assert_eq!(active.protocol_request(), Some(child.request));

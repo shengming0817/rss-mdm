@@ -510,79 +510,39 @@ impl Departure for WindowsBusiness {
     }
 }
 impl WakeDemand for WindowsBusiness {
-    fn candidates<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        after: Option<rss_mdm_agent_wire::DeviceId>,
-    ) -> Pending<'a, Vec<rss_mdm_agent_wire::DeviceId>> {
-        Box::pin(async move {
-            let mut candidates = self
-                .0
-                .windows_wake_candidates_in(c, after)
-                .await
-                .map_err(error)?;
-            candidates.extend(
-                self.1
-                    .windows_wake_candidates_in(c, after)
-                    .await
-                    .map_err(policy_error)?,
-            );
-            candidates.extend(
-                self.2
-                    .windows_wake_candidates_on(c, after)
-                    .await
-                    .map_err(collection_fault)?,
-            );
-            candidates.extend(
-                self.3
-                    .windows_wake_candidates_in(c, after)
-                    .await
-                    .map_err(software_error)?,
-            );
-            candidates.extend(
-                self.4
-                    .windows_wake_candidates_in(c, after)
-                    .await
-                    .map_err(registration_error)?,
-            );
-            candidates.sort();
-            candidates.dedup();
-            candidates.truncate(32);
-            Ok(candidates)
-        })
-    }
     fn pending<'a>(
         &'a self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         c: &'a mut PgConnection,
         device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, bool> {
         Box::pin(async move {
-            let execution = self
+            let control_pending = self
                 .0
-                .windows_wake_pending_in(c, device)
+                .windows_wake_pending_in(execution, c, device)
                 .await
                 .map_err(error)?;
             let configuration = self
                 .1
-                .windows_wake_pending_in(c, device)
+                .windows_wake_pending_in(execution, c, device)
                 .await
                 .map_err(policy_error)?;
             let collection = self
                 .2
-                .windows_wake_pending_on(c, device)
+                .windows_wake_pending_on(execution, c, device)
                 .await
                 .map_err(collection_fault)?;
             let software = self
                 .3
-                .windows_wake_pending_in(c, device)
+                .windows_wake_pending_in(execution, c, device)
                 .await
                 .map_err(software_error)?;
             let bootstrap = self
                 .4
-                .windows_wake_pending_in(c, device)
+                .windows_wake_pending_in(execution, c, device)
                 .await
                 .map_err(registration_error)?;
-            Ok(execution || configuration || collection || software || bootstrap)
+            Ok(control_pending || configuration || collection || software || bootstrap)
         })
     }
 }

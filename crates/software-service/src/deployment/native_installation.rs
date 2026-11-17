@@ -11,12 +11,33 @@ use rss_mdm_registration_service::installation::queries::{
 };
 
 impl SoftwareService {
+    pub(super) async fn artifact_execution(
+        &self,
+        id: Uuid,
+    ) -> std::result::Result<rss_transactional_messaging::fence::ExecutionBinding, Error> {
+        let rows: Vec<(Uuid, i64)> =
+            sqlx::query_as("SELECT * FROM mdm_software_deployment.artifact_scope($1)")
+                .bind(id)
+                .fetch_all(&self.read_pool)
+                .await
+                .map_err(|_| Error::Unavailable(Failure::CommandStorage))?;
+        let [(tenant, epoch)] = rows.as_slice() else {
+            return Err(Error::Forbidden);
+        };
+        Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            TenantId::parse(&tenant.to_string()).map_err(|_| Error::Malformed)?,
+            rss_transactional_messaging::fence::Epoch::new(*epoch).map_err(|_| Error::Malformed)?,
+        ))
+    }
+
     /// Opaque operation locates a fixed public package; it carries no enrollment authority.
     pub async fn installation_artifact(
         &self,
         id: Uuid,
         audit: &RequestAudit,
     ) -> std::result::Result<rss_mdm_resource::Artifact, Error> {
+        audit.bind_scope(self.artifact_execution(id).await?)?;
         audit.identify_service("native-package-download");
         audit.operation(
             id,
@@ -25,12 +46,12 @@ impl SoftwareService {
         );
         crate::deployment::transaction::inspect(
             &self.transactions.runtime,
-            self.transactions.audit_store.binding(),
+            audit.binding()?,
             (self, id),
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, id) = *ctx;
-                    let tenant = s.transactions.tenant.to_string();
+                    let tenant = tx.tenant_id().to_string();
                     let instance = s.transactions.instance.clone();
                     tx.with_connection(move |c| {
                         Box::pin(async move {
@@ -78,7 +99,7 @@ impl SoftwareService {
                     {
                         return Err(Error::Forbidden.into());
                     }
-                    let tenant = s.transactions.tenant.to_string();
+                    let tenant = tx.tenant_id().to_string();
                     if !tx
                         .with_connection(move |c| {
                             Box::pin(async move {
@@ -534,7 +555,7 @@ impl crate::deployment::transactions::Transactions {
                 authority,
                 crate::deployment::protection::fingerprint(
                     &self.protection,
-                    self.tenant,
+                    tx.tenant_id(),
                     device,
                     "agent-install-command/v1",
                     &(&input, policy, version),
@@ -781,7 +802,7 @@ impl crate::deployment::transactions::Transactions {
             let event = match observation["installation"].as_str() {
                 Some("installed") => dc::DeviceEvent::Reported(op.request.digest(
                     &self.protection,
-                    self.tenant,
+                    tx.tenant_id(),
                     &op.device,
                 )?),
                 Some("failed") => dc::DeviceEvent::Rejected,

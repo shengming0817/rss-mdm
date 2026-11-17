@@ -13,6 +13,7 @@ use zeroize::Zeroizing;
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'a>>;
 /// Configured backend client. No browser input chooses its issuer, credentials or scopes.
 pub trait Client: Send + Sync {
+    fn tenant(&self) -> rss_request_context::TenantId;
     fn target(&self) -> &rss_identity_core::enterprise::EnterpriseTarget;
     fn provider(&self) -> Uuid;
     fn fingerprint(&self) -> &str;
@@ -115,7 +116,7 @@ async fn load(
 ) -> Result<(Context, Option<Vec<u8>>), Error> {
     use sqlx::Row;
     let sql = if locked {
-        "SELECT document,sealed FROM rss_da.brokers WHERE tenant_id=$1 AND id=$2 FOR UPDATE"
+        "SELECT document,sealed FROM rss_da.brokers WHERE tenant_id=$1 AND id=$2 AND expected_epoch=current_setting('rss.execution_epoch')::bigint FOR UPDATE"
     } else {
         "SELECT document,sealed FROM rss_da.brokers WHERE tenant_id=$1 AND id=$2"
     };
@@ -180,8 +181,8 @@ async fn qualify(
     Ok(())
 }
 
-fn tenant(service: &Service) -> Result<Uuid, Error> {
-    Uuid::parse_str(&service.tenant.to_string()).map_err(|_| Error::Configuration)
+fn tenant(execution: rss_transactional_messaging::fence::ExecutionBinding) -> Result<Uuid, Error> {
+    Uuid::parse_str(&execution.tenant().to_string()).map_err(|_| Error::Configuration)
 }
 fn terminal_phase(context: &Context, now: i64) -> wire::Phase {
     if context.phase == wire::Phase::Consumed || context.phase == wire::Phase::Cancelled {
@@ -216,8 +217,8 @@ impl Service {
             "enterprise_broker_prepare",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        self.write(audit,(self,input,browser,client,admission),|ctx,c|Box::pin(async move{
-            let (service,input,browser,client,admission)=ctx;let tenant=tenant(service)?;
+        self.write(audit,(self,input,browser,client,admission, audit),|ctx,c|Box::pin(async move{
+            let (_,input,browser,client,admission, audit)=ctx;let tenant=tenant(audit.binding()?)?;
             let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM rss_da.brokers WHERE tenant_id=$1 AND id=$2)").bind(tenant).bind(input.operation_id).fetch_one(&mut *c).await.map_err(db)?;
             if exists {
                 let (old,_)=load(c,tenant,input.operation_id,true).await?;browser_matches(&old,browser)?;
@@ -258,11 +259,11 @@ impl Service {
         );
         self.write(
             audit,
-            (self, id, browser, challenge, admission),
+            (self, id, browser, challenge, admission, audit),
             |ctx, c| {
                 Box::pin(async move {
-                    let (service, id, browser, challenge, admission) = ctx;
-                    let (mut value, _) = load(c, tenant(service)?, *id, true).await?;
+                    let (_, id, browser, challenge, admission, audit) = ctx;
+                    let (mut value, _) = load(c, tenant(audit.binding()?)?, *id, true).await?;
                     browser_matches(&value, browser)?;
                     if value.phase != wire::Phase::Preparing {
                         return Err(Error::Conflict);
@@ -301,10 +302,11 @@ impl Service {
             "enterprise_broker_claim",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        self.write(audit, (self, input, browser, admission), |ctx, c| {
+        self.write(audit, (self, input, browser, admission, audit), |ctx, c| {
             Box::pin(async move {
-                let (service, input, browser, admission) = ctx;
-                let (mut value, _) = load(c, tenant(service)?, input.operation_id, true).await?;
+                let (_, input, browser, admission, audit) = ctx;
+                let (mut value, _) =
+                    load(c, tenant(audit.binding()?)?, input.operation_id, true).await?;
                 browser_matches(&value, browser)?;
                 let now = rss_mdm_webhook_service::events::now_on(c)
                     .await
@@ -341,28 +343,32 @@ impl Service {
             "enterprise_broker_failure",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        self.write(audit, (self, id, attempt, browser, unknown), |ctx, c| {
-            Box::pin(async move {
-                let (service, id, attempt, browser, unknown) = ctx;
-                let (mut value, sealed) = load(c, tenant(service)?, *id, true).await?;
-                browser_matches(&value, browser)?;
-                if value.attempt != Some(*attempt) {
-                    return Err(Error::Conflict);
-                }
-                if value.phase == wire::Phase::Completing {
-                    value.phase = if *unknown {
-                        wire::Phase::Unknown
-                    } else {
-                        wire::Phase::Failed
-                    };
-                    save(c, &value, sealed.as_deref()).await?;
-                }
-                Ok(AuditedChange {
-                    value: (),
-                    replay: false,
+        self.write(
+            audit,
+            (self, id, attempt, browser, unknown, audit),
+            |ctx, c| {
+                Box::pin(async move {
+                    let (_, id, attempt, browser, unknown, audit) = ctx;
+                    let (mut value, sealed) = load(c, tenant(audit.binding()?)?, *id, true).await?;
+                    browser_matches(&value, browser)?;
+                    if value.attempt != Some(*attempt) {
+                        return Err(Error::Conflict);
+                    }
+                    if value.phase == wire::Phase::Completing {
+                        value.phase = if *unknown {
+                            wire::Phase::Unknown
+                        } else {
+                            wire::Phase::Failed
+                        };
+                        save(c, &value, sealed.as_deref()).await?;
+                    }
+                    Ok(AuditedChange {
+                        value: (),
+                        replay: false,
+                    })
                 })
-            })
-        })
+            },
+        )
         .await
     }
     #[allow(
@@ -387,7 +393,7 @@ impl Service {
         self.write_admitted(
             &self.access_audit,
             audit,
-            (self, id, attempt, browser, actor, token, admission),
+            (self, id, attempt, browser, actor, token, admission, audit),
             |ctx, c| {
                 Box::pin(async move {
                     rss_identity_postgres::recheck_authenticated_session_on(c, ctx.4)
@@ -397,8 +403,8 @@ impl Service {
             },
             |ctx, c| {
                 Box::pin(async move {
-                    let (service, id, attempt, browser, actor, token, admission) = ctx;
-                    let (mut value, _) = load(c, tenant(service)?, *id, true).await?;
+                    let (service, id, attempt, browser, actor, token, admission, audit) = ctx;
+                    let (mut value, _) = load(c, tenant(audit.binding()?)?, *id, true).await?;
                     browser_matches(&value, browser)?;
                     let now = rss_mdm_webhook_service::events::now_on(c)
                         .await
@@ -411,7 +417,7 @@ impl Service {
                     {
                         return Err(Error::Conflict);
                     }
-                    if actor.account().tenant != service.tenant
+                    if actor.account().tenant != audit.binding()?.tenant()
                         || actor.instance().as_uuid() != value.binding.person.instance
                         || actor.account().principal.as_uuid() != value.binding.person.principal
                     {
@@ -434,7 +440,7 @@ impl Service {
                         Zeroizing::new(serde_json::to_vec(&handoff).map_err(|_| Error::Corrupt)?);
                     let sealed = service
                         .protection
-                        .seal_bytes(&plain, &aad(service.tenant, *id)?)
+                        .seal_bytes(&plain, &aad(audit.binding()?.tenant(), *id)?)
                         .map_err(|_| Error::Configuration)?;
                     save(c, &value, Some(&sealed)).await?;
                     let status = wire::Status {
@@ -455,12 +461,13 @@ impl Service {
     }
     pub async fn broker_status(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         id: Uuid,
         browser: &Secret,
         admission: &dyn Admission,
     ) -> Result<wire::Status, Error> {
-        let mut tx = self.store.begin(&self.tenant.to_string()).await?;
-        let (value, sealed) = load(&mut tx, tenant(self)?, id, false).await?;
+        let mut tx = self.store.begin(&execution.tenant().to_string()).await?;
+        let (value, sealed) = load(&mut tx, tenant(execution)?, id, false).await?;
         browser_matches(&value, browser)?;
         let now = rss_mdm_webhook_service::events::now_on(&mut tx)
             .await
@@ -470,7 +477,10 @@ impl Service {
             qualify(&mut tx, &value, admission).await?;
             let plain = self
                 .protection
-                .open_bytes(&sealed.ok_or(Error::Corrupt)?, &aad(self.tenant, id)?)
+                .open_bytes(
+                    &sealed.ok_or(Error::Corrupt)?,
+                    &aad(execution.tenant(), id)?,
+                )
                 .map_err(|_| Error::Corrupt)?;
             let handoff: Handoff =
                 serde_json::from_slice(plain.expose()).map_err(|_| Error::Corrupt)?;
@@ -501,10 +511,10 @@ impl Service {
             "enterprise_broker_cancel",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        self.write(audit, (self, id, browser), |ctx, c| {
+        self.write(audit, (self, id, browser, audit), |ctx, c| {
             Box::pin(async move {
-                let (service, id, browser) = ctx;
-                let (mut value, _) = load(c, tenant(service)?, *id, true).await?;
+                let (_, id, browser, audit) = ctx;
+                let (mut value, _) = load(c, tenant(audit.binding()?)?, *id, true).await?;
                 browser_matches(&value, browser)?;
                 let replay = value.phase == wire::Phase::Cancelled;
                 value.phase = wire::Phase::Cancelled;
@@ -516,13 +526,14 @@ impl Service {
     }
     pub async fn broker_reference(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         client: &dyn Client,
         id: Uuid,
         continuation: Option<&Secret>,
         admission: &dyn Admission,
     ) -> Result<SessionReference, Error> {
-        let mut tx = self.store.begin(&self.tenant.to_string()).await?;
-        let (value, _) = load(&mut tx, tenant(self)?, id, false).await?;
+        let mut tx = self.store.begin(&execution.tenant().to_string()).await?;
+        let (value, _) = load(&mut tx, tenant(execution)?, id, false).await?;
         if value.relying_party.id != client.target().id
             || value.relying_party.target_fingerprint != client.fingerprint()
             || value.subject.provider != client.provider()
@@ -566,17 +577,26 @@ impl Service {
         );
         self.write(
             audit,
-            (self, client, id, operation, continuation, facts, admission),
+            (
+                self,
+                client,
+                id,
+                operation,
+                continuation,
+                facts,
+                admission,
+                audit,
+            ),
             |ctx, c| {
                 Box::pin(async move {
-                    let (service, client, id, operation, continuation, facts, admission) = ctx;
+                    let (_, client, id, operation, continuation, facts, admission, audit) = ctx;
                     facts.check_live().map_err(|_| Error::Unauthorized)?;
-                    let (mut value, sealed) = load(c, tenant(service)?, *id, true).await?;
+                    let (mut value, sealed) = load(c, tenant(audit.binding()?)?, *id, true).await?;
                     continuation_matches(&value, continuation)?;
                     if value.relying_party.id != client.target().id
                         || value.relying_party.target_fingerprint != client.fingerprint()
                         || value.subject.provider != client.provider()
-                        || facts.account().tenant != service.tenant
+                        || facts.account().tenant != audit.binding()?.tenant()
                         || facts.instance().as_uuid() != value.binding.person.instance
                         || Some(facts.view().id.as_uuid()) != value.identity_session
                         || facts.account().principal.as_uuid() != value.binding.person.principal
@@ -615,6 +635,7 @@ impl Service {
     )]
     async fn broker_authorized_snapshot(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         authority: &rss_identity_postgres::Authority,
         client: &dyn Client,
         id: Uuid,
@@ -626,7 +647,9 @@ impl Service {
     ) -> Result<(Context, Option<Vec<u8>>), Error> {
         use sqlx::{Arguments, Row};
         let mut arguments = sqlx::postgres::PgArguments::default();
-        arguments.add(tenant(self)?).map_err(|_| Error::Malformed)?;
+        arguments
+            .add(tenant(execution)?)
+            .map_err(|_| Error::Malformed)?;
         arguments
             .add(client.target().id.clone())
             .map_err(|_| Error::Malformed)?;
@@ -644,7 +667,7 @@ impl Service {
             .map_err(|_| Error::Malformed)?;
         let query = admission.broker_release_query();
         let rows = authority
-            .with_session_references_read(self.audit.binding(), deadline, move |mut read| {
+            .with_session_references_read(execution, deadline, move |mut read| {
                 Box::pin(async move { read.query(query, arguments, 1).await })
             })
             .await
@@ -667,6 +690,7 @@ impl Service {
     )]
     pub async fn broker_release(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         authority: &rss_identity_postgres::Authority,
         client: &dyn Client,
         id: Uuid,
@@ -678,6 +702,7 @@ impl Service {
     ) -> Result<Consumed, Error> {
         let (context, sealed) = self
             .broker_authorized_snapshot(
+                execution,
                 authority,
                 client,
                 id,
@@ -690,7 +715,10 @@ impl Service {
             .await?;
         let plain = self
             .protection
-            .open_bytes(&sealed.ok_or(Error::Conflict)?, &aad(self.tenant, id)?)
+            .open_bytes(
+                &sealed.ok_or(Error::Conflict)?,
+                &aad(execution.tenant(), id)?,
+            )
             .map_err(|_| Error::Corrupt)?;
         let handoff: Handoff =
             serde_json::from_slice(plain.expose()).map_err(|_| Error::Corrupt)?;
@@ -705,8 +733,13 @@ impl Service {
             expires_at: handoff.expires_at,
         })
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     pub async fn broker_current(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         authority: &rss_identity_postgres::Authority,
         client: &dyn Client,
         id: Uuid,
@@ -716,7 +749,7 @@ impl Service {
     ) -> Result<Uuid, Error> {
         let (context, _) = self
             .broker_authorized_snapshot(
-                authority, client, id, None, None, platform, admission, deadline,
+                execution, authority, client, id, None, None, platform, admission, deadline,
             )
             .await?;
         Ok(context.binding.person.principal)

@@ -10,7 +10,7 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='mdm_group' AND c.relkind NOT IN('r','i'))
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
- WHERE n.nspname='mdm_group' AND p.oid NOT IN('mdm_group.input_candidate_groups(uuid[],uuid[])'::regprocedure,'mdm_group.group_current(uuid)'::regprocedure,'mdm_group.lock_reference_target(uuid)'::regprocedure,'mdm_group.scope_dependencies(uuid)'::regprocedure,'mdm_group.lock_scope_dependencies(uuid[])'::regprocedure,'mdm_group.scope_source(uuid)'::regprocedure))
+ WHERE n.nspname='mdm_group' AND has_function_privilege(current_user,p.oid,'EXECUTE') AND p.oid NOT IN('mdm_group.input_candidate_groups(uuid[],uuid[])'::regprocedure,'mdm_group.group_current(uuid)'::regprocedure,'mdm_group.lock_reference_target(uuid)'::regprocedure,'mdm_group.scope_dependencies(uuid)'::regprocedure,'mdm_group.lock_scope_dependencies(uuid[])'::regprocedure,'mdm_group.scope_source(uuid)'::regprocedure))
  AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication
  OR oid IN (SELECT relowner FROM tables) OR has_schema_privilege(oid,'mdm_group','CREATE'))
  AND has_schema_privilege(current_user,'mdm_group','USAGE')
@@ -19,7 +19,7 @@ SELECT
  OR NOT has_table_privilege(current_user,t.oid,'INSERT')
  OR has_table_privilege(current_user,t.oid,'TRUNCATE,REFERENCES,TRIGGER,UPDATE')
  OR has_table_privilege(current_user,t.oid,'DELETE')<>(t.relname='definition_walk')
- OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>1
+ OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid AND polroles && (ARRAY[0::oid] || ARRAY(SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER'))))<>1
  OR NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=t.oid AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
  AND lower(replace(regexp_replace(pg_get_expr(polqual,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
  AND lower(replace(regexp_replace(pg_get_expr(polwithcheck,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'))

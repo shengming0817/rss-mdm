@@ -61,9 +61,6 @@ impl Associations {
         change: Change<'_>,
         audit: &RequestAudit,
     ) -> Result<Association> {
-        if proof.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
         proof.bind_audit(audit)?;
         audit.owned_operation(
             rss_mdm_audit_integration::operation::OperationOwner::DeviceManagement,
@@ -77,7 +74,7 @@ impl Associations {
         let attempt = self
             .audit
             .write(
-                self.tenant,
+                proof.binding(),
                 &budget.source_control(),
                 (self, proof, &change, audit, &digest),
                 |(service, proof, change, audit, digest), tx| {

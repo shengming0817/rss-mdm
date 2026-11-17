@@ -235,6 +235,8 @@ class CandidateInputs(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes((release.ROOT / release.deployment_source(name)).read_bytes())
                 deployment[name] = release.sha(path)
+            contract=root/'http-contract.json';contract.write_text('{"routes":[]}\n')
+            deployment[contract.name]=release.sha(contract)
             installer=root/'rss-mdm-installer';installer.write_bytes(b'fixed-binary')
             operator=root/'installer.oci.tar';operator.write_bytes(b'operator-oci')
             tools={}
@@ -272,7 +274,7 @@ class BaselinePrivacy(unittest.TestCase):
         import base64
         with tempfile.TemporaryDirectory() as temporary:
             owner=candidate.Candidate.__new__(candidate.Candidate)
-            owner.tenant=candidate.TENANT;owner.pg_host='postgres';owner.config={};owner.private_values=[]
+            owner.instance=candidate.INSTANCE;owner.tenant=candidate.TENANT;owner.pg_host='postgres';owner.config={};owner.private_values=[]
             owner.runtime=Path(temporary)/'runtime';owner.runtime.mkdir()
             owner.operator_root=Path(temporary)/'operator';owner.operator_root.mkdir()
             owner.sql=mock.Mock();owner.copy_runtime=mock.Mock()
@@ -290,13 +292,13 @@ class InstallationObservation(unittest.TestCase):
     def test_application_requires_exact_runtime_and_live_process(self):
         from candidate_installation_driver import observe_runtime
         runtime = {'runtime_binding': {'host_id':'host','operation_id':'operation','revision':2,'material_digest':'digest'},
-                   'identity': {'tenant_id':'tenant','instance_id':'installation'}}
+                   'identity': {'instance_id':'installation'}}
         observed = {'hostId':'host','operationId':'operation','revision':2,'materialDigest':'digest',
-                    'tenantId':'tenant','instanceId':'installation','processGeneration':'11111111-1111-4111-8111-111111111111'}
+                    'instanceId':'installation','processGeneration':'11111111-1111-4111-8111-111111111111'}
         browser = mock.Mock()
         browser.call.return_value = (200, {'ready':True,'observation':observed})
         self.assertEqual(observe_runtime(browser,runtime),observed)
-        for field,value in [('revision',1),('tenantId','other'),('processGeneration','00000000-0000-0000-0000-000000000000')]:
+        for field,value in [('revision',1),('instanceId','other'),('processGeneration','00000000-0000-0000-0000-000000000000')]:
             with self.subTest(field=field):
                 browser.call.return_value = (200, {'ready':True,'observation':dict(observed,**{field:value})})
                 with self.assertRaises(RuntimeError):

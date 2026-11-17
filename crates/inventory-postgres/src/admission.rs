@@ -67,6 +67,8 @@ FROM target t
     if reader {
         crate::cut::verify_asset_reader(&mut transaction).await?;
     } else {
+        let fenced:bool=sqlx::query_scalar("SELECT has_schema_privilege(current_user,'rss_transactional_messaging','USAGE') AND has_function_privilege(current_user,'rss_transactional_messaging.check_execution()','EXECUTE')").fetch_one(&mut *transaction).await?;
+        ensure!(fenced, "Inventory execution authority unavailable");
         crate::verify_asset_history(&mut transaction).await?;
     }
     transaction.commit().await?;

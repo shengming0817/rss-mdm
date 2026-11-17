@@ -39,7 +39,7 @@ impl Key {
         })
     }
 }
-pub fn runtime(c: &Context) -> Result<Arc<psso::Runtime>> {
+pub fn runtime() -> Result<Arc<psso::Runtime>> {
     Ok(Arc::new(
         psso::Runtime::new(
             wire::Configuration {
@@ -50,7 +50,6 @@ pub fn runtime(c: &Context) -> Result<Arc<psso::Runtime>> {
                 client_id: Uuid::new_v4(),
             },
             "https://localhost",
-            Uuid::parse_str(&c.tenant.to_string())?,
             "active".into(),
             [("active".into(), Key::new()?.signer)].into(),
         )?
@@ -210,7 +209,7 @@ async fn native_login(
     let inner = user.signer.sign(
         wire::ASSERTION_TYPE,
         &json!({
-            "iss":source.source_id,"sub":source.source_id,"aud":rt.endpoints.issuer,
+            "iss":source.source_id,"sub":source.source_id,"aud":rt.endpoints(Uuid::parse_str(&c.tenant.to_string())?)?.issuer,
             "iat":now(),"exp":now()+120,"scope":wire::SCOPE,
             "nonce":client_nonce,"request_nonce":nonce["nonce"],
         }),
@@ -219,7 +218,7 @@ async fn native_login(
         wire::LOGIN_TYPE,
         &json!({
             "iss":rt.configuration.client_id,"client_id":rt.configuration.client_id,
-            "aud":rt.endpoints.token,"sub":source.source_id,"username":source.source_id,
+            "aud":rt.endpoints(Uuid::parse_str(&c.tenant.to_string())?)?.token,"sub":source.source_id,"username":source.source_id,
             "grant_type":wire::GRANT,"iat":now(),"exp":now()+120,"scope":wire::SCOPE,
             "nonce":client_nonce,"request_nonce":nonce["nonce"],"assertion":inner,
             "jwe_crypto":{"alg":"ECDH-ES","enc":"A256GCM","apv":apv(user,client_nonce)?},
@@ -254,7 +253,7 @@ async fn browser_session(
 ) -> Result<SessionSecret> {
     let browser = crypto::random()?;
     let challenge = Box::pin(c.authority.begin_platform_login(
-        c.sessions.binding(),
+        c.execution(),
         binding,
         rss_identity_postgres::platform::PlatformPurpose::BrowserLogin,
         browser.clone(),
@@ -275,7 +274,7 @@ async fn browser_session(
         })?,
     )?;
     let result = Box::pin(c.authority.complete_platform_login(
-        c.sessions.binding(),
+        c.execution(),
         challenge.id,
         challenge.nonce,
         browser,
@@ -286,7 +285,7 @@ async fn browser_session(
     assert!(result.assertion.is_none());
     let secret = SessionSecret::parse(result.session.secret().expose().into())?;
     Box::pin(c.authority.inspect_session(
-        c.sessions.binding(),
+        c.execution(),
         SessionSecret::parse(secret.expose().into())?,
         deadline(),
     ))
@@ -302,13 +301,14 @@ pub async fn verify(
     client: &reqwest::Client,
     base: &str,
 ) -> Result<SessionSecret> {
+    let management = material::management_base(base, c.tenant);
     let b = business::assemble(c, m)?;
     let rt = b.platform.context.runtime()?;
     let token = material::administrator(c).await?;
     let principal = c
         .authority
         .inspect_bearer(
-            c.sessions.binding(),
+            c.execution(),
             BearerSecret::parse(token.clone())?,
             deadline(),
         )
@@ -360,7 +360,7 @@ pub async fn verify(
 
     let exported: da::SignedConfiguration = material::success(
         client
-            .post(format!("{base}/configurations"))
+            .post(format!("{management}/configurations"))
             .bearer_auth(&token)
             .json(&da::Export {
                 operation_id: Uuid::new_v4(),
@@ -376,7 +376,7 @@ pub async fn verify(
 
     let managed: da::SignedConfiguration = material::success(
         client
-            .post(format!("{base}/configurations"))
+            .post(format!("{management}/configurations"))
             .bearer_auth(&token)
             .json(&da::Export {
                 operation_id: Uuid::new_v4(),
@@ -398,7 +398,7 @@ pub async fn verify(
     material::verify(&exported, &installed)?;
 
     let rendered = rss_mdm_apple_mdm::platform_sso::from_da_configuration(&exported.decode()?)?;
-    let mut expected = rt.profile(&login)?;
+    let mut expected = rt.profile(Uuid::parse_str(&c.tenant.to_string())?, &login)?;
     rss_mdm_apple_mdm::da::bind(&mut expected)?;
     assert_eq!(
         serde_json::to_value(rendered)?,
@@ -406,7 +406,11 @@ pub async fn verify(
     );
 
     Box::pin(super::exports::verify(
-        client, base, &token, &exported, &installed,
+        client,
+        &management,
+        &token,
+        &exported,
+        &installed,
     ))
     .await?;
 
@@ -450,7 +454,9 @@ pub async fn verify(
             application_version: configuration.application_version,
             application_installed: true,
             profile_identifier: configuration.profile_identifier,
-            profile_uuid: rt.profile(&login)?.uuid,
+            profile_uuid: rt
+                .profile(Uuid::parse_str(&c.tenant.to_string())?, &login)?
+                .uuid,
             profile_matched: true,
             architecture: "aarch64".into(),
             os_version: [26, 4, 0, 0],
@@ -665,7 +671,7 @@ pub async fn verify(
     )
     .await?;
     let diagnostic =
-        super::configuration::diagnostic(client, base, &token, &registration.device).await?;
+        super::configuration::diagnostic(client, &management, &token, &registration.device).await?;
     assert_eq!(diagnostic["resolution"]["blocked"], "withdrawn");
     assert!(
         Box::pin(native_login(c, &b, &source, &device, &user))
@@ -675,7 +681,7 @@ pub async fn verify(
     );
     assert!(
         c.authority
-            .inspect_session(c.sessions.binding(), session, deadline())
+            .inspect_session(c.execution(), session, deadline())
             .await
             .is_err(),
         "evidence revocation invalidates the current Identity session"
@@ -683,7 +689,7 @@ pub async fn verify(
     assert!(
         c.authority
             .begin_platform_login(
-                c.sessions.binding(),
+                c.execution(),
                 id,
                 rss_identity_postgres::platform::PlatformPurpose::BrowserLogin,
                 crypto::random()?,

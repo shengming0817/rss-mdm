@@ -184,10 +184,6 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::NATIVE_TASKS_SQL,
         ),
         (
-            "software-deployment-source-changes-v1",
-            rss_mdm_software_service::deployment::SOURCE_CHANGES_SQL,
-        ),
-        (
             "device-associations-v1",
             rss_mdm_device_service::INSTALL_SQL,
         ),
@@ -210,6 +206,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         (
             "device-control-source-changes-v1",
             rss_mdm_device_service::control::SOURCE_CHANGES_SQL,
+        ),
+        (
+            "software-deployment-source-changes-v1",
+            rss_mdm_software_service::deployment::SOURCE_CHANGES_SQL,
         ),
         (
             "scope-channel-projections-v1",
@@ -343,10 +343,6 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "reconcile-runtime-v1",
             include_str!("../../schema/reconcile-runtime.sql"),
         ),
-        (
-            "asset-inputs-v1",
-            include_str!("../../schema/asset-inputs.sql"),
-        ),
         ("group-relations-v1", rss_mdm_group_postgres::RELATIONS_SQL),
         (
             "scope-group-changes-v1",
@@ -443,6 +439,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::AGENT_NATIVE_SQL,
         ),
         ("group-service-tasks-v1", rss_mdm_group_service::TASKS_SQL),
+        (
+            "asset-inputs-v1",
+            include_str!("../../schema/asset-inputs.sql"),
+        ),
         (
             "inventory-tenant-seed-v1",
             rss_mdm_inventory_postgres::tenant_seed_sql(),

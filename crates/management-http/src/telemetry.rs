@@ -90,7 +90,7 @@ async fn configurations(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
 ) -> Result<Json<rss_mdm_telemetry_service::configurations::Configurations>, Error> {
     audit.set_action(
         "telemetry_configurations_read",
@@ -118,6 +118,8 @@ pub fn error(e: rss_mdm_telemetry_service::Error) -> Error {
     }
 }
 async fn history(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -140,6 +142,8 @@ async fn history(
 }
 
 async fn aggregate(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -162,6 +166,8 @@ async fn aggregate(
 }
 
 async fn maintenance(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -191,6 +197,8 @@ async fn maintenance(
 }
 
 async fn health(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -211,6 +219,8 @@ async fn health(
 }
 
 async fn resources(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -232,6 +242,8 @@ async fn resources(
 }
 
 async fn gaps(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,

@@ -25,7 +25,7 @@ pub struct Transactions {
     pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) changes: Arc<dyn crate::inputs::ExecutionChanges>,
     pub(crate) outbox: Arc<rss_transactional_messaging_postgres::PgOutboxStore<()>>,
-    pub(crate) tenant: TenantId,
+
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) policy_reader: rss_mdm_policy_postgres::PolicyReader,
     pub(crate) source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,

@@ -100,7 +100,7 @@ fn declarations() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::D
     rss_mdm_http_contract::route_module! { struct DaRoutes for [Da] { grant, issue, recover_issuance, activate, status, renew, recover, revoke, pki_trust, pki_ack, configuration_trust, configuration_ack, trust_read, trust_change, trust_operation, export, export_operation, templates, retrieve } }
     DaRoutes {
         grant: Route::new(
-            "/api/v1/da/grants",
+            "/api/v1/tenants/{tenant}/da/grants",
             post(grant, &PROTOCOL, &[Operation::Action]),
         ),
         issue: Route::new(
@@ -108,7 +108,7 @@ fn declarations() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::D
             post(issue, &PROTOCOL, &[Operation::Action]),
         ),
         recover_issuance: Route::new(
-            "/api/v1/da/certificates/{id}/recover",
+            "/api/v1/tenants/{tenant}/da/certificates/{id}/recover",
             post(recover_issuance, &PROTOCOL, &[Operation::Action]),
         ),
         activate: Route::new(
@@ -124,11 +124,11 @@ fn declarations() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::D
             post(renew, &PROTOCOL, &[Operation::Action]),
         ),
         recover: Route::new(
-            "/api/v1/da/devices/{id}/registration/recovery-grants",
+            "/api/v1/tenants/{tenant}/da/devices/{id}/registration/recovery-grants",
             post(recover, &PROTOCOL, &[Operation::Action]),
         ),
         revoke: Route::new(
-            "/api/v1/da/devices/{device}/registration/revoke",
+            "/api/v1/tenants/{tenant}/da/devices/{device}/registration/revoke",
             post(revoke, &PROTOCOL, &[Operation::Action]),
         ),
         pki_trust: Route::new(
@@ -148,27 +148,27 @@ fn declarations() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::D
             post(configuration_ack, &PROTOCOL, &[Operation::Action]),
         ),
         trust_read: Route::new(
-            "/api/v1/da/admin/configuration-trust",
+            "/api/v1/tenants/{tenant}/da/admin/configuration-trust",
             get(trust_read, &PROTOCOL, &[Operation::Action]),
         ),
         trust_change: Route::new(
-            "/api/v1/da/admin/configuration-trust/{operation}",
+            "/api/v1/tenants/{tenant}/da/admin/configuration-trust/{operation}",
             post(trust_change, &PROTOCOL, &[Operation::Action]),
         ),
         trust_operation: Route::new(
-            "/api/v1/da/admin/configuration-trust/operations/{operation}",
+            "/api/v1/tenants/{tenant}/da/admin/configuration-trust/operations/{operation}",
             get(trust_operation, &PROTOCOL, &[Operation::Action]),
         ),
         export: Route::new(
-            "/api/v1/da/configurations",
+            "/api/v1/tenants/{tenant}/da/configurations",
             post(export, &PROTOCOL, &[Operation::Action]),
         ),
         export_operation: Route::new(
-            "/api/v1/da/configuration-operations/{operation}",
+            "/api/v1/tenants/{tenant}/da/configuration-operations/{operation}",
             get(export_operation, &PROTOCOL, &[Operation::Action]),
         ),
         templates: Route::new(
-            "/api/v1/da/configuration-operations/{operation}/templates",
+            "/api/v1/tenants/{tenant}/da/configuration-operations/{operation}/templates",
             get(exports::templates, &PROTOCOL, &[Operation::Action]),
         ),
         retrieve: Route::new(
@@ -196,6 +196,7 @@ fn trust(v: task_trust::Trust) -> da::ConfigurationTrust {
     }
 }
 async fn grant(
+    Path(_tenant): Path<Uuid>,
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
     Administrator(p): Administrator,
@@ -240,7 +241,7 @@ async fn recover(
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
     Administrator(p): Administrator,
-    Path(id): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, id)): Path<(Uuid, rss_mdm_agent_wire::DeviceId)>,
     v: Body<da::GrantRequest>,
 ) -> Result<Json<da::Grant>, Error> {
     Ok(Json(s.registrations.recover(&p, id, &body(v)?, &a).await?))
@@ -254,7 +255,7 @@ async fn revoke(
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
     Administrator(p): Administrator,
-    Path(id): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, id)): Path<(Uuid, rss_mdm_agent_wire::DeviceId)>,
     v: Body<OperationRequest>,
 ) -> Result<Json<rss_mdm_registration_service::device::RevocationReceipt>, Error> {
     Ok(Json(
@@ -263,13 +264,23 @@ async fn revoke(
             .await?,
     ))
 }
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TrustTarget {
+    tenant_id: uuid::Uuid,
+}
 async fn pki_trust(
+    axum::extract::Query(target): axum::extract::Query<TrustTarget>,
     State(s): State<Arc<Services>>,
     tls: Option<Extension<ClientCertificateEvidence>>,
 ) -> Result<Json<wire_pki::Trust>, Error> {
     Ok(Json(
         s.registrations
-            .device_trust(tls.as_ref().map(|v| &v.0))
+            .device_trust(
+                rss_request_context::TenantId::parse(&target.tenant_id.to_string())
+                    .map_err(|_| Error::Malformed)?,
+                tls.as_ref().map(|v| &v.0),
+            )
             .await?,
     ))
 }
@@ -290,6 +301,7 @@ async fn configuration_trust(
     tls: Option<Extension<ClientCertificateEvidence>>,
 ) -> Result<Json<da::ConfigurationTrust>, Error> {
     let p = s.registrations.authenticate(&peer(tls)?).await?;
+    a.bind_scope(p.binding()).map_err(|_| Error::Unavailable)?;
     Ok(Json(trust(
         s.configurations.trust().device_trust(&p, &a).await?,
     )))
@@ -301,6 +313,7 @@ async fn configuration_ack(
     v: Body<task_trust::Acknowledgement>,
 ) -> Result<(), Error> {
     let p = s.registrations.authenticate(&peer(tls)?).await?;
+    a.bind_scope(p.binding()).map_err(|_| Error::Unavailable)?;
     s.configurations
         .trust()
         .acknowledge_task_trust(&p, &a, &body(v)?)
@@ -308,6 +321,7 @@ async fn configuration_ack(
     Ok(())
 }
 async fn trust_read(
+    Path(_tenant): Path<Uuid>,
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
     Administrator(p): Administrator,
@@ -320,7 +334,7 @@ async fn trust_change(
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
     Administrator(p): Administrator,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(Uuid, Uuid)>,
     v: Body<rss_mdm_task_trust::service::Change>,
 ) -> Result<Json<da::ConfigurationTrust>, Error> {
     Ok(Json(trust(
@@ -334,7 +348,7 @@ async fn trust_operation(
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
     Administrator(p): Administrator,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<da::ConfigurationTrust>, Error> {
     Ok(Json(trust(
         s.configurations
@@ -344,6 +358,7 @@ async fn trust_operation(
     )))
 }
 async fn export(
+    Path(_tenant): Path<Uuid>,
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
     Administrator(p): Administrator,
@@ -365,7 +380,7 @@ async fn export(
 async fn export_operation(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<da::SignedConfiguration>, Error> {
     let b = s.business.as_ref().ok_or(Error::Unavailable)?;
     Ok(Json(
@@ -381,6 +396,7 @@ async fn retrieve(
     Path(id): Path<Uuid>,
 ) -> Result<Json<da::SignedConfiguration>, Error> {
     let p = s.registrations.authenticate(&peer(tls)?).await?;
+    a.bind_scope(p.binding()).map_err(|_| Error::Unavailable)?;
     let b = s.business.as_ref().ok_or(Error::Unavailable)?;
     let current = b
         .service
@@ -393,7 +409,7 @@ async fn recover_issuance(
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
     Administrator(p): Administrator,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(Uuid, Uuid)>,
     v: Body<enroll::RecoverIssuance>,
 ) -> Result<Json<enroll::Candidate>, Error> {
     Ok(Json(

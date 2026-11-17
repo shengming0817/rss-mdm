@@ -28,7 +28,7 @@ impl Service {
         crate::control::transaction::run(
             &self.transactions.audit_store,
             &self.transactions.runtime,
-            self.transactions.audit_store.binding(),
+            proof.binding(),
             audit,
             (self, proof, device, input, audit),
             |ctx, tx| {
@@ -49,7 +49,7 @@ impl Service {
         input: &crate::control::device_control::Input,
         audit: &RequestAudit,
     ) -> Result<AcceptedReceipt> {
-        require_tenant(self.transactions.tenant, proof)?;
+        require_tenant(tx.tenant_id(), proof)?;
 
         let action = input.action.kind();
         let auth = storage::authorized_native(tx, proof, device, &[action.permission()]).await?;
@@ -77,7 +77,7 @@ impl Service {
         )
         .await?;
         let confirmation = input.action.confirmation()?;
-        let tenant = self.transactions.tenant;
+        let tenant = tx.tenant_id();
         let source = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -95,8 +95,8 @@ impl Service {
                 .as_ref()
                 .ok_or(Error::Unsupported)?
                 .clone();
-            let tenant = Uuid::parse_str(&self.transactions.tenant.to_string())
-                .map_err(|_| Error::Malformed)?;
+            let tenant =
+                Uuid::parse_str(&tx.tenant_id().to_string()).map_err(|_| Error::Malformed)?;
             let device = device.to_owned();
             let operation = input.operation_id;
             let pin = zeroize::Zeroizing::new(pin.clone());
@@ -133,7 +133,7 @@ impl Service {
         if change.request_id.is_nil() || change.expected_revision < 1 {
             return Err(Error::Malformed);
         }
-        crate::control::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.audit_store.binding(),audit,(self,proof,device,id,change,reauthorization,audit),|ctx,tx|Box::pin(async move {
+        crate::control::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,proof.binding(),audit,(self,proof,device,id,change,reauthorization,audit),|ctx,tx|Box::pin(async move {
             let (service,proof,device,id,change,reauthorization,audit) = *ctx;
 
             let reauthorize = reauthorization.is_some();
@@ -174,7 +174,7 @@ impl Service {
                 }
                 op.authority
             };
-            let authority=checked_input(serde_json::to_string(&authority))?;let tenant=service.transactions.tenant.to_string();let operation_key=id.to_string();
+            let authority=checked_input(serde_json::to_string(&authority))?;let tenant=proof.binding().tenant().to_string();let operation_key=id.to_string();
             tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_devices.control_operations SET authority=$3::jsonb,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(operation_key).bind(authority).execute(c).await?;Ok(())})).await?;
             crate::control::worker_wake::notify_in(tx, crate::control::worker_wake::Work::CommandRecovery).await?;
             crate::control::worker_wake::notify_in(tx, crate::control::worker_wake::Work::Apple).await?;
@@ -304,7 +304,7 @@ fn create_fingerprint(
 ) -> Result<Vec<u8>> {
     Ok(crate::control::protection::fingerprint(
         &service.transactions.protection,
-        service.transactions.tenant,
+        proof.binding().tenant(),
         device,
         "device-control-create/v1",
         &(proof.actor(), input),
@@ -394,14 +394,15 @@ impl crate::control::transactions::Transactions {
         fingerprint: Vec<u8>,
         audit: &RequestAudit,
     ) -> Result<AcceptedReceipt> {
+        let expected_epoch = audit.binding()?.epoch().get();
         // Every producer, including bootstrap cleanup, must durably wake command
         // publication; a relay notification alone does not advance queued commands.
         self.reconcile_messaging
             .wake_in(
                 tx,
-                &target(self.tenant, device),
+                &target(tx.tenant_id(), device),
                 &rss_mdm_registration_service::lifecycle::resources::device(
-                    self.tenant,
+                    tx.tenant_id(),
                     device,
                     rss_mdm_registration_service::lifecycle::resources::Work::Exclusive,
                 ),
@@ -453,7 +454,7 @@ impl crate::control::transactions::Transactions {
         if matches!(input.task, Task::Windows { .. })
             && matches!(input.target, NativeTarget::EnrolledUser)
         {
-            let tenant = self.tenant.to_string();
+            let tenant = tx.tenant_id().to_string();
             let target = input.target.clone();
 
             let allowed = tx.with_connection(move |c| Box::pin(async move {
@@ -472,17 +473,17 @@ impl crate::control::transactions::Transactions {
             scope,
             checked_input(dc::CommandId::parse(&input.operation_id.to_string()))?,
             coordinate,
-            input.digest(&self.protection, self.tenant, device)?,
+            input.digest(&self.protection, tx.tenant_id(), device)?,
             input.deadline * 1_000_000,
         );
-        let message = dispatch(self.tenant, device, input, coordinate, now)?;
+        let message = dispatch(tx.tenant_id(), device, input, coordinate, now)?;
         let dispatch_fingerprint = message.fingerprint().as_bytes().to_vec();
         self.store.queue(tx, spec, message).await?;
         let binding = rss_mdm_registration_service::command_authority::CommandBinding {
             operation: input.operation_id,
             device: registration,
         };
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         if matches!(input.task, Task::Windows { .. }) {
             let channel = self.windows_results.clone();
             tx.with_connection(move |c| {
@@ -497,12 +498,12 @@ impl crate::control::transactions::Transactions {
             .await??;
         }
 
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let name = device.to_owned();
         let id = input.operation_id.to_string();
         let (input_context, request) = super::input_storage::seal(
             &self.protection,
-            self.tenant,
+            tx.tenant_id(),
             &super::input_storage::Identity {
                 operation: input.operation_id,
                 device,
@@ -536,7 +537,15 @@ impl crate::control::transactions::Transactions {
         };
         let authority = checked_input(serde_json::to_string(&authority))?;
         let digest = fingerprint.clone();
-        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_devices.control_operations (tenant_id, id, device, request, fingerprint, generation, epoch, authority, dispatch_fingerprint, source_kind, policy_version, input_context) VALUES (CAST($1 AS uuid), CAST($2 AS uuid), $3, $4, $5, $6, $7, CAST($8 AS jsonb), $9, $10, $11, $12)").bind(tenant).bind(id).bind(name.into_uuid()).bind(request).bind(digest).bind(coordinate.generation()).bind(coordinate.epoch()).bind(authority).bind(dispatch_fingerprint).bind(source).bind(policy_version).bind(input_context).execute(c).await?;Ok(())})).await?;
+        let recovery_tenant = tx.tenant_id().to_string();
+        let recovery_device = device.into_uuid();
+        tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query("INSERT INTO mdm_devices.control_recovery(tenant_id,device,authority_epoch,expected_epoch) SELECT tenant_id,device,epoch,$3 FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND device=$2 ON CONFLICT DO NOTHING").bind(&recovery_tenant).bind(recovery_device).bind(expected_epoch).execute(&mut *c).await?;
+            let original:i64=sqlx::query_scalar("SELECT expected_epoch FROM mdm_devices.control_recovery WHERE tenant_id=$1::uuid AND device=$2").bind(recovery_tenant).bind(recovery_device).fetch_one(c).await?;
+            if original!=expected_epoch {return Err(sqlx::Error::Protocol("native recovery epoch mismatch".into()))}
+            Ok(())
+        })).await?;
+        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_devices.control_operations (tenant_id, id, device, request, fingerprint, generation, epoch, authority, dispatch_fingerprint, source_kind, policy_version, input_context,expected_epoch) VALUES (CAST($1 AS uuid), CAST($2 AS uuid), $3, $4, $5, $6, $7, CAST($8 AS jsonb), $9, $10, $11, $12,$13)").bind(tenant).bind(id).bind(name.into_uuid()).bind(request).bind(digest).bind(coordinate.generation()).bind(coordinate.epoch()).bind(authority).bind(dispatch_fingerprint).bind(source).bind(policy_version).bind(input_context).bind(expected_epoch).execute(c).await?;Ok(())})).await?;
         apple::own(tx, self.apple_profiles.clone(), device, input).await?;
         let response = created(tx, self, audit, input.operation_id, fingerprint).await?;
         crate::control::worker_wake::notify_in(tx, crate::control::worker_wake::Work::CommandRelay)

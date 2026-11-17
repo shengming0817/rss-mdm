@@ -50,14 +50,16 @@ async fn unknown_survives_restart_and_only_original_attempt_can_settle_it() -> R
     script::transaction::run(
         &h.audit,
         &h.a.resources.storage.runtime,
-        h.c.audit.binding(),
+        h.c.execution(),
         &request(&h.c),
-        (&h.a.scripts, id),
-        |ctx, tx| Box::pin(async move { script::recovery::recover_one(ctx.0, tx, ctx.1).await }),
+        (&h.a.scripts, id, h.c.execution()),
+        |ctx, tx| {
+            Box::pin(async move { script::recovery::recover_one(ctx.2, ctx.0, tx, ctx.1).await })
+        },
     )
     .await?;
     assert_eq!(h.state(id).await?["execution"], "unknown");
-    let a = Fixture::open(&h.c, true).await?;
+    let a = Fixture::open(&h.c).await?;
     let (audit, delivery) = delivery(&h.c, &a).await?;
     drop(std::mem::replace(&mut h.delivery, delivery));
     drop(std::mem::replace(&mut h.audit, audit));
@@ -71,7 +73,7 @@ async fn unknown_survives_restart_and_only_original_attempt_can_settle_it() -> R
         let target = target.clone();
         script::transaction::inspect(
             &h.a.resources.storage.runtime,
-            h.c.audit.binding(),
+            h.c.execution(),
             (target, resource),
             move |ctx, tx| {
                 Box::pin(async move {

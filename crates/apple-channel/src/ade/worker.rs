@@ -24,21 +24,31 @@ pub fn registration(
     let (task, _) =
         rss_runtime::ManagedTask::prepare("apple-ade", std::time::Duration::from_secs(8));
     task.into_registration(move|stop|async move{
-        loop{
-            let progress=tokio::select!{biased;()=stop.cancelled()=>return Ok(()),r=cycle(&app)=>r};
-            if matches!(progress,Ok(true)){continue;}
-            if progress.is_err(){eprintln!("apple_ade_cycle_failed");}
-            tokio::select!{biased;()=stop.cancelled()=>return Ok(()),()=notify.notified()=>{},()=tokio::time::sleep(std::time::Duration::from_secs(5))=>{}}
+        let mut after=None;
+        loop {
+            if stop.is_cancelled(){return Ok(())}
+            let scopes=match app.access.ade_work_scopes(after,app.expected_epoch).await {Ok(page)=>page,Err(_)=>{eprintln!("apple_ade_discovery_failed");Vec::new()}};
+            if scopes.is_empty(){after=None;tokio::select!{biased;()=stop.cancelled()=>return Ok(()),()=notify.notified()=>{},()=tokio::time::sleep(std::time::Duration::from_secs(5))=>{}}continue}
+            for (tenant,epoch) in scopes {
+                after=Some((tenant,epoch));if stop.is_cancelled(){return Ok(())}
+                let tenant=rss_request_context::TenantId::parse(&tenant.to_string()).map_err(rss_runtime::ShutdownError::new)?;
+                let epoch=rss_transactional_messaging::fence::Epoch::new(epoch).map_err(rss_runtime::ShutdownError::new)?;
+                let execution=rss_transactional_messaging::fence::ExecutionBinding::new(app.storage,tenant,epoch);
+                if cycle(execution,&app).await.is_err(){eprintln!("apple_ade_cycle_failed");}
+            }
         }
     })
 }
 /// One bounded page/effect per invocation. Used by the real worker and protocol T2.
-pub async fn cycle(app: &HttpState) -> Result<bool, Error> {
-    let tenant = app.identity.tenant().to_string();
+pub async fn cycle(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    app: &HttpState,
+) -> Result<bool, Error> {
+    let tenant = execution.tenant().to_string();
     let time = now(app)?;
     let mut scan = app.access.begin(&tenant).await?;
-    let due: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND ((state='pending' AND next_attempt<=$2) OR (state='running' AND lease_until<=$2))) OR EXISTS(SELECT 1 FROM mdm_apple.ade_servers WHERE tenant_id=$1::uuid AND enabled AND verified AND NOT token_invalid AND token_expires>$2 AND next_sync<=$2)")
-        .bind(&tenant).bind(time).fetch_one(&mut *scan).await.map_err(db)?;
+    let due: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND expected_epoch=$3 AND ((state='pending' AND next_attempt<=$2) OR (state='running' AND lease_until<=$2))) OR EXISTS(SELECT 1 FROM mdm_apple.ade_servers WHERE tenant_id=$1::uuid AND enabled AND verified AND NOT token_invalid AND token_expires>$2 AND next_sync<=$2)")
+        .bind(&tenant).bind(time).bind(execution.epoch().get()).fetch_one(&mut *scan).await.map_err(db)?;
     scan.rollback().await.map_err(db)?;
     if !due {
         return Ok(false);
@@ -46,7 +56,7 @@ pub async fn cycle(app: &HttpState) -> Result<bool, Error> {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        tenant.clone(),
+        execution,
         "apple_ade_worker",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -56,7 +66,7 @@ pub async fn cycle(app: &HttpState) -> Result<bool, Error> {
     let claimed = app
         .audit_store
         .write(
-            app.identity.tenant(),
+            audit.binding()?,
             &budget.source_control(),
             (app, &audit, &tenant, time),
             |ctx, tx| {
@@ -115,7 +125,7 @@ pub async fn cycle(app: &HttpState) -> Result<bool, Error> {
         }
         Err(_) => Err(client::RemoteError::Unauthorized),
     };
-    finish(app, &tenant, &work, response).await?;
+    finish(execution, app, &tenant, &work, response).await?;
     Ok(true)
 }
 async fn claim_in(
@@ -161,14 +171,14 @@ async fn claim_in(
         .map_err(db)?;
         sqlx::query("UPDATE mdm_apple.ade_servers SET next_sync=$3 WHERE tenant_id=$1::uuid AND organization=$2").bind(tenant).bind(organization).bind(time+1800).execute(&mut *c).await.map_err(db)?;
     }
-    let candidate=sqlx::query("SELECT id,organization FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND ($3::uuid IS NULL OR id=$3) AND ((state='pending' AND next_attempt<=$2) OR (state='running' AND lease_until<=$2)) ORDER BY created_at,id LIMIT 1").bind(tenant).bind(time).bind(scheduled_id).fetch_optional(&mut *c).await.map_err(db)?;
+    let candidate=sqlx::query("SELECT id,organization FROM mdm_apple.ade_operations WHERE expected_epoch=current_setting('rss.execution_epoch')::bigint AND tenant_id=$1::uuid AND ($3::uuid IS NULL OR id=$3) AND ((state='pending' AND next_attempt<=$2) OR (state='running' AND lease_until<=$2)) ORDER BY created_at,id LIMIT 1").bind(tenant).bind(time).bind(scheduled_id).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(candidate) = candidate else {
         return Ok((None, changes));
     };
     let id: Uuid = candidate.try_get("id").map_err(db)?;
     let organization: Uuid = candidate.try_get("organization").map_err(db)?;
     let s = server(c, tenant, organization).await?;
-    let row=sqlx::query("SELECT * FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND id=$2 AND ((state='pending' AND next_attempt<=$3) OR (state='running' AND lease_until<=$3)) FOR UPDATE SKIP LOCKED").bind(tenant).bind(id).bind(time).fetch_optional(&mut *c).await.map_err(db)?;
+    let row=sqlx::query("SELECT * FROM mdm_apple.ade_operations WHERE expected_epoch=current_setting('rss.execution_epoch')::bigint AND tenant_id=$1::uuid AND id=$2 AND ((state='pending' AND next_attempt<=$3) OR (state='running' AND lease_until<=$3)) FOR UPDATE SKIP LOCKED").bind(tenant).bind(id).bind(time).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(r) = row else {
         return Ok((None, changes));
     };
@@ -353,6 +363,7 @@ fn previous_outcome<'a>(work: &'a Work, serial: &str) -> Option<&'a str> {
         .as_str()
 }
 async fn finish(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     app: &HttpState,
     tenant: &str,
     work: &Work,
@@ -361,7 +372,7 @@ async fn finish(
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        tenant.into(),
+        execution,
         "apple_ade_worker",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -374,7 +385,8 @@ async fn finish(
     );
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
-    let result=app.audit_store.write(app.identity.tenant(),&budget.source_control(),(app,tenant,work,&audit,&response),|ctx,tx|Box::pin(async move{
+    let result=app.audit_store.write(
+            audit.binding()?,&budget.source_control(),(app,tenant,work,&audit,&response),|ctx,tx|Box::pin(async move{
         let(app,tenant,work,audit,response)=*ctx;
         let committed=tx.with_connection_context(&mut(app,tenant,work,response),|ctx,c|Box::pin(async move{
             let(app,tenant,work,response)=*ctx;management::lock(c,tenant,work.organization).await?;let s=server(c,tenant,work.organization).await?;

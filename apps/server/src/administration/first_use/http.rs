@@ -23,6 +23,8 @@ get_operation: rss_mdm_http_contract::module::Route::new("/settings/first-use/op
         .layer(axum::extract::DefaultBodyLimit::max(16384))
 }
 async fn read(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(source): State<Arc<FirstUse>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -42,7 +44,7 @@ async fn operation(
     State(source): State<Arc<FirstUse>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<Receipt>, Error> {
     audit.set_action(
         "first_use_operation_read",
@@ -55,6 +57,8 @@ async fn operation(
         .map_err(Error::from)
 }
 async fn update(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(source): State<Arc<FirstUse>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,

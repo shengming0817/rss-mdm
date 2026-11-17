@@ -22,7 +22,7 @@ pub(super) fn validate_listeners(config: &crate::config::Config) -> Result<()> {
 pub struct Config {
     /// Runtime files mounted by the deployment manifest.
     pub directory: PathBuf,
-    /// Shared ingress output for all tenant hosts on this gateway.
+    /// Shared ingress output for this installation.
     pub gateway_directory: PathBuf,
     /// Optional internal HTTPS endpoint; certificate identity remains product_origin.
     pub probe_address: Option<String>,
@@ -107,7 +107,7 @@ impl GatewayTls {
         config.trust_file = self.trust_file.clone();
     }
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Applied {
     pub host_id: uuid::Uuid,
@@ -115,8 +115,60 @@ pub struct Applied {
     pub revision: u64,
     pub material_digest: String,
     pub process_generation: uuid::Uuid,
-    pub tenant_id: String,
     pub instance_id: String,
+}
+/// One atomic record of the complete input actually observed through deployment TLS.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Deployment {
+    runtime: Value,
+    observation: Applied,
+}
+fn owner(root: &Journal) -> Result<Journal> {
+    // The installer template supplies only the immutable installation coordinate.
+    let initial: crate::config::Config = root.load("runtime.json")?.ok_or(Error::Corrupt)?;
+    Journal::open(&root.path(&format!(
+        "rss-mdm-{}",
+        initial.runtime_binding.host_id.simple()
+    ))?)
+}
+pub(super) fn requested(root: &Journal) -> Result<Value> {
+    owner(root)?
+        .load("requested-runtime.json")?
+        .ok_or(Error::Corrupt)
+}
+/// A pending desired input cannot be consumed as an applied installation.
+pub(super) fn current(root: &Journal) -> Result<Value> {
+    let owner = owner(root)?;
+    let desired: Value = owner
+        .load("requested-runtime.json")?
+        .ok_or(Error::Corrupt)?;
+    let deployed: Deployment = owner.load("applied.json")?.ok_or(Error::Conflict)?;
+    let config: crate::config::Config =
+        serde_json::from_value(deployed.runtime.clone()).map_err(|_| Error::Corrupt)?;
+    if desired != deployed.runtime
+        || !matches(
+            &deployed.observation,
+            &config.runtime_binding,
+            &config.identity.instance_id,
+        )
+    {
+        return Err(Error::Conflict);
+    }
+    Ok(deployed.runtime)
+}
+/// Observe the installed desired configuration while its public endpoints are running.
+pub async fn observe_installation(input: super::install::Input) -> Result<Applied> {
+    let root = Journal::open(&input.directory)?;
+    if root
+        .load::<Option<uuid::Uuid>>("backup-operation.json")?
+        .flatten()
+        .is_some()
+    {
+        return Err(Error::Busy);
+    }
+    let runtime = requested(&root)?;
+    observe_runtime(&input.directory, &runtime).await
 }
 fn public_file(name: &str) -> bool {
     matches!(
@@ -335,12 +387,21 @@ pub async fn prepare(directory: &Path, config: &Config, runtime: &Value) -> Resu
 /// Publish files and observe an already running host. Pending until operations restarts it.
 pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result<Applied> {
     prepare(directory, config, runtime).await?;
+    observe_runtime(directory, runtime).await
+}
+async fn observe_runtime(directory: &Path, runtime: &Value) -> Result<Applied> {
     let decoded: crate::config::Config =
         serde_json::from_value(runtime.clone()).map_err(|_| Error::Input)?;
     let owner = Journal::open(&directory.join(format!(
         "rss-mdm-{}",
         decoded.runtime_binding.host_id.simple()
     )))?;
+    let desired: Value = owner
+        .load("requested-runtime.json")?
+        .ok_or(Error::Corrupt)?;
+    if &desired != runtime {
+        return Err(Error::Conflict);
+    }
     let effective: Config = owner.load("runtime-files.json")?.ok_or(Error::Corrupt)?;
     let root =
         crate::config::read(&effective.trust_file, 128 * 1024, false).map_err(|_| Error::Input)?;
@@ -375,7 +436,6 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
             &client.build().map_err(|_| Error::Input)?,
             origin.as_str().trim_end_matches('/'),
             &decoded.runtime_binding,
-            &decoded.identity.tenant_id,
             &decoded.identity.instance_id,
             &public_origin,
         )
@@ -385,15 +445,20 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
         }
     }
     let applied = observed.ok_or(Error::Corrupt)?;
-    owner.save("applied.json", &applied)?;
+    owner.save(
+        "applied.json",
+        &Deployment {
+            runtime: runtime.clone(),
+            observation: applied.clone(),
+        },
+    )?;
     Ok(applied)
 }
-fn matches(value: &Applied, binding: &Binding, tenant: &str, instance: &str) -> bool {
+fn matches(value: &Applied, binding: &Binding, instance: &str) -> bool {
     value.host_id == binding.host_id
         && value.operation_id == binding.operation_id
         && value.revision == binding.revision
         && value.material_digest == binding.material_digest
-        && value.tenant_id == tenant
         && value.instance_id == instance
         && !value.process_generation.is_nil()
 }
@@ -401,7 +466,6 @@ async fn observe(
     client: &reqwest::Client,
     origin: &str,
     binding: &Binding,
-    tenant: &str,
     instance: &str,
     public_origin: &str,
 ) -> Result<Applied> {
@@ -430,58 +494,10 @@ async fn observe(
     }
     let observation: Applied =
         serde_json::from_value(value["observation"].clone()).map_err(|_| Error::Storage)?;
-    if !matches(&observation, binding, tenant, instance) {
+    if !matches(&observation, binding, instance) {
         return Err(Error::Conflict);
     }
     Ok(observation)
-}
-
-/// Called only after apply has verified every advertised origin over actual HTTPS.
-pub(super) async fn record_observation(
-    c: &mut sqlx::PgConnection,
-    runtime: &Value,
-    applied: &Applied,
-) -> Result<()> {
-    use sqlx::Connection;
-    let decoded: crate::config::Config =
-        serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
-    if !matches(
-        applied,
-        &decoded.runtime_binding,
-        &decoded.identity.tenant_id,
-        &decoded.identity.instance_id,
-    ) {
-        return Err(Error::Conflict);
-    }
-    let tenant = uuid::Uuid::parse_str(&applied.tenant_id).map_err(|_| Error::Corrupt)?;
-    let service = uuid::Uuid::parse_str(&applied.instance_id).map_err(|_| Error::Corrupt)?;
-    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(tenant.to_string())
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| Error::Storage)?;
-    if let crate::agent_pki::Config::StepCa {
-        endpoint,
-        additional_origins,
-        ..
-    } = &decoded.agent_pki
-    {
-        for origin in std::iter::once(&endpoint.origin).chain(additional_origins.iter()) {
-            rss_mdm_registration_service::agent::connections::record_deployment_on(
-                rss_mdm_install_support::StorageProfile::Mdm,
-                &mut tx,
-                tenant,
-                origin,
-                service,
-                applied.host_id,
-                applied.revision,
-            )
-            .await
-            .map_err(|_| Error::Storage)?;
-        }
-    }
-    tx.commit().await.map_err(|_| Error::Storage)
 }
 
 #[cfg(test)]

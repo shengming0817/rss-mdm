@@ -71,9 +71,10 @@ impl ScriptService {
         self.agent_prepare_in(tx, p).await?;
         let tenant = tx.tenant_id().to_string();
         let device = p.device().to_owned();
+        let epoch = p.binding().epoch().get();
         let versions = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_script.agent_admission(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&tenant).bind(device.into_uuid()).execute(&mut *c).await?;
-            let after: Option<Uuid> = sqlx::query_scalar("SELECT policy_after FROM mdm_script.agent_admission WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(&tenant).bind(device.into_uuid()).fetch_one(&mut *c).await?;
+            sqlx::query("INSERT INTO mdm_script.agent_admission(tenant_id,device,expected_epoch) VALUES($1::uuid,$2,$3) ON CONFLICT DO NOTHING").bind(&tenant).bind(device.into_uuid()).bind(epoch).execute(&mut *c).await?;
+            let after: Option<Uuid> = sqlx::query_scalar("SELECT policy_after FROM mdm_script.agent_admission WHERE tenant_id=$1::uuid AND device=$2 AND expected_epoch=$3 FOR UPDATE").bind(&tenant).bind(device.into_uuid()).bind(epoch).fetch_one(&mut *c).await?;
             let rows = sqlx::query("SELECT id,current_version FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND state='enabled' AND definition->'action'->>'kind'='execution' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 64").bind(&tenant).bind(after).fetch_all(&mut *c).await?;
             let next = if rows.len()==64 { rows.last().map(|r|r.try_get::<Uuid,_>("id")).transpose()? } else { None };
             sqlx::query("UPDATE mdm_script.agent_admission SET policy_after=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(device.into_uuid()).bind(next).execute(c).await?;
@@ -86,6 +87,7 @@ impl ScriptService {
         for version in versions {
             let plan = policy::read_in(&self.transactions, tx, version).await?;
             crate::admission::accept_for_device(
+                p.binding(),
                 &self.transactions,
                 tx,
                 &plan,
@@ -130,7 +132,7 @@ impl ScriptService {
         } else {
             true
         };
-        crate::recovery::audit_recovery(self, tx, &run, &previous).await?;
+        crate::recovery::audit_recovery(p.binding(), self, tx, &run, &previous).await?;
         let offer = if waiting_ready
             && run.state.cancellation == Cancellation::None
             && run.available_at <= now
@@ -139,7 +141,7 @@ impl ScriptService {
             let previous_attempt = run.state.attempt();
             if run.state.claim(attempt, now).is_ok() {
                 if let Some(old) = previous_attempt {
-                    self.abandon_in(tx, old, "superseded").await?;
+                    self.abandon_in(p.binding(), tx, old, "superseded").await?;
                 }
                 if let Some(definition) = plan.frozen.collection.clone() {
                     let tenant = tx.tenant_id();
@@ -311,7 +313,8 @@ impl ScriptService {
             wire::TaskEvent::Cancelled => {
                 run.state.cancel();
                 run.state.cancelled(input.attempt_id())?;
-                self.abandon_in(tx, input.attempt_id(), "revoked").await?;
+                self.abandon_in(p.binding(), tx, input.attempt_id(), "revoked")
+                    .await?;
             }
             wire::TaskEvent::Result(result) => {
                 run.result = Some(
@@ -410,6 +413,7 @@ impl ScriptService {
     }
     pub(crate) async fn abandon_in(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         attempt: Uuid,
         reason: &'static str,
@@ -419,7 +423,7 @@ impl ScriptService {
             .with_connection(move |c| {
                 Box::pin(
                     rss_mdm_inventory_service::collection::enterprise::abandon_in(
-                        c, tenant, attempt, reason,
+                        execution, c, tenant, attempt, reason,
                     ),
                 )
             })

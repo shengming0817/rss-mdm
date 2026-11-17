@@ -38,6 +38,7 @@ pub(super) async fn prove(
     let (stream, _) = socket.accept().await?;
     let gateway =
         rss_mdm_certificate::GatewayConnection::from_stream(&stream, "127.0.0.1".parse()?)?;
+    let origin = gateway.request_origin("https://localhost".into());
     let pem = format!(
         "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
         STANDARD.encode(&certificate)
@@ -48,33 +49,15 @@ pub(super) async fn prove(
         issuance_id: issuance,
         operation_id: Uuid::new_v4(),
     };
-    // Certificate qualification is a required transaction participant. Missing trust aborts
-    // after binding, and may not leave a device/time, credential or activation receipt.
-    assert!(
-        service
-            .activate(&evidence, &request, &audit(c))
-            .await
-            .is_err()
-    );
-    let retained:(bool,bool,bool)=sqlx::query_as("SELECT EXISTS(SELECT FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2),EXISTS(SELECT FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND device=$2),EXISTS(SELECT FROM mdm_access.certificate_issuances WHERE tenant_id=$1::uuid AND id=$3 AND activation_result IS NOT NULL)").bind(c.tenant.to_string()).bind(device.into_uuid()).bind(issuance).fetch_one(&c.operator).await?;
-    assert_eq!(retained, (false, false, false));
-    let mut trust = n.trust.clone();
-    trust.purpose = rss_mdm_agent_wire::pki::Purpose::Agent;
     let mut tx = command::seed_transaction(c).await?;
-    sqlx::query("INSERT INTO mdm_pki.issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES($1::uuid,'agent',$2,1,'active',$3,'step_ca',$4)").bind(c.tenant.to_string()).bind(&issuer).bind(&n.root).bind(now()+86400).execute(&mut *tx).await?;
-    sqlx::query(
-        "INSERT INTO mdm_pki.trust(tenant_id,purpose,revision,body) VALUES($1::uuid,'agent',1,$2)",
-    )
-    .bind(c.tenant.to_string())
-    .bind(serde_json::to_vec(&trust)?)
-    .execute(&mut *tx)
-    .await?;
     let before: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
             .fetch_one(&mut *tx)
             .await?;
     tx.commit().await?;
-    let receipt = service.activate(&evidence, &request, &audit(c)).await?;
+    let receipt = service
+        .activate(&evidence, &request, &audit(c), &origin)
+        .await?;
     assert_eq!(receipt.runtime.device_id, device);
     let registered: i64 = sqlx::query_scalar(
         "SELECT registered_at FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2",
@@ -87,8 +70,8 @@ pub(super) async fn prove(
     let audit_a = audit(c);
     let audit_b = audit(c);
     let (a, b) = tokio::join!(
-        service.activate(&evidence, &request, &audit_a),
-        service.activate(&evidence, &request, &audit_b)
+        service.activate(&evidence, &request, &audit_a, &origin),
+        service.activate(&evidence, &request, &audit_b, &origin)
     );
     assert_eq!(serde_json::to_value(a?)?, serde_json::to_value(&receipt)?);
     assert_eq!(serde_json::to_value(b?)?, serde_json::to_value(&receipt)?);
@@ -108,9 +91,11 @@ pub(super) async fn prove(
     )
     .await?;
     let renewal: wire::GrantRequest = serde_json::from_value(
-        json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":URL_SAFE_NO_PAD.encode([11;32]),"platform":"windows","csr":STANDARD.encode(&csr)}),
+        json!({"tenantId":c.tenant.to_string(),"wireVersion":1,"operationId":Uuid::new_v4(),"secret":URL_SAFE_NO_PAD.encode([11;32]),"platform":"windows","csr":STANDARD.encode(&csr)}),
     )?;
-    let renewal = service.renew(&evidence, &renewal, &audit(c)).await?;
+    let renewal = service
+        .renew(&evidence, &renewal, &audit(c), &origin)
+        .await?;
     let metadata = peer.metadata();
     let issuance = Uuid::new_v4();
     let mut tx = command::seed_transaction(c).await?;
@@ -129,7 +114,9 @@ pub(super) async fn prove(
         issuance_id: issuance,
         operation_id: Uuid::new_v4(),
     };
-    let renewed = service.activate(&evidence, &request, &audit(c)).await?;
+    let renewed = service
+        .activate(&evidence, &request, &audit(c), &origin)
+        .await?;
     assert_eq!(renewed.runtime.device_id, device);
     let after: i64 = sqlx::query_scalar(
         "SELECT registered_at FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2",

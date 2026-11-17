@@ -4,7 +4,6 @@ use crate::{
     transaction::{Fault, Result, checked_input, stored},
 };
 use rss_mdm_scope_postgres::{Publication, ScopeBinding};
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use sqlx::Row;
 use std::sync::Arc;
@@ -16,29 +15,20 @@ struct SourcePosition {
 }
 pub struct ScopeProjection {
     runtime: Arc<PgRuntime>,
-    tenant: TenantId,
     scope: ScopeBinding,
 }
 impl ScopeProjection {
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
         self.scope.profile()
     }
-    pub fn new(
-        profile: rss_mdm_install_support::StorageProfile,
-        runtime: Arc<PgRuntime>,
-        tenant: TenantId,
-    ) -> Self {
+    pub fn new(profile: rss_mdm_install_support::StorageProfile, runtime: Arc<PgRuntime>) -> Self {
         Self {
-            scope: ScopeBinding::new(profile, runtime.clone(), tenant),
+            scope: ScopeBinding::new(profile, runtime.clone()),
             runtime,
-            tenant,
         }
     }
     fn validate(&self, tx: &PgTransaction<'_>) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::Forbidden.into());
-        }
         Ok(())
     }
     async fn admit(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
@@ -72,7 +62,7 @@ impl ScopeProjection {
         if head.revision != p.definition_revision || head.resolution != p.previous_resolution {
             return Err(Error::Conflict.into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let id = p.run;
         let scope = p.scope;
         let previous = head.resolution;
@@ -138,7 +128,7 @@ impl ScopeProjection {
         after: Option<SourcePosition>,
     ) -> Result<()> {
         let profile = self.profile();
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| {
             Box::pin(async move {
                 let rows = sqlx::query_as::<_, (i32, i16, Uuid, serde_json::Value)>(
@@ -192,7 +182,7 @@ impl ScopeProjection {
         let previous: Option<Uuid> = progress.try_get("previous_resolution")?;
         let epoch: i64 = progress.try_get("next_entry")?;
         let hashes: serde_json::Value = progress.try_get("channel_hashes")?;
-        let tenant = self.tenant;
+        let tenant = tx.tenant_id();
         let page = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -311,7 +301,7 @@ impl ScopeProjection {
         if head.revision != p.definition_revision || head.resolution != p.previous_resolution {
             return Err(Error::Conflict.into());
         }
-        let tenant = self.tenant.to_string();
+        let tenant = tx.tenant_id().to_string();
         let id = p.run;
         let previous = p.previous_resolution;
         let changed = tx
@@ -390,9 +380,6 @@ impl ScopeProjection {
                 after,
                 limit,
             } = page;
-            if tenant != self.tenant {
-                return Err(Error::Forbidden.into());
-            }
             let page = crate::channels::targets::result_devices_on(
                 profile, c, tenant, scope, run, channel, after, limit,
             )
@@ -429,9 +416,6 @@ impl ScopeProjection {
                 device,
                 objects,
             } = member;
-            if tenant != self.tenant {
-                return Err(Error::Forbidden.into());
-            }
             let status = crate::channels::targets::result_admission_on(
                 profile, c, tenant, scope, run, channel, device,
             )

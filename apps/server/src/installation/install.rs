@@ -59,8 +59,6 @@ pub struct Input {
     pub directory: PathBuf,
     pub deployment: super::runtime_files::Config,
     #[serde(default)]
-    pub additional_hosts: Vec<super::tenant_hosts::Slot>,
-    #[serde(default)]
     pub storage_profiles: Vec<super::providers::storage::Profile>,
     #[serde(default)]
     pub mail_profiles: Vec<super::providers::mail::Profile>,
@@ -85,7 +83,6 @@ pub enum Stage {
     Database,
     Platform,
     Business,
-    HostPending,
     Initialized,
 }
 /// An installation receipt is deliberately not a deployment-success declaration.
@@ -117,7 +114,6 @@ fn invalid<T>(_: T) -> Error {
 }
 impl Input {
     fn validate(&self) -> Result<()> {
-        super::tenant_hosts::validate_slots(self)?;
         let u = url::Url::parse(&self.origin).map_err(invalid)?;
         if u.scheme() != "https"
             || u.host_str().is_none()
@@ -344,7 +340,7 @@ fn admit_installation(input: &Input) -> Result<Journal> {
     Ok(journal)
 }
 async fn resume(input: &Input, journal: &Journal, mut saved: Saved) -> Result<Receipt> {
-    initialize_platform(input, journal, &mut saved).await?;
+    let management = initialize_platform(input, journal, &mut saved).await?;
     crate::administration::tenants::create(crate::administration::tenants::Create {
         database: input.database("mdm_owner")?,
         installation: coordinates(input, &saved),
@@ -383,10 +379,15 @@ async fn resume(input: &Input, journal: &Journal, mut saved: Saved) -> Result<Re
             .map_err(|_| Error::Storage)?;
     let connection_budget = super::postgres::connection_budget(&mut database).await?;
     database.close().await.map_err(|_| Error::Storage)?;
-    let mut runtime = runtime(input, journal, &saved, connection_budget)?;
-    let telemetry =
-        super::default_telemetry::prepare(input, journal, saved.receipt.tenant_id).await?;
-    runtime["telemetry"] = serde_json::to_value(telemetry).map_err(invalid)?;
+    let mut runtime = runtime(input, journal, &saved, connection_budget, management)?;
+    let telemetry = super::default_telemetry::prepare(
+        input,
+        journal,
+        saved.receipt.tenant_id,
+        saved.receipt.instance_id,
+    )
+    .await?;
+    runtime["telemetry"] = serde_json::to_value(vec![telemetry]).map_err(invalid)?;
     runtime["content"] = match input.content_storage {
         ContentStorage::Volume => {
             let content = input.deployment.prepare_content_storage()?;
@@ -395,11 +396,10 @@ async fn resume(input: &Input, journal: &Journal, mut saved: Saved) -> Result<Re
         ContentStorage::S3 => serde_json::Value::Null,
     };
     let _: crate::config::Config = serde_json::from_value(runtime.clone()).map_err(invalid)?;
-    let capacity =
-        super::tenant_hosts::Capacity::new(input.additional_hosts.len(), connection_budget)?;
-    capacity.preflight(&runtime, &input.content_storage)?;
-    capacity.project(&mut runtime)?;
-    super::tenant_hosts::save_slots(input, journal)?;
+    serde_json::from_value::<crate::config::Config>(runtime.clone())
+        .map_err(invalid)?
+        .compile()
+        .map_err(invalid)?;
     journal.save("runtime.json", &runtime)?;
     super::runtime_files::prepare(&input.directory, &input.deployment, &runtime).await?;
     publish_progress(input, &saved, true, None).await?;
@@ -407,28 +407,20 @@ async fn resume(input: &Input, journal: &Journal, mut saved: Saved) -> Result<Re
     journal.save("installation.json", &saved)?;
     Ok(saved.receipt)
 }
-fn initial_progress(saved: &Saved, account: bool) -> super::model::Provisioning {
-    super::model::Provisioning {
-        operation_id: saved.receipt.operation_id,
-        tenant_id: saved.receipt.tenant_id,
-        administrator_id: account.then_some(saved.receipt.administrator_id),
-        host_id: saved.receipt.host_id,
-        revision: 1,
-        phase: if account {
-            super::model::Phase::HostPending
-        } else {
-            super::model::Phase::Reserved
-        },
-        blocked: None,
-        origin: None,
-        application: None,
-    }
+fn initial_progress(
+    saved: &Saved,
+    account: bool,
+) -> crate::administration::tenants::provisioning::Progress {
+    crate::administration::tenants::provisioning::Progress::pending(
+        saved.receipt.tenant_id,
+        account.then_some(saved.receipt.administrator_id),
+    )
 }
 async fn publish_progress(
     input: &Input,
     saved: &Saved,
     account: bool,
-    progress: Option<super::model::Provisioning>,
+    progress: Option<crate::administration::tenants::provisioning::Progress>,
 ) -> Result<()> {
     let mut c =
         sqlx::PgConnection::connect_with(&input.database("mdm_owner")?.options().map_err(invalid)?)
@@ -459,7 +451,9 @@ async fn publish_progress(
             tx.rollback().await.map_err(|_| Error::Storage)?;
             return Ok(());
         }
-        value.revision = previous.revision.checked_add(1).ok_or(Error::Corrupt)?;
+        if previous.phase == crate::administration::baseline::Phase::Configured {
+            value = previous;
+        }
     }
     let receipt = crate::administration::tenants::Receipt {
         operation_id: saved.receipt.operation_id,
@@ -537,6 +531,7 @@ fn runtime(
     journal: &Journal,
     saved: &Saved,
     connection_budget: u32,
+    management: rss_request_context::TenantId,
 ) -> Result<serde_json::Value> {
     let audit = match input.audit_mode {
         AuditMode::Plain => serde_json::json!({"mode":"plain"}),
@@ -547,18 +542,19 @@ fn runtime(
     Ok(serde_json::json!({
         "http": crate::config::http::Http::installation(),
         "inventory_runtime":crate::config::InventoryRuntimeConfig::installation(),
-        "background":{"device_concurrency":4,"command_recovery_batch_size":64,"command_supersede_batch_size":64,"scheduling":crate::background::SchedulingConfig::installation(),"database_connection_budget":connection_budget,"database_host_instances":input.additional_hosts.len()+1},
+        "background":{"device_concurrency":4,"command_recovery_batch_size":64,"command_supersede_batch_size":64,"scheduling":crate::background::SchedulingConfig::installation(),"database_connection_budget":connection_budget},
         "runtime_binding":{"host_id":saved.receipt.host_id,"operation_id":saved.receipt.operation_id,"revision":1,"material_digest":saved.fingerprint_digest()},
         "device_access":{"database":input.database("da_access")?,"deployment_authorities":[],"platform_sso":null,"registration":null},
         "agent_pki":{"mode":"disabled"},"device_pki":[],"native_protocols":{},"native_protection":{"active_file":journal.path("native.key")?,"historical_files":[],"fingerprint_file":journal.path("native-fingerprint.key")?},
         "audit":audit,"audit_query":{"max_rows":1024,"max_bytes":8388608,"recovery_rows":64,"recovery_bytes":4194304,"recovery_seconds":10},"listen":input.listen,"product_origin":input.origin,"trusted_gateway":input.trusted_gateway,
-        "identity":{"runtime":crate::identity::policy::RuntimePolicy::installation(),"instance_id":saved.receipt.instance_id,"tenant_id":saved.receipt.tenant_id,"database":input.database("mdm_identity_runtime")?,"oidc":null},
+        "identity":{"runtime":crate::identity::policy::RuntimePolicy::installation(),"instance_id":saved.receipt.instance_id,"management_tenant":management.to_string(),"database":input.database("mdm_identity_runtime")?,"oidc":null},
         "access_database":input.database("mdm_access")?,"runtime_database":input.database("mdm_runtime")?,"command_database":input.database("mdm_command_runtime")?,
         "storage_binding":{"target":saved.target,"lineage":saved.lineage,"epoch":1},
+        "telemetry":[],
         "business_databases":{"inventory":input.database("mdm_inventory_runtime")?,"scope":input.database("mdm_scope_runtime")?,"policy":input.database("mdm_policy_runtime")?,"resource":input.database("mdm_resource_runtime")?,"software":input.database("mdm_software_runtime")?,"content":input.database("mdm_content_runtime")?,"telemetry":input.database("mdm_telemetry_runtime")?,"scheduler":input.database("mdm_scheduler_runtime")?},
         "publication":{"database":input.database("mdm_software_driver")?,"sources":[]},
         "tenant_administration":{"registry_database":input.database("mdm_tenant_registry")?,"provisioning_database":input.database("mdm_identity_provisioning")?,"fingerprint_key_file":journal.path("operation.key")?},
-        "scope_group_database":input.database("mdm_scope_group_consumer")?,"asset_input_database":input.database("mdm_asset_ingress_consumer")?,"webhooks":{"networks":[],"recovery_database":input.database("mdm_webhook_operator")?},"content":null,"task_signing":null,"recovery_credentials":null
+        "scope_group_database":input.database("mdm_scope_group_consumer")?,"asset_input_database":input.database("mdm_asset_ingress_consumer")?,"webhooks":{"networks":[],"recovery_database":input.database("mdm_webhook_operator")?},"content":null,"recovery_credentials":null
     }))
 }
 
@@ -569,7 +565,11 @@ impl Saved {
     }
 }
 
-async fn initialize_platform(input: &Input, journal: &Journal, saved: &mut Saved) -> Result<()> {
+async fn initialize_platform(
+    input: &Input,
+    journal: &Journal,
+    saved: &mut Saved,
+) -> Result<rss_request_context::TenantId> {
     if saved.receipt.stage == Stage::Prepared {
         super::postgres::prepare(input, saved.receipt.instance_id).await?;
     }
@@ -618,7 +618,7 @@ async fn initialize_platform(input: &Input, journal: &Journal, saved: &mut Saved
         saved.receipt.stage = Stage::Platform;
         journal.save("installation.json", saved)?;
     }
-    Ok(())
+    rss_request_context::TenantId::parse(&management).map_err(invalid)
 }
 
 #[cfg(test)]

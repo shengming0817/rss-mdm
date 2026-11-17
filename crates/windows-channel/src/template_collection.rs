@@ -102,6 +102,7 @@ pub async fn send(
         if plan.applicable(context).is_err() {
             facts.extend(
                 store::seal(
+                    p.binding(),
                     rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &mut run,
@@ -157,6 +158,7 @@ pub async fn send(
                 s::Admission::Unsupported => {
                     facts.extend(
                         store::seal(
+                            p.binding(),
                             rss_mdm_install_support::StorageProfile::Mdm,
                             c,
                             &mut run,
@@ -333,6 +335,7 @@ pub async fn receive(
         ) {
             Settlement::Seal(reason) => facts.extend(
                 store::seal(
+                    p.binding(),
                     rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &mut run,
@@ -342,6 +345,7 @@ pub async fn receive(
             ),
             Settlement::Abandon => facts.extend(
                 rss_mdm_inventory_service::collection::channel::abandon_in(
+                    p.binding(),
                     rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &tenant,

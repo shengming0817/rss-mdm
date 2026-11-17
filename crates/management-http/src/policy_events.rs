@@ -47,7 +47,7 @@ async fn invoke(
     State(s): State<Arc<Events>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
     input: Result<Json<PolicyEventRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<
     rss_mdm_http_contract::signature::WithStatus<
@@ -66,7 +66,7 @@ async fn list(
     State(s): State<Arc<Events>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Directory<Batches>,
     >,
@@ -93,7 +93,7 @@ async fn read(
     State(s): State<Arc<Events>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, batch)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
+    Path((_tenant, device, batch)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId, Uuid)>,
 ) -> Result<Json<queries::Batch>, Error> {
     s.read_management(
         &auth.proof,
@@ -112,7 +112,7 @@ async fn members(
     State(s): State<Arc<Events>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, batch)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
+    Path((_tenant, device, batch)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId, Uuid)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Directory<Members>,
     >,

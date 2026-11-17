@@ -35,7 +35,7 @@ impl crate::GroupStore {
             return Ok(Err(Rejection::InvalidInput));
         }
         let mut sql = sqlx::QueryBuilder::new("SELECT * FROM mdm_group.groups WHERE tenant_id=");
-        sql.push_bind(self.tenant.to_string()).push("::uuid");
+        sql.push_bind(tx.tenant_id().to_string()).push("::uuid");
         if let Some(context) = context {
             sql.push(" AND asset_context=")
                 .push_bind(context.as_str())

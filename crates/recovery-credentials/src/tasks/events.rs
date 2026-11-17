@@ -6,6 +6,7 @@ use rss_mdm_audit_integration::activity::ActivityOrigin;
 impl crate::tasks::Transactions {
     pub async fn accept_event_in(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         version: Uuid,
         target: &crate::tasks::Target,
@@ -41,6 +42,7 @@ impl crate::tasks::Transactions {
             });
         }
         crate::tasks::actions::production::accept_for_device(
+            binding,
             profile,
             self,
             tx,

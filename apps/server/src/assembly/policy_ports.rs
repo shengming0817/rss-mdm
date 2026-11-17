@@ -94,7 +94,6 @@ pub(super) fn fault(e: rss_mdm_device_service::control::transaction::Fault) -> F
 pub(super) struct Publication {
     pub software: Arc<rss_mdm_software_service::deployment::Inputs>,
     pub enrollment_entries: rss_mdm_registration_service::enrollment::task::Entries,
-    pub signing_enabled: bool,
 }
 
 impl ExecutionPublication for Publication {
@@ -158,7 +157,6 @@ impl ExecutionPublication for Publication {
                 }
                 let action = task::prepare(
                     &self.enrollment_entries,
-                    self.signing_enabled,
                     proof,
                     snapshot,
                     *organization,
@@ -269,10 +267,10 @@ impl ExecutionChanges for Changes {
             .ok_or(Error::NotFound)?;
             match persisted.action_kind {
                 ActionKind::NativeCollection if !available => {
-                    rss_mdm_inventory_service::collection::execution::wake::policy_in(&self.messaging, tx, persisted.policy).await?;
+                    rss_mdm_inventory_service::collection::execution::wake::policy_in( &self.messaging, tx, persisted.policy).await?;
                 }
                 ActionKind::Software if !available => {
-                    rss_mdm_software_service::deployment::sources::storage::wake_execution_in(&self.messaging, tx, persisted.policy).await.map_err(software_fault)?;
+                    rss_mdm_software_service::deployment::sources::storage::wake_execution_in( &self.messaging, tx, persisted.policy).await.map_err(software_fault)?;
                 }
                 ActionKind::NativeCollection => {
                     if let Some(verified) = rss_mdm_inventory_service::collection::execution::scheduled::VerifiedNativeCollectionVersion::verify_in(&self.reader, tx, version).await? {
@@ -519,6 +517,7 @@ impl ExecutionEvents for Events {
                         .find(|s| s.profile() == profile)
                         .ok_or(Error::Unsupported)?
                         .accept_event_in(
+                            audit.binding()?,
                             tx,
                             policy.version,
                             &rss_mdm_recovery_credentials::tasks::Target {
@@ -534,6 +533,7 @@ impl ExecutionEvents for Events {
                     return self
                         .enrollment
                         .accept_event_in(
+                            audit.binding()?,
                             tx,
                             policy.version,
                             &rss_mdm_registration_service::enrollment::tasks::Target {
@@ -549,6 +549,7 @@ impl ExecutionEvents for Events {
                     return self
                         .scripts
                         .accept_event_in(
+                            audit.binding()?,
                             tx,
                             policy.version,
                             &rss_mdm_script_service::Target {
@@ -565,6 +566,7 @@ impl ExecutionEvents for Events {
                     return self
                         .collections
                         .accept_event_in(
+                            audit.binding()?,
                             tx,
                             policy.version,
                             &rss_mdm_inventory_service::collection::execution::model::Target {

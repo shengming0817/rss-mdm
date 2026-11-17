@@ -230,12 +230,16 @@ pub(crate) fn register() -> Router<App, impl rss_mdm_http_contract::module::Decl
     }
 }
 async fn connection_state(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
 ) -> Result<Json<rss_mdm_registration_service::agent::connections::State>, HttpFailure> {
     Ok(Json(service(&app)?.connection_state(&auth.proof).await?))
 }
 async fn save_connections(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
@@ -248,6 +252,8 @@ async fn save_connections(
     ))
 }
 async fn publish_connections(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
@@ -262,7 +268,7 @@ async fn publish_connections(
 async fn connection_operation(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<Option<rss_mdm_registration_service::agent::connections::Receipt>>, HttpFailure> {
     Ok(Json(
         service(&app)?.connection_operation(&auth.proof, id).await?,
@@ -271,7 +277,7 @@ async fn connection_operation(
 async fn connection_observation(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
 ) -> Result<Json<Option<rss_mdm_registration_service::agent::connections::Observation>>, HttpFailure>
 {
     Ok(Json(
@@ -281,12 +287,16 @@ async fn connection_observation(
     ))
 }
 async fn settings(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
 ) -> Result<Json<rss_mdm_registration_service::agent::settings::DeliverySettings>, HttpFailure> {
     Ok(Json(service(&app)?.settings(&auth.proof).await?.into()))
 }
 async fn update_settings(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
@@ -303,7 +313,7 @@ async fn authorize(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     input: Body<Operation>,
 ) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
     Ok(Json(
@@ -316,7 +326,7 @@ async fn revoke(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     input: Body<Operation>,
 ) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
     Ok(Json(
@@ -329,7 +339,7 @@ async fn recovery(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
-    Path(id): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, id)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
     input: Body<wire::GrantRequest>,
 ) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
     Ok(Json(
@@ -342,7 +352,7 @@ async fn recover_issuance(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     input: Body<wire::RecoverIssuance>,
 ) -> Result<Json<wire::Candidate>, HttpFailure> {
     Ok(Json(
@@ -354,7 +364,7 @@ async fn recover_issuance(
 async fn issuance_recovery_operation(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-    Path((id, operation)): Path<(Uuid, Uuid)>,
+    Path((_tenant, id, operation)): Path<(uuid::Uuid, Uuid, Uuid)>,
     identity: Result<
         Query<rss_mdm_registration_service::agent::queries::ReceiptIdentity>,
         axum::extract::rejection::QueryRejection,
@@ -407,6 +417,8 @@ impl IntoResponse for HttpFailure {
 }
 
 async fn create_configuration(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
@@ -435,7 +447,7 @@ async fn create_configuration(
 async fn read_configuration(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<rss_mdm_registration_service::agent::configurations::Read>, HttpFailure> {
     Ok(Json(
         service(&app)?.read_configuration(&auth.proof, id).await?,
@@ -444,7 +456,7 @@ async fn read_configuration(
 async fn configuration_operation(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<Option<rss_mdm_registration_service::agent::configurations::Read>>, HttpFailure> {
     Ok(Json(
         service(&app)?
@@ -456,7 +468,7 @@ async fn revoke_configuration(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     input: Body<Operation>,
 ) -> Result<rss_mdm_http_contract::signature::WithStatus<204, ()>, HttpFailure> {
     service(&app)?
@@ -466,6 +478,8 @@ async fn revoke_configuration(
 }
 
 async fn download_connections(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
 ) -> Result<
@@ -487,6 +501,8 @@ async fn download_connections(
 }
 
 async fn unconfirmed_devices(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Query(input): Query<rss_mdm_registration_service::agent::connections::DeviceQuery>,
@@ -500,6 +516,8 @@ async fn unconfirmed_devices(
 }
 
 async fn list_configurations(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
+
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -591,7 +609,7 @@ impl rss_mdm_http_contract::query::DirectoryOwner for RecoveryOperationsQuery {
 async fn request_directory(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
+    Path((_tenant, device)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Directory<RequestsQuery>,
     >,
@@ -619,7 +637,7 @@ async fn request_directory(
 async fn request_details(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
 ) -> Result<Json<rss_mdm_registration_service::agent::queries::Request>, Error> {
     app.as_ref()
         .as_deref()
@@ -632,7 +650,7 @@ async fn request_details(
 async fn registration_recovery_operation(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-    Path((id, operation)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
+    Path((_tenant, id, operation)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId, Uuid)>,
     identity: Result<
         Query<rss_mdm_registration_service::agent::queries::ReceiptIdentity>,
         axum::extract::rejection::QueryRejection,
@@ -650,7 +668,7 @@ async fn registration_recovery_operation(
 async fn issuance_recovery_operations(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
+    Path((_tenant, id)): Path<(uuid::Uuid, Uuid)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Directory<RecoveryOperationsQuery>,
     >,

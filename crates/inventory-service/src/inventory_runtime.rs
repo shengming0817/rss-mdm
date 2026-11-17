@@ -14,6 +14,7 @@ use rss_request_context::{Deadline, TenantId};
 use rss_runtime::{
     ManagedResource, ManagedTask, ManagedTaskRegistration, ShutdownError, TaskStatus,
 };
+use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
 use sha2::{Digest, Sha256};
 use sqlx::{
     PgPool,
@@ -270,7 +271,7 @@ fn shutdown_error() -> ShutdownError {
     ShutdownError::new(std::io::Error::other("inventory runtime unavailable"))
 }
 
-/// Journal authority comes only from the configured application tenant and worker cancellation.
+/// Journal authority is scoped to the discovered owner and the worker lifetime.
 struct JournalAuthority<'a> {
     tenant: TenantId,
     token: &'a CancellationToken,
@@ -333,18 +334,25 @@ pub struct InventoryRuntime {
     observation: Arc<Observation<Clock>>,
     projection: Arc<Projection>,
     delivery: crate::collection::store::Delivery,
-    tenant: TenantId,
+    storage: StorageIdentity,
+    expected_epoch: Epoch,
+
     clock: Clock,
     pub readiness: Arc<Readiness>,
     latest_projection: std::sync::Mutex<Option<diagnostics::ProjectionObservation>>,
 }
 impl InventoryRuntime {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep execution scope and existing operation inputs explicit"
+    )]
     pub fn new(
         observation: Arc<Observation<Clock>>,
         projection: Arc<Projection>,
         access: Arc<Store>,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-        tenant: TenantId,
+        storage: StorageIdentity,
+        expected_epoch: Epoch,
         clock: Clock,
         readiness: Arc<Readiness>,
     ) -> Self {
@@ -352,7 +360,9 @@ impl InventoryRuntime {
             observation,
             projection,
             delivery: crate::collection::store::Delivery::new(access, audit_store),
-            tenant,
+            storage,
+            expected_epoch,
+
             clock,
             readiness,
             latest_projection: std::sync::Mutex::new(None),
@@ -384,12 +394,21 @@ impl InventoryRuntime {
     }
     async fn deliver(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         report: &DurableReport,
         deadline: Deadline,
     ) -> Result<bool, WorkerFailure> {
-        if report.scope().tenant() != self.tenant {
+        if report.scope().tenant() != binding.tenant() || report.expected_epoch() != binding.epoch()
+        {
             return Err(WorkerFailure::ReportAuthority);
         }
+        // Keep the source execution lock through Observation I/O and the original ACK.
+        // Observation owns its own commit/receipt; a source rollback cannot undo that fact.
+        let mut tx = self
+            .delivery
+            .execution(binding)
+            .await
+            .map_err(|_| WorkerFailure::ReportAuthority)?;
         let authority = ReportAuthority(report);
         let lifecycle = LifecycleGrant::verify(&authority, report.scope().clone())
             .map_err(|_| WorkerFailure::ReportAuthority)?;
@@ -419,25 +438,24 @@ impl InventoryRuntime {
         }
         // A lost acknowledgement leaves this true. Restart repeats the exact batch; lookup None
         // is never interpreted as proof of rollback.
-        match tokio::time::timeout_at(deadline.instant().into(), self.delivery.delivered(report))
-            .await
-        {
-            Ok(Ok(())) => Ok(true),
-            Ok(Err(crate::collection::store::DeliveryError::Permanent(_))) => {
+        match self.delivery.delivered_on(&mut tx, report).await {
+            Ok(()) => match tx.commit().await {
+                Ok(()) => Ok(true),
+                Err(_) => {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({"event":"mdm_inventory_ack_deferred","commitUnknown":true})
+                    );
+                    Ok(false)
+                }
+            },
+            Err(crate::collection::store::DeliveryError::Permanent(_)) => {
                 Err(WorkerFailure::DeliveryProgress)
             }
-            Ok(Err(error)) => {
-                eprintln!(
-                    "{}",
-                    serde_json::json!({"event":"mdm_inventory_ack_deferred","commitUnknown":matches!(error,crate::collection::store::DeliveryError::CommitUnknown)})
-                );
-                Ok(false)
-            }
-            // The shared pass budget expired; dropping COMMIT does not prove rollback.
-            // The next pass rereads durable progress and reuses the exact batch identity.
             Err(_) => Ok(false),
         }
     }
+
     async fn deliver_pending(
         &self,
         reports: Vec<DurableReport>,
@@ -452,7 +470,18 @@ impl InventoryRuntime {
             if token.is_cancelled() {
                 return Ok(false);
             }
-            match self.deliver(&report, deadline).await {
+            match self
+                .deliver(
+                    ExecutionBinding::new(
+                        self.storage,
+                        report.scope().tenant(),
+                        report.expected_epoch(),
+                    ),
+                    &report,
+                    deadline,
+                )
+                .await
+            {
                 Ok(true) => {}
                 Ok(false) => return Ok(false),
                 Err(phase) => {
@@ -478,24 +507,185 @@ impl InventoryRuntime {
         token: &CancellationToken,
         notify: &tokio::sync::Notify,
     ) -> Result<(), WorkerFailure> {
+        // These are RSS claim handles over the same two stores, not tenant runtimes.
+        let mut projections = std::collections::BTreeMap::new();
+        let mut after = None;
+        let mut pass_ready = true;
+        loop {
+            if token.is_cancelled() {
+                return Ok(());
+            }
+            let scopes = match self.delivery.scopes(after).await {
+                Ok(scopes) => scopes,
+                Err(_) => {
+                    self.readiness.initialized.store(false, Ordering::Release);
+                    crate::wake::wait(notify, token, None).await;
+                    continue;
+                }
+            };
+            if scopes.is_empty() {
+                after = None;
+                self.readiness
+                    .initialized
+                    .store(pass_ready, Ordering::Release);
+                pass_ready = true;
+                crate::wake::wait(notify, token, None).await;
+                continue;
+            }
+            for (tenant, epoch) in scopes {
+                if token.is_cancelled() {
+                    return Ok(());
+                }
+                after = Some((tenant, epoch));
+                let tenant_id = TenantId::parse(&tenant.to_string())
+                    .map_err(|_| WorkerFailure::ReportAuthority)?;
+                let original = ExecutionBinding::new(
+                    self.storage,
+                    tenant_id,
+                    Epoch::new(epoch).map_err(|_| WorkerFailure::ReportAuthority)?,
+                );
+                let delivered = async {
+                    self.delivery
+                        .expire_timed(original)
+                        .await
+                        .map_err(|_| WorkerFailure::PendingReports)?;
+                    let deadline = self.clock.deadline();
+                    let reports = self
+                        .delivery
+                        .pending_reports(
+                            original,
+                            self.clock.policy.delivery,
+                            self.clock.policy.delivery_bytes,
+                        )
+                        .await
+                        .map_err(|_| WorkerFailure::PendingReports)?;
+                    self.deliver_pending(reports, deadline, token).await
+                }
+                .await;
+                if let Err(phase) = delivered {
+                    pass_ready = false;
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({"event":"mdm_inventory_delivery_deferred","tenant":tenant,"phase":phase})
+                    );
+                }
+                if token.is_cancelled() {
+                    return Ok(());
+                }
+                // A new projection operation may consume already committed facts from an older
+                // execution. Its authorization does not rebind any unfinished collection run.
+                let current = ExecutionBinding::new(self.storage, tenant_id, self.expected_epoch);
+                let Ok(guard) = self.delivery.execution(current).await else {
+                    pass_ready = false;
+                    continue;
+                };
+                if let std::collections::btree_map::Entry::Vacant(entry) = projections.entry(tenant)
+                {
+                    let handles = self.projection_handles(current, token).await;
+                    match handles {
+                        Ok(handles) => {
+                            entry.insert(handles);
+                        }
+                        Err(phase) => {
+                            pass_ready = false;
+                            eprintln!(
+                                "{}",
+                                serde_json::json!({"event":"mdm_inventory_projection_deferred","tenant":tenant,"phase":phase})
+                            );
+                            continue;
+                        }
+                    }
+                }
+                let (source, execution) = projections.get(&tenant).expect("initialized projection");
+                let deadline = self.clock.deadline();
+                let control = Control::new(
+                    &self.clock,
+                    deadline
+                        .instant()
+                        .saturating_duration_since(self.clock.origin),
+                    token,
+                );
+                let run = rss_projection::run(
+                    source.as_ref(),
+                    execution,
+                    &control,
+                    self.clock.policy.run,
+                );
+                {
+                    let mut latest = self
+                        .latest_projection
+                        .lock()
+                        .expect("projection observation");
+                    let last_completed_at = latest
+                        .as_ref()
+                        .filter(|p| p.tenant == tenant_id)
+                        .and_then(|p| p.last_completed_at);
+                    *latest = Some(diagnostics::ProjectionObservation {
+                        tenant: tenant_id,
+                        run: run.observation(),
+                        started_at: self.clock.now.now(),
+                        last_completed_at,
+                    });
+                }
+                let result = run.await.into_result();
+                if let Some(latest) = self
+                    .latest_projection
+                    .lock()
+                    .expect("projection observation")
+                    .as_mut()
+                {
+                    latest.last_completed_at = Some(self.clock.now.now());
+                }
+                // The source guard also covers duplicate-event checkpoint advancement, which
+                // intentionally skips the application effect. It has no writes to commit.
+                let _ = guard.rollback().await;
+                match result {
+                    Ok(report) if report.applied > 0 => eprintln!(
+                        "{}",
+                        serde_json::json!({"event":"mdm_inventory_progress","tenant":tenant,"applied":report.applied})
+                    ),
+                    Ok(_) => {}
+                    Err(error) => {
+                        pass_ready = false;
+                        // Keep the claim, including when fenced. Retaking every pass would
+                        // repeatedly evict another running process and lose ownership semantics.
+                        self.readiness.initialized.store(false, Ordering::Release);
+                        eprintln!(
+                            "{}",
+                            serde_json::json!({"event":"mdm_projection_deferred","tenant":tenant,"kind":format!("{:?}",error.kind()),"sqlstate":error.diagnostic().and_then(|d|d.sqlstate())})
+                        );
+                    }
+                }
+            }
+        }
+    }
+    async fn projection_handles(
+        &self,
+        binding: ExecutionBinding,
+        token: &CancellationToken,
+    ) -> Result<
+        (
+            Arc<PgSource<Clock>>,
+            rss_projection_postgres::PgProjection<rss_mdm_inventory_postgres::Inventory<Clock>>,
+        ),
+        WorkerFailure,
+    > {
+        let scope = rss_mdm_inventory_postgres::projection_scope(binding.tenant());
         let source = Arc::new(
             PgSource::new(
                 self.observation.clone(),
                 JournalReadGrant::verify(
                     &JournalAuthority {
-                        tenant: self.tenant,
+                        tenant: binding.tenant(),
                         token,
                     },
-                    self.tenant,
+                    binding.tenant(),
                 )
                 .map_err(|_| WorkerFailure::JournalAuthority)?,
-                rss_mdm_inventory_postgres::projection_scope(self.tenant)
-                    .source()
-                    .clone(),
+                scope.source().clone(),
             )
             .map_err(|_| WorkerFailure::JournalAuthority)?,
         );
-        let scope = rss_mdm_inventory_postgres::projection_scope(self.tenant);
         let control = Control::new(&self.clock, self.clock.startup_cutoff(), token);
         let definition = rss_mdm_inventory_postgres::definition();
         self.projection
@@ -517,156 +707,20 @@ impl InventoryRuntime {
             .projection
             .projection(
                 claim,
-                rss_mdm_inventory_postgres::Inventory::new(source.clone()),
+                rss_mdm_inventory_postgres::Inventory::new(source.clone(), binding),
             )
             .map_err(|_| WorkerFailure::ProjectionCompose)?;
-        loop {
-            if token.is_cancelled() {
-                return Ok(());
-            }
-            // The Audit transaction owns its settlement budget; never drop that owner
-            // at the shorter discovery deadline or when shutdown is requested.
-            let expired = self.delivery.expire_timed(&self.tenant.to_string()).await;
-            if token.is_cancelled() {
-                return Ok(());
-            }
-            let deadline = self.clock.deadline();
-            let reports = match expired {
-                Ok(expired) => tokio::time::timeout_at(
-                    deadline.instant().into(),
-                    self.delivery.pending_reports(
-                        &self.tenant.to_string(),
-                        self.clock.policy.delivery,
-                        self.clock.policy.delivery_bytes,
-                    ),
-                )
-                .await
-                .map(|result| result.map(|reports| (expired, reports))),
-                Err(error) => Ok(Err(error)),
-            };
-            let (expired, reports) = match reports {
-                Ok(Ok(reports)) => reports,
-                // A contended Audit head or uncertain settlement leaves durable work
-                // pending. The next pass acquires the same locks and reads fresh state.
-                Err(_)
-                | Ok(Err(
-                    Error::CommitUnknown
-                    | Error::RollbackFailed
-                    | Error::Unavailable(crate::Failure::RequestDeadline),
-                )) => {
-                    tokio::select! { () = token.cancelled() => return Ok(()), () = tokio::time::sleep(Duration::from_secs(1)) => {} }
-                    continue;
-                }
-                Ok(Err(_)) => return Err(WorkerFailure::PendingReports),
-            };
-            let pending_count = reports.len();
-            let delivered = self.deliver_pending(reports, deadline, token).await?;
-            if token.is_cancelled() {
-                return Ok(());
-            }
-            if deadline.remaining(self.clock.now.now()).is_none() {
-                self.readiness.initialized.store(false, Ordering::Release);
-                tokio::select! { () = token.cancelled() => return Ok(()), () = tokio::time::sleep(Duration::from_secs(1)) => {} }
-                continue;
-            }
-            let control = Control::new(
-                &self.clock,
-                deadline
-                    .instant()
-                    .saturating_duration_since(self.clock.origin),
-                token,
-            );
-            let run =
-                rss_projection::run(source.as_ref(), &execution, &control, self.clock.policy.run);
-            {
-                let mut latest = self
-                    .latest_projection
-                    .lock()
-                    .expect("projection observation");
-                let last_completed_at = latest.as_ref().and_then(|p| p.last_completed_at);
-                *latest = Some(diagnostics::ProjectionObservation {
-                    run: run.observation(),
-                    started_at: self.clock.now.now(),
-                    last_completed_at,
-                });
-            }
-            let report = run.await;
-            if let Some(observation) = self
-                .latest_projection
-                .lock()
-                .expect("projection observation")
-                .as_mut()
-            {
-                observation.last_completed_at = Some(self.clock.now.now());
-            }
-            let report = match report.into_result() {
-                Ok(report) => report,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        rss_projection::ErrorKind::Deadline
-                            | rss_projection::ErrorKind::Cancelled
-                            | rss_projection::ErrorKind::CommitUnknown
-                            | rss_projection::ErrorKind::RollbackFailed
-                    ) =>
-                {
-                    if token.is_cancelled() {
-                        return Ok(());
-                    }
-                    // Keep the same fenced execution. The next run rereads its durable
-                    // checkpoint and receipts; an interrupted settlement proves neither outcome.
-                    self.readiness.initialized.store(false, Ordering::Release);
-                    eprintln!(
-                        "{}",
-                        serde_json::json!({"event":"mdm_projection_deferred","kind":format!("{:?}",error.kind())})
-                    );
-                    tokio::select! { () = token.cancelled() => return Ok(()), () = tokio::time::sleep(Duration::from_secs(1)) => {} }
-                    continue;
-                }
-                Err(error) => {
-                    let diagnostic = error.diagnostic();
-                    eprintln!(
-                        "{}",
-                        serde_json::json!({
-                            "event": "mdm_projection_failure",
-                            "kind": format!("{:?}", error.kind()),
-                            "phase": diagnostic.map(|d| format!("{:?}", d.phase())),
-                            "sqlstate": diagnostic.and_then(|d| d.sqlstate()),
-                            "position": diagnostic.and_then(|d| d.position()).map(|p| format!("{p:?}")),
-                        })
-                    );
-                    return Err(WorkerFailure::ProjectionRun);
-                }
-            };
-            self.readiness
-                .initialized
-                .store(delivered, Ordering::Release);
-            if !delivered {
-                tokio::select! { () = token.cancelled() => return Ok(()), () = tokio::time::sleep(Duration::from_secs(1)) => {} }
-            } else if expired == 0 && pending_count == 0 && report.applied == 0 {
-                let nearest = self
-                    .delivery
-                    .next_expiry(&self.tenant.to_string())
-                    .await
-                    .map_err(|_| WorkerFailure::PendingReports)?;
-                crate::wake::wait(notify, token, nearest).await;
-            }
-            if report.applied > 0 {
-                eprintln!(
-                    "{}",
-                    serde_json::json!({"event":"mdm_inventory_progress","applied":report.applied,"position":report.position.map(|p| p.get())})
-                );
-            }
-        }
+        Ok((source, execution))
     }
     /// Called only after product permission and current scope resolution. Inspect authoritative RSS facts.
     pub async fn inspect(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         run: &Run,
         deadline: Deadline,
         cancellation: rss_request_context::Cancellation<'_>,
     ) -> Result<DeliveryStatus, Error> {
-        if run.scope.tenant() != self.tenant {
+        if run.scope.tenant() != binding.tenant() {
             return Err(Error::Forbidden);
         }
         let Some(batch) = run.batch() else {
@@ -675,18 +729,19 @@ impl InventoryRuntime {
                 projection: ProjectionStatus::NotApplicable,
             });
         };
-        self.inspect_report(&run.scope, batch, deadline, cancellation)
+        self.inspect_report(binding.tenant(), &run.scope, batch, deadline, cancellation)
             .await
     }
 
     pub async fn inspect_report(
         &self,
+        tenant: rss_request_context::TenantId,
         scope: &Scope,
         batch: &rss_observation::Batch,
         deadline: Deadline,
         cancellation: rss_request_context::Cancellation<'_>,
     ) -> Result<DeliveryStatus, Error> {
-        if scope.tenant() != self.tenant {
+        if scope.tenant() != tenant {
             return Err(Error::Forbidden);
         }
         let token = CancellationToken::new();
@@ -712,7 +767,7 @@ impl InventoryRuntime {
                 &token,
             );
             let query = rss_projection::ReceiptQuery::new(
-                rss_mdm_inventory_postgres::projection_scope(self.tenant),
+                rss_mdm_inventory_postgres::projection_scope(tenant),
                 rss_mdm_inventory_postgres::definition(),
                 event,
             )

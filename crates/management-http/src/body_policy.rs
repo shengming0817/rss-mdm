@@ -15,10 +15,10 @@ pub(crate) fn content_owned(route: &str, method: &Method) -> bool {
         || (method == Method::POST
             && matches!(
                 route,
-                "/api/v1/resources/{id}/uploads/{upload}/complete"
-                    | "/api/v1/resources/{id}/content/mirror"
-                    | "/api/v1/agent-packages"
-                    | "/api/v1/agent-packages/uploads/{id}"
+                "/api/v1/tenants/{tenant}/resources/{id}/uploads/{upload}/complete"
+                    | "/api/v1/tenants/{tenant}/resources/{id}/content/mirror"
+                    | "/api/v1/tenants/{tenant}/agent-packages"
+                    | "/api/v1/tenants/{tenant}/agent-packages/uploads/{id}"
             ))
 }
 
@@ -27,45 +27,56 @@ pub(crate) fn for_route(route: &str, method: &Method) -> BodyPolicy {
     match (method.as_str(), route) {
         (
             "POST",
-            "/api/v1/devices/{id}/inventory-scopes"
-            | "/api/v1/devices/{id}/inventory-lists/{field}",
+            "/api/v1/tenants/{tenant}/devices/{id}/inventory-scopes"
+            | "/api/v1/tenants/{tenant}/devices/{id}/inventory-lists/{field}",
         ) => Buffered(rss_mdm_inventory_service::assets::windows::MAX_PAGE_BODY_BYTES),
-        ("POST", "/api/v1/software/source-snapshots/{source}") => {
+        ("POST", "/api/v1/tenants/{tenant}/software/source-snapshots/{source}") => {
             Buffered(rss_mdm_software_service::source_snapshots::MAX_REQUEST_BYTES)
         }
-        ("POST", "/api/v1/resources/{id}/content")
-        | ("PATCH", "/api/v1/resources/{id}/uploads/{upload}") => Streaming,
+        ("POST", "/api/v1/tenants/{tenant}/resources/{id}/content")
+        | ("PATCH", "/api/v1/tenants/{tenant}/resources/{id}/uploads/{upload}") => Streaming,
         (
             "POST",
-            "/api/v1/policies/{policy}"
-            | "/api/v1/policies/{policy}/previews"
-            | "/api/v1/policies/{policy}/scope/previews"
-            | "/api/v1/policies/{policy}/stages/{stage}/scope/previews"
-            | "/api/v1/resources/{id}",
+            "/api/v1/tenants/{tenant}/policies/{policy}"
+            | "/api/v1/tenants/{tenant}/policies/{policy}/previews"
+            | "/api/v1/tenants/{tenant}/policies/{policy}/scope/previews"
+            | "/api/v1/tenants/{tenant}/policies/{policy}/stages/{stage}/scope/previews"
+            | "/api/v1/tenants/{tenant}/resources/{id}",
         ) => Buffered(8 * 1024 * 1024),
-        ("POST", "/api/v1/devices/{device}/operations") => Buffered(16 * 1024 * 1024),
-        ("POST", "/api/v1/pki/rotations" | "/api/v1/pki/crls") => Buffered(64 * 1024 * 1024),
-        ("POST", "/api/v1/pki/signing/recover" | "/api/v1/agent-issuances/{id}/recover") => {
-            Buffered(256 * 1024)
+        ("POST", "/api/v1/tenants/{tenant}/devices/{device}/operations") => {
+            Buffered(16 * 1024 * 1024)
         }
-        ("PUT", "/api/v1/windows/entra-policy") => Buffered(128 * 1024),
-        ("POST", "/api/v1/certificate-archive/import")
+        (
+            "POST",
+            "/api/v1/tenants/{tenant}/pki/rotations" | "/api/v1/tenants/{tenant}/pki/crls",
+        ) => Buffered(64 * 1024 * 1024),
+        (
+            "POST",
+            "/api/v1/tenants/{tenant}/pki/signing/recover"
+            | "/api/v1/tenants/{tenant}/agent-issuances/{id}/recover",
+        ) => Buffered(256 * 1024),
+        ("PUT", "/api/v1/tenants/{tenant}/windows/entra-policy") => Buffered(128 * 1024),
+        ("POST", "/api/v1/tenants/{tenant}/certificate-archive/import")
         | (
             "PUT",
-            "/api/v1/authorization/rules/{id}"
-            | "/api/v1/authorization/user-groups/{id}"
+            "/api/v1/tenants/{tenant}/authorization/rules/{id}"
+            | "/api/v1/tenants/{tenant}/authorization/user-groups/{id}"
             | "/api/v1/tenant-administration/authorization/rules/{id}",
         ) => Buffered(2 * 1024 * 1024),
         (
             "POST",
-            "/api/v1/agent-packages"
-            | "/api/v1/agent-packages/{id}/withdraw"
-            | "/api/v1/software/imports"
-            | "/api/v1/software/sources/{id}/revisions/{revision}"
-            | "/api/v1/software/resources/{id}/versions/{version}",
+            "/api/v1/tenants/{tenant}/agent-packages"
+            | "/api/v1/tenants/{tenant}/agent-packages/{id}/withdraw"
+            | "/api/v1/tenants/{tenant}/software/imports"
+            | "/api/v1/tenants/{tenant}/software/sources/{id}/revisions/{revision}"
+            | "/api/v1/tenants/{tenant}/software/resources/{id}/versions/{version}",
         ) => Buffered(1024 * 1024),
-        (_, path) if path.starts_with("/api/v1/apple/materials/") => Buffered(256 * 1024),
-        (_, path) if path.starts_with("/api/v1/apple/organizations") => Buffered(256 * 1024),
+        (_, path) if path.starts_with("/api/v1/tenants/{tenant}/apple/materials/") => {
+            Buffered(256 * 1024)
+        }
+        (_, path) if path.starts_with("/api/v1/tenants/{tenant}/apple/organizations") => {
+            Buffered(256 * 1024)
+        }
         _ => Buffered(16 * 1024),
     }
 }
@@ -180,7 +191,7 @@ mod tests {
             e.method == "POST"
                 && (e.operations.contains(&Operation::Update) || e.path.ends_with("/previews"))
         }) {
-            let path = format!("/api/v1{}", endpoint.path);
+            let path = format!("/api/v1/tenants/{{tenant}}{}", endpoint.path);
             let BodyPolicy::Buffered(limit) = for_route(&path, &Method::POST) else {
                 panic!("buffered Policy input")
             };
@@ -207,42 +218,57 @@ mod tests {
 
     #[test]
     fn budgets_match_methods_and_matched_paths() {
-        assert!(content_owned("/api/v1/agent-packages", &Method::POST));
-        assert!(!content_owned("/api/v1/agent-packages", &Method::GET));
         assert!(content_owned(
-            "/api/v1/agent-packages/uploads/{id}",
+            "/api/v1/tenants/{tenant}/agent-packages",
             &Method::POST
         ));
         assert!(!content_owned(
-            "/api/v1/agent-packages/uploads/{id}",
+            "/api/v1/tenants/{tenant}/agent-packages",
+            &Method::GET
+        ));
+        assert!(content_owned(
+            "/api/v1/tenants/{tenant}/agent-packages/uploads/{id}",
+            &Method::POST
+        ));
+        assert!(!content_owned(
+            "/api/v1/tenants/{tenant}/agent-packages/uploads/{id}",
             &Method::GET
         ));
         assert_eq!(
-            for_route("/api/v1/agent-packages", &Method::POST),
+            for_route("/api/v1/tenants/{tenant}/agent-packages", &Method::POST),
             BodyPolicy::Buffered(1024 * 1024)
         );
         assert_eq!(
-            for_route("/api/v1/policies/{policy}", &Method::POST),
+            for_route("/api/v1/tenants/{tenant}/policies/{policy}", &Method::POST),
             BodyPolicy::Buffered(8 * 1024 * 1024)
         );
         assert_eq!(
-            for_route("/api/v1/policies/{policy}", &Method::PUT),
+            for_route("/api/v1/tenants/{tenant}/policies/{policy}", &Method::PUT),
             BodyPolicy::Buffered(16 * 1024)
         );
         assert_eq!(
-            for_route("/api/v1/pki/crls", &Method::POST),
+            for_route("/api/v1/tenants/{tenant}/pki/crls", &Method::POST),
             BodyPolicy::Buffered(64 * 1024 * 1024)
         );
         assert_eq!(
-            for_route("/api/v1/resources/{id}/content", &Method::POST),
+            for_route(
+                "/api/v1/tenants/{tenant}/resources/{id}/content",
+                &Method::POST
+            ),
             BodyPolicy::Streaming
         );
         assert_eq!(
-            for_route("/api/v1/resources/{id}/content", &Method::PATCH),
+            for_route(
+                "/api/v1/tenants/{tenant}/resources/{id}/content",
+                &Method::PATCH
+            ),
             BodyPolicy::Buffered(16 * 1024)
         );
         assert_eq!(
-            for_route("/api/v1/resources/{id}/uploads/{upload}", &Method::PATCH),
+            for_route(
+                "/api/v1/tenants/{tenant}/resources/{id}/uploads/{upload}",
+                &Method::PATCH
+            ),
             BodyPolicy::Streaming
         );
     }

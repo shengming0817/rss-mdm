@@ -48,6 +48,7 @@ pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Dec
     .assemble()
 }
 async fn configuration(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
@@ -66,6 +67,7 @@ async fn configuration(
     ))
 }
 async fn delivery(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
@@ -89,6 +91,7 @@ struct Revision {
     revision: i64,
 }
 async fn step_up(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     CeremonyHeaders(headers): CeremonyHeaders,
@@ -100,7 +103,7 @@ async fn step_up(
         .step_up_context(&auth.proof)?;
     let actor = s
         .identity
-        .ceremony_actor(&headers, auth.remaining()?)
+        .ceremony_actor(auth.proof.binding(), &headers, auth.remaining()?)
         .await?;
     let result = s
         .identity
@@ -111,6 +114,7 @@ async fn step_up(
     Ok(Json(crate::identity_contract::TimedChallenge(result)))
 }
 async fn configuration_step_up(
+    axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     CeremonyHeaders(headers): CeremonyHeaders,
@@ -122,7 +126,7 @@ async fn configuration_step_up(
         .step_up_context(&auth.proof)?;
     let actor = s
         .identity
-        .ceremony_actor(&headers, auth.remaining()?)
+        .ceremony_actor(auth.proof.binding(), &headers, auth.remaining()?)
         .await?;
     let result = s
         .identity
@@ -153,14 +157,15 @@ async fn evidence(
     body: Body<SignedObservation>,
 ) -> Result<Json<Accepted>, Error> {
     let business = s.business.as_ref().ok_or(Error::Unsupported)?;
+    let value = body.map_err(|_| Error::Malformed)?.0;
+    let verified = business.evidence.authenticate(&value)?;
+    let tenant = rss_request_context::TenantId::parse(&verified.tenant.to_string())
+        .map_err(|_| Error::Malformed)?;
+    a.bind_scope(s.registrations.execution(tenant))
+        .map_err(|_| Error::Unavailable)?;
     business
         .service
-        .record_deployment(
-            &business.evidence,
-            &s.configurations,
-            &body.map_err(|_| Error::Malformed)?.0,
-            &a,
-        )
+        .record_deployment(&business.evidence, &s.configurations, &value, &a)
         .await?;
     Ok(Json(Accepted { accepted: true }))
 }

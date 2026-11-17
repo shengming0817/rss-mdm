@@ -88,7 +88,7 @@ pub(crate) fn management_routes()
         rss_mdm_http_contract::route_module! { struct ManagementRoutesModule1 for [Browser] { get_list, get_organization_detail, put_organization, get_accounts, get_account_detail, put_account } }
         ManagementRoutesModule1 {
             get_list: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/apple/organizations",
+                "/api/v1/tenants/{tenant}/apple/organizations",
                 get(
                     management::list,
                     &contracts::APPLE_ORGANIZATIONS,
@@ -96,7 +96,7 @@ pub(crate) fn management_routes()
                 ),
             ),
             get_organization_detail: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/apple/organizations/{id}/account-enrollment",
+                "/api/v1/tenants/{tenant}/apple/organizations/{id}/account-enrollment",
                 rss_mdm_http_contract::routing::get(
                     management::organization_detail,
                     &contracts::APPLE_ACCOUNT_CONFIGURATION,
@@ -104,7 +104,7 @@ pub(crate) fn management_routes()
                 ),
             ),
             put_organization: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/apple/organizations/{id}/account-enrollment",
+                "/api/v1/tenants/{tenant}/apple/organizations/{id}/account-enrollment",
                 rss_mdm_http_contract::routing::put(
                     management::organization,
                     &contracts::APPLE_ACCOUNT_CONFIGURATION,
@@ -112,7 +112,7 @@ pub(crate) fn management_routes()
                 ),
             ),
             get_accounts: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/apple/organizations/{id}/account-enrollment/accounts",
+                "/api/v1/tenants/{tenant}/apple/organizations/{id}/account-enrollment/accounts",
                 get(
                     management::accounts,
                     &contracts::APPLE_ACCOUNTS,
@@ -120,7 +120,7 @@ pub(crate) fn management_routes()
                 ),
             ),
             get_account_detail: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/apple/organizations/{id}/account-enrollment/accounts/{account}",
+                "/api/v1/tenants/{tenant}/apple/organizations/{id}/account-enrollment/accounts/{account}",
                 rss_mdm_http_contract::routing::get(
                     management::account_detail,
                     &contracts::APPLE_ACCOUNT_BINDINGS,
@@ -128,7 +128,7 @@ pub(crate) fn management_routes()
                 ),
             ),
             put_account: rss_mdm_http_contract::module::Route::new(
-                "/api/v1/apple/organizations/{id}/account-enrollment/accounts/{account}",
+                "/api/v1/tenants/{tenant}/apple/organizations/{id}/account-enrollment/accounts/{account}",
                 rss_mdm_http_contract::routing::put(
                     management::account,
                     &contracts::APPLE_ACCOUNT_BINDINGS,
@@ -141,6 +141,7 @@ pub(crate) fn management_routes()
 }
 pub(crate) async fn authenticate(
     app: &HttpState,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     headers: &HeaderMap,
     active: bool,
     cutoff: rss_request_context::Deadline,
@@ -148,7 +149,7 @@ pub(crate) async fn authenticate(
     let (session, _secret) = rss_identity_http_axum::authenticate_request(
         &app.authentication.authority,
         &app.authentication.http,
-        app.identity.binding(),
+        execution,
         headers,
         if active {
             rss_identity_http_axum::SessionActivity::Active
@@ -175,7 +176,7 @@ pub(crate) async fn authenticate(
     )?;
     AuthorizedPrincipal::from_identity(
         &app.access.authorization,
-        rss_mdm_authorization_service::context::Principal::new(session)?,
+        rss_mdm_authorization_service::context::Principal::new(session, execution)?,
     )?
     .load_authorization(&app.access.authorization)
     .await
@@ -216,9 +217,13 @@ fn account_name(value: &str) -> Result<String, Error> {
     Ok(format!("{}@{}", local.to_ascii_lowercase(), domain(host)?))
 }
 /// All post-authentication entry points require the current server-selected binding revision.
-pub(crate) async fn require_binding(app: &HttpState, enrollment: Uuid) -> Result<(), Error> {
-    let mut tx = app.access.begin(&app.identity.tenant().to_string()).await?;
-    store::binding(&mut tx, &app.identity.tenant().to_string(), enrollment).await?;
+pub(crate) async fn require_binding(
+    app: &HttpState,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    enrollment: Uuid,
+) -> Result<(), Error> {
+    let mut tx = app.access.begin(&execution.tenant().to_string()).await?;
+    store::binding(&mut tx, &execution.tenant().to_string(), enrollment).await?;
     tx.rollback().await.map_err(crate::database::db)?;
     Ok(())
 }
@@ -274,11 +279,12 @@ impl UserAccess {
 /// A user-channel bearer supplements the current device certificate.
 pub(crate) async fn authorize_user(
     app: &HttpState,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     enrollment: Uuid,
     headers: &HeaderMap,
     cutoff: rss_request_context::Deadline,
 ) -> Result<Option<UserAccess>, Error> {
-    let tenant = app.identity.tenant().to_string();
+    let tenant = execution.tenant().to_string();
     let mut tx = app.access.begin(&tenant).await?;
     let account:bool=sqlx::query_scalar("SELECT authority_kind='apple_account' FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2")
         .bind(&tenant).bind(enrollment).fetch_one(&mut *tx).await.map_err(crate::database::db)?;
@@ -297,6 +303,7 @@ pub(crate) async fn authorize_user(
     let flow = row.try_get("id").map_err(crate::database::db)?;
     tx.rollback().await.map_err(crate::database::db)?;
     let admission = rss_mdm_registration_service::enrollment::native::account(
+        execution,
         &app.access.registration(),
         &app.identity,
         enrollment,
@@ -327,14 +334,14 @@ pub(crate) async fn reauthentication(
     enrollment: Uuid,
     audit: &rss_mdm_audit_integration::RequestAudit,
 ) -> Result<axum::response::Response, Error> {
-    let tenant = app.identity.tenant().to_string();
+    let tenant = audit.binding()?.tenant().to_string();
     let flow = Uuid::new_v4();
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let outcome = app
         .audit_store
         .write(
-            app.identity.tenant(),
+            audit.binding()?,
             &budget.source_control(),
             (app, &tenant, enrollment, flow, audit),
             |(app, tenant, enrollment, flow, audit), tx| {
@@ -409,7 +416,8 @@ pub(crate) async fn maid(
     access: Option<&UserAccess>,
 ) -> Result<axum::response::Response, Error> {
     use axum::response::IntoResponse;
-    let tenant = app.identity.tenant().to_string();
+    let apple = app.apple(principal.binding()).await?;
+    let tenant = principal.binding().tenant().to_string();
     let mut tx = app.access.begin(&tenant).await?;
     crate::device::store::revalidate_source(
         rss_mdm_install_support::StorageProfile::Mdm,
@@ -431,7 +439,7 @@ pub(crate) async fn maid(
     let key: String = organization
         .try_get("signing_key")
         .map_err(crate::database::db)?;
-    let signer = app.apple()?.account_keys.get(&key).ok_or(Error::Conflict)?;
+    let signer = apple.account_keys.get(&key).ok_or(Error::Conflict)?;
     let token = signer.sign(
         organization
             .try_get("server_uuid")
@@ -449,6 +457,7 @@ pub(crate) async fn maid(
 
 /// Current account instructions and Identity validity are observations, never a new grant.
 pub async fn progress_in(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     c: &mut sqlx::PgConnection,
     sessions: &rss_mdm_authorization_service::session::SessionAuthority,
     context: &rss_mdm_registration_service::enrollment::read::Context,
@@ -466,6 +475,7 @@ pub async fn progress_in(
         serde_json::from_value(reference).map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
     let required = match sessions
         .recheck(
+            execution,
             &reference,
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                 std::time::Duration::from_secs(10),

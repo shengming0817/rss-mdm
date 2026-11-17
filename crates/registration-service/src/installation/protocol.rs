@@ -70,7 +70,7 @@ pub async fn settle_one(
     {
         report.event = dc::DeviceEvent::Reported(op.request.digest(
             &s.transactions.protection,
-            s.transactions.tenant,
+            tx.tenant_id(),
             &op.device,
         )?);
         if s.transactions.store.report(tx, &report).await?.outcome == dc::Outcome::OutOfOrder {

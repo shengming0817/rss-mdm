@@ -51,6 +51,7 @@ impl Target {
     }
 }
 pub(super) struct Call {
+    pub expected_epoch: i64,
     pub target: Target,
     pub attempted: bool,
     pub generation: i64,
@@ -116,19 +117,20 @@ pub(super) async fn lock(
 }
 
 pub(super) fn fact(
-    tenant: rss_request_context::TenantId,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     actor: &rel::ActorId,
     target: &str,
     action: &'static str,
     software: rss_mdm_audit_integration::SoftwareFact,
 ) -> std::result::Result<rss_mdm_audit_integration::Fact, PgError> {
+    let tenant = execution.tenant();
     if actor.tenant() != tenant {
         return Err(fault());
     }
     let audit = rss_mdm_audit_integration::RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
-        tenant.to_string(),
+        execution,
         action,
         rss_mdm_audit_integration::AuditIntent::Management,
     );
@@ -173,6 +175,7 @@ pub(super) fn fact(
 }
 
 pub(super) async fn register(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     audit_store: &dyn crate::AuditPort,
     tx: &mut PgTransaction<'_>,
     sources: &Sources,
@@ -227,7 +230,7 @@ pub(super) async fn register(
             .await?;
         }
         let fact = fact(
-            tx.tenant_id(),
+            execution,
             actor,
             &sources.logical,
             "software_binding",
@@ -476,10 +479,10 @@ pub(super) async fn call_on(
 ) -> std::result::Result<Option<Call>, PgError> {
     let q = match table {
         Table::Publish => {
-            "SELECT document,digest,attempted,call_generation,acknowledged,false AS complete,true AS prepared FROM mdm_software_composition.targets WHERE tenant_id=$1::uuid AND id=$2"
+            "SELECT expected_epoch,document,digest,attempted,call_generation,acknowledged,false AS complete,true AS prepared FROM mdm_software_composition.targets WHERE tenant_id=$1::uuid AND id=$2"
         }
         Table::Withdraw => {
-            "SELECT coalesce(t.document,w.document) AS document,coalesce(t.digest,w.digest) AS digest,coalesce(t.attempted,false) AS attempted,coalesce(t.call_generation,0) AS call_generation,coalesce(t.acknowledged,false) AS acknowledged,w.complete,t.id IS NOT NULL AS prepared FROM mdm_software_composition.withdrawals w LEFT JOIN mdm_software_composition.targets t ON t.tenant_id=w.tenant_id AND t.id=w.id WHERE w.tenant_id=$1::uuid AND w.id=$2"
+            "SELECT w.expected_epoch,coalesce(t.document,w.document) AS document,coalesce(t.digest,w.digest) AS digest,coalesce(t.attempted,false) AS attempted,coalesce(t.call_generation,0) AS call_generation,coalesce(t.acknowledged,false) AS acknowledged,w.complete,t.id IS NOT NULL AS prepared FROM mdm_software_composition.withdrawals w LEFT JOIN mdm_software_composition.targets t ON t.tenant_id=w.tenant_id AND t.id=w.id WHERE w.tenant_id=$1::uuid AND w.id=$2"
         }
     };
     let row = sqlx::query(q)
@@ -496,6 +499,7 @@ pub(super) async fn call_on(
             return Err(fault());
         }
         Ok(Call {
+            expected_epoch: r.try_get("expected_epoch")?,
             target,
             attempted: r.try_get("attempted")?,
             generation: r.try_get("call_generation")?,
@@ -831,30 +835,59 @@ const SET_AUTHORITY_SQL: &str = "INSERT INTO mdm_software_composition.authoritie
 const SLOT_SQL: &str = "SELECT operation,cursor FROM mdm_software_composition.slots WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3";
 const RESERVE_SQL: &str = "INSERT INTO mdm_software_composition.slots(tenant_id,binding,coordinate,operation,cursor) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT(tenant_id,binding,coordinate) DO UPDATE SET operation=EXCLUDED.operation WHERE mdm_software_composition.slots.operation IS NULL AND mdm_software_composition.slots.cursor IS NOT DISTINCT FROM EXCLUDED.cursor";
 const RELEASE_SLOT_SQL: &str = "UPDATE mdm_software_composition.slots SET operation=NULL,cursor=coalesce($5,cursor) WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3 AND operation=$4";
-const MARK_ATTEMPT_SQL: &str = "UPDATE mdm_software_composition.targets SET call_generation=call_generation+CASE WHEN attempted THEN 0 ELSE 1 END,attempted=true,acknowledged=acknowledged OR $3 WHERE tenant_id=$1::uuid AND id=$2";
+const MARK_ATTEMPT_SQL: &str = "UPDATE mdm_software_composition.targets SET call_generation=call_generation+CASE WHEN attempted THEN 0 ELSE 1 END,attempted=true,acknowledged=acknowledged OR $3 WHERE tenant_id=$1::uuid AND id=$2 AND expected_epoch=current_setting('rss.execution_epoch')::bigint";
 const COMPLETE_WITHDRAWAL_SQL: &str = "UPDATE mdm_software_composition.withdrawals SET complete=true WHERE tenant_id=$1::uuid AND id=$2";
 const PROJECTION_SQL: &str = "SELECT publication FROM mdm_software_composition.projections WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3";
-const PREPARE_WITHDRAWAL_SQL: &str = "INSERT INTO mdm_software_composition.targets(tenant_id,id,record,document,digest,withdrawal_id) SELECT $1::uuid,$2,$3,$4,$5,$2 WHERE EXISTS(SELECT 1 FROM mdm_software_composition.withdrawals WHERE tenant_id=$1::uuid AND id=$2 AND NOT complete)";
+const PREPARE_WITHDRAWAL_SQL: &str = "INSERT INTO mdm_software_composition.targets(tenant_id,id,record,document,digest,withdrawal_id,expected_epoch) SELECT $1::uuid,$2,$3,$4,$5,$2,expected_epoch FROM mdm_software_composition.withdrawals WHERE tenant_id=$1::uuid AND id=$2 AND expected_epoch=current_setting('rss.execution_epoch')::bigint AND NOT complete AND expected_epoch=current_setting('rss.execution_epoch')::bigint";
 const COMPLETE_NOOP_SQL: &str = "UPDATE mdm_software_composition.withdrawals w SET complete=true WHERE tenant_id=$1::uuid AND id=$2 AND NOT EXISTS(SELECT 1 FROM mdm_software_composition.targets t WHERE t.tenant_id=w.tenant_id AND t.id=w.id AND t.attempted)";
 
 /// Persist the immutable withdrawal intent and its queue audit exactly once.
 /// Subsequent commands have their own management audit and reuse this original intent.
 pub(super) async fn queue_withdrawal_in(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     tx: &mut PgTransaction<'_>,
     audit: &dyn crate::AuditPort,
     actor: &rel::ActorId,
     target: &Target,
 ) -> std::result::Result<(), PgError> {
     lock(tx, "withdrawal", &target.withdrawal_key()).await?;
-    if call(tx, Table::Withdraw, &target.withdrawal_key())
-        .await?
-        .is_some()
-    {
+    let expected: i64 = tx
+        .with_connection(|c| {
+            Box::pin(async move {
+                sqlx::query_scalar("SELECT current_setting('rss.execution_epoch')::bigint")
+                    .fetch_one(c)
+                    .await
+            })
+        })
+        .await?;
+    if let Some(old) = call(tx, Table::Withdraw, &target.withdrawal_key()).await? {
+        if !old.complete && old.expected_epoch != expected {
+            return Err(sqlx::Error::Protocol("original publication epoch mismatch".into()).into());
+        }
         return Ok(());
+    }
+    let original = call(tx, Table::Publish, &target.key())
+        .await?
+        .ok_or_else(fault)?;
+    if original.expected_epoch != expected {
+        let key = rel::PublicationKey::new(tx.tenant_id(), &target.record).map_err(|_| fault())?;
+        let publication =
+            rss_mdm_software_release_postgres::lock_publication_reference_in(tx, &key)
+                .await?
+                .map_err(|_| fault())?;
+        let publication = core_publication(&publication, target).map_err(|_| fault())?;
+        if !matches!(
+            publication.outcome,
+            rel::PublicationOutcome::Reported(
+                rel::PublicationResult::Applied(_) | rel::PublicationResult::NotApplied(_)
+            )
+        ) {
+            return Err(sqlx::Error::Protocol("original publication epoch mismatch".into()).into());
+        }
     }
     insert_call(tx, Table::Withdraw, target).await?;
     let fact = fact(
-        tx.tenant_id(),
+        execution,
         actor,
         &target.record,
         "software_withdraw",
@@ -902,7 +935,12 @@ mod audit_tests {
         let actor = rel::ActorId::new(tenant(), "service").unwrap();
         let make = |generation| {
             fact(
-                tenant(),
+                rss_transactional_messaging::fence::ExecutionBinding::new(
+                    rss_transactional_messaging::fence::StorageIdentity::new([1; 16], [2; 16])
+                        .unwrap(),
+                    tenant(),
+                    rss_transactional_messaging::fence::Epoch::new(1).unwrap(),
+                ),
                 &actor,
                 &t.record,
                 "software_call",

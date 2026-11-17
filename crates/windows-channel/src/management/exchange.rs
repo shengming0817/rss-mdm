@@ -4,7 +4,6 @@ use crate::protocol_types::{self as protocol, Windows as _};
 use crate::{Error, Failure, Windows, native};
 use rss_mdm_audit_integration::{AuditStore, RequestAudit};
 use rss_mdm_registration_service::DevicePrincipal;
-use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgError, PgRuntime, PgTransaction};
 use std::{
     sync::{Arc, Mutex},
@@ -13,7 +12,6 @@ use std::{
 use uuid::Uuid;
 pub struct Delivery {
     pub runtime: Arc<PgRuntime>,
-    pub tenant: TenantId,
     pub audit: Arc<AuditStore>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub business: Arc<dyn Business>,
@@ -105,7 +103,7 @@ impl Delivery {
         let attempt = self
             .runtime
             .local_tx_with_context(
-                self.audit.binding(),
+                audit.binding()?,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     Duration::from_secs(6),
                 ),

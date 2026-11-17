@@ -32,18 +32,21 @@ impl Authority for DefinitionAuthority {
 impl Service {
     pub(crate) async fn synchronize(
         self: &Arc<Self>,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         field: FieldDefinition,
         cutoff: Deadline,
     ) -> Result<bool, Error> {
         let service = self.clone();
         self.runtime
-            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
+            .local_tx(execution, crate::deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
-                            advance_on(&service, c, &field, cutoff).await.map_err(|_| {
-                                sqlx::Error::Protocol("definition projection failed".into())
-                            })
+                            advance_on(execution, &service, c, &field, cutoff)
+                                .await
+                                .map_err(|_| {
+                                    sqlx::Error::Protocol("definition projection failed".into())
+                                })
                         })
                     })
                     .await
@@ -61,21 +64,23 @@ impl Service {
     }
 }
 async fn advance_on(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
     service: &Service,
     c: &mut PgConnection,
     field: &FieldDefinition,
     cutoff: Deadline,
 ) -> Result<bool, Error> {
+    let backend = service.backend_on(c, execution.tenant()).await?;
     sqlx::query("INSERT INTO mdm_telemetry.definition_progress(tenant_id,field,version,digest) VALUES($1::uuid,$2,0,NULL) ON CONFLICT DO NOTHING")
-        .bind(service.tenant.to_string()).bind(field.key.as_str()).execute(&mut *c).await?;
+        .bind(execution.tenant().to_string()).bind(field.key.as_str()).execute(&mut *c).await?;
     let row = sqlx::query("SELECT version,digest FROM mdm_telemetry.definition_progress WHERE tenant_id=$1::uuid AND field=$2 FOR UPDATE")
-        .bind(service.tenant.to_string()).bind(field.key.as_str()).fetch_one(&mut *c).await?;
+        .bind(execution.tenant().to_string()).bind(field.key.as_str()).fetch_one(&mut *c).await?;
     let mut version = row.try_get::<i64, _>("version")? as u64;
     let authority = DefinitionAuthority {
-        tenant: service.tenant,
+        tenant: execution.tenant(),
         key: field.key.as_str().into(),
     };
-    let scope = Scope::new(service.tenant, Id::new("mdm.telemetry")?);
+    let scope = Scope::new(execution.tenant(), Id::new("mdm.telemetry")?);
     let lookup = |version| DefinitionId {
         scope: scope.clone(),
         key: Id::new(field.key.as_str()).expect("validated field key"),
@@ -84,8 +89,7 @@ async fn advance_on(
     let mut expected = if version == 0 {
         None
     } else {
-        let found = service
-            .backend
+        let found = backend
             .definition(
                 &Authorized::<DefinitionId>::verify(&authority, lookup(version))?,
                 cutoff,
@@ -103,8 +107,7 @@ async fn advance_on(
         Some(digest)
     };
     if version >= field.version {
-        return match service
-            .backend
+        return match backend
             .definition(
                 &Authorized::<DefinitionId>::verify(&authority, lookup(field.version))?,
                 cutoff,
@@ -124,7 +127,7 @@ async fn advance_on(
     }
     let fields = rss_mdm_inventory_postgres::time_series_versions_in(
         c,
-        service.tenant,
+        execution.tenant(),
         FieldKey::parse(field.key.as_str()).map_err(|_| Error::Invalid)?,
         version,
         field.version,
@@ -142,7 +145,7 @@ async fn advance_on(
                 expected_latest: expected,
             },
         )?;
-        let outcome = service.backend.define(&mutation, cutoff).await?;
+        let outcome = backend.define(&mutation, cutoff).await?;
         let record = match outcome {
             Outcome::Accepted(v) | Outcome::Replay(v) => v,
             Outcome::Unknown => return Ok(false),
@@ -153,20 +156,23 @@ async fn advance_on(
         expected = Some(record.definition.digest()?);
         version = field.version;
         sqlx::query("UPDATE mdm_telemetry.definition_progress SET version=$3,digest=$4 WHERE tenant_id=$1::uuid AND field=$2")
-            .bind(service.tenant.to_string()).bind(field.key.as_str()).bind(version as i64).bind(expected.as_ref().map(|d| d.as_bytes().to_vec())).execute(&mut *c).await?;
+            .bind(execution.tenant().to_string()).bind(field.key.as_str()).bind(version as i64).bind(expected.as_ref().map(|d| d.as_bytes().to_vec())).execute(&mut *c).await?;
     }
     Ok(version >= field.version)
 }
 
 impl Service {
-    pub(crate) async fn retire_definitions(self: &Arc<Self>) -> Result<(), Error> {
+    pub(crate) async fn retire_definitions(
+        self: &Arc<Self>,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Result<(), Error> {
         let service = self.clone();
         self.runtime
-            .local_tx(self.audit_store.binding(), crate::deadline(), move |tx| {
+            .local_tx(execution, crate::deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
-                            retire_on(&service, c).await.map_err(|_| {
+                            retire_on(execution, &service, c).await.map_err(|_| {
                                 sqlx::Error::Protocol(
                                     "telemetry definition retirement unconfirmed".into(),
                                 )
@@ -187,14 +193,19 @@ impl Service {
             )
     }
 }
-async fn retire_on(service: &Service, c: &mut PgConnection) -> Result<(), Error> {
+async fn retire_on(
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    service: &Service,
+    c: &mut PgConnection,
+) -> Result<(), Error> {
+    let backend = service.backend_on(c, execution.tenant()).await?;
     // A shared catalog fence prevents fresh admission while retirement is decided.
     sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2554))")
-        .bind(format!("{}:field-catalog", service.tenant))
+        .bind(format!("{}:field-catalog", execution.tenant()))
         .execute(&mut *c)
         .await?;
     let row=sqlx::query("SELECT p.field,p.version,p.retired_through FROM mdm_telemetry.definition_progress p WHERE p.tenant_id=$1::uuid AND p.retired_through<p.version AND (SELECT definition IS NULL FROM mdm.field_versions f WHERE f.tenant_id=p.tenant_id AND f.field=p.field ORDER BY version DESC LIMIT 1) AND NOT EXISTS(SELECT 1 FROM mdm_telemetry.batches b WHERE b.tenant_id=p.tenant_id AND p.field=ANY(b.fields) AND b.delivery<>'published') ORDER BY p.field LIMIT 1 FOR UPDATE OF p")
-        .bind(service.tenant.to_string()).fetch_optional(&mut *c).await?;
+        .bind(execution.tenant().to_string()).fetch_optional(&mut *c).await?;
     let Some(row) = row else {
         return Ok(());
     };
@@ -203,7 +214,7 @@ async fn retire_on(service: &Service, c: &mut PgConnection) -> Result<(), Error>
     let retired = row.try_get::<i64, _>("retired_through")? as u64;
     let versions = rss_mdm_inventory_postgres::time_series_versions_in(
         c,
-        service.tenant,
+        execution.tenant(),
         FieldKey::parse(&field).map_err(|_| Error::Storage)?,
         retired,
         through,
@@ -211,10 +222,10 @@ async fn retire_on(service: &Service, c: &mut PgConnection) -> Result<(), Error>
     .await
     .map_err(|_| Error::Storage)?;
     let authority = DefinitionAuthority {
-        tenant: service.tenant,
+        tenant: execution.tenant(),
         key: field.clone(),
     };
-    let scope = Scope::new(service.tenant, Id::new("mdm.telemetry")?);
+    let scope = Scope::new(execution.tenant(), Id::new("mdm.telemetry")?);
     let deadline = Deadline::from_timeout(
         &crate::backend::SystemClock,
         std::time::Duration::from_secs(6),
@@ -233,8 +244,7 @@ async fn retire_on(service: &Service, c: &mut PgConnection) -> Result<(), Error>
             id,
             expected: definition.digest()?,
         };
-        match service
-            .backend
+        match backend
             .define(
                 &Authorized::<DefinitionMutation>::verify(&authority, mutation)?,
                 deadline,
@@ -249,7 +259,7 @@ async fn retire_on(service: &Service, c: &mut PgConnection) -> Result<(), Error>
             }
         }
         sqlx::query("UPDATE mdm_telemetry.definition_progress SET retired_through=$3 WHERE tenant_id=$1::uuid AND field=$2")
-            .bind(service.tenant.to_string()).bind(field.key.as_str()).bind(field.version as i64).execute(&mut *c).await?;
+            .bind(execution.tenant().to_string()).bind(field.key.as_str()).bind(field.version as i64).execute(&mut *c).await?;
     }
     Ok(())
 }

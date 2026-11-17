@@ -2,7 +2,7 @@
 use super::service::PublicationDirectory;
 use rss_contract::Timepoint;
 use rss_request_context::Deadline;
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 struct Timer;
 impl rss_request_context::Clock for Timer {
     #[allow(
@@ -18,29 +18,36 @@ impl PublicationDirectory {
         let (task, _) =
             rss_runtime::ManagedTask::prepare("mdm-software-publication", Duration::from_secs(8));
         task.into_registration(move|cancel|async move {
-            let mut cursors=BTreeMap::<String,String>::new();
+            let mut after:Option<(uuid::Uuid,i64,String)>=None;
             loop {
-                for (source,service) in &self.services {
-                    if cancel.is_cancelled(){return Ok(());}
-                    let cutoff=Deadline::from_timeout(&Timer,Duration::from_secs(6)).map_err(rss_runtime::ShutdownError::new)?;
-                    let page=tokio::select!{()=cancel.cancelled()=>return Ok(()),page=service.reconciliation_page(cursors.get(source).map_or("",String::as_str),32,cutoff)=>page};
-                    let page=match page {Ok(page)=>page,Err(error)=>{eprintln!("{}",failure_event(source,service.tenant(),&error,None));continue;}};
-                    let mut completed=true;
-                    for work in page.work {
-                        if cancel.is_cancelled(){return Ok(());}
-                        let now=self.clock.unix_seconds().ok_or_else(||rss_runtime::ShutdownError::new(crate::management::Error::Unavailable(crate::management::Failure::Clock)))?;
-                        let at=Timepoint::try_from(now).map_err(rss_runtime::ShutdownError::new)?;
-                        let outcome=tokio::select! {
-                            ()=cancel.cancelled()=>return Ok(()),
-                            outcome=async {if work.withdrawal {service.reconcile_withdrawal(work.publication,work.attempt,cutoff).await.map(|_|())}else{service.reconcile(work.publication,work.attempt,at,cutoff).await.map(|_|())}}=>outcome,
-                        };
-                        if let Err(error)=outcome {eprintln!("{}",failure_event(source,service.tenant(),&error,Some(&work)));}
-                        cursors.insert(source.clone(),work.cursor);
-                        if cutoff.is_expired(rss_request_context::Clock::now(&Timer)){completed=false;break;}
-                    }
-                    if completed {cursors.insert(source.clone(),page.next.unwrap_or_default());}
+                if cancel.is_cancelled(){return Ok(());}
+                let page=sqlx::query_as::<_,(uuid::Uuid,i64,String,String)>("SELECT tenant_id,expected_epoch,id,source FROM mdm_software_composition.work_scopes($1,$2,$3)")
+                    .bind(after.as_ref().map(|v|v.0)).bind(after.as_ref().map(|v|v.1)).bind(after.as_ref().map(|v|v.2.as_str()))
+                    .fetch_all(&self.discovery_pool).await;
+                let page=match page {Ok(page)=>page,Err(_)=>{
+                    tokio::select!{()=cancel.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_secs(5))=>()}
+                    continue;
+                }};
+                if page.is_empty(){
+                    after=None;
+                    tokio::select!{()=cancel.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_secs(5))=>()}
+                    continue;
                 }
-                tokio::select!{()=cancel.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_secs(5))=>()}
+                for (tenant,epoch,key,source) in page {
+                    if cancel.is_cancelled(){return Ok(());}
+                    after=Some((tenant,epoch,key.clone()));
+                    let Some(service)=self.services.get(&source) else {continue;};
+                    let tenant=rss_request_context::TenantId::parse(&tenant.to_string()).map_err(rss_runtime::ShutdownError::new)?;
+                    let execution=rss_transactional_messaging::fence::ExecutionBinding::new(self.storage,tenant,rss_transactional_messaging::fence::Epoch::new(epoch).map_err(rss_runtime::ShutdownError::new)?);
+                    let operation=match service.operation(execution){Ok(value)=>value,Err(error)=>{eprintln!("{}",failure_event(&source,tenant,&error,None));continue;}};
+                    let cutoff=Deadline::from_timeout(&Timer,Duration::from_secs(6)).map_err(rss_runtime::ShutdownError::new)?;
+                    let work=match operation.reconciliation_work(&key,cutoff).await {Ok(Some(value))=>value,Ok(None)=>continue,Err(error)=>{eprintln!("{}",failure_event(&source,tenant,&error,None));continue;}};
+                    let now=self.clock.unix_seconds().ok_or_else(||rss_runtime::ShutdownError::new(crate::management::Error::Unavailable(crate::management::Failure::Clock)))?;
+                    let at=Timepoint::try_from(now).map_err(rss_runtime::ShutdownError::new)?;
+                    // Original call settlement owns its budget; shutdown only stops between calls.
+                    let outcome=if work.withdrawal {operation.reconcile_withdrawal(work.publication,work.attempt,cutoff).await.map(|_|())}else{operation.reconcile(work.publication,work.attempt,at,cutoff).await.map(|_|())};
+                    if let Err(error)=outcome{eprintln!("{}",failure_event(&source,tenant,&error,Some(&work)));}
+                }
             }
         })
     }

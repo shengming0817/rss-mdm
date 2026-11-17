@@ -164,16 +164,15 @@ async fn start(
     axum::Extension(a): axum::Extension<RequestAudit>,
     Query(input): Query<Start>,
 ) -> Result<NativeRedirect, Error> {
+    let token = bearer(&headers)?;
+    let entra = owner(&app, locate(&app, &token).await?).await?;
     // Never redirect to an untrusted URI, even when token validation fails.
-    if !owner(&app)?
-        .config
-        .native_callbacks
-        .contains(&input.redirect_uri)
-    {
+    if !entra.config.native_callbacks.contains(&input.redirect_uri) {
         return Err(Error::Malformed);
     }
     let callback = input.redirect_uri.clone();
     match start_flow(
+        entra,
         State(app),
         headers,
         axum::Extension(a),
@@ -197,13 +196,13 @@ async fn start(
     }
 }
 async fn start_flow(
+    entra: Arc<Entra>,
     State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
     axum::Extension(a): axum::Extension<RequestAudit>,
     Query(input): Query<Start>,
     cutoff: rss_request_context::Deadline,
 ) -> Result<NativeRedirect, Error> {
-    let entra = owner(&app)?;
     if input.client_request_id.is_nil()
         || input.api_version != "1.0"
         || input
@@ -216,6 +215,8 @@ async fn start_flow(
     }
     let token = bearer(&headers)?;
     let subject = entra.verify(token.clone(), cutoff).await?;
+    a.bind_scope(entra.binding)
+        .map_err(|_| Error::Unauthorized)?;
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let expires_at = subject
         .claims()
@@ -249,7 +250,7 @@ async fn start_flow(
             version: settings.policy.terms_version,
         },
     };
-    commit(&app, &subject, &stored, None, &a).await?;
+    commit(&app, &entra, &subject, &stored, None, &a).await?;
     let mut response = redirect(ENTRY)?;
     response.cookie = Some(
         HeaderValue::from_str(&format!(
@@ -266,10 +267,10 @@ async fn context(
     State(app): State<Arc<HttpState>>,
     ContextHeaders(headers): ContextHeaders,
 ) -> Result<Json<TermsContext>, Error> {
-    let entra = owner(&app)?;
     let (id, digest) = cookie(&headers)?;
+    let entra = owner(&app, flow_scope(&app, id).await?).await?;
     let mut tx = app.access.begin_read(&entra.tenant.to_string()).await?;
-    let stored = load(&mut tx, &app, entra, id, &digest, false).await?;
+    let stored = load(&mut tx, &app, &entra, id, &digest, false).await?;
     if origin(&headers)? != stored.flow.origin {
         return Err(Error::Forbidden);
     }
@@ -294,11 +295,11 @@ async fn finish(
     axum::Extension(a): axum::Extension<RequestAudit>,
     Form(input): Form<Finish>,
 ) -> Result<NativeRedirect, Error> {
-    let entra = owner(&app)?;
     let (id, digest) = cookie(&headers)?;
+    let entra = owner(&app, flow_scope(&app, id).await?).await?;
     let stored = {
         let mut tx = app.access.begin_read(&entra.tenant.to_string()).await?;
-        load(&mut tx, &app, entra, id, &digest, false).await?
+        load(&mut tx, &app, &entra, id, &digest, false).await?
     };
     if headers.get_all(header::ORIGIN).iter().count() != 1
         || headers.get(header::ORIGIN).and_then(|v| v.to_str().ok())
@@ -314,7 +315,7 @@ async fn finish(
     let subject = entra
         .verify(stored.flow.token.clone(), control.deadline())
         .await?;
-    commit(&app, &subject, &stored, Some(input.accepted), &a).await?;
+    commit(&app, &entra, &subject, &stored, Some(input.accepted), &a).await?;
     let mut location = format!(
         "{}?IsAccepted={}",
         stored.flow.callback,
@@ -332,12 +333,14 @@ async fn finish(
 /// One audit transaction binds both initial persistence and replayable decisions.
 async fn commit(
     app: &HttpState,
+    entra: &Entra,
     subject: &VerifiedExternalSubject,
     stored: &Stored,
     decision: Option<bool>,
     a: &RequestAudit,
 ) -> Result<(), Error> {
-    let entra = owner(app)?;
+    a.bind_scope(entra.binding)
+        .map_err(|_| Error::Unauthorized)?;
     let action = if decision.is_some() {
         "windows_entra_consent"
     } else {
@@ -353,7 +356,7 @@ async fn commit(
     let result = app
         .audit_store
         .write(
-            entra.tenant,
+            a.binding()?,
             &budget.source_control(),
             (app, entra, subject, stored, decision, a),
             |(app, entra, subject, stored, decision, a), tx| {

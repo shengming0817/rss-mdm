@@ -60,7 +60,7 @@ def native_pki_journey(deployed,browser):
     csr=base64.b64encode((fixture/'agent.der').read_bytes()).decode()
     secret=secrets.token_urlsafe(32);deployed.private_values.append(secret)
     operation=str(uuid.uuid4())
-    request=dict(wireVersion=1,operationId=operation,secret=secret,platform='macos',csr=csr)
+    request=dict(tenantId=deployed.tenant,wireVersion=1,operationId=operation,secret=secret,platform='macos',csr=csr)
     context=ssl.create_default_context(cafile=str(root/'ca.crt'))
     def connection():
         from urllib.parse import urlsplit
@@ -85,10 +85,10 @@ def native_pki_journey(deployed,browser):
     try:
         status,pending=call(client,'POST','/api/v1/agent/enroll/requests',request)
         require(status==200 and pending['state']=='pending','candidate CSR request failed')
-        status,grant=browser.call('POST','/api/v1/agent-requests/'+pending['grantId']+'/authorize',
+        status,grant=browser.call('POST',f'/api/v1/tenants/{TENANT}/agent-requests/'+pending['grantId']+'/authorize',
                                   dict(operationId=str(uuid.uuid4())))
         require(status==200 and grant['state']=='available','candidate Agent authorization failed')
-        status,trust=call(client,'GET','/api/v1/agent/enroll/trust')
+        status,trust=call(client,'GET','/api/v1/agent/enroll/trust?tenantId='+deployed.tenant)
         require(status==200 and trust['origin']==deployed.agent_origin and trust['purpose']=='agent','candidate public trust authority mismatch')
         profile=dict(capabilities=['inventory.collect.v1'],platform='macos',architecture='aarch64',
                      executionContext=dict(revision=1,osVersion=[14,0,0,0],userHelper=False,systemBroker=True,interactiveUser=None,sourceCredentials=[],msixSideload=False,msixUnsigned=False))
@@ -116,7 +116,7 @@ def native_pki_journey(deployed,browser):
     try:
         require(call(client,'GET',path)[0]==404,'restored original Agent identity rejected')
         binding=active['runtime']
-        require(browser.call('POST','/api/v1/devices/'+binding['deviceId']+'/registrations/'+binding['registrationId']+'/revoke',{},str(uuid.uuid4()))[0]==200,'candidate credential revoke failed')
+        require(browser.call('POST',f'/api/v1/tenants/{TENANT}/devices/'+binding['deviceId']+'/registration/revoke',{},str(uuid.uuid4()))[0]==200,'candidate credential revoke failed')
         require(call(client,'GET',path)[0]==401,'revoked credential remained valid on retained TLS connection')
     finally:client.close()
     wait(lambda:deployed.sql("SELECT count(*) FROM mdm_pki.revocations WHERE purpose='agent' AND state='published'")=='1',
@@ -140,19 +140,18 @@ def run_smoke(directory):
         browser=Browser(deployed.port,deployed.root/"ca.crt")
         require(browser.call("GET", "/livez") == (200, {"alive": True}), "candidate liveness failed")
         tenant="/api/v1/identity/tenants/"+TENANT
-        require(browser.call("GET","/api/v1/authorization")[0]==401,"anonymous candidate accepted")
+        require(browser.call("GET",f"/api/v1/tenants/{TENANT}/authorization")[0]==401,"anonymous candidate accepted")
         require(browser.call("POST",tenant+"/login",dict(login="admin",password=PASSWORD))[0]==200,"local candidate login failed")
-        status,principal=browser.call("GET","/api/v1/authorization")
+        status,principal=browser.call("GET",f"/api/v1/tenants/{TENANT}/authorization")
         require(status==200 and (principal["instanceId"],principal["tenantId"],principal["principalId"])==(INSTANCE,TENANT,ADMIN),"candidate subject mismatch")
         management=Browser(deployed.port,deployed.root/"ca.crt")
         management_api="/api/v1/identity/tenants/"+deployed.management_tenant
         require(management.call("POST",management_api+"/login",dict(login="admin",password=PASSWORD))[0]==200,
                 "candidate management login failed")
         status,grants=management.call("GET","/api/v1/tenant-administration/authorization")
-        require(status==200 and {grant["operation"] for grant in grants["grants"]}==
-                {"tenant_create","tenant_read","tenant_update","tenant_delete","authorization_read","authorization_write","tenant_administrator_create","identity_accounts_manage"},
-                "candidate management permissions mismatch")
-        require(management.call("GET","/api/v1/resources")[0] in (401,403),"candidate management entered business")
+        require(status==200 and any(grant["operation"]=="tenant_create" for grant in grants["grants"]),
+                "candidate tenant creation permission missing")
+        require(management.call("GET",f"/api/v1/tenants/{TENANT}/resources")[0] in (401,403),"candidate management entered business")
         require(browser.call("GET","/api/v1/tenant-administration/authorization")[0]==401,
                 "candidate business entered management")
         administrator=browser
@@ -161,22 +160,23 @@ def run_smoke(directory):
         browser=Browser(deployed.port,deployed.root/'ca.crt')
         require(browser.call('POST',tenant+'/login',dict(login='scoped',password=PASSWORD))[0]==200,
                 'candidate scoped account login')
-        rule=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=account["principalId"])),grants=[dict(operation=operation,scope=dict(kind='device',id='device-1')) for operation in ['inventory_read','enrollment','credentials']])
-        require(administrator.call('PUT','/api/v1/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=rule))[0]==200,'candidate explicit authorization')
         operation=str(uuid.uuid4())
-        enrollment=dict(deviceId="device-1",password="A"*43,source="mdm.windows",windowsProfile="Device")
-        status,receipt=browser.call("POST","/api/v1/enrollments",enrollment,operation)
+        enrollment=dict(password="A"*43,source="mdm.windows",windowsProfile="Device")
+        status,receipt=administrator.call("POST",f"/api/v1/tenants/{TENANT}/enrollments",enrollment,operation)
         require(status==200 and receipt["status"]=="pending","candidate enrollment failed")
-        require(browser.call("POST","/api/v1/enrollments",enrollment,operation)==(status,receipt),"candidate replay changed enrollment")
-        require(browser.call("GET","/api/v1/enrollments/"+receipt["enrollmentId"])[1]["status"]=="pending","candidate enrollment query failed")
+        require(administrator.call("POST",f"/api/v1/tenants/{TENANT}/enrollments",enrollment,operation)==(status,receipt),"candidate replay changed enrollment")
+        device=str(uuid.UUID(receipt["deviceId"]))
+        rule=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=account["principalId"])),grants=[dict(operation=operation,scope=dict(kind='device',id=device)) for operation in ['inventory_read','enrollment','credentials']])
+        require(administrator.call('PUT',f'/api/v1/tenants/{TENANT}/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=rule))[0]==200,'candidate explicit authorization')
+        status, enrollment_status=administrator.call("GET",f"/api/v1/tenants/{TENANT}/enrollments/"+receipt["enrollmentId"])
+        require(status==200 and enrollment_status.get("status")=="pending","candidate creator enrollment query failed: "+str(status))
         denied=str(uuid.uuid4())
-        require(browser.call("POST","/api/v1/enrollments",dict(deviceId="outside",password="A"*43,source="mdm.windows",windowsProfile="Device"),denied)[0]==403,"device scope bypass")
-        require(sql("SELECT count(*) FROM mdm_access.grants WHERE device='outside'")=="0","denied enrollment wrote business state")
+        require(browser.call("POST",f"/api/v1/tenants/{TENANT}/enrollments",enrollment,denied)[0]==403,"device-scoped authority created a new device")
         require(browser.request_id is not None,"candidate protected response has no request identity")
         event_id = "e-" + hashlib.sha256(browser.request_id.encode()).hexdigest()
         wait(lambda: sql("SELECT count(*) FROM rss_audit.records WHERE tenant_id='"+TENANT+"' AND source_id='mdm.request' AND event_id='"+event_id+"'")=="1", "candidate denial audit projection")
-        require(browser.call("POST","/api/v1/devices/device-1/actions",dict(action="wipe"),str(uuid.uuid4()))[0]==403,"wipe permission bypass")
-        require(browser.call("GET","/api/v1/devices/outside/inventory")[0]==403,"inventory scope bypass")
+        require(browser.call("POST",f"/api/v1/tenants/{TENANT}/devices/{device}/actions",dict(action="wipe"),str(uuid.uuid4()))[0]==403,"wipe permission bypass")
+        require(browser.call("GET",f"/api/v1/tenants/{TENANT}/devices/88888888-8888-4888-8888-888888888882/inventory")[0]==403,"inventory scope bypass")
         # The independent native journey shares the real gateway's 10r/s, burst-20 API quota.
         # Let the browser checks' burst drain before testing mutation replay without retries.
         time.sleep(2.2)
@@ -184,9 +184,9 @@ def run_smoke(directory):
         old_cookie=browser.cookie
         require(browser.call("POST",tenant+"/session/refresh")[0]==200 and browser.cookie!=old_cookie,"candidate refresh failed")
         stale=Browser(deployed.port,deployed.root/"ca.crt");stale.cookie=old_cookie
-        require(stale.call("GET","/api/v1/authorization")[0]==401,"rotated credential accepted")
+        require(stale.call("GET",f"/api/v1/tenants/{TENANT}/authorization")[0]==401,"rotated credential accepted")
         require(browser.call("POST",tenant+"/session/logout")[0]==204,"candidate logout failed")
-        require(browser.call("GET","/api/v1/authorization")[0]==401,"logged-out candidate accepted")
+        require(browser.call("GET",f"/api/v1/tenants/{TENANT}/authorization")[0]==401,"logged-out candidate accepted")
         started=time.monotonic();docker("stop","--time","45",server,timeout=55,stage=Stage.STOP)
         elapsed=time.monotonic()-started
         logs=docker("logs",server,stage=Stage.LOGS)

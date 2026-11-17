@@ -173,7 +173,7 @@ impl Service {
     ) -> Result<Detail> {
         grant.require(proof, Permission::OperationRead, Some(device))?;
         let s = &self.transactions;
-        let op = storage::load_on(c, s.tenant, &s.protection, id).await?;
+        let op = storage::load_on(c, proof.binding().tenant(), &s.protection, id).await?;
         if op.device != *device {
             return Err(Error::Forbidden.into());
         }
@@ -183,7 +183,11 @@ impl Service {
                 .fetch_one(&mut *c)
                 .await?;
         let status = stored(dc::Status::restore(&status))?;
-        let authorization = if op.authority.valid(&s.materials, c, s.tenant).await? {
+        let authorization = if op
+            .authority
+            .valid(&s.materials, c, proof.binding().tenant())
+            .await?
+        {
             Authorization::Authorized
         } else {
             Authorization::Blocked {
@@ -192,7 +196,7 @@ impl Service {
         };
         let observation = super::protocol::observation_on(
             c,
-            s.tenant,
+            proof.binding().tenant(),
             s.windows_results.clone(),
             s.apple_results.clone(),
             &op,
@@ -217,14 +221,19 @@ impl Service {
     }
     pub async fn decisions_on(
         &self,
+        execution: rss_transactional_messaging::fence::ExecutionBinding,
         c: &mut sqlx::PgConnection,
         ids: Vec<Uuid>,
     ) -> Result<std::collections::BTreeMap<Uuid, Decision>> {
         let s = &self.transactions;
-        let operations = storage::load_many_on(c, s.tenant, &s.protection, ids).await?;
+        let operations = storage::load_many_on(c, execution.tenant(), &s.protection, ids).await?;
         let mut result = std::collections::BTreeMap::new();
         for op in operations.into_values() {
-            let authorization = if op.authority.valid(&s.materials, c, s.tenant).await? {
+            let authorization = if op
+                .authority
+                .valid(&s.materials, c, execution.tenant())
+                .await?
+            {
                 Authorization::Authorized
             } else {
                 Authorization::Blocked {

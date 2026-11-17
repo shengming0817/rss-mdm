@@ -31,6 +31,29 @@ pub async fn apple(
     Arc<rss_mdm_apple_channel::Apple>,
     rss_mdm_registration_service::DevicePrincipal,
 )> {
+    apple_with_providers(
+        c,
+        n,
+        key,
+        users,
+        Arc::new(rss_mdm_pki_service::providers::Providers::new(vec![])?),
+    )
+    .await
+}
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one legal material fixture prepares the existing native protocol proof"
+)]
+pub async fn apple_with_providers(
+    c: &Context,
+    n: &Native,
+    key: Arc<Protector>,
+    users: &[String],
+    providers: Arc<rss_mdm_pki_service::providers::Providers>,
+) -> Result<(
+    Arc<rss_mdm_apple_channel::Apple>,
+    rss_mdm_registration_service::DevicePrincipal,
+)> {
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let cert = std::fs::read_to_string(n.directory.join("runtime.pem"))?;
     let private = std::fs::read(n.directory.join("runtime.pk8"))?;
@@ -63,6 +86,7 @@ pub async fn apple(
         sqlx::query("INSERT INTO mdm_apple_runtime.heads(tenant_id,purpose,revision,desired_revision) VALUES($1::uuid,$2,1,1)").bind(c.tenant.to_string()).bind(purpose).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO mdm_apple_runtime.versions(tenant_id,purpose,revision,key_id,public_digest,private_key,csr,certificate,certificate_digest,expires_at,selected,topic) VALUES($1::uuid,$2,1,$3,$4,$5,$6,$7,$8,$9,true,$10)").bind(c.tenant.to_string()).bind(purpose).bind(id).bind(format!("{:x}",Sha256::digest(&public))).bind(sealed).bind(std::fs::read_to_string(n.directory.join("runtime.csr"))?).bind(&cert).bind(&digest).bind(expires).bind(if purpose=="apns"{Some("com.apple.mgmt.rss-t2")}else{None}).execute(&mut *tx).await?;
     }
+    sqlx::query("INSERT INTO mdm_apple_runtime.identity(tenant_id,challenge_id,notify_id) VALUES($1::uuid,'challenge','notify') ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).execute(&mut *tx).await?;
     tx.commit().await?;
     let root_pem = x509_cert::Certificate::from_der(&n.root)?
         .to_pem(x509_cert::der::pem::LineEnding::LF)?
@@ -72,11 +96,6 @@ pub async fn apple(
         c.tenant,
         &key,
         std::slice::from_ref(&root_pem),
-        &rss_mdm_apple_channel::runtime_materials::runtime::Selection {
-            apns: Some(1),
-            profile: Some(1),
-            accounts: Default::default(),
-        },
         now,
     )
     .await?;
@@ -95,18 +114,13 @@ pub async fn apple(
     )?;
     let credential = rss_mdm_registration_service::device::ChannelMount::new(
         rss_mdm_install_support::StorageProfile::Mdm,
-        c.tenant,
         rss_mdm_inventory::ReportSource::MdmApple,
         rss_mdm_registration_service::Purpose::Primary,
     )
-    .credential(checked.fingerprint())?;
-    let p = crate::device::DeviceService::new(
-        c.database.registration(),
-        c.tenant.to_string(),
-        c.audit.clone(),
-    )
-    .management_principal(&credential)
-    .await?;
+    .credential(c.execution(), checked.fingerprint())?;
+    let p = crate::device::DeviceService::new(c.database.registration(), c.audit.clone())
+        .management_principal(&credential)
+        .await?;
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     sqlx::query("INSERT INTO mdm_apple.devices (tenant_id, device, udid, state, access_rights) VALUES (CAST($1 AS uuid), $2, $3, 'active', 8191)").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(n.device.to_string()).execute(&mut *tx).await?;
     for user in std::iter::once("").chain(users.iter().map(String::as_str)) {
@@ -134,14 +148,7 @@ pub async fn apple(
         &loaded.apns_private_key,
         Arc::new(identity::Clock),
     )?;
-    let webhook =
-        rss_mdm_pki_service::scep::Verifier::new(vec![rss_mdm_pki_service::scep::Credentials {
-            issuer: format!("{:x}", Sha256::digest(&n.root)),
-            challenge_id: "challenge".into(),
-            notify_id: "notify".into(),
-            challenge_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &[7; 32]),
-            notify_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &[8; 32]),
-        }])?;
+
     let apple = Arc::new(rss_mdm_apple_channel::Apple::new(
         key,
         rss_mdm_apple_channel::Config {
@@ -156,10 +163,9 @@ pub async fn apple(
         },
         authority,
         loaded.profile,
-        push,
+        Arc::new(push),
         loaded.binding,
-        webhook,
-        Arc::new(rss_mdm_pki_service::providers::Providers::new(vec![])?),
+        providers,
     ));
     Ok((apple, p))
 }
@@ -247,9 +253,9 @@ async fn seed_operation(
     sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,version) VALUES($1::uuid,$2,$3,1,1,$4,$5,$6,'mdm.commands.v1',$2,$4,'published',$6,2)").bind(c.tenant.to_string()).bind(id.to_string()).bind(device).bind(digest).bind(input["deadline"].as_i64().unwrap()*1_000_000).bind(now*1_000_000).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_apple.native_commands (tenant_id, id, device) VALUES (CAST($1 AS uuid), $2, $3)").bind(c.tenant.to_string()).bind(id).bind(n.device.into_uuid()).execute(&mut *tx).await?;
     if configuration {
-        sqlx::query("INSERT INTO mdm_planning.configuration_operations (tenant_id, id, device, request, input_context, fingerprint, generation, epoch, authority, dispatch_fingerprint, gateway_accepted, policy_version) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 1, 1, $7, $6, TRUE, $8)").bind(c.tenant.to_string()).bind(id).bind(n.device.into_uuid()).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(authority).bind(policy).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_planning.configuration_operations (expected_epoch,tenant_id, id, device, request, input_context, fingerprint, generation, epoch, authority, dispatch_fingerprint, gateway_accepted, policy_version) VALUES (current_setting('rss.execution_epoch')::bigint,CAST($1 AS uuid), $2, $3, $4, $5, $6, 1, 1, $7, $6, TRUE, $8)").bind(c.tenant.to_string()).bind(id).bind(n.device.into_uuid()).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(authority).bind(policy).execute(&mut *tx).await?;
     } else {
-        sqlx::query("INSERT INTO mdm_devices.control_operations (tenant_id, id, device, request, input_context, fingerprint, generation, epoch, authority, dispatch_fingerprint, gateway_accepted, source_kind, policy_version) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 1, 1, $7, $6, TRUE, $8, $9)").bind(c.tenant.to_string()).bind(id).bind(n.device.into_uuid()).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(authority).bind(if policy.is_some(){"policy"}else{"direct"}).bind(policy).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_devices.control_operations (expected_epoch,tenant_id, id, device, request, input_context, fingerprint, generation, epoch, authority, dispatch_fingerprint, gateway_accepted, source_kind, policy_version) VALUES (current_setting('rss.execution_epoch')::bigint,CAST($1 AS uuid), $2, $3, $4, $5, $6, 1, 1, $7, $6, TRUE, $8, $9)").bind(c.tenant.to_string()).bind(id).bind(n.device.into_uuid()).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(authority).bind(if policy.is_some(){"policy"}else{"direct"}).bind(policy).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     Ok(())
