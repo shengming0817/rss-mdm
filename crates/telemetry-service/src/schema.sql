@@ -119,7 +119,7 @@ ALTER TABLE mdm_telemetry.storage_binding ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_telemetry.storage_binding FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_telemetry.storage_binding USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_telemetry.storage_binding FROM PUBLIC;
-GRANT SELECT,INSERT ON mdm_telemetry.storage_binding TO mdm_telemetry_runtime;
+GRANT SELECT,INSERT(tenant_id,binding,expected_epoch) ON mdm_telemetry.storage_binding TO mdm_telemetry_runtime;
 GRANT UPDATE(qualified) ON mdm_telemetry.storage_binding TO mdm_telemetry_runtime;
 
 -- Device-reported bounded diagnostics, not field coverage or sampled values.

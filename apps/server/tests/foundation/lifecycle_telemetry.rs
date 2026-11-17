@@ -67,6 +67,9 @@ async fn attach(
     action: Value,
 ) -> Result<Value> {
     let request = json!({"product":source,"installation":resource,"operationId":Uuid::new_v4(),"tenant":tenant,"expectedRevision":rev,"action":action});
+    replay_selection(request, resource, rev).await
+}
+async fn replay_selection(request: Value, resource: &Value, rev: i64) -> Result<Value> {
     let receipt = serde_json::to_value(
         telemetry::prepare_tenant(serde_json::from_value(request.clone())?).await?,
     )?;
@@ -131,6 +134,10 @@ async fn provision(platform: &mut Browser) -> Result<(Uuid, Browser)> {
         .await?;
     Ok((tenant, browser))
 }
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one installed host proves tenant isolation, interrupted rotation, and cold recovery across the same receipts"
+)]
 pub(super) async fn exercise(
     root: &Path,
     source: &Value,
@@ -178,7 +185,7 @@ pub(super) async fn exercise(
         a,
         &primary,
         &runtime,
-        root,
+        inputs,
         11,
     )
     .await
@@ -199,9 +206,10 @@ pub(super) async fn exercise(
     let b_reader = reader("b")?;
     attach(source, &resources[0], b, 0, b_reader.clone()).await?;
     available(&mut peer, b, true).await?;
-    let b_data = data::Upload::publish(&running, &mut peer, b, &primary, &runtime, root, 22)
+    let b_data = data::Upload::publish(&running, &mut peer, b, &primary, &runtime, inputs, 22)
         .await
         .context("B product intake")?;
+    recovery::reader_isolation(root, &resources[0], a, b).await?;
     a_data
         .reject_foreign_cursor(&mut first_browser, &b_data)
         .await?;
@@ -220,14 +228,43 @@ pub(super) async fn exercise(
     let password = root.join("b-next-password");
     private(&password, Uuid::new_v4().simple().to_string())?;
     rotation["password_file"] = json!(password);
-    attach(source, &resources[0], b, 1, rotation).await?;
+    let request = json!({"product":source,"installation":resources[0],"operationId":Uuid::new_v4(),"tenant":b,"expectedRevision":1,"action":rotation});
+    // Interrupt after the provider changed the password and before PostgreSQL accepts the probe.
+    let admin = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(primary.options()?)
+        .await?;
+    sqlx::raw_sql("CREATE FUNCTION public.interrupt_reader_probe() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'interrupted reader'; END $$; CREATE TRIGGER interrupt_reader_probe BEFORE UPDATE ON mdm_telemetry.storage_binding FOR EACH ROW WHEN (NEW.probe_ready AND NOT OLD.probe_ready) EXECUTE FUNCTION public.interrupt_reader_probe()").execute(&admin).await?;
+    ensure!(
+        matches!(
+            telemetry::prepare_tenant(serde_json::from_value(request.clone())?).await,
+            Err(crate::installation::Error::Storage)
+        ),
+        "interrupted reader must remain pending"
+    );
+    sqlx::raw_sql("DROP TRIGGER interrupt_reader_probe ON mdm_telemetry.storage_binding; DROP FUNCTION public.interrupt_reader_probe()").execute(&admin).await?;
+    admin.close().await;
+    let mut competing = request.clone();
+    competing["operationId"] = json!(Uuid::new_v4());
+    ensure!(
+        matches!(
+            telemetry::prepare_tenant(serde_json::from_value(competing)?).await,
+            Err(crate::installation::Error::Conflict)
+        ),
+        "only the durable original operation can resume"
+    );
+    available(&mut peer, b, false).await?;
+    available(&mut first_browser, a, true).await?;
+    replay_selection(request, &resources[0], 1)
+        .await
+        .context("resume original reader rotation")?;
     available(&mut first_browser, a, true).await?;
     available(&mut peer, b, true).await?;
     let (t, mut shared) = provision(&mut platform).await?;
     attach(source, &resources[1], t, 0, json!({"kind":"select"})).await?;
     available(&mut shared, t, true).await?;
     let _shared_data =
-        data::Upload::publish(&running, &mut shared, t, &primary, &runtime, root, 33)
+        data::Upload::publish(&running, &mut shared, t, &primary, &runtime, inputs, 33)
             .await
             .context("SharedRls product intake")?;
     a_data
@@ -245,7 +282,6 @@ pub(super) async fn exercise(
         first,
         management,
         &primary,
-        pg,
         &resources,
         [a, b, t],
     ))

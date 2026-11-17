@@ -276,6 +276,12 @@ MODULES = {
                 'crates/inventory-postgres/migrations/asset-cuts.sql',
                 'crates/inventory-postgres/migrations/install.sql',
                 'apps/server/tests/foundation/recovery.rs')),
+    'telemetry.shared_installation': dict(
+        prefix='foundation_t2::shared_telemetry_on_a_running_installation', profiles=('shared_telemetry',),
+        inputs=('apps/server/tests/foundation/mod.rs','apps/server/tests/foundation/lifecycle*.rs',
+                'apps/server/tests/support/authority*.rs','apps/server/tests/task_trust/support.rs',
+                'apps/server/src/installation/*','apps/server/src/telemetry.rs','crates/telemetry-service/*',
+                'hack/task_trust_materials.py','hack/t2_telemetry.py')),
     'foundation.lifecycle': dict(
         prefix='foundation_t2::lifecycle::', profiles=('lifecycle','installation'),
         inputs=('apps/server/src/lifecycle.rs', 'apps/server/src/identity.rs',

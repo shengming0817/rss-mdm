@@ -486,18 +486,17 @@ async fn qualify_readers(
                 .reader(&key, tenant)
                 .map_err(|_| Error::Corrupt)?
                 .ok_or(Error::Corrupt)?;
-            if reader.password.is_some() {
-                match operation {
-                    ReaderOperation::Restore(profile) => {
-                        clickhouse::provision_reader(profile, tenant, &reader, None).await?
-                    }
-                    ReaderOperation::Admit(owner) => {
-                        reader
-                            .bind(owner, tenant, row.revision, deadline()?)
-                            .await
-                            .map_err(|_| Error::Corrupt)?;
-                    }
+            match operation {
+                ReaderOperation::Restore(profile) => {
+                    clickhouse::provision_reader(profile, tenant, &reader, None).await?
                 }
+                ReaderOperation::Admit(owner) if reader.password.is_some() => {
+                    reader
+                        .bind(owner, tenant, row.revision, deadline()?)
+                        .await
+                        .map_err(|_| Error::Corrupt)?;
+                }
+                ReaderOperation::Admit(_) => {}
             }
         }
     }

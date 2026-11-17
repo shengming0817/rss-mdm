@@ -131,9 +131,14 @@ async fn issued(
     );
     ensure!(rss_mdm_inventory_postgres::publish_field_in(&mut tx, c.tenant, 0, &field).await?);
     sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,device,source,epoch,next_sequence,enabled) VALUES($1::uuid,$2,'agent.script',$3,0,true)").bind(c.tenant.to_string()).bind(principal.device().into_uuid()).bind(epoch).execute(&mut *tx).await?;
-    let definition = json!({"scope":{"targets":[{"kind":"device","id":principal.device()}],"exclusions":[]},"action":{"kind":"telemetry_profile","resource":{"id":"profile","version":"v1","variant":"default","platform":"windows","architecture":"x86_64"}}});
-    let author = json!({"kind":"account","principal":"fixture"});
-    sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'archived',$4,$5,$6)").bind(c.tenant.to_string()).bind(policy).bind(version).bind(definition).bind(author).bind(now).execute(&mut *tx).await?;
+    let definition: rss_mdm_policy::Definition = serde_json::from_value(
+        json!({"scope":Uuid::new_v4(),"action":{"kind":"telemetry_profile","resource":{"id":"profile","version":"v1","variant":"default","platform":"windows","architecture":"x86_64"}}}),
+    )?;
+    definition.validate()?;
+    let author = rss_mdm_authorization_service::Actor::Account {
+        user: c.user(Uuid::new_v4()),
+    };
+    sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'archived',$4,$5,$6)").bind(c.tenant.to_string()).bind(policy).bind(version).bind(serde_json::to_value(definition)?).bind(serde_json::to_value(author)?).bind(now).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,resource,resource_version,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'telemetry_profile','profile','v1',$4,$5)").bind(c.tenant.to_string()).bind(version).bind(policy).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).execute(&mut *tx).await?;
     let signing = rss_mdm_task_trust::Signing::new(
         rss_mdm_install_support::StorageProfile::Mdm,
@@ -219,11 +224,14 @@ impl Upload {
             ],
         )
         .await?;
-        let (input, history) = issued(&c, &config, &principal, sample).await?;
+        let (input, history) = issued(&c, &config, &principal, sample)
+            .await
+            .context("issue signed historical configuration")?;
         c.close().await;
         let accepted = service
             .receive(&principal, &input, serde_json::to_vec(&input)?.len())
-            .await?;
+            .await
+            .context("admit device upload")?;
         ensure!(!accepted.replayed);
         tokio::time::timeout(Duration::from_secs(40), async {
             loop {

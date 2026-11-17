@@ -3,13 +3,75 @@ use super::*;
 use crate::installation::backup;
 use sqlx::Connection;
 
+fn clickhouse_client(ch: &Value) -> Result<(reqwest::Client, &str)> {
+    let endpoint = ch["configuration"]["backend"]["endpoint"]
+        .as_str()
+        .context("fixture endpoint")?;
+    let ca = std::fs::read(
+        ch["configuration"]["backend"]["ca_file"]
+            .as_str()
+            .context("fixture CA")?,
+    )?;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .add_root_certificate(reqwest::Certificate::from_pem(&ca)?)
+        .build()?;
+    Ok((client, endpoint))
+}
+fn reader(ch: &Value, tenant: Uuid) -> Result<String> {
+    let physical = Uuid::parse_str(
+        ch["configuration"]["resource_id"]
+            .as_str()
+            .context("physical fixture UUID")?,
+    )?;
+    Ok(format!(
+        "mdm_reader_{}",
+        Uuid::new_v5(&physical, tenant.as_bytes()).simple()
+    ))
+}
+pub(super) async fn reader_isolation(root: &Path, ch: &Value, a: Uuid, b: Uuid) -> Result<()> {
+    let (client, endpoint) = clickhouse_client(ch)?;
+    let a_password = crate::config::secret(&root.join("a-password"))?;
+    let query = format!(
+        "SELECT countIf(tenant='{a}'),countIf(tenant='{b}') FROM rss_ts_ch.raw FORMAT TabSeparated"
+    );
+    let response = client
+        .post(endpoint)
+        .basic_auth(reader(ch, a)?, Some(a_password.as_str()))
+        .body(query)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    ensure!(
+        response.trim() == "2\t0",
+        "A's actual reader must see only A's two samples"
+    );
+    let status = client
+        .post(endpoint)
+        .basic_auth(reader(ch, b)?, Some(a_password.as_str()))
+        .body("SELECT currentUser()")
+        .send()
+        .await?
+        .status();
+    ensure!(
+        matches!(status.as_u16(), 401 | 403),
+        "B rejects A's credential: {status}"
+    );
+    Ok(())
+}
+
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "this cold restore removes each owned backend and starts from the original archive"
+)]
 pub(super) async fn cold(
     root: &Path,
     source: &Value,
     first: &install::Receipt,
     management: &str,
     primary: &crate::config::Database,
-    admin: &crate::config::Database,
     profiles: &[Value],
     attached: [Uuid; 3],
 ) -> Result<()> {
@@ -26,18 +88,17 @@ pub(super) async fn cold(
         json!({"tenant_id":first.tenant_id,"account":{"principal_id":first.administrator_id,"login":"administrator","password_file":root.join("administrator-password")}}),
     ];
     private(&root.join("metrics-admin"), "Telemetry-admin-password!42")?;
-    let users:Vec<(Uuid,String,String)>=sqlx::query_as("SELECT t.tenant_id,t.name,o.receipt->'result'->>'principalId' FROM public.mdm_tenant_operations o JOIN public.mdm_tenants t USING(tenant_id) WHERE o.action='administrator_create'").fetch_all(&mut connection).await?;
-    for (tenant, name, principal) in users {
-        let file = if attached.contains(&tenant) {
-            "metrics-admin"
-        } else if name == "Second organization" {
-            "second-password"
-        } else {
-            "pending-password"
-        };
-        accounts.push(json!({"tenant_id":tenant,"account":{"principal_id":principal,"login":"administrator","password_file":root.join(file)}}));
+    let users:Vec<(Uuid,String)>=sqlx::query_as("SELECT tenant_id,receipt->'result'->>'principalId' FROM public.mdm_tenant_operations WHERE action='administrator_create'").fetch_all(&mut connection).await?;
+    for (tenant, principal) in users {
+        ensure!(
+            attached.contains(&tenant),
+            "unexpected fixture administrator"
+        );
+        accounts.push(json!({"tenant_id":tenant,"account":{"principal_id":principal,"login":"administrator","password_file":root.join("metrics-admin")}}));
     }
     connection.close().await?;
+    let mut admin = primary.clone();
+    admin.name = "postgres".into();
     let mut control = sqlx::PgConnection::connect_with(&admin.options()?).await?;
     for name in [
         &primary.name,
@@ -56,34 +117,15 @@ pub(super) async fn cold(
     maintenance::reset_fixture_database(&mut connection, "shared_metrics").await?;
     connection.close().await?;
     let ch = &profiles[0];
-    let endpoint = ch["configuration"]["backend"]["endpoint"]
-        .as_str()
-        .context("fixture endpoint")?;
-    let ca = std::fs::read(
-        ch["configuration"]["backend"]["ca_file"]
-            .as_str()
-            .context("fixture CA")?,
-    )?;
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .add_root_certificate(reqwest::Certificate::from_pem(&ca)?)
-        .build()?;
+    let (client, endpoint) = clickhouse_client(ch)?;
     let password = crate::config::secret(Path::new(
         ch["clickhouse"]["installer"]["password_file"]
             .as_str()
             .context("fixture installer")?,
     ))?;
-    let physical = Uuid::parse_str(
-        ch["configuration"]["resource_id"]
-            .as_str()
-            .context("physical fixture UUID")?,
-    )?;
-    let mut ddl = vec!["DROP DATABASE rss_ts_ch SYNC".to_owned()];
+    let mut ddl = Vec::new();
     for tenant in &attached[..2] {
-        let login = format!(
-            "mdm_reader_{}",
-            Uuid::new_v5(&physical, tenant.as_bytes()).simple()
-        );
+        let login = reader(ch, *tenant)?;
         ddl.push(format!("DROP USER {login}"));
         for table in ["raw", "summaries"] {
             ddl.push(format!(
@@ -91,6 +133,7 @@ pub(super) async fn cold(
             ));
         }
     }
+    ddl.push("DROP DATABASE rss_ts_ch SYNC".to_owned());
     for statement in ddl {
         client
             .post(endpoint)

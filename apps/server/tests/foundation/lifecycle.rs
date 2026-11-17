@@ -99,3 +99,5 @@ async fn host_reports_its_binding_then_releases_listener_and_database_resources(
 
 #[path = "lifecycle_installation.rs"]
 mod installation;
+
+pub(super) use installation::shared_telemetry;

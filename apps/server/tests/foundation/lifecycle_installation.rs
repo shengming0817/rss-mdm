@@ -170,26 +170,26 @@ fn private(path: &Path, value: impl AsRef<[u8]>) -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "T2: fresh installer, real App and workers, post-start tenant login/defaults and replay"]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "integration observes production monotonic time and bounded shutdown"
-)]
-async fn installed_service_creates_another_tenant_without_reassembly() -> Result<()> {
+const FIRST_PASSWORD: &str = "Installation-first-admin!42";
+const PLATFORM_PASSWORD: &str = "Installation-platform-admin!42";
+
+struct Installed {
+    source: Value,
+    first: crate::installation::install::Receipt,
+    management: String,
+    address: SocketAddr,
+    gateway: maintenance::Gateway,
+}
+async fn fresh(root: &Path, administrator: &crate::config::Database) -> Result<Installed> {
     use crate::installation::install::{Input, install};
-    let inputs = Inputs::load()?;
-    let administrator = inputs.database("installation", "postgres");
+
     let pg_root = administrator
         .ca_file
         .parent()
         .context("PG input directory")?;
-    let temp = tempfile::tempdir()?;
-    let root = temp.path().canonicalize()?;
-    let first_password = "Installation-first-admin!42";
-    let platform_password = "Installation-platform-admin!42";
-    private(&root.join("administrator-password"), first_password)?;
-    private(&root.join("platform-password"), platform_password)?;
+
+    private(&root.join("administrator-password"), FIRST_PASSWORD)?;
+    private(&root.join("platform-password"), PLATFORM_PASSWORD)?;
     let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = reservation.local_addr()?;
     let gateway = maintenance::Gateway::open(
@@ -216,8 +216,6 @@ async fn installed_service_creates_another_tenant_without_reassembly() -> Result
     )?;
     let input: Input = crate::config::load(&root.join("install.json"))?;
     let first = install(input).await?;
-    let runtime_path = root.join("installation/runtime.json");
-    let runtime_before = std::fs::read(&runtime_path)?;
     let public: Value = serde_json::from_slice(&std::fs::read(
         root.join("gateway")
             .join(first.host_id.simple().to_string())
@@ -226,6 +224,36 @@ async fn installed_service_creates_another_tenant_without_reassembly() -> Result
     let management = public["managementTenant"]
         .as_str()
         .context("installation management tenant")?;
+    drop(reservation);
+    Ok(Installed {
+        source: installation_input,
+        first,
+        management: management.into(),
+        address,
+        gateway,
+    })
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "T2: fresh installer, real App and workers, post-start tenant login/defaults and replay"]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "integration observes production monotonic time and bounded shutdown"
+)]
+async fn installed_service_creates_another_tenant_without_reassembly() -> Result<()> {
+    use crate::installation::install::install;
+    let administrator = Inputs::load()?.database("installation", "postgres");
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().canonicalize()?;
+    let Installed {
+        source: installation_input,
+        first,
+        management,
+        address,
+        gateway,
+    } = fresh(&root, &administrator).await?;
+    let management = management.as_str();
+    let runtime_path = root.join("installation/runtime.json");
+    let runtime_before = std::fs::read(&runtime_path)?;
     let mut db = administrator.clone();
     db.name = "mdm_installation_proof".into();
     let operator = sqlx::postgres::PgPoolOptions::new()
@@ -239,7 +267,6 @@ async fn installed_service_creates_another_tenant_without_reassembly() -> Result
         .fetch_one(&operator)
     };
     let count_before = resource_count().await?;
-    drop(reservation);
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let mut server = tokio::spawn(crate::serve(
         crate::config::load(&runtime_path)?,
@@ -259,10 +286,10 @@ async fn installed_service_creates_another_tenant_without_reassembly() -> Result
             response = tokio::time::timeout(Duration::from_secs(90), super::ready(&readiness_client, &readiness_url)) => { response??; }
         }
         let mut platform = Browser::new(address)?;
-        platform.login(management, "platform", platform_password).await?;
+        platform.login(management, "platform", PLATFORM_PASSWORD).await?;
         platform.configured(first.operation_id).await?;
         let mut business = Browser::new(address)?;
-        business.login(&first.tenant_id.to_string(), "administrator", first_password).await?;
+        business.login(&first.tenant_id.to_string(), "administrator", FIRST_PASSWORD).await?;
         business.defaults(&first.tenant_id.to_string()).await?;
         let (status, before) = business.call(Method::GET, "/readyz", None, None).await?;
         ensure!(matches!(status, 200 | 503) && before["observation"].is_object(), "original process observation unavailable: {status}: {before}");
@@ -314,14 +341,29 @@ async fn installed_service_creates_another_tenant_without_reassembly() -> Result
         management,
     ))
     .await?;
+    Ok(())
+}
+
+pub(in crate::foundation_t2) async fn shared_telemetry() -> Result<()> {
+    let inputs = Inputs::load()?;
+    let admin = inputs.database("shared_telemetry", "postgres");
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().canonicalize()?;
+    let installed = fresh(&root, &admin).await?;
+    let original = maintenance::desired(&root, installed.first.host_id)?;
+    let running = maintenance::Running::open(&original).await?;
+    crate::installation::runtime_files::observe_installation(serde_json::from_value(
+        installed.source.clone(),
+    )?)
+    .await?;
+    running.close().await?;
     Box::pin(telemetry::exercise(
         &root,
-        &installation_input,
-        &first,
-        management,
-        &administrator,
+        &installed.source,
+        &installed.first,
+        &installed.management,
+        &admin,
         &inputs.directory,
     ))
-    .await?;
-    Ok(())
+    .await
 }

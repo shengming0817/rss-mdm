@@ -76,38 +76,9 @@ async fn verify_installation(input: &Request, journal: &Journal) -> Result<()> {
 }
 
 async fn select(input: TenantRequest) -> Result<TenantReceipt> {
-    input.installation.validate()?;
-    if input.operation_id.is_nil() || input.tenant.is_nil() || input.expected_revision < 0 {
-        return Err(Error::Input);
-    }
-    let root = Journal::open(&input.product.directory)?;
-    for marker in [
-        "backup-operation.json",
-        "configuration-operation.json",
-        "protection-operation.json",
-    ] {
-        if root.load::<Option<Uuid>>(marker)?.flatten().is_some() {
-            return Err(Error::Busy);
-        }
-    }
-    let config: crate::config::Config =
-        serde_json::from_value(runtime_files::current(&root)?).map_err(|_| Error::Corrupt)?;
-    let physical = &input.installation.configuration;
-    let target = config
-        .telemetry
-        .iter()
-        .find(|r| r.resource_id == physical.resource_id)
-        .ok_or(Error::Input)?;
+    let (root, config) = open_host(&input)?;
     let tenant = TenantId::parse(&input.tenant.to_string()).map_err(|_| Error::Input)?;
-    let binding = target.configuration_binding().map_err(|_| Error::Input)?;
-    if binding != physical.configuration_binding().map_err(|_| Error::Input)?
-        || target
-            .tenant()
-            .map_err(|_| Error::Input)?
-            .is_some_and(|t| t != tenant)
-    {
-        return Err(Error::Conflict);
-    }
+    let target = installed_target(&config, &input.installation.configuration, tenant)?;
     let storage = Journal::open(&input.installation.directory)?;
     verify_installation(&input.installation, &storage).await?;
     let journal = Journal::open(&root.path(&format!("telemetry-tenant-{}", input.operation_id))?)?;
@@ -151,43 +122,16 @@ async fn select(input: TenantRequest) -> Result<TenantReceipt> {
         }
         pending
     } else {
-        if previous.revision != input.expected_revision {
-            return Err(Error::Conflict);
-        }
-        if let (Some(op), Some(resource)) = (previous.operation_id, previous.resource_id) {
-            let old_journal = Journal::open(&root.path(&format!("telemetry-tenant-{op}"))?)?;
-            old_journal.save(
-                "receipt.json",
-                &TenantReceipt {
-                    operation_id: op,
-                    tenant: input.tenant,
-                    installation_id: resource,
-                    material_revision: previous.revision,
-                },
-            )?;
-        }
-        let old = previous
-            .reader(&protection, tenant)
-            .map_err(|_| Error::Corrupt)?;
-        let old = if previous.binding == binding {
-            old
-        } else {
-            if old.is_some_and(|r| r.password.is_some()) {
-                return Err(Error::Conflict);
-            }
-            None
-        };
-        let reader = changed_reader(&input, supplied, old, &journal).await?;
-        let next = Selection {
-            binding: binding.to_vec(),
-            resource_id: Some(target.resource_id),
-            revision,
-            operation_id: Some(input.operation_id),
-            material: reader
-                .map(|r| r.seal(&protection, tenant, target.resource_id, revision))
-                .transpose()
-                .map_err(|_| Error::Storage)?,
-        };
+        let next = next_selection(
+            &input,
+            &previous,
+            supplied,
+            tenant,
+            &protection,
+            &root,
+            &journal,
+        )
+        .await?;
         selection::reserve(&mut tx, tenant, &previous, &next)
             .await
             .map_err(|_| Error::Conflict)?;
@@ -203,7 +147,17 @@ async fn select(input: TenantRequest) -> Result<TenantReceipt> {
             .map_err(|_| Error::Corrupt)?;
         clickhouse::provision_reader(&input.installation, tenant, reader, old.as_ref()).await?;
     }
-    let mut tx = tenant_transaction(&mut c, tenant, input.tenant, execution).await?;
+    publish_qualified(&mut c, tenant, execution, &input).await?;
+    journal.save("receipt.json", &result)?;
+    Ok(result)
+}
+async fn publish_qualified(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+    input: &TenantRequest,
+) -> Result<()> {
+    let mut tx = tenant_transaction(c, tenant, input.tenant, execution).await?;
     selection::ready(&mut tx, tenant, input.operation_id)
         .await
         .map_err(|_| Error::Storage)?;
@@ -212,7 +166,7 @@ async fn select(input: TenantRequest) -> Result<TenantReceipt> {
     let wait = tokio::time::sleep(std::time::Duration::from_secs(12));
     tokio::pin!(wait);
     loop {
-        let mut tx = tenant_transaction(&mut c, tenant, input.tenant, execution).await?;
+        let mut tx = tenant_transaction(c, tenant, input.tenant, execution).await?;
         selection::lock_change(&mut tx, tenant)
             .await
             .map_err(|_| Error::Storage)?;
@@ -225,9 +179,99 @@ async fn select(input: TenantRequest) -> Result<TenantReceipt> {
         }
         tokio::select! {()=&mut wait=>return Err(Error::Busy),()=tokio::time::sleep(std::time::Duration::from_millis(200))=>{}}
     }
-    journal.save("receipt.json", &result)?;
-    Ok(result)
+    Ok(())
 }
+fn open_host(input: &TenantRequest) -> Result<(Journal, crate::config::Config)> {
+    input.installation.validate()?;
+    if input.operation_id.is_nil() || input.tenant.is_nil() || input.expected_revision < 0 {
+        return Err(Error::Input);
+    }
+    let root = Journal::open(&input.product.directory)?;
+    for marker in [
+        "backup-operation.json",
+        "configuration-operation.json",
+        "protection-operation.json",
+    ] {
+        if root.load::<Option<Uuid>>(marker)?.flatten().is_some() {
+            return Err(Error::Busy);
+        }
+    }
+    let config: crate::config::Config =
+        serde_json::from_value(runtime_files::current(&root)?).map_err(|_| Error::Corrupt)?;
+    Ok((root, config))
+}
+fn installed_target<'a>(
+    config: &'a crate::config::Config,
+    physical: &crate::telemetry::Config,
+    tenant: TenantId,
+) -> Result<&'a crate::telemetry::Config> {
+    let target = config
+        .telemetry
+        .iter()
+        .find(|r| r.resource_id == physical.resource_id)
+        .ok_or(Error::Input)?;
+    let binding = target.configuration_binding().map_err(|_| Error::Input)?;
+    if binding != physical.configuration_binding().map_err(|_| Error::Input)?
+        || target
+            .tenant()
+            .map_err(|_| Error::Input)?
+            .is_some_and(|t| t != tenant)
+    {
+        return Err(Error::Conflict);
+    }
+    Ok(target)
+}
+async fn next_selection(
+    input: &TenantRequest,
+    previous: &Selection,
+    supplied: Option<Reader>,
+    tenant: TenantId,
+    protection: &Protector,
+    root: &Journal,
+    journal: &Journal,
+) -> Result<Selection> {
+    let target = &input.installation.configuration;
+    let binding = target.configuration_binding().map_err(|_| Error::Input)?;
+    let revision = input.expected_revision.checked_add(1).ok_or(Error::Input)?;
+    if previous.revision != input.expected_revision {
+        return Err(Error::Conflict);
+    }
+    if let (Some(op), Some(resource)) = (previous.operation_id, previous.resource_id) {
+        let old_journal = Journal::open(&root.path(&format!("telemetry-tenant-{op}"))?)?;
+        old_journal.save(
+            "receipt.json",
+            &TenantReceipt {
+                operation_id: op,
+                tenant: input.tenant,
+                installation_id: resource,
+                material_revision: previous.revision,
+            },
+        )?;
+    }
+    let old = previous
+        .reader(protection, tenant)
+        .map_err(|_| Error::Corrupt)?;
+    let old = if previous.binding == binding {
+        old
+    } else {
+        if old.is_some_and(|r| r.password.is_some()) {
+            return Err(Error::Conflict);
+        }
+        None
+    };
+    let reader = changed_reader(input, supplied, old, journal).await?;
+    Ok(Selection {
+        binding: binding.to_vec(),
+        resource_id: Some(target.resource_id),
+        revision,
+        operation_id: Some(input.operation_id),
+        material: reader
+            .map(|r| r.seal(protection, tenant, target.resource_id, revision))
+            .transpose()
+            .map_err(|_| Error::Storage)?,
+    })
+}
+
 async fn tenant_transaction(
     c: &mut PgConnection,
     tenant: TenantId,
