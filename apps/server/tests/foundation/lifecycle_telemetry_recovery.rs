@@ -71,6 +71,174 @@ pub(super) async fn interrupt_retirement(ch: &Value, tenant: Uuid) -> Result<()>
         .error_for_status()?;
     Ok(())
 }
+async fn admin_sql(ch: &Value, sql: &str) -> Result<()> {
+    let (client, url) = clickhouse_client(ch)?;
+    let secret = crate::config::secret(Path::new(
+        ch["clickhouse"]["installer"]["password_file"]
+            .as_str()
+            .context("installer")?,
+    ))?;
+    client
+        .post(url)
+        .basic_auth("installer", Some(secret.as_str()))
+        .body(sql.to_owned())
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
+pub(super) async fn unrelated_rotation(
+    root: &Path,
+    source: &Value,
+    first: &install::Receipt,
+    ch: &Value,
+) -> Result<()> {
+    use crate::installation::protection;
+    let ch_id: Uuid = serde_json::from_value(ch["configuration"]["resource_id"].clone())?;
+    admin_sql(ch, "REVOKE INSERT ON rss_ts_ch.raw FROM metric_writer").await?;
+    let operation = Uuid::new_v4();
+    let checked = async {
+        for _ in 0..5 {
+            let running =
+                maintenance::Running::open(&maintenance::desired(root, first.host_id)?).await?;
+            let observation =
+                runtime_files::observe_installation(serde_json::from_value(source.clone())?)
+                    .await?;
+            ensure!(
+                observation.unavailable_telemetry.contains(&ch_id),
+                "actual host observed optional ClickHouse outage"
+            );
+            let receipt = protection::rotate(protection::Request {
+                installation: serde_json::from_value(source.clone())?,
+                purpose: protection::Purpose::Native,
+                operation_id: operation,
+            })
+            .await?;
+            running.close().await?;
+            if receipt.phase == protection::Phase::Complete {
+                return Ok::<_, anyhow::Error>(());
+            }
+        }
+        anyhow::bail!("host rotation must complete during an unrelated optional outage")
+    }
+    .await;
+    admin_sql(ch, "GRANT INSERT ON rss_ts_ch.raw TO metric_writer").await?;
+    checked
+}
+async fn restart_clickhouse(ch: &Value, container: &str) -> Result<()> {
+    let status = tokio::process::Command::new("docker")
+        .args(["restart", "--time", "10", container])
+        .stdout(std::process::Stdio::null())
+        .status()
+        .await?;
+    ensure!(status.success(), "restart isolated ClickHouse");
+    let (client, endpoint) = clickhouse_client(ch)?;
+    tokio::time::timeout(Duration::from_secs(45), async {
+        loop {
+            if client
+                .get(format!("{endpoint}/ping"))
+                .send()
+                .await
+                .is_ok_and(|r| r.status().is_success())
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .context("restarted ClickHouse HTTPS endpoint")?;
+    Ok(())
+}
+pub(super) async fn password_policy(
+    root: &Path,
+    inputs: &Path,
+    source: &Value,
+    ch: &Value,
+    tenant: Uuid,
+    reader: &Value,
+) -> Result<()> {
+    let file = Path::new(
+        ch["clickhouse"]["server_configuration_files"][0]
+            .as_str()
+            .context("fixture configuration")?,
+    );
+    let providers: Value =
+        serde_json::from_slice(&std::fs::read(inputs.join("telemetry-providers.json"))?)?;
+    let container = providers["container"]
+        .as_str()
+        .context("isolated ClickHouse container")?;
+    let policy = file.with_file_name("password-policy.xml");
+    let temporary = policy.with_extension("tmp");
+    let rule = "<password_complexity><rule><pattern>.{80,}</pattern><message>minimum 80 characters</message></rule></password_complexity>";
+    std::fs::write(&temporary, format!("<clickhouse>{rule}</clickhouse>"))?;
+    std::fs::rename(temporary, &policy)?;
+    restart_clickhouse(ch, container)
+        .await
+        .context("activate fixture password policy")?;
+    let secret = root.join("policy-rejected-password");
+    private(&secret, Uuid::new_v4().simple().to_string())?;
+    let mut action = reader.clone();
+    action["password_file"] = json!(secret);
+    let op = Uuid::new_v4();
+    let rejected = json!({"product":source,"installation":ch,"operationId":op,"tenant":tenant,"expectedRevision":1,"action":action});
+    let checked = async {
+        ensure!(
+            telemetry::prepare_tenant(serde_json::from_value(rejected)?)
+                .await
+                .is_err(),
+            "provider rejected the new password"
+        );
+        let result = telemetry::cancel(serde_json::from_value(
+            json!({"product":source,"installation":ch,"tenant":tenant,"operationId":op}),
+        )?)
+        .await?;
+        ensure!(serde_json::to_value(result)?["state"] == "cancelled");
+        login(root, ch, tenant, "b-password", true).await
+    }
+    .await;
+    std::fs::remove_file(policy)?;
+    restart_clickhouse(ch, container)
+        .await
+        .context("restore fixture password policy")?;
+    checked
+}
+pub(super) async fn retained(
+    primary: &crate::config::Database,
+    settled: Uuid,
+    unresolved: Uuid,
+    expired: Uuid,
+) -> Result<()> {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(primary.options()?)
+        .await?;
+    let durable: String = sqlx::query_scalar("SELECT status FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND message_id=$2")
+        .bind(unresolved).bind(expired.to_string()).fetch_one(&pool).await?;
+    ensure!(
+        durable == "dead_letter",
+        "reader retirement preserves the original recovery record"
+    );
+    for tenant in [settled, unresolved] {
+        let count = sqlx::query("UPDATE mdm_telemetry.retention_targets SET result=NULL,phase=0,next_check=0,due_at=(extract(epoch FROM clock_timestamp())*1000000)::bigint WHERE tenant_id=$1")
+            .bind(tenant).execute(&pool).await?.rows_affected();
+        ensure!(count > 0, "real retained series");
+    }
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let settled_done: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_telemetry.retention_targets WHERE tenant_id=$1 AND result->>'state'='complete')")
+                .bind(settled).fetch_one(&pool).await?;
+            let barrier: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_telemetry.retention_targets WHERE tenant_id=$1 AND result->>'reason'='accepted_batches_pending')")
+                .bind(unresolved).fetch_one(&pool).await?;
+            if settled_done && barrier {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }).await.context("retention completed for settled data and protected the unresolved batch after both readers retired")??;
+    pool.close().await;
+    Ok(())
+}
 pub(super) async fn reader_isolation(root: &Path, ch: &Value, a: Uuid, b: Uuid) -> Result<()> {
     let (client, endpoint) = clickhouse_client(ch)?;
     let a_password = crate::config::secret(&root.join("a-password"))?;
@@ -123,7 +291,12 @@ pub(super) async fn cold(
     let mut installations = vec![ordinary.clone()];
     installations.extend_from_slice(profiles);
     let bundle = root.join("shared-telemetry-backup");
-    let capture=backup::capture(serde_json::from_value(json!({"directory":bundle,"installation":source,"operation_id":Uuid::new_v4(),"authorities":[],"telemetry":installations}))?).await.context("capture shared telemetry")?;
+    let request = serde_json::from_value(
+        json!({"directory":bundle,"installation":source,"operation_id":Uuid::new_v4(),"authorities":[],"telemetry":installations}),
+    )?;
+    let capture = tokio::spawn(backup::capture(request))
+        .await?
+        .context("capture shared telemetry")?;
     let mut connection = sqlx::PgConnection::connect_with(&primary.options()?).await?;
     let mut accounts = vec![
         json!({"tenant_id":management,"account":{"principal_id":first.platform_principal_id,"login":"platform","password_file":root.join("platform-password")}}),
@@ -184,12 +357,17 @@ pub(super) async fn cold(
     ))?;
     let mut ddl = Vec::new();
     for tenant in &attached[..2] {
-        let login = reader(ch, *tenant)?;
-        ddl.push(format!("DROP USER {login}"));
-        for table in ["raw", "summaries"] {
-            ddl.push(format!(
+        let external = reader(ch, *tenant)?;
+        for login in [
+            external.clone(),
+            external.replacen("mdm_reader_", "mdm_work_", 1),
+        ] {
+            ddl.push(format!("DROP USER {login}"));
+            for table in ["raw", "summaries"] {
+                ddl.push(format!(
                 "DROP ROW POLICY IF EXISTS telemetry_reader_{login}_{table} ON rss_ts_ch.{table}"
             ));
+            }
         }
     }
     ddl.push("DROP DATABASE rss_ts_ch SYNC".to_owned());

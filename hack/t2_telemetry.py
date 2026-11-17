@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 import json
 import os
+import socket
 from pathlib import Path
 import time
 import uuid
@@ -31,7 +32,7 @@ def providers(root, installation):
         guard = uuid.uuid4().hex
         private(area / 'installer-password', password)
         private(area / 'guard-password', guard)
-        config = private(area / 'telemetry.xml', f"""<clickhouse>
+        config = private(area / 'config.d' / 'telemetry.xml', f"""<clickhouse>
 <listen_host>0.0.0.0</listen_host><https_port>8443</https_port>
 <openSSL><server><certificateFile>/inputs/server.crt</certificateFile><privateKeyFile>/inputs/server.key</privateKeyFile><verificationMode>none</verificationMode></server></openSSL>
 <named_collections><rss_ts_ch_guard><host>postgres</host><port>5432</port><database>ch_control</database><user>ch_guard</user><password>{guard}</password></rss_ts_ch_guard></named_collections>
@@ -42,17 +43,20 @@ def providers(root, installation):
 <password>{password}</password><networks><ip>::/0</ip></networks><profile>default</profile><quota>default</quota>
 <access_management>1</access_management><named_collection_control>1</named_collection_control>
 </installer></users></clickhouse>""")
+        # Keep the registered HTTPS endpoint through provider restarts during policy rotation.
+        with socket.socket() as reservation:
+            reservation.bind(('127.0.0.1', 0))
+            port = reservation.getsockname()[1]
         args = ['docker','run','-d','--rm','--user',f'{os.getuid()}:{os.getgid()}',
-                '--network',installation.project+'_default','-p','127.0.0.1::8443',
+                '--network',installation.project+'_default','-p',f'127.0.0.1:{port}:8443',
                 '-e','CLICKHOUSE_SKIP_USER_SETUP=1','-e','PGSSLMODE=verify-full','-e','PGSSLROOTCERT=/inputs/pg-ca.crt']
-        for path,mount in [(config,'/etc/clickhouse-server/config.d/telemetry.xml'),
+        for path,mount in [(config.parent,'/etc/clickhouse-server/config.d'),
                            (users,'/etc/clickhouse-server/users.d/installer.xml'),
                            (area/'server.crt','/inputs/server.crt'),(area/'server.key','/inputs/server.key'),
                            (installation.root/'ca.crt','/inputs/pg-ca.crt')]:
             args.extend(['-v',f'{path}:{mount}:ro'])
         container=run([*args,'-v',f'{disk}:/backups',installation.providers['telemetry-clickhouse']],capture_output=True).stdout.strip()
-        port=run(['docker','port',container,'8443/tcp'],capture_output=True).stdout.strip().rsplit(':',1)[1]
-        endpoint='https://127.0.0.1:'+port
+        endpoint=f'https://127.0.0.1:{port}'
         import ssl
         from urllib.request import build_opener, HTTPSHandler, ProxyHandler
         opener=build_opener(ProxyHandler({}), HTTPSHandler(context=ssl.create_default_context(cafile=installation.root/'ca.crt')))
@@ -67,7 +71,7 @@ def providers(root, installation):
             if time.monotonic()>=limit:
                 raise RuntimeError('ClickHouse HTTPS provider did not become ready')
             time.sleep(.25)
-        yield dict(endpoint=endpoint,area=str(area),ca=str(installation.root/'ca.crt'),
+        yield dict(container=container,endpoint=endpoint,area=str(area),ca=str(installation.root/'ca.crt'),
                    timescale=dict(host='localhost',port=timescale.port(),name='shared_metrics',user='postgres',
                                   ca_file=str(timescale.root/'ca.crt'),password_file=str(timescale.root/'pg/pg-password')))
     finally:

@@ -701,6 +701,12 @@ pub async fn run(request: Request) -> Result<Receipt> {
         applied: None,
     };
     root.save("configuration-operation.json", &Some(request.operation_id))?;
+    if let Change::Telemetry { settings } = &request.change {
+        host.save(
+            "telemetry-admission.json",
+            &(binding.operation_id, settings.resource_id),
+        )?;
+    }
     host.save("requested-runtime.json", &candidate)?;
     publish_gateway(&journal, &host)?;
     drop(host);

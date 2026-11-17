@@ -257,13 +257,13 @@ impl Upload {
             sample,
         })
     }
-    pub(super) async fn more(&self, service: &Arc<Service>) -> Result<Uuid> {
+    pub(super) async fn more(&self, service: &Arc<Service>, offset: u64) -> Result<Uuid> {
         let mut upload = self.input.clone();
         upload.batch_id = Uuid::new_v4();
         for point in &mut upload.observations {
             point.id = Uuid::new_v4();
-            point.sequence += 2;
-            point.observed_at += 100;
+            point.sequence += offset;
+            point.observed_at += 100 * offset as i64;
         }
         let receipt = service
             .receive(&self.principal, &upload, serde_json::to_vec(&upload)?.len())
@@ -284,7 +284,7 @@ impl Upload {
             }
         })
         .await
-        .context("original accepted batch completes during drain")??;
+        .context("original accepted batch completes during reader rotation")??;
         Ok(())
     }
     pub(super) async fn original_receipt(&self, service: &Arc<Service>) -> Result<()> {

@@ -316,21 +316,21 @@ async fn authenticates(input: &Request, name: &str, secret: &str) -> bool {
     .await
     .is_ok_and(|v| v.trim() == name)
 }
-async fn verify_login(
+/// An existing verifier can remain valid across provider password policy changes.
+async fn current_login(
     input: &Request,
     material: &rss_mdm_telemetry_service::selection::Reader,
     previous: Option<&rss_mdm_telemetry_service::selection::Reader>,
-) -> Result<()> {
-    for secret in [
-        previous.and_then(|r| r.password.as_deref()),
-        material.password.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
+) -> Result<bool> {
+    if let Some(secret) = material.password.as_deref()
+        && authenticates(input, &material.user, secret).await
     {
-        if authenticates(input, &material.user, secret).await {
-            return Ok(());
-        }
+        return Ok(true);
+    }
+    if let Some(secret) = previous.and_then(|r| r.password.as_deref())
+        && authenticates(input, &material.user, secret).await
+    {
+        return Ok(false);
     }
     Err(Error::Conflict)
 }
@@ -347,6 +347,33 @@ async fn drop_reader_policies(input: &Request, name: &str) -> Result<()> {
     }
     Ok(())
 }
+use rss_mdm_telemetry_service::selection::Reader;
+/// The worker's tenant-scoped login survives external password rotation and retirement while work exists.
+pub(in crate::installation) async fn reconcile(
+    input: &Request,
+    tenant: rss_request_context::TenantId,
+    previous: Option<&Reader>,
+    desired: Option<&Reader>,
+) -> Result<()> {
+    let before = previous.and_then(Reader::background);
+    let after = desired.and_then(Reader::background);
+    if previous.and_then(|r| r.worker.as_ref()) != desired.and_then(|r| r.worker.as_ref()) {
+        reconcile_login(input, tenant, before.as_ref(), after.as_ref()).await?;
+    }
+    reconcile_login(input, tenant, previous, desired).await
+}
+async fn reconcile_login(
+    input: &Request,
+    tenant: rss_request_context::TenantId,
+    previous: Option<&Reader>,
+    desired: Option<&Reader>,
+) -> Result<()> {
+    match (previous, desired) {
+        (_, Some(next)) => provision_reader(input, tenant, next, previous).await,
+        (Some(old), None) => provision_reader(input, tenant, &old.inactive(), Some(old)).await,
+        (None, None) => Ok(()),
+    }
+}
 /// Establish policies before granting table access. The caller reserves a new login
 /// or verifies its durable ownership before replay, rotation and restore.
 pub(in crate::installation) async fn provision_reader(
@@ -358,9 +385,11 @@ pub(in crate::installation) async fn provision_reader(
     let name = user(&material.user)?;
     let exists = reader_exists(input, &material.user).await?;
     verify_reader_catalog(input, tenant, &material.user, !exists).await?;
-    if exists {
-        verify_login(input, material, previous).await?;
-    }
+    let current = if exists {
+        current_login(input, material, previous).await?
+    } else {
+        false
+    };
     let Some(password) = material.password.as_ref() else {
         execute(
             input,
@@ -371,18 +400,27 @@ pub(in crate::installation) async fn provision_reader(
         return drop_reader_policies(input, &material.user).await;
     };
     if !exists {
-        // Detached exact policies can survive a prior DROP USER. No live login uses these names.
         drop_reader_policies(input, &material.user).await?;
+        execute(
+            input,
+            "create-reader",
+            &format!(
+                "CREATE USER {name} IDENTIFIED WITH sha256_password BY {}",
+                literal(password)
+            ),
+        )
+        .await?;
+    } else if !current {
+        execute(
+            input,
+            "reader-password",
+            &format!(
+                "ALTER USER {name} IDENTIFIED WITH sha256_password BY {}",
+                literal(password)
+            ),
+        )
+        .await?;
     }
-    execute(
-        input,
-        "create-reader",
-        &format!(
-            "CREATE USER IF NOT EXISTS {name} IDENTIFIED WITH sha256_password BY {}",
-            literal(password)
-        ),
-    )
-    .await?;
     for table in ["raw", "summaries"] {
         execute(input,&format!("reader-policy-{table}"),&format!("CREATE ROW POLICY IF NOT EXISTS telemetry_reader_{}_{table} ON rss_ts_ch.{table} USING tenant={} TO {name}",material.user,literal(&tenant.to_string()))).await?;
     }
@@ -394,14 +432,5 @@ pub(in crate::installation) async fn provision_reader(
         )
         .await?;
     }
-    execute(
-        input,
-        "reader-password",
-        &format!(
-            "ALTER USER {name} IDENTIFIED WITH sha256_password BY {}",
-            literal(password)
-        ),
-    )
-    .await?;
     Ok(())
 }

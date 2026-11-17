@@ -123,16 +123,17 @@ async fn select(input: TenantRequest) -> Result<TenantReceipt> {
     )
     .await?;
     tx.commit().await.map_err(|_| Error::Storage)?;
-    operation::drain(&mut c, tenant, execution, &input).await?;
+    let old = if previous.binding == change.binding {
+        previous
+            .reader(&protection, tenant)
+            .map_err(|_| Error::Corrupt)?
+    } else {
+        None
+    };
     let future = change
         .reader(&protection, tenant)
         .map_err(|_| Error::Corrupt)?;
-    if let Some(reader) = &future {
-        let old = previous
-            .reader(&protection, tenant)
-            .map_err(|_| Error::Corrupt)?;
-        clickhouse::provision_reader(&input.installation, tenant, reader, old.as_ref()).await?;
-    }
+    clickhouse::reconcile(&input.installation, tenant, old.as_ref(), future.as_ref()).await?;
     publish_qualified(&mut c, tenant, execution, &input).await?;
     Ok(result)
 }
@@ -154,7 +155,12 @@ async fn reserved(
         }
         pending
     } else {
-        let next = next_selection(input, previous, supplied, tenant, protection).await?;
+        let retain_worker = matches!(input.action, Action::Retire)
+            && selection::has_work(tx, tenant)
+                .await
+                .map_err(|_| Error::Storage)?;
+        let next =
+            next_selection(input, previous, supplied, tenant, protection, retain_worker).await?;
         selection::reserve(tx, tenant, previous, &next)
             .await
             .map_err(|_| Error::Conflict)?;
@@ -241,6 +247,7 @@ async fn next_selection(
     supplied: Option<Reader>,
     tenant: TenantId,
     protection: &Protector,
+    retain_worker: bool,
 ) -> Result<Selection> {
     let target = &input.installation.configuration;
     let binding = target.configuration_binding().map_err(|_| Error::Input)?;
@@ -259,7 +266,7 @@ async fn next_selection(
         }
         None
     };
-    let reader = changed_reader(input, supplied, old).await?;
+    let reader = changed_reader(input, supplied, old, retain_worker).await?;
     Ok(Selection {
         binding: binding.to_vec(),
         resource_id: Some(target.resource_id),
@@ -332,6 +339,7 @@ fn supplied_reader(input: &TenantRequest, target: &Config) -> Result<Option<Read
                 return Err(Error::Input);
             }
             Some(Reader {
+                worker: None,
                 user,
                 password: Some(password),
                 cursor: Zeroizing::new(
@@ -390,10 +398,12 @@ async fn changed_reader(
     input: &TenantRequest,
     supplied: Option<Reader>,
     old: Option<Reader>,
+    retain_worker: bool,
 ) -> Result<Option<Reader>> {
     Ok(match (&input.action, supplied) {
-        (Action::Reader { .. }, Some(reader)) => {
+        (Action::Reader { .. }, Some(mut reader)) => {
             if let Some(old) = old {
+                reader.worker = old.worker;
                 if old.user != reader.user
                     || *old.cursor != *reader.cursor
                     || old.password == reader.password
@@ -403,14 +413,40 @@ async fn changed_reader(
             } else if clickhouse::reader_exists(&input.installation, &reader.user).await? {
                 return Err(Error::Conflict);
             }
+            if reader.worker.is_none() {
+                reader.worker = Some(new_worker(input).await?);
+            }
             Some(reader)
         }
         (Action::Retire, None) => {
             let mut old = old.ok_or(Error::Conflict)?;
             old.password.take();
+            if !retain_worker {
+                old.worker = None;
+            }
             Some(old)
         }
         (Action::Select, None) => None,
         _ => return Err(Error::Input),
     })
+}
+
+async fn new_worker(input: &TenantRequest) -> Result<selection::Worker> {
+    let user = format!(
+        "mdm_work_{}",
+        Uuid::new_v5(
+            &input.installation.configuration.resource_id,
+            input.tenant.as_bytes()
+        )
+        .simple()
+    );
+    if clickhouse::reader_exists(&input.installation, &user).await? {
+        return Err(Error::Conflict);
+    }
+    let password = Zeroizing::new(format!(
+        "Aa1!{}{}",
+        Uuid::new_v4().simple(),
+        Uuid::new_v4().simple()
+    ));
+    Ok(selection::Worker { user, password })
 }

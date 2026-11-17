@@ -45,7 +45,7 @@ async fn resources(
             config["backend"] = json!({"kind":kind,"control":db,"endpoint":providers["endpoint"],"ca_file":providers["ca"],
                 "writer":{"user":"metric_writer","password_file":password},"maintenance":{"user":"metric_maint","password_file":password},
                 "max_scan_rows":100000,"max_scan_bytes":16777216,"max_memory_bytes":67108864});
-            ch = json!({"installer":{"user":"installer","password_file":area.join("installer-password")},"guard":{"user":"ch_guard","password_file":area.join("guard-password")},"backup_directory":area.join("backup"),"server_configuration_files":[area.join("telemetry.xml"),area.join("users.xml")]});
+            ch = json!({"installer":{"user":"installer","password_file":area.join("installer-password")},"guard":{"user":"ch_guard","password_file":area.join("guard-password")},"backup_directory":area.join("backup"),"server_configuration_files":[area.join("config.d/telemetry.xml"),area.join("users.xml")]});
         } else {
             config["cursor_key_file"] = json!(key);
             config["backend"] = json!({"kind":kind,"database":db,"chunk_micros":86400000000u64});
@@ -170,6 +170,8 @@ pub(super) async fn exercise(
         ensure!(receipt.deployment_required);
         runtime = maintenance::desired(root, first.host_id)?;
     }
+    recovery::unrelated_rotation(root, source, first, &resources[0]).await?;
+    runtime = maintenance::desired(root, first.host_id)?;
     let running = maintenance::Running::open(&runtime).await?;
     runtime_files::observe_installation(serde_json::from_value(source.clone())?).await?;
     let address = source["listen"]
@@ -235,6 +237,7 @@ pub(super) async fn exercise(
         sessions().await? == original,
         "tenant B must reuse the live A control connection"
     );
+    recovery::password_policy(root, inputs, source, &resources[0], b, &b_reader).await?;
     let mut rotation = b_reader.clone();
     let password = root.join("b-next-password");
     private(&password, Uuid::new_v4().simple().to_string())?;
@@ -257,24 +260,25 @@ pub(super) async fn exercise(
         "same password cannot rotate"
     );
     sqlx::raw_sql("CREATE FUNCTION public.pause_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'hold published receipt'; END $$; CREATE TRIGGER pause_receipt BEFORE UPDATE OF delivery ON mdm_telemetry.batches FOR EACH ROW WHEN (NEW.delivery='published') EXECUTE FUNCTION public.pause_receipt()").execute(&admin).await?;
-    let awaiting = b_data.more(service).await?;
+    let expired = b_data.more(service, 2).await?;
+    let mut tx = admin.begin().await?;
+    sqlx::query("SELECT set_config('rss.storage_target',encode(s.target,'hex'),true),set_config('rss.storage_lineage',encode(s.lineage,'hex'),true),set_config('rss.tenant_id',e.tenant_id::text,true),set_config('rss.execution_epoch',e.epoch::text,true) FROM rss_transactional_messaging.storage_lineage s CROSS JOIN rss_transactional_messaging.tenant_epoch e WHERE s.singleton AND e.tenant_id=$1")
+        .bind(b).fetch_one(&mut *tx).await?;
+    let advanced = sqlx::query("UPDATE rss_transactional_messaging.outbox SET automatic_retry_deadline=clock_timestamp()-interval '1 second',retry_after=clock_timestamp() WHERE tenant_id=$1 AND domain='mdm-telemetry' AND message_id=$2")
+        .bind(b).bind(expired.to_string()).execute(&mut *tx).await?.rows_affected();
     ensure!(
-        matches!(
-            telemetry::prepare_tenant(serde_json::from_value(request.clone())?).await,
-            Err(crate::installation::Error::Busy)
-        ),
-        "in-flight batch holds the original installation"
+        advanced == 1,
+        "expire the original batch under the installed storage fence"
     );
-    ensure!(
-        serde_json::to_value(telemetry::status(serde_json::from_value(query.clone())?).await?)?["state"]
-            == "draining"
-    );
-    sqlx::raw_sql(
-        "DROP TRIGGER pause_receipt ON mdm_telemetry.batches; DROP FUNCTION public.pause_receipt()",
-    )
-    .execute(&admin)
-    .await?;
-    b_data.published(service, awaiting).await?;
+    tx.commit().await?;
+    tokio::time::timeout(Duration::from_secs(45),async {
+        loop{
+            let status:String=sqlx::query_scalar("SELECT status FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND message_id=$2").bind(b).bind(expired.to_string()).fetch_one(&admin).await?;
+            if status=="dead_letter" {return Ok::<_,anyhow::Error>(());}
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }).await.context("relay placed expired original in dead letter")??;
+    let awaiting = b_data.more(service, 4).await?;
     sqlx::raw_sql("CREATE FUNCTION public.interrupt_reader_probe() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'interrupted reader'; END $$; CREATE TRIGGER interrupt_reader_probe BEFORE UPDATE ON mdm_telemetry.storage_binding FOR EACH ROW WHEN (NEW.probe_ready AND NOT OLD.probe_ready) EXECUTE FUNCTION public.interrupt_reader_probe()").execute(&admin).await?;
     ensure!(
         matches!(
@@ -283,6 +287,12 @@ pub(super) async fn exercise(
         ),
         "interrupted reader must remain pending"
     );
+    sqlx::raw_sql(
+        "DROP TRIGGER pause_receipt ON mdm_telemetry.batches; DROP FUNCTION public.pause_receipt()",
+    )
+    .execute(&admin)
+    .await?;
+    b_data.published(service, awaiting).await?;
     recovery::login(root, &resources[0], b, "b-password", false).await?;
     let mut different = request.clone();
     different["action"] = json!({"kind":"retire"});
@@ -389,6 +399,9 @@ pub(super) async fn exercise(
         .original_receipt(restarted.telemetry.get().unwrap())
         .await?;
     available(&mut first_browser, a, true).await?;
+    attach(source, &resources[0], a, 1, json!({"kind":"retire"})).await?;
+    available(&mut first_browser, a, false).await?;
+    recovery::retained(&primary, a, b, expired).await?;
     restarted.close().await?;
     Ok(())
 }

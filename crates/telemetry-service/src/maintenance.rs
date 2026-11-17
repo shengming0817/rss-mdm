@@ -504,7 +504,7 @@ impl Service {
                 let result=async {
                     authorize(c,tenant,&actor,&intent).await?;
                     crate::selection::lock_read(c,tenant).await?;
-                    if crate::selection::pending(c,tenant).await?.is_some() {return Err(Error::Conflict);}
+                    if crate::selection::pending(c,tenant).await?.is_some() && !sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2)").bind(tenant.to_string()).bind(intent.id).fetch_one(&mut *c).await? {return Err(Error::Conflict);}
                     let inserted=sqlx::query("INSERT INTO mdm_telemetry.maintenance(tenant_id,id,binding,request) VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING")
                         .bind(tenant.to_string()).bind(intent.id).bind(binding.as_slice()).bind(serde_json::to_value(Stored { input: intent.clone(), rows, buckets })?).execute(&mut *c).await?.rows_affected();
                     let stored:Vec<u8>=sqlx::query_scalar("SELECT binding FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
@@ -569,7 +569,7 @@ async fn step_on(
     input: &Request,
     deadline: Deadline,
 ) -> Result<Progress, Error> {
-    let backend = service.backend_on(c, proof.binding().tenant()).await?;
+    let backend = service.work_backend_on(c, proof.binding().tenant()).await?;
     authorize(c, proof.binding().tenant(), proof, input).await?;
     let (stored, previous): (Json, Option<Json>) = sqlx::query_as("SELECT request,result FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
         .bind(proof.binding().tenant().to_string()).bind(input.id).fetch_one(&mut *c).await?;

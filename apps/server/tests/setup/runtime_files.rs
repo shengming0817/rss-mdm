@@ -47,7 +47,7 @@ fn runtime_listeners_reject_backend_collisions_not_gateway_namespace() {
 
 fn previous() -> Applied {
     Applied {
-        telemetry_ready: true,
+        unavailable_telemetry: Vec::new(),
         host_id: uuid::Uuid::new_v4(),
         operation_id: uuid::Uuid::new_v4(),
         revision: 4,

@@ -147,9 +147,9 @@ pub struct Service {
     running: std::sync::atomic::AtomicBool,
 }
 impl Service {
-    /// True when the host actually opened every configured installation.
-    pub fn admits_installations(&self, count: usize) -> bool {
-        self.resources.len() == count
+    /// Report the physical installations actually opened by this host.
+    pub fn admits_installation(&self, id: uuid::Uuid) -> bool {
+        self.resources.values().any(|r| r.installation == id)
     }
     pub fn new(
         probe: rss_transactional_messaging::fence::ExecutionBinding,
@@ -407,10 +407,10 @@ impl Service {
         c: &mut sqlx::PgConnection,
         tenant: TenantId,
         cutoff: rss_request_context::Deadline,
-        draining_worker: bool,
+        worker: bool,
     ) -> Result<backend::Selected, Error> {
         selection::lock_read(c, tenant).await?;
-        let row = selection::load_row(c, tenant, true, draining_worker)
+        let row = selection::load_row(c, tenant, worker)
             .await?
             .ok_or(Error::Storage)?;
         let resource = self
@@ -430,7 +430,7 @@ impl Service {
             backend::Backend::Postgres(pg) => backend::Access::Postgres(pg.clone()),
             backend::Backend::ClickHouse(owner) => backend::Access::ClickHouse(
                 self.readers
-                    .access(owner, &self.protection, tenant, &row, cutoff)
+                    .access(owner, &self.protection, tenant, &row, cutoff, worker)
                     .await?,
             ),
         };

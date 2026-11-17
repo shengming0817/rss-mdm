@@ -109,8 +109,8 @@ GRANT SELECT,INSERT ON mdm_telemetry.observation_receipts TO mdm_telemetry_runti
 CREATE TABLE mdm_telemetry.storage_binding (
  expected_epoch bigint NOT NULL CHECK(expected_epoch>0),tenant_id uuid PRIMARY KEY,binding bytea NOT NULL CHECK(octet_length(binding)=32),
  resource_id uuid, revision bigint NOT NULL DEFAULT 0 CHECK(revision>=0), operation_id uuid,
- material bytea, pending jsonb, changing boolean NOT NULL DEFAULT false, probe_ready boolean NOT NULL DEFAULT false, qualified uuid,
- CHECK(pending IS NOT NULL OR (NOT changing AND NOT probe_ready AND qualified IS NULL)),
+ material bytea, pending jsonb, probe_ready boolean NOT NULL DEFAULT false, qualified uuid,
+ CHECK(pending IS NOT NULL OR (NOT probe_ready AND qualified IS NULL)),
  CHECK(qualified IS NULL OR (probe_ready AND qualified=(pending->>'operation_id')::uuid)),
  CHECK((revision=0 AND resource_id IS NULL AND operation_id IS NULL AND material IS NULL)
  OR (revision>0 AND resource_id IS NOT NULL AND operation_id IS NOT NULL))
@@ -127,7 +127,7 @@ CREATE TABLE mdm_telemetry.reader_operations (
  operation_id uuid PRIMARY KEY, tenant_id uuid NOT NULL, resource_id uuid NOT NULL,
  revision bigint NOT NULL CHECK(revision>0), request_mac jsonb NOT NULL,
  action text NOT NULL CHECK(action IN ('reader','retire','select')),
- state text NOT NULL CHECK(state IN ('draining','applying','qualifying','cancelling','cancelled','published'))
+ state text NOT NULL CHECK(state IN ('applying','qualifying','cancelling','cancelled','published'))
 );
 ALTER TABLE mdm_telemetry.reader_operations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_telemetry.reader_operations FORCE ROW LEVEL SECURITY;

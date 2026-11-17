@@ -114,7 +114,7 @@ pub struct Applied {
     pub operation_id: uuid::Uuid,
     pub revision: u64,
     pub material_digest: String,
-    pub telemetry_ready: bool,
+    pub unavailable_telemetry: Vec<uuid::Uuid>,
     pub process_generation: uuid::Uuid,
     pub instance_id: String,
 }
@@ -406,6 +406,10 @@ async fn observe_runtime(directory: &Path, runtime: &Value) -> Result<Applied> {
     let effective: Config = owner.load("runtime-files.json")?.ok_or(Error::Corrupt)?;
     let root =
         crate::config::read(&effective.trust_file, 128 * 1024, false).map_err(|_| Error::Input)?;
+    let required = owner
+        .load::<(uuid::Uuid, uuid::Uuid)>("telemetry-admission.json")?
+        .filter(|(op, _)| *op == decoded.runtime_binding.operation_id)
+        .map(|(_, id)| id);
     let mut observed = None;
     for public_origin in public_routes(&decoded)?
         .into_iter()
@@ -441,6 +445,9 @@ async fn observe_runtime(directory: &Path, runtime: &Value) -> Result<Applied> {
             &public_origin,
         )
         .await?;
+        if required.is_some_and(|id| applied.unavailable_telemetry.contains(&id)) {
+            return Err(Error::Storage);
+        }
         if public_origin == decoded.product_origin {
             observed = Some(applied);
         }
@@ -495,9 +502,6 @@ async fn observe(
     }
     let observation: Applied =
         serde_json::from_value(value["observation"].clone()).map_err(|_| Error::Storage)?;
-    if !observation.telemetry_ready {
-        return Err(Error::Storage);
-    }
     if !matches(&observation, binding, instance) {
         return Err(Error::Conflict);
     }

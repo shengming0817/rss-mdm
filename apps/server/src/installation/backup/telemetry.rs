@@ -488,15 +488,23 @@ async fn qualify_readers(
                 .ok_or(Error::Corrupt)?;
             match operation {
                 ReaderOperation::Restore(profile) => {
-                    clickhouse::provision_reader(profile, tenant, &reader, None).await?
+                    clickhouse::reconcile(profile, tenant, None, Some(&reader)).await?
                 }
-                ReaderOperation::Admit(owner) if reader.password.is_some() => {
-                    reader
-                        .bind(owner, tenant, row.revision, deadline()?)
-                        .await
-                        .map_err(|_| Error::Corrupt)?;
+                ReaderOperation::Admit(owner) => {
+                    let worker = reader.background();
+                    for material in [
+                        Some(&reader).filter(|r| r.password.is_some()),
+                        worker.as_ref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        material
+                            .bind(owner, tenant, row.revision, deadline()?)
+                            .await
+                            .map_err(|_| Error::Corrupt)?;
+                    }
                 }
-                ReaderOperation::Admit(_) => {}
             }
         }
     }

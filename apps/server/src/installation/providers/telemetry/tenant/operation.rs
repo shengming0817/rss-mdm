@@ -56,7 +56,7 @@ pub(super) async fn record(
             .mac(&identity, &aad)
             .map_err(|_| Error::Storage)?
     ]);
-    sqlx::query("INSERT INTO mdm_telemetry.reader_operations(operation_id,tenant_id,resource_id,revision,request_mac,action,state) VALUES($1,$2,$3,$4,$5,$6,'draining') ON CONFLICT DO NOTHING")
+    sqlx::query("INSERT INTO mdm_telemetry.reader_operations(operation_id,tenant_id,resource_id,revision,request_mac,action,state) VALUES($1,$2,$3,$4,$5,$6,'applying') ON CONFLICT DO NOTHING")
       .bind(input.operation_id).bind(input.tenant).bind(receipt.installation_id).bind(receipt.material_revision).bind(mac).bind(action).execute(&mut *c).await.map_err(|_|Error::Storage)?;
     let (value,resource,revision,kind,state):(serde_json::Value,Uuid,i64,String,String)=sqlx::query_as("SELECT request_mac,resource_id,revision,action,state FROM mdm_telemetry.reader_operations WHERE tenant_id=$1 AND operation_id=$2")
       .bind(input.tenant).bind(input.operation_id).fetch_optional(c).await.map_err(|_|Error::Storage)?.ok_or(Error::Conflict)?;
@@ -85,24 +85,6 @@ pub(super) async fn set(c: &mut PgConnection, op: Uuid, state: &str) -> Result<(
         return Err(Error::Conflict);
     }
     Ok(())
-}
-pub(super) async fn drain(
-    c: &mut PgConnection,
-    tenant: TenantId,
-    execution: ExecutionBinding,
-    input: &TenantRequest,
-) -> Result<()> {
-    let mut tx = tenant_transaction(c, tenant, input.tenant, execution).await?;
-    selection::lock_change(&mut tx, tenant)
-        .await
-        .map_err(|_| Error::Storage)?;
-    let drained=sqlx::query("UPDATE mdm_telemetry.storage_binding b SET changing=true WHERE b.tenant_id=$1 AND b.pending->>'operation_id'=$2 AND NOT EXISTS(SELECT FROM mdm_telemetry.batches WHERE tenant_id=$1 AND delivery<>'published')")
-      .bind(input.tenant).bind(input.operation_id.to_string()).execute(&mut *tx).await.map_err(|_|Error::Storage)?.rows_affected();
-    if drained != 1 {
-        return Err(Error::Busy);
-    }
-    set(&mut tx, input.operation_id, "applying").await?;
-    tx.commit().await.map_err(|_| Error::Storage)
 }
 async fn read(c: &mut PgConnection, tenant: Uuid, operation_id: Uuid) -> Result<Status> {
     let (installation_id,material_revision,state):(Uuid,i64,String)=sqlx::query_as("SELECT resource_id,revision,state FROM mdm_telemetry.reader_operations WHERE tenant_id=$1 AND operation_id=$2")
@@ -196,18 +178,10 @@ pub async fn cancel(input: Cancel) -> Result<Status> {
         .await
         .map_err(|_| Error::Storage)?
         .ok_or(Error::Corrupt)?;
-    let changing: bool =
-        sqlx::query_scalar("SELECT changing FROM mdm_telemetry.storage_binding WHERE tenant_id=$1")
-            .bind(input.tenant)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|_| Error::Storage)?;
     set(&mut tx, input.operation_id, "cancelling").await?;
     tx.commit().await.map_err(|_| Error::Storage)?;
-    if changing {
-        let key = config.native_protector().map_err(|_| Error::Corrupt)?;
-        compensate(&input.installation, tenant, &candidate, &previous, &key).await?;
-    }
+    let key = config.native_protector().map_err(|_| Error::Corrupt)?;
+    compensate(&input.installation, tenant, &candidate, &previous, &key).await?;
     finish_cancel(&mut c, tenant, execution, &input).await?;
     Ok(Status {
         state: "cancelled".into(),
@@ -224,7 +198,7 @@ async fn finish_cancel(
     selection::lock_change(&mut tx, tenant)
         .await
         .map_err(|_| Error::Storage)?;
-    if sqlx::query("UPDATE mdm_telemetry.storage_binding SET pending=NULL,changing=false,probe_ready=false,qualified=NULL WHERE tenant_id=$1 AND pending->>'operation_id'=$2").bind(input.tenant).bind(input.operation_id.to_string()).execute(&mut *tx).await.map_err(|_|Error::Storage)?.rows_affected()!=1 {return Err(Error::Conflict);}
+    if sqlx::query("UPDATE mdm_telemetry.storage_binding SET pending=NULL,probe_ready=false,qualified=NULL WHERE tenant_id=$1 AND pending->>'operation_id'=$2").bind(input.tenant).bind(input.operation_id.to_string()).execute(&mut *tx).await.map_err(|_|Error::Storage)?.rows_affected()!=1 {return Err(Error::Conflict);}
     set(&mut tx, input.operation_id, "cancelled").await?;
     tx.commit().await.map_err(|_| Error::Storage)?;
     Ok(())
@@ -236,18 +210,11 @@ async fn compensate(
     previous: &Selection,
     key: &Protector,
 ) -> Result<()> {
-    let Some(next) = candidate.reader(key, tenant).map_err(|_| Error::Corrupt)? else {
-        return Ok(());
+    let next = candidate.reader(key, tenant).map_err(|_| Error::Corrupt)?;
+    let old = if previous.binding == candidate.binding {
+        previous.reader(key, tenant).map_err(|_| Error::Corrupt)?
+    } else {
+        None
     };
-    if previous.binding == candidate.binding
-        && let Some(old) = previous.reader(key, tenant).map_err(|_| Error::Corrupt)?
-    {
-        return clickhouse::provision_reader(installation, tenant, &old, Some(&next)).await;
-    }
-    let retired = Reader {
-        user: next.user.clone(),
-        password: None,
-        cursor: next.cursor.clone(),
-    };
-    clickhouse::provision_reader(installation, tenant, &retired, Some(&next)).await
+    clickhouse::reconcile(installation, tenant, next.as_ref(), old.as_ref()).await
 }

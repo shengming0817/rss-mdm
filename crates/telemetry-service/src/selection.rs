@@ -25,16 +25,15 @@ pub struct Selection {
 }
 
 pub async fn load(c: &mut PgConnection, tenant: TenantId) -> Result<Option<Selection>, Error> {
-    load_row(c, tenant, false, false).await
+    load_row(c, tenant, true).await
 }
 pub(crate) async fn load_row(
     c: &mut PgConnection,
     tenant: TenantId,
-    active_only: bool,
-    draining_worker: bool,
+    include_pending: bool,
 ) -> Result<Option<Selection>, Error> {
-    let row=sqlx::query("SELECT binding,resource_id,revision,operation_id,material FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid AND (NOT $2 OR pending IS NULL OR ($3 AND NOT changing))")
-        .bind(tenant.to_string()).bind(active_only).bind(draining_worker).fetch_optional(c).await?;
+    let row=sqlx::query("SELECT binding,resource_id,revision,operation_id,material FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid AND ($2 OR pending IS NULL)")
+        .bind(tenant.to_string()).bind(include_pending).fetch_optional(c).await?;
     row.map(|r| {
         Ok(Selection {
             binding: r.try_get("binding")?,
@@ -61,9 +60,16 @@ pub async fn lock_change(c: &mut PgConnection, tenant: TenantId) -> Result<(), E
         .await?;
     Ok(())
 }
+/// Product-owned read-only credentials for delivery and retention.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct Worker {
+    pub user: String,
+    pub password: Zeroizing<String>,
+}
 /// The cursor survives reader rotation and retirement on the same installation.
 #[derive(Serialize, Deserialize)]
 pub struct Reader {
+    pub worker: Option<Worker>,
     pub user: String,
     pub password: Option<Zeroizing<String>>,
     pub cursor: Zeroizing<[u8; 32]>,
@@ -74,6 +80,23 @@ fn aad(tenant: TenantId, resource: Uuid, rev: i64) -> Result<DerivedAad, Error> 
         .map_err(|_| Error::Invalid)
 }
 impl Reader {
+    pub fn background(&self) -> Option<Self> {
+        let worker = self.worker.as_ref()?;
+        Some(Self {
+            user: worker.user.clone(),
+            password: Some(worker.password.clone()),
+            cursor: self.cursor.clone(),
+            worker: None,
+        })
+    }
+    pub fn inactive(&self) -> Self {
+        Self {
+            user: self.user.clone(),
+            password: None,
+            cursor: self.cursor.clone(),
+            worker: None,
+        }
+    }
     pub fn seal(
         &self,
         key: &Protector,
@@ -170,6 +193,10 @@ pub async fn pending(c: &mut PgConnection, tenant: TenantId) -> Result<Option<Se
         .transpose()
         .map_err(|_| Error::Storage)
 }
+/// Durable work fixes its original physical installation and maintenance authority.
+pub async fn has_work(c: &mut PgConnection, tenant: TenantId) -> Result<bool, Error> {
+    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid) OR EXISTS(SELECT FROM mdm_telemetry.definition_progress WHERE tenant_id=$1::uuid) OR EXISTS(SELECT FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid) OR EXISTS(SELECT FROM mdm_telemetry.retention_targets WHERE tenant_id=$1::uuid)").bind(tenant.to_string()).fetch_one(c).await?)
+}
 /// Freeze the next revision while admissions and maintenance share the tenant fence.
 pub async fn reserve(
     c: &mut PgConnection,
@@ -180,11 +207,8 @@ pub async fn reserve(
     if next.revision != current.revision.checked_add(1).ok_or(Error::Invalid)? {
         return Err(Error::Conflict);
     }
-    if current.binding != next.binding {
-        let used:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid) OR EXISTS(SELECT FROM mdm_telemetry.definition_progress WHERE tenant_id=$1::uuid) OR EXISTS(SELECT FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid)").bind(tenant.to_string()).fetch_one(&mut *c).await?;
-        if used {
-            return Err(Error::Conflict);
-        }
+    if current.binding != next.binding && has_work(c, tenant).await? {
+        return Err(Error::Conflict);
     }
     let rows=sqlx::query("UPDATE mdm_telemetry.storage_binding SET pending=$3 WHERE tenant_id=$1::uuid AND revision=$2 AND pending IS NULL")
         .bind(tenant.to_string()).bind(current.revision).bind(serde_json::to_value(next)?).execute(c).await?.rows_affected();
@@ -206,7 +230,7 @@ pub async fn publish(c: &mut PgConnection, tenant: TenantId, op: Uuid) -> Result
     if next.operation_id != Some(op) {
         return Err(Error::Conflict);
     }
-    Ok(sqlx::query("UPDATE mdm_telemetry.storage_binding SET binding=$3,resource_id=$4,revision=$5,operation_id=$2,material=$6,pending=NULL,changing=false,probe_ready=false,qualified=NULL WHERE tenant_id=$1::uuid AND pending->>'operation_id'=($2::uuid)::text AND (qualified=$2 OR EXISTS(SELECT FROM mdm_telemetry.reader_operations o WHERE o.operation_id=$2 AND o.tenant_id=$1::uuid AND o.action='retire' AND o.state='qualifying'))")
+    Ok(sqlx::query("UPDATE mdm_telemetry.storage_binding SET binding=$3,resource_id=$4,revision=$5,operation_id=$2,material=$6,pending=NULL,probe_ready=false,qualified=NULL WHERE tenant_id=$1::uuid AND pending->>'operation_id'=($2::uuid)::text AND qualified=$2")
         .bind(tenant.to_string()).bind(op).bind(next.binding).bind(next.resource_id).bind(next.revision).bind(next.material).execute(c).await?.rows_affected()==1)
 }
 impl crate::Service {
@@ -266,19 +290,35 @@ impl crate::Service {
         {
             return Err(Error::Denied);
         }
-        let access = match resource.backend.as_deref().ok_or(Error::Storage)? {
-            crate::backend::Backend::Postgres(pg) => crate::backend::Access::Postgres(pg.clone()),
-            crate::backend::Backend::ClickHouse(owner) => {
-                crate::backend::Access::ClickHouse(Arc::new(
-                    candidate
-                        .reader(&self.protection, tenant)?
-                        .ok_or(Error::Storage)?
-                        .bind(owner, tenant, candidate.revision, cutoff)
-                        .await?,
-                ))
+        use crate::backend::{Access, Backend};
+        match resource.backend.as_deref().ok_or(Error::Storage)? {
+            Backend::Postgres(pg) => {
+                crate::diagnostics::probe(&Access::Postgres(pg.clone()), tenant, cutoff).await?
             }
-        };
-        crate::diagnostics::probe(&access, tenant, cutoff).await?;
+            Backend::ClickHouse(owner) => {
+                let actual = candidate
+                    .reader(&self.protection, tenant)?
+                    .ok_or(Error::Storage)?;
+                let worker = actual.background();
+                for reader in [
+                    Some(&actual).filter(|r| r.password.is_some()),
+                    worker.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    let handle = reader
+                        .bind(owner, tenant, candidate.revision, cutoff)
+                        .await?;
+                    crate::diagnostics::probe(
+                        &Access::ClickHouse(Arc::new(handle)),
+                        tenant,
+                        cutoff,
+                    )
+                    .await?;
+                }
+            }
+        }
         let op = candidate.operation_id.ok_or(Error::Storage)?;
         sqlx::query("UPDATE mdm_telemetry.storage_binding SET qualified=$2 WHERE tenant_id=$1::uuid AND pending->>'operation_id'=($2::uuid)::text AND probe_ready")
             .bind(tenant.to_string()).bind(op).execute(c).await?;
@@ -287,7 +327,7 @@ impl crate::Service {
 }
 type Slot = tokio::sync::Mutex<Option<Arc<ChStore<SystemClock>>>>;
 #[derive(Default)]
-pub(crate) struct Readers(Mutex<HashMap<TenantId, Arc<Slot>>>);
+pub(crate) struct Readers(Mutex<HashMap<(TenantId, bool), Arc<Slot>>>);
 impl Readers {
     pub(crate) async fn access(
         &self,
@@ -296,12 +336,13 @@ impl Readers {
         tenant: TenantId,
         selection: &Selection,
         cutoff: Deadline,
+        worker: bool,
     ) -> Result<Arc<ChStore<SystemClock>>, Error> {
         let slot = self
             .0
             .lock()
             .map_err(|_| Error::Storage)?
-            .entry(tenant)
+            .entry((tenant, worker))
             .or_default()
             .clone();
         let mut active = slot.lock().await;
@@ -316,6 +357,11 @@ impl Readers {
         }
         *active = None;
         let reader = selection.reader(key, tenant)?.ok_or(Error::Storage)?;
+        let reader = if worker {
+            reader.background().ok_or(Error::Storage)?
+        } else {
+            reader
+        };
         let access = Arc::new(
             reader
                 .bind(owner, tenant, selection.revision, deadline)
@@ -335,6 +381,7 @@ mod tests {
         let tenant = TenantId::parse(&Uuid::new_v4().to_string()).unwrap();
         let resource = Uuid::new_v4();
         let reader = Reader {
+            worker: None,
             user: "reader".into(),
             password: Some(Zeroizing::new("first".into())),
             cursor: Zeroizing::new([2; 32]),
