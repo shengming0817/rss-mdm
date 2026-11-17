@@ -533,11 +533,8 @@ async fn activate_restored(
             .fetch_one(&mut c)
             .await
             .map_err(|_| Error::Storage)?;
-    let mut required = frozen
-        .tenants
-        .iter()
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>();
+    let config: crate::config::Config = serde_json::from_value(frozen.runtime.clone()).map_err(|_| Error::Corrupt)?;
+    let mut required = accounts::initialized_tenants(&mut c, &config.identity.instance_id, &frozen.tenants).await?;
     required.insert(management);
     let supplied = input
         .accounts
@@ -548,8 +545,6 @@ async fn activate_restored(
         return Err(Error::Input);
     }
     for account in &input.accounts {
-        let config: crate::config::Config =
-            serde_json::from_value(frozen.runtime.clone()).map_err(|_| Error::Corrupt)?;
         let epoch = if account.tenant_id == management {
             rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH
         } else {
