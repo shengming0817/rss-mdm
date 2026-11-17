@@ -150,14 +150,7 @@ async fn restart_clickhouse(ch: &Value, container: &str) -> Result<()> {
     .context("restarted ClickHouse HTTPS endpoint")?;
     Ok(())
 }
-pub(super) async fn password_policy(
-    root: &Path,
-    inputs: &Path,
-    source: &Value,
-    ch: &Value,
-    tenant: Uuid,
-    reader: &Value,
-) -> Result<()> {
+pub(super) async fn password_policy(inputs: &Path, ch: &Value, strict: bool) -> Result<()> {
     let file = Path::new(
         ch["clickhouse"]["server_configuration_files"][0]
             .as_str()
@@ -169,39 +162,43 @@ pub(super) async fn password_policy(
         .as_str()
         .context("isolated ClickHouse container")?;
     let policy = file.with_file_name("password-policy.xml");
-    let temporary = policy.with_extension("tmp");
-    let rule = "<password_complexity><rule><pattern>.{80,}</pattern><message>minimum 80 characters</message></rule></password_complexity>";
-    std::fs::write(&temporary, format!("<clickhouse>{rule}</clickhouse>"))?;
-    std::fs::rename(temporary, &policy)?;
+    if strict {
+        let temporary = policy.with_extension("tmp");
+        let rule = "<password_complexity><rule><pattern>.{80,}</pattern><message>minimum 80 characters</message></rule></password_complexity>";
+        std::fs::write(&temporary, format!("<clickhouse>{rule}</clickhouse>"))?;
+        std::fs::rename(temporary, &policy)?;
+    } else {
+        std::fs::remove_file(policy)?;
+    }
     restart_clickhouse(ch, container)
         .await
-        .context("activate fixture password policy")?;
+        .context("load fixture password policy")
+}
+pub(super) async fn rejected_rotation(
+    root: &Path,
+    source: &Value,
+    ch: &Value,
+    tenant: Uuid,
+    reader: &Value,
+) -> Result<()> {
     let secret = root.join("policy-rejected-password");
     private(&secret, Uuid::new_v4().simple().to_string())?;
     let mut action = reader.clone();
     action["password_file"] = json!(secret);
     let op = Uuid::new_v4();
     let rejected = json!({"product":source,"installation":ch,"operationId":op,"tenant":tenant,"expectedRevision":1,"action":action});
-    let checked = async {
-        ensure!(
-            telemetry::prepare_tenant(serde_json::from_value(rejected)?)
-                .await
-                .is_err(),
-            "provider rejected the new password"
-        );
-        let result = telemetry::cancel(serde_json::from_value(
-            json!({"product":source,"installation":ch,"tenant":tenant,"operationId":op}),
-        )?)
-        .await?;
-        ensure!(serde_json::to_value(result)?["state"] == "cancelled");
-        login(root, ch, tenant, "b-password", true).await
-    }
-    .await;
-    std::fs::remove_file(policy)?;
-    restart_clickhouse(ch, container)
-        .await
-        .context("restore fixture password policy")?;
-    checked
+    ensure!(
+        telemetry::prepare_tenant(serde_json::from_value(rejected)?)
+            .await
+            .is_err(),
+        "provider rejected the new password"
+    );
+    let result = telemetry::cancel(serde_json::from_value(
+        json!({"product":source,"installation":ch,"tenant":tenant,"operationId":op}),
+    )?)
+    .await?;
+    ensure!(serde_json::to_value(result)?["state"] == "cancelled");
+    login(root, ch, tenant, "a-password", true).await
 }
 pub(super) async fn retained(
     primary: &crate::config::Database,
@@ -393,8 +390,10 @@ pub(super) async fn cold(
     // Reader inputs live outside the deployment tree and are absent on the recovered host.
     for file in [
         "a-password",
+        "a-worker-password",
         "a-cursor",
         "b-password",
+        "b-worker-password",
         "b-next-password",
         "b-cursor",
     ] {

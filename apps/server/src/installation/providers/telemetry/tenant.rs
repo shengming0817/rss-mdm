@@ -24,6 +24,7 @@ enum Action {
     Select,
     Reader {
         password_file: PathBuf,
+        worker_password_file: Option<PathBuf>,
         cursor_key_file: PathBuf,
     },
     Retire,
@@ -311,6 +312,7 @@ fn supplied_reader(input: &TenantRequest, target: &Config) -> Result<Option<Read
         (
             Action::Reader {
                 password_file,
+                worker_password_file,
                 cursor_key_file,
             },
             Storage::ClickHouse {
@@ -319,29 +321,33 @@ fn supplied_reader(input: &TenantRequest, target: &Config) -> Result<Option<Read
                 ..
             },
         ) => {
-            let user = format!(
-                "mdm_reader_{}",
-                Uuid::new_v5(&target.resource_id, input.tenant.as_bytes()).simple()
-            );
+            let suffix = Uuid::new_v5(&target.resource_id, input.tenant.as_bytes());
+            let user = format!("mdm_reader_{}", suffix.simple());
+            let worker_user = format!("mdm_work_{}", suffix.simple());
             let installer = &input
                 .installation
                 .clickhouse
                 .as_ref()
                 .ok_or(Error::Input)?
                 .installer;
-            if [&writer.user, &maintenance.user, &installer.user].contains(&&user) {
-                return Err(Error::Input);
-            }
-            let password = crate::config::secret(password_file).map_err(|_| Error::Input)?;
-            if password.trim() != password.as_str()
-                || !password.bytes().all(|b| (0x20..=0x7e).contains(&b))
+            if [&writer.user, &maintenance.user, &installer.user]
+                .into_iter()
+                .any(|role| role == &user || role == &worker_user)
             {
                 return Err(Error::Input);
             }
+            let worker = worker_password_file
+                .as_deref()
+                .map(reader_password)
+                .transpose()?
+                .map(|password| selection::Worker {
+                    user: worker_user,
+                    password,
+                });
             Some(Reader {
-                worker: None,
+                worker,
                 user,
-                password: Some(password),
+                password: Some(reader_password(password_file)?),
                 cursor: Zeroizing::new(
                     crate::config::read(cursor_key_file, 32, true)
                         .map_err(|_| Error::Input)?
@@ -394,6 +400,15 @@ async fn product_connection(
     Ok(c)
 }
 
+fn reader_password(path: &std::path::Path) -> Result<Zeroizing<String>> {
+    let password = crate::config::secret(path).map_err(|_| Error::Input)?;
+    if password.trim() != password.as_str() || !password.bytes().all(|b| (0x20..=0x7e).contains(&b))
+    {
+        return Err(Error::Input);
+    }
+    Ok(password)
+}
+
 async fn changed_reader(
     input: &TenantRequest,
     supplied: Option<Reader>,
@@ -401,22 +416,8 @@ async fn changed_reader(
     retain_worker: bool,
 ) -> Result<Option<Reader>> {
     Ok(match (&input.action, supplied) {
-        (Action::Reader { .. }, Some(mut reader)) => {
-            if let Some(old) = old {
-                reader.worker = old.worker;
-                if old.user != reader.user
-                    || *old.cursor != *reader.cursor
-                    || old.password == reader.password
-                {
-                    return Err(Error::Conflict);
-                }
-            } else if clickhouse::reader_exists(&input.installation, &reader.user).await? {
-                return Err(Error::Conflict);
-            }
-            if reader.worker.is_none() {
-                reader.worker = Some(new_worker(input).await?);
-            }
-            Some(reader)
+        (Action::Reader { .. }, Some(reader)) => {
+            Some(prepare_reader(&input.installation, reader, old).await?)
         }
         (Action::Retire, None) => {
             let mut old = old.ok_or(Error::Conflict)?;
@@ -431,22 +432,38 @@ async fn changed_reader(
     })
 }
 
-async fn new_worker(input: &TenantRequest) -> Result<selection::Worker> {
-    let user = format!(
-        "mdm_work_{}",
-        Uuid::new_v5(
-            &input.installation.configuration.resource_id,
-            input.tenant.as_bytes()
-        )
-        .simple()
-    );
-    if clickhouse::reader_exists(&input.installation, &user).await? {
-        return Err(Error::Conflict);
+async fn prepare_reader(
+    installation: &Request,
+    mut reader: Reader,
+    old: Option<Reader>,
+) -> Result<Reader> {
+    let existing_worker = if let Some(old) = old {
+        if old.user != reader.user
+            || *old.cursor != *reader.cursor
+            || old.password == reader.password
+        {
+            return Err(Error::Conflict);
+        }
+        old.worker
+    } else {
+        if clickhouse::reader_exists(installation, &reader.user).await? {
+            return Err(Error::Conflict);
+        }
+        None
+    };
+    let worker = match (existing_worker, reader.worker.take()) {
+        (Some(existing), None) => existing,
+        (None, Some(new)) => {
+            if clickhouse::reader_exists(installation, &new.user).await? {
+                return Err(Error::Conflict);
+            }
+            new
+        }
+        _ => return Err(Error::Input),
+    };
+    if reader.password.as_ref() == Some(&worker.password) {
+        return Err(Error::Input);
     }
-    let password = Zeroizing::new(format!(
-        "Aa1!{}{}",
-        Uuid::new_v4().simple(),
-        Uuid::new_v4().simple()
-    ));
-    Ok(selection::Worker { user, password })
+    reader.worker = Some(worker);
+    Ok(reader)
 }

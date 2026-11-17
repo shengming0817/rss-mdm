@@ -185,12 +185,33 @@ pub(super) async fn exercise(
     let (a, mut first_browser) = provision(&mut platform).await?;
     let reader = |name: &str| -> Result<Value> {
         let password = root.join(format!("{name}-password"));
-        private(&password, Uuid::new_v4().simple().to_string())?;
+        let strong = || {
+            (0..3)
+                .map(|_| Uuid::new_v4().simple().to_string())
+                .collect::<String>()
+        };
+        private(
+            &password,
+            if name == "a" {
+                Uuid::new_v4().simple().to_string()
+            } else {
+                strong()
+            },
+        )?;
+        let worker = root.join(format!("{name}-worker-password"));
+        private(&worker, strong())?;
         let key = root.join(format!("{name}-cursor"));
         private(&key, [if name == "a" { 3 } else { 4 }; 32])?;
-        Ok(json!({"kind":"reader","password_file":password,"cursor_key_file":key}))
+        Ok(
+            json!({"kind":"reader","password_file":password,"worker_password_file":worker,"cursor_key_file":key}),
+        )
     };
-    attach(source, &resources[0], a, 0, reader("a")?).await?;
+    let mut a_reader = reader("a")?;
+    attach(source, &resources[0], a, 0, a_reader.clone()).await?;
+    a_reader
+        .as_object_mut()
+        .unwrap()
+        .remove("worker_password_file");
     available(&mut first_browser, a, true).await?;
     let a_data = data::Upload::publish(
         &running,
@@ -216,8 +237,19 @@ pub(super) async fn exercise(
     let original = sessions().await?;
     ensure!(original.len() == 1, "one admitted control pool session");
     let (b, mut peer) = provision(&mut platform).await?;
-    let b_reader = reader("b")?;
+    recovery::password_policy(inputs, &resources[0], true).await?;
+    let mut b_reader = reader("b")?;
+    let mut reused = b_reader.clone();
+    reused["worker_password_file"] = b_reader["password_file"].clone();
+    ensure!(
+        attach(source, &resources[0], b, 0, reused).await.is_err(),
+        "independent worker password on first enrollment"
+    );
     attach(source, &resources[0], b, 0, b_reader.clone()).await?;
+    b_reader
+        .as_object_mut()
+        .unwrap()
+        .remove("worker_password_file");
     available(&mut peer, b, true).await?;
     let b_data = data::Upload::publish(&running, &mut peer, b, &primary, &runtime, inputs, 22)
         .await
@@ -237,7 +269,8 @@ pub(super) async fn exercise(
         sessions().await? == original,
         "tenant B must reuse the live A control connection"
     );
-    recovery::password_policy(root, inputs, source, &resources[0], b, &b_reader).await?;
+    recovery::rejected_rotation(root, source, &resources[0], a, &a_reader).await?;
+    recovery::password_policy(inputs, &resources[0], false).await?;
     let mut rotation = b_reader.clone();
     let password = root.join("b-next-password");
     private(&password, Uuid::new_v4().simple().to_string())?;
