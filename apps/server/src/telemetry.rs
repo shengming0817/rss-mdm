@@ -373,27 +373,30 @@ pub(crate) async fn open(
     }
     let mut resources = Vec::new();
     for (index, configuration) in configurations.iter().enumerate() {
-        let binding = configuration.configuration_binding()?;
-        let tenant = configuration.tenant()?;
-        let backend = match configuration.open_backend().await {
-            Ok(backend) => {
-                let backend = Arc::new(backend);
-                acquire(Resource(backend.clone()));
-                Some(backend)
-            }
+        let opened = async {
+            let binding = configuration.configuration_binding()?;
+            let tenant = configuration.tenant()?;
+            let backend = Arc::new(configuration.open_backend().await?);
+            Ok::<_, Error>((binding, tenant, backend))
+        }.await;
+        let (binding, tenant, backend) = match opened {
+            Ok(opened) => opened,
             Err(error) if index == 0 => return Err(error),
-            Err(error) => {
-                eprintln!(
-                    "optional telemetry resource {} unavailable: {error}",
-                    configuration.resource_id
-                );
-                None
+            Err(_) => {
+                tracing::warn!(resource_id = %configuration.resource_id, reason = "unavailable", "optional telemetry resource unavailable");
+                continue;
             }
         };
+        acquire(Resource(backend.clone()));
         resources.push(rss_mdm_telemetry_service::backend::Resource {
             binding,
             tenant,
-            backend,
+            backend: Some(backend),
+            budget: rss_mdm_telemetry_service::StorageBudget {
+                points: configuration.limits.max_points,
+                series: configuration.limits.max_series,
+                bytes: configuration.limits.max_bytes,
+            },
         });
     }
     Service::new(
@@ -404,11 +407,6 @@ pub(crate) async fn open(
         signing,
         default.ingress.clone(),
         default.maintenance,
-        rss_mdm_telemetry_service::StorageBudget {
-            points: default.limits.max_points,
-            series: default.limits.max_series,
-            bytes: default.limits.max_bytes,
-        },
     )
     .map(Arc::new)
     .map_err(|_| invalid())

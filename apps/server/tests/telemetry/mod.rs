@@ -227,8 +227,10 @@ async fn exact_integer_queries_and_live_authorization() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let result = async {
         let fixture = Fixture::open(&c).await?;
-        let result = exercise(&c, &fixture).await;
-        fixture::with_cleanup(result, fixture.close(&c).await)
+        let default = Fixture::open_with_limits(&c, 4096, 4096).await?;
+        let result = exercise(&c, &fixture, &default).await;
+        let result = fixture::with_cleanup(result, fixture.close(&c).await);
+        fixture::with_cleanup(result, default.close(&c).await)
     }
     .await;
     c.close().await;
@@ -238,7 +240,7 @@ async fn exact_integer_queries_and_live_authorization() -> Result<()> {
     clippy::cognitive_complexity,
     reason = "One HTTPS scenario checks exact values, continuation and live authorization against the same persisted data"
 )]
-async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
+async fn exercise(c: &Context, f: &Fixture, default: &Fixture) -> Result<()> {
     let (device, grant) = materials::seed_registration(c).await?;
     let principal = materials::authenticated_agent(
         c,
@@ -282,7 +284,23 @@ async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
     }
     capacity::seed(c, f, &device, epoch).await?;
     let account = c.account(&[Permission::InventoryRead]).await?;
-    let service = f.service(c).await?;
+    let binding = f.config.configuration_binding()?;
+    rss_mdm_telemetry_service::admit_configuration(&f.owner.runtime, c.execution(), binding).await?;
+    let mut absent = f.config.clone();
+    absent.resource_id = Uuid::new_v4();
+    let absent_binding = absent.configuration_binding()?;
+    absent.cursor_key_file = absent.cursor_key_file.with_file_name("absent-cursor");
+    let service = f.service(c, &[default.config.clone(), f.config.clone(), absent]).await?;
+    service.admit_default(c.execution(), crate::authority_t2_support::deadline()).await?;
+    let selected: Vec<u8> = sqlx::query_scalar("SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
+    assert_eq!(selected, binding);
+    let unavailable = Context::open("shared", &[]).await?;
+    rss_mdm_telemetry_service::admit_configuration(&f.owner.runtime, unavailable.execution(), absent_binding).await?;
+    assert!(service.admit_default(unavailable.execution(), crate::authority_t2_support::deadline()).await.is_err());
+    let retained: Vec<u8> = sqlx::query_scalar("SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid").bind(unavailable.tenant.to_string()).fetch_one(&c.operator).await?;
+    assert_eq!(retained, absent_binding);
+    unavailable.close().await;
+
     // The telemetry role revalidates primary credentials without native protocol column grants.
     let now: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp())*1000000)::bigint")

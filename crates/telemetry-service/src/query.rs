@@ -144,9 +144,6 @@ impl Service {
         audit: &RequestAudit,
     ) -> Result<Reply, Error> {
         proof.check_live().map_err(|_| Error::Denied)?;
-        if input.max_points.get() > self.storage_budget.points.get() {
-            return Err(Error::Denied);
-        }
         let service = self.clone();
         let proof = proof.clone();
         let input = input.clone();
@@ -205,6 +202,9 @@ async fn read_on(
     _audit: &RequestAudit,
 ) -> Result<Reply, Error> {
     let backend = service.backend_on(c, proof.binding().tenant()).await?;
+    if input.max_points.get() > backend.budget.points.get() {
+        return Err(Error::Denied);
+    }
     rss_mdm_authorization_service::lock_on(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
@@ -323,9 +323,9 @@ async fn read_on(
             Timestamp::new(input.end_micros)?,
         )?,
         QueryBudget {
-            max_series: service.storage_budget.series,
+            max_series: backend.budget.series,
             max_points: if input.mode == QueryMode::Latest {
-                service.storage_budget.points
+                backend.budget.points
             } else {
                 input.max_points
             },
@@ -361,7 +361,7 @@ async fn read_on(
         while let Some(next) = page.next.take() {
             let part = backend.query(&authorized, Some(&next), cutoff).await?;
             if candidates.len().saturating_add(part.rows.len())
-                > service.storage_budget.series.get() as usize
+                > backend.budget.series.get() as usize
             {
                 return Err(Error::Capacity);
             }
@@ -370,7 +370,7 @@ async fn read_on(
             page.availability
                 .excluded
                 .extend(part.availability.excluded);
-            if page.availability.excluded.len() > service.storage_budget.series.get() as usize {
+            if page.availability.excluded.len() > backend.budget.series.get() as usize {
                 return Err(Error::Capacity);
             }
         }

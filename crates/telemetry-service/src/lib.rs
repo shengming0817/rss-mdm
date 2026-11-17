@@ -140,15 +140,10 @@ pub struct Service {
     signing: Arc<rss_mdm_task_trust::Signing>,
     limits: Limits,
     maintenance_policy: maintenance::Policy,
-    storage_budget: StorageBudget,
     running: std::sync::atomic::AtomicBool,
 }
 impl Service {
     /// Bind only already-admitted dependencies; never install or repair schemas here.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "admitted dependencies and independent ingestion, maintenance and storage budgets are assembled explicitly"
-    )]
     pub fn new(
         probe: rss_transactional_messaging::fence::ExecutionBinding,
         runtime: Arc<PgRuntime>,
@@ -157,8 +152,7 @@ impl Service {
         signing: Arc<rss_mdm_task_trust::Signing>,
         limits: Limits,
         maintenance_policy: maintenance::Policy,
-        storage_budget: StorageBudget,
-    ) -> Result<Self, Error> {
+        ) -> Result<Self, Error> {
         let default_resource = resources
             .first()
             .filter(|r| r.tenant.is_none() && r.backend.is_some())
@@ -192,7 +186,6 @@ impl Service {
             signing,
             limits,
             maintenance_policy,
-            storage_budget,
             running: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -375,19 +368,22 @@ impl Service {
         })).await.fold(Ok,|_|Err(Error::Storage),|_|Err(Error::Storage),|_|Err(Error::Unknown),|_|Err(Error::Unknown),|_|Err(Error::Storage))?;
         self.selected(execution.tenant(), &selected).map(|_| ())
     }
-    fn selected(&self, tenant: TenantId, key: &[u8]) -> Result<Arc<backend::Backend>, Error> {
+    fn selected(&self, tenant: TenantId, key: &[u8]) -> Result<backend::Selected, Error> {
         let key: [u8; 32] = key.try_into().map_err(|_| Error::Storage)?;
         let resource = self.resources.get(&key).ok_or(Error::Storage)?;
         if resource.tenant.is_some_and(|t| t != tenant) {
             return Err(Error::Denied);
         }
-        resource.backend.clone().ok_or(Error::Storage)
+        Ok(backend::Selected {
+            backend: resource.backend.clone().ok_or(Error::Storage)?,
+            budget: resource.budget,
+        })
     }
     async fn backend_on(
         &self,
         c: &mut sqlx::PgConnection,
         tenant: TenantId,
-    ) -> Result<Arc<backend::Backend>, Error> {
+    ) -> Result<backend::Selected, Error> {
         let key: Vec<u8> = sqlx::query_scalar(
             "SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid",
         )
@@ -402,7 +398,7 @@ impl Service {
     async fn backend(
         &self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,
-    ) -> Result<Arc<backend::Backend>, Error> {
+    ) -> Result<backend::Selected, Error> {
         let tenant = execution.tenant().to_string();
         let selected=self.runtime.local_tx(execution,deadline(),move|tx|Box::pin(async move {
             tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Vec<u8>>("SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid").bind(tenant).fetch_one(c).await})).await
