@@ -438,3 +438,6 @@ async fn session_authentication_uses_the_current_execution_binding() -> anyhow::
 
 #[path = "identity_capacity.rs"]
 mod identity_capacity;
+
+#[path = "http_scope.rs"]
+mod http_scope;

@@ -382,3 +382,101 @@ async fn verify_full_identity_restore(
     );
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "T2: actual request budget preserves audited unknown outcomes and completed downstream responses"]
+async fn request_timeout_is_projected_after_audit_settlement() -> Result<()> {
+    use axum::response::IntoResponse;
+    use std::time::Duration;
+    async fn slow(
+        Extension(audit): Extension<RequestAudit>,
+        axum::extract::Path(mode): axum::extract::Path<String>,
+    ) -> Json<String> {
+        audit.identify_service("budget-proof");
+        if mode == "commit" {
+            audit.mark_commit_started();
+        }
+        std::future::pending::<Json<String>>().await
+    }
+    struct Settled;
+    impl rss_mdm_http_contract::signature::Output for Settled {
+        fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+            vec![rss_mdm_http_contract::signature::Response::json::<String>(
+                503,
+            )]
+        }
+    }
+    impl IntoResponse for Settled {
+        fn into_response(self) -> axum::response::Response {
+            let mut response = (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"code":"downstream"})),
+            )
+                .into_response();
+            response.headers_mut().insert(
+                "set-cookie",
+                "settled=credential; Secure; HttpOnly".parse().unwrap(),
+            );
+            response
+        }
+    }
+    async fn settled() -> Settled {
+        Settled
+    }
+    let c = Context::open("audit_plain", &[]).await?;
+    rss_mdm_http_contract::route_module! { struct BudgetProof for [Browser] { slow, settled } }
+    let routes = BudgetProof {
+        slow: Route::new(
+            "/budget/{mode}",
+            get(slow, &catalog::AUDIT, &[Operation::List]),
+        ),
+        settled: Route::new(
+            "/settled",
+            get(settled, &catalog::AUDIT, &[Operation::List]),
+        ),
+    }
+    .assemble();
+    let router = rss_mdm_management_http::boundary::wrap(
+        routes,
+        rss_mdm_management_http::boundary::Envelope {
+            request_budget: rss_axum::RequestBudget::new(Duration::from_millis(30))?,
+            profile: rss_mdm_install_support::StorageProfile::Mdm,
+            admission: Arc::new(tokio::sync::Semaphore::new(2)),
+            host: "mdm.example.test".into(),
+            clock: crate::clock::monotonic(),
+            audit_store: c.audit.clone(),
+            requests: Arc::new(tokio::sync::Semaphore::new(2)),
+        },
+    )
+    .into_axum()
+    .layer(Extension(c.execution()));
+    for (path, expected) in [
+        ("/budget/read", "service_unavailable"),
+        ("/budget/commit", "operation_unknown"),
+        ("/settled", "downstream"),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(path)
+                    .header("host", "mdm.example.test")
+                    .body(axum::body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.status(), 503);
+        uuid::Uuid::parse_str(response.headers()["x-request-id"].to_str()?)?;
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        if path == "/settled" {
+            assert_eq!(
+                response.headers()["set-cookie"],
+                "settled=credential; Secure; HttpOnly"
+            );
+        }
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 4096).await?)?;
+        assert_eq!(body, serde_json::json!({"code":expected}));
+    }
+    c.close().await;
+    Ok(())
+}

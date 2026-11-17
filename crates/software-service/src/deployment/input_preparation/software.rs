@@ -63,15 +63,17 @@ impl Inputs {
                 };
                 native_packages.insert(
                     *target,
-                    crate::deployment::native::Package::compile(
-                        definition,
-                        self.materials.product_origin.clone(),
-                    )?,
+                    crate::deployment::native::Package::compile(definition)?,
                 );
             }
         }
         let action = FrozenSoftwareAction {
-            native_packages,
+            native: (*channel == rss_mdm_policy::SoftwareChannel::Mdm).then(|| {
+                crate::deployment::native_download::NativeSoftware {
+                    origin: self.materials.product_origin.clone(),
+                    packages: native_packages,
+                }
+            }),
             channel: *channel,
             delivery: (*delivery).clone(),
             resource_digest: version.digest().bytes(),

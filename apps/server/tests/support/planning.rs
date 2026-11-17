@@ -11,7 +11,7 @@ use uuid::Uuid;
 pub async fn owner(c: &Context, role: &str) -> Result<crate::owner_storage::OwnerRuntime> {
     if role == "mdm_policy_runtime" {
         return Ok(crate::owner_storage::OwnerRuntime::open(
-            crate::owner_storage::Messaging::Runtime(&c.inputs.database("shared", role)),
+            crate::owner_storage::Messaging::Runtime(&c.inputs.database(&c.profile, role)),
             c.execution(),
             4,
             c.audit.clone(),
@@ -21,7 +21,7 @@ pub async fn owner(c: &Context, role: &str) -> Result<crate::owner_storage::Owne
         .await?);
     }
     let runtime = crate::identity::open_runtime(
-        &c.inputs.database("shared", role),
+        &c.inputs.database(&c.profile, role),
         &c.inputs.installation.target,
         &c.inputs.installation.lineage,
         4,

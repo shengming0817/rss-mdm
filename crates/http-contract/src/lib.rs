@@ -179,6 +179,7 @@ pub struct Endpoint {
     /// Resolved by the real middleware owner after all path prefixes are mounted.
     #[serde(skip)]
     pub authentication: Option<fn(&str, &str) -> authentication::Description>,
+    pub ingress_rejections: Vec<signature::Response>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Violation {

@@ -39,7 +39,7 @@ pub async fn software_with_export(
         json!([{"evidence":{"reference":"reviewed-signature","length":3,"sha256":vec![4;32]},"artifact":"package","mechanism":"authenticode","publisher":"Acme"}])
     };
     let definition: r::SoftwareDefinition = serde_json::from_value(
-        json!({"material":{"format":"msi","installer":"package"},"source":source.snapshot()?,"package":"Acme.App","version":"1.2","artifacts":{"package":{"reference":"app-msi","length":3,"sha256":vec![2;32]}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2"},"upgradeInvocation":invocation},"signatures":signatures,"provenance":{"kind":"private"},"export":export}),
+        json!({"material":{"format":"msi","installer":"package"},"source":source.snapshot()?,"package":"Acme.App","version":"1.2","artifacts":{"package":{"reference":"app-msi","length":3,"sha256":r::Digest::of(b"msi").bytes()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2"},"upgradeInvocation":invocation},"signatures":signatures,"provenance":{"kind":"private"},"export":export}),
     )?;
     let version = r::Version::new(
         c.tenant,
@@ -168,13 +168,18 @@ pub async fn policy(
         };
         BTreeMap::from([(
             rss_mdm_policy::SoftwareTarget::WindowsX86_64,
-            owner::native::Package::compile(definition, "https://mdm.example.test".into())?,
+            owner::native::Package::compile(definition)?,
         )])
     } else {
         BTreeMap::new()
     };
     let action = owner::frozen::FrozenSoftwareAction {
-        native_packages: native,
+        native: (channel == rss_mdm_policy::SoftwareChannel::Mdm).then_some(
+            owner::native_download::NativeSoftware {
+                origin: "https://mdm.example.test".into(),
+                packages: native,
+            },
+        ),
         channel,
         delivery: rss_mdm_policy::SoftwareDelivery::Direct,
         resource: resource.resource().as_str().into(),

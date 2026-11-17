@@ -4,6 +4,16 @@
 
 受保护端点的 `authentication` 引用实际管理认证 owner；`alternatives` 为互斥凭据方式，各自包含 header schema、必填 header 和限制。Cookie 的写请求要求 Origin、`X-Identity-Request: 1` 和 session 绑定的 CSRF，GET/HEAD 使用被动认证；Bearer/API key 仅在实际允许的入口出现。`conditional_response_headers` 描述 401 的 `WWW-Authenticate` 条件，不能作为每个 401 都必含该 header 的承诺。描述在最终路径组合后解析，租户管理及自助入口保留实际凭据限制。认证 owner 在 handler 之前可能产生的拒绝响应也合并到端点唯一的 `responses` 集合；客户端按同一契约验证状态、错误体和响应头，认证失效继续交由既有会话 owner 处理。
 
+宿主在认证之前解析租户范围。无效租户标识返回 `400 malformed_request`，不存在或已删除租户返回
+`403 permission_denied`；这些是产品宿主拒绝，包括 Identity SDK 挂载入口。范围查询不可用时，产品入口返回
+`503 service_unavailable`，Identity 入口保留 `503 identity_unavailable`。错误带服务端生成的 `x-request-id`
+和禁止缓存、安全响应头；管理请求预算耗尽也进入同一错误与审计完成边界，提交未知仍返回 `operation_unknown`。
+产品端点在 `responses` 中声明这些提前拒绝，Identity SDK 的产品宿主拒绝另由 `externalOwners[].ingressResponses` 描述。
+
+原生软件安装任务直接消费发布时冻结的 `/api/v1/software/installations/{id}/package?token=…` 下载 URL。
+下载依据原操作定位租户并核验令牌、当前执行权限和完整内容；它不需要浏览器会话或租户路径参数。
+URL 含下载凭据，不应转发或记录到客户端日志；成功响应保持私有且禁止缓存，支持范围下载。
+
 普通目录分页的公共上限为 1024，各入口默认页大小由实际 query owner 导出。完整 Agent 报告最多 4096 字段，报告 JSON 与完整 Observation Batch 分别受 4 MiB 总字节约束；字段数不能替代字节校验。字段定义与采集定义的完整 PostgreSQL JSONB 表示分别限 1 MiB、4 MiB。Telemetry 每字段的维度、State 成员和每维词表支持 1024，单值 256 字节、词表总量 32768 字节和组合展开 4096 的约束仍共同生效。客户端应从最终后端 commit 再生契约，并固定消费对应 Agent schema 指纹。
 
 ## 按需导出

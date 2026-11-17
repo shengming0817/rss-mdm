@@ -212,41 +212,22 @@ impl SoftwareService {
                     let crate::deployment::frozen::Published::Software { action } = frozen else {
                         return Err(Error::NotFound.into());
                     };
-                    let actual =
-                        serde_json::to_value(&op.request.task).map_err(|_| Error::Malformed)?;
-                    let package = action
-                        .native_packages
-                        .values()
-                        .find(|package| {
-                            package
-                                .task(id, &s.transactions.protection, tx.tenant_id())
-                                .ok()
-                                .and_then(|task| serde_json::to_value(task).ok())
-                                .as_ref()
-                                == Some(&actual)
-                        })
+                    let native = action.native.as_ref().ok_or(Error::Forbidden)?;
+                    let package = native
+                        .package_for_task(
+                            id,
+                            &s.transactions.protection,
+                            tx.tenant_id(),
+                            &op.request.task,
+                        )?
                         .ok_or(Error::Forbidden)?;
-                    if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
-                        return Err(Error::Forbidden.into());
-                    }
-                    let tag = (0..64)
-                        .step_by(2)
-                        .map(|i| {
-                            u8::from_str_radix(&token[i..i + 2], 16).map_err(|_| Error::Forbidden)
-                        })
-                        .collect::<std::result::Result<Vec<_>, _>>()?;
-                    s.transactions
-                        .protection
-                        .verify_mac(
-                            &serde_json::to_vec(&package.artifact).map_err(|_| Error::Malformed)?,
-                            &crate::deployment::protection::aad(
-                                tx.tenant_id(),
-                                "software.download",
-                                &id,
-                            )?,
-                            &tag,
-                        )
-                        .map_err(|_| Error::Forbidden)?;
+                    super::native_download::verify_token(
+                        &s.transactions.protection,
+                        tx.tenant_id(),
+                        id,
+                        &package.artifact,
+                        token,
+                    )?;
                     let now = s
                         .transactions
                         .installation_authorization_time(storage::now(tx).await?);
@@ -330,14 +311,11 @@ pub async fn package_on(
         return Err(Error::Malformed);
     };
     let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
-    let task = serde_json::to_value(task).map_err(|_| Error::Malformed)?;
-    Ok(action.native_packages.into_values().find(|p| {
-        p.task(*operation, protection, tenant_id)
-            .ok()
-            .and_then(|t| serde_json::to_value(t).ok())
-            .as_ref()
-            == Some(&task)
-    }))
+    let native = action.native.as_ref().ok_or(Error::Forbidden)?;
+    Ok(native
+        .package_for_task(*operation, protection, tenant_id, task)
+        .map_err(|_| Error::Unavailable(crate::deployment::Failure::SoftwareCatalogInvariant))?
+        .cloned())
 }
 
 /// Shared selected-software authority facts for dispatch and directory reads.

@@ -113,11 +113,14 @@ MODULES = {
 
     "registration.device_access": dict(prefix="assembly::credential_owners_t2::registration::", profiles=("shared",), inputs=('crates/agent-wire/src/identity.rs', "crates/device-access*/*", "crates/recovery-credentials/*", "apps/server/schema/da-*", "apps/server/src/migration/device_access.rs", "apps/server/src/assembly/device_access/*", "apps/server/tests/credential_owners/*", "apps/server/src/assembly/access_execution.rs", "apps/server/src/assembly/registration_agent_facts.rs", "apps/server/src/assembly/registration_sources.rs", "crates/agent-channel/src/bindings.rs", "apps/server/tests/support/planning.rs", "apps/server/tests/task_trust/support.rs", "hack/task_trust_materials.py")),
     "recovery.credentials": dict(prefix="assembly::credential_owners_t2::credentials::", profiles=("shared", "recovery_maintenance", "recovery_audit"), inputs=('crates/agent-wire/src/identity.rs', "crates/recovery-credentials/*", "apps/server/tests/credential_owners/*", "apps/server/src/assembly/credential*", "crates/device-service/src/control/credential_inputs.rs", "crates/apple-channel/src/recovery_credentials.rs", "crates/apple-channel/src/flow_store.rs", "crates/apple-channel/src/protection.rs", "apps/server/tests/support/native_identity.rs", "apps/server/tests/task_trust/support.rs", "hack/native_protocol_materials.py", "hack/task_trust_materials.py")),
-    'software.deployment': dict(prefix='assembly::software_t2::', profiles=('shared',),
+    'software.deployment': dict(prefix='assembly::software_t2::', profiles=('shared', 'native_download'),
         inputs=('crates/agent-wire/src/identity.rs', 'crates/software-service/*', 'crates/device-service/src/control/source_changes.rs',
                 'apps/server/src/assembly/software*', 'apps/server/src/assembly/host_storage.rs',
                 'apps/server/src/assembly/registration.rs', 'apps/server/src/assembly/task_trust.rs',
                 'apps/server/tests/software/*', 'apps/server/tests/support/command_runtime.rs',
+                'apps/server/tests/support/host.rs', 'apps/server/src/assembly/http.rs',
+                'crates/management-http/src/software_content.rs', 'crates/management-http/src/boundary.rs',
+                'crates/management-http/src/router.rs', 'crates/content-service/*', 'crates/http-contract/*',
                 'apps/server/tests/support/planning.rs', 'hack/task_trust_materials.py')),
     'registration.installation': dict(prefix='assembly::registration_installation_t2::', profiles=('shared',),
         inputs=('crates/agent-wire/src/identity.rs', 'crates/registration-service/src/installation/*', 'crates/registration-service/src/agent*',
@@ -251,10 +254,10 @@ MODULES = {
                 'crates/agent-channel/src/tasks.rs')),
 
     'foundation.authorization': dict(
-        prefix='foundation_t2::authorization::', profiles=('shared', 'transaction'),
+        prefix='foundation_t2::authorization::', profiles=('shared', 'transaction', 'http_scope'),
         inputs=('crates/agent-wire/src/identity.rs', 'apps/server/src/identity.rs', 'apps/server/src/identity/*', 'apps/server/src/maintenance.rs', 'apps/server/src/authorization_bootstrap.rs', 'apps/server/src/installation/backup/accounts.rs', 'crates/audit-integration/src/*', 'crates/authorization-service/src/*', 'crates/authorization-service/schema/*',
                 'crates/management-http/src/authorization/http.rs', 'crates/device-access-http/src/browser.rs',
-                'crates/http-contract/*', 'crates/management-http/src/identity_contract.rs',
+                'crates/http-contract/*', 'crates/management-http/src/identity_contract.rs', 'crates/management-http/src/boundary.rs', 'crates/management-http/src/response.rs', 'apps/server/src/assembly/http.rs', 'apps/server/tests/support/host.rs', 'apps/server/tests/foundation/http_scope.rs', 'apps/server/src/diagnostic.rs',
                 'apps/server/src/assembly/device_access/*', 'apps/server/tests/foundation/authorization.rs', 'apps/server/tests/foundation/identity_capacity.rs', 'apps/server/src/administration/user_profiles/*')),
     'foundation.account_recovery': dict(
         prefix='installation::backup::accounts::t2::', profiles=('account_recovery',),

@@ -108,36 +108,32 @@ pub async fn advance_run(
                         value("/Status") == Some("70")
                             && value("/Version") == Some(job.version.as_str())
                     }
-                    _ => {
-                        let actual =
-                            serde_json::to_value(&op.request.task).map_err(|_| Error::Malformed)?;
-                        policy
-                            .assignment
-                            .frozen
-                            .native_packages
-                            .values()
-                            .find(|p| {
-                                p.task(run.id, &service.transactions.protection, execution.tenant())
-                                    .ok()
-                                    .and_then(|t| serde_json::to_value(t).ok())
-                                    .as_ref()
-                                    == Some(&actual)
-                            })
-                            .is_some_and(|p| match &p.identity {
-                                crate::deployment::native::Identity::Msix { identity, .. } => {
-                                    matches!(value("/IsProvisioned"), Some("1" | "true"))
-                                        && value("/Version")
-                                            == Some(
-                                                identity
-                                                    .version
-                                                    .map(|v| v.to_string())
-                                                    .join(".")
-                                                    .as_str(),
-                                            )
-                                }
-                                _ => false,
-                            })
-                    }
+                    _ => policy
+                        .assignment
+                        .frozen
+                        .native
+                        .as_ref()
+                        .ok_or(Error::Unsupported)?
+                        .package_for_task(
+                            run.id,
+                            &service.transactions.protection,
+                            execution.tenant(),
+                            &op.request.task,
+                        )?
+                        .is_some_and(|p| match &p.identity {
+                            crate::deployment::native::Identity::Msix { identity, .. } => {
+                                matches!(value("/IsProvisioned"), Some("1" | "true"))
+                                    && value("/Version")
+                                        == Some(
+                                            identity
+                                                .version
+                                                .map(|v| v.to_string())
+                                                .join(".")
+                                                .as_str(),
+                                        )
+                            }
+                            _ => false,
+                        }),
                 };
                 if verified {
                     if !command.status().is_terminal() {
@@ -245,17 +241,26 @@ pub async fn advance_run(
     {
         return Ok(());
     }
-    let package = policy
+    let native = policy
         .assignment
         .frozen
-        .native_packages
+        .native
+        .as_ref()
+        .ok_or(Error::Unsupported)?;
+    let package = native
+        .packages
         .get(&rss_mdm_policy::SoftwareTarget::new(p, a))
         .ok_or(Error::Unsupported)?;
     let input = crate::deployment::Create {
         operation_id: run.id,
         input_version: policy.id.to_string(),
         target: crate::deployment::NativeTarget::Device,
-        task: package.task(run.id, &service.transactions.protection, execution.tenant())?,
+        task: native.task(
+            package,
+            run.id,
+            &service.transactions.protection,
+            execution.tenant(),
+        )?,
         deadline: run.deadline,
     };
     let authority = crate::deployment::authority::Authority::Software {

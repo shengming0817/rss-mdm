@@ -252,20 +252,30 @@ async fn result_recovery_release_and_capacity() -> Result<()> {
     .await?;
     let task = Uuid::new_v4();
     let input = json!({"operationId":task,"expectedRevision":0,"input":{"context":"endpoint"}});
-    assert_eq!(
-        http.call(
+    let (status, accepted) = http
+        .call(
             reqwest::Method::POST,
             "/software-asset-queries",
-            Some(input)
+            Some(input),
         )
-        .await?
-        .0,
-        202
+        .await?;
+    assert_eq!(status, 202);
+    assert_eq!(accepted["asset"]["task"], task.to_string());
+    let receipt_path = format!("/software-asset-operations/{task}");
+    assert_eq!(
+        response(&http.get(&receipt_path).await?)["receipt"],
+        accepted["asset"]
     );
     assert!(!fixture.work(&c, task, 1).await?);
-    // A newly opened owner resumes the persisted array scan and unique memberships.
+    // Reconstruct both the owner and HTTP consumer from durable facts.
+    http.close().await;
     drop(fixture);
     let fixture = Fixture::open(&c).await?;
+    let http = Http::open(&c, &fixture, Arc::new(c.authenticate(&account).await?)).await?;
+    assert_eq!(
+        response(&http.get(&receipt_path).await?)["receipt"],
+        accepted["asset"]
+    );
     fixture.settle(&c, task).await?;
     let rows = http
         .get(&format!("/software-asset-queries/{task}/software"))
@@ -315,12 +325,18 @@ async fn result_recovery_release_and_capacity() -> Result<()> {
     .await?;
     assert_eq!(remaining, 1);
     tx.commit().await?;
+    http.close().await;
     drop(fixture);
     let fixture = Fixture::open(&c).await?;
+    let http = Http::open(&c, &fixture, Arc::new(c.authenticate(&account).await?)).await?;
     fixture.settle(&c, task).await?;
     assert_eq!(
         response(&http.get(&format!("/software-asset-queries/{task}")).await?)["resultState"],
         "released"
+    );
+    assert_eq!(
+        response(&http.get(&receipt_path).await?)["receipt"],
+        accepted["asset"]
     );
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     let facts: i64 =
@@ -501,6 +517,58 @@ async fn configuration_http_and_receipts() -> Result<()> {
     for risk in [json!(null), json!("critical")] {
         assert_eq!(http.call(reqwest::Method::PUT,&format!("/standard-software/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"name":"bad","risk":risk}}}))).await?.0,400);
     }
+    let task = Uuid::new_v4();
+    let (status, accepted) = http
+        .call(
+            reqwest::Method::POST,
+            "/software-asset-queries",
+            Some(json!({"operationId":task,"expectedRevision":0,"input":{"context":"endpoint"}})),
+        )
+        .await?;
+    assert_eq!(status, 202);
+    let accepted_path = format!("/software-asset-operations/{task}");
+    assert_eq!(
+        response(&http.get(&accepted_path).await?)["receipt"],
+        accepted["asset"]
+    );
+    // Same accepted shape without a Software task must not leak through this directory.
+    let unrelated = Uuid::new_v4();
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
+    sqlx::query("INSERT INTO mdm_assets.operations(tenant_id,actor,id,instance,fingerprint,response) SELECT tenant_id,actor,$3,instance,fingerprint,jsonb_set(response,'{asset,task}',to_jsonb($3::text)) FROM mdm_assets.operations WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(c.tenant.to_string()).bind(task).bind(unrelated).execute(&mut *tx).await?;
+    tx.commit().await?;
+    assert!(
+        response(
+            &http
+                .get(&format!("/software-asset-operations/{unrelated}"))
+                .await?
+        )["receipt"]
+            .is_null()
+    );
+    // The original operation remains restricted to its installation instance.
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
+    sqlx::query("UPDATE mdm_assets.operations SET instance=$3 WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(c.tenant.to_string())
+        .bind(task)
+        .bind(Uuid::new_v4())
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    assert!(response(&http.get(&accepted_path).await?)["receipt"].is_null());
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
+    sqlx::query(
+        "UPDATE mdm_assets.operations SET instance=$3::uuid WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(task)
+    .bind(&c.inputs.installation.instance_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    assert_eq!(
+        response(&http.get(&accepted_path).await?)["receipt"],
+        accepted["asset"]
+    );
     let reader = c
         .account(&[P::InventoryRead, P::InventorySensitiveRead, P::GroupRead])
         .await?;
@@ -520,6 +588,7 @@ async fn configuration_http_and_receipts() -> Result<()> {
         )["receipt"]
             .is_null()
     );
+    assert!(response(&readonly.get(&accepted_path).await?)["receipt"].is_null());
     let foreign = Context::open("shared", &[]).await?;
     let foreign_fixture = Fixture::open(&foreign).await?;
     let account = foreign.account(ADMIN).await?;
@@ -542,6 +611,7 @@ async fn configuration_http_and_receipts() -> Result<()> {
             .unwrap()
             .is_empty()
     );
+    assert!(response(&foreign_http.get(&accepted_path).await?)["receipt"].is_null());
     foreign_http.close().await;
     drop(foreign_fixture);
     foreign.close().await;
