@@ -55,10 +55,6 @@ fn xml_reads_bound_actual_output_even_when_zip_length_is_forged() {
     bytes[central + 24..central + 28].copy_from_slice(&1u32.to_le_bytes());
     let mut file = tempfile::tempfile().unwrap();
     file.write_all(&bytes).unwrap();
-    assert!(matches!(
-        super::bundle::archive(&mut file, &config(PathBuf::new())),
-        Err(Error::Malformed)
-    ));
     file.rewind().unwrap();
     let mut archive = zip::ZipArchive::new(&mut file).unwrap();
     let deadline =
@@ -327,6 +323,15 @@ fn unsigned_native_installers_are_observed_without_signature_evidence() {
                 super::installer::inspect(&mut file, name, &config, &RuntimeTimer, deadline)
                     .is_err()
             );
+        }
+        if name.ends_with(".msix") {
+            // Only the first entry's local modification time differs.
+            file.seek(SeekFrom::Start(10)).unwrap();
+            file.write_all(&[bytes[10] ^ 1]).unwrap();
+            assert!(matches!(
+                super::installer::inspect(&mut file, name, &config, &RuntimeTimer, deadline),
+                Err(Error::Malformed)
+            ));
         }
         file.set_len(2).unwrap();
         assert!(

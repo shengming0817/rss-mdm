@@ -220,7 +220,7 @@ pub(super) fn read_xml_bytes(
     Ok(())
 }
 fn read_xml(
-    archive: &mut zip::ZipArchive<&mut File>,
+    archive: &mut super::bundle::Archive<'_>,
     path: &str,
     timer: &dyn Clock,
     deadline: Deadline,
@@ -245,7 +245,7 @@ pub(super) fn inspect_msix(
     timer: &dyn Clock,
     deadline: Deadline,
 ) -> Result<rss_mdm_software_service::management::content::InstallerFacts, Error> {
-    let mut archive = super::bundle::archive(file, config)?;
+    let mut archive = super::bundle::archive(file, config, timer, deadline)?;
     let path = if archive.index_for_name("AppxManifest.xml").is_some() {
         "AppxManifest.xml"
     } else {

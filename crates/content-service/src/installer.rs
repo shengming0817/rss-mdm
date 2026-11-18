@@ -117,7 +117,7 @@ pub(super) async fn observe(
 fn invalid() -> Error {
     Error::Malformed
 }
-fn check(clock: &dyn Clock, deadline: Deadline) -> Result<(), Error> {
+pub(super) fn check(clock: &dyn Clock, deadline: Deadline) -> Result<(), Error> {
     if clock.now() >= deadline.instant() {
         Err(Error::Deadline)
     } else {
@@ -440,7 +440,7 @@ fn bundle(
     clock: &dyn Clock,
     deadline: Deadline,
 ) -> Result<InstallerFacts, Error> {
-    let mut zip = super::bundle::archive(file, config)?;
+    let mut zip = super::bundle::archive(file, config, clock, deadline)?;
     let mut entry = zip.by_name("manifest.json").map_err(|_| invalid())?;
     let length = entry.size();
     if !super::bundle::regular_entry(&entry)

@@ -3,7 +3,7 @@
 use super::*;
 use rss_mdm_resource::{Declaration, Version};
 use rss_mdm_software_service::catalog::{self, ContentPort, VerifiedContent};
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, io};
 // Check only fixed metadata/entry points; payload members are not inspected.
 pub(super) fn regular_entry<R: Read + Seek>(entry: &zip::read::ZipFile<'_, R>) -> bool {
     entry.is_file()
@@ -97,24 +97,72 @@ impl ContentPort for Store {
 fn invalid() -> Error {
     Error::Malformed
 }
+pub(super) type Archive<'a> = zip::ZipArchive<ArchiveReader<'a>>;
+
+pub(super) struct ArchiveReader<'a> {
+    file: &'a mut File,
+    clock: &'a dyn Clock,
+    deadline: Deadline,
+}
+
+impl ArchiveReader<'_> {
+    fn check_deadline(&self) -> io::Result<()> {
+        if self.clock.now() >= self.deadline.instant() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        Ok(())
+    }
+}
+
+impl Read for ArchiveReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.check_deadline()?;
+        self.file.read(buf)
+    }
+}
+
+impl Seek for ArchiveReader<'_> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.check_deadline()?;
+        self.file.seek(pos)
+    }
+}
+
+fn io_error(error: io::Error) -> Error {
+    if error.kind() == io::ErrorKind::TimedOut {
+        Error::Deadline
+    } else {
+        invalid()
+    }
+}
+
 pub(super) fn archive<'a>(
     file: &'a mut File,
     config: &Config,
-) -> Result<zip::ZipArchive<&'a mut File>, Error> {
-    let (count, offset) = directory(file, config)?;
-    let mut archive = zip::ZipArchive::with_config(
+    clock: &'a dyn Clock,
+    deadline: Deadline,
+) -> Result<Archive<'a>, Error> {
+    let length = file.metadata().map_err(|_| invalid())?.len();
+    let mut reader = ArchiveReader {
+        file,
+        clock,
+        deadline,
+    };
+    let (count, offset) = directory(&mut reader, length, config)?;
+    let opened = zip::ZipArchive::with_config(
         zip::read::Config {
             archive_offset: zip::read::ArchiveOffset::Known(0),
         },
-        file,
-    )
-    .map_err(|_| invalid())?;
+        reader,
+    );
+    super::installer::check(clock, deadline)?;
+    let mut archive = opened.map_err(|_| invalid())?;
     if archive.len() as u64 != count || archive.central_directory_start() != offset {
         return Err(invalid());
     }
-    archive
-        .validate_header_consistency()
-        .map_err(|_| invalid())?;
+    let consistency = archive.validate_header_consistency();
+    super::installer::check(clock, deadline)?;
+    consistency.map_err(|_| invalid())?;
     Ok(archive)
 }
 
@@ -127,15 +175,18 @@ fn u32le(b: &[u8]) -> u64 {
 fn u64le(b: &[u8]) -> u64 {
     u64::from_le_bytes(b.try_into().expect("fixed field"))
 }
-fn read_at<const N: usize>(file: &mut File, offset: u64) -> Result<[u8; N], Error> {
+fn read_at<const N: usize>(file: &mut ArchiveReader<'_>, offset: u64) -> Result<[u8; N], Error> {
     let mut b = [0; N];
-    file.seek(SeekFrom::Start(offset)).map_err(|_| invalid())?;
-    file.read_exact(&mut b).map_err(|_| invalid())?;
+    file.seek(SeekFrom::Start(offset)).map_err(io_error)?;
+    file.read_exact(&mut b).map_err(io_error)?;
     Ok(b)
 }
 // Check directory budgets and every raw name BEFORE ZipArchive allocates/deduplicates metadata.
-fn directory(file: &mut File, config: &Config) -> Result<(u64, u64), Error> {
-    let length = file.metadata().map_err(|_| invalid())?.len();
+fn directory(
+    file: &mut ArchiveReader<'_>,
+    length: u64,
+    config: &Config,
+) -> Result<(u64, u64), Error> {
     let end = length.checked_sub(22).ok_or_else(invalid)?;
     let e = read_at::<22>(file, end)?;
     if &e[..4] != b"PK\x05\x06" || e[4..8] != [0; 4] || e[20..22] != [0; 2] {
@@ -195,7 +246,7 @@ fn directory(file: &mut File, config: &Config) -> Result<(u64, u64), Error> {
             return Err(invalid());
         }
         let mut bytes = vec![0; name_len as usize];
-        file.read_exact(&mut bytes).map_err(|_| invalid())?;
+        file.read_exact(&mut bytes).map_err(io_error)?;
         let name = std::str::from_utf8(&bytes).map_err(|_| invalid())?;
         rss_mdm_resource::bundle_path(name).map_err(|_| invalid())?;
         if !names.insert(name.to_ascii_lowercase()) {

@@ -90,7 +90,7 @@ snapshot、partial、failed 分别表达完整快照、部分结果和失败。�
 4. `POST /api/v1/tenants/{tenant}/agent-packages` 只提交 operationId、packageId，要求 release_publish；自动启用软件仍检查 software_write。发布绑定真实安装文件与当前软件生命周期，显式启用后的正常 ARM64 EXE 与 PKG 沿用同一链路；领域拒绝与权限拒绝分别返回闭合原因。首用采用 production。四个原生目标及同目标多个版本可共存，一个已发布包即可满足首用包条件。
 5. `GET /api/v1/tenants/{tenant}/agent-packages/operations/{operationId}` 查询原保存、发布或撤回结果；null 表示仍未知，不证明未提交。`POST /api/v1/tenants/{tenant}/agent-packages/{releaseId}/withdraw` 要求 software_withdraw，禁止该 release 的新交换与下载。
 
-Nginx Agent 路由公开 `GET /api/v1/agent/enroll/packages`、`GET .../packages/{id}` 与 `GET .../packages/{id}/content`，继续复用 Content 的长度、摘要、Range 和 ETag。包目录只描述已发布安装材料，不承载注册 origin、公钥或构建期候选声明。注册 installation 只引用不可变 releaseId；文件摘要由软件 owner 持有，不另交付候选 manifest。
+产品控制台和 Agent 的公开 HTTPS origin 都提供匿名 `GET /api/v1/agent/enroll/packages`、`GET .../packages/{id}` 和 `GET .../packages/{id}/content`。请求通过必填的 `tenantId` 查询参数选定租户，下载复用 Content 的长度、摘要、Range 和 ETag。包目录只描述已发布安装材料，不承载注册 origin、公钥或构建期候选声明。注册 installation 只引用不可变 releaseId；文件摘要由软件 owner 持有，不另交付候选 manifest。
 
 注册配置仍由注册 owner 签名并验证稳定服务身份、签名连接配置、租户、目标、期限、secret、数量及 CSR；当前发布状态在同一租户事务中复查。任务签名与运行身份不因包未签名而改变。配置、共享 secret、设备 secret 和 CSR 不进入 URL、文件名或命令行。
 

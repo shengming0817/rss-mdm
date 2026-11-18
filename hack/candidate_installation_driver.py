@@ -61,8 +61,8 @@ class Browser:
         self.context=ssl.create_default_context(cafile=str(ca))
         self.tenant=None
 
-    def request(self, method, path, body=None, operation=None, content_type=None):
-        headers={'Origin':self.origin,'X-Identity-Request':'1'}
+    def request(self, method, path, body=None, operation=None, content_type=None, headers=None):
+        headers={'Origin':self.origin,'X-Identity-Request':'1'} if headers is None else dict(headers)
         if self.cookie:headers['Cookie']=self.cookie
         if self.csrf:headers['X-CSRF-Token']=self.csrf
         if operation:headers['Idempotency-Key']=operation
@@ -169,6 +169,10 @@ def qualify_agent_packages(operator, peer, visitor):
     head,head_headers,head_body=visitor.request('HEAD',scoped(content,operator))
     check(head==200 and not head_body and head_headers['Content-Length']==headers['Content-Length']==str(len(body)),
         'anonymous installer HEAD')
+    time.sleep(.2)
+    status,range_headers,part=visitor.request('GET',scoped(content,operator),headers={'Range':'bytes=1-3'})
+    check(status==206 and part==body[1:4] and range_headers['Content-Range']==f'bytes 1-3/{len(body)}'
+        and headers['ETag'] and range_headers['ETag']==headers['ETag'],'anonymous installer resume')
     check(call(visitor,'GET',scoped(catalogue,peer))==[],'tenant B catalogue excludes tenant A')
     call(visitor,'GET',scoped(detail,peer),expected=404)
     call(visitor,'GET',scoped(content,peer),expected=404)
