@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Real Compose journey: add a tenant to the running shared installation."""
+import hashlib
 import http.client
 import json
 from pathlib import Path
 import ssl
 import socket
+import struct
 import subprocess
 import time
 import uuid
@@ -59,29 +61,33 @@ class Browser:
         self.context=ssl.create_default_context(cafile=str(ca))
         self.tenant=None
 
-    def call(self, method, path, data=None, operation=None):
+    def request(self, method, path, body=None, operation=None, content_type=None):
         headers={'Origin':self.origin,'X-Identity-Request':'1'}
         if self.cookie:headers['Cookie']=self.cookie
         if self.csrf:headers['X-CSRF-Token']=self.csrf
         if operation:headers['Idempotency-Key']=operation
-        if data is not None:headers['Content-Type']='application/json'
+        if content_type:headers['Content-Type']=content_type
         connection=http.client.HTTPSConnection(self.url.hostname,self.url.port or 443,context=self.context,timeout=20)
         try:
             connection.sock=self.context.wrap_socket(socket.create_connection(("127.0.0.1",self.port),timeout=20),server_hostname=self.url.hostname)
-            connection.request(method,path,json.dumps(data) if data is not None else None,headers)
+            connection.request(method,path,body,headers)
             response=connection.getresponse()
             cookies=response.headers.get_all('set-cookie') or []
             if cookies:self.cookie='; '.join(value.split(';',1)[0] for value in cookies)
-            raw=response.read()
-            if raw and response.getheader('Content-Type','').startswith('application/json'):
-                value=json.loads(raw)
-            elif path=='/' and response.status==200:
-                value=raw.decode('utf-8')
-            else:
-                value=None
-            if isinstance(value,dict) and value.get('csrfToken'):self.csrf=value['csrfToken']
-            return response.status,value
+            return response.status,response.headers,response.read()
         finally:connection.close()
+
+    def call(self, method, path, data=None, operation=None):
+        body=json.dumps(data) if data is not None else None
+        status,headers,raw=self.request(method,path,body,operation,'application/json' if body is not None else None)
+        if raw and headers.get('Content-Type','').startswith('application/json'):
+            value=json.loads(raw)
+        elif path=='/' and status==200:
+            value=raw.decode('utf-8')
+        else:
+            value=None
+        if isinstance(value,dict) and value.get('csrfToken'):self.csrf=value['csrfToken']
+        return status,value
 
     def ready(self):
         status,value=self.call('GET','/readyz')
@@ -96,6 +102,78 @@ class Browser:
         check(self.tenant is not None, 'authenticated tenant')
         return '/api/v1/tenants/'+self.tenant+path
 
+
+def installer_fixture():
+    """Format-only PE for publication and byte checks. Never run on a device."""
+    # ref: crates/content-service/tests/fixtures/installers.rs exe_machine.
+    body = bytearray(1024)
+    body[:2] = b'MZ'
+    struct.pack_into('<I', body, 0x3c, 0x80)
+    body[0x80:0x84] = b'PE\0\0'
+    for offset,value in [(0x84,0x8664),(0x86,1),(0x94,240),(0x96,0x22),(0x98,0x20b),(0x98+68,3)]:
+        struct.pack_into('<H',body,offset,value)
+    for offset,value in [(16,0x1000),(32,4096),(36,512),(56,8192),(60,512),(108,16)]:
+        struct.pack_into('<I',body,0x98+offset,value)
+    section=0x98+240
+    body[section:section+5]=b'.text'
+    for offset,value in [(8,1),(12,4096),(16,512),(20,512),(36,0x60000020)]:
+        struct.pack_into('<I',body,section+offset,value)
+    body[512]=0xc3
+    return bytes(body)
+
+
+def qualify_agent_packages(operator, peer, visitor):
+    catalogue='/api/v1/agent/enroll/packages'
+
+    def scoped(path, browser):
+        return path+'?'+urlencode({'tenantId':browser.tenant})
+
+    def call(browser, method, path, data=None, expected=200):
+        time.sleep(.2)
+        status,value=browser.call(method,path,data)
+        check(status==expected,f'Agent package {method} {path}: expected {expected}, got {status}')
+        return value
+
+    for tenant in (operator,peer):
+        check(call(visitor,'GET',scoped(catalogue,tenant))==[],'anonymous initial catalogue is empty')
+
+    body=installer_fixture()
+    digest=hashlib.sha256(body).digest()
+    uploads=operator.business_path('/agent-packages/uploads')
+    started=call(operator,'POST',uploads,dict(operationId=str(uuid.uuid4()),filename='candidate-agent.exe',
+        length=len(body),sha256=list(digest)))
+    href=started['href']
+    check(href.startswith('/') and not href.startswith('//') and not urlsplit(href).netloc,'installer upload URI')
+    time.sleep(.2)
+    status,_,_=operator.request('PATCH',href+'?offset=0',body,content_type='application/octet-stream')
+    check(status==200,'installer bytes accepted')
+    call(operator,'POST',href+'/complete',expected=201)
+    package_id=started['packageId']
+    inspected=call(operator,'GET',uploads+'/'+package_id)
+    check(inspected['inspection']['status']=='parsed','fixture installer parsed')
+    call(operator,'POST',operator.business_path('/agent-packages/save'),dict(operationId=str(uuid.uuid4()),
+        packageId=package_id,version='3204-fixture',target=dict(platform='windows',architecture='x86_64')))
+    release=call(operator,'POST',operator.business_path('/agent-packages'),
+        dict(operationId=str(uuid.uuid4()),packageId=package_id))
+    detail=catalogue+'/'+str(uuid.UUID(release['releaseId']))
+    content=detail+'/content'
+    check(release['tenantId']==operator.tenant and release['installerSha256']==list(digest),'published fixture identity')
+    check(call(visitor,'GET',scoped(catalogue,operator))==[release],'anonymous published catalogue')
+    check(call(peer,'GET',scoped(catalogue,operator))==[release],'session does not choose the public tenant')
+    check(call(visitor,'GET',scoped(detail,operator))==release,'anonymous published detail')
+
+    time.sleep(.2)
+    status,headers,download=visitor.request('GET',scoped(content,operator))
+    check(status==200 and download==body and hashlib.sha256(download).digest()==digest,'anonymous installer download')
+    time.sleep(.2)
+    head,head_headers,head_body=visitor.request('HEAD',scoped(content,operator))
+    check(head==200 and not head_body and head_headers['Content-Length']==headers['Content-Length']==str(len(body)),
+        'anonymous installer HEAD')
+    check(call(visitor,'GET',scoped(catalogue,peer))==[],'tenant B catalogue excludes tenant A')
+    call(visitor,'GET',scoped(detail,peer),expected=404)
+    call(visitor,'GET',scoped(content,peer),expected=404)
+    call(visitor,'POST',scoped(catalogue,operator),expected=405)
+    check(not visitor.cookie,'anonymous package requests did not acquire a session')
 
 
 def storage_roundtrip(owner, business):
@@ -246,6 +324,7 @@ def qualify(owner,origin,port):
     peer.login(second['tenantId'],'administrator',request['administratorPassword'])
     check(peer.call('GET',peer.business_path('/resources'))[0]==200,'second tenant survives shared database recovery')
     check(completed(operation),'original provisioning survives recovery')
+    qualify_agent_packages(business,peer,Browser(origin,ca,port))
     return dict(status='passed',checks=['seed_and_replay','current_host_and_provisioning_contract','same_process_second_tenant',
         'shared_deployment_and_database_resources','real_administrators_and_default_business','tenant_session_isolation',
-        'tenant_directory_pagination','provisioning_replay','same_candidate_product_restore'])
+        'tenant_directory_pagination','provisioning_replay','same_candidate_product_restore','anonymous_agent_packages'])

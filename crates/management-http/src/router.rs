@@ -224,8 +224,6 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
             content: s.content.clone(),
         })
     });
-    let public_packages = crate::software_catalog::register_agent_packages()
-        .bind_with(context, |(s, _)| s.software_catalog.clone());
     let operations = {
         rss_mdm_http_contract::route_module! { struct AssembleModule3 for [Browser] { agent_enrollment_register, windows_entra_register, http_register, http_register_2, http_register_previews, software_catalog_routes, http_routes, http_register_3, directory_routes, timeline_routes, device_views_register } }
         AssembleModule3 {
@@ -336,10 +334,9 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
         crate::authorization::http::mount_protection(host_context, authentication.clone(), false);
     let protected = crate::authorization::http::mount_protection(protected, authentication, false);
     {
-        rss_mdm_http_contract::route_module! { struct AssembleModule4 for [Browser] { host_context, api_v1_agent_enroll at "/api/v1/agent/enroll", api_v1 at "/api/v1/tenants/{tenant}" } }
+        rss_mdm_http_contract::route_module! { struct AssembleModule4 for [Browser] { host_context, api_v1 at "/api/v1/tenants/{tenant}" } }
         AssembleModule4 {
             host_context,
-            api_v1_agent_enroll: public_packages,
             api_v1: protected,
         }
         .assemble()

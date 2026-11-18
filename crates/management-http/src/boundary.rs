@@ -30,17 +30,18 @@ pub fn wrap<M: rss_mdm_http_contract::module::Declaration>(
     wrap_with(router, envelope, Admission::Bound)
 }
 
-// Only the software ingress can choose deferred scope discovery; ordinary routes stay bound.
-pub(crate) fn wrap_download<M: rss_mdm_http_contract::module::Declaration>(
+// The software ingress uses this for reads whose authorization is resolved by the handler.
+pub(crate) fn wrap_unresolved<M: rss_mdm_http_contract::module::Declaration>(
     router: Router<(), M>,
     envelope: Envelope,
+    action: &'static str,
 ) -> Router<(), M> {
-    wrap_with(router, envelope, Admission::Download)
+    wrap_with(router, envelope, Admission::Unresolved(action))
 }
 #[derive(Clone, Copy)]
 enum Admission {
     Bound,
-    Download,
+    Unresolved(&'static str),
 }
 #[derive(Clone, Copy)]
 struct DownstreamResponse;
@@ -131,10 +132,10 @@ async fn admit(
             route_action(route),
             intent,
         ),
-        Admission::Download => RequestAudit::unresolved(
+        Admission::Unresolved(action) => RequestAudit::unresolved(
             rss_mdm_audit_integration::Origin::Request,
             envelope.profile,
-            "native-package-download",
+            action,
             rss_mdm_audit_integration::AuditIntent::Routine,
         ),
     };

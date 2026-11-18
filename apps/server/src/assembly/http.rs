@@ -541,9 +541,9 @@ pub(crate) fn from_state(
         let router = mount_agent(
             Some(&agent_services),
             da_agent_routes(&state, service.clone(), &host, monotonic.clone()),
-            rss_mdm_management_http::software_catalog::agent_packages_public(
+            rss_mdm_management_http::software_catalog::mount_agent_packages(Some(
                 state.software_catalog.clone(),
-            ),
+            )),
             agent_services.filevault.is_some(),
         );
         listeners.push((
@@ -561,6 +561,9 @@ pub(crate) fn from_state(
     }
     let apple = state.apple.clone();
     let browser = BrowserRoutes {
+        agent_packages: rss_mdm_management_http::software_catalog::mount_browser_agent_packages(
+            Some((state.software_catalog.clone(), management_boundary.clone())),
+        ),
         software_downloads: rss_mdm_management_http::software_content::routes(
             Arc::new(super::software::Downloads {
                 software: state.software.service.clone(),
@@ -806,13 +809,17 @@ fn windows_management_routes(
 rss_mdm_http_contract::route_module! {
     struct BrowserRoutes for [Browser] { device_access [optional],
         tenants, management, windows_management, apple_management,
-        apple_browser, windows_browser, host, software_native, software_downloads
+        apple_browser, windows_browser, host, software_native, software_downloads,
+        agent_packages at "/api/v1/agent/enroll"
     }
 }
 /// Complete self-owned HTTP surface, including conditional mounts, with no runtime state.
 /// Third-party Identity routers retain their external owner; product adapters remain included.
 pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<String>> {
     let browser = BrowserRoutes {
+        agent_packages: rss_mdm_management_http::software_catalog::mount_browser_agent_packages(
+            None,
+        ),
         software_downloads: rss_mdm_management_http::software_content::register().bind_with(
             None::<&Arc<dyn rss_mdm_management_http::software_content::Packages>>,
             Clone::clone,
