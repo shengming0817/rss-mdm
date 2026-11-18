@@ -324,6 +324,15 @@ fn unsigned_native_installers_are_observed_without_signature_evidence() {
                     .is_err()
             );
         }
+        if name.ends_with(".msix") {
+            // Only the first entry's local modification time differs.
+            file.seek(SeekFrom::Start(10)).unwrap();
+            file.write_all(&[bytes[10] ^ 1]).unwrap();
+            assert!(matches!(
+                super::installer::inspect(&mut file, name, &config, &RuntimeTimer, deadline),
+                Err(Error::Malformed)
+            ));
+        }
         file.set_len(2).unwrap();
         assert!(
             super::installer::inspect(&mut file, name, &config, &RuntimeTimer, deadline).is_err()

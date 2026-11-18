@@ -5,7 +5,11 @@ pub fn routes(
     service: std::sync::Arc<dyn Packages>,
     envelope: crate::boundary::Envelope,
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
-    crate::boundary::wrap_download(register().with_state(service), envelope)
+    crate::boundary::wrap_unresolved(
+        register().with_state(service),
+        envelope,
+        "native-package-download",
+    )
 }
 pub fn register()
 -> Router<std::sync::Arc<dyn Packages>, impl rss_mdm_http_contract::module::Declaration + use<>> {

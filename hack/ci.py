@@ -120,9 +120,29 @@ def identity_pin(manifest):
     require(len(pairs)==1, 'Identity packages must share exact source')
     return next(iter(pairs))
 
-def verify_policy(policy, manifest):
-    require(policy['advisories']['ignore']==[], 'unapproved advisory exception')
+def verify_chrono_exception(lock):
+    packages = lock['package']
+    registry = 'registry+https://github.com/rust-lang/crates.io-index'
+    for name, version, parent, parent_source in (
+        ('chrono', '0.4.45', 'xsd-schema', registry),
+        ('xsd-schema', '0.2.0', 'rss-mdm-windows-mdm', None),
+    ):
+        identities = [(p['version'], p.get('source')) for p in packages if p['name'] == name]
+        require(identities == [(version, registry)],
+                f'RUSTSEC-2026-0543: unexpected locked identities for {name}')
+        parents = [
+            (p['name'], p.get('source')) for p in packages
+            if any(dep.partition(' ')[0] == name for dep in p.get('dependencies', ()))
+        ]
+        require(parents == [(parent, parent_source)],
+                f'RUSTSEC-2026-0543: only {parent} may depend on {name}')
+
+def verify_policy(policy, manifest, lock):
+    ignores = policy['advisories']['ignore']
+    require(ignores in ([], ['RUSTSEC-2026-0543']), 'unapproved advisory exception')
     require(policy['advisories']['unused-ignored-advisory']=='deny', 'expired advisory exception must fail')
+    if ignores:
+        verify_chrono_exception(lock)
     require(policy['sources']['unknown-git']=='deny' and policy['sources']['unknown-registry']=='deny', 'unknown sources must fail')
     urls={rss_pin(manifest)[0],identity_pin(manifest)[0],audit_pin(manifest)[0]}
     require(len(urls)==3 and set(policy['sources']['allow-git'])==urls, 'source permissions must match distinct reviewed repositories')
@@ -164,7 +184,8 @@ def workspace_pin(root):
     pin = rss_pin(manifest)
     identity_pin(manifest)
     audit_pin(manifest)
-    verify_policy(tomllib.loads((root / "deny.toml").read_text()),manifest)
+    verify_policy(tomllib.loads((root / "deny.toml").read_text()), manifest,
+                  tomllib.loads((root / "Cargo.lock").read_text()))
     shared = manifest["workspace"]["dependencies"]
     for member in manifest["workspace"]["members"]:
         package = tomllib.loads((root / member / "Cargo.toml").read_text())

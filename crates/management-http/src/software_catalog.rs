@@ -462,13 +462,21 @@ async fn withdraw_agent(
     .await?;
     Ok(rss_mdm_http_contract::signature::WithStatus(()))
 }
-/// Anonymous, secret-free catalogue shared by Agent HTTPS and browser download ingress.
-pub fn agent_packages_public(
-    app: Arc<HttpState>,
+/// Anonymous Browser catalogue with the product request envelope.
+pub fn mount_browser_agent_packages(
+    runtime: Option<(Arc<HttpState>, crate::boundary::Envelope)>,
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
-    mount_agent_packages(Some(app))
+    let router = match runtime {
+        Some((app, envelope)) => crate::boundary::wrap_unresolved(
+            mount_agent_packages(Some(app)),
+            envelope,
+            "agent-package-public",
+        ),
+        None => mount_agent_packages(None),
+    };
+    router.rejections(crate::boundary::rejections)
 }
-pub(crate) fn register_agent_packages()
+fn register_agent_packages()
 -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
         rss_mdm_http_contract::route_module! { struct RegisterAgentPackagesModule1 for [Browser, Agent] { get_agent_package_list, get_agent_package_metadata, get_agent_package_content } }

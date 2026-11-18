@@ -143,6 +143,7 @@ class DependencyPolicy(unittest.TestCase):
                 (root / path).mkdir(parents=True)
                 (root / path / 'Cargo.toml').write_text((ci.ROOT / path / 'Cargo.toml').read_text())
             (root / 'Cargo.toml').write_text((ci.ROOT / 'Cargo.toml').read_text())
+            (root / 'Cargo.lock').write_bytes((ci.ROOT / 'Cargo.lock').read_bytes())
             (root / 'deny.toml').write_text((ci.ROOT / 'deny.toml').read_text())
             member = root / 'crates/inventory/Cargo.toml'
             original = (ci.ROOT / 'crates/inventory/Cargo.toml').read_text()
@@ -248,16 +249,57 @@ class AdvisoryPolicy(unittest.TestCase):
     def test_advisory_acceptance_is_exact(self):
         manifest = ci.tomllib.loads((ci.ROOT / 'Cargo.toml').read_text())
         policy = ci.tomllib.loads((ci.ROOT / 'deny.toml').read_text())
-        ci.verify_policy(policy, manifest)
-        for ignores in [['RUSTSEC-2023-0071'], ['RUSTSEC-2023-0071', 'RUSTSEC-9999-0001'], ['RUSTSEC-9999-0001']]:
+        lock = ci.tomllib.loads((ci.ROOT / 'Cargo.lock').read_text())
+        ci.verify_policy(policy, manifest, lock)
+        for ignores in [
+            ['RUSTSEC-2023-0071'],
+            ['chrono'],
+            ['RUSTSEC-2026-0543', 'RUSTSEC-2026-0543'],
+            [*policy['advisories']['ignore'], 'RUSTSEC-9999-0001'],
+        ]:
             changed = copy.deepcopy(policy)
             changed['advisories']['ignore'] = ignores
             with self.assertRaises(RuntimeError):
-                ci.verify_policy(changed, manifest)
+                ci.verify_policy(changed, manifest, lock)
         changed = copy.deepcopy(policy)
         changed['sources']['allow-git'].append('https://example.com/unapproved')
         with self.assertRaises(RuntimeError):
-            ci.verify_policy(changed, manifest)
+            ci.verify_policy(changed, manifest, lock)
+
+    def test_chrono_exception_requires_one_locked_windows_dependency_chain(self):
+        manifest = ci.tomllib.loads((ci.ROOT / 'Cargo.toml').read_text())
+        policy = ci.tomllib.loads((ci.ROOT / 'deny.toml').read_text())
+        lock = ci.tomllib.loads((ci.ROOT / 'Cargo.lock').read_text())
+        for name, change, error in (
+            ('chrono', {'version': '0.4.46'}, 'locked identities for chrono'),
+            ('chrono', {'source': 'registry+https://example.com/index'}, 'locked identities for chrono'),
+            ('xsd-schema', {'version': '0.3.1'}, 'locked identities for xsd-schema'),
+            ('xsd-schema', {'dependencies': []}, 'only xsd-schema may depend on chrono'),
+            ('rss-mdm-windows-mdm', {'dependencies': []}, 'only rss-mdm-windows-mdm may depend on xsd-schema'),
+        ):
+            with self.subTest(name=name, change=change):
+                changed = copy.deepcopy(lock)
+                next(p for p in changed['package'] if p['name'] == name).update(change)
+                with self.assertRaisesRegex(RuntimeError, error):
+                    ci.verify_policy(policy, manifest, changed)
+
+        for extra, error in (
+            ({'name': 'chrono', 'version': '0.4.46', 'source': 'registry+https://github.com/rust-lang/crates.io-index'},
+             'locked identities for chrono'),
+            ({'name': 'other', 'version': '0.1.0', 'dependencies': ['chrono 0.4.45']},
+             'only xsd-schema may depend on chrono'),
+            ({'name': 'other', 'version': '0.1.0', 'dependencies': ['xsd-schema']},
+             'only rss-mdm-windows-mdm may depend on xsd-schema'),
+        ):
+            with self.subTest(extra=extra):
+                with self.assertRaisesRegex(RuntimeError, error):
+                    ci.verify_policy(policy, manifest, {'package': [*lock['package'], extra]})
+
+        without_chrono = {'package': [p for p in lock['package'] if p['name'] != 'chrono']}
+        with self.assertRaisesRegex(RuntimeError, 'locked identities for chrono'):
+            ci.verify_policy(policy, manifest, without_chrono)
+        policy['advisories']['ignore'] = []
+        ci.verify_policy(policy, manifest, without_chrono)
 
 class WorkingTreeStability(unittest.TestCase):
 

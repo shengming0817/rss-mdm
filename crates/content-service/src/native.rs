@@ -13,23 +13,6 @@ fn check_time(timer: &dyn Clock, deadline: Deadline) -> Result<(), Error> {
     }
     Ok(())
 }
-fn archive<'a>(
-    file: &'a mut File,
-    config: &Config,
-) -> Result<zip::ZipArchive<&'a mut File>, Error> {
-    let (count, _) = super::bundle::directory(file, config)?;
-    let archive = zip::ZipArchive::with_config(
-        zip::read::Config {
-            archive_offset: zip::read::ArchiveOffset::Known(0),
-        },
-        file,
-    )
-    .map_err(|_| invalid())?;
-    if archive.len() as u64 != count {
-        return Err(invalid());
-    }
-    Ok(archive)
-}
 #[derive(Default)]
 struct Facts {
     identities: Vec<BTreeMap<String, String>>,
@@ -237,7 +220,7 @@ pub(super) fn read_xml_bytes(
     Ok(())
 }
 fn read_xml(
-    archive: &mut zip::ZipArchive<&mut File>,
+    archive: &mut super::bundle::Archive<'_>,
     path: &str,
     timer: &dyn Clock,
     deadline: Deadline,
@@ -262,7 +245,7 @@ pub(super) fn inspect_msix(
     timer: &dyn Clock,
     deadline: Deadline,
 ) -> Result<rss_mdm_software_service::management::content::InstallerFacts, Error> {
-    let mut archive = archive(file, config)?;
+    let mut archive = super::bundle::archive(file, config, timer, deadline)?;
     let path = if archive.index_for_name("AppxManifest.xml").is_some() {
         "AppxManifest.xml"
     } else {

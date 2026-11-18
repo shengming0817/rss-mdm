@@ -83,6 +83,8 @@ def native_pki_journey(deployed,browser):
             return response.status,json.loads(data) if data else None
     client=connection()
     try:
+        require(call(client,'GET','/api/v1/agent/enroll/packages?tenantId='+deployed.tenant)==(200,[]),
+                'candidate native Agent package catalogue failed')
         status,pending=call(client,'POST','/api/v1/agent/enroll/requests',request)
         require(status==200 and pending['state']=='pending','candidate CSR request failed')
         status,grant=browser.call('POST',f'/api/v1/tenants/{TENANT}/agent-requests/'+pending['grantId']+'/authorize',
@@ -128,7 +130,7 @@ def native_pki_journey(deployed,browser):
             require(response[0]==401,'published revoked certificate acquired a new identity')
         except (ssl.SSLError,ConnectionResetError):pass
     finally:client.close()
-    return ['native_public_trust','real_ca_signing','original_signing_replay','candidate_identity_denial','actual_mtls_activation',
+    return ['native_public_packages','native_public_trust','real_ca_signing','original_signing_replay','candidate_identity_denial','actual_mtls_activation',
             'activation_replay','joint_ca_mdm_audit_restore','same_registration_after_restore','retained_tls_revocation','signed_crl_serial_publication','new_tls_revocation']
 
 def run_smoke(directory):
