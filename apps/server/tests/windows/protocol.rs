@@ -131,10 +131,6 @@ impl Host {
         Fixture::close(self.assembly).await
     }
 }
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the real host monotonic clock is part of this fixture"
-)]
 async fn host(
     c: &Context,
     n: &identity::Native,
@@ -142,6 +138,10 @@ async fn host(
 ) -> Result<Host> {
     host_with_provider(c, n, w, None).await
 }
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the real host monotonic clock is part of this fixture"
+)]
 async fn host_with_provider(
     c: &Context,
     n: &identity::Native,
