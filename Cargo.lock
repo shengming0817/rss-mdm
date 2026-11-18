@@ -881,7 +881,6 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
- "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -2343,6 +2342,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nix"
+version = "0.31.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bc81ce8148d3b4f3274da811f11cdd824ae661ee4ef732cdb229825cf5be7f7"
+dependencies = [
+ "bitflags 2.13.1",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
 name = "no-std-compat"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2451,25 +2462,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "oauth2"
-version = "5.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "getrandom 0.2.17",
- "http 1.5.0",
- "rand 0.8.8",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "sha2 0.10.9",
- "thiserror 1.0.69",
- "url",
 ]
 
 [[package]]
@@ -3227,7 +3219,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-core"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=00abaf11984a24cbdc40d0385149c2fe0da01848#00abaf11984a24cbdc40d0385149c2fe0da01848"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=cee776d9e47cd32795df6f664eb71c2bfc0a073a#cee776d9e47cd32795df6f664eb71c2bfc0a073a"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -3248,7 +3240,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-http-axum"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=00abaf11984a24cbdc40d0385149c2fe0da01848#00abaf11984a24cbdc40d0385149c2fe0da01848"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=cee776d9e47cd32795df6f664eb71c2bfc0a073a#cee776d9e47cd32795df6f664eb71c2bfc0a073a"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3270,11 +3262,12 @@ dependencies = [
 [[package]]
 name = "rss-identity-oidc"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=00abaf11984a24cbdc40d0385149c2fe0da01848#00abaf11984a24cbdc40d0385149c2fe0da01848"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=cee776d9e47cd32795df6f664eb71c2bfc0a073a#cee776d9e47cd32795df6f664eb71c2bfc0a073a"
 dependencies = [
+ "base64 0.22.1",
+ "http 1.5.0",
  "ipnet",
  "jsonwebtoken",
- "oauth2",
  "reqwest",
  "rss-identity-core",
  "rss-request-context",
@@ -3291,7 +3284,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-postgres"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=00abaf11984a24cbdc40d0385149c2fe0da01848#00abaf11984a24cbdc40d0385149c2fe0da01848"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=cee776d9e47cd32795df6f664eb71c2bfc0a073a#cee776d9e47cd32795df6f664eb71c2bfc0a073a"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -3558,7 +3551,6 @@ dependencies = [
  "webauthn-authenticator-rs",
  "x509-cert",
  "zeroize",
- "zip",
 ]
 
 [[package]]
@@ -7392,14 +7384,15 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "9.0.0"
+version = "9.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "711e8c9646791c49b7eb799a19c4ae70a9b8372ddc6a1fa4778defd1e2aa5d5e"
+checksum = "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
 dependencies = [
  "crc32fast",
  "flate2",
  "indexmap",
  "memchr",
+ "nix",
  "typed-path",
 ]
 

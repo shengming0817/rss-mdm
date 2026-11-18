@@ -1,5 +1,5 @@
 //! Published content pins and bounded ZIP directory location.
-//! ref: zip-rs v8.6.0 src/read/zip_archive.rs
+//! ref: zip-rs v9.0.5 src/read/zip_archive.rs
 use super::*;
 use rss_mdm_resource::{Declaration, Version};
 use rss_mdm_software_service::catalog::{self, ContentPort, VerifiedContent};
@@ -97,6 +97,27 @@ impl ContentPort for Store {
 fn invalid() -> Error {
     Error::Malformed
 }
+pub(super) fn archive<'a>(
+    file: &'a mut File,
+    config: &Config,
+) -> Result<zip::ZipArchive<&'a mut File>, Error> {
+    let (count, offset) = directory(file, config)?;
+    let mut archive = zip::ZipArchive::with_config(
+        zip::read::Config {
+            archive_offset: zip::read::ArchiveOffset::Known(0),
+        },
+        file,
+    )
+    .map_err(|_| invalid())?;
+    if archive.len() as u64 != count || archive.central_directory_start() != offset {
+        return Err(invalid());
+    }
+    archive
+        .validate_header_consistency()
+        .map_err(|_| invalid())?;
+    Ok(archive)
+}
+
 fn u16le(b: &[u8]) -> u64 {
     u16::from_le_bytes(b.try_into().expect("fixed field")) as u64
 }
@@ -113,7 +134,7 @@ fn read_at<const N: usize>(file: &mut File, offset: u64) -> Result<[u8; N], Erro
     Ok(b)
 }
 // Check directory budgets and every raw name BEFORE ZipArchive allocates/deduplicates metadata.
-pub(super) fn directory(file: &mut File, config: &Config) -> Result<(u64, u64), Error> {
+fn directory(file: &mut File, config: &Config) -> Result<(u64, u64), Error> {
     let length = file.metadata().map_err(|_| invalid())?.len();
     let end = length.checked_sub(22).ok_or_else(invalid)?;
     let e = read_at::<22>(file, end)?;

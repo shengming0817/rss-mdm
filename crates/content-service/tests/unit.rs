@@ -55,6 +55,10 @@ fn xml_reads_bound_actual_output_even_when_zip_length_is_forged() {
     bytes[central + 24..central + 28].copy_from_slice(&1u32.to_le_bytes());
     let mut file = tempfile::tempfile().unwrap();
     file.write_all(&bytes).unwrap();
+    assert!(matches!(
+        super::bundle::archive(&mut file, &config(PathBuf::new())),
+        Err(Error::Malformed)
+    ));
     file.rewind().unwrap();
     let mut archive = zip::ZipArchive::new(&mut file).unwrap();
     let deadline =
