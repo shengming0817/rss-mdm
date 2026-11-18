@@ -422,6 +422,12 @@ pub(crate) async fn windows(
 #[ignore = "T2: actual TLS/HTTP, WNS revocation and persisted unfinished SyncML package across owner restart"]
 async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
+    let other = Context::open("shared", &[]).await?;
+    let (held, c) = if other.tenant.to_string() < c.tenant.to_string() {
+        (other, c)
+    } else {
+        (c, other)
+    };
     let n = identity::seed(&c, "windows").await?;
     let w = windows(&c, &n).await?;
     let native_id = "Windows-DeviceID-MixedCase-01";
@@ -574,6 +580,21 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
         .bind(c.tenant.to_string()).bind(n.device.into_uuid()).execute(&mut *tx).await?;
     assert_eq!(seeded.rows_affected(), 33);
     tx.commit().await?;
+    let prior = identity::seed(&held, "windows").await?;
+    let mut seed = command::seed_transaction(&held).await?;
+    sqlx::query("INSERT INTO mdm_access.management_sessions(tenant_id,device,protocol_epoch,session_id,credential,state,last_message,client_authenticated,login_user,nonce,expires_at)
+        VALUES($1::uuid,$2,$3,'101',$4,'superseded',1,true,false,$5,clock_timestamp()-interval '1 second')")
+        .bind(held.tenant.to_string()).bind(prior.device.into_uuid()).bind(prior.epoch).bind(prior.credential)
+        .bind([0u8;16].as_slice()).execute(&mut *seed).await?;
+    sqlx::query("INSERT INTO mdm_windows.push_queries(tenant_id,device,protocol_epoch,credential,session,message,command,configuration,request)
+        VALUES($1::uuid,$2,$3,$4,101,1,1024,$5,$6)")
+        .bind(held.tenant.to_string()).bind(prior.device.into_uuid()).bind(prior.epoch).bind(prior.credential)
+        .bind([0u8;32].as_slice()).bind([0u8;68].as_slice()).execute(&mut *seed).await?;
+    seed.commit().await?;
+    let mut lock = command::seed_transaction(&held).await?;
+    let lock_pid:i32=sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_windows.push_queries WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE")
+        .bind(held.tenant.to_string()).bind(prior.device.into_uuid()).fetch_one(&mut *lock).await?;
+
     assert!(discovered().await?);
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
@@ -592,11 +613,34 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
         while discovered().await? {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        loop {
+            let blocked: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))",
+            )
+            .bind(lock_pid)
+            .fetch_one(&held.operator)
+            .await?;
+            if blocked {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         Ok::<_, sqlx::Error>(())
     })
     .await;
-    assert!(stack.shutdown().join().await?.is_clean());
+    lock.rollback().await?;
     drained??;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let remains:bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND session_id='101')")
+                .bind(held.tenant.to_string()).fetch_one(&held.operator).await?;
+            if !remains { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok::<_, sqlx::Error>(())
+    }).await??;
+    assert!(stack.shutdown().join().await?.is_clean());
+    held.close().await;
     let retained: Vec<String> = sqlx::query_scalar("SELECT session_id FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND device=$2 ORDER BY session_id")
         .bind(c.tenant.to_string()).bind(n.device.into_uuid()).fetch_all(&c.operator).await?;
     assert_eq!(retained, ["17"]);

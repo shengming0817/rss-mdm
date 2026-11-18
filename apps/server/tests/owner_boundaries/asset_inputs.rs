@@ -1775,6 +1775,20 @@ async fn local_delivery_rotates_past_a_locked_first_tenant_and_a_full_page() -> 
         .map(|id| TenantId::parse(&id.to_string()))
         .collect::<Result<Vec<_>, _>>()?;
     let c = Context::open("shared", &keys).await?;
+    let (valid, columns, predicate): (bool, String, String) = sqlx::query_as(
+        "SELECT i.indisvalid, pg_get_indexdef(i.indexrelid), pg_get_expr(i.indpred,i.indrelid)
+         FROM pg_index i WHERE i.indexrelid='rss_transactional_messaging.mdm_local_projection_scopes'::regclass")
+        .fetch_one(&c.operator).await?;
+    assert!(valid && columns.contains("(domain, tenant_id, claim_epoch)"));
+    for value in [
+        "mdm-group",
+        "mdm-assets",
+        "pending",
+        "publishing",
+        "dead_letter",
+    ] {
+        assert!(predicate.contains(value), "{predicate}");
+    }
     for (&tenant, &id) in keys.iter().zip(&tenants) {
         let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")

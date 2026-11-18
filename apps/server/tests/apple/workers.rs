@@ -73,6 +73,19 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
         support::apple(ctx, native, key.clone(), &[]).await?;
     }
     let org = pending(first.0, first.1, &key).await?;
+    let mut skew = command::seed_transaction(&c).await?;
+    sqlx::query(
+        "UPDATE mdm_apple.ade_servers SET token_expires=101,next_sync=100 WHERE organization=$1",
+    )
+    .bind(org)
+    .execute(&mut *skew)
+    .await?;
+    for (clock, expected) in [(100_i64, true), (101, false)] {
+        let eligible: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_apple.ade_work_scopes(NULL,NULL,1,$1) WHERE tenant_id=$2::uuid)")
+            .bind(clock).bind(c.tenant.to_string()).fetch_one(&mut *skew).await?;
+        assert_eq!(eligible, expected);
+    }
+    skew.rollback().await?;
     let token = Uuid::new_v4();
     let aad = rss_mdm_native_protection::ProtectionContext::new(
         c.tenant,
