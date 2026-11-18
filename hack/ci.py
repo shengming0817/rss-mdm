@@ -30,6 +30,7 @@ LOCAL_PACKAGES = {
     "rss-mdm-device-access-postgres":"crates/device-access-postgres",
     "rss-mdm-device-access-runtime":"crates/device-access-runtime",
     "rss-mdm-device-access-http": "crates/device-access-http",
+    "rss-mdm-work-page": "crates/work-page",
     "rss-mdm-install-support": "crates/install-support",
     "rss-mdm-script-service": "crates/script-service",
     "rss-mdm-scope-postgres": "crates/scope-postgres",

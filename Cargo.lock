@@ -3517,6 +3517,7 @@ dependencies = [
  "rss-mdm-windows-channel",
  "rss-mdm-windows-mdm",
  "rss-mdm-winget-source",
+ "rss-mdm-work-page",
  "rss-observation",
  "rss-observation-postgres",
  "rss-projection",
@@ -3595,6 +3596,7 @@ dependencies = [
  "rss-mdm-registration-service",
  "rss-mdm-resource",
  "rss-mdm-software-service",
+ "rss-mdm-work-page",
  "rss-observation",
  "rss-request-context",
  "rss-runtime",
@@ -5192,6 +5194,7 @@ dependencies = [
  "rss-mdm-native-protection",
  "rss-mdm-query",
  "rss-mdm-query-postgres",
+ "rss-mdm-work-page",
  "rss-redact",
  "rss-request-context",
  "rss-transactional-messaging",
@@ -5294,6 +5297,14 @@ dependencies = [
  "serde_json",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "rss-mdm-work-page"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
