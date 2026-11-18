@@ -805,15 +805,14 @@ impl PolicyWork {
         if self.service.configuration.is_none() {
             return Ok(Vec::new());
         }
-        let result = sqlx::query_as(
+        sqlx::query_as(
             "SELECT tenant_id,expected_epoch FROM mdm_planning.configuration_relay_scopes($1,$2)",
         )
         .bind(after.map(|x| x.0))
         .bind(after.map(|x| x.1))
         .fetch_all(&self.read_pool)
         .await
-        .map_err(|_| Error::Unavailable(Failure::PolicyStorage));
-        result
+        .map_err(|_| Error::Unavailable(Failure::PolicyStorage))
     }
     pub async fn relay_scope(
         &self,

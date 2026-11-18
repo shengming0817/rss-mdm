@@ -150,10 +150,12 @@ async fn stalled_receiver_allows_other_fanout_and_http_settlement() -> Result<()
     let (sender, mut receipts) = mpsc::unbounded_channel();
     let handler = {
         let release = release.clone();
-        move |axum::Json(event): axum::Json<Event>| {
+        move |body: axum::body::Bytes| {
             let release = release.clone();
             let sender = sender.clone();
             async move {
+                let event: Event = serde_json::from_slice(&body)
+                    .expect("the signed Webhook body contains the event");
                 let _ = sender.send(event.event_id);
                 if event.event_id == a {
                     release.notified().await;
