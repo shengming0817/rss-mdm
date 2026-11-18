@@ -129,15 +129,17 @@ GRANT SELECT ON TABLE mdm_windows.attempts, mdm_windows.attempt_items TO mdm_acc
 
 COMMIT;
 
--- Read command and registration state under the candidate's tenant policy. The SET
--- clause restores the caller's setting on return. Only the installation owner may call it.
+-- Check command and device state under the candidate's tenant policy and restore the caller's scope.
 CREATE FUNCTION mdm_windows.wake_target_active(t uuid, device_id uuid, command text) RETURNS boolean
-LANGUAGE plpgsql STABLE SET search_path=pg_catalog SET rss.tenant_id='' AS $$
+LANGUAGE plpgsql STABLE SET search_path=pg_catalog AS $$
+DECLARE prior text := current_setting('rss.tenant_id',true); eligible boolean;
 BEGIN
  PERFORM set_config('rss.tenant_id',t::text,true);
- RETURN EXISTS(SELECT FROM mdm_access.devices d WHERE (d.tenant_id,d.id)=(t,device_id) AND d.state='active')
+ SELECT EXISTS(SELECT FROM mdm_access.devices d WHERE (d.tenant_id,d.id)=(t,device_id) AND d.state='active')
     AND (command IS NULL OR EXISTS(SELECT FROM rss_device_command.commands c
-        WHERE c.tenant_id=t AND c.command_id=command AND c.status IN ('published','received')));
+        WHERE c.tenant_id=t AND c.command_id=command AND c.status IN ('published','received'))) INTO eligible;
+ PERFORM set_config('rss.tenant_id',coalesce(prior,''),true);
+ RETURN eligible;
 END $$;
 REVOKE ALL ON FUNCTION mdm_windows.wake_target_active(uuid,uuid,text) FROM PUBLIC;
 

@@ -2,7 +2,7 @@
 //! ref: PostgreSQL LISTEN/NOTIFY; sqlx 0.9 sqlx-postgres/src/listener.rs.
 use crate::participants::WakeDemand;
 use crate::push::{PushOutcome, RetryAfter};
-use crate::{Error, Failure, RequestAudit, Store, Windows, database::db};
+use crate::{Error, Failure, RequestAudit, Windows, database::db};
 use rss_mdm_audit_integration::{AuditStore, Fact};
 use rss_mdm_native_protection::Protector;
 use rss_request_context::TenantId;
@@ -56,13 +56,11 @@ fn audit(
     audit.target_device(device);
     audit
 }
-pub async fn cycle(
+async fn cycle(
     execution: rss_transactional_messaging::fence::ExecutionBinding,
     w: &Windows,
     eligibility: &dyn WakeDemand,
-    key: &Protector,
-    dbase: &Store,
-    store: &AuditStore,
+    app: &crate::HttpState,
     candidates: &[rss_mdm_agent_wire::DeviceId],
     stop: &tokio_util::sync::CancellationToken,
 ) -> Result<WakeScan, Error> {
@@ -73,7 +71,7 @@ pub async fn cycle(
     let Some(push) = &w.push else { return Ok(scan) };
     let tenant_string = execution.tenant().to_string();
     let tenant = tenant_string.as_str();
-    let mut read = dbase.begin_read(tenant).await?;
+    let mut read = app.access.begin_read(tenant).await?;
     if let Some(revision) = push.material_revision
         && !crate::wns_materials::is_selected(&mut read, tenant, revision).await?
     {
@@ -92,7 +90,17 @@ pub async fn cycle(
             continue;
         }
         scan.transactions += 1;
-        match attempt(execution, w, eligibility, key, store, tenant, row).await {
+        match attempt(
+            execution,
+            w,
+            eligibility,
+            &app.protection,
+            &app.audit_store,
+            tenant,
+            row,
+        )
+        .await
+        {
             Ok(Some(delay)) => {
                 scan.sent += 1;
                 scan.due(push.now() + delay);
@@ -295,9 +303,7 @@ pub fn registration(
                             execution,
                             &windows,
                             eligibility.as_ref(),
-                            &app.protection,
-                            &app.access,
-                            &app.audit_store,
+                            &app,
                             &[device],
                             &stop,
                         )
