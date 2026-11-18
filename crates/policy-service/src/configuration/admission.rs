@@ -2,7 +2,6 @@ pub async fn verify_authority(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Er
     let bodies = [
         "configuration_device_key",
         "configuration_windows_pending_operations",
-        "configuration_windows_wake_candidates",
     ]
     .map(|name| {
         super::INSTALL_SQL
@@ -16,7 +15,6 @@ pub async fn verify_authority(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Er
     let rejected: Option<String> = sqlx::query_scalar(include_str!("authority-admission.sql"))
         .bind(bodies[0])
         .bind(bodies[1])
-        .bind(bodies[2])
         .fetch_optional(&mut *c)
         .await?;
     if let Some(name) = rejected {

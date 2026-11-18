@@ -395,10 +395,10 @@ REVOKE ALL ON FUNCTION mdm_windows.retention_scopes(uuid,bigint) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_windows.retention_scopes(uuid,bigint) TO mdm_access;
 
 CREATE INDEX management_session_expiry ON mdm_access.management_sessions(expires_at,tenant_id,expected_epoch);
-CREATE FUNCTION mdm_windows.next_session_expiry_ms() RETURNS bigint
+CREATE FUNCTION mdm_windows.next_session_expiry_ms(include_expired boolean) RETURNS bigint
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  SELECT ceil(extract(epoch FROM min(expires_at)-statement_timestamp())*1000)::bigint
- FROM mdm_access.management_sessions
+ FROM mdm_access.management_sessions WHERE include_expired OR expires_at>statement_timestamp()
 $$;
-REVOKE ALL ON FUNCTION mdm_windows.next_session_expiry_ms() FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_windows.next_session_expiry_ms() TO mdm_access;
+REVOKE ALL ON FUNCTION mdm_windows.next_session_expiry_ms(boolean) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_windows.next_session_expiry_ms(boolean) TO mdm_access;

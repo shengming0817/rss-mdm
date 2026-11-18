@@ -85,14 +85,14 @@ REVOKE ALL ON FUNCTION mdm_apple.ade_server_tenants(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_apple.ade_server_tenants(uuid) TO mdm_access;
 
 CREATE POLICY work_discovery ON mdm_apple.ade_operations FOR SELECT TO mdm_owner USING(true);
-CREATE FUNCTION mdm_apple.ade_work_scopes(after_tenant uuid,after_epoch bigint,fresh_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+CREATE FUNCTION mdm_apple.ade_work_scopes(after_tenant uuid,after_epoch bigint,fresh_epoch bigint, observed_at bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  SELECT tenant_id,expected_epoch FROM (
  (SELECT DISTINCT tenant_id,expected_epoch FROM mdm_apple.ade_operations WHERE state IN ('running','pending') AND (after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch)) ORDER BY tenant_id,expected_epoch LIMIT 32)
  UNION
- (SELECT DISTINCT tenant_id,fresh_epoch AS expected_epoch FROM mdm_apple.ade_servers s WHERE enabled AND verified AND NOT token_invalid AND token_expires>extract(epoch FROM statement_timestamp()) AND next_sync<token_expires
+ (SELECT DISTINCT tenant_id,fresh_epoch AS expected_epoch FROM mdm_apple.ade_servers s WHERE enabled AND verified AND NOT token_invalid AND token_expires>observed_at AND next_sync<token_expires
   AND NOT EXISTS(SELECT FROM mdm_apple.ade_operations o WHERE o.tenant_id=s.tenant_id AND o.organization=s.organization AND o.state IN ('pending','running','unknown'))
   AND (after_tenant IS NULL OR (tenant_id,fresh_epoch)>(after_tenant,after_epoch)) ORDER BY tenant_id,expected_epoch LIMIT 32)
  ) work ORDER BY tenant_id,expected_epoch LIMIT 32
 $$;
-REVOKE ALL ON FUNCTION mdm_apple.ade_work_scopes(uuid,bigint,bigint) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_apple.ade_work_scopes(uuid,bigint,bigint) TO mdm_access;
+REVOKE ALL ON FUNCTION mdm_apple.ade_work_scopes(uuid,bigint,bigint,bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_apple.ade_work_scopes(uuid,bigint,bigint,bigint) TO mdm_access;

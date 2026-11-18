@@ -275,20 +275,23 @@ pub fn registration(
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) = rss_runtime::ManagedTask::prepare("windows-wns", Duration::from_secs(8));
     task.into_registration(move |stop| async move {
-        rss_mdm_work_page::run(
-            std::num::NonZeroUsize::new(2).expect("parallel WNS devices"),
+        rss_mdm_work_page::run_grouped(
+            std::num::NonZeroUsize::new(2).expect("parallel WNS tenants"),
             RECONCILE,
             &stop,
             &notify,
-            |after| {
-                let (app, eligibility) = (&app, &eligibility);
-                async move {
-                    eligibility
-                        .candidates(&app.access, after)
-                        .await
-                        .map_err(|_| eprintln!("windows_push_discovery_failed"))
-                }
-            },
+            (
+                |(tenant, _)| tenant,
+                |after| {
+                    let (app, eligibility) = (&app, &eligibility);
+                    async move {
+                        eligibility
+                            .candidates(&app.access.pool, after)
+                            .await
+                            .map_err(|_| eprintln!("windows_push_discovery_failed"))
+                    }
+                },
+            ),
             |(tenant, device)| {
                 let (app, eligibility, stop) = (app.clone(), eligibility.clone(), stop.clone());
                 async move {

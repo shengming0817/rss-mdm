@@ -127,6 +127,7 @@ pub(crate) fn db(error: sqlx::Error) -> Error {
 fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
     let mut contracts = vec![
         include_str!("../schema/da-agent-access.json"),
+        include_str!("../schema/windows-wake-access.json"),
         crate::administration::first_use::ACCESS_CONTRACT,
         crate::administration::user_profiles::ACCESS_CONTRACT,
         crate::administration::tenants::ACCESS_CONTRACT,

@@ -284,18 +284,7 @@ LANGUAGE sql STABLE AS $$
 $$;
 REVOKE ALL ON FUNCTION mdm_devices.windows_wake_inputs() FROM PUBLIC;
 
-CREATE FUNCTION mdm_devices.windows_wake_candidates(p_after uuid) RETURNS TABLE(device uuid)
- LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
- AS $$
- SELECT DISTINCT w.device FROM mdm_devices.windows_wake_inputs() w
- JOIN rss_device_command.commands d ON d.tenant_id=w.tenant_id AND d.command_id=w.command_id
- JOIN mdm_access.devices r ON (r.tenant_id,r.id)=(w.tenant_id,w.device)
- WHERE w.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-   AND (p_after IS NULL OR w.device>p_after) AND r.state='active' AND d.status IN ('published','received')
- ORDER BY device LIMIT 32
-$$;
 
-REVOKE ALL ON FUNCTION mdm_devices.windows_wake_candidates(uuid) FROM PUBLIC;
 
 CREATE INDEX windows_wake_operations
   ON mdm_devices.control_operations (tenant_id

@@ -11,10 +11,6 @@
       "search_path": "search_path=pg_catalog"
     },
     {
-      "name": "mdm_planning.configuration_windows_wake_candidates",
-      "search_path": "search_path=pg_catalog"
-    },
-    {
       "name": "mdm_planning.configuration_work_scopes",
       "search_path": "search_path=pg_catalog, pg_temp"
     },

@@ -197,11 +197,13 @@ impl Store {
         &self,
         after: Option<(uuid::Uuid, i64)>,
         fresh_epoch: rss_transactional_messaging::fence::Epoch,
+        observed_at: i64,
     ) -> Result<Vec<(uuid::Uuid, i64)>, Error> {
-        sqlx::query_as("SELECT * FROM mdm_apple.ade_work_scopes($1,$2,$3)")
+        sqlx::query_as("SELECT * FROM mdm_apple.ade_work_scopes($1,$2,$3,$4)")
             .bind(after.map(|v| v.0))
             .bind(after.map(|v| v.1))
             .bind(fresh_epoch.get())
+            .bind(observed_at)
             .fetch_all(&self.pool)
             .await
             .map_err(db)

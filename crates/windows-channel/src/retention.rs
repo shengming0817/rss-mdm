@@ -113,86 +113,62 @@ pub fn registration(
 ) -> ManagedTaskRegistration {
     let (task, _) = ManagedTask::prepare("mdm-management-retention", Duration::from_secs(10));
     task.into_registration(move |stop| async move {
-        let mut after = None;
-        let mut nearest = None;
-        loop {
-            if stop.is_cancelled() {
-                return Ok(());
-            }
-            let page = match app.access.retention_scopes(after).await {
-                Ok(page) => page,
-                Err(_) => {
-                    eprintln!("mdm_retention_discovery_failed");
-                    nearest = Some(Duration::from_secs(5));
-                    Vec::new()
-                }
-            };
-            if page.is_empty() {
-                after = None;
-                if nearest.is_none() {
-                    match app.access.next_session_expiry().await {
-                        Ok(Some(expiry)) => {
-                            nearest = Some(nearest.map_or(expiry, |old: Duration| old.min(expiry)))
-                        }
-                        Err(_) => eprintln!("mdm_retention_expiry_query_failed"),
-                        Ok(None) => {}
-                    }
-                }
-                if nearest != Some(Duration::ZERO) {
-                    wait(&notify, &stop, nearest).await;
-                }
-                nearest = None;
-                continue;
-            }
-            for (tenant, epoch) in page {
-                after = Some((tenant, epoch));
-                if stop.is_cancelled() {
-                    return Ok(());
-                }
-                let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
-                    .map_err(rss_runtime::ShutdownError::new)?;
-                let epoch = rss_transactional_messaging::fence::Epoch::new(epoch)
-                    .map_err(rss_runtime::ShutdownError::new)?;
-                let execution = rss_transactional_messaging::fence::ExecutionBinding::new(
-                    app.storage,
-                    tenant,
-                    epoch,
-                );
-                match prune_management(
-                    execution,
-                    &app.access,
-                    &app.audit_store,
-                    &tenant.to_string(),
-                )
-                .await
-                {
-                    Ok(count) => {
-                        let delay = if count > 0 {
-                            Duration::ZERO
+        rss_mdm_work_page::run_grouped(
+            std::num::NonZeroUsize::new(2).expect("parallel retention tenants"),
+            Duration::from_secs(5),
+            &stop,
+            &notify,
+            (
+                |(tenant, _)| tenant,
+                |after| {
+                    let access = &app.access;
+                    async move {
+                        let rows = access
+                            .retention_scopes(after)
+                            .await
+                            .map_err(|_| eprintln!("mdm_retention_discovery_failed"))?;
+                        let next = if rows.is_empty() {
+                            access
+                                .next_session_expiry(after.is_none())
+                                .await
+                                .map_err(|_| eprintln!("mdm_retention_expiry_query_failed"))?
                         } else {
-                            Duration::from_millis(100)
+                            None
                         };
-                        nearest = Some(nearest.map_or(delay, |old: Duration| old.min(delay)));
+                        Ok(rss_mdm_work_page::Page { rows, next })
                     }
-                    Err(_) => {
-                        eprintln!("mdm_management_retention_failed");
-                        nearest = Some(
-                            nearest
-                                .unwrap_or(Duration::from_secs(5))
-                                .min(Duration::from_secs(5)),
-                        );
-                    }
+                },
+            ),
+            |(tenant, epoch)| {
+                let app = app.clone();
+                async move {
+                    let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
+                        .map_err(|_| ())?;
+                    let epoch =
+                        rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| ())?;
+                    let execution = rss_transactional_messaging::fence::ExecutionBinding::new(
+                        app.storage,
+                        tenant,
+                        epoch,
+                    );
+                    let count = prune_management(
+                        execution,
+                        &app.access,
+                        &app.audit_store,
+                        &tenant.to_string(),
+                    )
+                    .await
+                    .map_err(|_| eprintln!("mdm_management_retention_failed"))?;
+                    Ok(if count > 0 {
+                        Duration::ZERO
+                    } else {
+                        Duration::from_millis(100)
+                    })
                 }
-            }
-        }
+            },
+            |_| {},
+        )
+        .await;
+        Ok(())
     })
-}
-
-async fn wait(
-    notify: &tokio::sync::Notify,
-    stop: &tokio_util::sync::CancellationToken,
-    nearest: Option<Duration>,
-) {
-    let recovery = Duration::from_secs(5);
-    tokio::select! {biased; ()=stop.cancelled()=>{},()=notify.notified()=>{},()=tokio::time::sleep(nearest.unwrap_or(recovery).min(recovery))=>{}}
 }

@@ -2,7 +2,7 @@ use crate::{Error, Failure};
 use sqlx::{PgPool, Postgres, Transaction};
 use std::sync::Arc;
 pub struct Store {
-    pool: PgPool,
+    pub(crate) pool: PgPool,
     pub(crate) registration: Arc<rss_mdm_registration_service::Store>,
     pub(crate) authorization: Arc<rss_mdm_authorization_service::Store>,
 }
@@ -163,22 +163,16 @@ impl Store {
 }
 
 impl Store {
-    pub async fn push_work_page(
+    pub(crate) async fn next_session_expiry(
         &self,
-        after: Option<(uuid::Uuid, uuid::Uuid)>,
-    ) -> Result<Vec<(uuid::Uuid, uuid::Uuid)>, Error> {
-        sqlx::query_as("SELECT tenant_id,device FROM mdm_windows.push_work_page($1,$2)")
-            .bind(after.map(|key| key.0))
-            .bind(after.map(|key| key.1))
-            .fetch_all(&self.pool)
-            .await
-            .map_err(db)
-    }
-    pub(crate) async fn next_session_expiry(&self) -> Result<Option<std::time::Duration>, Error> {
-        let millis: Option<i64> = sqlx::query_scalar("SELECT mdm_windows.next_session_expiry_ms()")
-            .fetch_one(&self.pool)
-            .await
-            .map_err(db)?;
+        include_expired: bool,
+    ) -> Result<Option<std::time::Duration>, Error> {
+        let millis: Option<i64> =
+            sqlx::query_scalar("SELECT mdm_windows.next_session_expiry_ms($1)")
+                .bind(include_expired)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(db)?;
         Ok(millis.map(|ms| std::time::Duration::from_millis(ms.max(1) as u64)))
     }
     pub async fn retention_scopes(

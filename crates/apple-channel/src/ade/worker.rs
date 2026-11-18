@@ -34,7 +34,11 @@ pub fn registration(
                 let app = &app;
                 async move {
                     app.access
-                        .ade_work_scopes(after, app.expected_epoch)
+                        .ade_work_scopes(
+                            after,
+                            app.expected_epoch,
+                            now(app).map_err(|_| eprintln!("apple_ade_clock_failed"))?,
+                        )
                         .await
                         .map_err(|_| eprintln!("apple_ade_discovery_failed"))
                 }

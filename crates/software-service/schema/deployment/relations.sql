@@ -69,7 +69,6 @@ GRANT SELECT ON mdm_software_deployment.action_runs TO mdm_access;
 
 GRANT EXECUTE ON FUNCTION mdm_software_deployment.windows_pending_operations(uuid,uuid) TO mdm_access;
 
-GRANT EXECUTE ON FUNCTION mdm_software_deployment.windows_wake_candidates(uuid) TO mdm_access;
 
 GRANT EXECUTE ON FUNCTION mdm_software_deployment.retirement_commands(uuid,text),mdm_software_deployment.save_retired_command(uuid,uuid,bigint,bigint) TO mdm_access,mdm_command_runtime;
 

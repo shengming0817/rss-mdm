@@ -61,7 +61,6 @@ GRANT SELECT ON mdm_devices.unmanage_runs TO mdm_access;
 
 GRANT EXECUTE ON FUNCTION mdm_devices.windows_pending_operations(uuid,uuid) TO mdm_access;
 
-GRANT EXECUTE ON FUNCTION mdm_devices.windows_wake_candidates(uuid) TO mdm_access;
 
 GRANT EXECUTE ON FUNCTION mdm_devices.retirement_commands(uuid,text),mdm_devices.save_retired_command(uuid,uuid,bigint,bigint) TO mdm_access,mdm_command_runtime;
 

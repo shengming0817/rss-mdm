@@ -166,11 +166,9 @@ pub trait Departure: Send + Sync {
 pub trait WakeDemand: Send + Sync {
     fn candidates<'a>(
         &'a self,
-        store: &'a crate::Store,
+        pool: &'a sqlx::PgPool,
         after: Option<(uuid::Uuid, uuid::Uuid)>,
-    ) -> Pending<'a, Vec<(uuid::Uuid, uuid::Uuid)>> {
-        Box::pin(store.push_work_page(after))
-    }
+    ) -> Pending<'a, Vec<(uuid::Uuid, uuid::Uuid)>>;
     fn pending<'a>(
         &'a self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,
