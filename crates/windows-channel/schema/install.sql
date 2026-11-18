@@ -387,11 +387,6 @@ REVOKE ALL ON FUNCTION mdm_windows.entra_profile_tenants(uuid,text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_windows.entra_profile_tenants(uuid,text) TO mdm_access;
 
 CREATE POLICY push_discovery ON mdm_windows.push_channels FOR SELECT TO mdm_owner USING(true);
-CREATE FUNCTION mdm_windows.push_work_page(after_tenant uuid,after_device uuid) RETURNS TABLE(tenant_id uuid,device uuid) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
- SELECT tenant_id,device FROM mdm_windows.push_channels WHERE after_tenant IS NULL OR (tenant_id,device)>(after_tenant,after_device) ORDER BY tenant_id,device LIMIT 32
-$$;
-REVOKE ALL ON FUNCTION mdm_windows.push_work_page(uuid,uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_windows.push_work_page(uuid,uuid) TO mdm_access;
 CREATE POLICY retention_discovery ON mdm_access.management_sessions FOR SELECT TO mdm_owner USING(true);
 CREATE FUNCTION mdm_windows.retention_scopes(after_tenant uuid,after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  SELECT DISTINCT tenant_id,expected_epoch FROM mdm_access.management_sessions WHERE expires_at<statement_timestamp() AND (after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch)) ORDER BY tenant_id,expected_epoch LIMIT 32

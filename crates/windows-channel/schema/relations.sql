@@ -128,3 +128,34 @@ ALTER TABLE mdm_windows.attempts ADD FOREIGN KEY (tenant_id, device) REFERENCES 
 GRANT SELECT ON TABLE mdm_windows.attempts, mdm_windows.attempt_items TO mdm_access;
 
 COMMIT;
+
+-- Discover tenant coordinates only. Each domain enumerates current work under the tenant's RLS.
+CREATE FUNCTION mdm_windows.push_work_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT DISTINCT p.tenant_id FROM (
+    SELECT tenant_id,device FROM mdm_devices.control_operations
+    WHERE gateway_accepted AND dispatch_failure IS NULL AND input_context->>'platform'='windows'
+      AND (input_context->>'deadline')::bigint>extract(epoch FROM statement_timestamp())
+    UNION ALL
+    SELECT tenant_id,device FROM mdm_planning.configuration_operations
+    WHERE gateway_accepted AND dispatch_failure IS NULL AND input_context->>'platform'='windows'
+      AND (input_context->>'deadline')::bigint>extract(epoch FROM statement_timestamp())
+    UNION ALL
+    SELECT tenant_id,device FROM mdm_software_deployment.operations
+    WHERE gateway_accepted AND dispatch_failure IS NULL AND input_context->>'platform'='windows'
+      AND (input_context->>'deadline')::bigint>extract(epoch FROM statement_timestamp())
+    UNION ALL
+    SELECT tenant_id,device FROM mdm_registration_tasks.operations
+    WHERE gateway_accepted AND dispatch_failure IS NULL AND input_context->>'platform'='windows'
+      AND (input_context->>'deadline')::bigint>extract(epoch FROM statement_timestamp())
+    UNION ALL
+    SELECT tenant_id,device FROM mdm_inventory.collection_tasks
+    WHERE native_delivery IN ('prepared','sent') AND deadline>extract(epoch FROM statement_timestamp())
+ ) w JOIN mdm_windows.push_channels p USING(tenant_id,device)
+ WHERE (after_tenant IS NULL OR p.tenant_id>after_tenant)
+   AND p.attempt_until>statement_timestamp()
+   AND (p.outcome IS NULL OR p.outcome IN ('accepted','retryable','unknown'))
+ ORDER BY p.tenant_id LIMIT 32
+$$;
+REVOKE ALL ON FUNCTION mdm_windows.push_work_scopes(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_windows.push_work_scopes(uuid) TO mdm_access;

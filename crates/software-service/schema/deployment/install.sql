@@ -304,7 +304,7 @@ REVOKE ALL ON FUNCTION mdm_software_deployment.windows_pending_operations(uuid,u
 CREATE FUNCTION mdm_software_deployment.windows_wake_candidates(p_after uuid) RETURNS TABLE(device uuid)
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
- SELECT o.device FROM mdm_software_deployment.operations o
+ SELECT DISTINCT o.device FROM mdm_software_deployment.operations o
  JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text
  JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(o.tenant_id,o.device)
  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid

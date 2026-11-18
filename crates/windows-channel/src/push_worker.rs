@@ -64,6 +64,7 @@ pub async fn cycle(
     dbase: &Store,
     store: &AuditStore,
     candidates: &[rss_mdm_agent_wire::DeviceId],
+    stop: &tokio_util::sync::CancellationToken,
 ) -> Result<WakeScan, Error> {
     let mut scan = WakeScan {
         candidates: candidates.len(),
@@ -82,6 +83,7 @@ pub async fn cycle(
             .bind(tenant).bind(candidates.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).bind(push.configuration.as_slice()).fetch_all(&mut *read).await.map_err(db)?;
     read.rollback().await.map_err(db)?;
     for row in rows {
+        if stop.is_cancelled() { break; }
         let seconds: f64 = row.try_get("wait_seconds").map_err(db)?;
         if seconds > 0.0 {
             scan.due(push.now() + Duration::from_secs_f64(seconds.min(RECONCILE.as_secs_f64())));
@@ -269,18 +271,49 @@ pub fn registration(
         let mut after=None;let mut next=None;
         loop{
             if stop.is_cancelled(){return Ok(())}
-            let page=match app.access.push_work_page(after).await{Ok(page)=>page,Err(_)=>{eprintln!("windows_push_discovery_failed");Vec::new()}};
-            if page.is_empty(){after=None;wait(&notify,&stop,&mut reconcile,next).await;next=None;continue}
-            let mut groups=std::collections::BTreeMap::<Uuid,Vec<rss_mdm_agent_wire::DeviceId>>::new();
-            for(tenant,device)in page {after=Some((tenant,device));groups.entry(tenant).or_default().push(rss_mdm_agent_wire::DeviceId::try_from(device).map_err(rss_runtime::ShutdownError::new)?);}
-            for(tenant,devices)in groups{
-                if stop.is_cancelled(){return Ok(())}
-                let tenant=TenantId::parse(&tenant.to_string()).map_err(rss_runtime::ShutdownError::new)?;let execution=app.execution(tenant);
-                let result=async{let windows=app.windows(execution).await?;cycle(execution,&windows,eligibility.as_ref(),&app.protection,&app.access,&app.audit_store,&devices).await}.await;
-                match result {Ok(scan)=>{if let Some(at)=scan.next{next=Some(next.map_or(at,|old:Instant|old.min(at)));}},Err(_)=>{eprintln!("{}",serde_json::json!({"event":"windows_push_unavailable","tenant":tenant.to_string()}));}}
+            let page = match app.access.push_work_scopes(after).await {
+                Ok(rows) => rows,
+                Err(_) => {
+                    eprintln!("windows_push_discovery_failed");
+                    schedule_failure(&mut next);
+                    Vec::new()
+                }
+            };
+            if page.is_empty() { after=None; wait(&notify,&stop,&mut reconcile,next).await; next=None; continue; }
+            for tenant in page {
+                after = Some(tenant);
+                if stop.is_cancelled() { return Ok(()); }
+                let tenant = TenantId::parse(&tenant.to_string()).map_err(rss_runtime::ShutdownError::new)?;
+                let execution = app.execution(tenant);
+                let result = async {
+                    let windows = app.windows(execution).await?;
+                    let mut device_after = None;
+                    while !stop.is_cancelled() {
+                        let mut tx = app.access.begin_read(&tenant.to_string()).await?;
+                        let devices = eligibility.candidates(execution,&mut tx,device_after).await?;
+                        tx.rollback().await.map_err(db)?;
+                        let Some(last) = devices.last().copied() else { break; };
+                        device_after = Some(last);
+                        let scan = cycle(execution,&windows,eligibility.as_ref(),&app.protection,
+                            &app.access,&app.audit_store,&devices,&stop).await?;
+                        if let Some(at) = scan.next { next=Some(next.map_or(at,|old:Instant|old.min(at))); }
+                        if devices.len()<32 { break; }
+                    }
+                    Ok::<_,Error>(())
+                }.await;
+                if result.is_err() {
+                    eprintln!("{}",serde_json::json!({"event":"windows_push_unavailable","tenant":tenant.to_string()}));
+                    schedule_failure(&mut next);
+                }
             }
         }
     })
+}
+
+#[allow(clippy::disallowed_methods,reason="process-owned monotonic worker clock")]
+fn schedule_failure(next: &mut Option<Instant>) {
+    let at = Instant::now() + FAILURE_RETRY;
+    *next = Some(next.map_or(at, |old| old.min(at)));
 }
 
 async fn wait(

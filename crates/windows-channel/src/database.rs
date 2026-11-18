@@ -163,16 +163,9 @@ impl Store {
 }
 
 impl Store {
-    pub async fn push_work_page(
-        &self,
-        after: Option<(uuid::Uuid, uuid::Uuid)>,
-    ) -> Result<Vec<(uuid::Uuid, uuid::Uuid)>, Error> {
-        sqlx::query_as("SELECT * FROM mdm_windows.push_work_page($1,$2)")
-            .bind(after.map(|v| v.0))
-            .bind(after.map(|v| v.1))
-            .fetch_all(&self.pool)
-            .await
-            .map_err(db)
+    pub(crate) async fn push_work_scopes(&self, after: Option<uuid::Uuid>) -> Result<Vec<uuid::Uuid>, Error> {
+        sqlx::query_scalar("SELECT tenant_id FROM mdm_windows.push_work_scopes($1)")
+            .bind(after).fetch_all(&self.pool).await.map_err(db)
     }
     pub(crate) async fn next_session_expiry(&self) -> Result<Option<std::time::Duration>, Error> {
         let millis: Option<i64> = sqlx::query_scalar("SELECT mdm_windows.next_session_expiry_ms()")
