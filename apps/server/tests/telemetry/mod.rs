@@ -285,12 +285,19 @@ async fn exercise(c: &Context, f: &Fixture, default: &Fixture) -> Result<()> {
     capacity::seed(c, f, &device, epoch).await?;
     let account = c.account(&[Permission::InventoryRead]).await?;
     let binding = f.config.configuration_binding()?;
-    rss_mdm_telemetry_service::admit_configuration(&f.owner.runtime, c.execution(), binding)
-        .await?;
+    fixture::persist_selection(c, &f.config).await?;
     let mut absent = f.config.clone();
     absent.resource_id = Uuid::new_v4();
     let absent_binding = absent.configuration_binding()?;
-    absent.cursor_key_file = absent.cursor_key_file.with_file_name("absent-cursor");
+    let unavailable = Context::open("shared", &[]).await?;
+    fixture::persist_selection(&unavailable, &absent).await?;
+    absent.cursor_key_file = Some(
+        absent
+            .cursor_key_file
+            .as_ref()
+            .unwrap()
+            .with_file_name("absent-cursor"),
+    );
     let service = f
         .service(c, &[default.config.clone(), f.config.clone(), absent])
         .await?;
@@ -304,13 +311,6 @@ async fn exercise(c: &Context, f: &Fixture, default: &Fixture) -> Result<()> {
     .fetch_one(&c.operator)
     .await?;
     assert_eq!(selected, binding);
-    let unavailable = Context::open("shared", &[]).await?;
-    rss_mdm_telemetry_service::admit_configuration(
-        &f.owner.runtime,
-        unavailable.execution(),
-        absent_binding,
-    )
-    .await?;
     assert!(
         service
             .admit_default(

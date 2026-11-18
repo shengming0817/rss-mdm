@@ -11,7 +11,6 @@ use uuid::Uuid;
 pub(super) async fn prepare(
     input: &Input,
     journal: &Journal,
-    tenant: Uuid,
     instance: Uuid,
 ) -> Result<crate::telemetry::Config> {
     let request = if let Some(request) = journal.load::<Request>("telemetry-request.json")? {
@@ -38,7 +37,6 @@ pub(super) async fn prepare(
                 "telemetry-install",
             ),
             directory: input.directory.join("telemetry"),
-            tenant: tenant.to_string(),
             configuration,
             administrator,
             owner: format!("mdm_ts_owner_{}", instance.simple()),

@@ -141,7 +141,7 @@ impl Context {
         )
         .await
     }
-    async fn connect(
+    pub(crate) async fn connect(
         profile: &str,
         inputs: Inputs,
         operator: PgPool,

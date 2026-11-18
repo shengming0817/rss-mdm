@@ -124,7 +124,8 @@ impl Gateway {
         Ok(Self { address, task })
     }
 }
-struct Running {
+pub(super) struct Running {
+    pub(super) telemetry: Arc<std::sync::OnceLock<Arc<rss_mdm_telemetry_service::Service>>>,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<std::result::Result<(), crate::ProcessError>>,
 }
@@ -140,20 +141,25 @@ impl Running {
         clippy::disallowed_methods,
         reason = "integration supplies the production monotonic clock"
     )]
-    async fn open(runtime: &Value) -> Result<Self> {
+    pub(super) async fn open(runtime: &Value) -> Result<Self> {
         let config: crate::config::Config = serde_json::from_value(runtime.clone())?;
         let address = config.listen;
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(crate::serve(
-            config,
-            async move {
-                stopped
-                    .await
-                    .map_err(|_| std::io::Error::other("test shutdown"))
-            },
-            Arc::new(crate::Monotonic(std::time::Instant::now)),
+        let telemetry = Arc::new(std::sync::OnceLock::new());
+        let task = tokio::spawn(crate::telemetry::INSTALLED_SERVICE.scope(
+            telemetry.clone(),
+            crate::serve(
+                config,
+                async move {
+                    stopped
+                        .await
+                        .map_err(|_| std::io::Error::other("test shutdown"))
+                },
+                Arc::new(crate::Monotonic(std::time::Instant::now)),
+            ),
         ));
         let mut running = Self {
+            telemetry,
             stop: Some(stop),
             task,
         };
@@ -165,7 +171,7 @@ impl Running {
         }
         Ok(running)
     }
-    async fn close(mut self) -> Result<()> {
+    pub(super) async fn close(mut self) -> Result<()> {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
@@ -173,7 +179,7 @@ impl Running {
         Ok(())
     }
 }
-fn desired(root: &Path, host: Uuid) -> Result<Value> {
+pub(super) fn desired(root: &Path, host: Uuid) -> Result<Value> {
     Ok(serde_json::from_slice(&std::fs::read(
         root.join("installation")
             .join(format!("rss-mdm-{}", host.simple()))
@@ -454,32 +460,7 @@ pub(super) async fn exercise(
         database.name.as_str(),
         telemetry["administrator"]["name"].as_str().unwrap(),
     ] {
-        ensure!(
-            name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
-            "fixture database identifier"
-        );
-        let owner: String = sqlx::query_scalar(
-            "SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname=$1",
-        )
-        .bind(name)
-        .fetch_one(&mut admin)
-        .await?;
-        ensure!(
-            owner
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
-            "fixture database owner"
-        );
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "DROP DATABASE {name} WITH (FORCE)"
-        )))
-        .execute(&mut admin)
-        .await?;
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "CREATE DATABASE {name} OWNER {owner} TEMPLATE template0"
-        )))
-        .execute(&mut admin)
-        .await?;
+        reset_fixture_database(&mut admin, name).await?;
     }
     admin.close().await?;
     for directory in ["installation", "runtime", "gateway", "content"] {
@@ -555,5 +536,39 @@ pub(super) async fn exercise(
         business.defaults(&tenant.to_string()).await?;
     }
     running.close().await?;
+    Ok(())
+}
+
+/// Called only on the isolated databases created by this installation proof.
+pub(super) async fn reset_fixture_database(
+    admin: &mut sqlx::PgConnection,
+    name: &str,
+) -> Result<()> {
+    ensure!(
+        name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+        "fixture database identifier"
+    );
+    let owner: String = sqlx::query_scalar(
+        "SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname=$1",
+    )
+    .bind(name)
+    .fetch_one(&mut *admin)
+    .await?;
+    ensure!(
+        owner
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+        "fixture database owner"
+    );
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "DROP DATABASE {name} WITH (FORCE)"
+    )))
+    .execute(&mut *admin)
+    .await?;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "CREATE DATABASE {name} OWNER {owner} TEMPLATE template0"
+    )))
+    .execute(&mut *admin)
+    .await?;
     Ok(())
 }

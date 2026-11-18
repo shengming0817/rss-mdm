@@ -380,13 +380,8 @@ async fn resume(input: &Input, journal: &Journal, mut saved: Saved) -> Result<Re
     let connection_budget = super::postgres::connection_budget(&mut database).await?;
     database.close().await.map_err(|_| Error::Storage)?;
     let mut runtime = runtime(input, journal, &saved, connection_budget, management)?;
-    let telemetry = super::default_telemetry::prepare(
-        input,
-        journal,
-        saved.receipt.tenant_id,
-        saved.receipt.instance_id,
-    )
-    .await?;
+    let telemetry =
+        super::default_telemetry::prepare(input, journal, saved.receipt.instance_id).await?;
     runtime["telemetry"] = serde_json::to_value(vec![telemetry]).map_err(invalid)?;
     runtime["content"] = match input.content_storage {
         ContentStorage::Volume => {

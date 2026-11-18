@@ -26,35 +26,9 @@ impl Service {
         binding: rss_transactional_messaging::fence::ExecutionBinding,
         cutoff: std::time::Instant,
     ) -> Result<Diagnostics, Error> {
-        let backend = self.backend(binding).await?;
-        let remaining = cutoff
-            .checked_duration_since(crate::backend::SystemClock.now())
-            .ok_or(Error::Storage)?;
-        let deadline = Deadline::from_timeout(&crate::backend::SystemClock, remaining)
-            .map_err(|_| Error::Storage)?;
-        // A real bounded read exercises both the control and data plane. The
-        // reserved namespace has no product samples and grants no user data access.
-        let probe = Query::new(
-            Selection::Resource {
-                scope: Scope::new(binding.tenant(), Id::new("mdm.telemetry.probe")?),
-                subject: Id::new("readiness")?,
-                resource: Id::new("readiness")?,
-                keys: [Id::new("readiness")?].into(),
-            },
-            Interval::new(Timestamp::new(0)?, Timestamp::new(1)?)?,
-            QueryBudget {
-                max_points: NonZeroU32::new(1).unwrap(),
-                max_series: NonZeroU32::new(1).unwrap(),
-            },
-            QueryMode::History,
-        )?;
-        backend
-            .query(
-                &Authorized::<Query>::verify(&ProbeAuthority(probe.clone()), probe)?,
-                None,
-                deadline,
-            )
-            .await?;
+        let deadline = Deadline::at(cutoff);
+        let backend = self.backend(binding, deadline).await?;
+        probe(&backend, binding.tenant(), deadline).await?;
         let tenant = binding.tenant();
         let budget = rss_transactional_messaging::policy::OperationDeadline::from_remaining(
             cutoff
@@ -83,4 +57,35 @@ impl Service {
             maintenance: counts[3],
         })
     }
+}
+
+pub(crate) async fn probe(
+    backend: &crate::backend::Access,
+    tenant: rss_request_context::TenantId,
+    deadline: Deadline,
+) -> Result<(), Error> {
+    // A real bounded read exercises both the control and data plane. The
+    // reserved namespace has no product samples and grants no user data access.
+    let probe = Query::new(
+        Selection::Resource {
+            scope: Scope::new(tenant, Id::new("mdm.telemetry.probe")?),
+            subject: Id::new("readiness")?,
+            resource: Id::new("readiness")?,
+            keys: [Id::new("readiness")?].into(),
+        },
+        Interval::new(Timestamp::new(0)?, Timestamp::new(1)?)?,
+        QueryBudget {
+            max_points: NonZeroU32::new(1).unwrap(),
+            max_series: NonZeroU32::new(1).unwrap(),
+        },
+        QueryMode::History,
+    )?;
+    backend
+        .query(
+            &Authorized::<Query>::verify(&ProbeAuthority(probe.clone()), probe)?,
+            None,
+            deadline,
+        )
+        .await?;
+    Ok(())
 }

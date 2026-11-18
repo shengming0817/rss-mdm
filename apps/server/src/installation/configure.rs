@@ -701,6 +701,12 @@ pub async fn run(request: Request) -> Result<Receipt> {
         applied: None,
     };
     root.save("configuration-operation.json", &Some(request.operation_id))?;
+    if let Change::Telemetry { settings } = &request.change {
+        host.save(
+            "telemetry-admission.json",
+            &(binding.operation_id, settings.resource_id),
+        )?;
+    }
     host.save("requested-runtime.json", &candidate)?;
     publish_gateway(&journal, &host)?;
     drop(host);
@@ -787,82 +793,37 @@ async fn apply_change(
 ) -> Result<()> {
     match change {
         Change::Telemetry { settings } => {
-            use sqlx::Connection;
-            let tenant = tenant.ok_or(Error::Input)?;
-            let target = rss_request_context::TenantId::parse(&tenant.to_string())
-                .map_err(|_| Error::Input)?;
-            if settings
-                .tenant()
-                .map_err(|_| Error::Input)?
-                .is_some_and(|t| t != target)
-            {
+            if tenant.is_some() {
                 return Err(Error::Input);
             }
-            let selected = settings.configuration_binding().map_err(|_| Error::Input)?;
-            let value = serde_json::to_value(settings).map_err(|_| Error::Input)?;
-            let resources = runtime["telemetry"].as_array().ok_or(Error::Corrupt)?;
-            if let Some(previous) = resources
-                .iter()
-                .find(|r| r["resource_id"] == value["resource_id"])
-                && previous != &value
-            {
-                return Err(Error::Conflict);
-            }
-
-            let config: crate::config::Config =
-                serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
-            let execution = config
-                .storage_binding
-                .execution(target)
-                .map_err(|_| Error::Input)?;
-            let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-                .bind(tenant.to_string())
-                .execute(&mut *tx)
-                .await
-                .map_err(|_| Error::Storage)?;
-            if !sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS(SELECT FROM public.mdm_tenants WHERE tenant_id=$1 AND NOT deleted)",
+            settings.validate().map_err(|_| Error::Input)?;
+            let backend = settings.open_backend().await.map_err(|_| Error::Storage)?;
+            let deadline = rss_request_context::Deadline::from_timeout(
+                &rss_mdm_telemetry_service::backend::SystemClock,
+                std::time::Duration::from_secs(10),
             )
-            .bind(tenant)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|_| Error::Storage)?
-            {
-                return Err(Error::Input);
-            }
-            sqlx::query("SELECT set_config('rss.storage_target',$1,true),set_config('rss.storage_lineage',$2,true),set_config('rss.execution_epoch',$3,true)")
-                .bind(Uuid::from_bytes(execution.storage().target()).simple().to_string()).bind(Uuid::from_bytes(execution.storage().lineage()).simple().to_string()).bind(execution.epoch().get().to_string()).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
-            sqlx::query("SELECT rss_transactional_messaging.check_execution()")
-                .execute(&mut *tx)
-                .await
-                .map_err(|_| Error::Conflict)?;
-            // Create-or-lock the same selection row used by first use and batch admission.
-            sqlx::query("INSERT INTO mdm_telemetry.storage_binding(tenant_id,binding,expected_epoch) VALUES($1,$2,$3) ON CONFLICT DO NOTHING").bind(tenant).bind(selected.as_slice()).bind(execution.epoch().get()).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
-            let previous: Option<Vec<u8>> = sqlx::query_scalar(
-                "SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1 FOR UPDATE",
-            )
-            .bind(tenant)
-            .fetch_optional(&mut *tx)
-            .await
             .map_err(|_| Error::Storage)?;
-            if previous.as_deref().is_some_and(|p| p != selected) {
-                let used:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_telemetry.batches WHERE tenant_id=$1) OR EXISTS(SELECT FROM mdm_telemetry.definition_progress WHERE tenant_id=$1) OR EXISTS(SELECT FROM mdm_telemetry.maintenance WHERE tenant_id=$1)").bind(tenant).fetch_one(&mut *tx).await.map_err(|_|Error::Storage)?;
-                if used {
+            backend.close(deadline).await.map_err(|_| Error::Storage)?;
+            let value = serde_json::to_value(settings).map_err(|_| Error::Input)?;
+            let resources = runtime["telemetry"].as_array_mut().ok_or(Error::Corrupt)?;
+            if let Some(existing) = resources
+                .iter_mut()
+                .find(|r| r["resource_id"] == value["resource_id"])
+            {
+                let previous: crate::telemetry::Config =
+                    serde_json::from_value(existing.clone()).map_err(|_| Error::Corrupt)?;
+                if previous
+                    .configuration_binding()
+                    .map_err(|_| Error::Corrupt)?
+                    != settings.configuration_binding().map_err(|_| Error::Input)?
+                {
                     return Err(Error::Conflict);
                 }
-            }
-            sqlx::query("INSERT INTO mdm_telemetry.storage_binding(tenant_id,binding,expected_epoch) VALUES($1,$2,$3) ON CONFLICT(tenant_id) DO UPDATE SET binding=excluded.binding,expected_epoch=excluded.expected_epoch").bind(tenant).bind(selected.as_slice()).bind(execution.epoch().get()).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
-            tx.commit().await.map_err(|_| Error::Storage)?;
-            let resources = runtime["telemetry"].as_array_mut().ok_or(Error::Corrupt)?;
-            if !resources
-                .iter()
-                .any(|r| r["resource_id"] == value["resource_id"])
-            {
+                *existing = value;
+            } else {
                 resources.push(value);
             }
         }
-
         Change::GatewayTls {
             certificate_file,
             private_key_file,

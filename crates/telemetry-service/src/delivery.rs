@@ -175,7 +175,7 @@ async fn deliver_on(
     history: Option<Batch>,
     cutoff: Deadline,
 ) -> Result<(), Error> {
-    let backend = service.backend_on(c, execution.tenant()).await?;
+    let backend = service.work_backend_on(c, execution.tenant()).await?;
     use sqlx::Row;
     let row = sqlx::query("SELECT input_digest, context_digest, delivery, device, credential, epoch FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND id = $2 FOR UPDATE")
         .bind(execution.tenant().to_string()).bind(input.input.batch_id).fetch_one(&mut *c).await?;
@@ -323,12 +323,15 @@ impl Service {
                         tokio::select! {()=relay_cancel.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_millis(500))=>{}}
                         continue;
                     }
-                    for (tenant, epoch) in scopes {
+                    for (tenant, epoch, probe) in scopes {
                         if relay_cancel.is_cancelled() {
                             return Ok(());
                         }
                         after = Some((tenant, epoch));
                         let binding = self.work_binding(tenant, epoch)?;
+                        if probe && self.qualify_reader(binding).await.is_err() {
+                            eprintln!("telemetry selection qualification unconfirmed");
+                        }
                         if relay_once(
                             binding,
                             store.as_ref(),
@@ -364,7 +367,7 @@ impl Service {
                         tokio::select! {()=maintenance_cancel.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_secs(30))=>{}}
                         continue;
                     }
-                    for (tenant, epoch) in scopes {
+                    for (tenant, epoch, _) in scopes {
                         if maintenance_cancel.is_cancelled() {
                             return Ok(());
                         }
@@ -414,13 +417,15 @@ impl Service {
     async fn work_scopes(
         &self,
         after: Option<(uuid::Uuid, i64)>,
-    ) -> Result<Vec<(uuid::Uuid, i64)>, Error> {
-        sqlx::query_as("SELECT tenant_id,expected_epoch FROM mdm_telemetry.work_scopes($1,$2)")
-            .bind(after.map(|x| x.0))
-            .bind(after.map(|x| x.1))
-            .fetch_all(&self.read_pool)
-            .await
-            .map_err(Into::into)
+    ) -> Result<Vec<(uuid::Uuid, i64, bool)>, Error> {
+        sqlx::query_as(
+            "SELECT tenant_id,expected_epoch,probe FROM mdm_telemetry.work_scopes($1,$2)",
+        )
+        .bind(after.map(|x| x.0))
+        .bind(after.map(|x| x.1))
+        .fetch_all(&self.read_pool)
+        .await
+        .map_err(Into::into)
     }
     fn work_binding(
         &self,

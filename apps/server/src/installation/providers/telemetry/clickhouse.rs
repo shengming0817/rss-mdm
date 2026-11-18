@@ -20,7 +20,26 @@ pub(in crate::installation) async fn execute(
     label: &str,
     statement: &str,
 ) -> Result<String> {
-    let (endpoint, ca, credentials) = configuration(input)?;
+    let (_, _, credentials) = configuration(input)?;
+    let password =
+        crate::config::secret(&credentials.installer.password_file).map_err(|_| Error::Input)?;
+    execute_as(
+        input,
+        label,
+        statement,
+        &credentials.installer.user,
+        &password,
+    )
+    .await
+}
+async fn execute_as(
+    input: &Request,
+    label: &str,
+    statement: &str,
+    login: &str,
+    password: &str,
+) -> Result<String> {
+    let (endpoint, ca, _) = configuration(input)?;
     let url = url::Url::parse(endpoint).map_err(|_| Error::Input)?;
     if url.scheme() != "https"
         || url.host_str().is_none()
@@ -45,12 +64,10 @@ pub(in crate::installation) async fn execute(
         .timeout(std::time::Duration::from_secs(65))
         .build()
         .map_err(|_| Error::Input)?;
-    let password =
-        crate::config::secret(&credentials.installer.password_file).map_err(|_| Error::Input)?;
     let id = Uuid::new_v5(&input.operation_id, label.as_bytes()).to_string();
     let mut response = client
         .post(url)
-        .basic_auth(&credentials.installer.user, Some(password.as_str()))
+        .basic_auth(login, Some(password))
         .query(&[
             ("query_id", id.as_str()),
             ("wait_end_of_query", "1"),
@@ -93,7 +110,6 @@ fn user(value: &str) -> Result<String> {
 }
 pub(super) async fn install(input: &Request, journal: &Journal) -> Result<()> {
     let Storage::ClickHouse {
-        reader,
         writer,
         maintenance,
         ..
@@ -103,12 +119,7 @@ pub(super) async fn install(input: &Request, journal: &Journal) -> Result<()> {
     };
     let (_, _, bootstrap) = configuration(input)?;
     let mut names = std::collections::BTreeSet::new();
-    for name in [
-        &reader.user,
-        &writer.user,
-        &maintenance.user,
-        &bootstrap.installer.user,
-    ] {
+    for name in [&writer.user, &maintenance.user, &bootstrap.installer.user] {
         user(name)?;
         if !names.insert(name) {
             return Err(Error::Input);
@@ -138,7 +149,7 @@ pub(super) async fn install(input: &Request, journal: &Journal) -> Result<()> {
         {
             return Err(Error::Conflict);
         }
-        for credential in [reader, writer, maintenance] {
+        for credential in [writer, maintenance] {
             if execute(
                 input,
                 &format!("reserve-user-{}", credential.user),
@@ -183,11 +194,10 @@ pub(super) async fn install(input: &Request, journal: &Journal) -> Result<()> {
             return Err(Error::Conflict);
         }
     }
-    provision_users(input).await
+    provision_users(input, true).await
 }
-pub(in crate::installation) async fn provision_users(input: &Request) -> Result<()> {
+pub(in crate::installation) async fn provision_users(input: &Request, writes: bool) -> Result<()> {
     let Storage::ClickHouse {
-        reader,
         writer,
         maintenance,
         ..
@@ -196,7 +206,7 @@ pub(in crate::installation) async fn provision_users(input: &Request) -> Result<
         return Err(Error::Input);
     };
     let (_, _, bootstrap) = configuration(input)?;
-    for credential in [reader, writer, maintenance] {
+    for credential in [writer, maintenance] {
         let password =
             crate::config::secret(&credential.password_file).map_err(|_| Error::Input)?;
         execute(
@@ -210,14 +220,12 @@ pub(in crate::installation) async fn provision_users(input: &Request) -> Result<
         )
         .await?;
     }
-    let reader_policy = reader.user.clone();
     let maintenance_policy = maintenance.user.clone();
-    let reader = user(&reader.user)?;
     let writer = user(&writer.user)?;
     let maintenance = user(&maintenance.user)?;
     let installer = user(&bootstrap.installer.user)?;
     let mut grants = vec![
-        format!("GRANT SELECT ON rss_ts_ch.installation TO {reader},{writer},{maintenance}"),
+        format!("GRANT SELECT ON rss_ts_ch.installation TO {writer},{maintenance}"),
         format!("GRANT CREATE TEMPORARY TABLE ON *.* TO {writer}"),
         format!("GRANT SELECT ON rss_ts_ch.active_attempts TO {writer}"),
         format!("GRANT SELECT ON rss_ts_ch.guard_identity TO {writer}"),
@@ -228,17 +236,201 @@ pub(in crate::installation) async fn provision_users(input: &Request) -> Result<
     ];
     for table in ["raw", "summaries"] {
         grants.push(format!(
-            "GRANT SELECT ON rss_ts_ch.{table} TO {reader},{maintenance}"
+            "GRANT SELECT ON rss_ts_ch.{table} TO {maintenance}"
         ));
-        grants.push(format!("GRANT INSERT ON rss_ts_ch.{table} TO {writer}"));
-        grants.push(format!(
-            "GRANT ALTER DELETE ON rss_ts_ch.{table} TO {maintenance}"
-        ));
-        grants.push(format!("CREATE ROW POLICY IF NOT EXISTS telemetry_reader_{reader_policy}_{table} ON rss_ts_ch.{table} USING tenant={} TO {reader}",literal(&input.tenant)));
+        if writes {
+            grants.push(format!("GRANT INSERT ON rss_ts_ch.{table} TO {writer}"));
+            grants.push(format!(
+                "GRANT ALTER DELETE ON rss_ts_ch.{table} TO {maintenance}"
+            ));
+        }
         grants.push(format!("CREATE ROW POLICY IF NOT EXISTS telemetry_maintenance_{maintenance_policy}_{table} ON rss_ts_ch.{table} USING 1 TO {maintenance},{installer}"));
     }
     for (index, grant) in grants.iter().enumerate() {
         execute(input, &format!("grant-{index}"), grant).await?;
+    }
+    Ok(())
+}
+
+pub(super) async fn reader_exists(input: &Request, name: &str) -> Result<bool> {
+    let sql = format!(
+        "SELECT count() FROM system.users WHERE name={} FORMAT TabSeparated",
+        literal(name)
+    );
+    match execute(input, "reader-exists", &sql).await?.trim() {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        _ => Err(Error::Corrupt),
+    }
+}
+/// Never adopt an account with unrelated roles, grants or row policies. Partial
+/// grants are possible only while recovering this same reserved operation.
+async fn verify_reader_catalog(
+    input: &Request,
+    tenant: rss_request_context::TenantId,
+    name: &str,
+    detached: bool,
+) -> Result<()> {
+    user(name)?;
+    let login = literal(name);
+    let grants = format!(
+        "SELECT count() FROM system.grants WHERE user_name={login} AND NOT (access_type='SELECT' AND ifNull(database,'')='rss_ts_ch' AND ifNull(table,'') IN ('installation','raw','summaries') AND column IS NULL AND NOT grant_option AND NOT is_partial_revoke) FORMAT TabSeparated"
+    );
+    let roles = format!(
+        "SELECT count() FROM system.role_grants WHERE user_name={login} FORMAT TabSeparated"
+    );
+    let targets = if detached {
+        format!("(apply_to_list=[{login}] OR empty(apply_to_list))")
+    } else {
+        format!("apply_to_list=[{login}]")
+    };
+    let mut expected = Vec::new();
+    for table in ["raw", "summaries"] {
+        expected.push(format!("(table={table} AND short_name={policy} AND replaceRegexpAll(ifNull(select_filter,''),'[[:space:]]','')={filter} AND NOT is_restrictive AND NOT apply_to_all AND {targets} AND empty(apply_to_except))",table=literal(table),policy=literal(&format!("telemetry_reader_{name}_{table}")),filter=literal(&format!("tenant='{}'",tenant))));
+    }
+    let policies = format!(
+        "SELECT count() FROM system.row_policies WHERE database='rss_ts_ch' AND (apply_to_all OR has(apply_to_list,{login}) OR short_name IN ({},{})) AND NOT ({}) FORMAT TabSeparated",
+        literal(&format!("telemetry_reader_{name}_raw")),
+        literal(&format!("telemetry_reader_{name}_summaries")),
+        expected.join(" OR ")
+    );
+    for (label, statement) in [
+        ("reader-roles", roles),
+        ("reader-grants", grants),
+        ("reader-policies", policies),
+    ] {
+        if execute(input, label, &statement).await?.trim() != "0" {
+            return Err(Error::Conflict);
+        }
+    }
+    Ok(())
+}
+async fn authenticates(input: &Request, name: &str, secret: &str) -> bool {
+    execute_as(
+        input,
+        "reader-login",
+        "SELECT currentUser() FORMAT TabSeparated",
+        name,
+        secret,
+    )
+    .await
+    .is_ok_and(|v| v.trim() == name)
+}
+/// An existing verifier can remain valid across provider password policy changes.
+async fn current_login(
+    input: &Request,
+    material: &rss_mdm_telemetry_service::selection::Reader,
+    previous: Option<&rss_mdm_telemetry_service::selection::Reader>,
+) -> Result<bool> {
+    if let Some(secret) = material.password.as_deref()
+        && authenticates(input, &material.user, secret).await
+    {
+        return Ok(true);
+    }
+    if let Some(secret) = previous.and_then(|r| r.password.as_deref())
+        && authenticates(input, &material.user, secret).await
+    {
+        return Ok(false);
+    }
+    Err(Error::Conflict)
+}
+async fn drop_reader_policies(input: &Request, name: &str) -> Result<()> {
+    for table in ["raw", "summaries"] {
+        execute(
+            input,
+            &format!("remove-reader-policy-{table}"),
+            &format!(
+                "DROP ROW POLICY IF EXISTS telemetry_reader_{name}_{table} ON rss_ts_ch.{table}"
+            ),
+        )
+        .await?;
+    }
+    Ok(())
+}
+use rss_mdm_telemetry_service::selection::Reader;
+/// The worker's tenant-scoped login survives external password rotation and retirement while work exists.
+pub(in crate::installation) async fn reconcile(
+    input: &Request,
+    tenant: rss_request_context::TenantId,
+    previous: Option<&Reader>,
+    desired: Option<&Reader>,
+) -> Result<()> {
+    let before = previous.and_then(Reader::background);
+    let after = desired.and_then(Reader::background);
+    if previous.and_then(|r| r.worker.as_ref()) != desired.and_then(|r| r.worker.as_ref()) {
+        reconcile_login(input, tenant, before.as_ref(), after.as_ref()).await?;
+    }
+    reconcile_login(input, tenant, previous, desired).await
+}
+async fn reconcile_login(
+    input: &Request,
+    tenant: rss_request_context::TenantId,
+    previous: Option<&Reader>,
+    desired: Option<&Reader>,
+) -> Result<()> {
+    match (previous, desired) {
+        (_, Some(next)) => provision_reader(input, tenant, next, previous).await,
+        (Some(old), None) => provision_reader(input, tenant, &old.inactive(), Some(old)).await,
+        (None, None) => Ok(()),
+    }
+}
+/// Establish policies before granting table access. The caller reserves a new login
+/// or verifies its durable ownership before replay, rotation and restore.
+pub(in crate::installation) async fn provision_reader(
+    input: &Request,
+    tenant: rss_request_context::TenantId,
+    material: &rss_mdm_telemetry_service::selection::Reader,
+    previous: Option<&rss_mdm_telemetry_service::selection::Reader>,
+) -> Result<()> {
+    let name = user(&material.user)?;
+    let exists = reader_exists(input, &material.user).await?;
+    verify_reader_catalog(input, tenant, &material.user, !exists).await?;
+    let current = if exists {
+        current_login(input, material, previous).await?
+    } else {
+        false
+    };
+    let Some(password) = material.password.as_ref() else {
+        execute(
+            input,
+            "retire-reader",
+            &format!("DROP USER IF EXISTS {name}"),
+        )
+        .await?;
+        return drop_reader_policies(input, &material.user).await;
+    };
+    if !exists {
+        drop_reader_policies(input, &material.user).await?;
+        execute(
+            input,
+            "create-reader",
+            &format!(
+                "CREATE USER {name} IDENTIFIED WITH sha256_password BY {}",
+                literal(password)
+            ),
+        )
+        .await?;
+    } else if !current {
+        execute(
+            input,
+            "reader-password",
+            &format!(
+                "ALTER USER {name} IDENTIFIED WITH sha256_password BY {}",
+                literal(password)
+            ),
+        )
+        .await?;
+    }
+    for table in ["raw", "summaries"] {
+        execute(input,&format!("reader-policy-{table}"),&format!("CREATE ROW POLICY IF NOT EXISTS telemetry_reader_{}_{table} ON rss_ts_ch.{table} USING tenant={} TO {name}",material.user,literal(&tenant.to_string()))).await?;
+    }
+    for table in ["installation", "raw", "summaries"] {
+        execute(
+            input,
+            &format!("reader-select-{table}"),
+            &format!("GRANT SELECT ON rss_ts_ch.{table} TO {name}"),
+        )
+        .await?;
     }
     Ok(())
 }

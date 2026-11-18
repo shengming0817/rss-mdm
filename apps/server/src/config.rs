@@ -307,7 +307,11 @@ impl Config {
         {
             return Err(Error::Malformed);
         }
+        let mut installations = std::collections::BTreeSet::new();
         for telemetry in &self.telemetry {
+            if !installations.insert(telemetry.resource_id) {
+                return Err(Error::Malformed);
+            }
             telemetry.validate()?;
             let database = telemetry.database();
             if database.host == self.access_database.host

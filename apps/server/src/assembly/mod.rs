@@ -466,11 +466,21 @@ pub(crate) async fn from_compiled(
         events,
         resources,
         channels,
-        telemetry,
         runtime_observation: crate::installation::host::Observation::new(
             &config.runtime_binding,
             identity.instance.to_string(),
+            config
+                .telemetry
+                .iter()
+                .filter_map(|r| {
+                    (!telemetry
+                        .as_ref()
+                        .is_some_and(|s| s.admits_installation(r.resource_id)))
+                    .then_some(r.resource_id)
+                })
+                .collect(),
         ),
+        telemetry,
         apple_material_roots,
         webhooks,
         pki,

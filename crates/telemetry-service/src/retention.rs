@@ -72,7 +72,7 @@ async fn step(
     service: &Service,
     c: &mut PgConnection,
 ) -> Result<(), Error> {
-    let backend = service.backend_on(c, execution.tenant()).await?;
+    let backend = service.work_backend_on(c, execution.tenant()).await?;
     let tenant = execution.tenant();
     let now: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp())*1000000)::bigint")

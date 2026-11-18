@@ -17,9 +17,9 @@ impl Clock for SystemClock {
 /// PG includes ordinary, shared Timescale and dedicated Timescale profiles.
 pub enum Backend {
     /// An explicitly configured PostgreSQL-family store.
-    Postgres(rss_timeseries_postgres::PgStore<SystemClock>),
-    /// A tenant-bound ClickHouse store with its PostgreSQL control plane.
-    ClickHouse(Box<rss_timeseries_clickhouse::ChStore<SystemClock>>),
+    Postgres(std::sync::Arc<rss_timeseries_postgres::PgStore<SystemClock>>),
+    /// The sole owner of this ClickHouse installation.
+    ClickHouse(rss_timeseries_clickhouse::ChOwner<SystemClock>),
 }
 macro_rules! dispatch {
     ($self:ident,$method:ident,$($arg:expr),*) => { match $self {
@@ -32,6 +32,13 @@ impl Backend {
     pub async fn close(&self, deadline: Deadline) -> Result<(), Error> {
         dispatch!(self, close, deadline)
     }
+}
+
+pub(crate) enum Access {
+    Postgres(std::sync::Arc<rss_timeseries_postgres::PgStore<SystemClock>>),
+    ClickHouse(std::sync::Arc<rss_timeseries_clickhouse::ChStore<SystemClock>>),
+}
+impl Access {
     pub(crate) async fn write(
         &self,
         input: &Authorized<Batch>,
@@ -81,6 +88,7 @@ impl Backend {
 
 /// One explicitly installed physical resource. Only the installation owner may close it.
 pub struct Resource {
+    pub installation: uuid::Uuid,
     pub binding: [u8; 32],
     pub tenant: Option<rss_request_context::TenantId>,
     pub backend: Option<std::sync::Arc<Backend>>,
@@ -89,12 +97,12 @@ pub struct Resource {
 
 /// A persisted selection keeps the admitted provider and its limits together.
 pub(crate) struct Selected {
-    pub(crate) backend: std::sync::Arc<Backend>,
+    pub(crate) backend: Access,
     pub(crate) budget: crate::StorageBudget,
 }
 impl std::ops::Deref for Selected {
-    type Target = Backend;
-    fn deref(&self) -> &Backend {
+    type Target = Access;
+    fn deref(&self) -> &Self::Target {
         &self.backend
     }
 }

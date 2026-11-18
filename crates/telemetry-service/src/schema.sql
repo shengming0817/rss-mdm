@@ -107,13 +107,34 @@ GRANT SELECT,INSERT ON mdm_telemetry.observation_receipts TO mdm_telemetry_runti
 
 -- App-owned fixed installation/admission identity, shared by every tenant replica.
 CREATE TABLE mdm_telemetry.storage_binding (
- expected_epoch bigint NOT NULL CHECK(expected_epoch>0),tenant_id uuid PRIMARY KEY,binding bytea NOT NULL CHECK(octet_length(binding)=32)
+ expected_epoch bigint NOT NULL CHECK(expected_epoch>0),tenant_id uuid PRIMARY KEY,binding bytea NOT NULL CHECK(octet_length(binding)=32),
+ resource_id uuid, revision bigint NOT NULL DEFAULT 0 CHECK(revision>=0), operation_id uuid,
+ material bytea, pending jsonb, probe_ready boolean NOT NULL DEFAULT false, qualified uuid,
+ CHECK(pending IS NOT NULL OR (NOT probe_ready AND qualified IS NULL)),
+ CHECK(qualified IS NULL OR (probe_ready AND qualified=(pending->>'operation_id')::uuid)),
+ CHECK((revision=0 AND resource_id IS NULL AND operation_id IS NULL AND material IS NULL)
+ OR (revision>0 AND resource_id IS NOT NULL AND operation_id IS NOT NULL))
 );
 ALTER TABLE mdm_telemetry.storage_binding ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_telemetry.storage_binding FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_telemetry.storage_binding USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_telemetry.storage_binding FROM PUBLIC;
-GRANT SELECT,INSERT ON mdm_telemetry.storage_binding TO mdm_telemetry_runtime;
+GRANT SELECT,INSERT(tenant_id,binding,expected_epoch) ON mdm_telemetry.storage_binding TO mdm_telemetry_runtime;
+GRANT UPDATE(qualified) ON mdm_telemetry.storage_binding TO mdm_telemetry_runtime;
+
+-- Operator-owned idempotency and recovery record. Runtime readers have no privileges here.
+CREATE TABLE mdm_telemetry.reader_operations (
+ operation_id uuid PRIMARY KEY, tenant_id uuid NOT NULL, resource_id uuid NOT NULL,
+ revision bigint NOT NULL CHECK(revision>0), request_mac jsonb NOT NULL,
+ action text NOT NULL CHECK(action IN ('reader','retire','select')),
+ state text NOT NULL CHECK(state IN ('applying','qualifying','cancelling','cancelled','published'))
+);
+ALTER TABLE mdm_telemetry.reader_operations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_telemetry.reader_operations FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_telemetry.reader_operations
+ USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)
+ WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_telemetry.reader_operations FROM PUBLIC;
 
 -- Device-reported bounded diagnostics, not field coverage or sampled values.
 CREATE TABLE mdm_telemetry.gap_reports (
@@ -143,9 +164,9 @@ GRANT SELECT ON mdm_telemetry.maintenance TO mdm_access;
 
 CREATE POLICY work_discovery ON mdm_telemetry.batches FOR SELECT TO mdm_owner USING(true);
 CREATE POLICY work_discovery ON mdm_telemetry.storage_binding FOR SELECT TO mdm_owner USING(true);
-CREATE FUNCTION mdm_telemetry.work_scopes(after_tenant uuid,after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
+CREATE FUNCTION mdm_telemetry.work_scopes(after_tenant uuid,after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint,probe boolean)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
- SELECT tenant_id,expected_epoch FROM (
+ SELECT work.tenant_id,work.expected_epoch,EXISTS(SELECT FROM mdm_telemetry.storage_binding AS b WHERE b.tenant_id=work.tenant_id AND b.probe_ready AND b.qualified IS NULL) FROM (
   (SELECT DISTINCT tenant_id,expected_epoch FROM mdm_telemetry.batches WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32)
   UNION (SELECT tenant_id,expected_epoch FROM mdm_telemetry.storage_binding WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32)
  ) work ORDER BY tenant_id,expected_epoch LIMIT 32

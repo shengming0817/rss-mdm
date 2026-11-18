@@ -73,7 +73,6 @@ impl Fixture {
                 crate::installation::providers::telemetry::Request {
                     operation_id: Uuid::new_v4(),
                     directory: fixture.directory.path().join("installation"),
-                    tenant: c.tenant.to_string(),
                     configuration: fixture.config.clone(),
                     administrator,
                     owner: fixture.roles[0].clone(),
@@ -94,7 +93,7 @@ impl Fixture {
         }
         Ok(fixture)
     }
-    pub async fn store(&self) -> Result<rss_timeseries_postgres::PgStore<SystemClock>> {
+    pub async fn store(&self) -> Result<Arc<rss_timeseries_postgres::PgStore<SystemClock>>> {
         match self.config.open_backend().await? {
             Backend::Postgres(store) => Ok(store),
             Backend::ClickHouse(_) => unreachable!(),
@@ -107,6 +106,7 @@ impl Fixture {
     ) -> Result<Arc<Service>> {
         let objects = Arc::new(rss_mdm_device_service::planning::PlanningObjects);
         let dependencies = PolicyDependencies {
+            protection: crate::device_material_support::protection(c)?,
             agent_facts: Arc::new(crate::assembly::agent_facts::AgentFacts),
             read_pool: c.inputs.pool("shared", "mdm_access").await?,
             clock: Arc::new(SystemClock),
@@ -199,4 +199,17 @@ impl ts::Authority for SeedAuthority {
             Err(ts::Error::Unauthorized)
         }
     }
+}
+
+/// The query fixture starts from an explicit domain selection. The installation T2 owns its creation.
+pub(super) async fn persist_selection(
+    c: &Context,
+    config: &crate::telemetry::Config,
+) -> Result<()> {
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
+    sqlx::query("INSERT INTO mdm_telemetry.storage_binding(tenant_id,binding,expected_epoch,resource_id,revision,operation_id) VALUES($1::uuid,$2,$3,$4,1,$5)")
+        .bind(c.tenant.to_string()).bind(config.configuration_binding()?.as_slice()).bind(c.execution().epoch().get())
+        .bind(config.resource_id).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
 }

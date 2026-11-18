@@ -300,6 +300,9 @@ async fn rewrap_native(
     let tenant_uuid = uuid::Uuid::parse_str(&tenant.to_string()).map_err(|_| Error::Corrupt)?;
     let mut rewritten = 0;
 
+    rewritten += rss_mdm_telemetry_service::selection::rewrap(c, tenant, protector)
+        .await
+        .map_err(|_| Error::Corrupt)?;
     rewritten += rss_mdm_webhook_service::materials::rewrap(&mut *c, tenant_uuid, protector)
         .await
         .map_err(|_| Error::Corrupt)?;

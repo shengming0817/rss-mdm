@@ -553,7 +553,15 @@ ClickHouse 使用固定 HTTPS origin 和显式 CA，运行读、写、维护及�
 
 分区准备及 dedicated 原生列存转换使用 `maintain-telemetry-storage`，传入原安装请求和固定维护操作 UUID。操作要求停写，并核对原安装身份；返回 `more` 时沿用原请求继续，`unknown` 时不得生成新操作身份。该入口不提供在线后端迁移。
 
-共享 ClickHouse 安装增加租户时，使用 `prepare-telemetry-tenant` 提供原安装请求、新操作 UUID、租户身份、独立 reader 凭据及游标密钥。该入口核对原安装身份，为新 reader 建立精确租户行策略，并在实际准入后返回该租户的运行配置。不得复用另一租户的 reader 或把新租户伪装成首次安装。联合备份须同时包含所有使用该安装的宿主配置和凭据。
+用 `prepare-telemetry` 安装物理资源。向 `configure-host` 提交 `change.kind=telemetry` 时省略顶层 `tenant` 或传 `null`，部署新宿主配置，并让原配置操作观察到 `applied`。ClickHouse 的 `backend` 指定 control、endpoint、CA、writer、maintenance 和扫描预算；游标密钥随租户 reader 提交。PostgreSQL 系列的物理配置提供 `cursor_key_file`。
+
+新增业务租户完成开通后，部署管理员运行 `prepare-telemetry-tenant`。输入含原产品安装输入 `product`、原物理安装请求 `installation`、租户 UUID `tenant`、本次 `operationId`、`expectedRevision` 和 `action`。首次使用修订号 0。
+原产品库保存供应方变更、运行期资格检查、撤销及发布状态。每个已接入 ClickHouse 的租户另有一个由安装方提供独立密码、受原生保护的后台 reader，专供原 relay、定义同步和保留维护使用，与对外 reader 共享同一物理 owner。`telemetry-tenant-operation-status` 使用产品安装输入、租户和操作 ID 查询，支持遗失原 reader 输入后的回执核对。对长期无法准入的候选执行 `cancel-telemetry-tenant-operation`，提供同一产品、租户、操作 ID 和原物理安装输入，恢复旧版本后可用新操作修正。轮换时提交不同密码和相同游标密钥，保留先前签发的游标。
+
+- PostgreSQL、TimescaleSharedRls 和 TimescaleDedicatedTenant 使用 `{"kind":"select"}`。Dedicated 校验物理安装已指定的租户。
+- ClickHouse 首次接入使用 `{"kind":"reader","password_file":"…","worker_password_file":"…","cursor_key_file":"…"}`。为每个租户分别生成两份满足该安装密码策略的私密文件，并提供 32 字节游标密钥。对外 reader 轮换时省略 `worker_password_file`，提交独立的新密码并沿用原游标密钥。重新接入时，曾有已接收工作的租户沿用封存的后台账号；已退役且没有工作记录的租户重新提供后台密码。退役使用 `{"kind":"retire"}`。
+- 保管成功回执中的 `operationId` 和 `materialRevision`，下一次操作把最新 `materialRevision` 作为 `expectedRevision`。命令中断或返回忙时，恢复原服务和存储后用同一操作 ID、原请求和私密输入重试。待结算的租户操作阻止竞争改选和冷备，其他租户继续使用各自的绑定。对权限漂移，先修复该安装的 reader 权限再重试。
+- 运行中的遥测服务使用自己的物理资源核验待发布的材料。成功后，通过该租户的运行诊断和实际业务读写检查接入。已有批次、定义进度或维护任务的租户继续使用原安装。
 
 主业务库、普通遥测 PostgreSQL 和 Timescale profile 统一采用 PG17；普通 PostgreSQL 共用 `postgres` 固定镜像，Timescale 固定为 `2.30.2-pg17`。联合备份统一由安装器携带的 PG17 `pg_dump`/`pg_restore` 执行。缺少或不匹配的客户端明确失败。ClickHouse 的备份磁盘和配置恢复仍遵循原 UID/GID 与权限约束，部署时应使其与恢复执行身份兼容，不能依靠恢复命令隐式 chown。
 

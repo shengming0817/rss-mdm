@@ -61,7 +61,7 @@ def prepared(root, modules, binary, command, resources):
                 path.write_bytes(bytes([value]) * 32)
                 path.chmod(0o600)
 
-        if set(profiles(modules)) & {'shared', 'agent_foundation', 'da_foundation'}:
+        if set(profiles(modules)) & {'shared', 'agent_foundation', 'da_foundation', 'shared_telemetry'}:
             from task_trust_materials import prepare
             material = directory / 'task-trust-ca'
             existed = material.exists()
@@ -78,14 +78,17 @@ def prepared(root, modules, binary, command, resources):
         values = {}
         try:
             for profile in profiles(modules):
-                if profile == 'installation':
+                if profile in ('installation', 'shared_telemetry'):
                     # The installer owns cluster roles as well as databases; an already
                     # migrated shared foundation cannot prove a fresh installation.
-                    fresh = Environment(root, group='installation-t2')
+                    fresh = Environment(root, group=profile.replace('_','-')+'-t2')
                     if fresh.root.exists():
                         fresh.reset()
                     isolated.callback(fresh.reset)
                     fresh.up()
+                    if profile == 'shared_telemetry':
+                        from t2_telemetry import providers as telemetry_providers
+                        private(directory/'telemetry-providers.json', isolated.enter_context(telemetry_providers(root, fresh)))
                     values[profile] = {'postgres': dict(host='localhost', port=fresh.port(), name='postgres', user='postgres',
                         ca_file=str(fresh.root/'ca.crt'), password_file=str(fresh.root/'pg/pg-password'))}
                     resources.append(dict(kind='postgres', identity=fresh.container(), profile=profile, action='created'))

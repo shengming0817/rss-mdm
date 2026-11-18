@@ -357,7 +357,7 @@ class Candidate:
             max_bytes=1048576,replay_micros=86400000000,cursor_micros=60000000))
         day=int(time.time())//86400
         private(self.operator_root/'telemetry-prepare.json',dict(operationId=str(uuid.uuid4()),
-            directory='/tmp/telemetry-installation',tenant=self.tenant,configuration=config,
+            directory='/tmp/telemetry-installation',configuration=config,
             administrator=database,owner='o_'+uuid.uuid4().hex,partitions=[dict(
             startMicros=(day-1)*86400000000,endMicros=(day+2)*86400000000)],clickhouse=None))
         self.copy_runtime()
