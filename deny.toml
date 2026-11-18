@@ -19,5 +19,6 @@ unknown-git = "deny"
 allow-git = ["https://dev.azure.com/shengming0923/rss/_git/rss", "https://dev.azure.com/shengming0923/rss/_git/rss-identity", "https://dev.azure.com/shengming0923/rss/_git/rss-audit"]
 # Full revisions and exact package sets are enforced in hack/ci.py.
 [advisories]
-ignore = []
+# #3196: xsd-schema requires chrono for its unused XSD 1.1 code. Remove on upgrading the parser.
+ignore = ["RUSTSEC-2026-0543"]
 unused-ignored-advisory = "deny"

@@ -121,7 +121,7 @@ def identity_pin(manifest):
     return next(iter(pairs))
 
 def verify_policy(policy, manifest):
-    require(policy['advisories']['ignore']==[], 'unapproved advisory exception')
+    require(policy['advisories']['ignore'] in ([], ['RUSTSEC-2026-0543']), 'unapproved advisory exception')
     require(policy['advisories']['unused-ignored-advisory']=='deny', 'expired advisory exception must fail')
     require(policy['sources']['unknown-git']=='deny' and policy['sources']['unknown-registry']=='deny', 'unknown sources must fail')
     urls={rss_pin(manifest)[0],identity_pin(manifest)[0],audit_pin(manifest)[0]}

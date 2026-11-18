@@ -249,7 +249,12 @@ class AdvisoryPolicy(unittest.TestCase):
         manifest = ci.tomllib.loads((ci.ROOT / 'Cargo.toml').read_text())
         policy = ci.tomllib.loads((ci.ROOT / 'deny.toml').read_text())
         ci.verify_policy(policy, manifest)
-        for ignores in [['RUSTSEC-2023-0071'], ['RUSTSEC-2023-0071', 'RUSTSEC-9999-0001'], ['RUSTSEC-9999-0001']]:
+        for ignores in [
+            ['RUSTSEC-2023-0071'],
+            ['chrono'],
+            ['RUSTSEC-2026-0543', 'RUSTSEC-2026-0543'],
+            [*policy['advisories']['ignore'], 'RUSTSEC-9999-0001'],
+        ]:
             changed = copy.deepcopy(policy)
             changed['advisories']['ignore'] = ignores
             with self.assertRaises(RuntimeError):
