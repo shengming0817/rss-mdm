@@ -2,7 +2,7 @@
 use std::{
     future::Future,
     num::NonZeroUsize,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 use tokio::sync::{Notify, Semaphore};
@@ -16,7 +16,7 @@ pub(super) struct Relay {
     permits: Arc<Semaphore>,
     stop: CancellationToken,
     failure: OnceLock<rss_runtime::ShutdownError>,
-    notify: Notify,
+    owners: Mutex<Vec<Arc<Notify>>>,
 }
 impl Relay {
     pub(super) fn new(parallelism: usize, stop: &CancellationToken) -> Arc<Self> {
@@ -26,8 +26,13 @@ impl Relay {
             permits: Arc::new(Semaphore::new(capacity.get())),
             stop: stop.child_token(),
             failure: OnceLock::new(),
-            notify: Notify::new(),
+            owners: Mutex::default(),
         })
+    }
+    fn wake_owners(&self) {
+        for owner in self.owners.lock().expect("owner notifications").iter() {
+            owner.notify_one();
+        }
     }
     async fn run<E, P, B>(
         self: &Arc<Self>,
@@ -39,11 +44,16 @@ impl Relay {
         P: Future<Output = Result<Vec<Key>, E>>,
         B: Future<Output = Result<usize, E>> + Send + 'static,
     {
+        let notify = Arc::new(Notify::new());
+        self.owners
+            .lock()
+            .expect("owner notifications")
+            .push(notify.clone());
         rss_mdm_work_page::run(
             self.capacity,
             IDLE,
             &self.stop,
-            &self.notify,
+            &notify,
             |after| {
                 let query = page(after);
                 async move {
@@ -174,9 +184,9 @@ pub(crate) fn registration(
             let work = futures::future::join_all(owners);
             tokio::pin!(work);
             loop {
-                tokio::select! {
+                tokio::select! { biased;
                     _ = &mut work => break,
-                    () = notify.notified() => relay.notify.notify_waiters(),
+                    () = notify.notified() => relay.wake_owners(),
                 }
             }
         }
@@ -189,4 +199,43 @@ pub(crate) fn registration(
             None => Ok(()),
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn owner_receives_a_hint_sent_after_its_empty_snapshot() {
+        let stop = CancellationToken::new();
+        let relay = Relay::new(2, &stop);
+        let release = Notify::new();
+        let scanned = Notify::new();
+        let seen = std::cell::Cell::new(false);
+        let rescan = Notify::new();
+        let work = relay.run(
+            "test",
+            |_| {
+                let first = !seen.replace(true);
+                let (scanned, release, rescan) = (&scanned, &release, &rescan);
+                async move {
+                    if first {
+                        scanned.notify_one();
+                        release.notified().await;
+                    } else {
+                        rescan.notify_one();
+                    }
+                    Ok::<_, std::io::Error>(Vec::new())
+                }
+            },
+            |_| std::future::ready(Ok(0)),
+        );
+        tokio::pin!(work);
+        tokio::select! { () = &mut work => panic!("relay exited"), () = scanned.notified() => {} }
+        relay.wake_owners();
+        release.notify_one();
+        // With paused time, the ready branch must precede the periodic scan.
+        tokio::select! { biased; () = &mut work => panic!("relay exited"), () = rescan.notified() => {}, () = std::future::ready(()) => panic!("hint lost") }
+        stop.cancel();
+        work.await;
+    }
 }

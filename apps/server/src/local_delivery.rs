@@ -57,6 +57,13 @@ pub(crate) struct Delivery<H, V> {
 fn deadline() -> OperationDeadline {
     OperationDeadline::from_remaining(Duration::from_secs(6))
 }
+// Claimed effects drain to their durable outcome. Advisory reads may end as soon as shutdown begins.
+async fn read_while_running<T>(
+    stop: &tokio_util::sync::CancellationToken,
+    read: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    tokio::select! { biased; () = stop.cancelled() => None, result = read => Some(result) }
+}
 fn unavailable() -> Error {
     Error::Unavailable(Failure::Database)
 }
@@ -156,12 +163,15 @@ where
         binding: ExecutionBinding,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<usize, PollFailure> {
-        if self
-            .projection
-            .has_dead_letters(binding, deadline())
-            .await
-            .map_err(|_| PollFailure::Unavailable)?
-        {
+        let Some(dead) = read_while_running(
+            cancel,
+            self.projection.has_dead_letters(binding, deadline()),
+        )
+        .await
+        else {
+            return Ok(0);
+        };
+        if dead.map_err(|_| PollFailure::Unavailable)? {
             return Err(PollFailure::RecoveryRequired);
         }
         if cancel.is_cancelled() {
@@ -188,14 +198,19 @@ where
                     use rss_transactional_messaging::observability::TransactionalMessagingTransactionStatus as Status;
                     match outcome.status() {
                         Status::Committed => Ok(true),
-                        Status::CommitUnknown | Status::RollbackFailed => self
-                            .projection
-                            .resolve(&recovery, deadline())
-                            .await
-                            .ok()
-                            .flatten()
-                            .map(|_| true)
-                            .ok_or(PollFailure::Unavailable),
+                        Status::CommitUnknown | Status::RollbackFailed => match read_while_running(
+                            cancel,
+                            self.projection.resolve(&recovery, deadline()),
+                        )
+                        .await
+                        {
+                            None => Ok(false),
+                            Some(result) => result
+                                .ok()
+                                .flatten()
+                                .map(|_| true)
+                                .ok_or(PollFailure::Unavailable),
+                        },
                         _ => Err(PollFailure::Unavailable),
                     }
                 }
@@ -228,11 +243,12 @@ where
         if self.poll(binding, stop).await? > 0 {
             return Ok(Duration::ZERO);
         }
-        let wake = self
-            .projection
-            .next_wakeup(binding, deadline())
-            .await
-            .map_err(|_| PollFailure::Unavailable)?;
+        let Some(wake) =
+            read_while_running(stop, self.projection.next_wakeup(binding, deadline())).await
+        else {
+            return Ok(Duration::ZERO);
+        };
+        let wake = wake.map_err(|_| PollFailure::Unavailable)?;
         if wake.due_now() {
             return Ok(Duration::from_millis(100));
         }
@@ -314,5 +330,24 @@ where
     async fn shutdown(&self) -> Result<(), rss_runtime::ShutdownError> {
         self.0.runtime.close().await;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_while_running;
+    #[tokio::test]
+    async fn shutdown_ends_receipt_reads_and_skips_late_recovery_queries() {
+        let stop = tokio_util::sync::CancellationToken::new();
+        let read = read_while_running(&stop, std::future::pending::<()>());
+        tokio::pin!(read);
+        assert!(futures::poll!(&mut read).is_pending());
+        stop.cancel();
+        assert_eq!(read.await, None);
+        let late = read_while_running(&stop, async {
+            panic!("receipt read started after shutdown")
+        })
+        .await;
+        assert_eq!(late, None::<()>);
     }
 }
