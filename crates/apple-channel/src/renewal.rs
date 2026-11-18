@@ -95,7 +95,8 @@ pub async fn maintain(
         );
     }
     for candidate in candidates {
-        progress += usize::from(prepare(execution, apple, audit_store, &tenant, now, candidate).await?);
+        progress +=
+            usize::from(prepare(execution, apple, audit_store, &tenant, now, candidate).await?);
     }
     Ok(progress)
 }

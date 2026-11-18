@@ -171,7 +171,13 @@ where
         runtime,
         timer: timer.clone(),
     });
-    let lanes = RelayLanes { storage, pool: discovery_pool, timer, emitter, token };
+    let lanes = RelayLanes {
+        storage,
+        pool: discovery_pool,
+        timer,
+        emitter,
+        token,
+    };
     tokio::join!(
         lanes.drive(events::SOURCE_DOMAIN, source, fanout, 2),
         lanes.drive(events::DELIVERY_DOMAIN, delivery, publisher, 4)
@@ -179,7 +185,7 @@ where
     Ok(())
 }
 
-struct RelayLanes<T,E> {
+struct RelayLanes<T, E> {
     storage: rss_transactional_messaging::fence::StorageIdentity,
     pool: sqlx::PgPool,
     timer: Arc<T>,
@@ -187,31 +193,71 @@ struct RelayLanes<T,E> {
     token: tokio_util::sync::CancellationToken,
 }
 
-impl<T: ExecutionTimer + 'static,E: TransactionalMessagingEmitter + 'static> RelayLanes<T,E> {
-    async fn drive<P>(&self, domain: &'static str, store: Arc<PgOutboxStore<P::Receipt>>,
-        publisher: Arc<P>, capacity: usize)
-    where P: Publisher<Vec<u8>> + 'static, P::Receipt: 'static {
+impl<T: ExecutionTimer + 'static, E: TransactionalMessagingEmitter + 'static> RelayLanes<T, E> {
+    async fn drive<P>(
+        &self,
+        domain: &'static str,
+        store: Arc<PgOutboxStore<P::Receipt>>,
+        publisher: Arc<P>,
+        capacity: usize,
+    ) where
+        P: Publisher<Vec<u8>> + 'static,
+        P::Receipt: 'static,
+    {
         let idle = Duration::from_millis(500);
         let notify = tokio::sync::Notify::new();
-        rss_mdm_work_page::run(NonZeroUsize::new(capacity).expect("relay capacity"),
-            idle, &self.token, &notify,
+        rss_mdm_work_page::run(
+            NonZeroUsize::new(capacity).expect("relay capacity"),
+            idle,
+            &self.token,
+            &notify,
             |after: Option<(Uuid, i64)>| async move {
-                sqlx::query_as("SELECT tenant_id,expected_epoch FROM mdm_webhook.work_scopes($1,$2,$3)")
-                    .bind(domain).bind(after.map(|v|v.0)).bind(after.map(|v|v.1))
-                    .fetch_all(&self.pool).await.map_err(|_| ())
+                sqlx::query_as(
+                    "SELECT tenant_id,expected_epoch FROM mdm_webhook.work_scopes($1,$2,$3)",
+                )
+                .bind(domain)
+                .bind(after.map(|v| v.0))
+                .bind(after.map(|v| v.1))
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|_| ())
             },
             |(tenant, epoch), _| {
-                let (store,publisher,timer,emitter) = (store.clone(),publisher.clone(),self.timer.clone(),self.emitter.clone());
+                let (store, publisher, timer, emitter) = (
+                    store.clone(),
+                    publisher.clone(),
+                    self.timer.clone(),
+                    self.emitter.clone(),
+                );
                 let storage = self.storage;
                 async move {
-                    let tenant = rss_request_context::TenantId::parse(&tenant.to_string()).map_err(|_| ())?;
-                    let epoch = rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| ())?;
-                    let binding = rss_transactional_messaging::fence::ExecutionBinding::new(storage,tenant,epoch);
-                    let report = relay_once(binding,store.as_ref(),publisher.as_ref(),timer.as_ref(),emitter.as_ref(),NonZeroUsize::MIN)
-                        .await.map_err(|_| ())?;
-                    Ok(if report.published() > 0 { Duration::ZERO } else { idle })
+                    let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
+                        .map_err(|_| ())?;
+                    let epoch =
+                        rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| ())?;
+                    let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
+                        storage, tenant, epoch,
+                    );
+                    let report = relay_once(
+                        binding,
+                        store.as_ref(),
+                        publisher.as_ref(),
+                        timer.as_ref(),
+                        emitter.as_ref(),
+                        NonZeroUsize::MIN,
+                    )
+                    .await
+                    .map_err(|_| ())?;
+                    Ok(if report.published() > 0 {
+                        Duration::ZERO
+                    } else {
+                        idle
+                    })
                 }
-            }, |_| {}).await;
+            },
+            |_| {},
+        )
+        .await;
     }
 }
 pub(crate) async fn delivery_execution(

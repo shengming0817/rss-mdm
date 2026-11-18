@@ -67,3 +67,6 @@ tokio={workspace=true,features=["rt","macros","time"]}
 time={workspace=true,features=["formatting"]}
 [lints]
 workspace=true
+
+[features]
+integration = []

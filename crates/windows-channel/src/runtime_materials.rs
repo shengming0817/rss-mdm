@@ -14,6 +14,8 @@ pub struct Configuration {
     pub entra: Option<crate::entra::Config>,
 }
 pub struct Runtime {
+    #[cfg(feature = "integration")]
+    fixture: Option<(u16, reqwest::Certificate)>,
     pub enrollment_origin: String,
     pub management_origin: String,
     pub additional_management_origins: Vec<String>,
@@ -52,8 +54,15 @@ impl Runtime {
             authority,
             verifier,
             clock,
+            #[cfg(feature = "integration")]
+            fixture: None,
             push: Default::default(),
         }
+    }
+    #[cfg(feature = "integration")]
+    pub fn with_loopback_provider(mut self, port: u16, root: reqwest::Certificate) -> Self {
+        self.fixture = Some((port, root));
+        self
     }
     pub fn request_id(&self, username: &str) -> Result<uuid::Uuid, Error> {
         let (local, host) = username.split_once('@').ok_or(Error::Unauthorized)?;
@@ -149,17 +158,21 @@ impl Runtime {
             {
                 push.clone()
             } else {
-                let push = Arc::new(
-                    crate::wns_materials::load(
-                        &mut tx,
-                        &tenant,
-                        revision,
-                        &app.protection,
-                        self.clock.clone(),
-                        true,
-                    )
-                    .await?,
-                );
+                let push = crate::wns_materials::load(
+                    &mut tx,
+                    &tenant,
+                    revision,
+                    &app.protection,
+                    self.clock.clone(),
+                    true,
+                )
+                .await?;
+                #[cfg(feature = "integration")]
+                let push = match &self.fixture {
+                    Some((port, root)) => push.with_loopback_provider(*port, root.clone())?,
+                    None => push,
+                };
+                let push = Arc::new(push);
                 transports.insert(tenant.clone(), (revision, push.clone()));
                 push
             };

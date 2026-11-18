@@ -280,7 +280,9 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     );
     step(&h, retirement).await?;
     assert_eq!(state(&h, retirement).await?.0, "unenroll");
-    h.a.service.relay_once().await?;
+    for key in h.a.service.relay_page(None).await? {
+        h.a.service.relay_scope(key).await?;
+    }
     let offer = h.claim().await?;
     assert!(matches!(offer.payload, w::TaskPayload::Unmanage(_)));
     h.event(&offer, w::TaskEvent::Received).await?;

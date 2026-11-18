@@ -189,27 +189,39 @@ where
                     use rss_transactional_messaging::observability::TransactionalMessagingTransactionStatus as Status;
                     match outcome.status() {
                         Status::Committed => Ok(true),
-                        Status::CommitUnknown | Status::RollbackFailed => self.projection
-                            .resolve(&recovery, deadline()).await.ok().flatten()
-                            .map(|_| true).ok_or(PollFailure::Unavailable),
+                        Status::CommitUnknown | Status::RollbackFailed => self
+                            .projection
+                            .resolve(&recovery, deadline())
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|_| true)
+                            .ok_or(PollFailure::Unavailable),
                         _ => Err(PollFailure::Unavailable),
                     }
                 }
                 Ok(PgProjectionOutcome::InProgress) => Ok(false),
-                Ok(PgProjectionOutcome::DeliveryExpired | PgProjectionOutcome::Rejected(_)) =>
-                    Err(PollFailure::RecoveryRequired),
+                Ok(PgProjectionOutcome::DeliveryExpired | PgProjectionOutcome::Rejected(_)) => {
+                    Err(PollFailure::RecoveryRequired)
+                }
                 Err(_) => Err(PollFailure::Unavailable),
             };
             match result {
                 Ok(committed) => progress += usize::from(committed),
-                Err(error) => { failure.get_or_insert(error); }
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
             }
         }
         failure.map_or(Ok(progress), Err)
     }
 
-    async fn batch(&self, key: (uuid::Uuid, i64), slots: NonZeroUsize,
-        stop: &tokio_util::sync::CancellationToken) -> Result<Duration, PollFailure> {
+    async fn batch(
+        &self,
+        key: (uuid::Uuid, i64),
+        slots: NonZeroUsize,
+        stop: &tokio_util::sync::CancellationToken,
+    ) -> Result<Duration, PollFailure> {
         let tenant = rss_request_context::TenantId::parse(&key.0.to_string())
             .map_err(|_| PollFailure::Unavailable)?;
         let epoch = rss_transactional_messaging::fence::Epoch::new(key.1)
@@ -218,11 +230,20 @@ where
         if self.poll(binding, slots, stop).await? > 0 {
             return Ok(Duration::ZERO);
         }
-        let wake = self.projection.next_wakeup(binding, deadline()).await
+        let wake = self
+            .projection
+            .next_wakeup(binding, deadline())
+            .await
             .map_err(|_| PollFailure::Unavailable)?;
-        if wake.due_now() { return Ok(Duration::from_millis(100)); }
-        Ok(wake.next_deadline().map_or(Duration::from_secs(60), |d|
-            d.instant().saturating_duration_since(rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer))))
+        if wake.due_now() {
+            return Ok(Duration::from_millis(100));
+        }
+        Ok(wake.next_deadline().map_or(Duration::from_secs(60), |d| {
+            d.instant()
+                .saturating_duration_since(rss_request_context::Clock::now(
+                    &crate::lifecycle::RuntimeTimer,
+                ))
+        }))
     }
     pub(crate) fn registration(
         self: Arc<Self>,

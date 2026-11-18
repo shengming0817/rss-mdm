@@ -163,13 +163,21 @@ impl Store {
 }
 
 impl Store {
-    pub(crate) async fn push_work_scopes(&self, after: Option<uuid::Uuid>) -> Result<Vec<uuid::Uuid>, Error> {
+    pub(crate) async fn push_work_scopes(
+        &self,
+        after: Option<uuid::Uuid>,
+    ) -> Result<Vec<uuid::Uuid>, Error> {
         sqlx::query_scalar("SELECT tenant_id FROM mdm_windows.push_work_scopes($1)")
-            .bind(after).fetch_all(&self.pool).await.map_err(db)
+            .bind(after)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)
     }
     pub(crate) async fn next_session_expiry(&self) -> Result<Option<std::time::Duration>, Error> {
         let millis: Option<i64> = sqlx::query_scalar("SELECT mdm_windows.next_session_expiry_ms()")
-            .fetch_one(&self.pool).await.map_err(db)?;
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db)?;
         Ok(millis.map(|ms| std::time::Duration::from_millis(ms.max(1) as u64)))
     }
     pub async fn retention_scopes(

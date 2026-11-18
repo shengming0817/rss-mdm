@@ -164,9 +164,11 @@ pub trait Departure: Send + Sync {
     ) -> Pending<'a, ()>;
 }
 pub trait WakeDemand: Send + Sync {
-    fn candidates<'a>(&'a self,
+    fn candidates<'a>(
+        &'a self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,
-        c: &'a mut PgConnection, after: Option<rss_mdm_agent_wire::DeviceId>,
+        c: &'a mut PgConnection,
+        after: Option<rss_mdm_agent_wire::DeviceId>,
     ) -> Pending<'a, Vec<rss_mdm_agent_wire::DeviceId>>;
     fn pending<'a>(
         &'a self,

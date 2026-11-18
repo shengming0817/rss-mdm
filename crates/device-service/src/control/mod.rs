@@ -47,10 +47,7 @@ use rss_device_command as dc;
 use rss_device_command::Store;
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgError, PgOutboxStore, PgRuntime, PgTransaction};
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
 const DOMAIN: &str = "mdm.commands.v1";
@@ -64,7 +61,6 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 pub struct Service {
     pub(crate) read_pool: sqlx::PgPool,
     pub(crate) storage: rss_transactional_messaging::fence::StorageIdentity,
-    pub(crate) relay_after: Mutex<Option<(Uuid, i64)>>,
     pub(crate) worker_budget: Arc<tokio::sync::Semaphore>,
     pub(crate) recovery_batch: rss_device_command::BatchLimit,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
@@ -111,7 +107,6 @@ impl Service {
         Self {
             read_pool: dependencies.read_pool,
             storage: dependencies.probe.storage(),
-            relay_after: Mutex::new(None),
             transactions: transactions::Transactions {
                 retirement: dependencies.retirement,
                 capacity: dependencies.capacity,

@@ -83,7 +83,9 @@ pub async fn cycle(
             .bind(tenant).bind(candidates.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).bind(push.configuration.as_slice()).fetch_all(&mut *read).await.map_err(db)?;
     read.rollback().await.map_err(db)?;
     for row in rows {
-        if stop.is_cancelled() { break; }
+        if stop.is_cancelled() {
+            break;
+        }
         let seconds: f64 = row.try_get("wait_seconds").map_err(db)?;
         if seconds > 0.0 {
             scan.due(push.now() + Duration::from_secs_f64(seconds.min(RECONCILE.as_secs_f64())));
@@ -310,7 +312,10 @@ pub fn registration(
     })
 }
 
-#[allow(clippy::disallowed_methods,reason="process-owned monotonic worker clock")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "process-owned monotonic worker clock"
+)]
 fn schedule_failure(next: &mut Option<Instant>) {
     let at = Instant::now() + FAILURE_RETRY;
     *next = Some(next.map_or(at, |old| old.min(at)));

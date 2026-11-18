@@ -61,8 +61,8 @@ pub(super) enum RemoteError {
     Unknown,
 }
 impl Client {
-    pub fn new(token: Token) -> Result<Self, Error> {
-        let http = reqwest::Client::builder()
+    pub fn new(token: Token, builder: reqwest::ClientBuilder) -> Result<Self, Error> {
+        let http = builder
             .user_agent("RSS-MDM-ADE/1")
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(30))
@@ -75,6 +75,12 @@ impl Client {
             token,
             session: Zeroizing::new(String::new()),
         })
+    }
+
+    #[cfg(feature = "integration")]
+    pub(super) fn at_loopback(mut self, port: u16) -> Self {
+        self.origin = format!("https://localhost:{port}");
+        self
     }
 
     async fn session(&mut self) -> Result<(), RemoteError> {

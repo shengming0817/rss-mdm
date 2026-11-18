@@ -1,9 +1,9 @@
 //! One ADE operation journal, page checkpoints and fenced external effects.
-use std::time::Duration;
 use super::management::Command;
 use super::*;
 use rss_mdm_audit_integration::{Fact, RequestAudit};
 use serde_json::{Value, json};
+use std::time::Duration;
 
 struct Work {
     id: Uuid,
@@ -25,15 +25,42 @@ pub fn registration(
     let (task, _) =
         rss_runtime::ManagedTask::prepare("apple-ade", std::time::Duration::from_secs(8));
     task.into_registration(move |stop| async move {
-        rss_mdm_work_page::run(std::num::NonZeroUsize::new(2).expect("parallel ADE bindings"),
-            Duration::from_secs(5), &stop, &notify,
-            |after| { let app = &app; async move { app.access.ade_work_scopes(after, app.expected_epoch).await.map_err(|_| eprintln!("apple_ade_discovery_failed")) } },
-            |(tenant, epoch), _| { let app = app.clone(); async move {
-                let tenant = rss_request_context::TenantId::parse(&tenant.to_string()).map_err(|_| ())?;
-                let epoch = rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| ())?;
-                cycle(rss_transactional_messaging::fence::ExecutionBinding::new(app.storage,tenant,epoch),&app)
-                    .await.map_err(|_| eprintln!("apple_ade_cycle_failed"))
-            } }, |_| {}).await;
+        rss_mdm_work_page::run(
+            std::num::NonZeroUsize::new(2).expect("parallel ADE bindings"),
+            Duration::from_secs(5),
+            &stop,
+            &notify,
+            |after| {
+                let app = &app;
+                async move {
+                    app.access
+                        .ade_work_scopes(after, app.expected_epoch)
+                        .await
+                        .map_err(|_| eprintln!("apple_ade_discovery_failed"))
+                }
+            },
+            |(tenant, epoch), _| {
+                let app = app.clone();
+                async move {
+                    let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
+                        .map_err(|_| ())?;
+                    let epoch =
+                        rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| ())?;
+                    cycle(
+                        rss_transactional_messaging::fence::ExecutionBinding::new(
+                            app.storage,
+                            tenant,
+                            epoch,
+                        ),
+                        &app,
+                    )
+                    .await
+                    .map_err(|_| eprintln!("apple_ade_cycle_failed"))
+                }
+            },
+            |_| {},
+        )
+        .await;
         Ok(())
     })
 }
@@ -52,8 +79,12 @@ pub async fn cycle(
         .bind(&tenant).bind(time).bind(execution.epoch().get()).bind(execution.epoch() == app.expected_epoch)
         .fetch_one(&mut *scan).await.map_err(db)?;
     scan.rollback().await.map_err(db)?;
-    let Some(next) = next else { return Ok(Duration::from_secs(5)); };
-    if next > time { return Ok(Duration::from_secs(next.abs_diff(time))); }
+    let Some(next) = next else {
+        return Ok(Duration::from_secs(5));
+    };
+    if next > time {
+        return Ok(Duration::from_secs(next.abs_diff(time)));
+    }
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
@@ -69,15 +100,21 @@ pub async fn cycle(
         .write(
             audit.binding()?,
             &budget.source_control(),
-            (app, &audit, &tenant, time),
+            (
+                app,
+                &audit,
+                &tenant,
+                time,
+                execution.epoch() == app.expected_epoch,
+            ),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (app, audit, tenant, time) = *ctx;
+                    let (app, audit, tenant, time, fresh) = *ctx;
                     let (work, changes) = tx
-                        .with_connection_context(&mut (app, tenant, time), |ctx, c| {
+                        .with_connection_context(&mut (tenant, time, fresh), |ctx, c| {
                             Box::pin(async move {
-                                let (app, tenant, time) = *ctx;
-                                claim_in(c, tenant, time, execution.epoch() == app.expected_epoch).await
+                                let (tenant, time, fresh) = *ctx;
+                                claim_in(c, tenant, time, fresh).await
                             })
                         })
                         .await?;
@@ -115,7 +152,11 @@ pub async fn cycle(
     );
     let (work, changed) = settled?;
     let Some(work) = work else {
-        return Ok(if changed { Duration::ZERO } else { Duration::from_millis(100) });
+        return Ok(if changed {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(100)
+        });
     };
     let mut tx = app.access.begin(&tenant).await?;
     let row = server(&mut tx, &tenant, work.organization).await?;

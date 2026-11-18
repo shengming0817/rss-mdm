@@ -130,6 +130,9 @@ rss-reconcile.workspace = true
 rss-reconcile-postgres.workspace = true
 
 [dev-dependencies]
+axum = { workspace = true, features = ["http2"] }
+rss-mdm-apple-channel = { workspace = true, features = ["integration"] }
+rss-mdm-windows-channel = { workspace = true, features = ["integration"] }
 jsonschema.workspace = true
 webauthn-authenticator-rs = {version="=0.5.5", default-features=false, features=["softpasskey"]}
 rss-transactional-messaging-postgres = { workspace = true, features = ["integration"] }

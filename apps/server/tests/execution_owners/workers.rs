@@ -456,7 +456,9 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
         .bind(blocked.c.tenant.to_string()).execute(&blocked.c.operator).await?.rows_affected(), 1);
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let _ = h.a.script_work.relay_once().await;
+            for key in h.a.script_work.relay_page(None).await? {
+                h.a.script_work.relay_scope(key).await?;
+            }
             if accepted().await? {
                 break;
             }
@@ -556,3 +558,62 @@ async fn recoverable_batch_scan_failure_does_not_stop_other_tenants() -> Result<
 
 #[path = "discovery.rs"]
 mod discovery;
+
+#[tokio::test]
+#[ignore = "T2: a locked Script run cannot block another tenant's real outbox settlement"]
+async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Result<()> {
+    use crate::assembly::task_relay;
+    let h = Harness::open().await?;
+    let other = Harness::open().await?;
+    let (first, second) = if h.c.tenant.to_string() < other.c.tenant.to_string() {
+        (&h, &other)
+    } else {
+        (&other, &h)
+    };
+    let a = Uuid::new_v4();
+    let b = Uuid::new_v4();
+    for (host, id) in [(first, a), (second, b)] {
+        let input = w::TaskClaimRequest::new(
+            Uuid::new_v4(),
+            vec![w::ExecutorProfile::PowerShell7],
+            context(),
+        )?;
+        host.delivery
+            .claim(&host.p, &input, &request(&host.c))
+            .await?;
+        let (_, version) = host.policy("relay-locked").await?;
+        assert!(matches!(
+            host.admit(version, id).await?,
+            w::PolicyEventDecision::Accepted { .. }
+        ));
+    }
+    let mut lock = command::seed_transaction(&first.c).await?;
+    sqlx::query("SELECT 1 FROM mdm_script.runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+        .bind(first.c.tenant.to_string())
+        .bind(a)
+        .fetch_one(&mut *lock)
+        .await?;
+    let stop = CancellationToken::new();
+    let relay = task_relay::Relay::new(2, &stop);
+    let worker = h.a.script_work.clone();
+    let running = tokio::spawn(async move { task_relay::script(&relay, worker).await });
+    let observed = tokio::time::timeout(Duration::from_secs(12), async {
+        loop {
+            let states: (bool, bool) = sqlx::query_as("SELECT
+                EXISTS(SELECT FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id=$2 AND status='publishing'),
+                EXISTS(SELECT FROM rss_transactional_messaging.outbox WHERE tenant_id=$3::uuid AND message_id=$4 AND status='published')")
+                .bind(first.c.tenant.to_string()).bind(format!("script.{a}"))
+                .bind(second.c.tenant.to_string()).bind(format!("script.{b}"))
+                .fetch_one(&first.c.operator).await?;
+            if states == (true, true) { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    }).await;
+    stop.cancel();
+    lock.rollback().await?;
+    running.await?;
+    observed??;
+    other.close().await?;
+    h.close().await
+}

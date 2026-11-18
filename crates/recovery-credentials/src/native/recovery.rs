@@ -4,6 +4,7 @@ use rss_mdm_audit_integration::activity::ActivityDelivery;
 use rss_reconcile::{ActualState, DesiredState, ReconcileDiff, ReconcileStep, Reconciler};
 use rss_transactional_messaging::outbox::{OutboxRelayStore, OutboxSettlement};
 use sqlx::Row;
+use std::sync::Mutex;
 
 pub struct Timer(tokio::time::Instant);
 impl Default for Timer {
@@ -257,7 +258,7 @@ impl Service {
         }
         result
     }
-    pub fn record_relay_health(&self, result: &std::result::Result<usize, Error>) {
+    pub fn record_relay_health<T>(&self, result: &std::result::Result<T, Error>) {
         self.readiness.relay_round(
             result
                 .as_ref()
@@ -841,48 +842,36 @@ impl Service {
             epoch,
         ))
     }
-    pub async fn relay_once(&self) -> std::result::Result<usize, Error> {
-        let after = *self
-            .relay_after
-            .lock()
-            .map_err(|_| Error::Unavailable(Failure::CommandInvariant))?;
-        let scopes:Vec<(Uuid,i64)>=sqlx::query_as("SELECT tenant_id,expected_epoch FROM mdm_recovery_tasks.native_work_relay_scopes($1,$2)").bind(after.map(|x|x.0)).bind(after.map(|x|x.1)).fetch_all(&self.read_pool).await.map_err(|_|Error::Unavailable(Failure::CommandStorage))?;
-        if scopes.is_empty() {
-            *self
-                .relay_after
-                .lock()
-                .map_err(|_| Error::Unavailable(Failure::CommandInvariant))? = None;
-            return Ok(0);
-        }
-        let mut count = 0;
-        for (tenant, epoch) in scopes {
-            let t = TenantId::parse(&tenant.to_string()).map_err(|_| Error::Malformed)?;
-            let e = rss_transactional_messaging::fence::Epoch::new(epoch)
-                .map_err(|_| Error::Malformed)?;
-            let result = self
-                .relay_binding(rss_transactional_messaging::fence::ExecutionBinding::new(
-                    self.storage,
-                    t,
-                    e,
-                ))
-                .await;
-            *self
-                .relay_after
-                .lock()
-                .map_err(|_| Error::Unavailable(Failure::CommandInvariant))? =
-                Some((tenant, epoch));
-            self.readiness.relay_scope(
-                &recovery_scope(t),
-                epoch,
-                result
-                    .as_ref()
-                    .map(|_| ())
-                    .map_err(|e| failure(e.clone()).kind()),
-            );
-            if let Ok(relayed) = result {
-                count += relayed;
-            }
-        }
-        Ok(count)
+    pub async fn relay_page(
+        &self,
+        after: Option<(Uuid, i64)>,
+    ) -> std::result::Result<Vec<(Uuid, i64)>, Error> {
+        let result = sqlx::query_as("SELECT tenant_id,expected_epoch FROM mdm_recovery_tasks.native_work_relay_scopes($1,$2)").bind(after.map(|x|x.0)).bind(after.map(|x|x.1)).fetch_all(&self.read_pool).await.map_err(|_|Error::Unavailable(Failure::CommandStorage));
+        self.record_relay_health(&result);
+        result
+    }
+    pub async fn relay_scope(
+        &self,
+        (tenant, epoch): (Uuid, i64),
+    ) -> std::result::Result<usize, Error> {
+        let t = TenantId::parse(&tenant.to_string()).map_err(|_| Error::Malformed)?;
+        let e =
+            rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| Error::Malformed)?;
+        let result = self
+            .relay_binding(rss_transactional_messaging::fence::ExecutionBinding::new(
+                self.storage,
+                t,
+                e,
+            ))
+            .await;
+        self.readiness.relay_scope(
+            &recovery_scope(t),
+            epoch,
+            result
+                .as_ref()
+                .map(|_| ())
+                .map_err(|e| failure(e.clone()).kind()),
+        );
+        Ok(result.unwrap_or(0))
     }
 }

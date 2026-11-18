@@ -213,3 +213,7 @@ mod policy_management_t2_support;
 #[cfg(test)]
 #[path = "../tests/scope/publication.rs"]
 mod scope_t2;
+
+#[cfg(test)]
+#[path = "../tests/support/provider_http.rs"]
+mod provider_http_t2_support;

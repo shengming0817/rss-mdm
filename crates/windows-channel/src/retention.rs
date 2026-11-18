@@ -130,7 +130,9 @@ pub fn registration(
                 after = None;
                 if nearest != Some(Duration::ZERO) {
                     match app.access.next_session_expiry().await {
-                        Ok(Some(expiry)) => nearest = Some(nearest.map_or(expiry, |old: Duration| old.min(expiry))),
+                        Ok(Some(expiry)) => {
+                            nearest = Some(nearest.map_or(expiry, |old: Duration| old.min(expiry)))
+                        }
                         Err(_) => eprintln!("mdm_retention_expiry_query_failed"),
                         Ok(None) => {}
                     }
@@ -153,9 +155,20 @@ pub fn registration(
                     tenant,
                     epoch,
                 );
-                match prune_management(execution, &app.access, &app.audit_store, &tenant.to_string()).await {
+                match prune_management(
+                    execution,
+                    &app.access,
+                    &app.audit_store,
+                    &tenant.to_string(),
+                )
+                .await
+                {
                     Ok(count) => {
-                        let delay = if count > 0 { Duration::ZERO } else { Duration::from_millis(100) };
+                        let delay = if count > 0 {
+                            Duration::ZERO
+                        } else {
+                            Duration::from_millis(100)
+                        };
                         nearest = Some(nearest.map_or(delay, |old: Duration| old.min(delay)));
                     }
                     Err(_) => {
