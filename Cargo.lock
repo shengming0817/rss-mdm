@@ -5248,6 +5248,7 @@ dependencies = [
  "rss-mdm-resource",
  "rss-mdm-software-service",
  "rss-mdm-windows-mdm",
+ "rss-mdm-work-page",
  "rss-observation",
  "rss-request-context",
  "rss-runtime",

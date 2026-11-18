@@ -1863,9 +1863,15 @@ async fn local_delivery_rotates_past_a_locked_first_tenant_and_a_full_page() -> 
         tx.commit().await?;
     }
     let mut held = c.operator.begin().await?;
-    let locked=sqlx::query("SELECT seq FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND domain IN ('mdm-assets','mdm-group') FOR UPDATE")
-        .bind(tenants[0]).fetch_all(&mut *held).await?;
-    assert_eq!(locked.len(), 2);
+    // Both claimed effects insert this same tenant's dispatch row. Keep the insert
+    // uncommitted so each lane actually waits inside its owner transaction.
+    sqlx::query("INSERT INTO mdm_scope.asset_dispatch(tenant_id,expected_epoch) VALUES($1,1)")
+        .bind(tenants[0])
+        .execute(&mut *held)
+        .await?;
+    let locked=sqlx::query("SELECT seq FROM rss_transactional_messaging.outbox WHERE tenant_id=ANY($1) AND domain IN ('mdm-assets','mdm-group') FOR UPDATE")
+        .bind(&tenants[1..32]).fetch_all(&mut *held).await?;
+    assert_eq!(locked.len(), 62);
     let owners = Owners::open(&c).await?;
     let scopes = crate::scope_t2::open(&c).await?;
     let workers = Workers::start(&c, &owners, scopes.clone()).await?;
@@ -1873,10 +1879,13 @@ async fn local_delivery_rotates_past_a_locked_first_tenant_and_a_full_page() -> 
         sqlx::query_scalar::<_,i64>("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=ANY($1) AND domain IN ('mdm-group','mdm-assets') AND status='published'").bind(ids).fetch_one(&c.operator)
     };
     let siblings = tokio::time::timeout(Duration::from_secs(30), async {
-        while count(tenants[1..].to_vec()).await? != 64 {
+        loop {
+            let inflight: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND domain IN ('mdm-assets','mdm-group') AND status='publishing'")
+                .bind(tenants[0]).fetch_one(&c.operator).await?;
+            if inflight == 2 && count(vec![tenants[32]]).await? == 2 { break; }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert_eq!(count(vec![tenants[0]]).await?, 0);
+        assert_eq!(count(tenants[..32].to_vec()).await?, 0);
         Ok::<_, anyhow::Error>(())
     })
     .await;

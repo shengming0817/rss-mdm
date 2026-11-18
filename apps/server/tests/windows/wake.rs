@@ -11,23 +11,21 @@ use uuid::Uuid;
 struct FailFirstPage {
     owner: crate::assembly::windows_business::WindowsBusiness,
     first: AtomicBool,
-    tenant: rss_request_context::TenantId,
 }
 impl WakeDemand for FailFirstPage {
     fn candidates<'a>(
         &'a self,
-        binding: ExecutionBinding,
-        tx: &'a mut sqlx::PgConnection,
-        after: Option<DeviceId>,
-    ) -> Pending<'a, Vec<DeviceId>> {
-        if binding.tenant() == self.tenant && self.first.swap(false, Ordering::AcqRel) {
+        store: &'a rss_mdm_windows_channel::Store,
+        after: Option<(Uuid, Uuid)>,
+    ) -> Pending<'a, Vec<(Uuid, Uuid)>> {
+        if self.first.swap(false, Ordering::AcqRel) {
             return Box::pin(async {
                 Err(rss_mdm_windows_channel::Error::Unavailable(
                     rss_mdm_windows_channel::Failure::Database,
                 ))
             });
         }
-        self.owner.candidates(binding, tx, after)
+        self.owner.candidates(store, after)
     }
     fn pending<'a>(
         &'a self,
@@ -92,19 +90,34 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
     tx.commit().await?;
     let pool = c.database.archive_pool();
     let discovered = || {
-        sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm_windows.push_work_scopes(NULL) WHERE tenant_id=$1::uuid)")
+        sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm_windows.push_work_page(NULL,NULL) WHERE tenant_id=$1::uuid)")
         .bind(&t).fetch_one(&pool)
     };
     assert!(!discovered().await?, "channel with no pending command");
+    let command_id = Uuid::new_v4();
     identity_cases::seed_group(
         &c,
         &n,
         key,
         &identity_cases::request(false, false)?,
-        &[Uuid::new_v4()],
+        &[command_id],
     )
     .await?;
     assert!(discovered().await?);
+    let mut terminal = command::seed_transaction(&c).await?;
+    sqlx::query("UPDATE rss_device_command.commands SET status='superseded',terminal_at=queued_at,version=version+1 WHERE tenant_id=$1::uuid AND command_id=$2")
+        .bind(&t).bind(command_id.to_string()).execute(&mut *terminal).await?;
+    let stale: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT FROM mdm_windows.push_work_page(NULL,NULL) WHERE tenant_id=$1::uuid)",
+    )
+    .bind(&t)
+    .fetch_one(&mut *terminal)
+    .await?;
+    assert!(
+        !stale,
+        "a terminal command with an active channel is no longer WNS work"
+    );
+    terminal.rollback().await?;
     let owner = Arc::new(FailFirstPage {
         owner: crate::assembly::windows_business::WindowsBusiness(
             a.service.clone(),
@@ -114,7 +127,6 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
             a.registration.native.clone(),
         ),
         first: AtomicBool::new(true),
-        tenant: c.tenant,
     });
     let router=axum::Router::new().route("/accesstoken.srf",axum::routing::post(||async{
         axum::Json(serde_json::json!({"token_type":"bearer","access_token":"test-token","expires_in":600}))

@@ -123,12 +123,13 @@ pub fn registration(
                 Ok(page) => page,
                 Err(_) => {
                     eprintln!("mdm_retention_discovery_failed");
+                    nearest = Some(Duration::from_secs(5));
                     Vec::new()
                 }
             };
             if page.is_empty() {
                 after = None;
-                if nearest != Some(Duration::ZERO) {
+                if nearest.is_none() {
                     match app.access.next_session_expiry().await {
                         Ok(Some(expiry)) => {
                             nearest = Some(nearest.map_or(expiry, |old: Duration| old.min(expiry)))
@@ -136,6 +137,8 @@ pub fn registration(
                         Err(_) => eprintln!("mdm_retention_expiry_query_failed"),
                         Ok(None) => {}
                     }
+                }
+                if nearest != Some(Duration::ZERO) {
                     wait(&notify, &stop, nearest).await;
                 }
                 nearest = None;
@@ -173,6 +176,11 @@ pub fn registration(
                     }
                     Err(_) => {
                         eprintln!("mdm_management_retention_failed");
+                        nearest = Some(
+                            nearest
+                                .unwrap_or(Duration::from_secs(5))
+                                .min(Duration::from_secs(5)),
+                        );
                     }
                 }
             }

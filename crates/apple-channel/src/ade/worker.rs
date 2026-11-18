@@ -39,7 +39,7 @@ pub fn registration(
                         .map_err(|_| eprintln!("apple_ade_discovery_failed"))
                 }
             },
-            |(tenant, epoch), _| {
+            |(tenant, epoch)| {
                 let app = app.clone();
                 async move {
                     let tenant = rss_request_context::TenantId::parse(&tenant.to_string())

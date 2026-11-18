@@ -73,7 +73,27 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
         support::apple(ctx, native, key.clone(), &[]).await?;
     }
     let org = pending(first.0, first.1, &key).await?;
-    let second_org = pending(second.0, second.1, &key).await?;
+    let token = Uuid::new_v4();
+    let aad = rss_mdm_native_protection::ProtectionContext::new(
+        c.tenant,
+        &serde_json::to_string(&(n.device, "", 1i64))?,
+        "apple.push.material",
+        1,
+    )?
+    .derive();
+    let bytes = serde_json::to_vec(&json!({"token":token.as_bytes(),"magic":"native-t2"}))?;
+    let compare = rss_mdm_native_protection::ProtectionContext::new(
+        c.tenant,
+        &serde_json::to_string(&(n.device, "", 0i64))?,
+        "apple.push.compare",
+        1,
+    )?
+    .derive();
+    let mut tx = command::seed_transaction(&c).await?;
+    sqlx::query("UPDATE mdm_apple.channels SET material=$3,material_digest=$4 WHERE tenant_id=$1::uuid AND device=$2 AND user_key=''")
+        .bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(key.seal_bytes(&bytes,&aad)?)
+        .bind(key.mac(&bytes,&compare)?.to_vec()).execute(&mut *tx).await?;
+    tx.commit().await?;
     let gate = Arc::new(Notify::new());
     let apns_waiting = Arc::new(Notify::new());
     let ade_waiting = Arc::new(Notify::new());
@@ -82,7 +102,7 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
         let gate = gate.clone();
         let waiting = apns_waiting.clone();
         let blocked = blocked_push_id.clone();
-        move |headers: HeaderMap| {
+        move |axum::extract::Path(target): axum::extract::Path<String>, headers: HeaderMap| {
             let gate = gate.clone();
             let waiting = waiting.clone();
             let blocked = blocked.clone();
@@ -92,7 +112,7 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
                     .unwrap()
                     .parse::<Uuid>()
                     .unwrap();
-                if blocked.set(id).is_ok() {
+                if target == token.simple().to_string() && blocked.set(id).is_ok() {
                     waiting.notify_one();
                     gate.notified().await;
                 }
@@ -153,24 +173,29 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut launch = stack.startup()?.commit();
+    let push_hint = Arc::new(Notify::new());
+    let ade_hint = Arc::new(Notify::new());
     launch.stage_deferred_task_with_token(
-        rss_mdm_apple_channel::push::registration(state.clone(), Arc::new(Notify::new()))
-            .critical(),
+        rss_mdm_apple_channel::push::registration(state.clone(), push_hint.clone()).critical(),
     );
     launch.stage_deferred_task_with_token(
-        rss_mdm_apple_channel::ade::registration(state.clone(), Arc::new(Notify::new())).critical(),
+        rss_mdm_apple_channel::ade::registration(state.clone(), ade_hint.clone()).critical(),
     );
     launch.finish();
     let result=tokio::time::timeout(Duration::from_secs(15),async {
         tokio::join!(apns_waiting.notified(),ade_waiting.notified());
+        let second_org = pending(second.0, second.1, &key).await?;
+        push_hint.notify_one();
+        ade_hint.notify_one();
         loop {
             let (pushed,synced,blocked):(bool,bool,bool)=sqlx::query_as("SELECT
-                EXISTS(SELECT FROM mdm_apple.channels WHERE tenant_id IN ($1::uuid,$2::uuid) AND push_outcome='accepted' AND push_id<>$3),
+                EXISTS(SELECT FROM mdm_apple.channels WHERE tenant_id=$2::uuid AND device=$6 AND push_outcome='accepted')
+                    AND EXISTS(SELECT FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND device=$7 AND push_id=$3 AND push_lease_until>statement_timestamp()),
                 EXISTS(SELECT FROM mdm_apple.ade_servers WHERE organization=$4 AND cursor='complete')
                     AND (SELECT count(*) FROM mdm_apple.ade_devices WHERE organization=$4)=2,
                 EXISTS(SELECT FROM mdm_apple.ade_operations WHERE organization=$5 AND state='running')")
                 .bind(c.tenant.to_string()).bind(other.tenant.to_string()).bind(blocked_push_id.get().copied().unwrap())
-                .bind(second_org).bind(org).fetch_one(&c.operator).await?;
+                .bind(second_org).bind(org).bind(other_n.device.into_uuid()).bind(n.device.into_uuid()).fetch_one(&c.operator).await?;
             if pushed && synced && blocked {break;}
             tokio::time::sleep(Duration::from_millis(20)).await;
         }

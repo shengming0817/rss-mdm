@@ -567,7 +567,7 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
     let mut tx = command::seed_transaction(&c).await?;
     let seeded = sqlx::query("INSERT INTO mdm_access.management_sessions
         (tenant_id,device,protocol_epoch,session_id,credential,state,last_message,client_authenticated,login_user,nonce,expires_at)
-        SELECT s.tenant_id,s.device,s.protocol_epoch,n::text,s.credential,s.state,s.last_message,s.client_authenticated,
+        SELECT s.tenant_id,s.device,s.protocol_epoch,n::text,s.credential,'superseded',s.last_message,s.client_authenticated,
                s.login_user,s.nonce,statement_timestamp()-interval '1 second'
         FROM mdm_access.management_sessions s CROSS JOIN generate_series(100,132) n
         WHERE s.tenant_id=$1::uuid AND s.device=$2 AND s.session_id='17'")
@@ -597,6 +597,9 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
     .await;
     assert!(stack.shutdown().join().await?.is_clean());
     drained??;
+    let retained: Vec<String> = sqlx::query_scalar("SELECT session_id FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND device=$2 ORDER BY session_id")
+        .bind(c.tenant.to_string()).bind(n.device.into_uuid()).fetch_all(&c.operator).await?;
+    assert_eq!(retained, ["17"]);
     assert_eq!(send(&http, &h, &third).await?, response);
     assert_eq!(count().await?, committed);
     drop(http);

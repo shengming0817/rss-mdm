@@ -277,7 +277,7 @@ pub fn registration(
                         .map_err(|_| eprintln!("apple_push_discovery_failed"))
                 }
             },
-            |tenant, _| {
+            |tenant| {
                 let app = app.clone();
                 async move {
                     let result = async {

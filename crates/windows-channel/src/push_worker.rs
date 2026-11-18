@@ -266,110 +266,64 @@ pub fn registration(
     notify: Arc<tokio::sync::Notify>,
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) = rss_runtime::ManagedTask::prepare("windows-wns", Duration::from_secs(8));
-    task.into_registration(move|stop|async move{
-        #[allow(clippy::disallowed_methods,reason="process-owned monotonic worker clock")]
-        let mut reconcile=tokio::time::interval_at(Instant::now()+RECONCILE,RECONCILE);
-        reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut after=None;let mut next=None;
-        loop{
-            if stop.is_cancelled(){return Ok(())}
-            let page = match app.access.push_work_scopes(after).await {
-                Ok(rows) => rows,
-                Err(_) => {
-                    eprintln!("windows_push_discovery_failed");
-                    schedule_failure(&mut next);
-                    Vec::new()
+    task.into_registration(move |stop| async move {
+        rss_mdm_work_page::run(
+            std::num::NonZeroUsize::new(2).expect("parallel WNS devices"),
+            RECONCILE,
+            &stop,
+            &notify,
+            |after| {
+                let (app, eligibility) = (&app, &eligibility);
+                async move {
+                    eligibility
+                        .candidates(&app.access, after)
+                        .await
+                        .map_err(|_| eprintln!("windows_push_discovery_failed"))
                 }
-            };
-            if page.is_empty() { after=None; wait(&notify,&stop,&mut reconcile,next).await; next=None; continue; }
-            for tenant in page {
-                after = Some(tenant);
-                if stop.is_cancelled() { return Ok(()); }
-                let tenant = TenantId::parse(&tenant.to_string()).map_err(rss_runtime::ShutdownError::new)?;
-                let execution = app.execution(tenant);
-                let result = async {
-                    let windows = app.windows(execution).await?;
-                    let mut device_after = None;
-                    while !stop.is_cancelled() {
-                        let mut tx = app.access.begin_read(&tenant.to_string()).await?;
-                        let devices = eligibility.candidates(execution,&mut tx,device_after).await?;
-                        tx.rollback().await.map_err(db)?;
-                        let Some(last) = devices.last().copied() else { break; };
-                        device_after = Some(last);
-                        let scan = cycle(execution,&windows,eligibility.as_ref(),&app.protection,
-                            &app.access,&app.audit_store,&devices,&stop).await?;
-                        if let Some(at) = scan.next { next=Some(next.map_or(at,|old:Instant|old.min(at))); }
-                        if devices.len()<32 { break; }
+            },
+            |(tenant, device)| {
+                let (app, eligibility, stop) = (app.clone(), eligibility.clone(), stop.clone());
+                async move {
+                    let result = async {
+                        let tenant =
+                            TenantId::parse(&tenant.to_string()).map_err(|_| Error::Malformed)?;
+                        let execution = app.execution(tenant);
+                        let windows = app.windows(execution).await?;
+                        let device = rss_mdm_agent_wire::DeviceId::try_from(device)
+                            .map_err(|_| Error::Malformed)?;
+                        let scan = cycle(
+                            execution,
+                            &windows,
+                            eligibility.as_ref(),
+                            &app.protection,
+                            &app.access,
+                            &app.audit_store,
+                            &[device],
+                            &stop,
+                        )
+                        .await?;
+                        Ok::<_, Error>(scan.next.map_or(RECONCILE, |due| {
+                            due.saturating_duration_since(
+                                windows
+                                    .push
+                                    .as_ref()
+                                    .expect("scan with a push deadline")
+                                    .now(),
+                            )
+                        }))
                     }
-                    Ok::<_,Error>(())
-                }.await;
-                if result.is_err() {
-                    eprintln!("{}",serde_json::json!({"event":"windows_push_unavailable","tenant":tenant.to_string()}));
-                    schedule_failure(&mut next);
+                    .await;
+                    result.map_err(|_| {
+                        eprintln!(
+                            "{}",
+                            serde_json::json!({"event":"windows_push_unavailable","tenant":tenant})
+                        )
+                    })
                 }
-            }
-        }
+            },
+            |_| {},
+        )
+        .await;
+        Ok(())
     })
-}
-
-#[allow(
-    clippy::disallowed_methods,
-    reason = "process-owned monotonic worker clock"
-)]
-fn schedule_failure(next: &mut Option<Instant>) {
-    let at = Instant::now() + FAILURE_RETRY;
-    *next = Some(next.map_or(at, |old| old.min(at)));
-}
-
-async fn wait(
-    notify: &tokio::sync::Notify,
-    stop: &tokio_util::sync::CancellationToken,
-    reconcile: &mut tokio::time::Interval,
-    next: Option<Instant>,
-) {
-    let retry = async {
-        match next {
-            Some(at) => tokio::time::sleep_until(at).await,
-            None => std::future::pending::<()>().await,
-        }
-    };
-    // A fixed interval cannot be postponed by a stream of hints.
-    tokio::select! { biased;
-        () = stop.cancelled() => {},
-        _ = reconcile.tick() => {},
-        () = retry => {},
-        () = notify.notified() => {},
-    }
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "test observes the paused Tokio runtime clock"
-    )]
-    #[tokio::test(start_paused = true)]
-    async fn hints_cannot_postpone_reconciliation_and_wait_keeps_early_permit() {
-        let notify = tokio::sync::Notify::new();
-        let stop = tokio_util::sync::CancellationToken::new();
-        let start = Instant::now();
-        let mut interval = tokio::time::interval_at(start + RECONCILE, RECONCILE);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        for _ in 0..59 {
-            tokio::time::advance(Duration::from_secs(1)).await;
-            notify.notify_one();
-            wait(&notify, &stop, &mut interval, None).await;
-        }
-        wait(&notify, &stop, &mut interval, None).await;
-        assert_eq!(Instant::now(), start + RECONCILE);
-        let next = Instant::now() + Duration::from_secs(2);
-        wait(&notify, &stop, &mut interval, Some(next)).await;
-        assert_eq!(Instant::now(), next);
-        notify.notify_one();
-        wait(&notify, &stop, &mut interval, None).await;
-        assert_eq!(Instant::now(), next);
-        stop.cancel();
-        wait(&notify, &stop, &mut interval, None).await;
-        assert_eq!(Instant::now(), next);
-    }
 }

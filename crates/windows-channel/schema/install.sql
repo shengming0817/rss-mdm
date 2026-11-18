@@ -398,7 +398,7 @@ CREATE INDEX management_session_expiry ON mdm_access.management_sessions(expires
 CREATE FUNCTION mdm_windows.next_session_expiry_ms() RETURNS bigint
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  SELECT ceil(extract(epoch FROM min(expires_at)-statement_timestamp())*1000)::bigint
- FROM mdm_access.management_sessions WHERE expires_at>=statement_timestamp()
+ FROM mdm_access.management_sessions
 $$;
 REVOKE ALL ON FUNCTION mdm_windows.next_session_expiry_ms() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_windows.next_session_expiry_ms() TO mdm_access;

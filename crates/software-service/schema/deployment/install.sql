@@ -301,18 +301,24 @@ REVOKE ALL ON FUNCTION mdm_software_deployment.windows_pending_operations(uuid,u
 
 -- Discovery starts with work, never with every installed push channel. Authority
 -- is still rechecked by Software in the eventual claimant's transaction.
+CREATE FUNCTION mdm_software_deployment.windows_wake_inputs() RETURNS TABLE(tenant_id uuid,device uuid,command_id text)
+LANGUAGE sql STABLE AS $$
+ SELECT o.tenant_id,o.device,o.id::text AS command_id
+ FROM mdm_software_deployment.operations o
+ WHERE o.gateway_accepted AND o.dispatch_failure IS NULL AND o.input_context->>'platform'='windows'
+   AND JSON_VALUE(o.input_context,'$.deadline' RETURNING bigint NULL ON ERROR)>extract(epoch FROM statement_timestamp())
+$$;
+REVOKE ALL ON FUNCTION mdm_software_deployment.windows_wake_inputs() FROM PUBLIC;
+
 CREATE FUNCTION mdm_software_deployment.windows_wake_candidates(p_after uuid) RETURNS TABLE(device uuid)
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
- SELECT DISTINCT o.device FROM mdm_software_deployment.operations o
- JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text
- JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(o.tenant_id,o.device)
- WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-  AND (p_after IS NULL OR o.device>p_after) AND r.state='active'
-  AND o.gateway_accepted AND o.dispatch_failure IS NULL
-  AND o.input_context->>'platform'='windows' AND d.status IN ('published','received')
-  AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp())
- ORDER BY device LIMIT 32;
+ SELECT DISTINCT w.device FROM mdm_software_deployment.windows_wake_inputs() w
+ JOIN rss_device_command.commands d ON d.tenant_id=w.tenant_id AND d.command_id=w.command_id
+ JOIN mdm_access.devices r ON (r.tenant_id,r.id)=(w.tenant_id,w.device)
+ WHERE w.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+   AND (p_after IS NULL OR w.device>p_after) AND r.state='active' AND d.status IN ('published','received')
+ ORDER BY device LIMIT 32
 $$;
 REVOKE ALL ON FUNCTION mdm_software_deployment.windows_wake_candidates(uuid) FROM PUBLIC;
 CREATE INDEX windows_wake_operations

@@ -163,12 +163,13 @@ impl Store {
 }
 
 impl Store {
-    pub(crate) async fn push_work_scopes(
+    pub async fn push_work_page(
         &self,
-        after: Option<uuid::Uuid>,
-    ) -> Result<Vec<uuid::Uuid>, Error> {
-        sqlx::query_scalar("SELECT tenant_id FROM mdm_windows.push_work_scopes($1)")
-            .bind(after)
+        after: Option<(uuid::Uuid, uuid::Uuid)>,
+    ) -> Result<Vec<(uuid::Uuid, uuid::Uuid)>, Error> {
+        sqlx::query_as("SELECT tenant_id,device FROM mdm_windows.push_work_page($1,$2)")
+            .bind(after.map(|key| key.0))
+            .bind(after.map(|key| key.1))
             .fetch_all(&self.pool)
             .await
             .map_err(db)

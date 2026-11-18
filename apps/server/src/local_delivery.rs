@@ -154,7 +154,6 @@ where
     async fn poll(
         &self,
         binding: ExecutionBinding,
-        slots: NonZeroUsize,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<usize, PollFailure> {
         if self
@@ -173,7 +172,7 @@ where
             .project_batch(
                 binding,
                 &self.validator,
-                slots,
+                NonZeroUsize::MIN,
                 OperationDeadline::from_remaining(Duration::from_secs(1)),
                 Duration::from_secs(6),
             )
@@ -219,7 +218,6 @@ where
     async fn batch(
         &self,
         key: (uuid::Uuid, i64),
-        slots: NonZeroUsize,
         stop: &tokio_util::sync::CancellationToken,
     ) -> Result<Duration, PollFailure> {
         let tenant = rss_request_context::TenantId::parse(&key.0.to_string())
@@ -227,7 +225,7 @@ where
         let epoch = rss_transactional_messaging::fence::Epoch::new(key.1)
             .map_err(|_| PollFailure::Unavailable)?;
         let binding = ExecutionBinding::new(self.storage, tenant, epoch);
-        if self.poll(binding, slots, stop).await? > 0 {
+        if self.poll(binding, stop).await? > 0 {
             return Ok(Duration::ZERO);
         }
         let wake = self
@@ -252,29 +250,46 @@ where
         let (task, status) = rss_runtime::ManagedTask::prepare(self.name, Duration::from_secs(8));
         let _ = self.health.task.set(status);
         task.into_registration(move |stop| async move {
-            rss_mdm_work_page::run(NonZeroUsize::new(SLOTS as usize).expect("projection slots"),
-                Duration::from_secs(60), &stop, &notify,
-                |after: Option<(uuid::Uuid,i64)>| {
+            rss_mdm_work_page::run(
+                NonZeroUsize::new(SLOTS as usize).expect("projection slots"),
+                Duration::from_secs(60),
+                &stop,
+                &notify,
+                |after: Option<(uuid::Uuid, i64)>| {
                     let lane = &self;
                     async move {
-                    sqlx::query_as(lane.scopes).bind(after.map(|k|k.0)).bind(after.map(|k|k.1))
-                        .fetch_all(&lane.read_pool).await.map_err(|_| ())
+                        sqlx::query_as(lane.scopes)
+                            .bind(after.map(|key| key.0))
+                            .bind(after.map(|key| key.1))
+                            .fetch_all(&lane.read_pool)
+                            .await
+                            .map_err(|_| eprintln!("{} discovery failed", lane.name))
                     }
                 },
-                |key, slots| {
+                |key| {
                     let lane = self.clone();
                     let cancel = stop.clone();
                     async move {
-                        lane.batch(key, slots, &cancel).await.map_err(|error| {
-                            eprintln!("{}", serde_json::json!({"event":"local_delivery_unavailable",
-                                "worker":lane.name,"tenant":key.0,"recoveryRequired":matches!(error,PollFailure::RecoveryRequired)}));
+                        lane.batch(key, &cancel).await.map_err(|error| {
+                            let event = serde_json::json!({
+                                "event":"local_delivery_unavailable", "worker":lane.name,
+                                "tenant":key.0, "epoch":key.1,
+                                "recoveryRequired":matches!(error, PollFailure::RecoveryRequired)
+                            });
+                            eprintln!("{event}");
                         })
                     }
                 },
                 |failed| {
-                    self.health.failed.store(failed,std::sync::atomic::Ordering::Release);
-                    self.health.observed.store(true,std::sync::atomic::Ordering::Release);
-                }).await;
+                    self.health
+                        .failed
+                        .store(failed, std::sync::atomic::Ordering::Release);
+                    self.health
+                        .observed
+                        .store(true, std::sync::atomic::Ordering::Release);
+                },
+            )
+            .await;
             Ok(())
         })
     }

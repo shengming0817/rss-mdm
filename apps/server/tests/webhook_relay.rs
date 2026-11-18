@@ -176,12 +176,16 @@ async fn stalled_receiver_allows_other_fanout_and_http_settlement() -> Result<()
         assert_eq!(receipts.recv().await,Some(a));
         emit(&second,b).await?;
         emit(&first,a2).await?;
-        assert_eq!(receipts.recv().await,Some(b));
+        let mut peers = std::collections::BTreeSet::new();
+        while peers.len()<2 {
+            peers.insert(receipts.recv().await.context("live receiver")?);
+        }
+        assert_eq!(peers, [a2,b].into_iter().collect());
         loop {
             let state:(bool,bool,bool)=sqlx::query_as("SELECT
                 EXISTS(SELECT FROM mdm_webhook.fanout WHERE id=$1 AND complete),
                 EXISTS(SELECT FROM mdm_webhook.deliveries d JOIN rss_transactional_messaging.outbox o ON o.tenant_id=d.tenant_id AND o.message_id=d.id::text AND o.domain='mdm-webhook-delivery' WHERE d.event_id=$2 AND d.attempts=1 AND d.last_outcome='received' AND o.status='published'),
-                EXISTS(SELECT FROM mdm_webhook.deliveries WHERE event_id=$3 AND attempts=1 AND last_outcome='unknown')")
+                EXISTS(SELECT FROM mdm_webhook.deliveries d JOIN rss_transactional_messaging.outbox o ON o.tenant_id=d.tenant_id AND o.message_id=d.id::text AND o.domain='mdm-webhook-delivery' WHERE d.event_id=$3 AND d.attempts=1 AND d.last_outcome='unknown' AND d.last_reason IS NULL AND o.status='publishing' AND o.retry_count=0)")
                 .bind(a2).bind(b).bind(a).fetch_one(&first.operator).await?;
             if state==(true,true,true) {break;}
             tokio::time::sleep(Duration::from_millis(20)).await;

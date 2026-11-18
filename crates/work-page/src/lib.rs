@@ -1,6 +1,6 @@
 //! Bounded traversal of the product workers' ordered discovery pages.
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     future::Future,
     num::NonZeroUsize,
     time::Duration,
@@ -21,19 +21,23 @@ pub async fn run<K, P, F>(
     stop: &CancellationToken,
     notify: &Notify,
     page: impl Fn(Option<K>) -> P,
-    batch: impl Fn(K, NonZeroUsize) -> F,
+    batch: impl Fn(K) -> F,
     observed: impl Fn(bool),
 ) where
     K: Copy + Ord + Send + 'static,
     P: Future<Output = Result<Vec<K>, ()>>,
     F: Future<Output = Result<Duration, ()>> + Send + 'static,
 {
+    let retry = Duration::from_secs(5);
     let mut active = BTreeSet::new();
     let mut tasks = JoinSet::new();
     let mut queued = VecDeque::new();
     let mut after = None;
     let mut scanning = true;
-    let mut failed = false;
+    let mut discovery_retry = None;
+    let mut due = BTreeMap::<K, Instant>::new();
+    let mut failures = BTreeSet::new();
+    let mut unseen = BTreeSet::new();
     let mut wake = Instant::now() + idle;
     loop {
         if stop.is_cancelled() {
@@ -41,13 +45,15 @@ pub async fn run<K, P, F>(
         }
         if scanning && active.len() < capacity.get() {
             if let Some(key) = queued.pop_front() {
+                unseen.remove(&key);
+                if let Some(at) = due.get(&key).copied()
+                    && at > Instant::now()
+                {
+                    wake = wake.min(at);
+                    continue;
+                }
                 if active.insert(key) {
-                    let slots = if queued.is_empty() && active.len() == 1 {
-                        capacity
-                    } else {
-                        NonZeroUsize::MIN
-                    };
-                    let attempt = batch(key, slots);
+                    let attempt = batch(key);
                     tasks.spawn(async move { (key, attempt.await) });
                 }
                 continue;
@@ -62,17 +68,19 @@ pub async fn run<K, P, F>(
                     queued = rows.into();
                     continue;
                 }
-                Ok(_) => {}
-                Err(()) => {
-                    failed = true;
-                    observed(true);
-                    wake = wake.min(Instant::now() + Duration::from_secs(5));
+                Ok(_) => {
+                    discovery_retry = None;
+                    for key in &unseen {
+                        if !active.contains(key) {
+                            due.remove(key);
+                            failures.remove(key);
+                        }
+                    }
                 }
+                Err(()) => discovery_retry = Some(Instant::now() + retry),
             }
+            observed(discovery_retry.is_some() || !failures.is_empty());
             scanning = false;
-        }
-        if !scanning && active.is_empty() {
-            observed(failed);
         }
         tokio::select! {
             biased;
@@ -80,22 +88,39 @@ pub async fn run<K, P, F>(
             Some(result) = tasks.join_next(), if !active.is_empty() => {
                 let (key, result) = result.expect("owned worker batch panicked");
                 active.remove(&key);
-                let delay = result.unwrap_or_else(|()| {
-                    failed = true;
-                    observed(true);
-                    Duration::from_secs(5)
-                });
-                wake = wake.min(Instant::now() + delay);
+                let delay = match result {
+                    Ok(delay) => {
+                        failures.remove(&key);
+                        delay.min(idle)
+                    }
+                    Err(()) => {
+                        failures.insert(key);
+                        retry
+                    }
+                };
+                let at = Instant::now() + delay;
+                due.insert(key, at);
+                wake = wake.min(at);
+                observed(discovery_retry.is_some() || !failures.is_empty());
             }
-            () = async {
+            hint = async {
+                if let Some(at) = discovery_retry {
+                    tokio::time::sleep_until(at).await;
+                    return false;
+                }
                 tokio::select! {
-                    () = notify.notified() => {},
-                    () = tokio::time::sleep_until(wake) => {},
+                    () = notify.notified() => true,
+                    () = tokio::time::sleep_until(wake) => false,
                 }
             }, if !scanning && active.len() < capacity.get() => {
+                if hint {
+                    // Hints can announce new work before a previously observed deadline.
+                    // Faulted bindings still observe their own retry delay.
+                    due.retain(|key, _| failures.contains(key));
+                }
+                unseen = due.keys().copied().collect();
                 after = None;
                 scanning = true;
-                if active.is_empty() { failed = false; }
                 wake = Instant::now() + idle;
             }
         }
@@ -153,7 +178,7 @@ mod tests {
                         }
                         std::future::ready(Ok(rows))
                     },
-                    |key, _| {
+                    |key| {
                         let release = release.clone();
                         let sent = sent.clone();
                         let finished = finished.clone();
@@ -193,5 +218,59 @@ mod tests {
         })
         .await
         .expect("pending work should finish while first binding remains blocked");
+    }
+    #[tokio::test(start_paused = true)]
+    async fn failed_binding_recovers_while_a_peer_is_still_running() {
+        let stop = CancellationToken::new();
+        let release = Arc::new(Notify::new());
+        let notify = Arc::new(Notify::new());
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (health, mut changes) = tokio::sync::mpsc::unbounded_channel();
+        let running = {
+            let (stop, release, notify, attempts) = (
+                stop.clone(),
+                release.clone(),
+                notify.clone(),
+                attempts.clone(),
+            );
+            tokio::spawn(async move {
+                run(
+                    NonZeroUsize::new(2).unwrap(),
+                    Duration::from_millis(500),
+                    &stop,
+                    &notify,
+                    |after| {
+                        std::future::ready(Ok(if after.is_none() { vec![1, 2] } else { vec![] }))
+                    },
+                    |key| {
+                        let (release, attempts) = (release.clone(), attempts.clone());
+                        async move {
+                            if key == 1 {
+                                release.notified().await;
+                            }
+                            if key == 2 && attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                                return Err(());
+                            }
+                            Ok(Duration::from_secs(60))
+                        }
+                    },
+                    |failed| {
+                        let _sent = health.send(failed);
+                    },
+                )
+                .await;
+            })
+        };
+        while changes.recv().await != Some(true) {}
+        notify.notify_one();
+        tokio::time::advance(Duration::from_secs(4)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        while changes.recv().await != Some(false) {}
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        stop.cancel();
+        release.notify_one();
+        running.await.unwrap();
     }
 }

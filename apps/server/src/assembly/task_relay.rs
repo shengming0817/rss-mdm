@@ -39,11 +39,27 @@ impl Relay {
         P: Future<Output = Result<Vec<Key>, E>>,
         B: Future<Output = Result<usize, E>> + Send + 'static,
     {
-        rss_mdm_work_page::run(self.capacity, IDLE, &self.stop, &self.notify,
-            |after| { let query = page(after); async move {
-                query.await.map_err(|e| eprintln!("{}",serde_json::json!({"event":"command_relay_discovery_failed","owner":name,"reason":e.to_string()})))
-            }},
-            |key,_| { let relay = self.clone(); let work = batch(key);
+        rss_mdm_work_page::run(
+            self.capacity,
+            IDLE,
+            &self.stop,
+            &self.notify,
+            |after| {
+                let query = page(after);
+                async move {
+                    query.await.map_err(|error| {
+                        let event = serde_json::json!({
+                            "event": "command_relay_discovery_failed",
+                            "owner": name,
+                            "reason": error.to_string()
+                        });
+                        eprintln!("{event}");
+                    })
+                }
+            },
+            |key| {
+                let relay = self.clone();
+                let work = batch(key);
                 async move {
                     let _permit = tokio::select! { biased;
                         () = relay.stop.cancelled() => return Ok(IDLE),
@@ -59,7 +75,10 @@ impl Relay {
                         }
                     }
                 }
-            }, |_| {}).await;
+            },
+            |_| {},
+        )
+        .await;
     }
 }
 

@@ -211,8 +211,8 @@ impl<T: ExecutionTimer + 'static, E: TransactionalMessagingEmitter + 'static> Re
             idle,
             &self.token,
             &notify,
-            |after: Option<(Uuid, i64)>| async move {
-                sqlx::query_as(
+            |after: Option<(Uuid, i64, usize)>| async move {
+                let bindings: Vec<(Uuid, i64)> = sqlx::query_as(
                     "SELECT tenant_id,expected_epoch FROM mdm_webhook.work_scopes($1,$2,$3)",
                 )
                 .bind(domain)
@@ -220,9 +220,18 @@ impl<T: ExecutionTimer + 'static, E: TransactionalMessagingEmitter + 'static> Re
                 .bind(after.map(|v| v.1))
                 .fetch_all(&self.pool)
                 .await
-                .map_err(|_| ())
+                .map_err(|_| eprintln!("webhook discovery failed for {domain}"))?;
+                // Independent RSS claims share the lane budget. Keep at least one slot
+                // for a newly arriving tenant even if all this binding’s HTTP calls stall.
+                let per_binding = capacity.saturating_sub(1).max(1);
+                Ok(bindings
+                    .into_iter()
+                    .flat_map(|(tenant, epoch)| {
+                        (0..per_binding).map(move |slot| (tenant, epoch, slot))
+                    })
+                    .collect())
             },
-            |(tenant, epoch), _| {
+            |(tenant, epoch, _)| {
                 let (store, publisher, timer, emitter) = (
                     store.clone(),
                     publisher.clone(),

@@ -510,48 +510,6 @@ impl Departure for WindowsBusiness {
     }
 }
 impl WakeDemand for WindowsBusiness {
-    fn candidates<'a>(
-        &'a self,
-        execution: rss_transactional_messaging::fence::ExecutionBinding,
-        c: &'a mut PgConnection,
-        after: Option<rss_mdm_agent_wire::DeviceId>,
-    ) -> Pending<'a, Vec<rss_mdm_agent_wire::DeviceId>> {
-        Box::pin(async move {
-            let mut devices = std::collections::BTreeSet::new();
-            devices.extend(
-                self.0
-                    .windows_wake_candidates_in(execution, c, after)
-                    .await
-                    .map_err(error)?,
-            );
-            devices.extend(
-                self.1
-                    .windows_wake_candidates_in(execution, c, after)
-                    .await
-                    .map_err(policy_error)?,
-            );
-            devices.extend(
-                self.2
-                    .windows_wake_candidates_on(execution, c, after)
-                    .await
-                    .map_err(collection_fault)?,
-            );
-            devices.extend(
-                self.3
-                    .windows_wake_candidates_in(execution, c, after)
-                    .await
-                    .map_err(software_error)?,
-            );
-            devices.extend(
-                self.4
-                    .windows_wake_candidates_in(execution, c, after)
-                    .await
-                    .map_err(registration_error)?,
-            );
-            Ok(devices.into_iter().take(32).collect())
-        })
-    }
-
     fn pending<'a>(
         &'a self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,

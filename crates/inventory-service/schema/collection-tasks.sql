@@ -116,3 +116,12 @@ ALTER FUNCTION mdm_inventory.collection_work_epoch(uuid,text) OWNER TO mdm_owner
 ALTER FUNCTION mdm_inventory.collection_work_relay_scopes(uuid,bigint) OWNER TO mdm_owner;
 REVOKE ALL ON FUNCTION mdm_inventory.collection_work_scopes(uuid),mdm_inventory.collection_work_epoch(uuid,text),mdm_inventory.collection_work_relay_scopes(uuid,bigint) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_inventory.collection_work_scopes(uuid),mdm_inventory.collection_work_epoch(uuid,text),mdm_inventory.collection_work_relay_scopes(uuid,bigint) TO mdm_access;
+
+CREATE FUNCTION mdm_inventory.windows_wake_inputs() RETURNS TABLE(tenant_id uuid,device uuid)
+LANGUAGE sql STABLE AS $$
+ SELECT t.tenant_id,t.device FROM mdm_inventory.collection_tasks t
+ JOIN mdm_access.collection_runs r ON (r.tenant_id,r.id)=(t.tenant_id,t.collection_run)
+ WHERE t.native_delivery IN ('prepared','sent') AND r.source='mdm.windows'
+   AND r.sealed_at IS NULL AND t.deadline>floor(extract(epoch FROM statement_timestamp()))
+$$;
+REVOKE ALL ON FUNCTION mdm_inventory.windows_wake_inputs() FROM PUBLIC;
