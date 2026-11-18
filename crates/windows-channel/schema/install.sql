@@ -394,7 +394,16 @@ REVOKE ALL ON FUNCTION mdm_windows.push_work_page(uuid,uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_windows.push_work_page(uuid,uuid) TO mdm_access;
 CREATE POLICY retention_discovery ON mdm_access.management_sessions FOR SELECT TO mdm_owner USING(true);
 CREATE FUNCTION mdm_windows.retention_scopes(after_tenant uuid,after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
- SELECT DISTINCT tenant_id,expected_epoch FROM mdm_access.management_sessions WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32
+ SELECT DISTINCT tenant_id,expected_epoch FROM mdm_access.management_sessions WHERE expires_at<statement_timestamp() AND (after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch)) ORDER BY tenant_id,expected_epoch LIMIT 32
 $$;
 REVOKE ALL ON FUNCTION mdm_windows.retention_scopes(uuid,bigint) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_windows.retention_scopes(uuid,bigint) TO mdm_access;
+
+CREATE INDEX management_session_expiry ON mdm_access.management_sessions(expires_at,tenant_id,expected_epoch);
+CREATE FUNCTION mdm_windows.next_session_expiry_ms() RETURNS bigint
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT ceil(extract(epoch FROM min(expires_at)-statement_timestamp())*1000)::bigint
+ FROM mdm_access.management_sessions WHERE expires_at>=statement_timestamp()
+$$;
+REVOKE ALL ON FUNCTION mdm_windows.next_session_expiry_ms() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_windows.next_session_expiry_ms() TO mdm_access;

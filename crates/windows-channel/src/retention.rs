@@ -14,8 +14,8 @@ pub async fn prune_management(
     // This is only a non-locking hint. Any candidate is re-read under Audit then
     // business locks below; a concurrent new expiry is picked up on the next tick.
     let mut hint = database.begin_read(tenant).await?;
-    let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND expires_at<clock_timestamp())")
-        .bind(tenant).fetch_one(&mut *hint).await.map_err(db)?;
+    let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND expected_epoch=$2 AND expires_at<clock_timestamp())")
+        .bind(tenant).bind(execution.epoch().get()).fetch_one(&mut *hint).await.map_err(db)?;
     hint.rollback().await.map_err(db)?;
     if !pending {
         return Ok(0);
@@ -128,7 +128,14 @@ pub fn registration(
             };
             if page.is_empty() {
                 after = None;
-                wait(&notify, &stop, nearest).await;
+                if nearest != Some(Duration::ZERO) {
+                    match app.access.next_session_expiry().await {
+                        Ok(Some(expiry)) => nearest = Some(nearest.map_or(expiry, |old: Duration| old.min(expiry))),
+                        Err(_) => eprintln!("mdm_retention_expiry_query_failed"),
+                        Ok(None) => {}
+                    }
+                    wait(&notify, &stop, nearest).await;
+                }
                 nearest = None;
                 continue;
             }
@@ -146,13 +153,9 @@ pub fn registration(
                     tenant,
                     epoch,
                 );
-                match sweep(execution, &app.access, &app.audit_store).await {
-                    Ok((count, next)) => {
-                        let delay = if count > 0 {
-                            Duration::from_millis(100)
-                        } else {
-                            next.unwrap_or(Duration::from_secs(5))
-                        };
+                match prune_management(execution, &app.access, &app.audit_store, &tenant.to_string()).await {
+                    Ok(count) => {
+                        let delay = if count > 0 { Duration::ZERO } else { Duration::from_millis(100) };
                         nearest = Some(nearest.map_or(delay, |old: Duration| old.min(delay)));
                     }
                     Err(_) => {
@@ -162,29 +165,6 @@ pub fn registration(
             }
         }
     })
-}
-
-async fn next_expiry(database: &crate::Store, tenant: &str) -> Result<Option<Duration>, Error> {
-    let mut tx = database.begin_read(tenant).await?;
-    let millis: Option<i64> = sqlx::query_scalar("SELECT ceil(extract(epoch FROM min(expires_at)-clock_timestamp())*1000)::bigint FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND expires_at>clock_timestamp()")
-        .bind(tenant).fetch_one(&mut *tx).await.map_err(db)?;
-    tx.rollback().await.map_err(db)?;
-    Ok(millis.map(|ms| Duration::from_millis(ms.max(1) as u64)))
-}
-
-pub async fn sweep(
-    execution: rss_transactional_messaging::fence::ExecutionBinding,
-    database: &crate::Store,
-    store: &rss_mdm_audit_integration::AuditStore,
-) -> Result<(u64, Option<Duration>), Error> {
-    let tenant = execution.tenant().to_string();
-    let count = prune_management(execution, database, store, &tenant).await?;
-    let nearest = if count == 0 {
-        next_expiry(database, &tenant).await?
-    } else {
-        None
-    };
-    Ok((count, nearest))
 }
 
 async fn wait(

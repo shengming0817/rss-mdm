@@ -174,6 +174,11 @@ impl Store {
             .await
             .map_err(db)
     }
+    pub(crate) async fn next_session_expiry(&self) -> Result<Option<std::time::Duration>, Error> {
+        let millis: Option<i64> = sqlx::query_scalar("SELECT mdm_windows.next_session_expiry_ms()")
+            .fetch_one(&self.pool).await.map_err(db)?;
+        Ok(millis.map(|ms| std::time::Duration::from_millis(ms.max(1) as u64)))
+    }
     pub async fn retention_scopes(
         &self,
         after: Option<(uuid::Uuid, i64)>,
