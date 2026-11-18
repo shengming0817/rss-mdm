@@ -227,7 +227,7 @@ impl Delivery {
         wake: &Wake,
         status: Option<u16>,
         outcome: PushOutcome,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let execution = wake.execution;
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
@@ -246,7 +246,7 @@ impl Delivery {
    let facts=s.facts.clone();let tenant=tx.tenant_id().to_string();let wake=wake.clone();
    let changed=tx.with_connection(move|c|Box::pin(async move {let changed=facts.settle_push(c,tenant,wake,status,outcome).await; if matches!(changed,Ok(Some(1))) {crate::notify(c,"apple").await?;} Ok(changed)})).await.map_err(storage)??;
    match changed {Some(0)=>{},Some(1)=>s.audit.append_in(tx,&fact).await?,Some(_)=>return Err(Error::Conflict),None=>audit.require_final_request()}
-   Ok(())
+   Ok(changed == Some(1))
   })).await;
         if result.is_ok() && audit.snapshot().final_request {
             let budget = rss_mdm_audit_integration::budget::AuditBudget::new(
