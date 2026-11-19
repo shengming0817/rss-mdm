@@ -2,7 +2,7 @@
 //! ref: PostgreSQL LISTEN/NOTIFY; sqlx 0.9 sqlx-postgres/src/listener.rs.
 use crate::participants::WakeDemand;
 use crate::push::{PushOutcome, RetryAfter};
-use crate::{Error, Failure, RequestAudit, Store, Windows, database::db};
+use crate::{Error, Failure, RequestAudit, Windows, database::db};
 use rss_mdm_audit_integration::{AuditStore, Fact};
 use rss_mdm_native_protection::Protector;
 use rss_request_context::TenantId;
@@ -56,14 +56,13 @@ fn audit(
     audit.target_device(device);
     audit
 }
-pub async fn cycle(
+async fn cycle(
     execution: rss_transactional_messaging::fence::ExecutionBinding,
     w: &Windows,
     eligibility: &dyn WakeDemand,
-    key: &Protector,
-    dbase: &Store,
-    store: &AuditStore,
+    app: &crate::HttpState,
     candidates: &[rss_mdm_agent_wire::DeviceId],
+    stop: &tokio_util::sync::CancellationToken,
 ) -> Result<WakeScan, Error> {
     let mut scan = WakeScan {
         candidates: candidates.len(),
@@ -72,7 +71,7 @@ pub async fn cycle(
     let Some(push) = &w.push else { return Ok(scan) };
     let tenant_string = execution.tenant().to_string();
     let tenant = tenant_string.as_str();
-    let mut read = dbase.begin_read(tenant).await?;
+    let mut read = app.access.begin_read(tenant).await?;
     if let Some(revision) = push.material_revision
         && !crate::wns_materials::is_selected(&mut read, tenant, revision).await?
     {
@@ -82,13 +81,26 @@ pub async fn cycle(
             .bind(tenant).bind(candidates.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).bind(push.configuration.as_slice()).fetch_all(&mut *read).await.map_err(db)?;
     read.rollback().await.map_err(db)?;
     for row in rows {
+        if stop.is_cancelled() {
+            break;
+        }
         let seconds: f64 = row.try_get("wait_seconds").map_err(db)?;
         if seconds > 0.0 {
             scan.due(push.now() + Duration::from_secs_f64(seconds.min(RECONCILE.as_secs_f64())));
             continue;
         }
         scan.transactions += 1;
-        match attempt(execution, w, eligibility, key, store, tenant, row).await {
+        match attempt(
+            execution,
+            w,
+            eligibility,
+            &app.protection,
+            &app.audit_store,
+            tenant,
+            row,
+        )
+        .await
+        {
             Ok(Some(delay)) => {
                 scan.sent += 1;
                 scan.due(push.now() + delay);
@@ -262,76 +274,65 @@ pub fn registration(
     notify: Arc<tokio::sync::Notify>,
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) = rss_runtime::ManagedTask::prepare("windows-wns", Duration::from_secs(8));
-    task.into_registration(move|stop|async move{
-        #[allow(clippy::disallowed_methods,reason="process-owned monotonic worker clock")]
-        let mut reconcile=tokio::time::interval_at(Instant::now()+RECONCILE,RECONCILE);
-        reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut after=None;let mut next=None;
-        loop{
-            if stop.is_cancelled(){return Ok(())}
-            let page=match app.access.push_work_page(after).await{Ok(page)=>page,Err(_)=>{eprintln!("windows_push_discovery_failed");Vec::new()}};
-            if page.is_empty(){after=None;wait(&notify,&stop,&mut reconcile,next).await;next=None;continue}
-            let mut groups=std::collections::BTreeMap::<Uuid,Vec<rss_mdm_agent_wire::DeviceId>>::new();
-            for(tenant,device)in page {after=Some((tenant,device));groups.entry(tenant).or_default().push(rss_mdm_agent_wire::DeviceId::try_from(device).map_err(rss_runtime::ShutdownError::new)?);}
-            for(tenant,devices)in groups{
-                if stop.is_cancelled(){return Ok(())}
-                let tenant=TenantId::parse(&tenant.to_string()).map_err(rss_runtime::ShutdownError::new)?;let execution=app.execution(tenant);
-                let result=async{let windows=app.windows(execution).await?;cycle(execution,&windows,eligibility.as_ref(),&app.protection,&app.access,&app.audit_store,&devices).await}.await;
-                match result {Ok(scan)=>{if let Some(at)=scan.next{next=Some(next.map_or(at,|old:Instant|old.min(at)));}},Err(_)=>{eprintln!("{}",serde_json::json!({"event":"windows_push_unavailable","tenant":tenant.to_string()}));}}
-            }
-        }
+    task.into_registration(move |stop| async move {
+        rss_mdm_work_page::run_grouped(
+            std::num::NonZeroUsize::new(2).expect("parallel WNS tenants"),
+            RECONCILE,
+            &stop,
+            &notify,
+            (
+                |(tenant, _)| tenant,
+                |after| {
+                    let (app, eligibility) = (&app, &eligibility);
+                    async move {
+                        eligibility
+                            .candidates(&app.access.pool, after)
+                            .await
+                            .map_err(|_| eprintln!("windows_push_discovery_failed"))
+                    }
+                },
+            ),
+            |(tenant, device)| {
+                let (app, eligibility, stop) = (app.clone(), eligibility.clone(), stop.clone());
+                async move {
+                    let result = async {
+                        let tenant =
+                            TenantId::parse(&tenant.to_string()).map_err(|_| Error::Malformed)?;
+                        let execution = app.execution(tenant);
+                        let windows = app.windows(execution).await?;
+                        let device = rss_mdm_agent_wire::DeviceId::try_from(device)
+                            .map_err(|_| Error::Malformed)?;
+                        let scan = cycle(
+                            execution,
+                            &windows,
+                            eligibility.as_ref(),
+                            &app,
+                            &[device],
+                            &stop,
+                        )
+                        .await?;
+                        Ok::<_, Error>(scan.next.map_or(RECONCILE, |due| {
+                            due.saturating_duration_since(
+                                windows
+                                    .push
+                                    .as_ref()
+                                    .expect("scan with a push deadline")
+                                    .now(),
+                            )
+                        }))
+                    }
+                    .await;
+                    result.map_err(|_| {
+                        eprintln!(
+                            "{}",
+                            serde_json::json!({"event":"windows_push_unavailable","tenant":tenant})
+                        )
+                    })
+                }
+            },
+            |_| {},
+        )
+        .await;
+        Ok(())
     })
-}
-
-async fn wait(
-    notify: &tokio::sync::Notify,
-    stop: &tokio_util::sync::CancellationToken,
-    reconcile: &mut tokio::time::Interval,
-    next: Option<Instant>,
-) {
-    let retry = async {
-        match next {
-            Some(at) => tokio::time::sleep_until(at).await,
-            None => std::future::pending::<()>().await,
-        }
-    };
-    // A fixed interval cannot be postponed by a stream of hints.
-    tokio::select! { biased;
-        () = stop.cancelled() => {},
-        _ = reconcile.tick() => {},
-        () = retry => {},
-        () = notify.notified() => {},
-    }
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "test observes the paused Tokio runtime clock"
-    )]
-    #[tokio::test(start_paused = true)]
-    async fn hints_cannot_postpone_reconciliation_and_wait_keeps_early_permit() {
-        let notify = tokio::sync::Notify::new();
-        let stop = tokio_util::sync::CancellationToken::new();
-        let start = Instant::now();
-        let mut interval = tokio::time::interval_at(start + RECONCILE, RECONCILE);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        for _ in 0..59 {
-            tokio::time::advance(Duration::from_secs(1)).await;
-            notify.notify_one();
-            wait(&notify, &stop, &mut interval, None).await;
-        }
-        wait(&notify, &stop, &mut interval, None).await;
-        assert_eq!(Instant::now(), start + RECONCILE);
-        let next = Instant::now() + Duration::from_secs(2);
-        wait(&notify, &stop, &mut interval, Some(next)).await;
-        assert_eq!(Instant::now(), next);
-        notify.notify_one();
-        wait(&notify, &stop, &mut interval, None).await;
-        assert_eq!(Instant::now(), next);
-        stop.cancel();
-        wait(&notify, &stop, &mut interval, None).await;
-        assert_eq!(Instant::now(), next);
-    }
 }

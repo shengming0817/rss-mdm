@@ -64,10 +64,13 @@ REVOKE ALL ON mdm_assets.group_dispatch FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm_assets.group_dispatch TO mdm_inventory_runtime;
 GRANT UPDATE(input_failed,from_cut,to_cut,event_after,page_through,cursor,relation_revision,relation_cursor,relation_pending_revision) ON mdm_assets.group_dispatch TO mdm_inventory_runtime;
 
-CREATE POLICY delivery_discovery ON mdm_group.operations FOR SELECT TO mdm_owner USING(true);
-CREATE POLICY delivery_discovery ON mdm_assets.group_tasks FOR SELECT TO mdm_owner USING(true);
-CREATE FUNCTION mdm_group.delivery_scopes(after_tenant uuid,after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
- SELECT tenant_id,expected_epoch FROM ((SELECT DISTINCT tenant_id,expected_epoch FROM mdm_group.operations WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32) UNION (SELECT DISTINCT tenant_id,expected_epoch FROM mdm_assets.group_tasks WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32)) work ORDER BY tenant_id,expected_epoch LIMIT 32
+CREATE FUNCTION mdm_group.delivery_scopes(after_tenant uuid,after_epoch bigint)
+RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT DISTINCT o.tenant_id,o.claim_epoch FROM rss_transactional_messaging.outbox o
+ WHERE o.domain='mdm-group' AND o.status IN ('pending','publishing','dead_letter')
+   AND (after_tenant IS NULL OR (o.tenant_id,o.claim_epoch)>(after_tenant,after_epoch))
+ ORDER BY o.tenant_id,o.claim_epoch LIMIT 32
 $$;
 REVOKE ALL ON FUNCTION mdm_group.delivery_scopes(uuid,bigint) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_group.delivery_scopes(uuid,bigint) TO mdm_access;

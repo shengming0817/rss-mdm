@@ -31,10 +31,7 @@ use rss_mdm_authorization_service as authorization;
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgError, PgOutboxStore, PgRuntime, PgTransaction};
 pub use service::{AcceptedReceipt, target};
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 pub use transaction::*;
 use uuid::Uuid;
 pub(super) const DOMAIN: &str = "mdm.registration.installation.v1";
@@ -110,7 +107,6 @@ pub struct Transactions {
 pub struct Service {
     pub(crate) read_pool: sqlx::PgPool,
     pub(crate) storage: rss_transactional_messaging::fence::StorageIdentity,
-    pub(crate) relay_after: Mutex<Option<(Uuid, i64)>>,
     pub(crate) transactions: Transactions,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
     pub(crate) reconcile: rss_reconcile_postgres::PgStore,
@@ -132,7 +128,6 @@ impl Service {
         Self {
             read_pool,
             storage,
-            relay_after: Mutex::new(None),
             transactions,
             outbox,
             reconcile,

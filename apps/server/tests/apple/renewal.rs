@@ -9,7 +9,7 @@ use std::time::Duration;
     clippy::disallowed_methods,
     reason = "integration supplies the production monotonic clock"
 )]
-async fn state(
+pub(super) async fn state(
     c: &Context,
     a: &Fixture,
     providers: Arc<rss_mdm_pki_service::providers::Providers>,
@@ -150,7 +150,11 @@ async fn exercise(c: &Context, a: &Fixture) -> Result<()> {
         renewal::maintain(c.execution(), &apple, &c.audit, now).await? > 0,
         "due candidate prepared"
     );
-    renewal::maintain(c.execution(), &apple, &c.audit, now).await?;
+    assert_eq!(
+        renewal::maintain(c.execution(), &apple, &c.audit, now).await?,
+        0,
+        "reobserving a prepared renewal is idle"
+    );
     let mut tx = command::seed_transaction(c).await?;
     let attempts: Vec<(Uuid,Uuid,i64)> = sqlx::query_as("SELECT id,device,expected_epoch FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND renewal_of=$2").bind(c.tenant.to_string()).bind(n.attempt).fetch_all(&mut *tx).await?;
     tx.rollback().await?;

@@ -487,14 +487,6 @@ pub(crate) async fn notify(c: &mut sqlx::PgConnection, work: &str) -> Result<(),
         .await?;
     Ok(())
 }
-async fn wait(
-    notify: &tokio::sync::Notify,
-    stop: &tokio_util::sync::CancellationToken,
-    nearest: Option<std::time::Duration>,
-) {
-    let recovery = std::time::Duration::from_secs(5);
-    tokio::select! {biased;()=stop.cancelled()=>{},()=notify.notified()=>{},()=tokio::time::sleep(nearest.unwrap_or(recovery).min(recovery))=>{}}
-}
 #[cfg(test)]
 #[path = "../tests/health.rs"]
 mod health_tests;

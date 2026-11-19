@@ -1,0 +1,11 @@
+{
+  "tables": [],
+  "functions": [
+    {
+      "name": "mdm_windows.push_work_page",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
+  "external_relations": [],
+  "verified_schemas": []
+}

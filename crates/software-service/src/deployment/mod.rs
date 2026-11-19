@@ -73,10 +73,7 @@ use rss_mdm_registration_service::device;
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgError, PgOutboxStore, PgRuntime, PgTransaction};
 pub use service::{AcceptedReceipt, ChangedReceipt, target};
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 pub use storage_authority::verify_authority;
 pub use target::Target;
 pub use transaction::*;
@@ -93,7 +90,6 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 pub struct SoftwareService {
     pub(crate) read_pool: sqlx::PgPool,
     pub(crate) storage: rss_transactional_messaging::fence::StorageIdentity,
-    pub(crate) relay_after: Mutex<Option<(Uuid, i64)>>,
     pub(crate) worker_budget: Arc<tokio::sync::Semaphore>,
     pub(crate) recovery_batch: rss_device_command::BatchLimit,
     pub(crate) sessions: Arc<authorization::session::SessionAuthority>,
@@ -121,7 +117,6 @@ impl SoftwareService {
         Self {
             read_pool,
             storage,
-            relay_after: Mutex::new(None),
             transactions,
             sessions,
             outbox,

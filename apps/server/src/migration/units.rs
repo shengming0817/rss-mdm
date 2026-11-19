@@ -487,6 +487,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_windows_channel::wns_materials::INSTALL_SQL,
         ),
         (
+            "windows-wake-discovery-v1",
+            include_str!("../../schema/windows-wake-discovery.sql"),
+        ),
+        (
             "content-connections-v1",
             rss_mdm_content_service::connections::INSTALL_SQL,
         ),

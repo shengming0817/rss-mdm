@@ -241,8 +241,8 @@ impl BackgroundConfig {
             ("execution-scheduler", SCHEDULER_CONNECTIONS),
             ("business-scheduler", SCHEDULER_CONNECTIONS),
             ("notifications", 1),
-            ("scope-group-delivery", 2),
-            ("asset-input-delivery", 2),
+            ("scope-group-delivery", crate::local_delivery::CONNECTIONS),
+            ("asset-input-delivery", crate::local_delivery::CONNECTIONS),
             ("webhook-recovery", AUXILIARY_CONNECTIONS),
             // Direct startup/maintenance probes do not borrow a long-lived pool.
             ("direct-probes", 2),

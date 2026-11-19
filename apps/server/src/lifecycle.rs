@@ -642,6 +642,7 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                     access_execution.worker.clone(),
                                     credential_execution.as_ref().map(|v| v.worker.clone()).unwrap_or_default(),
                                     credential_execution.as_ref().map(|v| v.native.clone()),
+                                    background.commands.concurrency(),
                                     signals.handle(Work::CommandRelay),
                                 )
                                 .critical(),

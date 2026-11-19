@@ -14,7 +14,6 @@ mod configuration;
 pub struct PolicyWork {
     read_pool: sqlx::PgPool,
     storage: rss_transactional_messaging::fence::StorageIdentity,
-    relay_after: Mutex<Option<(Uuid, i64)>>,
     service: Arc<Application>,
     events: Option<Arc<crate::events::Events>>,
     store: rss_reconcile_postgres::PgStore,
@@ -42,7 +41,6 @@ impl PolicyWork {
         Arc::new(Self {
             read_pool,
             storage,
-            relay_after: Mutex::new(None),
             service,
             events: Some(events),
             store,
@@ -800,54 +798,44 @@ impl PolicyWork {
             }
         }
     }
-    pub async fn relay_once(&self) -> std::result::Result<usize, Error> {
-        let Some(configuration) = self.service.configuration.as_ref() else {
-            return Ok(0);
-        };
-        let after = *self
-            .relay_after
-            .lock()
-            .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
-        let scopes: Vec<(Uuid, i64)> = sqlx::query_as(
+    pub async fn relay_page(
+        &self,
+        after: Option<(Uuid, i64)>,
+    ) -> std::result::Result<Vec<(Uuid, i64)>, Error> {
+        if self.service.configuration.is_none() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as(
             "SELECT tenant_id,expected_epoch FROM mdm_planning.configuration_relay_scopes($1,$2)",
         )
         .bind(after.map(|x| x.0))
         .bind(after.map(|x| x.1))
         .fetch_all(&self.read_pool)
         .await
-        .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
-        if scopes.is_empty() {
-            *self
-                .relay_after
-                .lock()
-                .map_err(|_| Error::Unavailable(Failure::PolicyStorage))? = None;
+        .map_err(|_| Error::Unavailable(Failure::PolicyStorage))
+    }
+    pub async fn relay_scope(
+        &self,
+        (tenant, epoch): (Uuid, i64),
+    ) -> std::result::Result<usize, Error> {
+        let Some(configuration) = self.service.configuration.as_ref() else {
             return Ok(0);
-        }
-        let mut count = 0;
-        for (tenant, epoch) in scopes {
-            let tenant_id = rss_request_context::TenantId::parse(&tenant.to_string())
-                .map_err(|_| Error::Malformed)?;
-            let epoch_id = rss_transactional_messaging::fence::Epoch::new(epoch)
-                .map_err(|_| Error::Malformed)?;
-            let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
-                self.storage,
-                tenant_id,
-                epoch_id,
-            );
-            let force = tokio_util::sync::CancellationToken::new();
-            let timer = Timer::new();
-            let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &force);
-            let result = configuration.relay_once(binding, &control).await;
-            self.service.record_relay(binding, &result);
-            if let Ok(relayed) = result {
-                count += relayed;
-            }
-            *self
-                .relay_after
-                .lock()
-                .map_err(|_| Error::Unavailable(Failure::PolicyStorage))? = Some((tenant, epoch));
-        }
-        Ok(count)
+        };
+        let tenant_id = rss_request_context::TenantId::parse(&tenant.to_string())
+            .map_err(|_| Error::Malformed)?;
+        let epoch_id =
+            rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| Error::Malformed)?;
+        let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
+            self.storage,
+            tenant_id,
+            epoch_id,
+        );
+        let force = tokio_util::sync::CancellationToken::new();
+        let timer = Timer::new();
+        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &force);
+        let result = configuration.relay_once(binding, &control).await;
+        self.service.record_relay(binding, &result);
+        Ok(result.unwrap_or(0))
     }
 }
 

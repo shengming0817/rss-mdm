@@ -15,6 +15,10 @@ use rss_transactional_messaging_postgres::{
 };
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
+// RSS reserves one connection in each dedicated projection pool for lease renewal.
+const SLOTS: u32 = 2;
+pub(crate) const CONNECTIONS: u32 = SLOTS + 1;
+
 #[derive(Default)]
 pub(crate) struct Health {
     task: std::sync::OnceLock<rss_runtime::TaskStatus>,
@@ -52,6 +56,13 @@ pub(crate) struct Delivery<H, V> {
 }
 fn deadline() -> OperationDeadline {
     OperationDeadline::from_remaining(Duration::from_secs(6))
+}
+// Claimed effects drain to their durable outcome. Advisory reads may end as soon as shutdown begins.
+async fn read_while_running<T>(
+    stop: &tokio_util::sync::CancellationToken,
+    read: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    tokio::select! { biased; () = stop.cancelled() => None, result = read => Some(result) }
 }
 fn unavailable() -> Error {
     Error::Unavailable(Failure::Database)
@@ -92,7 +103,7 @@ where
                 )
                 .map_err(|_| Error::Malformed)?,
             )
-            .with_pool_limits(0, 2);
+            .with_pool_limits(0, CONNECTIONS);
             let runtime = Arc::new(
                 PgRuntime::connect_consumer(pg, crate::lifecycle::RuntimeTimer, binding.storage())
                     .await
@@ -152,12 +163,15 @@ where
         binding: ExecutionBinding,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<usize, PollFailure> {
-        if self
-            .projection
-            .has_dead_letters(binding, deadline())
-            .await
-            .map_err(|_| PollFailure::Unavailable)?
-        {
+        let Some(dead) = read_while_running(
+            cancel,
+            self.projection.has_dead_letters(binding, deadline()),
+        )
+        .await
+        else {
+            return Ok(0);
+        };
+        if dead.map_err(|_| PollFailure::Unavailable)? {
             return Err(PollFailure::RecoveryRequired);
         }
         if cancel.is_cancelled() {
@@ -168,46 +182,82 @@ where
             .project_batch(
                 binding,
                 &self.validator,
-                NonZeroUsize::new(1).expect("one"),
+                NonZeroUsize::MIN,
                 OperationDeadline::from_remaining(Duration::from_secs(1)),
                 Duration::from_secs(6),
             )
             .await
             .map_err(|_| PollFailure::Unavailable)?;
         tokio::pin!(batch);
-        let mut count = 0;
+        let mut progress = 0;
+        let mut failure = None;
         while let Some(item) = batch.next().await {
-            count += 1;
-            match item.into_outcome().map_err(|_| PollFailure::Unavailable)? {
-                PgProjectionOutcome::Attempt(attempt) => {
+            let result = match item.into_outcome() {
+                Ok(PgProjectionOutcome::Attempt(attempt)) => {
                     let (outcome, recovery) = attempt.into_parts();
                     use rss_transactional_messaging::observability::TransactionalMessagingTransactionStatus as Status;
                     match outcome.status() {
-                        Status::Committed => {}
-                        Status::CommitUnknown | Status::RollbackFailed => {
-                            if cancel.is_cancelled() {
-                                return Ok(count);
-                            }
-                            if self
-                                .projection
-                                .resolve(&recovery, deadline())
-                                .await
-                                .map_err(|_| PollFailure::Unavailable)?
-                                .is_none()
-                            {
-                                return Err(PollFailure::Unavailable);
-                            }
-                        }
-                        _ => return Err(PollFailure::Unavailable),
+                        Status::Committed => Ok(true),
+                        Status::CommitUnknown | Status::RollbackFailed => match read_while_running(
+                            cancel,
+                            self.projection.resolve(&recovery, deadline()),
+                        )
+                        .await
+                        {
+                            None => Ok(false),
+                            Some(result) => result
+                                .ok()
+                                .flatten()
+                                .map(|_| true)
+                                .ok_or(PollFailure::Unavailable),
+                        },
+                        _ => Err(PollFailure::Unavailable),
                     }
                 }
-                PgProjectionOutcome::InProgress => {}
-                PgProjectionOutcome::DeliveryExpired | PgProjectionOutcome::Rejected(_) => {
-                    return Err(PollFailure::RecoveryRequired);
+                Ok(PgProjectionOutcome::InProgress) => Ok(false),
+                Ok(PgProjectionOutcome::DeliveryExpired | PgProjectionOutcome::Rejected(_)) => {
+                    Err(PollFailure::RecoveryRequired)
+                }
+                Err(_) => Err(PollFailure::Unavailable),
+            };
+            match result {
+                Ok(committed) => progress += usize::from(committed),
+                Err(error) => {
+                    failure.get_or_insert(error);
                 }
             }
         }
-        Ok(count)
+        failure.map_or(Ok(progress), Err)
+    }
+
+    async fn batch(
+        &self,
+        key: (uuid::Uuid, i64),
+        stop: &tokio_util::sync::CancellationToken,
+    ) -> Result<Duration, PollFailure> {
+        let tenant = rss_request_context::TenantId::parse(&key.0.to_string())
+            .map_err(|_| PollFailure::Unavailable)?;
+        let epoch = rss_transactional_messaging::fence::Epoch::new(key.1)
+            .map_err(|_| PollFailure::Unavailable)?;
+        let binding = ExecutionBinding::new(self.storage, tenant, epoch);
+        if self.poll(binding, stop).await? > 0 {
+            return Ok(Duration::ZERO);
+        }
+        let Some(wake) =
+            read_while_running(stop, self.projection.next_wakeup(binding, deadline())).await
+        else {
+            return Ok(Duration::ZERO);
+        };
+        let wake = wake.map_err(|_| PollFailure::Unavailable)?;
+        if wake.due_now() {
+            return Ok(Duration::from_millis(100));
+        }
+        Ok(wake.next_deadline().map_or(Duration::from_secs(60), |d| {
+            d.instant()
+                .saturating_duration_since(rss_request_context::Clock::now(
+                    &crate::lifecycle::RuntimeTimer,
+                ))
+        }))
     }
     pub(crate) fn registration(
         self: Arc<Self>,
@@ -215,44 +265,48 @@ where
     ) -> rss_runtime::ManagedTaskRegistration {
         let (task, status) = rss_runtime::ManagedTask::prepare(self.name, Duration::from_secs(8));
         let _ = self.health.task.set(status);
-        task.into_registration(move |cancel|async move {
-            let mut after:Option<(uuid::Uuid,i64)>=None;
-            let mut failed=false;let mut delay=Duration::from_secs(60);
-            loop {
-                if cancel.is_cancelled(){return Ok(())}
-                let page=sqlx::query_as::<_,(uuid::Uuid,i64)>(self.scopes).bind(after.map(|v|v.0)).bind(after.map(|v|v.1)).fetch_all(&self.read_pool).await;
-                let rows=match page {
-                    Ok(rows)=>rows,
-                    Err(_)=>{failed=true;delay=Duration::from_secs(5);Vec::new()},
-                };
-                if rows.is_empty(){
-                    self.health.failed.store(failed,std::sync::atomic::Ordering::Release);
-                    self.health.observed.store(true,std::sync::atomic::Ordering::Release);
-                    after=None;failed=false;
-                    tokio::select!{()=cancel.cancelled()=>return Ok(()),()=notify.notified()=>{},()=tokio::time::sleep(delay)=>{}}
-                    delay=Duration::from_secs(60);continue;
-                }
-                for (tenant,epoch) in rows {
-                    after=Some((tenant,epoch));
-                    let tenant=rss_request_context::TenantId::parse(&tenant.to_string()).map_err(rss_runtime::ShutdownError::new)?;
-                    let epoch=rss_transactional_messaging::fence::Epoch::new(epoch).map_err(rss_runtime::ShutdownError::new)?;
-                    let binding=ExecutionBinding::new(self.storage,tenant,epoch);
-                    match self.poll(binding,&cancel).await {
-                        Ok(count)=>{if count>0{delay=Duration::from_millis(100)}},
-                        Err(error)=>{
-                            failed=true;
-                            self.health.failed.store(true,std::sync::atomic::Ordering::Release);
-                            eprintln!("{}",serde_json::json!({"event":"local_delivery_unavailable","worker":self.name,"tenant":tenant.to_string(),"recoveryRequired":matches!(error,PollFailure::RecoveryRequired)}));
-                        },
+        task.into_registration(move |stop| async move {
+            rss_mdm_work_page::run(
+                NonZeroUsize::new(SLOTS as usize).expect("projection slots"),
+                Duration::from_secs(60),
+                &stop,
+                &notify,
+                |after: Option<(uuid::Uuid, i64)>| {
+                    let lane = &self;
+                    async move {
+                        sqlx::query_as(lane.scopes)
+                            .bind(after.map(|key| key.0))
+                            .bind(after.map(|key| key.1))
+                            .fetch_all(&lane.read_pool)
+                            .await
+                            .map_err(|_| eprintln!("{} discovery failed", lane.name))
                     }
-                    let wakeup=match self.projection.next_wakeup(binding,deadline()).await {
-                        Ok(wakeup) if wakeup.due_now()=>Duration::from_millis(100),
-                        Ok(wakeup)=>wakeup.next_deadline().map_or(Duration::from_secs(60),|at|at.instant().saturating_duration_since(rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)).max(Duration::from_millis(100))),
-                        Err(_)=>{failed=true;Duration::from_secs(5)},
-                    };
-                    delay=delay.min(wakeup);
-                }
-            }
+                },
+                |key| {
+                    let lane = self.clone();
+                    let cancel = stop.clone();
+                    async move {
+                        lane.batch(key, &cancel).await.map_err(|error| {
+                            let event = serde_json::json!({
+                                "event":"local_delivery_unavailable", "worker":lane.name,
+                                "tenant":key.0, "epoch":key.1,
+                                "recoveryRequired":matches!(error, PollFailure::RecoveryRequired)
+                            });
+                            eprintln!("{event}");
+                        })
+                    }
+                },
+                |failed| {
+                    self.health
+                        .failed
+                        .store(failed, std::sync::atomic::Ordering::Release);
+                    self.health
+                        .observed
+                        .store(true, std::sync::atomic::Ordering::Release);
+                },
+            )
+            .await;
+            Ok(())
         })
     }
 }
@@ -276,5 +330,24 @@ where
     async fn shutdown(&self) -> Result<(), rss_runtime::ShutdownError> {
         self.0.runtime.close().await;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_while_running;
+    #[tokio::test]
+    async fn shutdown_ends_receipt_reads_and_skips_late_recovery_queries() {
+        let stop = tokio_util::sync::CancellationToken::new();
+        let read = read_while_running(&stop, std::future::pending::<()>());
+        tokio::pin!(read);
+        assert!(futures::poll!(&mut read).is_pending());
+        stop.cancel();
+        assert_eq!(read.await, None);
+        let late = read_while_running(&stop, async {
+            panic!("receipt read started after shutdown")
+        })
+        .await;
+        assert_eq!(late, None::<()>);
     }
 }

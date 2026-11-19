@@ -275,21 +275,16 @@ REVOKE ALL ON FUNCTION mdm_devices.windows_pending_operations(uuid,uuid) FROM PU
 
 -- Discovery starts with work, never with every installed push channel. Authority
 -- is still rechecked by the Device service in the eventual claimant's transaction.
-CREATE FUNCTION mdm_devices.windows_wake_candidates(p_after uuid) RETURNS TABLE(device uuid)
- LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
- AS $$
- SELECT o.device FROM mdm_devices.control_operations o
- JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text
- JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(o.tenant_id,o.device)
- WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-  AND (p_after IS NULL OR o.device>p_after) AND r.state='active'
-  AND o.gateway_accepted AND o.dispatch_failure IS NULL
-  AND o.input_context->>'platform'='windows' AND d.status IN ('published','received')
-  AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp())
- ORDER BY device LIMIT 32;
+CREATE FUNCTION mdm_devices.windows_wake_inputs() RETURNS TABLE(tenant_id uuid,device uuid,command_id text)
+LANGUAGE sql STABLE AS $$
+ SELECT o.tenant_id,o.device,o.id::text AS command_id
+ FROM mdm_devices.control_operations o
+ WHERE o.gateway_accepted AND o.dispatch_failure IS NULL AND o.input_context->>'platform'='windows'
+   AND JSON_VALUE(o.input_context,'$.deadline' RETURNING bigint NULL ON ERROR)>extract(epoch FROM statement_timestamp())
 $$;
+REVOKE ALL ON FUNCTION mdm_devices.windows_wake_inputs() FROM PUBLIC;
 
-REVOKE ALL ON FUNCTION mdm_devices.windows_wake_candidates(uuid) FROM PUBLIC;
+
 
 CREATE INDEX windows_wake_operations
   ON mdm_devices.control_operations (tenant_id

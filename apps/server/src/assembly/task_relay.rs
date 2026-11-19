@@ -1,5 +1,148 @@
-//! One fixed relay loop shares the existing process delivery budget across concrete owners.
-use std::{sync::Arc, time::Duration};
+//! Each command owner rotates bindings independently within the command pool's relay budget.
+use std::{
+    future::Future,
+    num::NonZeroUsize,
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
+};
+use tokio::sync::{Notify, Semaphore};
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
+type Key = (Uuid, i64);
+const IDLE: Duration = Duration::from_secs(5);
+
+pub(super) struct Relay {
+    capacity: NonZeroUsize,
+    permits: Arc<Semaphore>,
+    stop: CancellationToken,
+    failure: OnceLock<rss_runtime::ShutdownError>,
+    owners: Mutex<Vec<Arc<Notify>>>,
+}
+impl Relay {
+    pub(super) fn new(parallelism: usize, stop: &CancellationToken) -> Arc<Self> {
+        let capacity = NonZeroUsize::new(parallelism.clamp(1, 2)).expect("positive relay budget");
+        Arc::new(Self {
+            capacity,
+            permits: Arc::new(Semaphore::new(capacity.get())),
+            stop: stop.child_token(),
+            failure: OnceLock::new(),
+            owners: Mutex::default(),
+        })
+    }
+    fn wake_owners(&self) {
+        for owner in self.owners.lock().expect("owner notifications").iter() {
+            owner.notify_one();
+        }
+    }
+    async fn run<E, P, B>(
+        self: &Arc<Self>,
+        name: &'static str,
+        page: impl Fn(Option<Key>) -> P,
+        batch: impl Fn(Key) -> B,
+    ) where
+        E: std::error::Error + Send + Sync + 'static,
+        P: Future<Output = Result<Vec<Key>, E>>,
+        B: Future<Output = Result<usize, E>> + Send + 'static,
+    {
+        let notify = Arc::new(Notify::new());
+        self.owners
+            .lock()
+            .expect("owner notifications")
+            .push(notify.clone());
+        rss_mdm_work_page::run(
+            self.capacity,
+            IDLE,
+            &self.stop,
+            &notify,
+            |after| {
+                let query = page(after);
+                async move {
+                    query.await.map_err(|error| {
+                        let event = serde_json::json!({
+                            "event": "command_relay_discovery_failed",
+                            "owner": name,
+                            "reason": error.to_string()
+                        });
+                        eprintln!("{event}");
+                    })
+                }
+            },
+            |key| {
+                let relay = self.clone();
+                let work = batch(key);
+                async move {
+                    let _permit = tokio::select! { biased;
+                        () = relay.stop.cancelled() => return Ok(IDLE),
+                        permit = relay.permits.acquire() => permit.expect("relay budget is live"),
+                    };
+                    match work.await {
+                        Ok(0) => Ok(IDLE),
+                        Ok(_) => Ok(Duration::ZERO),
+                        Err(error) => {
+                            let _ = relay.failure.set(rss_runtime::ShutdownError::new(error));
+                            relay.stop.cancel();
+                            Err(())
+                        }
+                    }
+                }
+            },
+            |_| {},
+        )
+        .await;
+    }
+}
+
+// The owners retain their concrete error types, epoch validation and scope health.
+macro_rules! owner {
+    ($name:ident, $owner:ty) => {
+        pub(super) async fn $name(relay: &Arc<Relay>, owner: Arc<$owner>) {
+            relay
+                .run(
+                    stringify!($name),
+                    |after| {
+                        let owner = owner.clone();
+                        async move { owner.relay_page(after).await }
+                    },
+                    |key| {
+                        let owner = owner.clone();
+                        async move { owner.relay_scope(key).await }
+                    },
+                )
+                .await;
+        }
+    };
+}
+owner!(device, rss_mdm_device_service::control::Service);
+owner!(policy, rss_mdm_policy_service::worker::PolicyWork);
+owner!(script, rss_mdm_script_service::worker::Worker);
+owner!(
+    inventory,
+    rss_mdm_inventory_service::collection::execution::worker::Worker
+);
+owner!(
+    software,
+    rss_mdm_software_service::deployment::SoftwareService
+);
+owner!(
+    installation,
+    rss_mdm_registration_service::installation::Service
+);
+owner!(
+    enrollment,
+    rss_mdm_registration_service::enrollment::tasks::worker::Worker
+);
+owner!(
+    device_access,
+    rss_mdm_device_access_postgres::device_access::execution::worker::Worker
+);
+owner!(
+    credentials,
+    rss_mdm_recovery_credentials::tasks::worker::Worker
+);
+owner!(
+    native_credentials,
+    rss_mdm_recovery_credentials::native::Service
+);
 #[expect(
     clippy::too_many_arguments,
     reason = "fixed concrete owners share one relay and shutdown budget"
@@ -15,63 +158,84 @@ pub(crate) fn registration(
     access: Arc<rss_mdm_device_access_postgres::device_access::execution::worker::Worker>,
     credentials: Vec<Arc<rss_mdm_recovery_credentials::tasks::worker::Worker>>,
     native_credentials: Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
+    parallelism: usize,
     notify: Arc<tokio::sync::Notify>,
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) = rss_runtime::ManagedTask::prepare("mdm-task-relay", Duration::from_secs(20));
-    task.into_registration(move|stop|async move {
-        loop {
-            if stop.is_cancelled(){return Ok(());}
-            let result=execution.relay_once().await;execution.record_relay_health(&result);
-            let mut pending=match result {Ok(n)=>n,Err(e)=>{if matches!(e,rss_mdm_device_service::control::Error::Malformed|rss_mdm_device_service::control::Error::Forbidden|rss_mdm_device_service::control::Error::Unauthorized|rss_mdm_device_service::control::Error::Unavailable(rss_mdm_device_service::control::Failure::CommandInvariant|rss_mdm_device_service::control::Failure::NativeInputIntegrity)){return Err(rss_runtime::ShutdownError::new(e));}0}};
-            if stop.is_cancelled(){return Ok(());}
-            match policy.relay_once().await {Ok(n)=>pending+=n,Err(e)=>{eprintln!("{}",serde_json::json!({"event":"mdm_configuration_relay_failure","reason":e.to_string()}));}}
-            if stop.is_cancelled(){return Ok(());}
-            let result = scripts.relay_once().await; scripts.record_relay_health(&result);
-            match result {Ok(n)=>pending+=n,Err(e)=>{if matches!(e,rss_mdm_script_service::Error::Malformed|rss_mdm_script_service::Error::Forbidden|rss_mdm_script_service::Error::Unauthorized|rss_mdm_script_service::Error::Invariant){return Err(rss_runtime::ShutdownError::new(e));}eprintln!("{}",serde_json::json!({"event":"mdm_task_relay_failure","owner":"script","reason":match e {rss_mdm_script_service::Error::CommitUnknown=>"commit_unknown",rss_mdm_script_service::Error::RollbackFailed=>"rollback_failed",_=>"transient"}}));}}
-            if stop.is_cancelled(){return Ok(());}
-            let result = collections.relay_once().await; collections.record_relay_health(&result);
-            match result {Ok(n)=>pending+=n,Err(e)=>{if matches!(e,rss_mdm_inventory_service::Error::Malformed|rss_mdm_inventory_service::Error::Forbidden|rss_mdm_inventory_service::Error::Unauthorized|rss_mdm_inventory_service::Error::Unavailable(rss_mdm_inventory_service::Failure::PlanningStorage)){return Err(rss_runtime::ShutdownError::new(e));}eprintln!("{}",serde_json::json!({"event":"mdm_task_relay_failure","owner":"collection","reason":match e {rss_mdm_inventory_service::Error::CommitUnknown=>"commit_unknown",rss_mdm_inventory_service::Error::RollbackFailed=>"rollback_failed",_=>"transient"}}));}}
-            if stop.is_cancelled(){return Ok(());}
-            let result=software.relay_once().await; software.record_relay_health(&result);
-            match result {Ok(n)=>pending+=n,Err(e)=>{if matches!(e,rss_mdm_software_service::deployment::Error::Malformed|rss_mdm_software_service::deployment::Error::Forbidden|rss_mdm_software_service::deployment::Error::Unauthorized|rss_mdm_software_service::deployment::Error::Unavailable(rss_mdm_software_service::deployment::Failure::CommandInvariant|rss_mdm_software_service::deployment::Failure::NativeInputIntegrity)){return Err(rss_runtime::ShutdownError::new(e));}}}
-            if stop.is_cancelled(){return Ok(());}
-            let result=installation.relay_once().await; installation.record_relay_health(&result);
-            match result {Ok(n)=>pending+=n,Err(e)=>{if matches!(e,rss_mdm_registration_service::installation::Error::Malformed|rss_mdm_registration_service::installation::Error::Forbidden|rss_mdm_registration_service::installation::Error::Unauthorized|rss_mdm_registration_service::installation::Error::Unavailable(rss_mdm_registration_service::installation::Failure::CommandInvariant|rss_mdm_registration_service::installation::Failure::NativeInputIntegrity)){return Err(rss_runtime::ShutdownError::new(e));}}}
-            if stop.is_cancelled(){return Ok(());}
-            let result = enrollment.relay_once().await; enrollment.record_relay_health(&result);
-            match result {
-                Ok(n) => pending += n,
-                Err(e) => {
-                    use rss_mdm_registration_service::enrollment::tasks::Error as E;
-                    let reason = match e {
-        E::Unsupported => "unsupported",
-                        E::Malformed | E::Forbidden | E::Unauthorized | E::Invariant => {
-                            return Err(rss_runtime::ShutdownError::new(e));
-                        }
-                        E::CommitUnknown => "commit_unknown",
-                        E::RollbackFailed => "rollback_failed",
-                        E::Unavailable => "unavailable",
-                        E::Conflict => "conflict",
-                        E::NotFound => "not_found",
-                        E::Audit(_) => "audit",
-                    };
-                    eprintln!("{}", serde_json::json!({"event":"mdm_task_relay_failure","owner":"enrollment","reason":reason}));
+    task.into_registration(move |stop| async move {
+        let relay = Relay::new(parallelism, &stop);
+        let mut owners: Vec<futures::future::BoxFuture<'_, ()>> = vec![
+            Box::pin(device(&relay, execution)),
+            Box::pin(self::policy(&relay, policy)),
+            Box::pin(script(&relay, scripts)),
+            Box::pin(inventory(&relay, collections)),
+            Box::pin(self::software(&relay, software)),
+            Box::pin(self::installation(&relay, installation)),
+            Box::pin(self::enrollment(&relay, enrollment)),
+            Box::pin(device_access(&relay, access)),
+        ];
+        for worker in credentials {
+            owners.push(Box::pin(self::credentials(&relay, worker)));
+        }
+        if let Some(worker) = native_credentials {
+            owners.push(Box::pin(self::native_credentials(&relay, worker)));
+        }
+        {
+            let work = futures::future::join_all(owners);
+            tokio::pin!(work);
+            loop {
+                tokio::select! { biased;
+                    _ = &mut work => break,
+                    () = notify.notified() => relay.wake_owners(),
                 }
             }
-            if stop.is_cancelled(){return Ok(());}
-            let result = access.relay_once().await; access.record_relay_health(&result);
-            match result{Ok(n)=>pending+=n,Err(e)=>{use rss_mdm_device_access_postgres::device_access::execution::Error as E;if matches!(e,E::Malformed|E::Forbidden|E::Unauthorized|E::Invariant){return Err(rss_runtime::ShutdownError::new(e));}eprintln!("{}",serde_json::json!({"event":"mdm_task_relay_failure","owner":"access","reason":e.to_string()}));}}
-            for credentials in &credentials {
-            if stop.is_cancelled(){return Ok(());}
-            let result = credentials.relay_once().await; credentials.record_relay_health(&result);
-            match result{Ok(n)=>pending+=n,Err(e)=>{use rss_mdm_recovery_credentials::tasks::Error as E;if matches!(e,E::Malformed|E::Forbidden|E::Unauthorized|E::Invariant){return Err(rss_runtime::ShutdownError::new(e));}eprintln!("{}",serde_json::json!({"event":"mdm_task_relay_failure","owner":"credential","reason":e.to_string()}));}}
-            }
-            if let Some(credentials) = &native_credentials {
-                if stop.is_cancelled(){return Ok(());}
-                let result=credentials.relay_once().await;credentials.record_relay_health(&result);
-                match result{Ok(n)=>pending+=n,Err(e)=>{use rss_mdm_recovery_credentials::native::{Error as E,Failure as F};if matches!(e,E::Malformed|E::Forbidden|E::Unauthorized|E::Unavailable(F::CommandInvariant|F::NativeInputIntegrity)){return Err(rss_runtime::ShutdownError::new(e));}}}
-            }
-            if pending==0 {tokio::select!{()=stop.cancelled()=>return Ok(()),()=notify.notified()=>{},()=tokio::time::sleep(Duration::from_secs(5))=>{}}}
+        }
+        match Arc::into_inner(relay)
+            .expect("all relay owners drained")
+            .failure
+            .into_inner()
+        {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn owner_receives_a_hint_sent_after_its_empty_snapshot() {
+        let stop = CancellationToken::new();
+        let relay = Relay::new(2, &stop);
+        let release = Notify::new();
+        let scanned = Notify::new();
+        let seen = std::cell::Cell::new(false);
+        let rescan = Notify::new();
+        let work = relay.run(
+            "test",
+            |_| {
+                let first = !seen.replace(true);
+                let (scanned, release, rescan) = (&scanned, &release, &rescan);
+                async move {
+                    if first {
+                        scanned.notify_one();
+                        release.notified().await;
+                    } else {
+                        rescan.notify_one();
+                    }
+                    Ok::<_, std::io::Error>(Vec::new())
+                }
+            },
+            |_| std::future::ready(Ok(0)),
+        );
+        tokio::pin!(work);
+        tokio::select! { () = &mut work => panic!("relay exited"), () = scanned.notified() => {} }
+        relay.wake_owners();
+        release.notify_one();
+        // With paused time, the ready branch must precede the periodic scan.
+        tokio::select! { biased; () = &mut work => panic!("relay exited"), () = rescan.notified() => {}, () = std::future::ready(()) => panic!("hint lost") }
+        stop.cancel();
+        work.await;
+    }
 }

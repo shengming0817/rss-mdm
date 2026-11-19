@@ -386,10 +386,21 @@ pub(super) fn remote_client(
     app: &HttpState,
     token: client::Token,
 ) -> Result<client::Client, Error> {
-    let client = client::Client::new(token)?;
-
+    let builder = reqwest::Client::builder();
+    #[cfg(feature = "integration")]
+    if let Some((port, root)) = app
+        .apple
+        .as_ref()
+        .and_then(|runtime| runtime.fixture.as_ref())
+    {
+        return Ok(client::Client::new(
+            token,
+            builder.no_proxy().add_root_certificate(root.clone()),
+        )?
+        .at_loopback(*port));
+    }
     let _ = app;
-    Ok(client)
+    client::Client::new(token, builder)
 }
 pub(super) fn remote(error: client::RemoteError) -> Error {
     match error {

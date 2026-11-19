@@ -15,10 +15,13 @@ REVOKE ALL ON FUNCTION mdm_devices.capture_object_publication() FROM PUBLIC;
 CREATE TRIGGER object_publication AFTER INSERT ON mdm_devices.object_cuts
  FOR EACH ROW EXECUTE FUNCTION mdm_devices.capture_object_publication();
 
-CREATE POLICY delivery_discovery ON mdm.asset_changes FOR SELECT TO mdm_owner USING(true);
-CREATE POLICY delivery_discovery ON mdm_devices.object_cuts FOR SELECT TO mdm_owner USING(true);
-CREATE FUNCTION mdm_devices.asset_delivery_scopes(after_tenant uuid,after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
- SELECT tenant_id,expected_epoch FROM ((SELECT DISTINCT tenant_id,expected_epoch FROM mdm.asset_changes WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32) UNION (SELECT DISTINCT tenant_id,expected_epoch FROM mdm_devices.object_cuts WHERE after_tenant IS NULL OR (tenant_id,expected_epoch)>(after_tenant,after_epoch) ORDER BY tenant_id,expected_epoch LIMIT 32)) work ORDER BY tenant_id,expected_epoch LIMIT 32
+CREATE FUNCTION mdm_devices.asset_delivery_scopes(after_tenant uuid,after_epoch bigint)
+RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT DISTINCT o.tenant_id,o.claim_epoch FROM rss_transactional_messaging.outbox o
+ WHERE o.domain='mdm-assets' AND o.status IN ('pending','publishing','dead_letter')
+   AND (after_tenant IS NULL OR (o.tenant_id,o.claim_epoch)>(after_tenant,after_epoch))
+ ORDER BY o.tenant_id,o.claim_epoch LIMIT 32
 $$;
 REVOKE ALL ON FUNCTION mdm_devices.asset_delivery_scopes(uuid,bigint) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_devices.asset_delivery_scopes(uuid,bigint) TO mdm_access;

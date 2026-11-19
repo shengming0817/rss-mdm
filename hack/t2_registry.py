@@ -6,6 +6,10 @@ from fnmatch import fnmatchcase
 
 PACKAGE = 'rss-mdm-app'
 MODULES = {
+    'webhook.relay': dict(prefix='assembly::webhook_relay_t2::', profiles=('shared',),
+        inputs=('apps/server/tests/support/provider_http.rs','crates/webhook-service/*','crates/work-page/*','apps/server/src/assembly/webhooks.rs',
+                'apps/server/tests/webhook_relay.rs','apps/server/src/adapters/webhooks.rs',
+                'apps/server/src/config/webhooks.rs','apps/server/tests/support/command_runtime.rs','hack/native_protocol_materials.py')),
     'telemetry.query': dict(prefix='assembly::telemetry_queries_t2::', profiles=('shared',),
         inputs=('crates/agent-wire/src/identity.rs', 'crates/management-http/src/telemetry*', 'crates/management-http/src/decimal.rs',
                 'crates/telemetry-service/*', 'apps/server/src/telemetry.rs', 'apps/server/tests/telemetry/*',
@@ -106,7 +110,7 @@ MODULES = {
         inputs=('crates/software-service/*','crates/device-service/src/control/*','crates/registration-service/src/installation/*','crates/recovery-credentials/src/native/*','apps/server/tests/execution_owners/*','apps/server/tests/credential_owners/*')),
 
     'planning.owners': dict(prefix='assembly::owner_boundaries_t2::', profiles=('shared',),
-        inputs=('crates/agent-wire/src/identity.rs', 'crates/device-service/src/identity_projection.rs','crates/device-service/src/worker.rs','crates/device-service/src/object_published.rs','crates/device-service/schema/object-publication.sql','crates/device-service/schema/object-published-v1.json','crates/device-service/schema/identity.sql','crates/recovery-observation/*','crates/device-service/src/control/source_changes.rs','crates/device-service/src/control/health.rs','crates/device-service/src/control/recovery.rs','crates/software-service/src/deployment/source_changes.rs','crates/software-service/src/deployment/health.rs','crates/software-service/src/deployment/recovery.rs','apps/server/src/asset_inputs.rs','apps/server/src/local_delivery.rs','apps/server/src/worker_wake.rs','crates/inventory-postgres/*','crates/inventory/*','crates/management-http/src/planning/http.rs','crates/scope-service/*','crates/device-service/src/planning*','crates/group-service/*','crates/compliance-service/*','crates/group-postgres/*','crates/compliance-postgres/*','crates/inventory-service/*','crates/resource-postgres/*','crates/scope-postgres/*','crates/policy-postgres/*','apps/server/src/assembly/inventory.rs','apps/server/tests/owner_boundaries/*','apps/server/tests/support/policies.rs','crates/management-http/src/planning/policies/*')),
+        inputs=('apps/server/schema/messaging-runtime.sql', 'crates/work-page/*', 'crates/agent-wire/src/identity.rs', 'crates/device-service/src/identity_projection.rs','crates/device-service/src/worker.rs','crates/device-service/src/object_published.rs','crates/device-service/schema/object-publication.sql','crates/device-service/schema/object-published-v1.json','crates/device-service/schema/identity.sql','crates/recovery-observation/*','crates/device-service/src/control/source_changes.rs','crates/device-service/src/control/health.rs','crates/device-service/src/control/recovery.rs','crates/software-service/src/deployment/source_changes.rs','crates/software-service/src/deployment/health.rs','crates/software-service/src/deployment/recovery.rs','apps/server/src/asset_inputs.rs','apps/server/src/local_delivery.rs','apps/server/src/worker_wake.rs','crates/inventory-postgres/*','crates/inventory/*','crates/management-http/src/planning/http.rs','crates/scope-service/*','crates/device-service/src/planning*','crates/group-service/*','crates/compliance-service/*','crates/group-postgres/*','crates/compliance-postgres/*','crates/inventory-service/*','crates/resource-postgres/*','crates/scope-postgres/*','crates/policy-postgres/*','apps/server/src/assembly/inventory.rs','apps/server/tests/owner_boundaries/*','apps/server/tests/support/policies.rs','crates/management-http/src/planning/policies/*')),
 
     'task.scheduled_owners': dict(prefix='assembly::execution_owners_t2::scheduled::', profiles=('shared',),
         inputs=('crates/policy-postgres/*','crates/policy-service/*','crates/software-service/*','crates/inventory-service/src/collection/*','apps/server/src/assembly/policy*','apps/server/tests/execution_owners/*')),
@@ -189,7 +193,7 @@ MODULES = {
                 'apps/server/tests/support/command_runtime.rs', 'apps/server/tests/task_trust/support.rs',
                 'hack/task_trust_materials.py')),
     'task.recovery': dict(prefix='assembly::execution_owners_t2::workers::', profiles=('shared',),
-        inputs=('crates/group-service/*', 'crates/scope-service/*', 'crates/compliance-service/*', 'crates/policy-service/*', 'crates/recovery-credentials/*', 'crates/registration-service/*', 'crates/device-access-postgres/*', 'crates/device-service/src/discovery.rs', 'crates/device-service/src/worker.rs', 'crates/device-service/src/control/recovery.rs', 'crates/software-service/src/discovery.rs', 'crates/software-service/src/deployment/recovery.rs', 'crates/inventory-service/src/discovery.rs', 'crates/inventory-service/src/assets/runtime.rs', 'crates/inventory-service/src/worker_health.rs', 'crates/agent-wire/src/identity.rs', 'crates/script-service/*', 'crates/inventory-service/src/collection/*',
+        inputs=('crates/work-page/*', 'crates/group-service/*', 'crates/scope-service/*', 'crates/compliance-service/*', 'crates/policy-service/*', 'crates/recovery-credentials/*', 'crates/registration-service/*', 'crates/device-access-postgres/*', 'crates/device-service/src/discovery.rs', 'crates/device-service/src/worker.rs', 'crates/device-service/src/control/recovery.rs', 'crates/software-service/src/discovery.rs', 'crates/software-service/src/deployment/recovery.rs', 'crates/inventory-service/src/discovery.rs', 'crates/inventory-service/src/assets/runtime.rs', 'crates/inventory-service/src/worker_health.rs', 'crates/agent-wire/src/identity.rs', 'crates/script-service/*', 'crates/inventory-service/src/collection/*',
                 'crates/inventory-service/schema/*', 'crates/agent-channel/*',
                 'crates/device-service/src/control/capacity.rs', 'crates/task-state/*', 'crates/recovery-observation/*',
                 'crates/device-service/src/control/actions/history.rs', 'crates/device-service/src/control/unmanage.rs',
@@ -221,7 +225,9 @@ MODULES = {
                 'apps/server/tests/support/command_runtime.rs', 'apps/server/tests/task_trust/support.rs',
                 'hack/task_trust_materials.py')),
     'windows.protocol': dict(prefix='windows_t2::', profiles=('shared',),
-        inputs=('crates/agent-wire/src/identity.rs', 'crates/windows-channel/*',
+        inputs=('apps/server/tests/support/provider_http.rs', 'crates/agent-wire/src/identity.rs', 'crates/windows-channel/*',
+                'apps/server/schema/windows-wake-*', 'crates/work-page/*', 'crates/inventory-service/schema/collection-tasks.sql',
+                'crates/software-service/schema/deployment/*', 'crates/registration-service/schema/tasks/*',
                 'crates/policy-service/src/configuration/windows*', 'crates/policy-service/src/configuration/protocol.rs', 'crates/policy-service/src/configuration/storage.rs', 'crates/policy-service/src/configuration/authority.rs', 'crates/policy-service/schema/*', 'crates/registration-service/src/command_authority.rs', 'crates/registration-service/schema/command-authorities.sql', 'apps/server/src/assembly/native_ownership.rs', 'apps/server/src/assembly/configuration_channels.rs', 'crates/device-service/schema/control-*', 'crates/device-service/src/control/protocol.rs',
                 'crates/device-service/src/control/windows_*',
                 'crates/windows-mdm/src/native/*', 'apps/server/src/assembly/windows_*',
@@ -233,7 +239,7 @@ MODULES = {
                 'apps/server/tests/support/command_runtime.rs', 'hack/native_protocol_materials.py',
                 'hack/task_trust_materials.py')),
     'apple.protocol': dict(prefix='apple_t2::', profiles=('shared',),
-        inputs=('crates/agent-wire/src/identity.rs', 'crates/recovery-credentials/src/native/storage.rs','crates/recovery-credentials/src/native/policy-access.sql','crates/recovery-credentials/schema/task-relations.sql','crates/policy-service/src/configuration/*','crates/apple-channel/src/configuration-access.sql','crates/apple-channel/*',
+        inputs=('apps/server/tests/support/provider_http.rs', 'crates/work-page/*', 'crates/agent-wire/src/identity.rs', 'crates/recovery-credentials/src/native/storage.rs','crates/recovery-credentials/src/native/policy-access.sql','crates/recovery-credentials/schema/task-relations.sql','crates/policy-service/src/configuration/*','crates/apple-channel/src/configuration-access.sql','crates/apple-channel/*',
                 'crates/policy-service/src/configuration/apple.rs', 'crates/policy-service/src/configuration/assets.rs', 'crates/policy-service/src/configuration/protocol.rs', 'crates/policy-service/src/configuration/storage.rs', 'crates/policy-service/src/configuration/authority.rs', 'crates/policy-service/schema/*', 'crates/registration-service/src/command_authority.rs', 'crates/registration-service/schema/command-authorities.sql', 'apps/server/src/assembly/native_ownership.rs', 'apps/server/src/assembly/configuration_channels.rs', 'crates/device-service/schema/control-*', 'crates/device-service/src/control/apple*',
                 'apps/server/src/assembly/apple_*', 'apps/server/src/enrollment_progress.rs', 'apps/server/tests/apple/*',
                 'apps/server/tests/support/native_identity.rs', 'apps/server/src/assembly/command*', 'apps/server/src/assembly/host_storage.rs',

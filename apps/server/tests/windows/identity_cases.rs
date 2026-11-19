@@ -13,7 +13,7 @@ fn document() -> String {
         r#"<DeclaredConfiguration schema="1.0" context="Device" id="{DOCUMENT}" checksum="version-1" osdefinedscenario="MSFTExtensibilityMIProviderConfig"><DSC namespace="root/Microsoft/Windows/DesiredStateConfiguration" className="MSFT_FileDirectoryConfiguration"><Key name="DestinationPath">c:\data\file</Key><Value name="Contents">fixture contents</Value></DSC></DeclaredConfiguration>"#
     )
 }
-fn request(linked: bool, user: bool) -> Result<Configuration> {
+pub(super) fn request(linked: bool, user: bool) -> Result<Configuration> {
     let request = if linked {
         json!({"kind":"node","node":"./Device/Vendor/MSFT/DeclaredConfiguration/Host/Complete/Documents/*/Document","instance":[DOCUMENT],"operation":"replace","value":{"type":"xml","value":document()}})
     } else {
@@ -37,7 +37,7 @@ struct Metadata<'a> {
     input_version: &'a str,
     target: &'a cfg::NativeTarget,
 }
-async fn seed_group(
+pub(super) async fn seed_group(
     c: &Context,
     n: &identity::Native,
     key: &Protector,

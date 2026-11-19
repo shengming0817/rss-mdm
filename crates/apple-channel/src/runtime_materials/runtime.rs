@@ -281,6 +281,8 @@ impl From<rss_mdm_certificate::Error> for LoadError {
 /// Shared physical transports. An operation loads only its immutable Apple material snapshot.
 /// Ordinary tenants without selected APNs material allocate no transport.
 pub struct Runtime {
+    #[cfg(feature = "integration")]
+    pub(crate) fixture: Option<(u16, reqwest::Certificate)>,
     origin: String,
     pub webhooks: Option<Arc<rss_mdm_pki_service::scep::Verifier>>,
     push: tokio::sync::Mutex<BTreeMap<String, (String, Arc<crate::push::Push>)>>,
@@ -290,8 +292,15 @@ impl Runtime {
         Self {
             origin,
             webhooks,
+            #[cfg(feature = "integration")]
+            fixture: None,
             push: Default::default(),
         }
+    }
+    #[cfg(feature = "integration")]
+    pub fn with_loopback_provider(mut self, port: u16, root: reqwest::Certificate) -> Self {
+        self.fixture = Some((port, root));
+        self
     }
     pub async fn load(
         &self,
@@ -343,12 +352,28 @@ impl Runtime {
             {
                 push.clone()
             } else {
-                let push = Arc::new(crate::push::Push::from_bytes(
-                    materials.apns_topic.clone(),
-                    &materials.apns_certificate,
-                    &materials.apns_private_key,
-                    app.clock.clone(),
-                )?);
+                let push = |builder| {
+                    crate::push::Push::with_client(
+                        materials.apns_topic.clone(),
+                        &materials.apns_certificate,
+                        &materials.apns_private_key,
+                        app.clock.clone(),
+                        builder,
+                    )
+                };
+                let builder = reqwest::Client::builder();
+                #[cfg(feature = "integration")]
+                let builder = match &self.fixture {
+                    Some((_, root)) => builder.no_proxy().add_root_certificate(root.clone()),
+                    None => builder,
+                };
+                let push = push(builder)?;
+                #[cfg(feature = "integration")]
+                let push = match &self.fixture {
+                    Some((port, _)) => push.at_loopback(*port),
+                    None => push,
+                };
+                let push = Arc::new(push);
                 transports.insert(execution.tenant().to_string(), (digest, push.clone()));
                 push
             }

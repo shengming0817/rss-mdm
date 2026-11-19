@@ -153,6 +153,23 @@ impl Push {
             token: tokio::sync::Mutex::new(None),
         })
     }
+    #[cfg(feature = "integration")]
+    pub(crate) fn with_loopback_provider(
+        mut self,
+        port: u16,
+        root: reqwest::Certificate,
+    ) -> Result<Self, Error> {
+        self.client = reqwest::Client::builder()
+            .no_proxy()
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(6))
+            .add_root_certificate(root)
+            .build()
+            .map_err(unavailable)?;
+        self.token_url = format!("https://localhost:{port}/accesstoken.srf");
+        Ok(self)
+    }
     pub(crate) fn now(&self) -> tokio::time::Instant {
         self.clock.now().into()
     }
@@ -214,6 +231,15 @@ impl Push {
     }
     pub async fn send(&self, channel: &str) -> Result<Receipt, Error> {
         let uri = channel_uri(channel)?;
+        #[cfg(feature = "integration")]
+        let uri = if self.token_url.starts_with("https://localhost:") {
+            let mut local = reqwest::Url::parse(&self.token_url).map_err(unavailable)?;
+            local.set_path(uri.path());
+            local.set_query(uri.query());
+            local
+        } else {
+            uri
+        };
 
         let token = match self.bearer().await {
             Ok(token) => token,

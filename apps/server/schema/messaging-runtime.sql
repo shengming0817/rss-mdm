@@ -165,3 +165,8 @@ GRANT EXECUTE ON FUNCTION rss_transactional_messaging.check_execution(),
  rss_transactional_messaging.prepare_outbox_partitions(jsonb),
  rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_scope_runtime,mdm_content_runtime,mdm_telemetry_runtime;
 COMMIT;
+
+-- Both local projection readers page unfinished bindings in tenant and epoch order.
+CREATE INDEX mdm_local_projection_scopes
+ ON rss_transactional_messaging.outbox(domain,tenant_id,claim_epoch)
+ WHERE domain IN ('mdm-group','mdm-assets') AND status IN ('pending','publishing','dead_letter');

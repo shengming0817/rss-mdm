@@ -6,6 +6,7 @@ rust-version.workspace=true
 publish.workspace=true
 autotests=false
 [dependencies]
+rss-mdm-work-page.workspace = true
 rss-axum.workspace = true
 rss-mdm-device-access.workspace = true
 rss-mdm-device-access-postgres.workspace = true
@@ -66,3 +67,6 @@ tokio={workspace=true,features=["rt","macros","time"]}
 time={workspace=true,features=["formatting"]}
 [lints]
 workspace=true
+
+[features]
+integration = []

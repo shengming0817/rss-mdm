@@ -2,18 +2,6 @@
 use super::*;
 use sqlx::Row;
 impl Transactions {
-    /// Read-only discovery from committed work. A candidate grants no wake or dispatch rights.
-    /// The caller advances by the last returned device even when no channel is usable.
-    pub async fn windows_wake_candidates_in(
-        &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-        c: &mut sqlx::PgConnection,
-        after: Option<rss_mdm_agent_wire::DeviceId>,
-    ) -> std::result::Result<Vec<rss_mdm_agent_wire::DeviceId>, Error> {
-        sqlx::query_scalar("SELECT device FROM mdm_planning.configuration_windows_wake_candidates($1) WHERE current_setting('rss.tenant_id')::uuid=$2::uuid ORDER BY device")
-            .bind(after.map(|id|id.into_uuid())).bind(binding.tenant().to_string()).fetch_all(c).await.and_then(crate::configuration::device_ids).map_err(db)
-    }
-
     pub async fn windows_wake_pending_in(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,

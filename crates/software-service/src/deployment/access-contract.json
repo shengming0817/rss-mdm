@@ -2,10 +2,6 @@
   "tables": [],
   "functions": [
     {
-      "name": "mdm_software_deployment.windows_wake_candidates",
-      "search_path": "search_path=pg_catalog"
-    },
-    {
       "name": "mdm_software_deployment.retirement_commands",
       "search_path": "search_path=pg_catalog"
     },

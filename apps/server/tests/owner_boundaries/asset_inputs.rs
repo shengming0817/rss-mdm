@@ -687,6 +687,18 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
         eprintln!("input drain targets: {targets:?}");
     }
     idle?;
+    let discover = c.database.archive_pool();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let drained:bool = sqlx::query_scalar("SELECT
+                NOT EXISTS (SELECT FROM mdm_group.delivery_scopes(NULL,NULL) WHERE tenant_id=$1::uuid)
+                AND NOT EXISTS (SELECT FROM mdm_devices.asset_delivery_scopes(NULL,NULL) WHERE tenant_id=$1::uuid)")
+                .bind(c.tenant.to_string()).fetch_one(&discover).await?;
+            if drained { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok::<_,sqlx::Error>(())
+    }).await??;
     let initial_operations: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid",
     )
@@ -1746,6 +1758,165 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
     drop(worker);
     drop(schedule);
     pool.close().await;
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "T2: both registered projections cross a 32-binding discovery page while a source row is locked"]
+async fn local_delivery_rotates_past_a_locked_first_tenant_and_a_full_page() -> Result<()> {
+    use rss_mdm_device_service::object_published::{self, ObjectPublished};
+    use rss_mdm_group_postgres::{GroupChangeKind, GroupChanged};
+    use rss_request_context::TenantId;
+    let mut tenants = (0..33).map(|_| Uuid::new_v4()).collect::<Vec<_>>();
+    tenants.sort_unstable();
+    let keys = tenants
+        .iter()
+        .map(|id| TenantId::parse(&id.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let c = Context::open("shared", &keys).await?;
+    let (valid, columns, predicate): (bool, String, String) = sqlx::query_as(
+        "SELECT i.indisvalid, pg_get_indexdef(i.indexrelid), pg_get_expr(i.indpred,i.indrelid)
+         FROM pg_index i WHERE i.indexrelid='rss_transactional_messaging.mdm_local_projection_scopes'::regclass")
+        .fetch_one(&c.operator).await?;
+    assert!(valid && columns.contains("(domain, tenant_id, claim_epoch)"));
+    for value in [
+        "mdm-group",
+        "mdm-assets",
+        "pending",
+        "publishing",
+        "dead_letter",
+    ] {
+        assert!(predicate.contains(value), "{predicate}");
+    }
+    for (&tenant, &id) in keys.iter().zip(&tenants) {
+        let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(tenant.to_string())
+            .execute(&mut *tx)
+            .await?;
+        let operation = Uuid::new_v4();
+        let group = Uuid::new_v4();
+        let g = GroupChanged {
+            execution_epoch: 1,
+            v: 1,
+            kind: GroupChangeKind::Created,
+            group_id: group.to_string(),
+            operation_id: operation.to_string(),
+            group_revision: 1,
+            member_version: 0,
+            authority_version: 1,
+            member_count: 0,
+            added: 0,
+            removed: 0,
+            rule_version: None,
+        };
+        let object = ObjectPublished {
+            execution_epoch: 1,
+            v: 1,
+            tenant: id,
+            history_epoch: Uuid::new_v4(),
+            snapshot_id: Uuid::new_v4(),
+            through: 1,
+        };
+        sqlx::query("SELECT rss_transactional_messaging.prepare_outbox_partitions($1)")
+            .bind(json!([["mdm-group", group]]))
+            .execute(&mut *tx)
+            .await?;
+        for (domain, route, contract, schema, message, body, partition) in [
+            (
+                "mdm-group",
+                "group.changed",
+                "mdm.group.changed",
+                rss_mdm_group_postgres::EVENT_SCHEMA,
+                format!("group.changed.v1:{operation}"),
+                serde_json::to_vec(&g)?,
+                Some(PartitionKey::parse(&group.to_string())?),
+            ),
+            (
+                "mdm-assets",
+                "object.published",
+                "mdm.device.object-published",
+                object_published::SCHEMA,
+                object.message_id(),
+                serde_json::to_vec(&object)?,
+                None,
+            ),
+        ] {
+            let envelope = MessageEnvelope::new(
+                MessageId::parse(&message)?,
+                MessageMetadata::new(
+                    AuthoredMessageMetadata::new(
+                        tenant,
+                        rss_contract::Timepoint::try_from(
+                            time::OffsetDateTime::now_utc().unix_timestamp(),
+                        )?,
+                        MessagingDomain::parse(domain)?,
+                        MessageRoute::parse(route)?,
+                        ContractIdentity::new(
+                            rss_contract::ContractId::parse(contract)?,
+                            rss_contract::ContractVersion::from_static_major(1),
+                            rss_contract::SchemaDigest::parse(&format!(
+                                "sha256:{:x}",
+                                Sha256::digest(schema.as_bytes())
+                            ))?,
+                        ),
+                    ),
+                    MessageMetadataExtensions::new(None, partition, None, BTreeMap::new()),
+                ),
+                body,
+            );
+            let result: String =
+                sqlx::query_scalar("SELECT rss_transactional_messaging.append_outbox($1,$2)")
+                    .bind(envelope.canonical_bytes())
+                    .bind(json!({"trace":null,"tenant_authority":null}))
+                    .fetch_one(&mut *tx)
+                    .await?;
+            assert_eq!(result, "inserted");
+        }
+        tx.commit().await?;
+    }
+    let mut held = c.operator.begin().await?;
+    // Both claimed effects insert this same tenant's dispatch row. Keep the insert
+    // uncommitted so each lane actually waits inside its owner transaction.
+    sqlx::query("INSERT INTO mdm_scope.asset_dispatch(tenant_id,expected_epoch) VALUES($1,1)")
+        .bind(tenants[0])
+        .execute(&mut *held)
+        .await?;
+    let locked=sqlx::query("SELECT seq FROM rss_transactional_messaging.outbox WHERE tenant_id=ANY($1) AND domain IN ('mdm-assets','mdm-group') FOR UPDATE")
+        .bind(&tenants[1..32]).fetch_all(&mut *held).await?;
+    assert_eq!(locked.len(), 62);
+    let owners = Owners::open(&c).await?;
+    let scopes = crate::scope_t2::open(&c).await?;
+    let workers = Workers::start(&c, &owners, scopes.clone()).await?;
+    let count = |ids: Vec<Uuid>| {
+        sqlx::query_scalar::<_,i64>("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=ANY($1) AND domain IN ('mdm-group','mdm-assets') AND status='published'").bind(ids).fetch_one(&c.operator)
+    };
+    let siblings = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let inflight: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND domain IN ('mdm-assets','mdm-group') AND status='publishing'")
+                .bind(tenants[0]).fetch_one(&c.operator).await?;
+            if inflight == 2 && count(vec![tenants[32]]).await? == 2 { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(count(tenants[..32].to_vec()).await?, 0);
+        Ok::<_, anyhow::Error>(())
+    })
+    .await;
+    held.rollback().await?;
+    workers.close().await?;
+    siblings??;
+    let workers = Workers::start(&c, &owners, scopes.clone()).await?;
+    let drained = tokio::time::timeout(Duration::from_secs(15), async {
+        while count(tenants.clone()).await? != 66 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await;
+    workers.close().await?;
+    drained??;
+    owners.storage.runtime.close().await;
     c.close().await;
     Ok(())
 }

@@ -1,6 +1,7 @@
 //! Apple owns receipt correlation and exact DDM scope/version persistence, independently of OS effect claims.
 mod fixture;
 mod renewal;
+mod workers;
 use fixture::Fixture;
 pub(crate) mod support;
 use crate::{

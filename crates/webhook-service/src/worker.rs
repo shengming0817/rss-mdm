@@ -126,10 +126,10 @@ pub async fn run<H, A, T, W, E>(
 ) -> Result<(), MessagingError>
 where
     H: Eligibility,
-    A: transport::TargetAuthorizer,
+    A: transport::TargetAuthorizer + 'static,
     T: ExecutionTimer + 'static,
-    W: transport::WallClock,
-    E: TransactionalMessagingEmitter,
+    W: transport::WallClock + 'static,
+    E: TransactionalMessagingEmitter + 'static,
 {
     let budget = DeliveryBudget::new(
         Duration::from_secs(60),
@@ -171,66 +171,102 @@ where
         runtime,
         timer: timer.clone(),
     });
-    let capacity = NonZeroUsize::new(4).expect("positive relay capacity");
-    let mut after = None;
-    loop {
-        if token.is_cancelled() {
-            return Ok(());
-        }
-        let scopes = sqlx::query_as::<_, (Uuid, i64)>(
-            "SELECT tenant_id,expected_epoch FROM mdm_webhook.work_scopes($1,$2)",
+    let lanes = RelayLanes {
+        storage,
+        pool: discovery_pool,
+        timer,
+        emitter,
+        token,
+    };
+    tokio::join!(
+        lanes.drive(events::SOURCE_DOMAIN, source, fanout, 2),
+        lanes.drive(events::DELIVERY_DOMAIN, delivery, publisher, 4)
+    );
+    Ok(())
+}
+
+struct RelayLanes<T, E> {
+    storage: rss_transactional_messaging::fence::StorageIdentity,
+    pool: sqlx::PgPool,
+    timer: Arc<T>,
+    emitter: Arc<E>,
+    token: tokio_util::sync::CancellationToken,
+}
+
+impl<T: ExecutionTimer + 'static, E: TransactionalMessagingEmitter + 'static> RelayLanes<T, E> {
+    async fn drive<P>(
+        &self,
+        domain: &'static str,
+        store: Arc<PgOutboxStore<P::Receipt>>,
+        publisher: Arc<P>,
+        capacity: usize,
+    ) where
+        P: Publisher<Vec<u8>> + 'static,
+        P::Receipt: 'static,
+    {
+        let idle = Duration::from_millis(500);
+        let notify = tokio::sync::Notify::new();
+        rss_mdm_work_page::run(
+            NonZeroUsize::new(capacity).expect("relay capacity"),
+            idle,
+            &self.token,
+            &notify,
+            |after: Option<(Uuid, i64, usize)>| async move {
+                let bindings: Vec<(Uuid, i64)> = sqlx::query_as(
+                    "SELECT tenant_id,expected_epoch FROM mdm_webhook.work_scopes($1,$2,$3)",
+                )
+                .bind(domain)
+                .bind(after.map(|v| v.0))
+                .bind(after.map(|v| v.1))
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|_| eprintln!("webhook discovery failed for {domain}"))?;
+                // Independent RSS claims share the lane budget. Keep at least one slot
+                // for a newly arriving tenant even if all this binding’s HTTP calls stall.
+                let per_binding = capacity.saturating_sub(1).max(1);
+                Ok(bindings
+                    .into_iter()
+                    .flat_map(|(tenant, epoch)| {
+                        (0..per_binding).map(move |slot| (tenant, epoch, slot))
+                    })
+                    .collect())
+            },
+            |(tenant, epoch, _)| {
+                let (store, publisher, timer, emitter) = (
+                    store.clone(),
+                    publisher.clone(),
+                    self.timer.clone(),
+                    self.emitter.clone(),
+                );
+                let storage = self.storage;
+                async move {
+                    let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
+                        .map_err(|_| ())?;
+                    let epoch =
+                        rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| ())?;
+                    let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
+                        storage, tenant, epoch,
+                    );
+                    let report = relay_once(
+                        binding,
+                        store.as_ref(),
+                        publisher.as_ref(),
+                        timer.as_ref(),
+                        emitter.as_ref(),
+                        NonZeroUsize::MIN,
+                    )
+                    .await
+                    .map_err(|_| ())?;
+                    Ok(if report.published() > 0 {
+                        Duration::ZERO
+                    } else {
+                        idle
+                    })
+                }
+            },
+            |_| {},
         )
-        .bind(after.map(|v: (Uuid, i64)| v.0))
-        .bind(after.map(|v| v.1))
-        .fetch_all(&discovery_pool)
         .await;
-        let scopes = match scopes {
-            Ok(scopes) => scopes,
-            Err(_) => {
-                tokio::select! {()=token.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_secs(5))=>()}
-                continue;
-            }
-        };
-        if scopes.is_empty() {
-            after = None;
-            tokio::select! {()=token.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_millis(500))=>()}
-            continue;
-        }
-        for (tenant, epoch) in scopes {
-            if token.is_cancelled() {
-                return Ok(());
-            }
-            after = Some((tenant, epoch));
-            let (Ok(tenant), Ok(epoch)) = (
-                rss_request_context::TenantId::parse(&tenant.to_string()),
-                rss_transactional_messaging::fence::Epoch::new(epoch),
-            ) else {
-                continue;
-            };
-            let binding =
-                rss_transactional_messaging::fence::ExecutionBinding::new(storage, tenant, epoch);
-            let _ = relay_once(
-                binding,
-                source.as_ref(),
-                fanout.as_ref(),
-                timer.as_ref(),
-                emitter.as_ref(),
-                capacity,
-            )
-            .await;
-            if token.is_cancelled() {
-                return Ok(());
-            }
-            let _ = relay_once(
-                binding,
-                delivery.as_ref(),
-                publisher.as_ref(),
-                timer.as_ref(),
-                emitter.as_ref(),
-                capacity,
-            )
-            .await;
-        }
     }
 }
 pub(crate) async fn delivery_execution(

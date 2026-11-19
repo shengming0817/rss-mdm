@@ -86,7 +86,7 @@ pub async fn maintain(
     })).await;
     let (health, candidates) = crate::operations::settle(outcome, &audit)?;
 
-    let progress = health.len() + candidates.len();
+    let mut progress = health.len();
     for row in health {
         let level: i32 = row.try_get("level").map_err(db)?;
         eprintln!(
@@ -95,7 +95,8 @@ pub async fn maintain(
         );
     }
     for candidate in candidates {
-        prepare(execution, apple, audit_store, &tenant, now, candidate).await?;
+        progress +=
+            usize::from(prepare(execution, apple, audit_store, &tenant, now, candidate).await?);
     }
     Ok(progress)
 }
@@ -110,7 +111,7 @@ async fn prepare(
     tenant: &str,
     now: i64,
     candidate: Candidate,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
@@ -160,7 +161,7 @@ async fn prepare(
                     })
                     .map_err(Error::from)?;
                     audit.mark_commit_started();
-                    Ok(Some(prepared))
+                    Ok(Some((prepared, !replayed)))
                 })
             },
         )
@@ -172,13 +173,14 @@ async fn prepare(
             .err()
             .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
     );
-    if let Some(prepared) = result? {
+    if let Some((prepared, changed)) = result? {
         eprintln!(
             "{}",
             serde_json::json!({"event":"apple_identity_renewal","coordinates":prepared})
         );
+        return Ok(changed);
     }
-    Ok(())
+    Ok(false)
 }
 #[derive(serde::Serialize)]
 struct PreparedRenewal {
@@ -669,7 +671,7 @@ pub async fn next_maintenance(
     tenant: &str,
 ) -> Result<Option<std::time::Duration>, Error> {
     let mut tx = access.begin_read(tenant).await?;
-    let millis: Option<i64> = sqlx::query_scalar("SELECT ceil(extract(epoch FROM min(due)-clock_timestamp())*1000)::bigint FROM (SELECT next_push AS due FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND state='active' UNION ALL SELECT push_lease_until FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND state='active' UNION ALL SELECT to_timestamp(not_after) FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND state='bound' UNION ALL SELECT to_timestamp(not_after-least((not_after-not_before)/3,604800)) FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND state='bound' UNION ALL SELECT expires_at FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND state IN ('prepared','consumed') UNION ALL SELECT next_attempt FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND state IN ('pending','sent','not_now') UNION ALL SELECT deadline FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND state IN ('pending','sent','not_now')) times WHERE due>clock_timestamp()")
+    let millis: Option<i64> = sqlx::query_scalar("SELECT ceil(extract(epoch FROM min(due)-clock_timestamp())*1000)::bigint FROM (SELECT greatest(next_push,push_lease_until) AS due FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND state='active' UNION ALL SELECT to_timestamp(not_after) FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND state='bound' UNION ALL SELECT to_timestamp(not_after-least((not_after-not_before)/3,604800)) FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND state='bound' UNION ALL SELECT expires_at FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND state IN ('prepared','consumed') UNION ALL SELECT next_attempt FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND state IN ('pending','sent','not_now') UNION ALL SELECT deadline FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND state IN ('pending','sent','not_now')) times WHERE due>clock_timestamp()")
         .bind(tenant).fetch_one(&mut *tx).await.map_err(db)?;
     tx.rollback().await.map_err(db)?;
     Ok(millis.map(|ms| std::time::Duration::from_millis(ms.max(1) as u64)))

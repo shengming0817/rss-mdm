@@ -13,7 +13,6 @@ use uuid::Uuid;
 pub struct Worker {
     read_pool: sqlx::PgPool,
     storage: rss_transactional_messaging::fence::StorageIdentity,
-    relay_after: Mutex<Option<(Uuid, i64)>>,
     readiness: rss_mdm_recovery_observation::Readiness,
     service: Arc<CollectionService>,
     store: rss_reconcile_postgres::PgStore,
@@ -48,7 +47,6 @@ impl Worker {
         Ok(Self {
             read_pool,
             storage,
-            relay_after: Mutex::new(None),
             readiness,
             service,
             store,
@@ -174,7 +172,7 @@ impl Worker {
     ) -> impl rss_reconcile::DurableStore<Claim = rss_reconcile_postgres::PgClaim> + '_ {
         rss_mdm_recovery_observation::ObservedStore::new(&self.store, &self.readiness)
     }
-    pub fn record_relay_health(&self, result: &std::result::Result<usize, Error>) {
+    pub fn record_relay_health<T>(&self, result: &std::result::Result<T, Error>) {
         self.readiness.relay_round(
             result
                 .as_ref()
@@ -182,7 +180,6 @@ impl Worker {
                 .map_err(|e| failure(e.clone()).kind()),
         );
     }
-    /// Host polls each concrete owner once in the single existing relay loop.
     async fn relay_binding(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
@@ -618,50 +615,38 @@ impl Worker {
             epoch,
         ))
     }
-    pub async fn relay_once(&self) -> std::result::Result<usize, Error> {
-        let after = *self
-            .relay_after
-            .lock()
+    pub async fn relay_page(
+        &self,
+        after: Option<(Uuid, i64)>,
+    ) -> std::result::Result<Vec<(Uuid, i64)>, Error> {
+        let result = sqlx::query_as("SELECT tenant_id,expected_epoch FROM mdm_inventory.collection_work_relay_scopes($1,$2)")
+            .bind(after.map(|x|x.0)).bind(after.map(|x|x.1)).fetch_all(&self.read_pool).await.map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage));
+        self.record_relay_health(&result);
+        result
+    }
+    pub async fn relay_scope(
+        &self,
+        (tenant, epoch): (Uuid, i64),
+    ) -> std::result::Result<usize, Error> {
+        let t = rss_request_context::TenantId::parse(&tenant.to_string())
             .map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))?;
-        let scopes: Vec<(Uuid,i64)> = sqlx::query_as("SELECT tenant_id,expected_epoch FROM mdm_inventory.collection_work_relay_scopes($1,$2)")
-            .bind(after.map(|x|x.0)).bind(after.map(|x|x.1)).fetch_all(&self.read_pool).await.map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))?;
-        if scopes.is_empty() {
-            *self
-                .relay_after
-                .lock()
-                .map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))? = None;
-            return Ok(0);
-        }
-        let mut count = 0;
-        for (tenant, epoch) in scopes {
-            let t = rss_request_context::TenantId::parse(&tenant.to_string())
-                .map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))?;
-            let e = rss_transactional_messaging::fence::Epoch::new(epoch)
-                .map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))?;
-            let result = self
-                .relay_binding(rss_transactional_messaging::fence::ExecutionBinding::new(
-                    self.storage,
-                    t,
-                    e,
-                ))
-                .await;
-            *self
-                .relay_after
-                .lock()
-                .map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))? =
-                Some((tenant, epoch));
-            self.readiness.relay_scope(
-                &super::wake::scope(t),
-                epoch,
-                result
-                    .as_ref()
-                    .map(|_| ())
-                    .map_err(|e| failure(e.clone()).kind()),
-            );
-            if let Ok(relayed) = result {
-                count += relayed;
-            }
-        }
-        Ok(count)
+        let e = rss_transactional_messaging::fence::Epoch::new(epoch)
+            .map_err(|_| Error::Unavailable(crate::Failure::PlanningStorage))?;
+        let result = self
+            .relay_binding(rss_transactional_messaging::fence::ExecutionBinding::new(
+                self.storage,
+                t,
+                e,
+            ))
+            .await;
+        self.readiness.relay_scope(
+            &super::wake::scope(t),
+            epoch,
+            result
+                .as_ref()
+                .map(|_| ())
+                .map_err(|e| failure(e.clone()).kind()),
+        );
+        Ok(result.unwrap_or(0))
     }
 }

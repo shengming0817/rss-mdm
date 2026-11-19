@@ -40,7 +40,12 @@ impl Push {
             reqwest::Client::builder(),
         )
     }
-    fn with_client(
+    #[cfg(feature = "integration")]
+    pub(crate) fn at_loopback(mut self, port: u16) -> Self {
+        self.origin = format!("https://localhost:{port}");
+        self
+    }
+    pub(crate) fn with_client(
         topic: String,
         certificate: &[u8],
         private_key: &[u8],
@@ -256,23 +261,60 @@ pub fn registration(
     notify: std::sync::Arc<tokio::sync::Notify>,
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) = rss_runtime::ManagedTask::prepare("apple-apns", Duration::from_secs(8));
-    task.into_registration(move|stop|async move{
-        let mut after=None;let mut nearest=Some(Duration::from_secs(60));
-        loop{
-            if stop.is_cancelled(){return Ok(())}
-            let scopes=match app.access.push_work_scopes(after).await{Ok(page)=>page,Err(_)=>{eprintln!("apple_push_discovery_failed");nearest=Some(Duration::from_secs(5));Vec::new()}};
-            if scopes.is_empty(){after=None;crate::wait(&notify,&stop,nearest).await;nearest=Some(Duration::from_secs(60));continue}
-            for tenant in scopes{
-                after=Some(tenant);if stop.is_cancelled(){return Ok(())}
-                let tenant=rss_request_context::TenantId::parse(&tenant.to_string()).map_err(rss_runtime::ShutdownError::new)?;
-                let execution=app.execution(tenant);
-                let result=async{let apple=app.apple(execution).await?;cycle(execution,&apple,&app.delivery,&app.access,&app.audit_store).await}.await;
-                match result{
-                    Ok((progress,wake,next))=>{let delay=if progress>0||!matches!(wake,WakeHealth::Idle){Duration::from_millis(100)}else{next.unwrap_or(Duration::from_secs(60))};nearest=Some(nearest.map_or(delay,|old|old.min(delay)));},
-                    Err(_)=>{eprintln!("{}",serde_json::json!({"event":"apple_push_failure","tenant":tenant.to_string()}));nearest=Some(Duration::from_secs(5));},
+    task.into_registration(move |stop| async move {
+        let idle = Duration::from_secs(5);
+        rss_mdm_work_page::run(
+            std::num::NonZeroUsize::new(2).expect("parallel push bindings"),
+            idle,
+            &stop,
+            &notify,
+            |after| {
+                let store = &app.access;
+                async move {
+                    store
+                        .push_work_scopes(after)
+                        .await
+                        .map_err(|_| eprintln!("apple_push_discovery_failed"))
                 }
-            }
-        }
+            },
+            |tenant| {
+                let app = app.clone();
+                async move {
+                    let result = async {
+                        let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
+                            .map_err(|_| Error::Malformed)?;
+                        let execution = app.execution(tenant);
+                        let apple = app.apple(execution).await?;
+                        cycle(
+                            execution,
+                            &apple,
+                            &app.delivery,
+                            &app.access,
+                            &app.audit_store,
+                        )
+                        .await
+                    }
+                    .await;
+                    result
+                        .map(|(progress, wake, next)| {
+                            if progress > 0 || !matches!(wake, WakeHealth::Idle) {
+                                Duration::ZERO
+                            } else {
+                                next.unwrap_or(idle)
+                            }
+                        })
+                        .map_err(|_| {
+                            eprintln!(
+                                "{}",
+                                serde_json::json!({"event":"apple_push_failure","tenant":tenant})
+                            )
+                        })
+                }
+            },
+            |_| {},
+        )
+        .await;
+        Ok(())
     })
 }
 pub async fn wake(
@@ -305,7 +347,9 @@ pub async fn wake(
             ),
             _ => (None, PushOutcome::Retryable, None, None, Some("transport")),
         };
-    delivery.pushed(&wake, status, outcome).await?;
+    if !delivery.pushed(&wake, status, outcome).await? {
+        return Ok(WakeHealth::Idle);
+    }
     if outcome != PushOutcome::Accepted {
         eprintln!(
             "{}",
