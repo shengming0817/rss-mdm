@@ -264,7 +264,6 @@ async fn lifecycle_http(
     fixture: &provider::Provider,
     admin: &crate::authority_t2_support::Account,
 ) -> Result<()> {
-    use rss_mdm_agent_wire::{da, enroll};
     use serde_json::{Value, json};
     let management = format!("{base}/api/v1/tenants/{}/da", c.tenant);
     let protocol = format!("{origin}/api/v1/da");
@@ -291,82 +290,27 @@ async fn lifecycle_http(
             .header("x-csrf-token", &csrf)
             .header("cookie", &cookie)
     };
-    let public = fixture.client(None)?;
-    let mut peer = None::<reqwest::Client>;
-    let mut first = None::<da::Registration>;
-    for index in 1..=2 {
-        let request = da::GrantRequest {
-            operation_id: Uuid::new_v4(),
-            secret: rss_mdm_agent_wire::runtime::Secret::parse(
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA",
-            )?,
-            csr: fixture.csr(index)?,
-            expires_in_seconds: 600,
-        };
-        let source = match peer.as_ref() {
-            None => post(format!("{management}/grants")),
-            Some(peer) => peer.post(format!("{protocol}/renewal-grants")),
-        };
-        let grant: da::Grant = read_response(source.json(&request).send().await?).await?;
-        let issue = da::CertificateRequest {
-            operation_id: Uuid::new_v4(),
-            grant_id: grant.grant_id,
-            secret: request.secret,
-            csr: request.csr,
-        };
-        let candidate: enroll::Candidate = read_response(
-            public
-                .post(format!("{protocol}/certificates"))
-                .json(&issue)
-                .send()
-                .await?,
-        )
-        .await?;
-        let current = fixture.client(Some((&candidate, index)))?;
-        let registration: da::Registration = read_response(
-            current
-                .post(format!("{protocol}/activate"))
-                .json(&enroll::ActivationRequest {
-                    wire_version: 1,
-                    operation_id: Uuid::new_v4(),
-                    issuance_id: candidate.issuance_id,
-                })
-                .send()
-                .await?,
-        )
-        .await?;
-        if let Some(old) = &first {
-            assert_eq!(old.device, registration.device);
-            assert_ne!(old.credential, registration.credential);
-        } else {
-            first = Some(registration);
-        }
-        if let Some(previous) = peer.replace(current) {
-            assert_eq!(
-                previous
-                    .get(format!("{protocol}/configuration-trust"))
-                    .send()
-                    .await?
-                    .status(),
-                401
-            );
-        }
-    }
-    let device = first.context("initial activation")?.device;
+    let (first_peer, initial) =
+        activate_from_grant(fixture, &protocol, post(format!("{management}/grants")), 1).await?;
+    let (renewed_peer, renewed) = activate_from_grant(
+        fixture,
+        &protocol,
+        first_peer.post(format!("{protocol}/renewal-grants")),
+        2,
+    )
+    .await?;
+    assert_eq!(initial.device, renewed.device);
+    assert_ne!(initial.credential, renewed.credential);
+    let trust = format!("{protocol}/configuration-trust");
+    assert_eq!(first_peer.get(&trust).send().await?.status(), 401);
+    let device = renewed.device;
     let revoke = format!("{management}/devices/{device}/registration/revoke");
     post(revoke.clone())
         .json(&json!({"operationId":Uuid::new_v4()}))
         .send()
         .await?
         .error_for_status()?;
-    assert_eq!(
-        peer.context("renewed peer")?
-            .get(format!("{protocol}/configuration-trust"))
-            .send()
-            .await?
-            .status(),
-        401
-    );
+    assert_eq!(renewed_peer.get(&trust).send().await?.status(), 401);
     sqlx::query("DELETE FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND id=$2")
         .bind(c.tenant.to_string())
         .bind(admin.rule)
@@ -381,6 +325,50 @@ async fn lifecycle_http(
         403
     );
     Ok(())
+}
+async fn activate_from_grant(
+    fixture: &provider::Provider,
+    protocol: &str,
+    submit: reqwest::RequestBuilder,
+    index: u8,
+) -> Result<(reqwest::Client, rss_mdm_agent_wire::da::Registration)> {
+    use rss_mdm_agent_wire::{da, enroll};
+    let request = da::GrantRequest {
+        operation_id: Uuid::new_v4(),
+        secret: rss_mdm_agent_wire::runtime::Secret::parse(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA",
+        )?,
+        csr: fixture.csr(index)?,
+        expires_in_seconds: 600,
+    };
+    let grant: da::Grant = read_response(submit.json(&request).send().await?).await?;
+    let candidate: enroll::Candidate = read_response(
+        fixture
+            .client(None)?
+            .post(format!("{protocol}/certificates"))
+            .json(&da::CertificateRequest {
+                operation_id: Uuid::new_v4(),
+                grant_id: grant.grant_id,
+                secret: request.secret,
+                csr: request.csr,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    let peer = fixture.client(Some((&candidate, index)))?;
+    let registration = read_response(
+        peer.post(format!("{protocol}/activate"))
+            .json(&enroll::ActivationRequest {
+                wire_version: 1,
+                operation_id: Uuid::new_v4(),
+                issuance_id: candidate.issuance_id,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    Ok((peer, registration))
 }
 async fn read_response<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T> {
     let path = response.url().path().to_owned();

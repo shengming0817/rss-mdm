@@ -170,7 +170,7 @@ async fn deployment_state(
 async fn facts(
     execution: ExecutionBinding,
     app: &Context,
-    mut tx: &mut PgConnection,
+    tx: &mut PgConnection,
     target: Target<'_>,
     binding: Option<Uuid>,
 ) -> Result<Facts, Error> {
@@ -179,45 +179,44 @@ async fn facts(
     let user_id:Option<Uuid>=sqlx::query_scalar("SELECT id FROM rss_da.psso_sources WHERE tenant_id=$1::uuid AND binding=$2 AND kind='user'")
         .bind(&tenant).bind(binding).fetch_optional(&mut *tx).await.map_err(db)?;
     let user = match user_id {
-        Some(id) => Some(store::read(&mut tx, &tenant, id).await?),
+        Some(id) => Some(store::read(tx, &tenant, id).await?),
         None => None,
     };
     // Identity guard precedes the device watermark, even for diagnostic reads.
     let identity_current = match &user {
-        Some(s) => admitted(service::admit(app, &mut tx, s).await)?,
+        Some(s) => admitted(service::admit(app, tx, s).await)?,
         None => false,
     };
     let object = DaRegistration {
         device: match target {
-            Target::Device(p) => *crate::delivery::resolve_on(&mut tx, p).await?.device(),
+            Target::Device(p) => *crate::delivery::resolve_on(tx, p).await?.device(),
             Target::Management(device) => device,
         },
     };
     if user.as_ref().is_some_and(|u| u.object != object) {
         return Err(Error::Unauthorized);
     }
-    store::current_object(execution, &mut tx, &object).await?;
+    store::current_object(execution, tx, &object).await?;
     if let Some(previous) = &user {
-        let current = store::read(&mut tx, &tenant, previous.id).await?;
+        let current = store::read(tx, &tenant, previous.id).await?;
         if current.version != previous.version || current.revoked != previous.revoked {
             return Err(Error::ReadConflict);
         }
     }
-    let now = store::now(&mut tx).await?;
-    let login =
-        match deployment::configuration_for_object(&mut tx, execution.tenant(), &object).await {
-            Ok(login) => Some(login),
-            Err(Error::NotFound | Error::Conflict) => None,
-            Err(e) => return Err(e),
-        };
+    let now = store::now(tx).await?;
+    let login = match deployment::configuration_for_object(tx, execution.tenant(), &object).await {
+        Ok(login) => Some(login),
+        Err(Error::NotFound | Error::Conflict) => None,
+        Err(e) => return Err(e),
+    };
     let (deployment, evidence) =
-        deployment_state(execution, app, &mut tx, &object, now, login.is_some()).await?;
+        deployment_state(execution, app, tx, &object, now, login.is_some()).await?;
     let qualified = deployment == DeploymentState::Trusted;
 
     let device_id:Option<Uuid>=sqlx::query_scalar("SELECT id FROM rss_da.psso_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND kind = 'device'")
         .bind(&tenant).bind(object.device.into_uuid()).fetch_optional(&mut *tx).await.map_err(db)?;
     let device = match device_id {
-        Some(id) => Some(store::source(&mut tx, &tenant, id).await?),
+        Some(id) => Some(store::source(tx, &tenant, id).await?),
         None => None,
     };
     let device_registered = device.as_ref().is_some_and(|s| {
@@ -229,7 +228,7 @@ async fn facts(
     let user_registered = match &user {
         Some(u) => {
             identity_current
-                && admitted(store::current_user(execution, app, &mut tx, u.id, false).await)?
+                && admitted(store::current_user(execution, app, tx, u.id, false).await)?
         }
         None => false,
     };
@@ -238,7 +237,7 @@ async fn facts(
             store::current_user(
                 execution,
                 app,
-                &mut tx,
+                tx,
                 user_id.ok_or(Error::Unauthorized)?,
                 true,
             )
