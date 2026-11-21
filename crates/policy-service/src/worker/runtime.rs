@@ -814,28 +814,22 @@ impl PolicyWork {
         .await
         .map_err(|_| Error::Unavailable(Failure::PolicyStorage))
     }
-    pub async fn relay_scope(
+    pub async fn claim_relay(
         &self,
-        (tenant, epoch): (Uuid, i64),
-    ) -> std::result::Result<usize, Error> {
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        limit: std::num::NonZeroUsize,
+    ) -> std::result::Result<Vec<impl Future<Output = std::result::Result<(), Error>> + Send + '_>, Error> {
         let Some(configuration) = self.service.configuration.as_ref() else {
-            return Ok(0);
+            return Ok(Vec::new());
         };
-        let tenant_id = rss_request_context::TenantId::parse(&tenant.to_string())
-            .map_err(|_| Error::Malformed)?;
-        let epoch_id =
-            rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| Error::Malformed)?;
-        let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
-            self.storage,
-            tenant_id,
-            epoch_id,
-        );
-        let force = tokio_util::sync::CancellationToken::new();
-        let timer = Timer::new();
-        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &force);
-        let result = configuration.relay_once(binding, &control).await;
-        self.service.record_relay(binding, &result);
-        Ok(result.unwrap_or(0))
+        configuration.claim_relay(binding, limit, Duration::from_secs(20)).await
+    }
+    pub fn observe_relay(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        result: &std::result::Result<usize, Error>,
+    ) {
+        self.service.record_relay(binding, result);
     }
 }
 

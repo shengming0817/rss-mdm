@@ -454,19 +454,19 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
     assert!(!accepted().await?);
     assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2 WHERE tenant_id=$1::uuid AND epoch=1")
         .bind(blocked.c.tenant.to_string()).execute(&blocked.c.operator).await?.rows_affected(), 1);
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            for key in h.a.script_work.relay_page(None).await? {
-                h.a.script_work.relay_scope(key).await?;
-            }
-            if accepted().await? {
-                break;
-            }
+    let stop = CancellationToken::new();
+    let relay = crate::assembly::task_relay::Relay::new(2, h.c.execution().storage(), &stop);
+    let work = h.a.script_work.clone();
+    let task = tokio::spawn(async move { crate::assembly::task_relay::script(&relay, work).await });
+    let observed = tokio::time::timeout(Duration::from_secs(20), async {
+        while !accepted().await? {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         Ok::<_, anyhow::Error>(())
-    })
-    .await??;
+    }).await;
+    stop.cancel();
+    task.await?;
+    observed??;
     let epoch: i64 = sqlx::query_scalar(
         "SELECT expected_epoch FROM mdm_script.runs WHERE tenant_id=$1::uuid AND id=$2",
     )
@@ -594,7 +594,7 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
         .fetch_one(&mut *lock)
         .await?;
     let stop = CancellationToken::new();
-    let relay = task_relay::Relay::new(2, &stop);
+    let relay = task_relay::Relay::new(2, h.c.execution().storage(), &stop);
     let worker = h.a.script_work.clone();
     let running = tokio::spawn(async move { task_relay::script(&relay, worker).await });
     let observed = tokio::time::timeout(Duration::from_secs(12), async {

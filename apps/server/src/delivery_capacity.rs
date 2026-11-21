@@ -47,6 +47,7 @@ impl Capacity {
         let binding = total.saturating_sub(1).clamp(1, 2);
         Self::new(total, total.min(3), total.min(3), binding)
     }
+    pub(crate) fn owner_limit(&self) -> usize { self.owner }
     pub(crate) fn total(&self) -> NonZeroUsize {
         NonZeroUsize::new(self.total).expect("positive execution capacity")
     }

@@ -266,26 +266,23 @@ impl Service {
                 .map_err(|e| failure(e.clone()).kind()),
         );
     }
-    async fn relay_binding(
+    pub async fn claim_relay(
         &self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,
-    ) -> std::result::Result<usize, Error> {
+        limit: std::num::NonZeroUsize,
+    ) -> std::result::Result<Vec<impl Future<Output = std::result::Result<(), Error>> + Send + '_>, Error> {
         let claims = self
             .outbox
-            .claim_partition_heads(execution, std::num::NonZeroUsize::MIN, deadline())
+            .claim_partition_heads(execution, limit, deadline())
             .await
             .map_err(|e| {
                 let e = provider(e.into());
                 relay_diagnostic("claim", None, &e);
                 e
             })?;
-        let count = claims.len();
-        for claim in claims {
-            self.relay_claim(execution, claim).await?;
-        }
-        Ok(count)
+        Ok(claims.into_iter().map(|claim| self.relay_claim(execution, claim)).collect())
     }
-    pub async fn relay_claim(
+    async fn relay_claim(
         &self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,
         claim: rss_transactional_messaging_postgres::PgOutboxClaim,
@@ -850,28 +847,18 @@ impl Service {
         self.record_relay_health(&result);
         result
     }
-    pub async fn relay_scope(
+    pub fn observe_relay(
         &self,
-        (tenant, epoch): (Uuid, i64),
-    ) -> std::result::Result<usize, Error> {
-        let t = TenantId::parse(&tenant.to_string()).map_err(|_| Error::Malformed)?;
-        let e =
-            rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| Error::Malformed)?;
-        let result = self
-            .relay_binding(rss_transactional_messaging::fence::ExecutionBinding::new(
-                self.storage,
-                t,
-                e,
-            ))
-            .await;
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        result: &std::result::Result<usize, Error>,
+    ) {
         self.readiness.relay_scope(
-            &recovery_scope(t),
-            epoch,
+            &recovery_scope(binding.tenant()),
+            binding.epoch().get(),
             result
                 .as_ref()
                 .map(|_| ())
                 .map_err(|e| failure(e.clone()).kind()),
         );
-        Ok(result.unwrap_or(0))
     }
 }

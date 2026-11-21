@@ -226,68 +226,82 @@ impl Transactions {
         })).await?;
         Ok(())
     }
-    pub async fn relay_once<T: rss_reconcile::Timer>(
+    pub async fn claim_relay(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
-        control: &rss_reconcile::Control<'_, T>,
-    ) -> std::result::Result<usize, Error> {
+        limit: std::num::NonZeroUsize,
+        budget: std::time::Duration,
+    ) -> std::result::Result<Vec<impl Future<Output = std::result::Result<(), Error>> + Send + '_>, Error> {
+        let timer = Arc::new(crate::clock::Timer::new());
         let claims = self
             .outbox
             .claim_partition_heads(
                 binding,
-                std::num::NonZeroUsize::MIN,
+                limit,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    budget,
+                ),
+            )
+            .await
+            .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
+        Ok(claims.into_iter().map(|claim| {
+            let timer = timer.clone();
+            async move {
+                let cancel = tokio_util::sync::CancellationToken::new();
+                let remaining = budget.saturating_sub(rss_reconcile::Timer::now(timer.as_ref()));
+                let control = rss_reconcile::Control::new(timer.as_ref(), remaining, &cancel);
+                self.relay_claim(binding, claim, &control).await
+            }
+        }).collect())
+    }
+    async fn relay_claim<T: rss_reconcile::Timer>(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        claim: rss_transactional_messaging_postgres::PgOutboxClaim,
+        control: &rss_reconcile::Control<'_, T>,
+    ) -> std::result::Result<(), Error> {
+        let message = PgOutboxStore::<()>::message(&claim);
+        let id = message
+            .message_id()
+            .as_str()
+            .strip_prefix("dispatch.")
+            .and_then(|v| Uuid::parse_str(v).ok())
+            .ok_or(Error::Unavailable(Failure::CommandInvariant))?;
+        let fingerprint = message.fingerprint().as_bytes().to_vec();
+        let result = self
+            .accept_dispatch(
+                binding,
+                id,
+                fingerprint,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    control.remaining(),
+                ),
+            )
+            .await;
+        if matches!(
+            result,
+            Err(Error::Unavailable(
+                Failure::CommandInvariant | Failure::NativeInputIntegrity
+            ))
+        ) {
+            return result;
+        }
+        let settlement = if result.is_ok() {
+            OutboxSettlement::Published(())
+        } else {
+            OutboxSettlement::Retry
+        };
+        self.outbox
+            .settle(
+                claim,
+                settlement,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
             )
             .await
             .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
-        let count = claims.len();
-        for claim in claims {
-            let message = PgOutboxStore::<()>::message(&claim);
-            let id = message
-                .message_id()
-                .as_str()
-                .strip_prefix("dispatch.")
-                .and_then(|v| Uuid::parse_str(v).ok())
-                .ok_or(Error::Unavailable(Failure::CommandInvariant))?;
-            let fingerprint = message.fingerprint().as_bytes().to_vec();
-            let result = self
-                .accept_dispatch(
-                    binding,
-                    id,
-                    fingerprint,
-                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                        control.remaining(),
-                    ),
-                )
-                .await;
-            if matches!(
-                result,
-                Err(Error::Unavailable(
-                    Failure::CommandInvariant | Failure::NativeInputIntegrity
-                ))
-            ) {
-                return result.map(|_| 0);
-            }
-            let settlement = if result.is_ok() {
-                OutboxSettlement::Published(())
-            } else {
-                OutboxSettlement::Retry
-            };
-            self.outbox
-                .settle(
-                    claim,
-                    settlement,
-                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                        control.remaining(),
-                    ),
-                )
-                .await
-                .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
-            result?;
-        }
-        Ok(count)
+        result
     }
     async fn accept_dispatch(
         &self,

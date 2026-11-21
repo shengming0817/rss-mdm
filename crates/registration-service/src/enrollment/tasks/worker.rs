@@ -193,51 +193,55 @@ impl Worker {
                 .map_err(|e| failure(e.clone()).kind()),
         );
     }
-    async fn relay_binding(
+    pub async fn claim_relay(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
-    ) -> std::result::Result<usize, Error> {
+        limit: std::num::NonZeroUsize,
+    ) -> std::result::Result<Vec<impl Future<Output = std::result::Result<(), Error>> + Send + '_>, Error> {
         let claims = self
             .outbox
             .claim_partition_heads(
                 binding,
-                std::num::NonZeroUsize::MIN,
+                limit,
                 crate::enrollment::tasks::transaction::deadline(),
             )
             .await
             .map_err(|_| Error::Unavailable)?;
-        let count = claims.len();
-        for claim in claims {
-            let message = PgOutboxStore::<()>::message(&claim);
-            let id = message
-                .message_id()
-                .as_str()
-                .strip_prefix("enrollment.")
-                .and_then(|s| Uuid::parse_str(s).ok())
-                .ok_or(Error::Invariant)?;
-            let result = self
-                .service
-                .accept_action_dispatch(binding, id, message.fingerprint().as_bytes().to_vec())
-                .await;
-            if result.as_ref().err().is_some_and(permanent) {
-                return result.map(|_| count);
-            }
-            let settlement = if result.is_ok() {
-                OutboxSettlement::Published(())
-            } else {
-                OutboxSettlement::Retry
-            };
-            self.outbox
-                .settle(
-                    claim,
-                    settlement,
-                    crate::enrollment::tasks::transaction::deadline(),
-                )
-                .await
-                .map_err(|_| Error::Unavailable)?;
-            result?;
+        Ok(claims.into_iter().map(|claim| self.relay_claim(binding, claim)).collect())
+    }
+    async fn relay_claim(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        claim: rss_transactional_messaging_postgres::PgOutboxClaim,
+    ) -> std::result::Result<(), Error> {
+        let message = PgOutboxStore::<()>::message(&claim);
+        let id = message
+            .message_id()
+            .as_str()
+            .strip_prefix("enrollment.")
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .ok_or(Error::Invariant)?;
+        let result = self
+            .service
+            .accept_action_dispatch(binding, id, message.fingerprint().as_bytes().to_vec())
+            .await;
+        if result.as_ref().err().is_some_and(permanent) {
+            return result;
         }
-        Ok(count)
+        let settlement = if result.is_ok() {
+            OutboxSettlement::Published(())
+        } else {
+            OutboxSettlement::Retry
+        };
+        self.outbox
+            .settle(
+                claim,
+                settlement,
+                crate::enrollment::tasks::transaction::deadline(),
+            )
+            .await
+            .map_err(|_| Error::Unavailable)?;
+        result
     }
 }
 fn permanent(e: &Error) -> bool {
@@ -639,29 +643,18 @@ impl Worker {
         self.record_relay_health(&result);
         result
     }
-    pub async fn relay_scope(
+    pub fn observe_relay(
         &self,
-        (tenant, epoch): (Uuid, i64),
-    ) -> std::result::Result<usize, Error> {
-        let t = rss_request_context::TenantId::parse(&tenant.to_string())
-            .map_err(|_| Error::Invariant)?;
-        let e =
-            rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| Error::Invariant)?;
-        let result = self
-            .relay_binding(rss_transactional_messaging::fence::ExecutionBinding::new(
-                self.storage,
-                t,
-                e,
-            ))
-            .await;
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        result: &std::result::Result<usize, Error>,
+    ) {
         self.readiness.relay_scope(
-            &crate::enrollment::tasks::wake::scope(self.service.profile(), t),
-            epoch,
+            &crate::enrollment::tasks::wake::scope(self.service.profile(), binding.tenant()),
+            binding.epoch().get(),
             result
                 .as_ref()
                 .map(|_| ())
                 .map_err(|e| failure(e.clone()).kind()),
         );
-        Ok(result.unwrap_or(0))
     }
 }

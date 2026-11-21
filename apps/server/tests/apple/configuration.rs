@@ -237,10 +237,11 @@ async fn reconcile(
         .map_err(|e| anyhow::anyhow!("configuration reconcile pass {pass}: {e:?}"))?;
         audit.finalize(None);
         crate::policy_configuration_t2::step(worker, c.tenant, device).await?;
-        let timer = rss_mdm_policy_service::clock::Timer::new();
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cancel);
-        while cfg.relay_once(c.execution(), &control).await? > 0 {}
+        loop {
+            let batch = cfg.claim_relay(c.execution(), std::num::NonZeroUsize::new(2).unwrap(), Duration::from_secs(10)).await?;
+            if batch.is_empty() { break; }
+            for claim in batch { claim.await?; }
+        }
     }
     Ok(())
 }

@@ -184,6 +184,7 @@ impl BackgroundConfig {
                 .try_fold(extra, |n, value| n.checked_add(u32::try_from(*value).ok()?))
                 .ok_or_else(bad)
         };
+        let relay = crate::delivery_capacity::Capacity::commands(std::num::NonZeroUsize::new(commands.concurrency()).ok_or_else(bad)?);
         let compiled = Compiled {
             device_drain: Duration::from_millis(self.scheduling.device.drain_ms),
             commands_drain: Duration::from_millis(self.scheduling.commands.drain_ms),
@@ -199,7 +200,7 @@ impl BackgroundConfig {
             )
             .map_err(|_| bad())?,
             access_connections: sum(&[device.concurrency()], 8)?,
-            command_connections: sum(&[commands.concurrency()], 8)?,
+            command_connections: sum(&[commands.concurrency(), relay.total().get().saturating_sub(2)], 8)?,
             inventory_connections: sum(
                 &[
                     group.concurrency(),
@@ -209,7 +210,7 @@ impl BackgroundConfig {
                 2,
             )?,
             scope_connections: sum(&[scope.concurrency()], 2)?,
-            policy_connections: sum(&[policy.concurrency(), policy_events.concurrency()], 2)?,
+            policy_connections: sum(&[policy.concurrency(), policy_events.concurrency(), relay.owner_limit().saturating_sub(2)], 2)?,
             telemetry_control_connections: rss_mdm_telemetry_service::CONTROL_WORKERS
                 .checked_add(2)
                 .ok_or_else(bad)?,
