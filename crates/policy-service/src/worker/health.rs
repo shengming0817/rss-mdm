@@ -181,7 +181,7 @@ impl Application {
     pub(crate) fn record_relay(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
-        message: Option<&str>,
+        message: Option<&rss_mdm_recovery_observation::RelayMessage>,
         result: std::result::Result<(), &Error>,
     ) {
         let scope = rss_reconcile::Scope::new(

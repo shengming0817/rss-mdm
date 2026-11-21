@@ -1,7 +1,10 @@
 //! Configuration work shares the Policy runner budget and preserves owner-local command decoding.
 use super::*;
+use rss_mdm_audit_integration::budget::RuntimeTimer;
 use rss_mdm_audit_integration::{Fact, activity::*};
+use rss_request_context::Deadline;
 use rss_transactional_messaging::outbox::{OutboxRelayStore, OutboxSettlement};
+use rss_transactional_messaging::policy::OperationDeadline;
 use rss_transactional_messaging_postgres::PgOutboxStore;
 pub(crate) fn owns_entity(entity: &str) -> bool {
     entity == "configuration-inputs"
@@ -233,39 +236,41 @@ impl Transactions {
         budget: std::time::Duration,
     ) -> std::result::Result<
         Vec<(
-            rss_transactional_messaging::message::MessageId,
+            rss_mdm_recovery_observation::RelayMessage,
             impl Future<Output = std::result::Result<(), Error>> + Send + '_,
         )>,
         Error,
     > {
-        let timer = Arc::new(crate::clock::Timer::new());
+        let cutoff = Deadline::from_timeout(&RuntimeTimer, budget)
+            .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
+        // Claim and business work share the earlier cutoff. A late Retry or
+        // Published settlement still has one quarter of the original window.
+        let operation = Deadline::at(cutoff.instant() - budget / 4);
         let claims = self
             .outbox
             .claim_partition_heads(
                 binding,
                 limit,
-                rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),
+                OperationDeadline::from_cutoff(operation, &RuntimeTimer),
             )
             .await
             .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
         Ok(claims
             .into_iter()
             .map(|claim| {
-                let timer = timer.clone();
-                let id = PgOutboxStore::<()>::message(&claim).message_id().clone();
-                (id, async move {
-                    let cancel = tokio_util::sync::CancellationToken::new();
-                    let control = rss_reconcile::Control::new(timer.as_ref(), budget, &cancel);
-                    self.relay_claim(binding, claim, &control).await
-                })
+                let id = rss_mdm_recovery_observation::RelayMessage::from(
+                    PgOutboxStore::<()>::message(&claim),
+                );
+                (id, self.relay_claim(binding, claim, operation, cutoff))
             })
             .collect())
     }
-    async fn relay_claim<T: rss_reconcile::Timer>(
+    async fn relay_claim(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
         claim: rss_transactional_messaging_postgres::PgOutboxClaim,
-        control: &rss_reconcile::Control<'_, T>,
+        operation: Deadline,
+        cutoff: Deadline,
     ) -> std::result::Result<(), Error> {
         let message = PgOutboxStore::<()>::message(&claim);
         let id = message
@@ -280,9 +285,7 @@ impl Transactions {
                 binding,
                 id,
                 fingerprint,
-                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                    control.remaining(),
-                ),
+                OperationDeadline::from_cutoff(operation, &RuntimeTimer),
             )
             .await;
         if matches!(
@@ -302,9 +305,7 @@ impl Transactions {
             .settle(
                 claim,
                 settlement,
-                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                    control.remaining(),
-                ),
+                OperationDeadline::from_cutoff(cutoff, &RuntimeTimer),
             )
             .await
             .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;

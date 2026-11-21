@@ -690,6 +690,29 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
         .fetch_one(&mut *lock)
         .await?;
     let hint = Arc::new(tokio::sync::Notify::new());
+    // The second host observed an uncertain outcome for b. Its own readback
+    // must distinguish b's publication from the other pending or leased heads.
+    let binding = h.c.execution();
+    let receipt: (String, Vec<u8>) = sqlx::query_as(
+        "SELECT domain,fingerprint FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND message_id=$2",
+    ).bind(Uuid::from_bytes(h.c.tenant.octets())).bind(format!("script.{b}")).fetch_one(&h.c.operator).await?;
+    let message = rss_mdm_recovery_observation::RelayMessage {
+        domain: rss_transactional_messaging::message::MessagingDomain::parse(&receipt.0)?,
+        id: rss_transactional_messaging::message::MessageId::parse(&format!("script.{b}"))?,
+        fingerprint: rss_transactional_messaging::message::MessageFingerprint::from_bytes(
+            receipt
+                .1
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("invalid outbox fingerprint"))?,
+        ),
+    };
+    let observer = &late.a.script_work;
+    observer.observe_relay(binding, Some(&message), Err(&script::Error::CommitUnknown));
+    observer.verify_relay(binding).await;
+    assert!(matches!(
+        observer.health().relay,
+        Some(rss_mdm_recovery_observation::Phase::Failed(_))
+    ));
     let stack = registered_relay(&h, hint.clone()).await?;
     let status = |message: String| {
         sqlx::query_scalar::<_, String>(
@@ -710,6 +733,11 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
     wait(format!("script.{b}"), "published").await?;
     wait(format!("collection.{collection}"), "published").await?;
     assert_eq!(status(format!("script.{a}")).await?, "publishing");
+    observer.verify_relay(binding).await;
+    assert_eq!(
+        observer.health().relay,
+        Some(rss_mdm_recovery_observation::Phase::Healthy)
+    );
     let refill = Uuid::new_v4();
     assert!(matches!(
         h.admit_on(refill_version, refill, *second.device()).await?,

@@ -1954,8 +1954,9 @@ async fn local_delivery_rotates_past_a_locked_first_tenant_and_a_full_page() -> 
 #[tokio::test]
 #[ignore = "T2: registered projections refill beside a locked effect, drain and resume on the same database"]
 async fn local_delivery_refills_while_a_group_head_is_in_flight() -> Result<()> {
-    let late = rss_request_context::TenantId::parse(&Uuid::new_v4().to_string())?;
-    let c = Context::open("shared", &[late]).await?;
+    let c = Context::open("shared", &[]).await?;
+    let second = Context::open("shared", &[]).await?;
+    let late = second.tenant;
     let config = serde_json::from_value(
         crate::host_t2_support::configuration(
             &c.inputs,
@@ -1982,16 +1983,21 @@ async fn local_delivery_refills_while_a_group_head_is_in_flight() -> Result<()> 
         let mut launch = startup.commit();
         launch.stage_task_with_token(
             assets
+                .clone()
                 .registration(Arc::new(tokio::sync::Notify::new()))
                 .critical(),
         );
         launch.stage_task_with_token(groups.registration(hint.clone()).critical());
         launch.finish();
-        Ok::<_, anyhow::Error>((stack, hint))
+        Ok::<_, anyhow::Error>((stack, hint, assets))
     };
     planning::endpoint(&c).await?;
     let (asset, _) = message(&c).await?;
     let (seed, _) = deliver_input(&c, &asset).await?;
+    seed.close().await;
+    planning::endpoint(&second).await?;
+    let (third, _) = message(&second).await?;
+    let (seed, _) = deliver_input(&second, &third).await?;
     seed.close().await;
     let group = Uuid::new_v4();
     let head = publish_pair(&c, c.tenant, group).await?;
@@ -2006,39 +2012,60 @@ async fn local_delivery_refills_while_a_group_head_is_in_flight() -> Result<()> 
     .bind(group)
     .execute(&mut *lock)
     .await?;
-    // Hold the real shared Scope target and leave exactly one source of
-    // each asset route claimable. Both effects need separate transaction
-    // connections after RSS has performed their initial lease renewal.
+    // Hold both tenants' Scope targets. The first tenant supplies both routes,
+    // the second supplies the third independent head. Each needs a physical
+    // connection for its effect after its initial RSS lease renewal.
     // Keep the observation connection independent of both lock holders.
     let barrier = c.inputs.pool("shared", "postgres").await?;
     let mut inputs = barrier.begin().await?;
     let tenant = Uuid::from_bytes(c.tenant.octets());
     let holder: i32 = sqlx::query_scalar("SELECT pg_backend_pid() FROM rss_reconcile.targets WHERE tenant_id=$1 AND reconciler='mdm.scopes' AND entity='inputs' FOR UPDATE")
         .bind(tenant).fetch_one(&mut *inputs).await?;
+    let late_tenant = Uuid::from_bytes(late.octets());
+    sqlx::query("SELECT 1 FROM rss_reconcile.targets WHERE tenant_id=$1 AND reconciler='mdm.scopes' AND entity='inputs' FOR UPDATE")
+        .bind(late_tenant).fetch_one(&mut *inputs).await?;
     let object: String = sqlx::query_scalar("SELECT message_id FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND domain='mdm-assets' AND envelope->>'route'='object.published' ORDER BY seq LIMIT 1")
         .bind(tenant).fetch_one(&mut *inputs).await?;
-    let routes = vec![asset.id().as_str().to_owned(), object];
-    sqlx::query("SELECT seq FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND domain='mdm-assets' AND message_id<>ALL($2) FOR UPDATE")
-        .bind(tenant).bind(&routes).fetch_all(&mut *inputs).await?;
-    let (stack, hint) = start().await?;
+    let routes = vec![
+        asset.id().as_str().to_owned(),
+        object,
+        third.id().as_str().to_owned(),
+    ];
+    sqlx::query("SELECT seq FROM rss_transactional_messaging.outbox WHERE tenant_id=ANY($1) AND domain='mdm-assets' AND message_id<>ALL($2) FOR UPDATE")
+        .bind(&[tenant,late_tenant][..]).bind(&routes).fetch_all(&mut *inputs).await?;
+    let (stack, hint, assets) = start().await?;
+    let tenants = [tenant, late_tenant];
+    let blocked = || {
+        sqlx::query_as::<_, (i64, i64)>(
+            "WITH RECURSIVE blockers(effect, blocker) AS (
+            SELECT pid, unnest(pg_blocking_pids(pid)) FROM pg_stat_activity
+            WHERE datname=current_database() AND usename='mdm_asset_ingress_consumer'
+            UNION SELECT effect, unnest(pg_blocking_pids(blocker)) FROM blockers
+          ) SELECT
+            (SELECT count(*) FROM rss_transactional_messaging.outbox
+                WHERE tenant_id=ANY($1) AND message_id=ANY($2) AND status='publishing'),
+            (SELECT count(DISTINCT effect) FROM blockers WHERE blocker=$3)",
+        )
+        .bind(&tenants[..])
+        .bind(&routes)
+        .bind(holder)
+        .fetch_one(&c.operator)
+    };
     tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            let (inflight, waiting, shared): (i64,i64,bool) = sqlx::query_as("WITH RECURSIVE effects AS (
-                SELECT pid, pg_blocking_pids(pid) AS blockers FROM pg_stat_activity
-                WHERE datname=current_database() AND usename='mdm_asset_ingress_consumer'
-              ), blockers(pid) AS (
-                SELECT unnest(blockers) FROM effects
-                UNION SELECT unnest(pg_blocking_pids(pid)) FROM blockers
-              ) SELECT
-                (SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND message_id=ANY($2) AND status='publishing'),
-                (SELECT count(*) FROM effects WHERE cardinality(blockers)>0),
-                EXISTS(SELECT FROM blockers WHERE pid=$3)")
-                .bind(tenant).bind(&routes).bind(holder).fetch_one(&c.operator).await?;
-            if (inflight,waiting,shared) == (2,2,true) { break; }
+        while blocked().await? != (3, 3) {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        Ok::<_,anyhow::Error>(())
-    }).await.context("two real asset effects waiting on the shared Scope target")??;
+        Ok::<_, sqlx::Error>(())
+    })
+    .await
+    .context("three real asset effects waiting on Scope targets")??;
+    // Same projection and pool used by RSS renewal. With three connections
+    // this read cannot complete until an effect releases its lock.
+    tokio::time::timeout(Duration::from_secs(1), assets.next_delay(c.execution()))
+        .await
+        .context("fourth physical connection available while all three effects are held")??;
+    assert_eq!(blocked().await?, (3, 3));
+    drop(assets);
     inputs.rollback().await?;
     barrier.close().await;
     let status = |id: String| {
@@ -2072,7 +2099,7 @@ async fn local_delivery_refills_while_a_group_head_is_in_flight() -> Result<()> 
     assert_eq!(status(head.clone()).await?, "published");
     assert_eq!(status(tail.clone()).await?, "pending");
     assert_eq!(status(after_stop.clone()).await?, "pending");
-    let (restart, _) = start().await?;
+    let (restart, _, _) = start().await?;
     published(tail.clone()).await?;
     published(after_stop.clone()).await?;
     assert!(restart.shutdown().join().await?.is_clean());
@@ -2090,15 +2117,16 @@ async fn local_delivery_refills_while_a_group_head_is_in_flight() -> Result<()> 
     let assets: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM rss_transactional_messaging.outbox o
         JOIN rss_transactional_messaging.inbox i USING (tenant_id,message_id)
-        WHERE o.tenant_id=$1 AND o.message_id=ANY($2) AND i.consumer_group='mdm-asset-inputs'
+        WHERE o.tenant_id=ANY($1) AND o.message_id=ANY($2) AND i.consumer_group='mdm-asset-inputs'
           AND o.status='published' AND i.disposition='succeeded' AND o.fingerprint=i.fingerprint",
     )
-    .bind(tenant)
+    .bind(&[tenant, late_tenant][..])
     .bind(&routes)
     .fetch_one(&c.operator)
     .await?;
-    assert_eq!(assets, 2);
+    assert_eq!(assets, 3);
     assert_eq!(confirmed, events.len() as i64);
+    second.close().await;
     c.close().await;
     Ok(())
 }

@@ -106,11 +106,11 @@ impl Relay {
 
 async fn settle<E>(
     claims: Vec<(
-        rss_transactional_messaging::message::MessageId,
+        rss_mdm_recovery_observation::RelayMessage,
         impl Future<Output = Result<(), E>>,
     )>,
     slots: Vec<Slot>,
-    observe: impl Fn(&str, Result<(), &E>),
+    observe: impl Fn(&rss_mdm_recovery_observation::RelayMessage, Result<(), &E>),
 ) -> Result<usize, ()> {
     let count = claims.len();
     assert!(count <= slots.len(), "owner exceeded the admitted batch");
@@ -119,7 +119,7 @@ async fn settle<E>(
         async move {
             let _slot = slot;
             let result = claim.await;
-            observe(id.as_str(), result.as_ref().map(|_| ()));
+            observe(&id, result.as_ref().map(|_| ()));
             result.is_ok()
         }
     });
@@ -138,18 +138,30 @@ async fn settle<E>(
 // The owners retain their concrete error types, epoch validation and scope health.
 macro_rules! owner {
     ($name:ident, $owner:ty) => {
+        owner!($name, $owner, |_: &$owner| stringify!($name));
+    };
+    ($name:ident, $owner:ty, $identity:expr) => {
         pub(super) async fn $name(relay: &Arc<Relay>, owner: Arc<$owner>) {
             let source = owner.clone();
+            let stop = relay.stop.clone();
             relay
                 .run(
-                    stringify!($name),
+                    ($identity)(owner.as_ref()),
                     |after| {
                         let owner = source.clone();
                         async move { owner.relay_page(after).await }
                     },
                     move |binding, slots| {
                         let owner = owner.clone();
+                        let stop = stop.clone();
                         async move {
+                            tokio::select! { biased;
+                                () = stop.cancelled() => return Ok(0),
+                                () = owner.verify_relay(binding) => {}
+                            }
+                            if stop.is_cancelled() {
+                                return Ok(0);
+                            }
                             let limit = NonZeroUsize::new(slots.len()).expect("admitted heads");
                             let claims = owner.claim_relay(binding, limit).await;
                             owner.observe_relay(binding, None, claims.as_ref().map(|_| ()));
@@ -187,9 +199,18 @@ owner!(
     device_access,
     rss_mdm_device_access_postgres::device_access::execution::worker::Worker
 );
+fn credential_owner(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    match profile {
+        rss_mdm_install_support::StorageProfile::Mdm => "mdm_credentials",
+        rss_mdm_install_support::StorageProfile::Da => "da_credentials",
+    }
+}
 owner!(
     credentials,
-    rss_mdm_recovery_credentials::tasks::worker::Worker
+    rss_mdm_recovery_credentials::tasks::worker::Worker,
+    |worker: &rss_mdm_recovery_credentials::tasks::worker::Worker| credential_owner(
+        worker.profile()
+    )
 );
 owner!(
     native_credentials,
@@ -257,6 +278,25 @@ pub(crate) fn registration(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn da_credentials_can_acquire_the_third_tenant_slot() {
+        use rss_mdm_install_support::StorageProfile::{Da, Mdm};
+        let capacity = Capacity::commands(NonZeroUsize::new(4).unwrap());
+        let tenant = Uuid::new_v4();
+        let stop = CancellationToken::new();
+        let mdm = capacity
+            .acquire(credential_owner(Mdm), tenant, &stop)
+            .await
+            .unwrap();
+        assert_eq!(mdm.len(), 2);
+        let da = capacity.acquire(credential_owner(Da), tenant, &stop);
+        tokio::pin!(da);
+        assert!(
+            matches!(futures::poll!(&mut da), std::task::Poll::Ready(Some(slots)) if slots.len() == 1)
+        );
+        drop(mdm);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn owner_receives_a_hint_sent_after_its_empty_snapshot() {
         let stop = CancellationToken::new();

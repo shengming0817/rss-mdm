@@ -829,7 +829,7 @@ impl PolicyWork {
         limit: std::num::NonZeroUsize,
     ) -> std::result::Result<
         Vec<(
-            rss_transactional_messaging::message::MessageId,
+            rss_mdm_recovery_observation::RelayMessage,
             impl Future<Output = std::result::Result<(), Error>> + Send + '_,
         )>,
         Error,
@@ -838,13 +838,28 @@ impl PolicyWork {
             return Ok(Vec::new());
         };
         configuration
-            .claim_relay(binding, limit, Duration::from_secs(20))
+            .claim_relay(binding, limit, Duration::from_secs(18))
             .await
+    }
+    pub async fn verify_relay(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) {
+        if let Some(config) = &self.service.configuration {
+            rss_mdm_recovery_observation::RelayMessage::verify_one(
+                &self.service.automation_observation,
+                crate::worker::jobs::domain(self.profile()),
+                binding,
+                &config.runtime,
+                &config.outbox,
+            )
+            .await;
+        }
     }
     pub fn observe_relay(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
-        message: Option<&str>,
+        message: Option<&rss_mdm_recovery_observation::RelayMessage>,
         result: std::result::Result<(), &Error>,
     ) {
         self.service.record_relay(binding, message, result);

@@ -152,17 +152,24 @@ fn relay_effects_require_exact_recovery_or_a_newer_durable_discovery_page() {
     let a = scope(1, "jobs");
     let key = (uuid::Uuid::from_bytes(a.tenant().octets()), 1);
     let page = RelayPage::begin(&state, "jobs", None);
+    let identity = |id: &str| rss_mdm_recovery_observation::RelayMessage {
+        id: rss_transactional_messaging::message::MessageId::parse(id).unwrap(),
+        domain: rss_transactional_messaging::message::MessagingDomain::parse("jobs").unwrap(),
+        fingerprint: rss_transactional_messaging::message::MessageFingerprint::from_bytes([1; 32]),
+    };
+    let hot = identity("hot");
+    let peer = identity("peer");
     let record = |message, outcome| state.lock().unwrap().relay(&a, 1, message, outcome, None);
     let phase = || state.lock().unwrap().snapshot().relay.unwrap().failure;
-    record(Some("hot"), Err(ErrorKind::CommitUnknown));
-    record(Some("peer"), Err(ErrorKind::Transient));
+    record(Some(&hot), Err(ErrorKind::CommitUnknown));
+    record(Some(&peer), Err(ErrorKind::Transient));
     record(None, Ok(()));
     assert_eq!(phase(), Some(ErrorKind::CommitUnknown));
     page.confirm(&[]);
     RelayPage::begin(&state, "jobs", None).confirm(&[key]);
     RelayPage::begin(&state, "jobs", Some(key)).confirm(&[]);
     assert_eq!(phase(), Some(ErrorKind::CommitUnknown));
-    record(Some("hot"), Ok(()));
+    record(Some(&hot), Ok(()));
     assert_eq!(phase(), Some(ErrorKind::Transient));
     RelayPage::begin(&state, "jobs", None).confirm(&[]);
     assert_eq!(phase(), None);

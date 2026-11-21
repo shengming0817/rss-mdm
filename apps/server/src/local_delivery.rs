@@ -274,12 +274,17 @@ where
         let Some(_slots) = budget.acquire(self.name, key.0, stop).await else {
             return Ok(Duration::ZERO);
         };
-        let Some(wake) =
-            read_while_running(stop, self.projection.next_wakeup(binding, deadline())).await
-        else {
-            return Ok(Duration::ZERO);
-        };
-        let wake = wake.map_err(|_| PollFailure::Unavailable)?;
+        read_while_running(stop, self.next_delay(binding))
+            .await
+            .transpose()
+            .map(|delay| delay.unwrap_or_default())
+            .map_err(|_| PollFailure::Unavailable)
+    }
+    pub(crate) async fn next_delay(
+        &self,
+        binding: ExecutionBinding,
+    ) -> Result<Duration, rss_transactional_messaging_postgres::PgError> {
+        let wake = self.projection.next_wakeup(binding, deadline()).await?;
         if wake.due_now() {
             return Ok(Duration::from_millis(100));
         }

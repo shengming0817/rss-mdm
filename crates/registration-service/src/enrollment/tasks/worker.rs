@@ -199,7 +199,7 @@ impl Worker {
         limit: std::num::NonZeroUsize,
     ) -> std::result::Result<
         Vec<(
-            rss_transactional_messaging::message::MessageId,
+            rss_mdm_recovery_observation::RelayMessage,
             impl Future<Output = std::result::Result<(), Error>> + Send + '_,
         )>,
         Error,
@@ -217,7 +217,9 @@ impl Worker {
             .into_iter()
             .map(|claim| {
                 (
-                    PgOutboxStore::<()>::message(&claim).message_id().clone(),
+                    rss_mdm_recovery_observation::RelayMessage::from(PgOutboxStore::<()>::message(
+                        &claim,
+                    )),
                     self.relay_claim(binding, claim),
                 )
             })
@@ -661,10 +663,18 @@ impl Worker {
         self.record_relay_health(&result);
         result
     }
+    pub async fn verify_relay(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) {
+        self.readiness
+            .verify_relay(binding, &self.service.transactions.runtime, &self.outbox)
+            .await;
+    }
     pub fn observe_relay(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
-        message: Option<&str>,
+        message: Option<&rss_mdm_recovery_observation::RelayMessage>,
         result: std::result::Result<(), &Error>,
     ) {
         self.readiness.relay_scope(
