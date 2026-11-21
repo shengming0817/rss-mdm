@@ -133,7 +133,7 @@ async fn run(
 #[tokio::test]
 #[ignore = "T2: real user sessions, sync SQL, replay and restore fencing"]
 async fn user_sync_atomicity_and_recovery() -> Result<()> {
-    let c = Box::pin(Context::open()).await?;
+    let c = Box::pin(Context::open("https://localhost".into())).await?;
     let s = Service::new(
         Uuid::parse_str(&c.inputs.installation.instance_id)?,
         c.proof_audit.clone(),

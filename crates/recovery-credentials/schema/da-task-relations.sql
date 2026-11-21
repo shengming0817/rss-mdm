@@ -4,7 +4,7 @@ CREATE UNIQUE INDEX credential_da_unfinished ON rss_da.credential_runs(tenant_id
  WHERE da_execution IS NOT NULL AND state <> '"applied"'::jsonb;
 CREATE POLICY credential_agent_path ON rss_da.credential_runs AS RESTRICTIVE
  TO da_command_runtime,da_policy_runtime USING(da_execution IS NULL) WITH CHECK(da_execution IS NULL);
-CREATE POLICY credential_da_update ON rss_da.credential_runs AS RESTRICTIVE FOR UPDATE TO da_access
+CREATE POLICY targeted_update ON rss_da.credential_runs AS RESTRICTIVE FOR UPDATE TO da_access
  USING(da_execution IS NOT NULL) WITH CHECK(da_execution IS NOT NULL);
 GRANT UPDATE(state,result,da_permit_until,da_escrow_digest) ON rss_da.credential_runs TO da_access;
 GRANT SELECT,INSERT ON rss_da.credential_runs TO da_identity_runtime;

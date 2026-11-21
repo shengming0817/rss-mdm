@@ -152,7 +152,7 @@ pub async fn verify(
     .await?;
     access::storage::insert_in(&mut tx, &binding).await?;
 
-    let config = rss_da_app::config::load(&m.directory.join("host-runtime.json"))?;
+    let config: rss_da_app::config::Config = rss_da_app::config::load(&m.directory.join("host-runtime.json"))?;
     let protection = config.recovery.unwrap().open()?;
     let recipient = recovery::Recipient::from_pem(
         &std::fs::read(m.directory.join("recovery.pem"))?,

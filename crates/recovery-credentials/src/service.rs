@@ -180,7 +180,7 @@ impl Credentials {
                             .with_connection_context(context, |context, c| {
                                 Box::pin(async move {
                                     let (service, principal, device, id, version, _, _, access, replay, _) = context;
-                                    let grant_expiry = match (access, *replay) {
+                                    let grant_expiry = match (*access, *replay) {
                                         (Some(_), true) => {
                                             rss_identity_postgres::recheck_authenticated_session_on(c, principal.session()?).await.map_err(|_|Error::Unauthorized)?;
                                             None

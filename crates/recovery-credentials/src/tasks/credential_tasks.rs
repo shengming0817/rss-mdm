@@ -520,6 +520,7 @@ pub(crate) async fn finish(
     }
     let product = service.product.clone();
     let anchor = run.material.clone();
+    let registration = anchor.as_ref().map_or(task.device_id, |a| a.device);
     let value = value.clone();
     let (success, uncertain, recovered) = tx
         .with_connection(move |c| {
