@@ -593,6 +593,13 @@ pub async fn assemble(
     let request_budget = rss_axum::RequestBudget::new(compiled.identity.request)
         .map_err(|_| Error::Configuration)?;
     let state = Arc::new(http::browser::Services {
+        management: Arc::new(http::management::Services {
+            registrations: runtime.registrations.clone().ok_or(Error::Admission)?,
+            configurations: runtime.configurations.clone().ok_or(Error::Admission)?,
+            business: runtime.business.clone(),
+            evidence: evidence.clone(),
+            platform: platform_http.clone(),
+        }),
         request_budget,
         vault: Arc::new(rss_mdm_vault_sync::Service::new(
             config.installation.instance,

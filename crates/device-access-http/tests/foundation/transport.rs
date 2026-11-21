@@ -1,6 +1,6 @@
 //! Actual anonymous TLS peers exercise the production RSS connection owner.
 use super::{
-    material::{Material, Server},
+    material::Material,
     *,
 };
 use tokio::{
@@ -15,9 +15,6 @@ use tokio_rustls::{
         pki_types::{CertificateDer, ServerName, pem::PemObject},
     },
 };
-async fn connect(material: &Material, server: &Server) -> Result<TlsStream<TcpStream>> {
-    connect_origin(material, &server.origin).await
-}
 async fn connect_origin(material: &Material, origin: &str) -> Result<TlsStream<TcpStream>> {
     let mut roots = RootCertStore::empty();
     for certificate in
@@ -44,18 +41,18 @@ async fn connect_origin(material: &Material, origin: &str) -> Result<TlsStream<T
 }
 pub async fn bounded_connections(
     material: &Material,
-    server: &Server,
+    origin: &str,
     tenant: rss_request_context::TenantId,
 ) -> Result<()> {
     let mut peers = Vec::new();
     // The host's four slots include established HTTP connections, not just TLS preparation.
     for _ in 0..4 {
-        peers.push(tokio::time::timeout(Duration::from_secs(2), connect(material, server)).await??);
+        peers.push(tokio::time::timeout(Duration::from_secs(2), connect_origin(material, origin)).await??);
     }
     peers[0]
         .write_all(b"GET /api/v1/da/pki/trust HTTP/1.1\r\nHost:")
         .await?;
-    let mut overflow = Box::pin(connect(material, server));
+    let mut overflow = Box::pin(connect_origin(material, origin));
     assert!(
         tokio::time::timeout(Duration::from_millis(150), &mut overflow)
             .await
@@ -74,7 +71,7 @@ pub async fn bounded_connections(
         Duration::from_secs(2),
         material
             .client(None)?
-            .get(format!("{}/pki/trust?tenantId={tenant}", server.origin))
+            .get(format!("{origin}/pki/trust?tenantId={tenant}"))
             .send(),
     )
     .await??;

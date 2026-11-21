@@ -20,6 +20,7 @@ pub struct Services {
     pub authorization: Arc<rss_mdm_authorization_service::Store>,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub business: Arc<crate::device_access::Services>,
+    pub management: Arc<crate::management::Services>,
     pub pki: Arc<crate::pki::HttpState>,
     pub platform: Arc<crate::platform_sso::HttpState>,
     pub origin: String,
@@ -37,8 +38,9 @@ pub fn router(state: Option<&Arc<Services>>) -> Router<(), impl Declaration + us
         pki: crate::pki::routes().bind_with(state.map(|s| &s.pki), Arc::clone),
     }
     .assemble();
-    rss_mdm_http_contract::route_module! {struct Protected for [Browser]{management at "/api/v1/tenants/{tenant}",vault,platform}}
+    rss_mdm_http_contract::route_module! {struct Protected for [Browser]{management at "/api/v1/tenants/{tenant}",registration,vault,platform}}
     let mut protected = Protected {
+        registration: crate::management::routes().bind_with(state.map(|s| &s.management), Arc::clone),
         vault: crate::vault::routes(state.map(|s| s.vault.clone())),
         management,
         platform: crate::platform_sso::management_routes().bind_with(platform.as_ref(), Arc::clone),

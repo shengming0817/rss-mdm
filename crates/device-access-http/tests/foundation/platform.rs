@@ -6,7 +6,6 @@ use openssl::{
     nid::Nid,
     pkey::{PKey, Private},
 };
-use ring::signature::KeyPair;
 use rss_identity_core::session::{BearerSecret, SessionSecret};
 use rss_mdm_agent_wire::{da, platform_sso as wire, runtime as access};
 use rss_mdm_device_access::deployment::{Deployment, Observation};
@@ -39,25 +38,22 @@ impl Key {
         })
     }
 }
-pub fn runtime() -> Result<Arc<psso::Runtime>> {
-    Ok(Arc::new(
-        psso::Runtime::new(
-            wire::Configuration {
-                team_id: "ABCDEFGHIJ".into(),
-                extension_id: "com.example.da.extension".into(),
-                application_id: "com.example.da".into(),
-                application_version: "1.0".into(),
-                client_id: Uuid::new_v4(),
-            },
-            "https://localhost",
-            "active".into(),
-            [("active".into(), Key::new()?.signer)].into(),
-        )?
-        .with_deployment_authorities(vec![pg::evidence::Authority {
-            id: business::authority_id(),
-            public_key: business::key().public_key().as_ref().try_into()?,
-        }])?,
-    ))
+pub fn configuration(dir: &std::path::Path) -> Result<rss_mdm_device_access_runtime::platform::PlatformSso> {
+    let key = dir.join("platform-signer.pem");
+    host::private(&key, &Key::new()?.private.private_key_to_pem_pkcs8()?)?;
+    Ok(rss_mdm_device_access_runtime::platform::PlatformSso {
+        configuration: wire::Configuration {
+            team_id: "ABCDEFGHIJ".into(), extension_id: "com.example.da.extension".into(),
+            application_id: "com.example.da".into(), application_version: "1.0".into(),
+            client_id: Uuid::new_v4(),
+        },
+        active_key: "active".into(), signing_keys: [("active".into(),key)].into(),
+        password_providers: vec![],
+    })
+}
+pub fn runtime(dir: &std::path::Path, origin:&str) -> Result<Arc<psso::Runtime>> {
+    let config:rss_da_app::config::Config = rss_da_app::config::load(&dir.join("host-runtime.json"))?;
+    Ok(config.platform_sso.unwrap().load(origin, business::authorities()?.as_ref())?)
 }
 async fn post(
     c: &Context,
@@ -265,7 +261,7 @@ async fn browser_session(
         wire::BRIDGE_TYPE,
         &serde_json::to_value(wire::BrowserClaims {
             iss: source.source_id,
-            aud: psso::browser_audience("https://localhost"),
+            aud: psso::browser_audience(&c.browser_origin),
             nonce: challenge.nonce.clone(),
             source_version: source.source_version,
             access_token: token,
@@ -301,7 +297,7 @@ pub async fn verify(
     client: &reqwest::Client,
     base: &str,
 ) -> Result<SessionSecret> {
-    let management = material::management_base(base, c.tenant);
+    let management = c.management_base();
     let b = business::assemble(c, m)?;
     let rt = b.platform.context.runtime()?;
     let token = material::administrator(c).await?;

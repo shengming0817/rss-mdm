@@ -30,11 +30,15 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         task_trust::{Acknowledgement, KeyState},
     };
     use rss_mdm_task_trust::{Use, service::Change};
-    let c = Context::open().await?;
+    let browser = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let protocol = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let browser_origin = format!("https://localhost:{}", browser.local_addr()?.port());
+    let device_origin = format!("https://localhost:{}", protocol.local_addr()?.port());
+    let c = Context::open(browser_origin).await?;
     admission::verify_and_reject_drift(&c).await?;
     let material = material::Material::new(&c).await?;
-    let registration = material.assemble(&c).await?;
-    let installed_host = Box::pin(host::verify(&c, &material, &registration)).await?;
+    let registration = material.assemble(&c, &device_origin).await?;
+    let (installed_host, stop, running) = Box::pin(host::verify(&c, &material, &registration, browser, protocol)).await?;
     let token = material::administrator(&c).await?;
     let proof = c
         .sessions
@@ -87,13 +91,11 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         .unwrap()
         .id
         .clone();
-    let loaded = material::signing(&material)?;
-    let state = material::state(&c, registration.clone(), loaded.clone(), &material)?;
-    let server = material.listen(state).await?;
-    transport::bounded_connections(&material, &server, c.tenant).await?;
+    let device_base = format!("{device_origin}/api/v1/da");
+    let base = device_base.as_str();
+    transport::bounded_connections(&material, base, c.tenant).await?;
     let client = material.client(None)?;
-    let base = &server.origin;
-    let management = material::management_base(base, c.tenant);
+    let management = c.management_base();
     let address = base
         .trim_start_matches("https://")
         .split('/')
@@ -278,7 +280,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         delivery: da::DeliveryPermission::Da,
         lifetime_seconds: 600,
     };
-    configuration::concurrent_export(&c, &client, base, &token, &proof, &export).await?;
+    configuration::concurrent_export(&c, &client, &token, &proof, &export).await?;
     let signed: da::SignedConfiguration = material::success(
         client
             .post(format!("{management}/configurations"))
@@ -500,8 +502,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         &material,
         &receipt,
         &client,
-        &server.origin,
-        &installed_host.runtime_file,
+        base,
     ))
     .await
     .context("DA business owner proof")?;
@@ -611,7 +612,8 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         "revoked DA registration cannot access the PSSO channel"
     );
 
-    server.shutdown().await?;
+    stop.send(()).map_err(|_| anyhow::anyhow!("DA host stopped early"))?;
+    tokio::time::timeout(Duration::from_secs(50), running).await???;
     c.close().await;
 
     Box::pin(recovery::verify(&c.inputs, &material, installed_host))
@@ -630,7 +632,7 @@ async fn unknown_recovery(
     old_export: Uuid,
     old_device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<()> {
-    let management = material::management_base(base, c.tenant);
+    let management = c.management_base();
     use base64::{Engine, engine::general_purpose::STANDARD};
     use rss_mdm_agent_wire::{da, enroll};
     let grant_request = da::GrantRequest {

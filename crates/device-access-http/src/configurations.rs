@@ -1,6 +1,6 @@
 //! Device reports and management reads share the production query declarations.
 use crate::business_error::Error as BusinessError;
-use crate::{Body, Error, Services, body, boundary::Administrator, peer};
+use crate::{Body, Error, Services, body, peer};
 use axum::{
     Extension, Json,
     extract::{Path, State},
@@ -66,8 +66,8 @@ fn service(s: &Services) -> Result<&crate::Business, BusinessError> {
     s.business.as_deref().ok_or(BusinessError::Unavailable)
 }
 pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
-    rss_mdm_http_contract::route_module! {struct Configurations for [Da]{status,application,current,list,detail,versions,latest,history,diagnostics,publication_operation}}
-    Configurations {
+    rss_mdm_http_contract::route_module! {struct DeviceReports for [Da] {status, application, current}}
+    DeviceReports {
         status: Route::new(
             "/api/v1/da/status-reports",
             post(status, &crate::PROTOCOL, &[Operation::Action]),
@@ -80,6 +80,12 @@ pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Dec
             "/api/v1/da/configuration",
             get(current, &crate::PROTOCOL, &[Operation::Action]),
         ),
+    }
+    .assemble().layer(axum::extract::DefaultBodyLimit::max(65536))
+}
+pub(crate) fn management() -> Router<Arc<crate::management::Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    rss_mdm_http_contract::route_module! {struct ConfigurationQueries for [Browser] {list, detail, versions, publication_operation, diagnostics, latest, history}}
+    ConfigurationQueries {
         list: Route::new(
             "/api/v1/tenants/{tenant}/da/admin/configurations",
             get(list, &catalog::DA_CONFIGURATIONS, &[Operation::List]),
@@ -122,7 +128,6 @@ pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Dec
         ),
     }
     .assemble()
-    .layer(axum::extract::DefaultBodyLimit::max(65536))
 }
 async fn status(
     State(s): State<Arc<Services>>,
@@ -173,8 +178,8 @@ async fn current(
 }
 async fn list(
     Path(_tenant): Path<Uuid>,
-    State(s): State<Arc<Services>>,
-    Administrator(p): Administrator,
+    State(s): State<Arc<crate::management::Services>>,
+    Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
     q: OwnedQuery<Directory>,
 ) -> Result<
     CollectionResponse<
@@ -197,31 +202,29 @@ async fn list(
         })
         .transpose()?;
     Ok(CollectionResponse(Json(
-        service(&s)?
-            .service
-            .configurations(&p, device.as_ref(), &q)
+        s.business
+            .configurations(&auth.proof, device.as_ref(), &q)
             .await?,
     )))
 }
 async fn detail(
-    State(s): State<Arc<Services>>,
-    Administrator(p): Administrator,
+    State(s): State<Arc<crate::management::Services>>,
+    Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
     Path((_tenant, id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<rss_mdm_policy_postgres::device_access::Publication>, BusinessError> {
-    Ok(Json(service(&s)?.service.configuration(&p, id).await?))
+    Ok(Json(s.business.configuration(&auth.proof, id).await?))
 }
 async fn versions(
-    State(s): State<Arc<Services>>,
-    Administrator(p): Administrator,
+    State(s): State<Arc<crate::management::Services>>,
+    Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
     Path((_tenant, id)): Path<(Uuid, Uuid)>,
     q: OwnedQuery<Window<Versions>>,
 ) -> Result<CollectionResponse<Json<config::ConfigurationPage>>, BusinessError> {
     let (q, _) = q.parse()?;
     Ok(CollectionResponse(Json(
-        service(&s)?
-            .service
+        s.business
             .configuration_history(
-                &p,
+                &auth.proof,
                 id,
                 &config::DirectoryQuery {
                     cursor: q.cursor().clone(),
@@ -232,20 +235,19 @@ async fn versions(
     )))
 }
 async fn latest(
-    State(s): State<Arc<Services>>,
-    Administrator(p): Administrator,
+    State(s): State<Arc<crate::management::Services>>,
+    Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
     Path((_tenant, device)): Path<(Uuid, rss_mdm_agent_wire::DeviceId)>,
 ) -> Result<Json<Option<reports::View>>, BusinessError> {
     Ok(Json(
-        service(&s)?
-            .service
-            .latest_report(&p, &device, reports::Kind::Status)
+        s.business
+            .latest_report(&auth.proof, &device, reports::Kind::Status)
             .await?,
     ))
 }
 async fn history(
-    State(s): State<Arc<Services>>,
-    Administrator(p): Administrator,
+    State(s): State<Arc<crate::management::Services>>,
+    Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
     Path((_tenant, device)): Path<(Uuid, rss_mdm_agent_wire::DeviceId)>,
     q: OwnedQuery<Window<Reports>>,
 ) -> Result<CollectionResponse<Json<reports::Page>>, BusinessError> {
@@ -256,10 +258,9 @@ async fn history(
         _ => return Err(BusinessError::Malformed),
     };
     Ok(CollectionResponse(Json(
-        service(&s)?
-            .service
+        s.business
             .report_history(
-                &p,
+                &auth.proof,
                 &device,
                 &reports::Query {
                     kind,
@@ -272,24 +273,24 @@ async fn history(
 }
 
 async fn diagnostics(
-    State(s): State<Arc<Services>>,
-    Administrator(p): Administrator,
+    State(s): State<Arc<crate::management::Services>>,
+    Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
     Path((_tenant, device)): Path<(Uuid, rss_mdm_agent_wire::DeviceId)>,
 ) -> Result<Json<config::Diagnostics>, BusinessError> {
-    let b = service(&s)?;
+    
     Ok(Json(
-        b.service
-            .configuration_diagnostics(&s.configurations, &b.evidence, &p, &device)
+        s.business
+            .configuration_diagnostics(&s.configurations, &s.evidence, &auth.proof, &device)
             .await?,
     ))
 }
 
 async fn publication_operation(
-    State(s): State<Arc<Services>>,
-    Administrator(p): Administrator,
+    State(s): State<Arc<crate::management::Services>>,
+    Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
     Path((_tenant, id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<rss_mdm_policy_postgres::device_access::Publication>, BusinessError> {
     Ok(Json(
-        service(&s)?.service.publication_operation(&p, id).await?,
+        s.business.publication_operation(&auth.proof, id).await?,
     ))
 }

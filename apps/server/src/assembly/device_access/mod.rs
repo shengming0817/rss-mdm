@@ -329,8 +329,21 @@ pub(crate) fn browser(
             .bind_with(diagnostics.as_ref(), Arc::clone),
     }
     .assemble();
-    rss_mdm_http_contract::route_module! {struct DaProtected for [Browser]{access at "/api/v1/tenants/{tenant}",platform}}
+    rss_mdm_http_contract::route_module! {struct DaProtected for [Browser]{access at "/api/v1/tenants/{tenant}",platform,registration [optional]}}
+    let registration = state.and_then(|s| {
+        let da = s.da.as_ref()?;
+        Some(Arc::new(http::management::Services {
+            registrations: da.runtime.registrations.clone()?,
+            configurations: da.runtime.configurations.clone()?,
+            business: da.runtime.business.clone(),
+            evidence: da.runtime.admission.evidence.clone(),
+            platform: psso.clone()?,
+        }))
+    });
     let protected = DaProtected {
+        registration: http::management::routes()
+            .bind_with(registration.as_ref(), Arc::clone)
+            .when("device_access_registration", state.is_none() || registration.is_some()),
         access,
         platform: http::platform_sso::management_routes().bind_with(psso.as_ref(), Arc::clone),
     }

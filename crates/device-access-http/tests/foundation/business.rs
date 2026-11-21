@@ -19,7 +19,7 @@ pub(super) fn key() -> Ed25519KeyPair {
 pub(super) fn authority_id() -> Uuid {
     Uuid::from_u128(0x229df54fe9804bc1aa8f006c14890c15)
 }
-fn authorities() -> Result<Arc<pg::evidence::Authorities>> {
+pub(super) fn authorities() -> Result<Arc<pg::evidence::Authorities>> {
     Ok(Arc::new(pg::evidence::Authorities::new(vec![
         pg::evidence::Authority {
             id: authority_id(),
@@ -52,7 +52,7 @@ pub fn assemble(
             proof_audit: c.proof_audit.clone(),
             cursor: rss_mdm_query::cursor::CursorCodec::new(&[37; 32])?,
             protection: m.protection.clone(),
-            platform: Some(super::platform::runtime()?),
+            platform: Some(super::platform::runtime(&m.directory,&c.browser_origin)?),
             evidence: evidence.clone(),
             broker_query: None,
             agent_facts: None,
@@ -67,7 +67,7 @@ pub fn assemble(
         platform: Arc::new(rss_mdm_device_access_http::platform_sso::HttpState {
             context: runtime.platform,
             authority: c.authority.clone(),
-            origin: "https://localhost".into(),
+            origin: c.browser_origin.clone(),
         }),
     });
     anyhow::ensure!(
@@ -134,7 +134,6 @@ pub async fn verify(
     receipt: &da::Registration,
     client: &reqwest::Client,
     base: &str,
-    browser_configuration: &std::path::Path,
 ) -> Result<()> {
     use rss_mdm_policy_postgres::device_access::{Publication, Target};
     let business = assemble(c, m)?;
@@ -284,7 +283,6 @@ pub async fn verify(
     directory_http(
         c,
         m,
-        browser_configuration,
         &session_secret,
         &receipt.device,
         binding,
@@ -536,7 +534,7 @@ pub(super) async fn operation_proof(
     context: rss_identity_core::step_up::StepUpContext,
 ) -> Result<wire::Secret> {
     use webauthn_authenticator_rs::{WebauthnAuthenticator, softpasskey::SoftPasskey};
-    let origin = url::Url::parse(c.browser_origin.get().expect("initialized host origin"))?;
+    let origin = url::Url::parse(&c.browser_origin)?;
     let webauthn = rss_identity_postgres::WebauthnAuthority::new(
         c.authority.clone(),
         "localhost".into(),
@@ -603,40 +601,12 @@ pub(super) async fn operation_proof(
 async fn directory_http(
     c: &Context,
     m: &material::Material,
-    configuration: &std::path::Path,
     secret: &SessionSecret,
     device: &rss_mdm_agent_wire::DeviceId,
     binding: Uuid,
 ) -> Result<()> {
-    let origin = c.browser_origin.get().context("browser listener origin")?;
-    let config = rss_da_app::config::load(configuration)?;
-    let (stop, stopped) = tokio::sync::oneshot::channel();
-    let mut running = tokio::spawn(rss_da_app::host::serve(config, async move {
-        stopped.await.map_err(std::io::Error::other)
-    }));
-    let result = async {
-        let client = m.client(None)?;
-        tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                if running.is_finished() {
-                    anyhow::bail!("browser host stopped before directory proof");
-                }
-                if client
-                    .get(format!(
-                        "{origin}/api/v1/identity/tenants/{}/session",
-                        c.tenant
-                    ))
-                    .send()
-                    .await
-                    .is_ok()
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            Ok::<_, anyhow::Error>(())
-        })
-        .await??;
+    let origin = &c.browser_origin;
+    let client = m.client(None)?;
         let page = material::success::<serde_json::Value>(
             client
                 .get(format!(
@@ -707,16 +677,5 @@ async fn directory_http(
         );
         assert_eq!(page["items"][0]["id"], "rp:directory-target");
 
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-    let _ = stop.send(());
-    let stopped = tokio::time::timeout(Duration::from_secs(50), &mut running).await;
-    if stopped.is_err() {
-        running.abort();
-        let _ = running.await;
-        anyhow::bail!("browser directory host drain timed out");
-    }
-    stopped.unwrap()??;
-    result
+    Ok(())
 }

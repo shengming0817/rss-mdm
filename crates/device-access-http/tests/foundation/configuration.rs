@@ -7,12 +7,11 @@ use rss_mdm_policy_postgres::device_access as policy;
 pub async fn concurrent_export(
     c: &Context,
     client: &reqwest::Client,
-    base: &str,
     token: &str,
     principal: &AuthorizedPrincipal,
     export: &da::Export,
 ) -> Result<()> {
-    let management = material::management_base(base, c.tenant);
+    let management = c.management_base();
     let mut tx = c.seed().await?;
     rss_mdm_authorization_service::lock_on(
         principal.authority_profile(),
@@ -209,7 +208,7 @@ pub async fn verify_sources(
     observation: &mut rss_mdm_device_access::deployment::Observation,
     ordinary: &da::SignedConfiguration,
 ) -> Result<()> {
-    let management = material::management_base(base, c.tenant);
+    let management = c.management_base();
     use rss_mdm_agent_wire::runtime::AccessWindowsConfiguration;
     use rss_mdm_device_access::deployment::ConfigurationDeployment;
     use rss_mdm_device_access_postgres::configuration::Change;
