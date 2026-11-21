@@ -353,6 +353,8 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     assert_eq!(
         client
             .post(format!("{management}/configurations"))
+            .header("origin", &c.browser_origin)
+            .header("x-identity-request", "1")
             .json(&export)
             .send()
             .await?

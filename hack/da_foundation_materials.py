@@ -21,7 +21,8 @@ def decode(value):
 def main():
     directory = Path(sys.argv[1])
     directory.mkdir(mode=0o700)
-    root = prepare(directory)
+    # The production registrar issues one-year leaves within the issuer validity window.
+    root = prepare(directory, ca_days=730)
     (directory / 'provider.pk8').write_bytes(run('pkcs8', '-topk8', '-nocrypt', '-outform', 'DER', '-in', root / 'ca.key'))
     (directory / 'provider.pub').write_bytes(run('pkey', '-in', root / 'ca.key', '-pubout'))
     server_ext = directory / 'server.conf'

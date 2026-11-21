@@ -39,12 +39,20 @@ pub(crate) async fn read(
         .map_err(error)?;
     let after = q.after(codec, &binding).map_err(error)?;
     let mut sql = sqlx::QueryBuilder::new(crate::storage_profile::sql(profile).directory_read_1);
-    sql.push_bind(p.tenant_id().to_owned())
-        .push("::uuid AND ((e.subject->>'kind'<>'filevault' AND e.device=")
-        .push_bind(device.into_uuid())
-        .push(crate::storage_profile::sql(profile).directory_read_2)
-        .push_bind(device.into_uuid())
-        .push("))");
+    sql.push_bind(p.tenant_id().to_owned()).push("::uuid AND ");
+    match profile {
+        rss_mdm_install_support::StorageProfile::Da => {
+            sql.push("e.subject->>'kind'='rss_login' AND e.device=")
+                .push_bind(device.into_uuid());
+        }
+        rss_mdm_install_support::StorageProfile::Mdm => {
+            sql.push("((e.subject->>'kind'<>'filevault' AND e.device=")
+                .push_bind(device.into_uuid())
+                .push(") OR mdm_recovery.filevault_accessible(e.subject,")
+                .push_bind(device.into_uuid())
+                .push("))");
+        }
+    }
     rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*BINDINGS).map_err(error)?;
     let rows: Vec<Value> = sql.build_query_scalar().fetch_all(&mut *c).await?;
     let rows = rows

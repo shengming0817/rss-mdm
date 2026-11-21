@@ -102,15 +102,17 @@ impl Material {
     }
 }
 pub async fn success<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T> {
+    let path = response.url().path().to_owned();
     let status = response.status();
     let text = response.text().await?;
-    anyhow::ensure!(status.is_success(), "HTTP {status}: {text}");
+    anyhow::ensure!(status.is_success(), "{path} returned HTTP {status}: {text}");
     Ok(serde_json::from_str(&text)?)
 }
 pub async fn empty(response: reqwest::Response) -> Result<()> {
+    let path = response.url().path().to_owned();
     let status = response.status();
     let text = response.text().await?;
-    anyhow::ensure!(status.is_success(), "HTTP {status}: {text}");
+    anyhow::ensure!(status.is_success(), "{path} returned HTTP {status}: {text}");
     Ok(())
 }
 pub fn verify(signed: &da::SignedConfiguration, trust: &da::ConfigurationTrust) -> Result<()> {

@@ -4,7 +4,7 @@ use rss_mdm_agent_wire::runtime as w;
 #[tokio::test]
 #[ignore = "T2: explicit DA delivery authorization and RSS material custody across distinct real endpoints"]
 async fn access_binding_requires_current_device_authority() -> Result<()> {
-    let c = Context::open("shared", &[]).await?;
+    let c = Context::open("da_embedded", &[]).await?;
     let (device, grant) = material::seed_registration(&c).await?;
     let p = material::authenticated_agent(
         &c,
@@ -109,7 +109,7 @@ async fn delivery_lifecycle(
         .bind(serde_json::to_value(meta)?).bind(fingerprint)
         .bind(serde_json::json!({"kind":"da_device","receipt":receipt})).bind(credential).execute(&mut *tx).await?;
     tx.commit().await?;
-    let da_pool = c.inputs.pool("shared", "da_access").await?;
+    let da_pool = c.inputs.pool(&c.profile, "da_access").await?;
     let mut tx = da_pool.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(tenant.to_string())
@@ -198,7 +198,8 @@ async fn embedded_status(
     let denied = cookie(&denied)?;
     let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
     let mut config =
-        crate::host_t2_support::configuration(&c.inputs, "shared", address, Uuid::new_v4()).await?;
+        crate::host_t2_support::configuration(&c.inputs, &c.profile, address, Uuid::new_v4())
+            .await?;
     let provider = provider::Provider::new(&c.inputs.directory).await?;
     let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
     let origin = format!("https://localhost:{}", address.port());
@@ -382,11 +383,12 @@ async fn lifecycle_http(
     Ok(())
 }
 async fn read_response<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T> {
+    let path = response.url().path().to_owned();
     let status = response.status();
     let body = response.text().await?;
     anyhow::ensure!(
         status.is_success(),
-        "embedded registration {status}: {body}"
+        "embedded {path} returned {status}: {body}"
     );
     Ok(serde_json::from_str(&body)?)
 }
