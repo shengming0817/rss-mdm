@@ -16,7 +16,7 @@ pub(crate) async fn assemble(
     probe: rss_transactional_messaging::fence::ExecutionBinding,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
     recovery: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
-    reconcile: rss_reconcile_postgres::PgStore,
+    reconcile: rss_mdm_work_page::scheduler::Scheduler,
     budget: Arc<rss_mdm_work_page::capacity::Capacity>,
     enabled: bool,
 ) -> Result<Assembly, crate::Error> {

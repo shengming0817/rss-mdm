@@ -1,9 +1,9 @@
 //! One host-owned scheduling pool shared by independently registered business workers.
-use rss_reconcile_postgres::PgStore;
+use rss_mdm_work_page::scheduler::Scheduler;
 use std::time::Duration;
 #[derive(Clone)]
 pub(crate) struct SchedulerStorage {
-    pub(crate) store: PgStore,
+    pub(crate) store: Scheduler,
 }
 impl SchedulerStorage {
     pub(crate) async fn open(
@@ -18,7 +18,7 @@ impl SchedulerStorage {
         let timer = rss_mdm_policy_service::clock::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-        match PgStore::new(pool.clone(), &control).await {
+        match Scheduler::new(pool.clone(), &control).await {
             Ok(store) => Ok(Self { store }),
             Err(_) => {
                 pool.close().await;

@@ -56,7 +56,7 @@ pub(super) fn protection(c: &Context, active: &str) -> Result<Arc<recovery::Prot
 }
 struct Owners {
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    maintenance: recovery::maintenance::Maintenance,
+    maintenance: Arc<recovery::maintenance::Maintenance>,
 }
 impl Owners {
     async fn open(
@@ -107,7 +107,7 @@ impl Owners {
         );
         Ok(Self {
             runtime,
-            maintenance,
+            maintenance: Arc::new(maintenance),
         })
     }
     async fn close(self) {

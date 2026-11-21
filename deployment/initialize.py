@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 from render_gateway import origin
 
 
@@ -78,14 +79,19 @@ def run():
     path = root/'installation-input.json'
     if path.exists() and json.loads(path.read_text()) != config:
         raise ValueError('initialization input changed')
-    path.write_text(json.dumps(config))
-    path.chmod(0o600)
-    os.chown(path,10001,10001)
     os.setgroups([])
     os.setgid(10001)
     os.setuid(10001)
     binary = '/usr/local/bin/rss-mdm-installer'
-    receipt = subprocess.check_output([binary, 'install', '--config', str(path)])
+    # The Rust journal seals accepted inputs. Publish the replay file atomically after admission.
+    with tempfile.NamedTemporaryFile(mode='w', dir=root, delete=False) as pending:
+        json.dump(config, pending)
+    staged = Path(pending.name)
+    try:
+        receipt = subprocess.check_output([binary, 'install', '--config', str(staged)])
+        staged.replace(path)
+    finally:
+        staged.unlink(missing_ok=True)
     if ca_request:
         subprocess.run([binary, 'initialize-ca', '--config', str(ca_request)], check=True, stdout=subprocess.DEVNULL)
     from render_gateway import render

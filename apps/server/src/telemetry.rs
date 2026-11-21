@@ -461,7 +461,10 @@ pub(crate) fn registration(
     service: Arc<Service>,
     relay_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
 ) -> rss_runtime::ManagedTaskRegistration {
-    let (task, _) = rss_runtime::ManagedTask::prepare("telemetry-relay", Duration::from_secs(15));
+    let (task, _) = rss_runtime::ManagedTask::prepare(
+        "telemetry-relay",
+        rss_mdm_telemetry_service::WORKER_DRAIN,
+    );
     task.into_registration(move |cancel| async move {
         service
             .run(relay_runtime, cancel)

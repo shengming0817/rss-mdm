@@ -161,6 +161,14 @@ mod tests {
         drop(slots);
     }
     #[tokio::test]
+    async fn two_slots_allow_one_item_per_tenant() {
+        let budget = Capacity::new(NonZeroUsize::new(2).unwrap());
+        let stop = CancellationToken::new();
+        let first = budget.acquire(Uuid::from_u128(1), 8, &stop).await;
+        let peer = budget.acquire(Uuid::from_u128(2), 8, &stop).await;
+        assert_eq!((first.len(), peer.len()), (1, 1));
+    }
+    #[tokio::test]
     async fn capacity_one_serializes_all_registrations() {
         let budget = Capacity::new(NonZeroUsize::MIN);
         let stop = CancellationToken::new();

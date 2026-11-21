@@ -349,6 +349,12 @@ async fn verify_owner(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
 
 pub mod profile_validation;
 
+const RELAY_STAGE: std::time::Duration = std::time::Duration::from_secs(10);
+/// One claim, lease check, extension, publish and settlement, plus scheduling margin.
+pub const WORKER_DRAIN: std::time::Duration = RELAY_STAGE
+    .saturating_mul(5)
+    .saturating_add(std::time::Duration::from_secs(1));
+
 /// Process-wide slots for the telemetry relay.
 pub const RELAY_CONCURRENCY: u32 = 2;
 /// Independent tenants admitted to periodic maintenance.

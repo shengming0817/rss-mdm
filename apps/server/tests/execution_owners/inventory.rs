@@ -436,8 +436,9 @@ async fn report_and_projection_progress_while_a_peer_is_blocked() -> anyhow::Res
     use rss_mdm_inventory_service::inventory_runtime as rt;
     let a = Harness::open().await?;
     let b = Harness::open().await?;
+    let mut original = Some(tenant_report(&a, true).await?);
     for initial in [true, false] {
-        let (slow, object, batch) = tenant_report(&a, initial).await?;
+        let (slow, object, batch) = original.take().expect("persisted report");
         if initial {
             sqlx::query("INSERT INTO rss_observation.objects(tenant_id,object_id,revision) VALUES($1::uuid,$2,0) ON CONFLICT DO NOTHING").bind(a.c.tenant.to_string()).bind(&object).execute(&a.c.operator).await?;
         }
@@ -457,7 +458,8 @@ async fn report_and_projection_progress_while_a_peer_is_blocked() -> anyhow::Res
             .fetch_one(&mut *held)
             .await?;
         let mut policy = a.a.resources.config.inventory_runtime.clone();
-        policy.pass_seconds = 20;
+        policy.pass_seconds = 10;
+        policy.drain_seconds = 17;
         let clock = rt::Clock::new(crate::clock::monotonic(), policy.compile()?);
         let stop = tokio_util::sync::CancellationToken::new();
         let control = rss_projection::Control::new(&clock, clock.startup_cutoff(), &stop);
@@ -505,10 +507,31 @@ async fn report_and_projection_progress_while_a_peer_is_blocked() -> anyhow::Res
         }.await;
         held.rollback().await?;
         notify.notify_one();
-        let recovered = report_committed(&a, slow, &batch).await;
-        anyhow::ensure!(stack.shutdown().join().await?.is_clean());
         check?;
-        recovered?;
+        report_committed(&a, slow, &batch).await?;
+        if initial {
+            let mut gate = a.c.operator.begin().await?;
+            let pid = sqlx::query_scalar("SELECT pg_backend_pid() FROM rss_observation.objects WHERE tenant_id=$1::uuid AND object_id=$2 FOR UPDATE")
+                .bind(a.c.tenant.to_string()).bind(&object).fetch_one(&mut *gate).await?;
+            let accepted = tenant_report(&a, false).await?;
+            notify.notify_one();
+            wait_for_blocked_attempt(&a.c.operator, pid, "").await?;
+            anyhow::ensure!(stack.shutdown().join().await?.is_clean());
+            anyhow::ensure!(sqlx::query_scalar::<_, bool>("SELECT delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(a.c.tenant.to_string()).bind(accepted.0).fetch_one(&a.c.operator).await?, "original report must survive shutdown unacknowledged");
+            gate.rollback().await?;
+            original = Some(accepted);
+        } else {
+            anyhow::ensure!(stack.shutdown().join().await?.is_clean());
+            let effects: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM mdm.inventory WHERE tenant_id=$1::uuid AND batch_id=$2",
+            )
+            .bind(a.c.tenant.to_string())
+            .bind(&batch)
+            .fetch_one(&a.c.operator)
+            .await?;
+            anyhow::ensure!(effects == 1, "one projection of the original report");
+        }
     }
     b.close().await?;
     a.close().await

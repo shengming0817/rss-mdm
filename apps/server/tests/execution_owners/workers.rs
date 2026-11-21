@@ -98,9 +98,11 @@ async fn first_page(
     let force = CancellationToken::new();
     let stop = CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &force);
-    let store =
-        rss_reconcile_postgres::PgStore::new(h.a.resources.storage.read_pool.clone(), &control)
-            .await?;
+    let store = rss_mdm_work_page::scheduler::Scheduler::new(
+        h.a.resources.storage.read_pool.clone(),
+        &control,
+    )
+    .await?;
     let scope = if collection {
         collection::wake::scope(h.c.tenant)
     } else {
@@ -186,9 +188,11 @@ async fn resume(
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-    let store =
-        rss_reconcile_postgres::PgStore::new(h.a.resources.storage.read_pool.clone(), &control)
-            .await?;
+    let store = rss_mdm_work_page::scheduler::Scheduler::new(
+        h.a.resources.storage.read_pool.clone(),
+        &control,
+    )
+    .await?;
     assert!(
         store
             .claim_due(scope, 64, 64, Duration::from_secs(30), &control)
@@ -234,9 +238,11 @@ async fn drain_native(h: &Harness, task: Uuid) -> Result<()> {
     let cancel = CancellationToken::new();
     let stop = CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &cancel);
-    let store =
-        rss_reconcile_postgres::PgStore::new(h.a.resources.storage.read_pool.clone(), &control)
-            .await?;
+    let store = rss_mdm_work_page::scheduler::Scheduler::new(
+        h.a.resources.storage.read_pool.clone(),
+        &control,
+    )
+    .await?;
     let scope = collection::wake::scope(h.c.tenant);
     let target = rss_reconcile::Target::new(scope.clone(), format!("run:{task}"))?;
     store
@@ -356,7 +362,7 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-    let store = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
+    let store = rss_mdm_work_page::scheduler::Scheduler::new(pool.clone(), &control).await?;
     let worker = script::worker::Worker::new(
         h.c.database.archive_pool(),
         h.c.execution().storage(),
@@ -507,7 +513,7 @@ async fn recoverable_batch_scan_failure_does_not_stop_other_tenants() -> Result<
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let force = CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &force);
-    let store = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
+    let store = rss_mdm_work_page::scheduler::Scheduler::new(pool.clone(), &control).await?;
     let worker = Arc::new(script::worker::Worker::new(
         h.c.database.archive_pool(),
         h.c.execution().storage(),
@@ -949,3 +955,169 @@ recovery_isolation!(
     da_credentials_recovery_commits_during_a_peer_business_lock,
     TaskOwner::Credentials(rss_mdm_install_support::StorageProfile::Da)
 );
+
+fn start_owner(
+    registration: rss_runtime::ManagedTaskRegistration,
+) -> Result<rss_runtime::ShutdownStack> {
+    let mut stack = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut start = stack.startup()?.commit();
+    start.stage_task_with_token(registration);
+    start.finish();
+    Ok(stack)
+}
+
+#[tokio::test]
+#[ignore = "T2: Script and Collection share eight execution slots, refill a single freed slot, and stop claiming on shutdown"]
+async fn registered_owners_share_capacity_and_drain() -> Result<()> {
+    use crate::authority_t2_support::{blocked_attempt, wait_for_blocked_attempt};
+    let a = Harness::open().await?;
+    let b = Harness::open().await?;
+    let config = &a.a.resources.background;
+    let width = config.tasks.concurrency();
+    anyhow::ensure!(width == 8);
+    for _ in 1..width {
+        TaskOwner::Script.seed(&a).await?;
+    }
+    for _ in 0..2 {
+        TaskOwner::Collection.seed(&b).await?;
+    }
+    let mut held = a.c.operator.begin().await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_script.policy_recovery WHERE tenant_id=$1::uuid FOR UPDATE")
+        .bind(a.c.tenant.to_string()).fetch_all(&mut *held).await?[0];
+    let mut peer = b.c.operator.begin().await?;
+    let peer_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_inventory.collection_policy_recovery WHERE tenant_id=$1::uuid FOR UPDATE")
+        .bind(b.c.tenant.to_string()).fetch_all(&mut *peer).await?[0];
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let script = start_owner(a.a.script_work.clone().registration(
+        config.tasks,
+        config.tasks_drain,
+        notify.clone(),
+    ))?;
+    let counts = || {
+        sqlx::query_as::<_,(i64,i64)>("SELECT count(*) FILTER(WHERE tenant_id=$1::uuid AND reconciler=$3), count(*) FILTER(WHERE tenant_id=$2::uuid AND reconciler=$4) FROM rss_reconcile.targets WHERE token IS NOT NULL")
+        .bind(a.c.tenant.to_string()).bind(b.c.tenant.to_string()).bind(script::wake::scope(a.c.tenant).reconciler().to_owned())
+        .bind(collection::wake::scope(b.c.tenant).reconciler().to_owned()).fetch_one(&a.c.operator)
+    };
+    let attempt = wait_for_blocked_attempt(&a.c.operator, pid, TaskOwner::Script.table()).await?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while counts().await?.0 != 7 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
+    let collection = start_owner(a.a.collection_work.clone().registration(
+        config.tasks,
+        config.tasks_drain,
+        Arc::default(),
+    ))?;
+    wait_for_blocked_attempt(&b.c.operator, peer_pid, TaskOwner::Collection.table()).await?;
+    let peak = counts().await?;
+    anyhow::ensure!(peak == (7, 1), "observed shared execution peak {peak:?}");
+    eprintln!(
+        "shared execution peak: Script {} + Collection {}",
+        peak.0, peak.1
+    );
+    peer.rollback().await?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let done: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_inventory.collection_policy_recovery WHERE tenant_id=$1::uuid AND input_consumed=input_revision AND runs_done")
+                .bind(b.c.tenant.to_string()).fetch_one(&b.c.operator).await?;
+            if done == 2 { return Ok::<_,anyhow::Error>(()); }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await??;
+    anyhow::ensure!(
+        blocked_attempt(&a.c.operator, pid, TaskOwner::Script.table()).await? == Some(attempt)
+    );
+    let drain = script.shutdown();
+    let late = TaskOwner::Script.seed(&b).await?;
+    notify.notify_one();
+    held.rollback().await?;
+    anyhow::ensure!(drain.join().await?.is_clean());
+    let late_epoch: i64 = sqlx::query_scalar("SELECT epoch FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity=$3")
+        .bind(b.c.tenant.to_string()).bind(script::wake::scope(b.c.tenant).reconciler()).bind(format!("policy:{late}")).fetch_one(&b.c.operator).await?;
+    anyhow::ensure!(late_epoch == 0, "new rows stay unclaimed after stop");
+    let drained: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_script.policy_recovery WHERE tenant_id=$1::uuid AND input_consumed=input_revision AND runs_done")
+        .bind(a.c.tenant.to_string()).fetch_one(&a.c.operator).await?;
+    anyhow::ensure!(drained == 7);
+    anyhow::ensure!(collection.shutdown().join().await?.is_clean());
+    b.close().await?;
+    a.close().await
+}
+
+#[tokio::test]
+#[ignore = "T2: two slow settlements from A leave a real PostgreSQL scheduler connection for B"]
+async fn scheduler_connections_remain_available_to_a_late_tenant() -> Result<()> {
+    use crate::authority_t2_support::{blocked_attempt, wait_for_blocked_attempt};
+    use rss_reconcile::{Completion, ResourceSet, Scope, Target};
+    let a = Harness::open().await?;
+    let b = Context::open("shared", &[]).await?;
+    let store = a.a.resources.storage.reconcile.clone();
+    anyhow::ensure!(
+        a.a.resources
+            .storage
+            .read_pool
+            .options()
+            .get_max_connections()
+            == 2
+    );
+    let timer = rss_mdm_policy_service::clock::Timer::new();
+    let stop = CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &stop);
+    let scope_a = Scope::new(a.c.tenant, "mdm.test-3210")?;
+    let scope_b = Scope::new(b.tenant, "mdm.test-3210")?;
+    for (scope, id) in [(&scope_a, "one"), (&scope_a, "two"), (&scope_b, "peer")] {
+        store
+            .wake(
+                &Target::new(scope.clone(), id)?,
+                &ResourceSet::empty(scope.tenant()),
+                &control,
+            )
+            .await?;
+    }
+    let leases = store
+        .claim_due(&scope_a, 2, 64, Duration::from_secs(30), &control)
+        .await?
+        .claims;
+    anyhow::ensure!(leases.len() == 2);
+    let mut held = a.c.operator.begin().await?;
+    let pids:Vec<i32> = sqlx::query_scalar("SELECT pg_backend_pid() FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 FOR UPDATE")
+        .bind(a.c.tenant.to_string()).bind(scope_a.reconciler()).fetch_all(&mut *held).await?;
+    let first = store.finish(&leases[0], Completion::Converged, &control);
+    let second = store.finish(&leases[1], Completion::Converged, &control);
+    let verify = async {
+        let original = wait_for_blocked_attempt(&a.c.operator, pids[0], "").await?;
+        let claim = store
+            .claim_due(&scope_b, 1, 64, Duration::from_secs(30), &control)
+            .await?
+            .claims
+            .pop()
+            .expect("peer claim");
+        store
+            .finish(&claim, Completion::Converged, &control)
+            .await?;
+        anyhow::ensure!(blocked_attempt(&a.c.operator, pids[0], "").await? == Some(original));
+        let blocked: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
+        )
+        .bind(pids[0])
+        .fetch_one(&a.c.operator)
+        .await?;
+        anyhow::ensure!(
+            blocked == 1,
+            "one A settlement waits outside the physical pool"
+        );
+        held.rollback().await?;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (one, two, checked) = tokio::join!(first, second, verify);
+    checked?;
+    one?;
+    two?;
+    b.close().await;
+    a.close().await
+}

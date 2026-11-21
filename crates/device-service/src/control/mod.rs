@@ -64,7 +64,7 @@ pub struct Service {
     pub(crate) worker_budget: Arc<rss_mdm_work_page::capacity::Capacity>,
     pub(crate) recovery_batch: rss_device_command::BatchLimit,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
-    pub(crate) reconcile: rss_reconcile_postgres::PgStore,
+    pub(crate) reconcile: rss_mdm_work_page::scheduler::Scheduler,
     pub(crate) readiness: rss_mdm_recovery_observation::Readiness,
 
     pub(crate) transactions: transactions::Transactions,
@@ -90,7 +90,7 @@ pub struct Dependencies {
     pub runtime: Arc<PgRuntime>,
     pub outbox: Arc<PgOutboxStore<()>>,
     pub store: rss_device_command_postgres::PgStore<()>,
-    pub reconcile: rss_reconcile_postgres::PgStore,
+    pub reconcile: rss_mdm_work_page::scheduler::Scheduler,
     pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     pub probe: rss_transactional_messaging::fence::ExecutionBinding,
     pub instance: String,

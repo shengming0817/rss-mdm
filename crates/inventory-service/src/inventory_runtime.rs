@@ -49,9 +49,10 @@ impl Policy {
         batch: u32,
         events: u64,
     ) -> Result<Self, Error> {
-        if [startup, pass, drain]
-            .iter()
-            .any(|v| v.is_zero() || v.as_millis() > i64::MAX as u128)
+        if pass > drain
+            || [startup, pass, drain]
+                .iter()
+                .any(|v| v.is_zero() || v.as_millis() > i64::MAX as u128)
         {
             return Err(Error::Malformed);
         }
@@ -594,11 +595,13 @@ impl InventoryRuntime {
         // A new projection operation may consume already committed facts from an older
         // execution. Its authorization does not rebind any unfinished collection run.
         let current = ExecutionBinding::new(self.storage, tenant_id, self.expected_epoch);
-        let guard = self
-            .delivery
-            .execution(current)
-            .await
-            .map_err(|_| WorkerFailure::ReportAuthority)?;
+        let guard = tokio::select! { biased;
+            () = token.cancelled() => return Ok(()),
+            guard = self.delivery.execution(current) => guard.map_err(|_| WorkerFailure::ReportAuthority)?,
+        };
+        if token.is_cancelled() {
+            return Ok(());
+        }
         let drain = CancellationToken::new();
         // Discovery groups all epochs of a tenant together. Keep the first claim
         // for the lifetime of this registration, including after a fence.
@@ -611,7 +614,7 @@ impl InventoryRuntime {
         let handles = match cached {
             Some(handles) => handles,
             None => {
-                let handles = Arc::new(self.projection_handles(current, &drain).await?);
+                let handles = Arc::new(self.projection_handles(current, token).await?);
                 self.projections
                     .lock()
                     .expect("projection handles")
@@ -619,6 +622,9 @@ impl InventoryRuntime {
                 handles
             }
         };
+        if token.is_cancelled() {
+            return Ok(());
+        }
         let (source, execution) = handles.as_ref();
         let deadline = self.clock.deadline();
         let control = Control::new(

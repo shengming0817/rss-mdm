@@ -11,7 +11,7 @@ pub(crate) const PROVISIONING_SLOTS: u32 = 2;
 pub(crate) const PROVISIONING_CONNECTIONS: u32 = 1;
 pub(crate) const CONTENT_CONNECTIONS: u32 = 4;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BackgroundConfig {
     pub device_concurrency: usize,
@@ -149,7 +149,43 @@ pub(crate) struct Compiled {
     pub policy_events: rss_reconcile::Policy,
 }
 impl BackgroundConfig {
+    pub(crate) fn installation(
+        planning_concurrency: usize,
+        device_concurrency: usize,
+        database_connection_budget: u32,
+    ) -> Self {
+        Self {
+            planning_concurrency,
+            device_concurrency,
+            database_connection_budget,
+            scheduling: SchedulingConfig::installation(),
+            command_recovery_batch_size: 64,
+            command_supersede_batch_size: 64,
+        }
+    }
     pub(crate) fn compile(&self, config: &Config) -> Result<Compiled, Error> {
+        let telemetry = config.telemetry.iter().flat_map(|resource| {
+            let maximum = resource.connections.get();
+            let maintenance = matches!(
+                resource.backend,
+                crate::telemetry::Storage::TimescaleDedicated { .. }
+            );
+            std::iter::once(maximum).chain(maintenance.then_some(maximum))
+        });
+        self.compile_pools(
+            config.content.is_some(),
+            !config.publication.sources.is_empty(),
+            config.tenant_administration.is_some(),
+            telemetry,
+        )
+    }
+    pub(crate) fn compile_pools(
+        &self,
+        content: bool,
+        publication: bool,
+        administration: bool,
+        telemetry: impl IntoIterator<Item = u32>,
+    ) -> Result<Compiled, Error> {
         let bad = || Error::Configuration(ConfigIssue::Budget);
         if [self.device_concurrency, self.planning_concurrency]
             .into_iter()
@@ -248,7 +284,7 @@ impl BackgroundConfig {
             // Direct startup/maintenance probes do not borrow a long-lived pool.
             ("direct-probes", 2),
         ];
-        if config.content.is_some() {
+        if content {
             pools.extend([
                 ("content", CONTENT_CONNECTIONS),
                 ("content-owner", 2),
@@ -258,10 +294,10 @@ impl BackgroundConfig {
                 ),
             ]);
         }
-        if !config.publication.sources.is_empty() {
+        if publication {
             pools.push(("publication", AUXILIARY_CONNECTIONS));
         }
-        if config.tenant_administration.is_some() {
+        if administration {
             pools.extend([
                 ("tenant-registry", 8),
                 ("tenant-registry-source", IDENTITY_CONNECTIONS),
@@ -273,18 +309,11 @@ impl BackgroundConfig {
                 ),
             ]);
         }
-        if !config.telemetry.is_empty() {
+        let mut telemetry = telemetry.into_iter().peekable();
+        if telemetry.peek().is_some() {
             pools.push(("telemetry-control", compiled.telemetry_control_connections));
         }
-        for telemetry in &config.telemetry {
-            pools.push(("telemetry", telemetry.connections.get()));
-            if matches!(
-                telemetry.backend,
-                crate::telemetry::Storage::TimescaleDedicated { .. }
-            ) {
-                pools.push(("telemetry-maintenance", telemetry.connections.get()));
-            }
-        }
+        pools.extend(telemetry.map(|maximum| ("telemetry", maximum)));
         let total = pools
             .iter()
             .try_fold(0u32, |total, (_, max)| total.checked_add(*max))

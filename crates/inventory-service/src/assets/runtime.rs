@@ -1,20 +1,21 @@
 //! Query-only durable execution; the host owns the shared scheduler pool.
 use super::*;
+use rss_mdm_work_page::scheduler::Scheduler;
 use rss_reconcile::{
     ActualState, ClaimBatch, Completion, Control, DesiredState, DurableStore,
     Error as ReconcileError, ErrorKind, ReconcileDiff, ReconcileStep, Reconciler, ResourceSet,
     Scope, Target, Timer,
 };
-use rss_reconcile_postgres::{PgClaim, PgStore, ProtectedStep};
+use rss_reconcile_postgres::{PgClaim, ProtectedStep};
 use rss_transactional_messaging_postgres::PgError;
 use std::{sync::Mutex, time::Duration};
 
 pub struct QueryWork {
     assets: Arc<AssetService>,
-    schedule: PgStore,
+    schedule: Scheduler,
 }
 impl QueryWork {
-    pub fn new(assets: Arc<AssetService>, schedule: PgStore) -> Self {
+    pub fn new(assets: Arc<AssetService>, schedule: Scheduler) -> Self {
         Self { assets, schedule }
     }
     fn check(&self, scope: &Scope) -> std::result::Result<(), ReconcileError> {

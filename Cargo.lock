@@ -5318,7 +5318,10 @@ dependencies = [
 name = "rss-mdm-work-page"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "rss-reconcile",
+ "rss-reconcile-postgres",
+ "sqlx",
  "tokio",
  "tokio-util",
  "uuid",

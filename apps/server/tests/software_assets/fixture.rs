@@ -109,7 +109,7 @@ impl Fixture {
         let control =
             rss_reconcile::Control::new(&timer, std::time::Duration::from_secs(60), &cancel);
         let pool = c.inputs.pool("shared", "mdm_scheduler_runtime").await?;
-        let schedule = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
+        let schedule = rss_mdm_work_page::scheduler::Scheduler::new(pool.clone(), &control).await?;
         let worker = a::runtime::QueryWork::new(self.assets.clone(), schedule.clone());
         let target = a::tasks::target(c.tenant, task);
         let mut batch = schedule

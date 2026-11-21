@@ -1,21 +1,22 @@
 //! Scope-only RSS reconciler. App owns the shared scheduler pool and shutdown.
 use crate::*;
+use rss_mdm_work_page::scheduler::Scheduler;
 use rss_reconcile::{
     ActualState, ClaimBatch, Completion, Control, DesiredState, DurableStore,
     Error as ReconcileError, ErrorKind, ReconcileDiff, ReconcileStep, Reconciler, ResourceSet,
     Scope, Target, Timer,
 };
-use rss_reconcile_postgres::{PgClaim, PgStore, ProtectedStep};
+use rss_reconcile_postgres::{PgClaim, ProtectedStep};
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
 pub struct ScopeWork {
     pub scopes: Arc<Scopes>,
-    schedule: PgStore,
+    schedule: Scheduler,
 }
 impl ScopeWork {
-    pub fn new(scopes: Arc<Scopes>, schedule: PgStore) -> Self {
+    pub fn new(scopes: Arc<Scopes>, schedule: Scheduler) -> Self {
         Self { scopes, schedule }
     }
     async fn capture<T: Timer>(

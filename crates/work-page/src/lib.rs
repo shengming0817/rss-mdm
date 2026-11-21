@@ -1,6 +1,7 @@
 //! Bounded traversal of the product workers' ordered discovery pages.
 pub mod capacity;
 pub mod reconcile;
+pub mod scheduler;
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},

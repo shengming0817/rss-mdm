@@ -14,7 +14,7 @@ pub struct PolicyWork {
     storage: rss_transactional_messaging::fence::StorageIdentity,
     service: Arc<Application>,
     events: Option<Arc<crate::events::Events>>,
-    store: rss_reconcile_postgres::PgStore,
+    store: rss_mdm_work_page::scheduler::Scheduler,
 }
 pub struct Automation {
     pub work: Arc<PolicyWork>,
@@ -34,7 +34,7 @@ impl PolicyWork {
         storage: rss_transactional_messaging::fence::StorageIdentity,
         service: Arc<Application>,
         events: Arc<crate::events::Events>,
-        store: rss_reconcile_postgres::PgStore,
+        store: rss_mdm_work_page::scheduler::Scheduler,
     ) -> Arc<Self> {
         Arc::new(Self {
             read_pool,

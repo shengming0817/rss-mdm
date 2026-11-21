@@ -99,7 +99,7 @@ pub(crate) struct Storage {
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub storage: rss_transactional_messaging::fence::StorageIdentity,
     pub discovery_pool: sqlx::PgPool,
-    pub reconcile: rss_reconcile_postgres::PgStore,
+    pub reconcile: rss_mdm_work_page::scheduler::Scheduler,
     pub read_pool: sqlx::PgPool,
     pub worker_budget: Arc<rss_mdm_work_page::capacity::Capacity>,
 }
@@ -204,7 +204,7 @@ impl Storage {
         let timer = Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-        let reconcile = rss_reconcile_postgres::PgStore::new(read_pool.clone(), &control)
+        let reconcile = rss_mdm_work_page::scheduler::Scheduler::new(read_pool.clone(), &control)
             .await
             .map_err(|_| bad())?;
         Ok(Self {

@@ -94,7 +94,7 @@ pub struct SoftwareService {
     pub(crate) recovery_batch: rss_device_command::BatchLimit,
     pub(crate) sessions: Arc<authorization::session::SessionAuthority>,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
-    pub(crate) reconcile: rss_reconcile_postgres::PgStore,
+    pub(crate) reconcile: rss_mdm_work_page::scheduler::Scheduler,
     pub(crate) readiness: rss_mdm_recovery_observation::Readiness,
     pub(crate) transactions: Arc<Transactions>,
 }
@@ -109,7 +109,7 @@ impl SoftwareService {
         transactions: Arc<Transactions>,
         sessions: Arc<authorization::session::SessionAuthority>,
         outbox: Arc<PgOutboxStore<()>>,
-        reconcile: rss_reconcile_postgres::PgStore,
+        reconcile: rss_mdm_work_page::scheduler::Scheduler,
         worker_budget: Arc<rss_mdm_work_page::capacity::Capacity>,
         recovery_batch: rss_device_command::BatchLimit,
     ) -> Self {

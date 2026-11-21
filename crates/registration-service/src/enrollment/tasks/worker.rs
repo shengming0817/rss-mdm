@@ -14,7 +14,7 @@ pub struct Worker {
     storage: rss_transactional_messaging::fence::StorageIdentity,
     readiness: rss_mdm_recovery_observation::Readiness,
     service: Arc<Service>,
-    store: rss_reconcile_postgres::PgStore,
+    store: rss_mdm_work_page::scheduler::Scheduler,
     outbox: Arc<PgOutboxStore<()>>,
     budget: Arc<rss_mdm_work_page::capacity::Capacity>,
 }
@@ -24,7 +24,7 @@ impl Worker {
         storage: rss_transactional_messaging::fence::StorageIdentity,
         profile: rss_mdm_install_support::StorageProfile,
         service: Arc<Service>,
-        store: rss_reconcile_postgres::PgStore,
+        store: rss_mdm_work_page::scheduler::Scheduler,
         budget: Arc<rss_mdm_work_page::capacity::Capacity>,
     ) -> std::result::Result<Self, Error> {
         let delivery = rss_transactional_messaging::policy::DeliveryBudget::new(

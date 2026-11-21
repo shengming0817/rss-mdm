@@ -215,6 +215,16 @@ async fn fresh(root: &Path, administrator: &crate::config::Database) -> Result<I
         serde_json::to_vec(&installation_input)?,
     )?;
     let input: Input = crate::config::load(&root.join("install.json"))?;
+    let mut rejected = installation_input.clone();
+    rejected["planning_concurrency"] = json!(1_000_000);
+    ensure!(matches!(
+        install(serde_json::from_value(rejected)?).await,
+        Err(crate::installation::Error::Input)
+    ));
+    ensure!(
+        !root.join("installation/installation.json").exists(),
+        "an invalid pool budget cannot bind the installation"
+    );
     let first = install(input)
         .await
         .context("initialize fresh installation")?;

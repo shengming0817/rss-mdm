@@ -1,10 +1,11 @@
 //! A single Device owner runner. RSS is the only claim, retry and lease authority.
 use crate::{Associations, identity_projection, reconcile};
+use rss_mdm_work_page::scheduler::Scheduler;
 use rss_reconcile::{
     ActualState, ClaimBatch, Completion, Control, DesiredState, DurableStore, Error, ErrorKind,
     ReconcileDiff, ReconcileStep, Reconciler, ResourceSet, Scope, Target, Timer,
 };
-use rss_reconcile_postgres::{PgClaim, PgMessagingStore, PgStore};
+use rss_reconcile_postgres::{PgClaim, PgMessagingStore};
 use rss_transactional_messaging::policy::OperationDeadline;
 use rss_transactional_messaging_postgres::{PgError, PgRuntime, PgTransaction};
 use std::{sync::Arc, time::Duration};
@@ -12,7 +13,7 @@ use uuid::Uuid;
 pub struct DeviceWork {
     owner: Arc<Associations>,
     runtime: Arc<PgRuntime>,
-    schedule: PgStore,
+    schedule: Scheduler,
     messaging: PgMessagingStore,
     read_pool: sqlx::PgPool,
     storage: rss_transactional_messaging::fence::StorageIdentity,
@@ -23,7 +24,7 @@ impl DeviceWork {
         probe: rss_transactional_messaging::fence::ExecutionBinding,
         owner: Arc<Associations>,
         runtime: Arc<PgRuntime>,
-        schedule: PgStore,
+        schedule: Scheduler,
         deadline: OperationDeadline,
     ) -> Result<Self, PgError> {
         let messaging = PgMessagingStore::new(runtime.clone(), probe, deadline).await?;

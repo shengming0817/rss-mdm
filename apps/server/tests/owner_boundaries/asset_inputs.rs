@@ -412,7 +412,7 @@ impl Workers {
         let cancel = tokio_util::sync::CancellationToken::new();
         let control =
             rss_reconcile::Control::new(&timer, timer.now() + Duration::from_secs(6), &cancel);
-        let schedule = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
+        let schedule = rss_mdm_work_page::scheduler::Scheduler::new(pool.clone(), &control).await?;
         let mut policy_owner = None;
         let policy_work = if let Some(fixture) = policy {
             let owner = planning::owner(c, "mdm_policy_runtime").await?;
@@ -915,7 +915,7 @@ async fn coalesced_static_edit_and_scope_request_are_not_acknowledged_by_old_tas
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(15), &cancel);
     let pool = c.inputs.pool("shared", "mdm_scheduler_runtime").await?;
-    let schedule = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
+    let schedule = rss_mdm_work_page::scheduler::Scheduler::new(pool.clone(), &control).await?;
     let worker = group::runtime::GroupWork::new(owners.groups.clone(), schedule.clone());
     let target =
         rss_reconcile::Target::new(rss_reconcile::Scope::new(c.tenant, "mdm.groups")?, "inputs")?;
@@ -1306,7 +1306,7 @@ async fn input_health_is_durable_across_instances() -> Result<()> {
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(30), &cancel);
     let pool = c.inputs.pool("shared", "mdm_scheduler_runtime").await?;
-    let schedule = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
+    let schedule = rss_mdm_work_page::scheduler::Scheduler::new(pool.clone(), &control).await?;
     let group = group::runtime::GroupWork::new(owners.groups.clone(), schedule.clone());
     let scope = rss_mdm_scope_service::runtime::ScopeWork::new(scopes.clone(), schedule.clone());
     let compliance =
@@ -1458,7 +1458,7 @@ async fn association_health_recovers_after_another_instance_converges() -> Resul
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(30), &cancel);
     let pool = c.inputs.pool("shared", "mdm_scheduler_runtime").await?;
-    let schedule = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
+    let schedule = rss_mdm_work_page::scheduler::Scheduler::new(pool.clone(), &control).await?;
     let scope = rss_reconcile::Scope::new(c.tenant, "mdm.devices")?;
     let work = Uuid::new_v4();
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(6));
@@ -1597,7 +1597,7 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(40), &cancel);
-    let schedule = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
+    let schedule = rss_mdm_work_page::scheduler::Scheduler::new(pool.clone(), &control).await?;
     let worker = rss_mdm_device_service::worker::DeviceWork::new(
         c.database.archive_pool(),
         c.execution(),
@@ -2255,7 +2255,7 @@ async fn asset_query_commits_during_a_peer_run_lock() -> Result<()> {
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(60), &cancel);
     let pool = a.inputs.pool("shared", "mdm_scheduler_runtime").await?;
-    let schedule = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
+    let schedule = rss_mdm_work_page::scheduler::Scheduler::new(pool.clone(), &control).await?;
     let mut held = a.operator.begin().await?;
     let pid=sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid FOR UPDATE").bind(a.tenant.to_string()).fetch_one(&mut *held).await?;
     schedule

@@ -118,13 +118,15 @@ async fn claim_policy<T: rss_reconcile::Timer>(
     collection: bool,
     control: &rss_reconcile::Control<'_, T>,
 ) -> Result<(
-    rss_reconcile_postgres::PgStore,
+    rss_mdm_work_page::scheduler::Scheduler,
     rss_reconcile_postgres::PgClaim,
     rss_reconcile::ReconcileDiff<bool>,
 )> {
-    let store =
-        rss_reconcile_postgres::PgStore::new(h.a.resources.storage.read_pool.clone(), control)
-            .await?;
+    let store = rss_mdm_work_page::scheduler::Scheduler::new(
+        h.a.resources.storage.read_pool.clone(),
+        control,
+    )
+    .await?;
     let scope = if collection {
         collection::wake::scope(h.c.tenant)
     } else {
@@ -224,9 +226,11 @@ async fn independent_run_recovery_overlaps_on_one_device() -> Result<()> {
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(30), &cancel);
-    let store =
-        rss_reconcile_postgres::PgStore::new(h.a.resources.storage.read_pool.clone(), &control)
-            .await?;
+    let store = rss_mdm_work_page::scheduler::Scheduler::new(
+        h.a.resources.storage.read_pool.clone(),
+        &control,
+    )
+    .await?;
     let script_scope = script::wake::scope(h.c.tenant);
     let collection_scope = collection::wake::scope(h.c.tenant);
     let mut scripts = store

@@ -287,9 +287,9 @@ impl Service {
         let _running = Running(self.clone());
         let budget = DeliveryBudget::new(
             Duration::from_secs(60),
-            Duration::from_secs(10),
-            Duration::from_secs(10),
-            Duration::from_secs(10),
+            crate::RELAY_STAGE,
+            crate::RELAY_STAGE,
+            crate::RELAY_STAGE,
         )
         .map_err(|_| Error::Invalid)?;
         let store = Arc::new(
