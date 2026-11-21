@@ -71,7 +71,7 @@ fn step(h: &Harness, id: Uuid) -> futures::future::LocalBoxFuture<'_, Result<()>
                 .claim_due(&scope, 64, 64, Duration::from_secs(30), &control)
                 .await?;
             let mut seen = false;
-            for (_, claim) in batch.claims {
+            for claim in batch.claims {
                 if claim.target() != &target {
                     // This fixture drives retirement only. Yield the other owner's
                     // claim normally, keeping its work and retry history intact.

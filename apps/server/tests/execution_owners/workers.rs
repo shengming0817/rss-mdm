@@ -628,54 +628,25 @@ async fn registered_relay(
 }
 
 async fn accept_collection(h: &Harness) -> Result<Uuid> {
-    use rss_mdm_inventory_service::transaction::{self, TransactionOwner};
-    let (_, version) = owner_policy(h, true).await?;
-    let id = Uuid::new_v4();
-    let binding = h.c.execution();
-    let r = &h.a.resources;
-    let transactions = collection::Transactions::bind(
-        r.storage.runtime.clone(),
-        binding,
-        h.audit.clone(),
-        Arc::new(collection::Materials {
-            agent_store: Arc::new(crate::assembly::agent_facts::AgentFacts),
-            source: Arc::new(crate::assembly::collection_ports::Source(r.source.clone())),
-            capacity: Arc::new(crate::assembly::capacity::Capacity),
-            native: Arc::new(crate::assembly::collection_ports::Delivery {
-                protection: r.protection.clone(),
-            }),
-        }),
-    )
-    .await?;
-    let device = *h.p.device();
-    let result = transaction::run(
-        &h.audit,
-        &r.storage.runtime,
-        binding,
-        &request(&h.c),
-        transactions,
-        move |owner, tx| {
-            Box::pin(async move {
-                owner
-                    .accept_event_in(
-                        binding,
-                        tx,
-                        version,
-                        &collection::model::Target { device },
-                        (
-                            id,
-                            rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
-                        ),
-                        now() + 300,
-                    )
-                    .await
-            })
-        },
-        TransactionOwner::Collections,
-    )
-    .await?;
-    assert!(matches!(result, w::PolicyEventDecision::Accepted { .. }));
-    Ok(id)
+    let (definition, frozen, template) = super::mixed::agent(h)?;
+    let mut tx = command::seed_transaction(&h.c).await?;
+    sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id, device, source, epoch, enabled) VALUES($1::uuid,$2,'agent.native',$3,TRUE)")
+        .bind(h.c.tenant.to_string()).bind(h.p.device().into_uuid()).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+    tx.commit().await?;
+    let version = super::mixed::publish(h, Uuid::new_v4(), 1, definition, frozen).await?;
+    let input = w::TaskClaimRequest::new(
+        Uuid::new_v4(),
+        vec![w::ExecutorProfile::PowerShell7],
+        context(),
+    )?
+    .with_environment(rss_mdm_agent_wire::CollectionEnvironment {
+        edition: None,
+        tools: Default::default(),
+        native_engines: template.spec().plan.requirements(),
+    })?;
+    h.delivery.claim(&h.p, &input, &request(&h.c)).await?;
+    Ok(sqlx::query_scalar("SELECT id FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND policy_version=$2")
+        .bind(h.c.tenant.to_string()).bind(version).fetch_one(&h.c.operator).await?)
 }
 
 #[tokio::test]

@@ -391,7 +391,7 @@ impl Workers {
         scopes: Arc<rss_mdm_scope_service::Scopes>,
         policy: Option<&crate::policy_configuration_t2::fixture::Fixture>,
     ) -> Result<Self> {
-        let config: crate::config::Config = serde_json::from_value(
+        let mut config: crate::config::Config = serde_json::from_value(
             crate::host_t2_support::configuration(
                 &c.inputs,
                 "shared",
@@ -400,6 +400,9 @@ impl Workers {
             )
             .await?,
         )?;
+        // Exercise durable owner transitions without waiting through a five-second
+        // recovery scan for each page of an already active calculation.
+        config.background.scheduling.planning.scan_interval_ms = 1;
         let background = config.background.compile(&config)?;
         let listener = worker_wake::Listener::new(config.access_options()?);
         let signals = listener.signals.clone();
@@ -2006,7 +2009,9 @@ async fn local_delivery_refills_while_a_group_head_is_in_flight() -> Result<()> 
     // Hold the real shared Scope target and leave exactly one source of
     // each asset route claimable. Both effects need separate transaction
     // connections after RSS has performed their initial lease renewal.
-    let mut inputs = c.operator.begin().await?;
+    // Keep the observation connection independent of both lock holders.
+    let barrier = c.inputs.pool("shared", "postgres").await?;
+    let mut inputs = barrier.begin().await?;
     let tenant = Uuid::from_bytes(c.tenant.octets());
     let holder: i32 = sqlx::query_scalar("SELECT pg_backend_pid() FROM rss_reconcile.targets WHERE tenant_id=$1 AND reconciler='mdm.scopes' AND entity='inputs' FOR UPDATE")
         .bind(tenant).fetch_one(&mut *inputs).await?;
@@ -2033,8 +2038,9 @@ async fn local_delivery_refills_while_a_group_head_is_in_flight() -> Result<()> 
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         Ok::<_,anyhow::Error>(())
-    }).await??;
+    }).await.context("two real asset effects waiting on the shared Scope target")??;
     inputs.rollback().await?;
+    barrier.close().await;
     let status = |id: String| {
         sqlx::query_scalar::<_, String>("SELECT status FROM rss_transactional_messaging.outbox WHERE domain='mdm-group' AND message_id=$1")
             .bind(id).fetch_one(&c.operator)
