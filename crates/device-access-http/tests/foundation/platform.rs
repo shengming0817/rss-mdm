@@ -776,6 +776,7 @@ pub async fn verify(
     let session = Box::pin(browser_session(c, client, id, &source, &user, native_token)).await?;
     Box::pin(super::configuration::verify_override(
         c,
+        m,
         client,
         &token,
         &mut observation,

@@ -582,6 +582,14 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     ))
     .await
     .context("DA platform owner proof")?;
+    c.authority
+        .inspect_session(
+            c.execution(),
+            platform_session.clone(),
+            platform::deadline(),
+        )
+        .await
+        .context("platform session is active before registration revocation")?;
     material::empty(
         client
             .post(format!(

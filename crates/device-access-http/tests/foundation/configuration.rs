@@ -527,75 +527,69 @@ pub async fn verify_sources(
 
 pub async fn verify_override(
     c: &Context,
+    m: &material::Material,
     client: &reqwest::Client,
     token: &str,
     observation: &mut rss_mdm_device_access::deployment::Observation,
-    source: &policy::Publication,
+    device_policy: &policy::Publication,
     base: &str,
 ) -> Result<()> {
-    let target = policy::Publication {
-        id: Uuid::new_v4(),
-        version: Uuid::new_v4(),
-        revision: 1,
-        target: policy::Target::Device {
-            device: observation.device,
-        },
-        managed_fields: vec![],
-        ..source.clone()
-    };
+    use rss_mdm_device_access::deployment::{ConfigurationDeployment, ConfigurationReadback};
+    use rss_mdm_device_access_postgres::configuration::Change;
     let management = c.management_base();
-    let principal = c
-        .authority
-        .inspect_bearer(
-            c.execution(),
-            rss_identity_core::session::BearerSecret::parse(token.to_owned())?,
-            platform::deadline(),
-        )
-        .await?
-        .account()
-        .principal
-        .as_uuid();
-    let (cookie, csrf) = super::credentials::login(c, client, principal).await?;
-    let _: policy::Publication = material::success(
-        client
-            .post(format!(
-                "{}/api/v1/tenants/{}/device-access/configurations",
-                c.browser_origin, c.tenant
-            ))
-            .header("origin", &c.browser_origin)
-            .header("x-identity-request", "1")
-            .header("x-csrf-token", csrf)
-            .header("cookie", cookie)
-            .json(&rss_mdm_device_access_postgres::configuration::Change {
+    let read:serde_json::Value=sqlx::query_scalar("SELECT definition FROM rss_da.policies WHERE tenant_id=$1::uuid AND definition#>>'{target,kind}'='tenant_default'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
+    let mut default: policy::Publication = serde_json::from_value(read)?;
+    default.managed_fields = vec![da::ConfigurationField::Mac];
+    default.configuration = device_policy.configuration.clone();
+    let mut target = device_policy.clone();
+    target.managed_fields.clear();
+    for p in [&mut target, &mut default] {
+        p.revision += 1;
+        p.version = Uuid::new_v4();
+        publish_protected(
+            c,
+            m,
+            &Change {
                 operation_id: Uuid::new_v4(),
-                expected_revision: 0,
-                publication: target.clone(),
-            })
-            .send()
-            .await?,
-    )
-    .await?;
-    let artifact: da::SignedConfiguration = material::success(
+                expected_revision: p.revision - 1,
+                publication: p.clone(),
+            },
+        )
+        .await?;
+    }
+    let export = |p: &policy::Publication, delivery| {
         client
             .post(format!("{management}/configurations"))
             .bearer_auth(token)
             .json(&da::Export {
                 operation_id: Uuid::new_v4(),
-                policy: target.id,
-                version: target.version,
-                delivery: da::DeliveryPermission::Da,
+                policy: p.id,
+                version: p.version,
+                delivery,
                 lifetime_seconds: 600,
             })
             .send()
-            .await?,
-    )
-    .await?;
-    let prior = diagnostic(client, &management, token, &observation.device).await?;
-    let managed = observation.configuration.as_mut().unwrap();
-    managed.applied = Some(rss_mdm_device_access::deployment::ConfigurationReadback {
-        backend_artifact: artifact.decode()?.operation_id,
-        effective: serde_json::from_value(prior["resolution"]["configuration"].clone())?,
-        managed_sources: [(da::ConfigurationField::Mac, managed.artifact)].into(),
+    };
+    let source: da::SignedConfiguration =
+        material::success(export(&default, da::DeliveryPermission::ManagedMandatory).await?)
+            .await?;
+    let backend: da::SignedConfiguration =
+        material::success(export(&target, da::DeliveryPermission::Da).await?).await?;
+    let signed = source.decode()?;
+    observation.policy = default.id;
+    observation.policy_version = default.version;
+    observation.applications.clear();
+    observation.configuration = Some(ConfigurationDeployment {
+        artifact: signed.operation_id,
+        digest: source.digest,
+        native_digest: signed.native.digest,
+        delivery: da::DeliveryPermission::ManagedMandatory,
+        state: da::SourceState::Present,
+        applied: Some(ConfigurationReadback {
+            backend_artifact: backend.decode()?.operation_id,
+            effective: target.configuration.clone(),
+            managed_sources: [(da::ConfigurationField::Mac, signed.operation_id)].into(),
+        }),
     });
     observation.sequence += 1;
     material::empty(
