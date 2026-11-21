@@ -47,6 +47,44 @@ pub async fn run<K, P, F>(
     .await;
 }
 
+/// Admit independent claim attempts for one durable binding. Each position
+/// stays live until its batch drains. A peer position can refill released
+/// item capacity while that batch still owns a slow head. The database
+/// cursor remains the owner's key; positions exist only inside this process.
+pub async fn run_partitioned<K, G, P, F>(
+    capacity: NonZeroUsize,
+    positions: NonZeroUsize,
+    idle: Duration,
+    stop: &CancellationToken,
+    notify: &Notify,
+    (tenant, page): (impl Fn(K) -> G, impl Fn(Option<K>) -> P),
+    batch: impl Fn(K) -> F,
+    observed: impl Fn(bool),
+) where
+    K: Copy + Ord + Send + 'static,
+    G: Copy + Ord,
+    P: Future<Output = Result<Vec<K>, ()>>,
+    F: Future<Output = Result<Duration, ()>> + Send + 'static,
+{
+    run_grouped(
+        capacity,
+        idle,
+        stop,
+        notify,
+        (|(key, position)| (tenant(key), position), |after: Option<(K, usize)>| {
+            let rows = page(after.map(|(key, _)| key));
+            async move {
+                let rows = rows.await?;
+                Ok(rows.into_iter().flat_map(|key| {
+                    (0..positions.get()).map(move |position| (key, position))
+                }).collect::<Vec<_>>())
+            }
+        }),
+        |(key, _)| batch(key),
+        observed,
+    ).await;
+}
+
 /// A group occupies at most one slot, so multiple keys sharing a tenant resource
 /// cannot exclude other tenants. Rows still advance the owner's ordered cursor.
 #[allow(
