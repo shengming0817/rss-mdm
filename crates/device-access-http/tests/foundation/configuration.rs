@@ -561,13 +561,28 @@ pub async fn verify_override(
         device: separate.device,
     };
     target.managed_fields.clear();
+    let principal = c
+        .authority
+        .inspect_bearer(
+            c.execution(),
+            rss_identity_core::session::BearerSecret::parse(token.to_owned())?,
+            platform::deadline(),
+        )
+        .await?
+        .account()
+        .principal
+        .as_uuid();
+    let (cookie, csrf) = super::credentials::login(c, client, principal).await?;
     let _: policy::Publication = material::success(
         client
             .post(format!(
                 "{}/api/v1/tenants/{}/device-access/configurations",
                 c.browser_origin, c.tenant
             ))
-            .bearer_auth(token)
+            .header("origin", &c.browser_origin)
+            .header("x-identity-request", "1")
+            .header("x-csrf-token", csrf)
+            .header("cookie", cookie)
             .json(&Change {
                 operation_id: Uuid::new_v4(),
                 expected_revision: 0,
