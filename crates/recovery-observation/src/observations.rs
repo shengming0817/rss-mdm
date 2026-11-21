@@ -42,7 +42,7 @@ pub struct Attempt {
 #[derive(Clone, Copy)]
 struct Failure {
     sequence: u128,
-    last_check: u128,
+    check_order: u128,
     kind: ErrorKind,
     stage: Option<Stage>,
     observed_at: Option<i64>,
@@ -138,9 +138,9 @@ impl Observations {
                 }
                 _ => None,
             })
-            .min_by_key(|(_, f)| (f.last_check, f.sequence))?;
+            .min_by_key(|(_, f)| f.check_order)?;
         self.sequence = self.sequence.saturating_add(1);
-        failure.last_check = self.sequence;
+        failure.check_order = self.sequence;
         Some((message.clone(), failure.sequence))
     }
 
@@ -179,21 +179,28 @@ impl Observations {
             Ok(()) => {
                 self.failures.remove(&key);
             }
-            Err(kind)
-                if self.failures.contains_key(&key) || self.failures.len() < FAILURE_LIMIT =>
-            {
+            Err(kind) => {
+                // Re-reporting changes the evidence watermark, not the place
+                // in the readback queue. New identities join at the tail.
+                let check_order = match self.failures.get(&key) {
+                    Some(existing) => existing.check_order,
+                    None if self.failures.len() < FAILURE_LIMIT => self.sequence,
+                    None => {
+                        self.truncated = true;
+                        return;
+                    }
+                };
                 self.failures.insert(
                     key,
                     Failure {
                         sequence: self.sequence,
-                        last_check: 0,
+                        check_order,
                         kind,
                         stage,
                         observed_at: at,
                     },
                 );
             }
-            Err(_) => self.truncated = true,
         }
     }
     pub fn discovery(&mut self, domain: &str, outcome: Result<(), ErrorKind>, at: Option<i64>) {
@@ -342,8 +349,26 @@ mod tests {
         }
         let (first, seq) = state.next_relay_check(&scope, 1).unwrap();
         assert_eq!(first.id.as_str(), "first");
-        let (second, next) = state.next_relay_check(&scope, 1).unwrap();
+        let (second, _) = state.next_relay_check(&scope, 1).unwrap();
         assert_eq!(second.id.as_str(), "second");
+        // Both original messages have had a turn. A stream of new failures
+        // and repeat reports for the second must leave the first at the head.
+        for new_id in ["new-a", "new-b", "new-c"] {
+            let new = message(new_id);
+            state.relay(&scope, 1, Some(&new), Err(ErrorKind::Transient), None);
+            state.relay(&scope, 1, Some(&second), Err(ErrorKind::Transient), None);
+        }
+        let (oldest, _) = state.next_relay_check(&scope, 1).unwrap();
+        assert_eq!(oldest.id.as_str(), "first");
+        let (next_original, next) = state.next_relay_check(&scope, 1).unwrap();
+        assert_eq!(next_original.id.as_str(), "second");
+        // Later reports must also keep their place relative to new arrivals.
+        for new_id in ["new-a", "new-b", "new-c"] {
+            state.relay(&scope, 1, Some(&first), Err(ErrorKind::Transient), None);
+            let (checked, watermark) = state.next_relay_check(&scope, 1).unwrap();
+            assert_eq!(checked.id.as_str(), new_id);
+            state.confirm_publication(scope.clone(), 1, checked, watermark);
+        }
         state.relay(&scope, 1, Some(&first), Err(ErrorKind::CommitUnknown), None);
         state.confirm_publication(scope.clone(), 1, first, seq);
         state.confirm_publication(scope.clone(), 1, second, next);
