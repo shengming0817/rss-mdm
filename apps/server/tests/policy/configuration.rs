@@ -222,7 +222,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
         .claim_relay(c.execution(), limit, Duration::from_secs(10))
         .await?;
     assert_eq!(claims.len(), 1);
-    for claim in claims {
+    for (_, claim) in claims {
         claim.await?;
     }
     assert!(

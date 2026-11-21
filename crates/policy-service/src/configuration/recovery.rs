@@ -232,7 +232,10 @@ impl Transactions {
         limit: std::num::NonZeroUsize,
         budget: std::time::Duration,
     ) -> std::result::Result<
-        Vec<impl Future<Output = std::result::Result<(), Error>> + Send + '_>,
+        Vec<(
+            rss_transactional_messaging::message::MessageId,
+            impl Future<Output = std::result::Result<(), Error>> + Send + '_,
+        )>,
         Error,
     > {
         let timer = Arc::new(crate::clock::Timer::new());
@@ -249,11 +252,12 @@ impl Transactions {
             .into_iter()
             .map(|claim| {
                 let timer = timer.clone();
-                async move {
+                let id = PgOutboxStore::<()>::message(&claim).message_id().clone();
+                (id, async move {
                     let cancel = tokio_util::sync::CancellationToken::new();
                     let control = rss_reconcile::Control::new(timer.as_ref(), budget, &cancel);
                     self.relay_claim(binding, claim, &control).await
-                }
+                })
             })
             .collect())
     }

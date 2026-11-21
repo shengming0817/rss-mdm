@@ -2,7 +2,6 @@
 use crate::delivery_capacity::{Capacity, Slot};
 use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
 use std::{
-    collections::BTreeMap,
     future::Future,
     num::NonZeroUsize,
     sync::{Arc, Mutex, OnceLock},
@@ -46,11 +45,10 @@ impl Relay {
         name: &'static str,
         page: impl Fn(Option<Key>) -> P,
         batch: impl Fn(ExecutionBinding, Vec<Slot>) -> B + Send + Sync + 'static,
-        observe: impl Fn(ExecutionBinding, &Result<usize, E>) + Send + Sync + 'static,
     ) where
         E: std::error::Error + Send + Sync + 'static,
         P: Future<Output = Result<Vec<Key>, E>>,
-        B: Future<Output = Result<usize, E>> + Send + 'static,
+        B: Future<Output = Result<usize, ()>> + Send + 'static,
     {
         let notify = Arc::new(Notify::new());
         self.owners
@@ -58,8 +56,6 @@ impl Relay {
             .expect("owner notifications")
             .push(notify.clone());
         let batch = Arc::new(batch);
-        let observe = Arc::new(observe);
-        let rounds = Arc::new(Mutex::new(BTreeMap::<Key, Round>::new()));
         rss_mdm_work_page::run_partitioned(
             (self.capacity.total(), self.capacity.batches_per_binding()),
             IDLE,
@@ -82,8 +78,7 @@ impl Relay {
                 },
             ),
             |key| {
-                let (relay, rounds, batch, observe) =
-                    (self.clone(), rounds.clone(), batch.clone(), observe.clone());
+                let (relay, batch) = (self.clone(), batch.clone());
                 async move {
                     let Some(slots) = relay.capacity.acquire(name, key.0, &relay.stop).await else {
                         return Ok(IDLE);
@@ -95,28 +90,12 @@ impl Relay {
                         relay.stop.cancel();
                     })?;
                     let binding = ExecutionBinding::new(relay.storage, tenant, epoch);
-                    {
-                        let mut running = rounds.lock().expect("relay observations");
-                        let round = running.entry(key).or_default();
-                        if round.failed || relay.stop.is_cancelled() {
-                            return Ok(IDLE);
-                        }
-                        round.active += 1;
+                    if relay.stop.is_cancelled() {
+                        return Ok(IDLE);
                     }
-                    let result = batch(binding, slots).await;
-                    let mut running = rounds.lock().expect("relay observations");
-                    let round = running.get_mut(&key).expect("active binding");
-                    round.active -= 1;
-                    if result.is_err() || !round.failed {
-                        observe(binding, &result);
-                    }
-                    round.failed |= result.is_err();
-                    if round.active == 0 {
-                        running.remove(&key);
-                    }
-                    result
+                    batch(binding, slots)
+                        .await
                         .map(|count| if count > 0 { Duration::ZERO } else { IDLE })
-                        .map_err(|_| ())
                 }
             },
             |_| {},
@@ -125,30 +104,35 @@ impl Relay {
     }
 }
 
-#[derive(Default)]
-struct Round {
-    active: usize,
-    failed: bool,
-}
-
 async fn settle<E>(
-    claims: Vec<impl Future<Output = Result<(), E>>>,
+    claims: Vec<(
+        rss_transactional_messaging::message::MessageId,
+        impl Future<Output = Result<(), E>>,
+    )>,
     slots: Vec<Slot>,
-) -> Result<usize, E> {
+    observe: impl Fn(&str, Result<(), &E>),
+) -> Result<usize, ()> {
     let count = claims.len();
     assert!(count <= slots.len(), "owner exceeded the admitted batch");
-    let work = claims
-        .into_iter()
-        .zip(slots)
-        .map(|(claim, slot)| async move {
+    let work = claims.into_iter().zip(slots).map(|((id, claim), slot)| {
+        let observe = &observe;
+        async move {
             let _slot = slot;
-            claim.await
-        });
-    // Poll every admitted effect through settlement, including after a sibling fails.
-    for outcome in futures::future::join_all(work).await {
-        outcome?;
+            let result = claim.await;
+            observe(id.as_str(), result.as_ref().map(|_| ()));
+            result.is_ok()
+        }
+    });
+    // Poll each effect through settlement and publish its own observation immediately.
+    if futures::future::join_all(work)
+        .await
+        .into_iter()
+        .all(|ok| ok)
+    {
+        Ok(count)
+    } else {
+        Err(())
     }
-    Ok(count)
 }
 
 // The owners retain their concrete error types, epoch validation and scope health.
@@ -156,7 +140,6 @@ macro_rules! owner {
     ($name:ident, $owner:ty) => {
         pub(super) async fn $name(relay: &Arc<Relay>, owner: Arc<$owner>) {
             let source = owner.clone();
-            let health = owner.clone();
             relay
                 .run(
                     stringify!($name),
@@ -168,11 +151,14 @@ macro_rules! owner {
                         let owner = owner.clone();
                         async move {
                             let limit = NonZeroUsize::new(slots.len()).expect("admitted heads");
-                            let claims = owner.claim_relay(binding, limit).await?;
-                            settle(claims, slots).await
+                            let claims = owner.claim_relay(binding, limit).await;
+                            owner.observe_relay(binding, None, claims.as_ref().map(|_| ()));
+                            settle(claims.map_err(|_| ())?, slots, |id, outcome| {
+                                owner.observe_relay(binding, Some(id), outcome)
+                            })
+                            .await
                         }
                     },
-                    move |binding, result| health.observe_relay(binding, result),
                 )
                 .await;
         }
@@ -295,7 +281,6 @@ mod tests {
                 }
             },
             |_, _| std::future::ready(Ok(0)),
-            |_, _| {},
         );
         tokio::pin!(work);
         tokio::select! { () = &mut work => panic!("relay exited"), () = scanned.notified() => {} }

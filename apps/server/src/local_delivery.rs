@@ -209,8 +209,9 @@ where
         while let Some(result) = outcomes.next().await {
             match result {
                 Ok(committed) => progress += usize::from(committed),
-                Err(error) => {
-                    failure.get_or_insert(error);
+                Err(PollFailure::RecoveryRequired) => failure = Some(PollFailure::RecoveryRequired),
+                Err(PollFailure::Unavailable) => {
+                    failure.get_or_insert(PollFailure::Unavailable);
                 }
             }
         }

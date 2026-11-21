@@ -805,21 +805,33 @@ impl PolicyWork {
         if self.service.configuration.is_none() {
             return Ok(Vec::new());
         }
-        sqlx::query_as(
+        let page = rss_mdm_recovery_observation::RelayPage::begin(
+            &self.service.automation_observation,
+            crate::worker::jobs::domain(self.profile()),
+            after,
+        );
+        let result = sqlx::query_as(
             "SELECT tenant_id,expected_epoch FROM mdm_planning.configuration_relay_scopes($1,$2)",
         )
         .bind(after.map(|x| x.0))
         .bind(after.map(|x| x.1))
         .fetch_all(&self.read_pool)
         .await
-        .map_err(|_| Error::Unavailable(Failure::PolicyStorage))
+        .map_err(|_| Error::Unavailable(Failure::PolicyStorage));
+        if let Ok(rows) = &result {
+            page.confirm(rows);
+        }
+        result
     }
     pub async fn claim_relay(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
         limit: std::num::NonZeroUsize,
     ) -> std::result::Result<
-        Vec<impl Future<Output = std::result::Result<(), Error>> + Send + '_>,
+        Vec<(
+            rss_transactional_messaging::message::MessageId,
+            impl Future<Output = std::result::Result<(), Error>> + Send + '_,
+        )>,
         Error,
     > {
         let Some(configuration) = self.service.configuration.as_ref() else {
@@ -832,9 +844,10 @@ impl PolicyWork {
     pub fn observe_relay(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
-        result: &std::result::Result<usize, Error>,
+        message: Option<&str>,
+        result: std::result::Result<(), &Error>,
     ) {
-        self.service.record_relay(binding, result);
+        self.service.record_relay(binding, message, result);
     }
 }
 

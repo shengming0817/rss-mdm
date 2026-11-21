@@ -248,7 +248,7 @@ async fn reconcile(
             if batch.is_empty() {
                 break;
             }
-            for claim in batch {
+            for (_, claim) in batch {
                 claim.await?;
             }
         }

@@ -71,7 +71,7 @@ fn step(h: &Harness, id: Uuid) -> futures::future::LocalBoxFuture<'_, Result<()>
                 .claim_due(&scope, 64, 64, Duration::from_secs(30), &control)
                 .await?;
             let mut seen = false;
-            for claim in batch.claims {
+            for (_, claim) in batch.claims {
                 if claim.target() != &target {
                     // This fixture drives retirement only. Yield the other owner's
                     // claim normally, keeping its work and retry history intact.
@@ -280,7 +280,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     );
     step(&h, retirement).await?;
     assert_eq!(state(&h, retirement).await?.0, "unenroll");
-    for claim in
+    for (_, claim) in
         h.a.service
             .claim_relay(h.c.execution(), std::num::NonZeroUsize::new(2).unwrap())
             .await?

@@ -181,14 +181,15 @@ impl Application {
     pub(crate) fn record_relay(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
-        result: &std::result::Result<usize, Error>,
+        message: Option<&str>,
+        result: std::result::Result<(), &Error>,
     ) {
         let scope = rss_reconcile::Scope::new(
             binding.tenant(),
             crate::worker::jobs::domain(self.profile()),
         )
         .expect("fixed relay domain");
-        let outcome = result.as_ref().map(|_| ()).map_err(|error| match error {
+        let outcome = result.map_err(|error| match error {
             Error::CommitUnknown => rss_reconcile::ErrorKind::CommitUnknown,
             Error::RollbackFailed => rss_reconcile::ErrorKind::RollbackFailed,
             _ => rss_reconcile::ErrorKind::Transient,
@@ -199,6 +200,7 @@ impl Application {
             .relay(
                 &scope,
                 binding.epoch().get(),
+                message,
                 outcome,
                 self.clock.unix_seconds().ok(),
             );

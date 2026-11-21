@@ -47,12 +47,12 @@ impl Capacity {
     }
     pub(crate) fn command_limits(parallelism: NonZeroUsize) -> (usize, usize) {
         let total = parallelism.get().min(4);
-        (total, total.min(3))
+        (total, if total >= 3 { total - 1 } else { total })
     }
     pub(crate) fn commands(parallelism: NonZeroUsize) -> Arc<Self> {
         let (total, owner) = Self::command_limits(parallelism);
         let binding = total.saturating_sub(1).clamp(1, 2);
-        Self::new(total, owner, total.min(3), binding)
+        Self::new(total, owner, owner, binding)
     }
     pub(crate) fn total(&self) -> NonZeroUsize {
         NonZeroUsize::new(self.total).expect("positive execution capacity")
@@ -75,18 +75,19 @@ impl Capacity {
     ) -> Option<Vec<Slot>> {
         let key = Binding { owner, tenant };
         let mut changed = self.changed.subscribe();
-        let ticket = Arc::new(());
+        let ticket = Waiter {
+            budget: self,
+            id: Arc::new(()),
+        };
         self.state
             .lock()
             .expect("admission state")
             .waiting
-            .push_back((ticket.clone(), key));
+            .push_back((ticket.id.clone(), key));
         loop {
             {
                 let mut state = self.state.lock().expect("admission state");
                 if stop.is_cancelled() {
-                    state.waiting.retain(|(id, _)| !Arc::ptr_eq(id, &ticket));
-                    self.changed.send_replace(());
                     return None;
                 }
                 // Skip saturated owners/tenants without giving a hot binding priority
@@ -96,12 +97,10 @@ impl Capacity {
                     .iter()
                     .position(|(_, k)| self.available(&state, *k) > 0);
                 if let Some(index) = next
-                    && Arc::ptr_eq(&ticket, &state.waiting[index].0)
+                    && Arc::ptr_eq(&ticket.id, &state.waiting[index].0)
                 {
-                    state.waiting.remove(index);
                     let count = self.available(&state, key);
                     state.active.extend(std::iter::repeat_n(key, count));
-                    self.changed.send_replace(());
                     return Some(
                         (0..count)
                             .map(|_| Slot {
@@ -117,6 +116,22 @@ impl Capacity {
                 value = changed.changed() => value.expect("live admission budget"),
             }
         }
+    }
+}
+// A dropped acquire future must also let the next eligible waiter proceed.
+struct Waiter<'a> {
+    budget: &'a Capacity,
+    id: Arc<()>,
+}
+impl Drop for Waiter<'_> {
+    fn drop(&mut self) {
+        self.budget
+            .state
+            .lock()
+            .expect("admission state")
+            .waiting
+            .retain(|(id, _)| !Arc::ptr_eq(id, &self.id));
+        self.budget.changed.send_replace(());
     }
 }
 pub(crate) struct Slot {
@@ -154,17 +169,59 @@ mod tests {
             let waiting = capacity.acquire("script", a, &stop);
             tokio::pin!(waiting);
             assert!(futures::poll!(&mut waiting).is_pending());
-            if binding < total {
-                let peer = capacity.acquire("inventory", a, &stop).await.unwrap();
-                assert_eq!(peer.len(), (total - binding).min(3 - binding));
-                if total == 4 {
-                    let late = capacity.acquire("script", b, &stop).await.unwrap();
-                    assert_eq!(late.len(), 1);
-                }
+            if total > 1 {
+                let peer = capacity.acquire("inventory", b, &stop).await.unwrap();
+                assert_eq!(peer.len(), (total - binding).min(binding));
             }
             drop(held);
             assert_eq!(waiting.await.unwrap().len(), binding);
         }
+    }
+    #[tokio::test]
+    async fn one_owner_or_tenant_cannot_take_the_last_of_three_or_four_slots() {
+        let stop = CancellationToken::new();
+        let a = Uuid::from_u128(1);
+        let b = Uuid::from_u128(2);
+        for total in [3, 4] {
+            for (owner, tenant) in [("script", b), ("inventory", a)] {
+                let capacity = Capacity::commands(NonZeroUsize::new(total).unwrap());
+                let hot = capacity.acquire("script", a, &stop).await.unwrap();
+                assert_eq!(hot.len(), 2);
+                let more = capacity.acquire(owner, tenant, &stop);
+                tokio::pin!(more);
+                let _another = if total == 4 {
+                    let slots = more.await.unwrap();
+                    assert_eq!(slots.len(), 1);
+                    Some(slots)
+                } else {
+                    assert!(futures::poll!(&mut more).is_pending());
+                    None
+                };
+                assert_eq!(
+                    capacity
+                        .acquire("device", Uuid::from_u128(3), &stop)
+                        .await
+                        .unwrap()
+                        .len(),
+                    1
+                );
+            }
+        }
+    }
+    #[tokio::test]
+    async fn dropping_the_oldest_waiter_unblocks_the_next() {
+        let stop = CancellationToken::new();
+        let capacity = Capacity::commands(NonZeroUsize::MIN);
+        let tenant = Uuid::from_u128(1);
+        let held = capacity.acquire("device", tenant, &stop).await.unwrap();
+        let mut oldest = Box::pin(capacity.acquire("script", tenant, &stop));
+        let mut next = Box::pin(capacity.acquire("inventory", tenant, &stop));
+        assert!(futures::poll!(&mut oldest).is_pending());
+        assert!(futures::poll!(&mut next).is_pending());
+        drop(held);
+        assert!(futures::poll!(&mut next).is_pending());
+        drop(oldest);
+        assert_eq!(next.await.unwrap().len(), 1);
     }
     #[tokio::test]
     async fn projection_refills_one_returned_slot_and_cancels_queued_claims() {

@@ -271,7 +271,10 @@ impl Service {
         execution: rss_transactional_messaging::fence::ExecutionBinding,
         limit: std::num::NonZeroUsize,
     ) -> std::result::Result<
-        Vec<impl Future<Output = std::result::Result<(), Error>> + Send + '_>,
+        Vec<(
+            rss_transactional_messaging::message::MessageId,
+            impl Future<Output = std::result::Result<(), Error>> + Send + '_,
+        )>,
         Error,
     > {
         let claims = self
@@ -285,7 +288,12 @@ impl Service {
             })?;
         Ok(claims
             .into_iter()
-            .map(|claim| self.relay_claim(execution, claim))
+            .map(|claim| {
+                (
+                    PgOutboxStore::<()>::message(&claim).message_id().clone(),
+                    self.relay_claim(execution, claim),
+                )
+            })
             .collect())
     }
     async fn relay_claim(
@@ -849,22 +857,25 @@ impl Service {
         &self,
         after: Option<(Uuid, i64)>,
     ) -> std::result::Result<Vec<(Uuid, i64)>, Error> {
+        let page = self.readiness.relay_page(after);
         let result = sqlx::query_as("SELECT tenant_id,expected_epoch FROM mdm_recovery_tasks.native_work_relay_scopes($1,$2)").bind(after.map(|x|x.0)).bind(after.map(|x|x.1)).fetch_all(&self.read_pool).await.map_err(|_|Error::Unavailable(Failure::CommandStorage));
+        if let Ok(rows) = &result {
+            page.confirm(rows);
+        }
         self.record_relay_health(&result);
         result
     }
     pub fn observe_relay(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
-        result: &std::result::Result<usize, Error>,
+        message: Option<&str>,
+        result: std::result::Result<(), &Error>,
     ) {
         self.readiness.relay_scope(
             &recovery_scope(binding.tenant()),
             binding.epoch().get(),
-            result
-                .as_ref()
-                .map(|_| ())
-                .map_err(|e| failure(e.clone()).kind()),
+            message,
+            result.map_err(|e| failure(e.clone()).kind()),
         );
     }
 }

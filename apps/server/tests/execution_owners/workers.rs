@@ -700,6 +700,7 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
     let b = Uuid::new_v4();
     let (_, version) = h.policy("relay-first").await?;
     let (_, peer_version) = h.policy_in_scope("relay-peer", "system", scope).await?;
+    let (_, refill_version) = h.policy_in_scope("relay-refill", "system", scope).await?;
     let (_, late_version) = late.policy("relay-late").await?;
     let (_, restart_version) = late.policy("relay-restart").await?;
     assert!(matches!(
@@ -738,12 +739,18 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
     wait(format!("script.{b}"), "published").await?;
     wait(format!("collection.{collection}"), "published").await?;
     assert_eq!(status(format!("script.{a}")).await?, "publishing");
+    let refill = Uuid::new_v4();
+    assert!(matches!(
+        h.admit_on(refill_version, refill, *second.device()).await?,
+        w::PolicyEventDecision::Accepted { .. }
+    ));
     let arrived = Uuid::new_v4();
     assert!(matches!(
         late.admit(late_version, arrived).await?,
         w::PolicyEventDecision::Accepted { .. }
     ));
     hint.notify_one();
+    wait(format!("script.{refill}"), "published").await?;
     wait(format!("script.{arrived}"), "published").await?;
     assert_eq!(status(format!("script.{a}")).await?, "publishing");
     let drain = stack.shutdown();
@@ -763,8 +770,8 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
     let scripts: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_script.runs r JOIN rss_transactional_messaging.outbox o
         ON o.tenant_id=r.tenant_id AND o.message_id='script.'||r.id::text
         WHERE r.id=ANY($1) AND r.gateway_accepted AND o.status='published' AND o.fingerprint=r.dispatch_fingerprint")
-        .bind([a,b,arrived,restart].as_slice()).fetch_one(&h.c.operator).await?;
-    assert_eq!(scripts, 4);
+        .bind([a,b,refill,arrived,restart].as_slice()).fetch_one(&h.c.operator).await?;
+    assert_eq!(scripts, 5);
     let accepted: bool = sqlx::query_scalar(
         "SELECT gateway_accepted FROM mdm_inventory.collection_tasks WHERE tenant_id=$1 AND id=$2",
     )

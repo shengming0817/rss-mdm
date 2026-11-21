@@ -12,7 +12,7 @@ enum Key {
     Scan(Scope),
     Attempt(Target),
     RelayRound(String),
-    Relay(Scope, i64),
+    Relay(Scope, i64, Option<String>),
     Inputs(Scope),
 }
 impl Key {
@@ -74,6 +74,51 @@ pub struct Observations {
     latest: [Option<Scan>; 4],
     sequence: u128,
     truncated: bool,
+}
+/// Correlates a successful ordered discovery page with failures observed before its query.
+pub struct RelayPage<'a> {
+    observations: &'a std::sync::Mutex<Observations>,
+    sequence: u128,
+    domain: &'a str,
+    after: Option<(uuid::Uuid, i64)>,
+}
+impl<'a> RelayPage<'a> {
+    pub fn begin(
+        observations: &'a std::sync::Mutex<Observations>,
+        domain: &'a str,
+        after: Option<(uuid::Uuid, i64)>,
+    ) -> Self {
+        let sequence = observations.lock().expect("relay observations").sequence;
+        Self {
+            observations,
+            sequence,
+            domain,
+            after,
+        }
+    }
+    /// Every pending or publishing message keeps its binding discoverable.
+    /// Absence in the covered interval proves that another worker may have drained it.
+    pub fn confirm(self, rows: &[(uuid::Uuid, i64)]) {
+        let mut state = self.observations.lock().expect("relay observations");
+        let before = state.failures.len();
+        state.failures.retain(|key, failure| {
+            let Key::Relay(scope, epoch, _) = key else {
+                return true;
+            };
+            let binding = (uuid::Uuid::from_bytes(scope.tenant().octets()), *epoch);
+            scope.reconciler() != self.domain
+                || failure.sequence > self.sequence
+                || self.after.is_some_and(|after| binding <= after)
+                || rows.last().is_some_and(|last| binding > *last)
+                || rows.binary_search(&binding).is_ok()
+        });
+        if state.failures.len() < before {
+            state.latest[2] = Some(Scan {
+                failure: None,
+                observed_at: None,
+            });
+        }
+    }
 }
 impl Observations {
     fn record(
@@ -148,10 +193,16 @@ impl Observations {
         &mut self,
         scope: &Scope,
         epoch: i64,
+        message: Option<&str>,
         outcome: Result<(), ErrorKind>,
         at: Option<i64>,
     ) {
-        self.record(Key::Relay(scope.clone(), epoch), outcome, None, at);
+        self.record(
+            Key::Relay(scope.clone(), epoch, message.map(str::to_owned)),
+            outcome,
+            None,
+            at,
+        );
     }
     /// The owner supplies the actual durable input target, never a tenant-only alias.
     pub fn inputs(&mut self, target: &Target, outcome: Result<(), ErrorKind>, at: Option<i64>) {
@@ -164,7 +215,16 @@ impl Observations {
         self.failures
             .iter()
             .filter(|(key, _)| key.phase() == Some(index))
-            .max_by_key(|(_, failure)| failure.sequence)
+            .max_by_key(|(_, failure)| {
+                (
+                    index == 2
+                        && matches!(
+                            failure.kind,
+                            ErrorKind::CommitUnknown | ErrorKind::RollbackFailed
+                        ),
+                    failure.sequence,
+                )
+            })
             .map(|(_, failure)| Scan {
                 failure: Some(failure.kind),
                 observed_at: failure.observed_at,

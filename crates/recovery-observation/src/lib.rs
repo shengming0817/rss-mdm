@@ -8,7 +8,7 @@ use std::sync::{
 };
 
 mod observations;
-pub use observations::{Attempt, Observations, Scan, Snapshot};
+pub use observations::{Attempt, Observations, RelayPage, Scan, Snapshot};
 mod store;
 pub use store::ObservedStore;
 
@@ -149,12 +149,21 @@ impl Readiness {
             r.scan(scope, outcome, None);
         }
     }
-    pub fn relay_scope(&self, scope: &Scope, epoch: i64, outcome: Result<(), ErrorKind>) {
+    pub fn relay_page(&self, after: Option<(uuid::Uuid, i64)>) -> RelayPage<'_> {
+        RelayPage::begin(&self.rounds, &self.domain, after)
+    }
+    pub fn relay_scope(
+        &self,
+        scope: &Scope,
+        epoch: i64,
+        message: Option<&str>,
+        outcome: Result<(), ErrorKind>,
+    ) {
         if self.relay_enabled
             && self.check(scope).is_ok()
             && let Ok(mut r) = self.rounds.lock()
         {
-            r.relay(scope, epoch, outcome, None);
+            r.relay(scope, epoch, message, outcome, None);
         }
     }
     fn settled(&self, target: &Target, completion: Completion) {

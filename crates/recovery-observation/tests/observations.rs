@@ -155,14 +155,14 @@ async fn only_same_scope_scan_and_confirmed_target_finish_recover_health() {
             .is_empty()
     );
     assert_eq!(health.health().recovery, Phase::Healthy);
-    health.relay_scope(&scope, 1, Err(ErrorKind::Transient));
-    health.relay_scope(&other_tenant, 1, Ok(()));
-    health.relay_scope(&scope, 2, Ok(()));
+    health.relay_scope(&scope, 1, None, Err(ErrorKind::Transient));
+    health.relay_scope(&other_tenant, 1, None, Ok(()));
+    health.relay_scope(&scope, 2, None, Ok(()));
     assert_eq!(
         health.health().recovery,
         Phase::Failed(ErrorKind::Transient)
     );
-    health.relay_scope(&scope, 1, Ok(()));
+    health.relay_scope(&scope, 1, None, Ok(()));
     assert_eq!(health.health().recovery, Phase::Healthy);
 
     let target = Token(Target::new(scope.clone(), "a").unwrap());

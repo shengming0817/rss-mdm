@@ -4718,6 +4718,7 @@ dependencies = [
  "rss-runtime",
  "tokio",
  "tokio-util",
+ "uuid",
 ]
 
 [[package]]
