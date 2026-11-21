@@ -4716,8 +4716,10 @@ dependencies = [
  "rss-reconcile",
  "rss-request-context",
  "rss-runtime",
+ "rss-transactional-messaging",
  "tokio",
  "tokio-util",
+ "uuid",
 ]
 
 [[package]]

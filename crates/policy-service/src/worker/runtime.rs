@@ -805,37 +805,65 @@ impl PolicyWork {
         if self.service.configuration.is_none() {
             return Ok(Vec::new());
         }
-        sqlx::query_as(
+        let page = rss_mdm_recovery_observation::RelayPage::begin(
+            &self.service.automation_observation,
+            crate::worker::jobs::domain(self.profile()),
+            after,
+        );
+        let result = sqlx::query_as(
             "SELECT tenant_id,expected_epoch FROM mdm_planning.configuration_relay_scopes($1,$2)",
         )
         .bind(after.map(|x| x.0))
         .bind(after.map(|x| x.1))
         .fetch_all(&self.read_pool)
         .await
-        .map_err(|_| Error::Unavailable(Failure::PolicyStorage))
+        .map_err(|_| Error::Unavailable(Failure::PolicyStorage));
+        if let Ok(rows) = &result {
+            page.confirm(rows);
+        }
+        result
     }
-    pub async fn relay_scope(
+    pub async fn claim_relay(
         &self,
-        (tenant, epoch): (Uuid, i64),
-    ) -> std::result::Result<usize, Error> {
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        limit: std::num::NonZeroUsize,
+    ) -> std::result::Result<
+        Vec<(
+            rss_mdm_recovery_observation::RelayMessage,
+            impl Future<Output = std::result::Result<(), Error>> + Send + '_,
+        )>,
+        Error,
+    > {
         let Some(configuration) = self.service.configuration.as_ref() else {
-            return Ok(0);
+            return Ok(Vec::new());
         };
-        let tenant_id = rss_request_context::TenantId::parse(&tenant.to_string())
-            .map_err(|_| Error::Malformed)?;
-        let epoch_id =
-            rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| Error::Malformed)?;
-        let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
-            self.storage,
-            tenant_id,
-            epoch_id,
-        );
-        let force = tokio_util::sync::CancellationToken::new();
-        let timer = Timer::new();
-        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &force);
-        let result = configuration.relay_once(binding, &control).await;
-        self.service.record_relay(binding, &result);
-        Ok(result.unwrap_or(0))
+        configuration
+            .claim_relay(binding, limit, Duration::from_secs(18))
+            .await
+    }
+    pub fn relay_check(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+    ) -> Option<(
+        rss_mdm_recovery_observation::RelayCheck<'_>,
+        &rss_transactional_messaging_postgres::PgRuntime,
+        &rss_transactional_messaging_postgres::PgOutboxStore<()>,
+    )> {
+        let config = self.service.configuration.as_ref()?;
+        let check = rss_mdm_recovery_observation::RelayCheck::begin(
+            &self.service.automation_observation,
+            crate::worker::jobs::domain(self.profile()),
+            binding,
+        )?;
+        Some((check, &config.runtime, &config.outbox))
+    }
+    pub fn observe_relay(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        message: Option<&rss_mdm_recovery_observation::RelayMessage>,
+        result: std::result::Result<(), &Error>,
+    ) {
+        self.service.record_relay(binding, message, result);
     }
 }
 

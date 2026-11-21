@@ -162,6 +162,7 @@ mod recovery_credentials;
 pub mod telemetry;
 
 mod asset_inputs;
+mod delivery_capacity;
 mod local_delivery;
 mod scopes;
 

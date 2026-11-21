@@ -454,19 +454,20 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
     assert!(!accepted().await?);
     assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2 WHERE tenant_id=$1::uuid AND epoch=1")
         .bind(blocked.c.tenant.to_string()).execute(&blocked.c.operator).await?.rows_affected(), 1);
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            for key in h.a.script_work.relay_page(None).await? {
-                h.a.script_work.relay_scope(key).await?;
-            }
-            if accepted().await? {
-                break;
-            }
+    let stop = CancellationToken::new();
+    let relay = crate::assembly::task_relay::Relay::new(2, h.c.execution().storage(), &stop);
+    let work = h.a.script_work.clone();
+    let task = tokio::spawn(async move { crate::assembly::task_relay::script(&relay, work).await });
+    let observed = tokio::time::timeout(Duration::from_secs(20), async {
+        while !accepted().await? {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         Ok::<_, anyhow::Error>(())
     })
-    .await??;
+    .await;
+    stop.cancel();
+    task.await?;
+    observed??;
     let epoch: i64 = sqlx::query_scalar(
         "SELECT expected_epoch FROM mdm_script.runs WHERE tenant_id=$1::uuid AND id=$2",
     )
@@ -559,61 +560,225 @@ async fn recoverable_batch_scan_failure_does_not_stop_other_tenants() -> Result<
 #[path = "discovery.rs"]
 mod discovery;
 
+async fn registered_relay(
+    h: &Harness,
+    hint: Arc<tokio::sync::Notify>,
+) -> Result<rss_runtime::ShutdownStack> {
+    let r = &h.a.resources;
+    let owner = planning::owner(&h.c, "mdm_policy_runtime").await?;
+    let app = crate::assembly::policy::application(
+        &r.background,
+        &owner,
+        h.c.execution(),
+        &[7; 32],
+        Arc::new(crate::clock::SystemClock),
+        r.protection.clone(),
+        None,
+    )
+    .await?;
+    let events = crate::assembly::policy::events(
+        h.c.execution(),
+        app.clone(),
+        Arc::new(crate::assembly::policy::EventInputs {
+            source: r.source.clone(),
+            protection: r.protection.clone(),
+            instance: h.c.inputs.installation.instance_id.clone(),
+        }),
+        h.a.software.materials.clone(),
+        h.a.registration.materials.clone(),
+        Vec::new(),
+    )
+    .await?;
+    let policy = rss_mdm_policy_service::worker::PolicyWork::new(
+        h.c.database.archive_pool(),
+        h.c.execution().storage(),
+        app,
+        events,
+        r.storage.reconcile.clone(),
+    );
+    let mut stack = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(25))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut startup = stack.startup()?;
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        crate::owner_storage::Resource::new(owner.runtime, "relay-policy-test"),
+    ));
+    let mut launch = startup.commit();
+    launch.stage_task_with_token(
+        crate::assembly::task_relay::registration(
+            policy,
+            h.a.service.clone(),
+            h.a.script_work.clone(),
+            h.a.collection_work.clone(),
+            h.a.software.service.clone(),
+            h.a.registration.native.clone(),
+            h.a.registration.worker.clone(),
+            h.a.access_execution.worker.clone(),
+            Vec::new(),
+            None,
+            4,
+            h.c.execution().storage(),
+            hint,
+        )
+        .critical(),
+    );
+    launch.finish();
+    Ok(stack)
+}
+
+async fn accept_collection(h: &Harness) -> Result<Uuid> {
+    let (definition, frozen, template) = super::mixed::agent(h)?;
+    let mut tx = command::seed_transaction(&h.c).await?;
+    sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id, device, source, epoch, enabled) VALUES($1::uuid,$2,'agent.native',$3,TRUE)")
+        .bind(h.c.tenant.to_string()).bind(h.p.device().into_uuid()).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+    tx.commit().await?;
+    let version = super::mixed::publish(h, Uuid::new_v4(), 1, definition, frozen).await?;
+    let input = w::TaskClaimRequest::new(
+        Uuid::new_v4(),
+        vec![w::ExecutorProfile::PowerShell7],
+        context(),
+    )?
+    .with_environment(rss_mdm_agent_wire::CollectionEnvironment {
+        edition: None,
+        tools: Default::default(),
+        native_engines: template.spec().plan.requirements(),
+    })?;
+    h.delivery.claim(&h.p, &input, &request(&h.c)).await?;
+    Ok(sqlx::query_scalar("SELECT id FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND policy_version=$2")
+        .bind(h.c.tenant.to_string()).bind(version).fetch_one(&h.c.operator).await?)
+}
+
 #[tokio::test]
-#[ignore = "T2: a locked Script run cannot block another tenant's real outbox settlement"]
+#[ignore = "T2: registered relay overlaps two devices, admits another tenant and owner, then drains on shutdown"]
 async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Result<()> {
-    use crate::assembly::task_relay;
     let h = Harness::open().await?;
-    let other = Harness::open().await?;
-    let (first, second) = if h.c.tenant.to_string() < other.c.tenant.to_string() {
-        (&h, &other)
-    } else {
-        (&other, &h)
-    };
-    let a = Uuid::new_v4();
-    let b = Uuid::new_v4();
-    for (host, id) in [(first, a), (second, b)] {
-        let input = w::TaskClaimRequest::new(
+    let late = Harness::open().await?;
+    let trust: serde_json::Value = sqlx::query_scalar("SELECT body FROM mdm_task_signing.versions WHERE tenant_id=$1 AND usage='agent_task' AND revision=1")
+        .bind(Uuid::from_bytes(h.c.tenant.octets())).fetch_one(&h.c.operator).await?;
+    let (second, _, scope) = Harness::endpoint(&h.c, &serde_json::from_value(trust)?).await?;
+    for (host, agent) in [(&h, &h.p), (&h, &second), (&late, &late.p)] {
+        let announcement = w::TaskClaimRequest::new(
             Uuid::new_v4(),
             vec![w::ExecutorProfile::PowerShell7],
             context(),
         )?;
         host.delivery
-            .claim(&host.p, &input, &request(&host.c))
+            .claim(agent, &announcement, &request(&host.c))
             .await?;
-        let (_, version) = host.policy("relay-locked").await?;
-        assert!(matches!(
-            host.admit(version, id).await?,
-            w::PolicyEventDecision::Accepted { .. }
-        ));
     }
-    let mut lock = command::seed_transaction(&first.c).await?;
-    sqlx::query("SELECT 1 FROM mdm_script.runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
-        .bind(first.c.tenant.to_string())
+    let a = Uuid::new_v4();
+    let b = Uuid::new_v4();
+    let (_, version) = h.policy("relay-first").await?;
+    let (_, peer_version) = h.policy_in_scope("relay-peer", "system", scope).await?;
+    let (_, refill_version) = h.policy_in_scope("relay-refill", "system", scope).await?;
+    let (_, late_version) = late.policy("relay-late").await?;
+    let (_, restart_version) = late.policy("relay-restart").await?;
+    assert!(matches!(
+        h.admit(version, a).await?,
+        w::PolicyEventDecision::Accepted { .. }
+    ));
+    assert!(matches!(
+        h.admit_on(peer_version, b, *second.device()).await?,
+        w::PolicyEventDecision::Accepted { .. }
+    ));
+    let collection = accept_collection(&h).await?;
+    let mut lock = command::seed_transaction(&h.c).await?;
+    sqlx::query("SELECT 1 FROM mdm_script.runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+        .bind(Uuid::from_bytes(h.c.tenant.octets()))
         .bind(a)
         .fetch_one(&mut *lock)
         .await?;
-    let stop = CancellationToken::new();
-    let relay = task_relay::Relay::new(2, &stop);
-    let worker = h.a.script_work.clone();
-    let running = tokio::spawn(async move { task_relay::script(&relay, worker).await });
-    let observed = tokio::time::timeout(Duration::from_secs(12), async {
-        loop {
-            let states: (bool, bool) = sqlx::query_as("SELECT
-                EXISTS(SELECT FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id=$2 AND status='publishing'),
-                EXISTS(SELECT FROM rss_transactional_messaging.outbox WHERE tenant_id=$3::uuid AND message_id=$4 AND status='published')")
-                .bind(first.c.tenant.to_string()).bind(format!("script.{a}"))
-                .bind(second.c.tenant.to_string()).bind(format!("script.{b}"))
-                .fetch_one(&first.c.operator).await?;
-            if states == (true, true) { break; }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        Ok::<_, anyhow::Error>(())
-    }).await;
-    stop.cancel();
+    let hint = Arc::new(tokio::sync::Notify::new());
+    // The second host observed an uncertain outcome for b. Its own readback
+    // must distinguish b's publication from the other pending or leased heads.
+    let binding = h.c.execution();
+    let receipt: (String, Vec<u8>) = sqlx::query_as(
+        "SELECT domain,fingerprint FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND message_id=$2",
+    ).bind(Uuid::from_bytes(h.c.tenant.octets())).bind(format!("script.{b}")).fetch_one(&h.c.operator).await?;
+    let message = rss_mdm_recovery_observation::RelayMessage {
+        domain: rss_transactional_messaging::message::MessagingDomain::parse(&receipt.0)?,
+        id: rss_transactional_messaging::message::MessageId::parse(&format!("script.{b}"))?,
+        fingerprint: rss_transactional_messaging::message::MessageFingerprint::from_bytes(
+            receipt
+                .1
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("invalid outbox fingerprint"))?,
+        ),
+    };
+    let observer = &late.a.script_work;
+    observer.observe_relay(binding, Some(&message), Err(&script::Error::CommitUnknown));
+    crate::assembly::task_relay::verify_publication(binding, observer.relay_check(binding)).await;
+    assert!(matches!(
+        observer.health().relay,
+        Some(rss_mdm_recovery_observation::Phase::Failed(_))
+    ));
+    let stack = registered_relay(&h, hint.clone()).await?;
+    let status = |message: String| {
+        sqlx::query_scalar::<_, String>(
+            "SELECT status FROM rss_transactional_messaging.outbox WHERE message_id=$1",
+        )
+        .bind(message)
+        .fetch_one(&h.c.operator)
+    };
+    let wait = |message: String, expected: &'static str| async move {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while status(message.clone()).await? != expected {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await?
+    };
+    wait(format!("script.{b}"), "published").await?;
+    wait(format!("collection.{collection}"), "published").await?;
+    assert_eq!(status(format!("script.{a}")).await?, "publishing");
+    crate::assembly::task_relay::verify_publication(binding, observer.relay_check(binding)).await;
+    assert_eq!(
+        observer.health().relay,
+        Some(rss_mdm_recovery_observation::Phase::Healthy)
+    );
+    let refill = Uuid::new_v4();
+    assert!(matches!(
+        h.admit_on(refill_version, refill, *second.device()).await?,
+        w::PolicyEventDecision::Accepted { .. }
+    ));
+    let arrived = Uuid::new_v4();
+    assert!(matches!(
+        late.admit(late_version, arrived).await?,
+        w::PolicyEventDecision::Accepted { .. }
+    ));
+    hint.notify_one();
+    wait(format!("script.{refill}"), "published").await?;
+    wait(format!("script.{arrived}"), "published").await?;
+    assert_eq!(status(format!("script.{a}")).await?, "publishing");
+    let drain = stack.shutdown();
+    let restart = Uuid::new_v4();
+    assert!(matches!(
+        late.admit(restart_version, restart).await?,
+        w::PolicyEventDecision::Accepted { .. }
+    ));
+    hint.notify_one();
     lock.rollback().await?;
-    running.await?;
-    observed??;
-    other.close().await?;
+    assert!(drain.join().await?.is_clean());
+    assert_eq!(status(format!("script.{a}")).await?, "published");
+    assert_eq!(status(format!("script.{restart}")).await?, "pending");
+    let stack = registered_relay(&h, hint).await?;
+    wait(format!("script.{restart}"), "published").await?;
+    assert!(stack.shutdown().join().await?.is_clean());
+    let scripts: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_script.runs r JOIN rss_transactional_messaging.outbox o
+        ON o.tenant_id=r.tenant_id AND o.message_id='script.'||r.id::text
+        WHERE r.id=ANY($1) AND r.gateway_accepted AND o.status='published' AND o.fingerprint=r.dispatch_fingerprint")
+        .bind([a,b,refill,arrived,restart].as_slice()).fetch_one(&h.c.operator).await?;
+    assert_eq!(scripts, 5);
+    let accepted: bool = sqlx::query_scalar(
+        "SELECT gateway_accepted FROM mdm_inventory.collection_tasks WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(Uuid::from_bytes(h.c.tenant.octets()))
+    .bind(collection)
+    .fetch_one(&h.c.operator)
+    .await?;
+    assert!(accepted);
+    late.close().await?;
     h.close().await
 }

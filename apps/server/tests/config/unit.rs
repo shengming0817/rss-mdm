@@ -274,6 +274,8 @@ fn configured_worker_capacity_and_pool_arithmetic_are_checked_together() {
     assert_eq!(compiled.device.claim_batch_size(), 1024);
     assert_eq!(compiled.device.scan_budget(), 4096);
     assert_eq!(compiled.access_connections, 136);
+    assert_eq!(compiled.command_connections, 128 + 4 + 6);
+    assert_eq!(compiled.policy_connections, 128 + 2 + 3);
     config.background.device_concurrency = u32::MAX as usize;
     assert!(config.background.compile(&config).is_err());
     config.background.device_concurrency = 128;

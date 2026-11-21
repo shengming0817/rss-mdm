@@ -1,6 +1,6 @@
 //! Exact identities survive unrelated successes. No execution or retry policy lives here.
 //! ref: kube-rs kube-runtime/src/controller/mod.rs@f2774b13d66910a8a0fe456cc8e6e52414eb1d0e
-use crate::Phase;
+use crate::{Phase, RelayMessage};
 use rss_reconcile::{Completion, ErrorKind, Observation, Scope, Stage, Target};
 use std::collections::HashMap;
 
@@ -12,7 +12,7 @@ enum Key {
     Scan(Scope),
     Attempt(Target),
     RelayRound(String),
-    Relay(Scope, i64),
+    Relay(Scope, i64, Option<RelayMessage>),
     Inputs(Scope),
 }
 impl Key {
@@ -42,6 +42,7 @@ pub struct Attempt {
 #[derive(Clone, Copy)]
 struct Failure {
     sequence: u128,
+    check_order: u128,
     kind: ErrorKind,
     stage: Option<Stage>,
     observed_at: Option<i64>,
@@ -75,7 +76,91 @@ pub struct Observations {
     sequence: u128,
     truncated: bool,
 }
+/// Correlates a successful ordered discovery page with failures observed before its query.
+pub struct RelayPage<'a> {
+    observations: &'a std::sync::Mutex<Observations>,
+    sequence: u128,
+    domain: &'a str,
+    after: Option<(uuid::Uuid, i64)>,
+}
+impl<'a> RelayPage<'a> {
+    pub fn begin(
+        observations: &'a std::sync::Mutex<Observations>,
+        domain: &'a str,
+        after: Option<(uuid::Uuid, i64)>,
+    ) -> Self {
+        let sequence = observations.lock().expect("relay observations").sequence;
+        Self {
+            observations,
+            sequence,
+            domain,
+            after,
+        }
+    }
+    /// Every pending or publishing message keeps its binding discoverable.
+    /// Absence in the covered interval proves that another worker may have drained it.
+    pub fn confirm(self, rows: &[(uuid::Uuid, i64)]) {
+        let mut state = self.observations.lock().expect("relay observations");
+        let before = state.failures.len();
+        state.failures.retain(|key, failure| {
+            let Key::Relay(scope, epoch, _) = key else {
+                return true;
+            };
+            let binding = (uuid::Uuid::from_bytes(scope.tenant().octets()), *epoch);
+            scope.reconciler() != self.domain
+                || failure.sequence > self.sequence
+                || self.after.is_some_and(|after| binding <= after)
+                || rows.last().is_some_and(|last| binding > *last)
+                || rows.binary_search(&binding).is_ok()
+        });
+        if state.failures.len() < before {
+            state.latest[2] = Some(Scan {
+                failure: None,
+                observed_at: None,
+            });
+        }
+    }
+}
 impl Observations {
+    // One check per admitted batch. Rotate across outstanding messages even
+    // when a long-lived failure or a failed read remains unresolved.
+    pub(crate) fn next_relay_check(
+        &mut self,
+        scope: &Scope,
+        epoch: i64,
+    ) -> Option<(RelayMessage, u128)> {
+        let (message, failure) = self
+            .failures
+            .iter_mut()
+            .filter_map(|(key, failure)| match key {
+                Key::Relay(owner, at, Some(message)) if owner == scope && *at == epoch => {
+                    Some((message, failure))
+                }
+                _ => None,
+            })
+            .min_by_key(|(_, f)| f.check_order)?;
+        self.sequence = self.sequence.saturating_add(1);
+        failure.check_order = self.sequence;
+        Some((message.clone(), failure.sequence))
+    }
+
+    pub(crate) fn confirm_publication(
+        &mut self,
+        scope: Scope,
+        epoch: i64,
+        message: RelayMessage,
+        sequence: u128,
+    ) {
+        let key = Key::Relay(scope, epoch, Some(message));
+        if self
+            .failures
+            .get(&key)
+            .is_some_and(|f| f.sequence == sequence)
+        {
+            self.record(key, Ok(()), None, None);
+        }
+    }
+
     fn record(
         &mut self,
         key: Key,
@@ -94,20 +179,28 @@ impl Observations {
             Ok(()) => {
                 self.failures.remove(&key);
             }
-            Err(kind)
-                if self.failures.contains_key(&key) || self.failures.len() < FAILURE_LIMIT =>
-            {
+            Err(kind) => {
+                // Re-reporting changes the evidence watermark, not the place
+                // in the readback queue. New identities join at the tail.
+                let check_order = match self.failures.get(&key) {
+                    Some(existing) => existing.check_order,
+                    None if self.failures.len() < FAILURE_LIMIT => self.sequence,
+                    None => {
+                        self.truncated = true;
+                        return;
+                    }
+                };
                 self.failures.insert(
                     key,
                     Failure {
                         sequence: self.sequence,
+                        check_order,
                         kind,
                         stage,
                         observed_at: at,
                     },
                 );
             }
-            Err(_) => self.truncated = true,
         }
     }
     pub fn discovery(&mut self, domain: &str, outcome: Result<(), ErrorKind>, at: Option<i64>) {
@@ -148,10 +241,16 @@ impl Observations {
         &mut self,
         scope: &Scope,
         epoch: i64,
+        message: Option<&RelayMessage>,
         outcome: Result<(), ErrorKind>,
         at: Option<i64>,
     ) {
-        self.record(Key::Relay(scope.clone(), epoch), outcome, None, at);
+        self.record(
+            Key::Relay(scope.clone(), epoch, message.cloned()),
+            outcome,
+            None,
+            at,
+        );
     }
     /// The owner supplies the actual durable input target, never a tenant-only alias.
     pub fn inputs(&mut self, target: &Target, outcome: Result<(), ErrorKind>, at: Option<i64>) {
@@ -164,7 +263,16 @@ impl Observations {
         self.failures
             .iter()
             .filter(|(key, _)| key.phase() == Some(index))
-            .max_by_key(|(_, failure)| failure.sequence)
+            .max_by_key(|(_, failure)| {
+                (
+                    index == 2
+                        && matches!(
+                            failure.kind,
+                            ErrorKind::CommitUnknown | ErrorKind::RollbackFailed
+                        ),
+                    failure.sequence,
+                )
+            })
             .map(|(_, failure)| Scan {
                 failure: Some(failure.kind),
                 observed_at: failure.observed_at,
@@ -209,5 +317,67 @@ impl Observations {
             truncated: self.truncated,
             latest_failure,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rss_transactional_messaging::message::{MessageFingerprint, MessageId, MessagingDomain};
+
+    #[test]
+    fn publication_readback_rotates_and_cannot_clear_a_concurrent_failure() {
+        let scope = Scope::new(
+            rss_request_context::TenantId::parse("00000000-0000-0000-0000-000000000001").unwrap(),
+            "jobs",
+        )
+        .unwrap();
+        let mut state = Observations::default();
+        let message = |id| RelayMessage {
+            domain: MessagingDomain::parse("dispatch").unwrap(),
+            id: MessageId::parse(id).unwrap(),
+            fingerprint: MessageFingerprint::from_bytes([7; 32]),
+        };
+        for id in ["first", "second"] {
+            state.relay(
+                &scope,
+                1,
+                Some(&message(id)),
+                Err(ErrorKind::Transient),
+                None,
+            );
+        }
+        let (first, seq) = state.next_relay_check(&scope, 1).unwrap();
+        assert_eq!(first.id.as_str(), "first");
+        let (second, _) = state.next_relay_check(&scope, 1).unwrap();
+        assert_eq!(second.id.as_str(), "second");
+        // Both original messages have had a turn. A stream of new failures
+        // and repeat reports for the second must leave the first at the head.
+        for new_id in ["new-a", "new-b", "new-c"] {
+            let new = message(new_id);
+            state.relay(&scope, 1, Some(&new), Err(ErrorKind::Transient), None);
+            state.relay(&scope, 1, Some(&second), Err(ErrorKind::Transient), None);
+        }
+        let (oldest, _) = state.next_relay_check(&scope, 1).unwrap();
+        assert_eq!(oldest.id.as_str(), "first");
+        let (next_original, next) = state.next_relay_check(&scope, 1).unwrap();
+        assert_eq!(next_original.id.as_str(), "second");
+        // Later reports must also keep their place relative to new arrivals.
+        for new_id in ["new-a", "new-b", "new-c"] {
+            state.relay(&scope, 1, Some(&first), Err(ErrorKind::Transient), None);
+            let (checked, watermark) = state.next_relay_check(&scope, 1).unwrap();
+            assert_eq!(checked.id.as_str(), new_id);
+            state.confirm_publication(scope.clone(), 1, checked, watermark);
+        }
+        state.relay(&scope, 1, Some(&first), Err(ErrorKind::CommitUnknown), None);
+        state.confirm_publication(scope.clone(), 1, first, seq);
+        state.confirm_publication(scope.clone(), 1, second, next);
+        assert_eq!(
+            state.snapshot().relay.unwrap().failure,
+            Some(ErrorKind::CommitUnknown)
+        );
+        let (remaining, seq) = state.next_relay_check(&scope, 1).unwrap();
+        state.confirm_publication(scope, 1, remaining, seq);
+        assert_eq!(state.snapshot().relay.unwrap().failure, None);
     }
 }

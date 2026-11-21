@@ -86,13 +86,13 @@ fn discovery_domains_scan_and_target_settlement_have_distinct_identities() {
 fn relay_rounds_and_epochs_cannot_acknowledge_each_other() {
     let a = scope(1, "jobs");
     let mut state = Observations::default();
-    state.relay(&a, 1, Err(ErrorKind::CommitUnknown), None);
+    state.relay(&a, 1, None, Err(ErrorKind::CommitUnknown), None);
     state.relay_round("jobs", Ok(()), None);
-    state.relay(&a, 2, Ok(()), None);
+    state.relay(&a, 2, None, Ok(()), None);
     state.discovery("jobs", Ok(()), None);
     assert!(state.snapshot().failed());
     state.relay_round("jobs", Err(ErrorKind::Transient), None);
-    state.relay(&a, 1, Ok(()), None);
+    state.relay(&a, 1, None, Ok(()), None);
     assert!(state.snapshot().failed());
     state.relay_round("jobs", Ok(()), None);
     assert!(!state.snapshot().failed());
@@ -143,4 +143,34 @@ fn input_recovery_clears_the_exact_target_across_all_attempt_stages() {
         state.settled(&peer, Completion::Converged);
         assert_eq!(state.snapshot().recovery, Phase::Healthy);
     }
+}
+
+#[test]
+fn relay_effects_require_exact_recovery_or_a_newer_durable_discovery_page() {
+    use rss_mdm_recovery_observation::RelayPage;
+    let state = std::sync::Mutex::new(Observations::default());
+    let a = scope(1, "jobs");
+    let key = (uuid::Uuid::from_bytes(a.tenant().octets()), 1);
+    let page = RelayPage::begin(&state, "jobs", None);
+    let identity = |id: &str| rss_mdm_recovery_observation::RelayMessage {
+        id: rss_transactional_messaging::message::MessageId::parse(id).unwrap(),
+        domain: rss_transactional_messaging::message::MessagingDomain::parse("jobs").unwrap(),
+        fingerprint: rss_transactional_messaging::message::MessageFingerprint::from_bytes([1; 32]),
+    };
+    let hot = identity("hot");
+    let peer = identity("peer");
+    let record = |message, outcome| state.lock().unwrap().relay(&a, 1, message, outcome, None);
+    let phase = || state.lock().unwrap().snapshot().relay.unwrap().failure;
+    record(Some(&hot), Err(ErrorKind::CommitUnknown));
+    record(Some(&peer), Err(ErrorKind::Transient));
+    record(None, Ok(()));
+    assert_eq!(phase(), Some(ErrorKind::CommitUnknown));
+    page.confirm(&[]);
+    RelayPage::begin(&state, "jobs", None).confirm(&[key]);
+    RelayPage::begin(&state, "jobs", Some(key)).confirm(&[]);
+    assert_eq!(phase(), Some(ErrorKind::CommitUnknown));
+    record(Some(&hot), Ok(()));
+    assert_eq!(phase(), Some(ErrorKind::Transient));
+    RelayPage::begin(&state, "jobs", None).confirm(&[]);
+    assert_eq!(phase(), None);
 }

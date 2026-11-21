@@ -1,7 +1,10 @@
 //! Configuration work shares the Policy runner budget and preserves owner-local command decoding.
 use super::*;
+use rss_mdm_audit_integration::budget::RuntimeTimer;
 use rss_mdm_audit_integration::{Fact, activity::*};
+use rss_request_context::Deadline;
 use rss_transactional_messaging::outbox::{OutboxRelayStore, OutboxSettlement};
+use rss_transactional_messaging::policy::OperationDeadline;
 use rss_transactional_messaging_postgres::PgOutboxStore;
 pub(crate) fn owns_entity(entity: &str) -> bool {
     entity == "configuration-inputs"
@@ -226,68 +229,87 @@ impl Transactions {
         })).await?;
         Ok(())
     }
-    pub async fn relay_once<T: rss_reconcile::Timer>(
+    pub async fn claim_relay(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
-        control: &rss_reconcile::Control<'_, T>,
-    ) -> std::result::Result<usize, Error> {
+        limit: std::num::NonZeroUsize,
+        budget: std::time::Duration,
+    ) -> std::result::Result<
+        Vec<(
+            rss_mdm_recovery_observation::RelayMessage,
+            impl Future<Output = std::result::Result<(), Error>> + Send + '_,
+        )>,
+        Error,
+    > {
+        let cutoff = Deadline::from_timeout(&RuntimeTimer, budget)
+            .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
+        // Claim and business work share the earlier cutoff. A late Retry or
+        // Published settlement still has one quarter of the original window.
+        let operation = Deadline::at(cutoff.instant() - budget / 4);
         let claims = self
             .outbox
             .claim_partition_heads(
                 binding,
-                std::num::NonZeroUsize::MIN,
-                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                    control.remaining(),
-                ),
+                limit,
+                OperationDeadline::from_cutoff(operation, &RuntimeTimer),
             )
             .await
             .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
-        let count = claims.len();
-        for claim in claims {
-            let message = PgOutboxStore::<()>::message(&claim);
-            let id = message
-                .message_id()
-                .as_str()
-                .strip_prefix("dispatch.")
-                .and_then(|v| Uuid::parse_str(v).ok())
-                .ok_or(Error::Unavailable(Failure::CommandInvariant))?;
-            let fingerprint = message.fingerprint().as_bytes().to_vec();
-            let result = self
-                .accept_dispatch(
-                    binding,
-                    id,
-                    fingerprint,
-                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                        control.remaining(),
-                    ),
-                )
-                .await;
-            if matches!(
-                result,
-                Err(Error::Unavailable(
-                    Failure::CommandInvariant | Failure::NativeInputIntegrity
-                ))
-            ) {
-                return result.map(|_| 0);
-            }
-            let settlement = if result.is_ok() {
-                OutboxSettlement::Published(())
-            } else {
-                OutboxSettlement::Retry
-            };
-            self.outbox
-                .settle(
-                    claim,
-                    settlement,
-                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                        control.remaining(),
-                    ),
-                )
-                .await
-                .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
-            result?;
+        Ok(claims
+            .into_iter()
+            .map(|claim| {
+                let id = rss_mdm_recovery_observation::RelayMessage::from(
+                    PgOutboxStore::<()>::message(&claim),
+                );
+                (id, self.relay_claim(binding, claim, operation, cutoff))
+            })
+            .collect())
+    }
+    async fn relay_claim(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        claim: rss_transactional_messaging_postgres::PgOutboxClaim,
+        operation: Deadline,
+        cutoff: Deadline,
+    ) -> std::result::Result<(), Error> {
+        let message = PgOutboxStore::<()>::message(&claim);
+        let id = message
+            .message_id()
+            .as_str()
+            .strip_prefix("dispatch.")
+            .and_then(|v| Uuid::parse_str(v).ok())
+            .ok_or(Error::Unavailable(Failure::CommandInvariant))?;
+        let fingerprint = message.fingerprint().as_bytes().to_vec();
+        let result = self
+            .accept_dispatch(
+                binding,
+                id,
+                fingerprint,
+                OperationDeadline::from_cutoff(operation, &RuntimeTimer),
+            )
+            .await;
+        if matches!(
+            result,
+            Err(Error::Unavailable(
+                Failure::CommandInvariant | Failure::NativeInputIntegrity
+            ))
+        ) {
+            return result;
         }
-        Ok(count)
+        let settlement = if result.is_ok() {
+            OutboxSettlement::Published(())
+        } else {
+            OutboxSettlement::Retry
+        };
+        self.outbox
+            .settle(
+                claim,
+                settlement,
+                OperationDeadline::from_cutoff(cutoff, &RuntimeTimer),
+            )
+            .await
+            .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
+        result
     }
     async fn accept_dispatch(
         &self,

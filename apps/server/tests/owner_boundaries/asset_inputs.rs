@@ -309,6 +309,69 @@ async fn late_commits_and_bounded_pages_do_not_use_sequence_as_commit_order() ->
     Ok(())
 }
 
+type AssetDelivery = local_delivery::Delivery<asset_inputs::Receiver, asset_inputs::Validator>;
+type GroupDelivery = local_delivery::Delivery<
+    rss_mdm_scope_service::group_changes::Receiver,
+    rss_mdm_scope_service::group_changes::Validator,
+>;
+async fn projection_lanes(
+    c: &Context,
+    config: &crate::config::Config,
+) -> Result<(Arc<AssetDelivery>, Arc<GroupDelivery>)> {
+    let protection = crate::device_material_support::protection(c)?;
+    let assets = local_delivery::Delivery::open(
+        config,
+        c.database.archive_pool(),
+        protection.clone(),
+        Arc::default(),
+        local_delivery::Lane {
+            database: &config.asset_input_database,
+            role: "mdm_asset_ingress_consumer",
+            domain: asset_inputs::DOMAIN,
+            consumer: asset_inputs::CONSUMER,
+            name: "asset-input-test",
+            scopes: "SELECT * FROM mdm_devices.asset_delivery_scopes($1,$2)",
+        },
+        |_, binding, messaging| {
+            (
+                asset_inputs::Receiver { messaging },
+                asset_inputs::Validator {
+                    storage: binding.storage(),
+                },
+            )
+        },
+    )
+    .await?;
+    let groups = local_delivery::Delivery::open(
+        config,
+        c.database.archive_pool(),
+        protection,
+        Arc::default(),
+        local_delivery::Lane {
+            database: &config.scope_group_database,
+            role: "mdm_scope_group_consumer",
+            domain: rss_mdm_scope_service::group_changes::DOMAIN,
+            consumer: rss_mdm_scope_service::group_changes::CONSUMER,
+            name: "group-input-test",
+            scopes: "SELECT * FROM mdm_group.delivery_scopes($1,$2)",
+        },
+        |runtime, binding, messaging| {
+            (
+                rss_mdm_scope_service::group_changes::Receiver::new(
+                    StorageProfile::Mdm,
+                    runtime,
+                    messaging,
+                ),
+                rss_mdm_scope_service::group_changes::Validator {
+                    storage: binding.storage(),
+                },
+            )
+        },
+    )
+    .await?;
+    Ok((assets, groups))
+}
+
 struct Workers {
     stack: rss_runtime::ShutdownStack,
     pool: sqlx::PgPool,
@@ -328,7 +391,7 @@ impl Workers {
         scopes: Arc<rss_mdm_scope_service::Scopes>,
         policy: Option<&crate::policy_configuration_t2::fixture::Fixture>,
     ) -> Result<Self> {
-        let config: crate::config::Config = serde_json::from_value(
+        let mut config: crate::config::Config = serde_json::from_value(
             crate::host_t2_support::configuration(
                 &c.inputs,
                 "shared",
@@ -337,60 +400,13 @@ impl Workers {
             )
             .await?,
         )?;
+        // Exercise durable owner transitions without waiting through a five-second
+        // recovery scan for each page of an already active calculation.
+        config.background.scheduling.planning.scan_interval_ms = 1;
         let background = config.background.compile(&config)?;
-        let protection = crate::device_material_support::protection(c)?;
         let listener = worker_wake::Listener::new(config.access_options()?);
         let signals = listener.signals.clone();
-        let assets = local_delivery::Delivery::open(
-            &config,
-            c.database.archive_pool(),
-            protection.clone(),
-            Arc::default(),
-            local_delivery::Lane {
-                database: &config.asset_input_database,
-                role: "mdm_asset_ingress_consumer",
-                domain: asset_inputs::DOMAIN,
-                consumer: asset_inputs::CONSUMER,
-                name: "asset-input-test",
-                scopes: "SELECT * FROM mdm_devices.asset_delivery_scopes($1,$2)",
-            },
-            |_, binding, messaging| {
-                (
-                    asset_inputs::Receiver { messaging },
-                    asset_inputs::Validator {
-                        storage: binding.storage(),
-                    },
-                )
-            },
-        )
-        .await?;
-        let groups = local_delivery::Delivery::open(
-            &config,
-            c.database.archive_pool(),
-            protection,
-            Arc::default(),
-            local_delivery::Lane {
-                database: &config.scope_group_database,
-                role: "mdm_scope_group_consumer",
-                domain: rss_mdm_scope_service::group_changes::DOMAIN,
-                consumer: rss_mdm_scope_service::group_changes::CONSUMER,
-                name: "group-input-test",
-                scopes: "SELECT * FROM mdm_group.delivery_scopes($1,$2)",
-            },
-            |runtime, binding, messaging| {
-                (
-                    rss_mdm_scope_service::group_changes::Receiver::new(
-                        StorageProfile::Mdm,
-                        runtime,
-                        messaging,
-                    ),
-                    rss_mdm_scope_service::group_changes::Validator {
-                        storage: binding.storage(),
-                    },
-                )
-            },
-        )
-        .await?;
+        let (assets, groups) = projection_lanes(c, &config).await?;
         let pool = c.inputs.pool("shared", "mdm_scheduler_runtime").await?;
         let timer = rss_mdm_device_service::control::recovery::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -1762,11 +1778,109 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
     Ok(())
 }
 
+async fn publish_pair(
+    c: &Context,
+    tenant: rss_request_context::TenantId,
+    group: Uuid,
+) -> Result<String> {
+    use rss_mdm_device_service::object_published::{self, ObjectPublished};
+    use rss_mdm_group_postgres::{GroupChangeKind, GroupChanged};
+    let id = Uuid::from_bytes(tenant.octets());
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let operation = Uuid::new_v4();
+    let g = GroupChanged {
+        execution_epoch: 1,
+        v: 1,
+        kind: GroupChangeKind::Created,
+        group_id: group.to_string(),
+        operation_id: operation.to_string(),
+        group_revision: 1,
+        member_version: 0,
+        authority_version: 1,
+        member_count: 0,
+        added: 0,
+        removed: 0,
+        rule_version: None,
+    };
+    let object = ObjectPublished {
+        execution_epoch: 1,
+        v: 1,
+        tenant: id,
+        history_epoch: Uuid::new_v4(),
+        snapshot_id: Uuid::new_v4(),
+        through: 1,
+    };
+    sqlx::query("SELECT rss_transactional_messaging.prepare_outbox_partitions($1)")
+        .bind(json!([["mdm-group", group]]))
+        .execute(&mut *tx)
+        .await?;
+    for (domain, route, contract, schema, message, body, partition) in [
+        (
+            "mdm-group",
+            "group.changed",
+            "mdm.group.changed",
+            rss_mdm_group_postgres::EVENT_SCHEMA,
+            format!("group.changed.v1:{operation}"),
+            serde_json::to_vec(&g)?,
+            Some(PartitionKey::parse(&group.to_string())?),
+        ),
+        (
+            "mdm-assets",
+            "object.published",
+            "mdm.device.object-published",
+            object_published::SCHEMA,
+            object.message_id(),
+            serde_json::to_vec(&object)?,
+            None,
+        ),
+    ] {
+        let envelope = MessageEnvelope::new(
+            MessageId::parse(&message)?,
+            MessageMetadata::new(
+                AuthoredMessageMetadata::new(
+                    tenant,
+                    rss_contract::Timepoint::try_from(
+                        time::OffsetDateTime::now_utc().unix_timestamp(),
+                    )?,
+                    MessagingDomain::parse(domain)?,
+                    MessageRoute::parse(route)?,
+                    ContractIdentity::new(
+                        rss_contract::ContractId::parse(contract)?,
+                        rss_contract::ContractVersion::from_static_major(1),
+                        rss_contract::SchemaDigest::parse(&format!(
+                            "sha256:{:x}",
+                            Sha256::digest(schema.as_bytes())
+                        ))?,
+                    ),
+                ),
+                MessageMetadataExtensions::new(None, partition, None, BTreeMap::new()),
+            ),
+            body,
+        );
+        let result: String =
+            sqlx::query_scalar("SELECT rss_transactional_messaging.append_outbox($1,$2)")
+                .bind(envelope.canonical_bytes())
+                .bind(json!({"trace":null,"tenant_authority":null}))
+                .fetch_one(&mut *tx)
+                .await?;
+        assert_eq!(result, "inserted");
+    }
+    sqlx::query(
+        "SELECT pg_notify('mdm_work','group_events'), pg_notify('mdm_work','asset_inputs')",
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(format!("group.changed.v1:{operation}"))
+}
+
 #[tokio::test]
 #[ignore = "T2: both registered projections cross a 32-binding discovery page while a source row is locked"]
 async fn local_delivery_rotates_past_a_locked_first_tenant_and_a_full_page() -> Result<()> {
-    use rss_mdm_device_service::object_published::{self, ObjectPublished};
-    use rss_mdm_group_postgres::{GroupChangeKind, GroupChanged};
     use rss_request_context::TenantId;
     let mut tenants = (0..33).map(|_| Uuid::new_v4()).collect::<Vec<_>>();
     tenants.sort_unstable();
@@ -1789,92 +1903,8 @@ async fn local_delivery_rotates_past_a_locked_first_tenant_and_a_full_page() -> 
     ] {
         assert!(predicate.contains(value), "{predicate}");
     }
-    for (&tenant, &id) in keys.iter().zip(&tenants) {
-        let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-            .bind(tenant.to_string())
-            .execute(&mut *tx)
-            .await?;
-        let operation = Uuid::new_v4();
-        let group = Uuid::new_v4();
-        let g = GroupChanged {
-            execution_epoch: 1,
-            v: 1,
-            kind: GroupChangeKind::Created,
-            group_id: group.to_string(),
-            operation_id: operation.to_string(),
-            group_revision: 1,
-            member_version: 0,
-            authority_version: 1,
-            member_count: 0,
-            added: 0,
-            removed: 0,
-            rule_version: None,
-        };
-        let object = ObjectPublished {
-            execution_epoch: 1,
-            v: 1,
-            tenant: id,
-            history_epoch: Uuid::new_v4(),
-            snapshot_id: Uuid::new_v4(),
-            through: 1,
-        };
-        sqlx::query("SELECT rss_transactional_messaging.prepare_outbox_partitions($1)")
-            .bind(json!([["mdm-group", group]]))
-            .execute(&mut *tx)
-            .await?;
-        for (domain, route, contract, schema, message, body, partition) in [
-            (
-                "mdm-group",
-                "group.changed",
-                "mdm.group.changed",
-                rss_mdm_group_postgres::EVENT_SCHEMA,
-                format!("group.changed.v1:{operation}"),
-                serde_json::to_vec(&g)?,
-                Some(PartitionKey::parse(&group.to_string())?),
-            ),
-            (
-                "mdm-assets",
-                "object.published",
-                "mdm.device.object-published",
-                object_published::SCHEMA,
-                object.message_id(),
-                serde_json::to_vec(&object)?,
-                None,
-            ),
-        ] {
-            let envelope = MessageEnvelope::new(
-                MessageId::parse(&message)?,
-                MessageMetadata::new(
-                    AuthoredMessageMetadata::new(
-                        tenant,
-                        rss_contract::Timepoint::try_from(
-                            time::OffsetDateTime::now_utc().unix_timestamp(),
-                        )?,
-                        MessagingDomain::parse(domain)?,
-                        MessageRoute::parse(route)?,
-                        ContractIdentity::new(
-                            rss_contract::ContractId::parse(contract)?,
-                            rss_contract::ContractVersion::from_static_major(1),
-                            rss_contract::SchemaDigest::parse(&format!(
-                                "sha256:{:x}",
-                                Sha256::digest(schema.as_bytes())
-                            ))?,
-                        ),
-                    ),
-                    MessageMetadataExtensions::new(None, partition, None, BTreeMap::new()),
-                ),
-                body,
-            );
-            let result: String =
-                sqlx::query_scalar("SELECT rss_transactional_messaging.append_outbox($1,$2)")
-                    .bind(envelope.canonical_bytes())
-                    .bind(json!({"trace":null,"tenant_authority":null}))
-                    .fetch_one(&mut *tx)
-                    .await?;
-            assert_eq!(result, "inserted");
-        }
-        tx.commit().await?;
+    for tenant in &keys {
+        publish_pair(&c, *tenant, Uuid::new_v4()).await?;
     }
     let mut held = c.operator.begin().await?;
     // Both claimed effects insert this same tenant's dispatch row. Keep the insert
@@ -1917,6 +1947,186 @@ async fn local_delivery_rotates_past_a_locked_first_tenant_and_a_full_page() -> 
     workers.close().await?;
     drained??;
     owners.storage.runtime.close().await;
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "T2: registered projections refill beside a locked effect, drain and resume on the same database"]
+async fn local_delivery_refills_while_a_group_head_is_in_flight() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let second = Context::open("shared", &[]).await?;
+    let late = second.tenant;
+    let config = serde_json::from_value(
+        crate::host_t2_support::configuration(
+            &c.inputs,
+            "shared",
+            "127.0.0.1:0".parse()?,
+            Uuid::new_v4(),
+        )
+        .await?,
+    )?;
+    let start = || async {
+        let (assets, groups) = projection_lanes(&c, &config).await?;
+        let hint = Arc::new(tokio::sync::Notify::new());
+        let mut stack = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(25))?,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )?;
+        let mut startup = stack.startup()?;
+        startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+            local_delivery::Resource(assets.clone()),
+        ));
+        startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+            local_delivery::Resource(groups.clone()),
+        ));
+        let mut launch = startup.commit();
+        launch.stage_task_with_token(
+            assets
+                .clone()
+                .registration(Arc::new(tokio::sync::Notify::new()))
+                .critical(),
+        );
+        launch.stage_task_with_token(groups.registration(hint.clone()).critical());
+        launch.finish();
+        Ok::<_, anyhow::Error>((stack, hint, assets))
+    };
+    planning::endpoint(&c).await?;
+    let (asset, _) = message(&c).await?;
+    let (seed, _) = deliver_input(&c, &asset).await?;
+    seed.close().await;
+    planning::endpoint(&second).await?;
+    let (third, _) = message(&second).await?;
+    let (seed, _) = deliver_input(&second, &third).await?;
+    seed.close().await;
+    let group = Uuid::new_v4();
+    let head = publish_pair(&c, c.tenant, group).await?;
+    let tail = publish_pair(&c, c.tenant, group).await?;
+    let peer = publish_pair(&c, c.tenant, Uuid::new_v4()).await?;
+    let mut lock = c.operator.begin().await?;
+    sqlx::query(
+        "INSERT INTO mdm_scope.group_changes(tenant_id,event_id,group_id) VALUES($1,$2,$3)",
+    )
+    .bind(Uuid::from_bytes(c.tenant.octets()))
+    .bind(&head)
+    .bind(group)
+    .execute(&mut *lock)
+    .await?;
+    // Hold both tenants' Scope targets. The first tenant supplies both routes,
+    // the second supplies the third independent head. Each needs a physical
+    // connection for its effect after its initial RSS lease renewal.
+    // Keep the observation connection independent of both lock holders.
+    let barrier = c.inputs.pool("shared", "postgres").await?;
+    let mut inputs = barrier.begin().await?;
+    let tenant = Uuid::from_bytes(c.tenant.octets());
+    let holder: i32 = sqlx::query_scalar("SELECT pg_backend_pid() FROM rss_reconcile.targets WHERE tenant_id=$1 AND reconciler='mdm.scopes' AND entity='inputs' FOR UPDATE")
+        .bind(tenant).fetch_one(&mut *inputs).await?;
+    let late_tenant = Uuid::from_bytes(late.octets());
+    sqlx::query("SELECT 1 FROM rss_reconcile.targets WHERE tenant_id=$1 AND reconciler='mdm.scopes' AND entity='inputs' FOR UPDATE")
+        .bind(late_tenant).fetch_one(&mut *inputs).await?;
+    let object: String = sqlx::query_scalar("SELECT message_id FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND domain='mdm-assets' AND envelope->>'route'='object.published' ORDER BY seq LIMIT 1")
+        .bind(tenant).fetch_one(&mut *inputs).await?;
+    let routes = vec![
+        asset.id().as_str().to_owned(),
+        object,
+        third.id().as_str().to_owned(),
+    ];
+    sqlx::query("SELECT seq FROM rss_transactional_messaging.outbox WHERE tenant_id=ANY($1) AND domain='mdm-assets' AND message_id<>ALL($2) FOR UPDATE")
+        .bind(&[tenant,late_tenant][..]).bind(&routes).fetch_all(&mut *inputs).await?;
+    let (stack, hint, assets) = start().await?;
+    let tenants = [tenant, late_tenant];
+    let blocked = || {
+        sqlx::query_as::<_, (i64, i64)>(
+            "WITH RECURSIVE blockers(effect, blocker) AS (
+            SELECT pid, unnest(pg_blocking_pids(pid)) FROM pg_stat_activity
+            WHERE datname=current_database() AND usename='mdm_asset_ingress_consumer'
+            UNION SELECT effect, unnest(pg_blocking_pids(blocker)) FROM blockers
+          ) SELECT
+            (SELECT count(*) FROM rss_transactional_messaging.outbox
+                WHERE tenant_id=ANY($1) AND message_id=ANY($2) AND status='publishing'),
+            (SELECT count(DISTINCT effect) FROM blockers WHERE blocker=$3)",
+        )
+        .bind(&tenants[..])
+        .bind(&routes)
+        .bind(holder)
+        .fetch_one(&c.operator)
+    };
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while blocked().await? != (3, 3) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Ok::<_, sqlx::Error>(())
+    })
+    .await
+    .context("three real asset effects waiting on Scope targets")??;
+    // Same projection and pool used by RSS renewal. With three connections
+    // this read cannot complete until an effect releases its lock.
+    tokio::time::timeout(Duration::from_secs(1), assets.next_delay(c.execution()))
+        .await
+        .context("fourth physical connection available while all three effects are held")??;
+    assert_eq!(blocked().await?, (3, 3));
+    drop(assets);
+    inputs.rollback().await?;
+    barrier.close().await;
+    let status = |id: String| {
+        sqlx::query_scalar::<_, String>("SELECT status FROM rss_transactional_messaging.outbox WHERE domain='mdm-group' AND message_id=$1")
+            .bind(id).fetch_one(&c.operator)
+    };
+    let published = |id: String| async move {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while status(id.clone()).await? != "published" {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await?
+    };
+    published(peer.clone()).await?;
+    let refill = publish_pair(&c, c.tenant, Uuid::new_v4()).await?;
+    let late_event = publish_pair(&c, late, Uuid::new_v4()).await?;
+    hint.notify_one();
+    published(refill.clone()).await?;
+    published(late_event.clone()).await?;
+    assert_eq!(status(head.clone()).await?, "publishing");
+    assert_eq!(status(tail.clone()).await?, "pending");
+    // Root cancellation is synchronous. The registered lane still owns the
+    // effect blocked on our INSERT, and the pool lives until its drain joins.
+    let drain = stack.shutdown();
+    let after_stop = publish_pair(&c, c.tenant, Uuid::new_v4()).await?;
+    hint.notify_one();
+    lock.rollback().await?;
+    assert!(drain.join().await?.is_clean());
+    assert_eq!(status(head.clone()).await?, "published");
+    assert_eq!(status(tail.clone()).await?, "pending");
+    assert_eq!(status(after_stop.clone()).await?, "pending");
+    let (restart, _, _) = start().await?;
+    published(tail.clone()).await?;
+    published(after_stop.clone()).await?;
+    assert!(restart.shutdown().join().await?.is_clean());
+    let events = [head, tail, peer, refill, late_event, after_stop];
+    let confirmed: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM rss_transactional_messaging.outbox o
+         JOIN rss_transactional_messaging.inbox i USING (tenant_id,message_id)
+         JOIN mdm_scope.group_changes g ON (g.tenant_id,g.event_id)=(o.tenant_id,o.message_id)
+         WHERE o.message_id=ANY($1) AND o.status='published' AND i.disposition='succeeded'
+           AND i.consumer_group='mdm-scope-group-changes' AND i.fingerprint=o.fingerprint",
+    )
+    .bind(events.as_slice())
+    .fetch_one(&c.operator)
+    .await?;
+    let assets: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM rss_transactional_messaging.outbox o
+        JOIN rss_transactional_messaging.inbox i USING (tenant_id,message_id)
+        WHERE o.tenant_id=ANY($1) AND o.message_id=ANY($2) AND i.consumer_group='mdm-asset-inputs'
+          AND o.status='published' AND i.disposition='succeeded' AND o.fingerprint=i.fingerprint",
+    )
+    .bind(&[tenant, late_tenant][..])
+    .bind(&routes)
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(assets, 3);
+    assert_eq!(confirmed, events.len() as i64);
+    second.close().await;
     c.close().await;
     Ok(())
 }

@@ -216,12 +216,42 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     wake(c.execution(), &app, device).await?;
     step(&worker, c.tenant, device).await?;
     // The production Policy role owns this outbox relay, including claim and settlement.
-    let timer = rss_mdm_policy_service::clock::Timer::new();
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cancel);
     let configuration = app.configuration.as_ref().expect("MDM configuration");
-    assert_eq!(configuration.relay_once(c.execution(), &control).await?, 1);
-    assert_eq!(configuration.relay_once(c.execution(), &control).await?, 0);
+    let limit = std::num::NonZeroUsize::new(2).unwrap();
+    let claims = configuration
+        .claim_relay(c.execution(), limit, Duration::from_secs(10))
+        .await?;
+    assert_eq!(claims.len(), 1);
+    let (original, delayed) = claims.into_iter().next().unwrap();
+    // Model a claim that arrives near drain: the operation cutoff has passed
+    // but settlement can still release the original lease as a durable Retry.
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(8)).await;
+    tokio::time::resume();
+    assert!(delayed.await.is_err());
+    let retry: bool = sqlx::query_scalar("SELECT status='pending' AND retry_count=1 AND lease_token IS NULL FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id=$2")
+        .bind(c.tenant.to_string()).bind(original.id.as_str()).fetch_one(&c.operator).await?;
+    assert!(retry);
+    tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            let claims = configuration
+                .claim_relay(c.execution(), limit, Duration::from_secs(10))
+                .await?;
+            if let Some((retried, claim)) = claims.into_iter().next() {
+                assert_eq!(retried.id, original.id);
+                claim.await?;
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await??;
+    assert!(
+        configuration
+            .claim_relay(c.execution(), limit, Duration::from_secs(10))
+            .await?
+            .is_empty()
+    );
     let committed = counts(&c, device).await?;
     assert_eq!(committed, (2, 2, 1, 1, 1, 1, 1, 1));
     let identity:(Uuid,serde_json::Value,String)=sqlx::query_as("SELECT o.id, o.authority, r.actor FROM mdm_planning.configuration_operations AS o INNER JOIN mdm_planning.configuration_receipts AS r USING (tenant_id, id) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2").bind(c.tenant.to_string()).bind(device.into_uuid()).fetch_one(&c.operator).await?;

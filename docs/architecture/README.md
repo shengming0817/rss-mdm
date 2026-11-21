@@ -49,4 +49,4 @@ Policy Events 通过 App 的静态参与组合，在 Policy 发起的事务中�
 
 Group 图编辑与最终发布使用同一图屏障复核 graph revision，普通属性和成员计算不取得图锁。Scope 的缺失聚合也受身份锁保护。非等待竞争使整笔事务回滚并重试原任务，不能当成业务版本过期终止任务。
 
-连接按实际物理池累计并乘宿主数：Inventory 8、Scope 4、Policy device_concurrency + 4、Telemetry 5、Resource/Software/Content 管理各 2。后台并发常量与预算复用；禁用 Content/Telemetry 不创建对应池。Command 查询与调度共用其既有读池，独立业务 scheduler 只有调度权限。默认 Compose 容量 160，为标准单宿主预算 128 保留维护余量；多宿主部署必须按总预算配置数据库容量。
+连接按实际物理池累计并乘宿主数：Inventory 8、Scope 4、Policy 按设备并发数加 4 计入（并发数达到 4 时加 5）、Telemetry 5、Resource/Software/Content 管理各 2。后台并发常量与预算复用；禁用 Content/Telemetry 不创建对应池。Command 查询与调度共用其既有读池，独立业务 scheduler 只有调度权限。默认 Compose 容量 160，为标准单宿主预算 128 保留维护余量；多宿主部署必须按总预算配置数据库容量。

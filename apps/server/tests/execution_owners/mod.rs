@@ -91,23 +91,7 @@ impl Harness {
             &[rss_mdm_agent_wire::task_trust::KeyState::Active],
         )
         .await?;
-        let (device, grant) = material::seed_registration(&c).await?;
-        let caps = vec![
-            w::Capability::InventoryCollectionV1,
-            w::Capability::TaskExecuteV1,
-            w::Capability::MdmEnrollmentV1,
-            w::Capability::DeviceUnmanageV1,
-            w::Capability::InventoryNativeV1,
-        ];
-        let p = material::authenticated_agent(&c, grant, &device, caps.clone()).await?;
-        material::seed_ack(&c, &trust, &device).await?;
-        let mut tx = command::seed_transaction(&c).await?;
-        sqlx::query("INSERT INTO mdm_agent.bindings (tenant_id, device, wire_version, capabilities, platform, architecture, execution_context) VALUES (CAST($1 AS uuid), $2, 1, $3, 'windows', 'x86_64', $4)").bind(c.tenant.to_string()).bind(device.into_uuid()).bind(serde_json::to_string(&caps)?).bind(serde_json::to_value(context())?).execute(&mut *tx).await?;
-        tx.commit().await?;
-        let object = serde_json::from_value(
-            json!({"object":{"kind":"endpoint","id":device},"associationVersion":null,"verified":true,"members":[{"device":device,"channel":"agent"}]}),
-        )?;
-        let scope = planning::published(&c, &object).await?.scope;
+        let (p, object, scope) = Self::endpoint(&c, &trust).await?;
         let a = Fixture::open(&c).await?;
         let (audit, delivery) = delivery(&c, &a).await?;
         Ok(Self {
@@ -120,6 +104,33 @@ impl Harness {
             scope,
         })
     }
+    async fn endpoint(
+        c: &Context,
+        trust: &rss_mdm_agent_wire::task_trust::Trust,
+    ) -> Result<(
+        rss_mdm_registration_service::DevicePrincipal,
+        rss_mdm_inventory_service::objects::DeviceObject,
+        Uuid,
+    )> {
+        let (device, grant) = material::seed_registration(c).await?;
+        let caps = vec![
+            w::Capability::InventoryCollectionV1,
+            w::Capability::TaskExecuteV1,
+            w::Capability::MdmEnrollmentV1,
+            w::Capability::DeviceUnmanageV1,
+            w::Capability::InventoryNativeV1,
+        ];
+        let p = material::authenticated_agent(c, grant, &device, caps.clone()).await?;
+        material::seed_ack(c, trust, &device).await?;
+        let mut tx = command::seed_transaction(c).await?;
+        sqlx::query("INSERT INTO mdm_agent.bindings (tenant_id, device, wire_version, capabilities, platform, architecture, execution_context) VALUES (CAST($1 AS uuid), $2, 1, $3, 'windows', 'x86_64', $4)").bind(c.tenant.to_string()).bind(device.into_uuid()).bind(serde_json::to_string(&caps)?).bind(serde_json::to_value(context())?).execute(&mut *tx).await?;
+        tx.commit().await?;
+        let object = serde_json::from_value(
+            json!({"object":{"kind":"endpoint","id":device},"associationVersion":null,"verified":true,"members":[{"device":device,"channel":"agent"}]}),
+        )?;
+        let scope = planning::published(c, &object).await?.scope;
+        Ok((p, object, scope))
+    }
     async fn close(self) -> Result<()> {
         drop(self.delivery);
         drop(self.audit);
@@ -131,11 +142,19 @@ impl Harness {
         self.policy_as(resource, "system").await
     }
     async fn policy_as(&self, resource: &str, run_as: &str) -> Result<(Uuid, Uuid)> {
+        self.policy_in_scope(resource, run_as, self.scope).await
+    }
+    async fn policy_in_scope(
+        &self,
+        resource: &str,
+        run_as: &str,
+        scope: Uuid,
+    ) -> Result<(Uuid, Uuid)> {
         use sha2::{Digest, Sha256};
         let policy = Uuid::new_v4();
         let version = Uuid::new_v4();
         let definition: rss_mdm_policy::Definition = serde_json::from_value(
-            json!({"scope":self.scope,"action":{"kind":"execution","resource":{"id":resource,"version":"1","variant":"default","platform":"windows","architecture":"x86_64"},"parameters":{},"schedule":{"trigger":{"kind":"manual"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null},"frequency":"every_trigger","runLifetimeSeconds":300}}),
+            json!({"scope":scope,"action":{"kind":"execution","resource":{"id":resource,"version":"1","variant":"default","platform":"windows","architecture":"x86_64"},"parameters":{},"schedule":{"trigger":{"kind":"manual"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null},"frequency":"every_trigger","runLifetimeSeconds":300}}),
         )?;
         definition.validate()?;
         let rss_mdm_policy::Action::Execution {
@@ -215,6 +234,14 @@ impl Harness {
             .await?)
     }
     async fn admit(&self, version: Uuid, id: Uuid) -> Result<w::PolicyEventDecision> {
+        self.admit_on(version, id, *self.p.device()).await
+    }
+    async fn admit_on(
+        &self,
+        version: Uuid,
+        id: Uuid,
+        device: rss_mdm_agent_wire::DeviceId,
+    ) -> Result<w::PolicyEventDecision> {
         let transactions = script::Transactions::bind(
             self.a.resources.storage.runtime.clone(),
             self.c.execution(),
@@ -230,9 +257,7 @@ impl Harness {
             }),
         )
         .await?;
-        let target = script::Target {
-            device: *self.p.device(),
-        };
+        let target = script::Target { device };
         Ok(script::transaction::run(
             &self.audit,
             &self.a.resources.storage.runtime,
