@@ -212,7 +212,7 @@ DA 状态上报为 `POST /api/v1/da/status-reports`；注册进度查询为 `POS
 客户端启动时先读取完整的托管引导快照，再裁决 DA 后台候选；签名内容整体替换，不将省略字段视为增量补丁。服务端按 authority/注册代际及 Policy/字段保留强制来源引用，新的空快照、普通 DA 来源或字段较窄的旧强制包不会清除其他字段的记录；只有通过 step-up 修改原签发 Policy 的 managedFields 才释放相应字段。读取失败、无效或撤除不等同于首次缺失。
 原生模板消费者须保持内层 payload 字节和签名绑定的 profile/payload UUID、identifier、version；外层 CMS 可重新签名。完整原生导出装配由 #3093 承接。
 
-RSS 登录恢复密钥沿用本页的恢复凭据列表/查阅入口及 Credentials 权限，轮换/核对使用现有 Credential Policy。独立与嵌入 DA 的管理员须同时拥有设备范围内的 PolicyWrite 和 AccountWrite，经 `POST /api/v1/tenants/{tenant}/devices/{device}/device-access/credential-policies` 发布精确设备的凭据策略。发布体包含策略 `id`、不可变 `version`、递增 `revision`、设备、RSS Login 操作及绑定、`enabled`、`notBefore`、`expiresAt` 和 `runLifetimeSeconds`。按同一内容和版本重试可取回原结果，`GET /api/v1/tenants/{tenant}/devices/{device}/device-access/credential-policies/{version}` 可读取原版本。定向操作引用该版本；发布新版本、禁用策略或到期会阻止旧版本继续执行。轮换托管后，先完成核验再披露当前值。
+RSS 登录恢复密钥沿用本页的恢复凭据列表/查阅入口及 Credentials 权限，轮换/核对使用现有 Credential Policy。独立与嵌入 DA 的管理员须同时拥有租户级 PolicyWrite 和该设备的 AccountWrite，经 `POST /api/v1/tenants/{tenant}/devices/{device}/device-access/credential-policies` 发布精确设备的凭据策略。发布体包含策略 `id`、不可变 `version`、递增 `revision`、设备、RSS Login 操作及绑定、`enabled`、`notBefore`、`expiresAt` 和 `runLifetimeSeconds`。按同一内容和版本重试可取回原结果，`GET /api/v1/tenants/{tenant}/devices/{device}/device-access/credential-policies/{version}` 可读取原版本。定向操作引用该版本；发布新版本、禁用策略或到期会阻止旧版本继续执行。轮换托管后，先完成核验再披露当前值。
 它只恢复 Windows 的 RSS 附加因子，仍需正确系统密码；Mac 沿用原生系统及磁盘恢复。
 普通列表和事件不返回秘密，系统密码与 Secure Token 不作为可查阅 RSS 恢复材料。
 

@@ -27,6 +27,20 @@ async fn target(
         .ok_or(Error::NotFound)?;
     Uuid::parse_str(actor.tenant_id()).map_err(|_| Error::Malformed)
 }
+async fn policy_authority(
+    c: &mut PgConnection,
+    actor: &AuthorizedPrincipal,
+    device: &DeviceId,
+) -> Result<(), Error> {
+    let grants = crate::device_access::service::grants(c, actor).await?;
+    grants
+        .require(actor, Permission::PolicyWrite, None)
+        .map_err(|_| Error::Forbidden)?;
+    grants
+        .require(actor, Permission::AccountWrite, Some(device))
+        .map_err(|_| Error::Forbidden)?;
+    Ok(())
+}
 async fn current_policy(
     c: &mut PgConnection,
     tenant: Uuid,
@@ -64,8 +78,7 @@ impl Service {
             |ctx,c| Box::pin(async move { crate::device_access::service::admit_session(c,ctx.0).await }),
             |ctx,c| Box::pin(async move {
                 let (actor,device,policy)=*ctx;
-                crate::device_access::service::authorize(c,actor,device,Permission::PolicyWrite).await?;
-                crate::device_access::service::authorize(c,actor,device,Permission::AccountWrite).await?;
+                policy_authority(c,actor,device).await?;
                 let tenant=Uuid::parse_str(actor.tenant_id()).map_err(|_|Error::Malformed)?;
                 crate::delivery::lock_da_target(c,actor.tenant_id(),device,None).await?;
                 let now=crate::platform_sso::store::now(c).await?;
@@ -83,8 +96,7 @@ impl Service {
         self.read_with_session(actor, (actor, device, version), |ctx, c| {
             Box::pin(async move {
                 let (actor, device, version) = *ctx;
-                crate::device_access::service::authorize(c, actor, device, Permission::PolicyWrite)
-                    .await?;
+                policy_authority(c, actor, device).await?;
                 let tenant = Uuid::parse_str(actor.tenant_id()).map_err(|_| Error::Malformed)?;
                 CredentialPublication::read(c, tenant, version, false)
                     .await
