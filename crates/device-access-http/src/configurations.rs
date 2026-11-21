@@ -70,7 +70,7 @@ pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Dec
     DeviceReports {
         claim_credential: Route::new(
             "/api/v1/da/credential-operations/next",
-            get(claim_credential, &crate::PROTOCOL, &[Operation::Action]),
+            post(claim_credential, &crate::PROTOCOL, &[Operation::Action]),
         ),
         credential_event: Route::new(
             "/api/v1/da/credential-operations/{id}/events",
@@ -90,7 +90,28 @@ pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Dec
         ),
     }
     .assemble()
+    .authentication(device_transport)
     .layer(axum::extract::DefaultBodyLimit::max(65536))
+}
+fn device_transport(_: &str, _: &str) -> rss_mdm_http_contract::authentication::Description {
+    use rss_mdm_http_contract::{
+        authentication::{Credential, Description},
+        signature::Output,
+    };
+    Description {
+        owner: "device-access-http::tls",
+        alternatives: vec![Credential {
+            kind: "mtls",
+            owner: "registration-service::agent::da::RegistrationService::authenticate",
+            headers: Default::default(),
+            required_headers: vec![],
+            constraints: vec![
+                "Current purpose-bound DA device certificate presented during the TLS handshake",
+            ],
+        }],
+        rejections: Error::responses(),
+        conditional_response_headers: vec![],
+    }
 }
 pub(crate) fn management()
 -> Router<Arc<crate::management::Services>, impl rss_mdm_http_contract::module::Declaration + use<>>
@@ -305,19 +326,45 @@ async fn publication_operation(
     ))
 }
 
+async fn credential_peer(
+    s: &Services,
+    tls: Option<Extension<ClientCertificateEvidence>>,
+    a: &RequestAudit,
+) -> Result<rss_mdm_registration_service::DevicePrincipal, BusinessError> {
+    let cert = tls.ok_or(BusinessError::Unauthorized)?;
+    let p = s.registrations.authenticate(&cert.0).await.map_err(|e| {
+        let e = Error::from(e);
+        match e.failure() {
+            Some(rss_mdm_audit_integration::completion::ResponseFailure::Denied) => {
+                BusinessError::Unauthorized
+            }
+            Some(rss_mdm_audit_integration::completion::ResponseFailure::Forbidden) => {
+                BusinessError::Forbidden
+            }
+            Some(f) => BusinessError::Classified(f),
+            None if e.status().is_client_error() => BusinessError::Unauthorized,
+            None => BusinessError::Unavailable,
+        }
+    })?;
+    a.bind_scope(p.binding())
+        .map_err(|_| BusinessError::Unavailable)?;
+    Ok(p)
+}
+
 async fn claim_credential(
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
     tls: Option<Extension<ClientCertificateEvidence>>,
-) -> Result<Json<Option<rss_mdm_agent_wire::runtime::CredentialTaskSpec>>, Error> {
-    let p = s.registrations.authenticate(&peer(tls)?).await?;
-    a.bind_scope(p.binding()).map_err(|_| Error::Unavailable)?;
+) -> Result<Json<Option<rss_mdm_agent_wire::runtime::CredentialTaskSpec>>, BusinessError> {
+    let p = credential_peer(&s, tls, &a).await?;
+    let b = service(&s)?;
     Ok(Json(
-        s.business
-            .as_ref()
-            .ok_or(Error::Unavailable)?
-            .service
-            .claim_credential(&p, &a)
+        b.service
+            .claim_credential(
+                b.recovery.as_deref().ok_or(BusinessError::Unavailable)?,
+                &p,
+                &a,
+            )
             .await?,
     ))
 }
@@ -327,17 +374,16 @@ async fn credential_event(
     tls: Option<Extension<ClientCertificateEvidence>>,
     Path(id): Path<Uuid>,
     event: Body<rss_mdm_recovery_credentials::tasks::device::Event>,
-) -> Result<Json<rss_mdm_recovery_credentials::tasks::device::Status>, Error> {
-    let p = s.registrations.authenticate(&peer(tls)?).await?;
-    a.bind_scope(p.binding()).map_err(|_| Error::Unavailable)?;
-    let b = s.business.as_ref().ok_or(Error::Unavailable)?;
+) -> Result<Json<rss_mdm_recovery_credentials::tasks::device::Status>, BusinessError> {
+    let p = credential_peer(&s, tls, &a).await?;
+    let b = service(&s)?;
     Ok(Json(
         b.service
             .credential_event(
-                b.recovery.as_deref().ok_or(Error::Unavailable)?,
+                b.recovery.as_deref().ok_or(BusinessError::Unavailable)?,
                 &p,
                 id,
-                &body(event)?,
+                &event?.0,
                 &a,
             )
             .await?,

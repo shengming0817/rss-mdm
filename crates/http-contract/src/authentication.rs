@@ -82,3 +82,37 @@ pub fn identity_credentials(method: &str, bearer: bool, api_key: bool) -> Vec<Cr
     }
     credentials
 }
+
+/// Fixed Cookie/Bearer authentication boundary of the pinned Identity SDK.
+/// ref: rss-identity 1d3ebac9 identity-http-axum/src/{lib,bearer,boundary}.rs
+pub fn identity_rejections() -> Vec<crate::signature::Response> {
+    use crate::signature::{Direction, Representation, Response, Schema};
+    use serde_json::json;
+    [
+        (400, "malformed_request"),
+        (401, "invalid_credential"),
+        (403, "csrf_rejected"),
+        (429, "rate_limited"),
+        (503, "identity_unavailable"),
+    ]
+    .into_iter()
+    .map(|(status, code)| {
+        let mut response = Response::empty(status);
+        response.body = Some(Representation::json(Schema {
+            direction: Direction::Response,
+            value: json!({"type":"object","properties":{"code":{"type":"string","const":code}},"required":["code"],"additionalProperties":false}),
+        }));
+        response.headers.insert("referrer-policy".into(), Schema {direction: Direction::Response, value: json!({"const":"no-referrer"})});
+        if status == 429 {
+            response.headers.insert(
+                "retry-after".into(),
+                Schema {
+                    direction: Direction::Response,
+                    value: json!({"type":"string","pattern":"^[1-9][0-9]{0,9}$"}),
+                },
+            );
+        }
+        response
+    })
+    .collect()
+}

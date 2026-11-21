@@ -130,11 +130,3 @@ fn project_failure(mut response: Response) -> Response {
     }
     response
 }
-
-/// Credential transport of this adapter and its pinned Identity SDK owner.
-pub(crate) fn credential_transport(
-    method: &str,
-    programmatic: bool,
-) -> Vec<rss_mdm_http_contract::authentication::Credential> {
-    rss_mdm_http_contract::authentication::identity_credentials(method, programmatic, programmatic)
-}

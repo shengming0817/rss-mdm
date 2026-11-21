@@ -193,7 +193,6 @@ async fn facts(
             Target::Management(device) => device,
         },
     };
-    store::fence(&mut tx, &tenant).await?;
     if user.as_ref().is_some_and(|u| u.object != object) {
         return Err(Error::Unauthorized);
     }
@@ -389,7 +388,14 @@ impl crate::Service {
                             .is_some_and(|u| Some(u.binding_generation) == generation),
                 );
                 let device_registration = registration(f.device.as_ref(), f.device_registered);
-                let exchange = f.password_exchange.map(|s| s.state);
+                let exchange = f
+                    .password_exchange
+                    .filter(|_| {
+                        user_registration == RegistrationState::Current
+                            && device_registration == RegistrationState::Current
+                            && f.deployment == DeploymentState::Trusted
+                    })
+                    .map(|s| s.state);
                 let login = if f.login_ready && user_registration == RegistrationState::Current {
                     Readiness::Ready
                 } else if matches!(

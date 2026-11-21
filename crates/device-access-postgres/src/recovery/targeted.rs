@@ -40,9 +40,6 @@ impl Service {
                     .await
                     .map_err(super::error)?
                     .ok_or(Error::NotFound)?;
-                if !run.owned(actor) {
-                    return Err(Error::NotFound);
-                }
                 Ok(run.status())
             })
         })
@@ -114,6 +111,39 @@ impl Service {
                         super::credential_tasks::qualified(c, tenant, &operation)
                             .await
                             .map_err(super::error)?;
+                    if let Some(id) = input.replaces {
+                        let previous = device::load(c, tenant, *device, Some(id), false)
+                            .await
+                            .map_err(super::error)?
+                            .ok_or(Error::Conflict)?;
+                        if let Some(recovery) = previous.unresolved() {
+                            let original = if recovery.task_id == id {
+                                previous
+                            } else {
+                                device::load(c, tenant, *device, Some(recovery.task_id), false)
+                                    .await
+                                    .map_err(super::error)?
+                                    .ok_or(Error::Conflict)?
+                            };
+                            let old = &original.status().request;
+                            if old.binding_id != input.binding_id
+                                || old.binding_generation != input.binding_generation
+                            {
+                                let retired = crate::device_access::storage::get_in(
+                                    c,
+                                    tenant,
+                                    old.binding_id,
+                                )
+                                .await?;
+                                if retired.device != *device
+                                    || (retired.generation == old.binding_generation
+                                        && retired.state != rss_mdm_device_access::State::Revoked)
+                                {
+                                    return Err(Error::Conflict);
+                                }
+                            }
+                        }
+                    }
                     let snapshot = rss_mdm_authorization_service::snapshot_on(
                         actor.authority_profile(),
                         c,
@@ -153,23 +183,23 @@ impl Service {
     }
     pub async fn claim_credential(
         &self,
+        credentials: &Credentials,
         p: &DevicePrincipal,
         a: &RequestAudit,
     ) -> Result<Option<CredentialTaskSpec>, Error> {
         a.identify_device(p.device());
-        self.write(a, (self, p), |ctx, c| {
+        self.write(a, (self, credentials, p), |ctx, c| {
             Box::pin(async move {
-                let (service, p) = *ctx;
-                crate::reports::admit(c, service, p, None).await?;
-                let tenant =
-                    Uuid::parse_str(&p.tenant().to_string()).map_err(|_| Error::Malformed)?;
-                let run = device::load(c, tenant, *p.device(), None, true)
-                    .await
-                    .map_err(super::error)?;
+                let (service, credentials, p) = *ctx;
+                let run = admitted_run(c, service, p, None).await?;
                 let value = match run {
                     Some(run) => {
-                        let now = admit_run(c, tenant, &run).await?;
-                        Some(run.permit(c, now).await.map_err(super::error)?)
+                        let now = crate::platform_sso::store::now(c).await?;
+                        Some(
+                            run.permit(c, credentials, now)
+                                .await
+                                .map_err(super::error)?,
+                        )
                     }
                     None => None,
                 };
@@ -198,14 +228,10 @@ impl Service {
         self.write(a, (self, credentials, p, id, input), |ctx, c| {
             Box::pin(async move {
                 let (service, credentials, p, id, input) = *ctx;
-                crate::reports::admit(c, service, p, None).await?;
-                let tenant =
-                    Uuid::parse_str(&p.tenant().to_string()).map_err(|_| Error::Malformed)?;
-                let mut run = device::load(c, tenant, *p.device(), Some(id), true)
-                    .await
-                    .map_err(super::error)?
+                let mut run = admitted_run(c, service, p, Some(id))
+                    .await?
                     .ok_or(Error::NotFound)?;
-                let now = admit_run(c, tenant, &run).await?;
+                let now = crate::platform_sso::store::now(c).await?;
                 let replay = run
                     .settle(c, credentials, input, now)
                     .await
@@ -219,13 +245,41 @@ impl Service {
         .await
     }
 }
-async fn admit_run(c: &mut PgConnection, tenant: Uuid, run: &device::Run) -> Result<i64, Error> {
-    let (binding, anchor) = super::credential_tasks::qualified(c, tenant, run.operation())
+/// Acquire the frozen authorization fence before the device fence, then re-read the locked run.
+async fn admitted_run(
+    c: &mut PgConnection,
+    service: &Service,
+    p: &DevicePrincipal,
+    id: Option<Uuid>,
+) -> Result<Option<device::Run>, Error> {
+    let tenant = Uuid::parse_str(&p.tenant().to_string()).map_err(|_| Error::Malformed)?;
+    let hint = device::load(c, tenant, *p.device(), id, false)
         .await
         .map_err(super::error)?;
-    let now = crate::platform_sso::store::now(c).await?;
-    run.admit(c, &anchor, binding.policy, binding.policy_version, now)
+    if let Some(run) = &hint {
+        run.lock_authority(c).await.map_err(super::error)?;
+    }
+    crate::reports::admit(c, service, p, None).await?;
+    let run = device::load(c, tenant, *p.device(), id, true)
         .await
         .map_err(super::error)?;
-    Ok(now)
+    if hint.as_ref().map(|r| r.spec().task_id) != run.as_ref().map(|r| r.spec().task_id) {
+        return Err(Error::ReadConflict);
+    }
+    if let Some(run) = &run {
+        let current_time = crate::platform_sso::store::now(c).await?;
+        if !run
+            .authority_current(c, current_time)
+            .await
+            .map_err(super::error)?
+        {
+            return Err(Error::Forbidden);
+        }
+        let (binding, anchor) = super::credential_tasks::qualified(c, tenant, run.operation())
+            .await
+            .map_err(super::error)?;
+        run.admit(&anchor, binding.policy, binding.policy_version)
+            .map_err(super::error)?;
+    }
+    Ok(run)
 }

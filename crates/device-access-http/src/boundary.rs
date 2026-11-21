@@ -35,6 +35,10 @@ pub async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: N
         || request.headers().contains_key("x-client-certificate")
         || request.headers().contains_key("x-ssl-client-cert")
         || request.headers().contains_key(header::COOKIE);
+    let credential = request
+        .uri()
+        .path()
+        .starts_with("/api/v1/da/credential-operations/");
     request.extensions_mut().insert(a.clone());
     // Completion retains the admission lease even if the HTTP client disconnects.
     tokio::spawn(async move {
@@ -62,12 +66,21 @@ pub async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: N
             });
         if let Some(replacement) = complete(&s.audit, &a, response.status().as_u16(), failure).await
         {
-            response = match replacement {
-                Replacement::CommitUnknown => Error::Unknown,
-                Replacement::RollbackFailed => Error::Rollback,
-                Replacement::Audit(_) => Error::Unavailable,
-            }
-            .into_response();
+            response = if credential {
+                match replacement {
+                    Replacement::CommitUnknown => crate::business_error::Error::CommitUnknown,
+                    Replacement::RollbackFailed => crate::business_error::Error::RollbackFailed,
+                    Replacement::Audit(_) => crate::business_error::Error::Unavailable,
+                }
+                .into_response()
+            } else {
+                match replacement {
+                    Replacement::CommitUnknown => Error::Unknown,
+                    Replacement::RollbackFailed => Error::Rollback,
+                    Replacement::Audit(_) => Error::Unavailable,
+                }
+                .into_response()
+            };
         }
         response
             .headers_mut()
@@ -83,5 +96,11 @@ pub async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: N
         response
     })
     .await
-    .unwrap_or_else(|_| Error::Unknown.into_response())
+    .unwrap_or_else(|_| {
+        if credential {
+            crate::business_error::Error::CommitUnknown.into_response()
+        } else {
+            Error::Unknown.into_response()
+        }
+    })
 }

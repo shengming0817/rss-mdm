@@ -29,7 +29,7 @@ impl Error {
             Self::Enrollment(c, _, _) => *c,
         }
     }
-    fn status(&self) -> StatusCode {
+    pub(crate) fn status(&self) -> StatusCode {
         match self.code() {
             Code::MalformedRequest => StatusCode::BAD_REQUEST,
             Code::InvalidIdentity

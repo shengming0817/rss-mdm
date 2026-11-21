@@ -25,6 +25,8 @@ pub struct Request {
     pub binding_id: Uuid,
     pub binding_generation: i64,
     pub action: Action,
+    /// Exact active operation to supersede or verify after its original execution stops.
+    pub replaces: Option<Uuid>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
@@ -32,6 +34,10 @@ pub struct Request {
 pub enum State {
     Accepted,
     PendingApplication,
+    Reconciling,
+    Superseded,
+    Unchanged,
+    Retired,
     Applied,
 }
 
@@ -70,6 +76,7 @@ struct Frozen {
     instance: String,
     actor: String,
     operation: CredentialOperation,
+    predecessor: wire::CredentialReceipt,
     spec: wire::CredentialTaskSpec,
 }
 pub struct Run {
@@ -98,25 +105,27 @@ impl Run {
     pub fn spec(&self) -> &wire::CredentialTaskSpec {
         &self.frozen.spec
     }
-    pub async fn admit(
-        &self,
-        c: &mut PgConnection,
-        anchor: &Binding,
-        policy: Uuid,
-        version: Uuid,
-        now: i64,
-    ) -> Result<(), Error> {
+    pub async fn lock_authority(&self, c: &mut PgConnection) -> Result<(), Error> {
+        self.frozen
+            .authority
+            .lock_source(c)
+            .await
+            .map_err(Into::into)
+    }
+    pub async fn authority_current(&self, c: &mut PgConnection, now: i64) -> Result<bool, Error> {
+        self.frozen
+            .authority
+            .valid(DA, c, Permission::AccountWrite, now)
+            .await
+            .map_err(Into::into)
+    }
+    pub fn admit(&self, anchor: &Binding, policy: Uuid, version: Uuid) -> Result<(), Error> {
         if anchor != &self.anchor
             || self.spec().authorization
                 != (wire::TaskAuthorization::Policy {
                     policy_id: policy,
                     policy_version: version,
                 })
-            || !self
-                .frozen
-                .authority
-                .valid(DA, c, Permission::AccountWrite, now)
-                .await?
         {
             return Err(Error::Forbidden);
         }
@@ -136,10 +145,11 @@ pub async fn load(
     id: Option<Uuid>,
     lock: bool,
 ) -> Result<Option<Run>, Error> {
+    macro_rules! select_run { () => {"SELECT da_execution,material_binding,state,result,da_permit_until,da_escrow_digest FROM rss_da.credential_runs WHERE tenant_id=$1 AND device=$2 AND da_execution IS NOT NULL AND (id=$3 OR ($3 IS NULL AND state IN ('\"accepted\"'::jsonb,'\"pending_application\"'::jsonb)))"}; }
     let query = if lock {
-        "SELECT da_execution,material_binding,state,result,da_permit_until,da_escrow_digest FROM rss_da.credential_runs WHERE tenant_id=$1 AND device=$2 AND da_execution IS NOT NULL AND (id=$3 OR ($3 IS NULL AND state <> '\"applied\"'::jsonb)) FOR UPDATE"
+        concat!(select_run!(), " FOR UPDATE")
     } else {
-        "SELECT da_execution,material_binding,state,result,da_permit_until,da_escrow_digest FROM rss_da.credential_runs WHERE tenant_id=$1 AND device=$2 AND da_execution IS NOT NULL AND id=$3"
+        select_run!()
     };
     sqlx::query(query)
         .bind(tenant)
@@ -164,6 +174,69 @@ pub async fn load(
             })
         })
         .transpose()
+}
+
+impl Run {
+    async fn transition(&self, c: &mut PgConnection, to: State) -> Result<(), Error> {
+        let changed=sqlx::query("UPDATE rss_da.credential_runs SET state=$4 WHERE tenant_id=$1 AND id=$2 AND state=$3 AND da_execution IS NOT NULL")
+            .bind(self.spec().tenant_id).bind(self.spec().task_id).bind(encode(&self.state)?).bind(encode(&to)?).execute(c).await?;
+        if changed.rows_affected() != 1 {
+            return Err(Error::Conflict);
+        }
+        Ok(())
+    }
+    pub fn unresolved(&self) -> Option<wire::CredentialRecovery> {
+        if let Some(original) = &self.spec().recovery {
+            Some(original.clone())
+        } else if self.state == State::PendingApplication
+            && self.frozen.request.action == Action::Rotate
+        {
+            Some(wire::CredentialRecovery {
+                task_id: self.spec().task_id,
+                attempt_id: self.spec().attempt_id,
+            })
+        } else {
+            None
+        }
+    }
+    /// The replacing verifier must fence the journal of the exact original mutation.
+    async fn replace(
+        &self,
+        c: &mut PgConnection,
+        request: &Request,
+    ) -> Result<Option<wire::CredentialRecovery>, Error> {
+        if !matches!(self.state, State::Accepted | State::PendingApplication) {
+            return Err(Error::Conflict);
+        }
+        let recovery = self.unresolved();
+        if recovery.is_some() && request.action != Action::Verify {
+            return Err(Error::Conflict);
+        }
+        self.transition(
+            c,
+            if recovery
+                .as_ref()
+                .is_some_and(|r| r.task_id == self.spec().task_id)
+            {
+                State::Reconciling
+            } else {
+                State::Superseded
+            },
+        )
+        .await?;
+        Ok(recovery)
+    }
+}
+async fn release_guard(c: &mut PgConnection, id: Uuid, attempt: Uuid) -> Result<(), Error> {
+    if !sqlx::query_scalar::<_, bool>("SELECT rss_da.release_targeted_credential($1,$2)")
+        .bind(id)
+        .bind(attempt)
+        .fetch_one(c)
+        .await?
+    {
+        return Err(Error::Conflict);
+    }
+    Ok(())
 }
 
 #[allow(
@@ -198,13 +271,29 @@ pub async fn accept(
         key_id: recipient.id().into(),
         public_key: STANDARD.encode(recipient.public_key_der()?),
     };
-    let expected = vec![wire::CredentialVersion {
-        subject: decode(encode(&anchor.subject)?)?,
-        revision: current.version,
-    }];
+    let subject: wire::CredentialSubject = decode(encode(&anchor.subject)?)?;
+    let predecessor = wire::CredentialReceipt {
+        subject: subject.clone(),
+        material: current.id,
+        version: current.version,
+    };
+    let revision = storage::revisions_in(credentials.custody(), c, tenant, &anchor.device)
+        .await?
+        .into_iter()
+        .find(|(subject, _)| subject == &anchor.subject)
+        .ok_or(Error::Conflict)?
+        .1;
+    let expected = vec![wire::CredentialVersion { subject, revision }];
+    let active = load(c, tenant, anchor.device, None, true).await?;
+    let recovery = match (request.replaces, active) {
+        (None, None) => None,
+        (Some(id), Some(prior)) if id == prior.spec().task_id => prior.replace(c, request).await?,
+        _ => return Err(Error::Conflict),
+    };
     let action = credential_tasks::operation(&operation);
-    let definition_digest = wire::CredentialTaskSpec::digest(&action, &recipient, &expected, &None)
-        .map_err(|_| Error::Malformed)?;
+    let definition_digest =
+        wire::CredentialTaskSpec::digest(&action, &recipient, &expected, &recovery)
+            .map_err(|_| Error::Malformed)?;
     // The operation can wait offline. An mTLS claim issues a short-lived start permit.
     let spec = wire::CredentialTaskSpec {
         wire_version: wire::WIRE_VERSION,
@@ -225,7 +314,7 @@ pub async fn accept(
         operation: action,
         recipient,
         expected,
-        recovery: None,
+        recovery,
     };
     spec.validate().map_err(|_| Error::Malformed)?;
     let frozen = Frozen {
@@ -234,6 +323,7 @@ pub async fn accept(
         instance: p.instance_id().into(),
         actor: p.principal_id().into(),
         operation,
+        predecessor,
         spec,
     };
     let run = Run {
@@ -257,9 +347,16 @@ impl Run {
     pub async fn permit(
         &self,
         c: &mut PgConnection,
+        credentials: &Credentials,
         now: i64,
     ) -> Result<wire::CredentialTaskSpec, Error> {
         let mut spec = self.spec().clone();
+        if self.receipt.is_none() {
+            credentials
+                .protection()
+                .recipient(&spec.recipient.key_id)?
+                .require_current(now)?;
+        }
         spec.expires_at = now.saturating_add(300);
         sqlx::query("UPDATE rss_da.credential_runs SET da_permit_until=$3 WHERE tenant_id=$1 AND id=$2 AND da_execution IS NOT NULL")
             .bind(spec.tenant_id).bind(spec.task_id).bind(spec.expires_at).execute(c).await?;
@@ -299,6 +396,24 @@ impl Run {
                 if now >= self.permit_until {
                     return Err(Error::Forbidden);
                 }
+                if self.state != State::Accepted {
+                    return Err(Error::Conflict);
+                }
+                credentials
+                    .protection()
+                    .recipient(&spec.recipient.key_id)?
+                    .require_current(now)?;
+                if self.frozen.request.action == Action::Rotate {
+                    storage::start_agent_in(
+                        credentials.custody(),
+                        c,
+                        spec.tenant_id,
+                        self.anchor.device,
+                        spec.task_id,
+                        spec.attempt_id,
+                    )
+                    .await?;
+                }
                 let receipts = credential_tasks::escrow_on(
                     c,
                     credentials.custody(),
@@ -311,6 +426,25 @@ impl Run {
                 let [candidate] = receipts.as_slice() else {
                     return Err(Error::Conflict);
                 };
+                if let Some(original) = &spec.recovery {
+                    let prior = load(
+                        c,
+                        spec.tenant_id,
+                        self.anchor.device,
+                        Some(original.task_id),
+                        true,
+                    )
+                    .await?
+                    .ok_or(Error::Conflict)?;
+                    if prior.state != State::Reconciling
+                        || prior.spec().attempt_id != original.attempt_id
+                        || !(candidate == &self.frozen.predecessor
+                            || (prior.anchor == self.anchor
+                                && prior.receipt.as_ref() == Some(candidate)))
+                    {
+                        return Err(Error::Conflict);
+                    }
+                }
                 self.escrow_digest = Some(digest);
                 self.state = State::PendingApplication;
                 candidate.clone()
@@ -329,6 +463,9 @@ impl Run {
                 if self.state == State::Applied {
                     return Ok(true);
                 }
+                if self.state != State::PendingApplication {
+                    return Err(Error::Conflict);
+                }
                 let coordinates = Coordinates {
                     profile: DA,
                     tenant: spec.tenant_id,
@@ -339,6 +476,52 @@ impl Run {
                 if self.frozen.request.action == Action::Rotate {
                     storage::verify_in(credentials.custody(), c, &coordinates, spec.task_id)
                         .await?;
+                } else if let Some(original) = &spec.recovery {
+                    let previous = load(
+                        c,
+                        spec.tenant_id,
+                        self.anchor.device,
+                        Some(original.task_id),
+                        true,
+                    )
+                    .await?
+                    .ok_or(Error::Conflict)?;
+                    if previous.state != State::Reconciling
+                        || previous.spec().attempt_id != original.attempt_id
+                    {
+                        return Err(Error::Conflict);
+                    }
+                    let outcome = if previous.anchor == self.anchor {
+                        let state = if previous.receipt.as_ref() == Some(receipt) {
+                            State::Applied
+                        } else if &previous.frozen.predecessor == receipt {
+                            State::Unchanged
+                        } else {
+                            return Err(Error::Conflict);
+                        };
+                        storage::reconcile_in(
+                            credentials.custody(),
+                            c,
+                            &coordinates,
+                            original.task_id,
+                        )
+                        .await?;
+                        state
+                    } else {
+                        // Current generation was independently verified after the old journal stopped.
+                        if receipt != &self.frozen.predecessor {
+                            return Err(Error::Conflict);
+                        }
+                        let old = previous.receipt.as_ref().ok_or(Error::Integrity)?;
+                        let updated=sqlx::query("UPDATE rss_da.recovery_versions SET validity='revoked',pending=false,invalidated_at=$5 WHERE tenant_id=$1 AND entry=$2 AND version=$3 AND operation=$4 AND pending")
+                            .bind(spec.tenant_id).bind(old.material).bind(old.version).bind(original.task_id).bind(now).execute(&mut *c).await?;
+                        if updated.rows_affected() != 1 {
+                            return Err(Error::Conflict);
+                        }
+                        State::Retired
+                    };
+                    previous.transition(c, outcome).await?;
+                    release_guard(c, original.task_id, original.attempt_id).await?;
                 } else {
                     let current =
                         storage::current_in(credentials.custody(), c, spec.tenant_id, &self.anchor)
@@ -357,7 +540,10 @@ impl Run {
         };
         self.receipt = Some(receipt);
         sqlx::query("UPDATE rss_da.credential_runs SET state=$3,result=$4,da_escrow_digest=$5 WHERE tenant_id=$1 AND id=$2 AND da_execution IS NOT NULL")
-            .bind(self.spec().tenant_id).bind(self.spec().task_id).bind(encode(&self.state)?).bind(encode(&self.receipt)?).bind(self.escrow_digest.as_ref().map(|v|v.as_slice())).execute(c).await?;
+            .bind(self.spec().tenant_id).bind(self.spec().task_id).bind(encode(&self.state)?).bind(encode(&self.receipt)?).bind(self.escrow_digest.as_ref().map(|v|v.as_slice())).execute(&mut *c).await?;
+        if self.state == State::Applied && self.frozen.request.action == Action::Rotate {
+            release_guard(c, self.spec().task_id, self.spec().attempt_id).await?;
+        }
         Ok(false)
     }
 }

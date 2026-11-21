@@ -268,19 +268,45 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             serde_json::json!({"mac":null,"windows":{"kind":"whfb"},"selfEnrollment":false,"enabled":true,"role":null}),
         )?,
     };
-    business::assemble(&c, &material)?
-        .service
-        .publish_configuration(
-            &proof,
-            &rss_mdm_device_access_postgres::configuration::Change {
-                operation_id: Uuid::new_v4(),
-                expected_revision: 0,
-                publication: publication.clone(),
-            },
-            None,
-            &audit(),
-        )
-        .await?;
+    let change = rss_mdm_device_access_postgres::configuration::Change {
+        operation_id: Uuid::new_v4(),
+        expected_revision: 0,
+        publication: publication.clone(),
+    };
+    let (cookie, csrf) =
+        credentials::login(&c, &client, Uuid::parse_str(proof.principal_id())?).await?;
+    let published: rss_mdm_policy_postgres::device_access::Publication = material::success(
+        client
+            .post(format!(
+                "{}/api/v1/tenants/{}/device-access/configurations",
+                c.browser_origin, c.tenant
+            ))
+            .header("origin", &c.browser_origin)
+            .header("x-identity-request", "1")
+            .header("x-csrf-token", &csrf)
+            .header("cookie", &cookie)
+            .json(&change)
+            .send()
+            .await?,
+    )
+    .await?;
+    let receipt_url = format!(
+        "{management}/admin/configuration-operations/{}",
+        change.operation_id
+    );
+    let recovered: rss_mdm_policy_postgres::device_access::Publication = material::success(
+        client
+            .get(receipt_url)
+            .header("cookie", cookie)
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(
+        serde_json::to_value(&recovered)?,
+        serde_json::to_value(&published)?
+    );
+    assert_eq!(published.version, publication.version);
     let export = da::Export {
         operation_id: Uuid::new_v4(),
         policy: publication.id,

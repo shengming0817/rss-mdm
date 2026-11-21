@@ -34,6 +34,11 @@ pub enum Application {
     VerifiedApplied,
 }
 
+fn current_readback(observation: (i64, i64), artifact: (i64, i64), now: i64) -> bool {
+    [observation, artifact]
+        .into_iter()
+        .all(|(issued, expires)| issued <= now && now < expires)
+}
 fn application_state(
     reported: Option<da::ApplicationState>,
     offline: bool,
@@ -44,13 +49,13 @@ fn application_state(
     }
     match reported {
         Some(da::ApplicationState::Rejected) => Application::Rejected,
+        _ if offline => Application::OfflinePending,
         Some(
             da::ApplicationState::Received
             | da::ApplicationState::Validated
             | da::ApplicationState::Applied,
         ) => Application::Received,
         Some(da::ApplicationState::Unknown) => Application::Unknown,
-        None if offline => Application::OfflinePending,
         None => Application::Pending,
     }
 }
@@ -130,8 +135,9 @@ impl Service {
                         || !config.permits(&identity, device) {
                         state = da::SourceState::Invalid; break;
                     }
-                    if !o.revoked && o.issued_at <= now && now < o.expires_at && proof.state == da::SourceState::Present
-                        && publication.as_ref().is_some_and(|p| p.id == o.policy && p.version == o.policy_version)
+                    if !o.revoked && proof.state == da::SourceState::Present
+                        && current_readback((o.issued_at,o.expires_at),(config.issued_at,config.expires_at),now)
+                        && publication.as_ref().is_some_and(|p| p.enabled && p.id == o.policy && p.version == o.policy_version)
                         && let Some(readback) = proof.applied
                     {
                         signing.verify_on(c, p.binding().tenant(), &artifact, now).await?;
@@ -207,12 +213,22 @@ impl Service {
 mod tests {
     use super::*;
     #[test]
+    fn readback_requires_both_lifetimes() {
+        assert!(current_readback((20, 90), (10, 50), 49));
+        assert!(!current_readback((20, 90), (10, 50), 50));
+        assert!(!current_readback((20, 90), (30, 100), 29));
+    }
+    #[test]
     fn application_requires_an_independent_readback_and_offline_requires_a_watermark() {
         for report in [
             da::ApplicationState::Received,
             da::ApplicationState::Validated,
             da::ApplicationState::Applied,
         ] {
+            assert_eq!(
+                application_state(Some(report), true, false),
+                Application::OfflinePending
+            );
             assert_eq!(
                 application_state(Some(report), false, false),
                 Application::Received

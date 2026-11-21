@@ -92,7 +92,10 @@ fn authentication(method: &str, path: &str) -> rss_mdm_http_contract::authentica
             bearer_allowed(path),
             false,
         ),
-        rejections: Error::responses(),
+        rejections: Error::responses()
+            .into_iter()
+            .chain(rss_mdm_http_contract::authentication::identity_rejections())
+            .collect(),
         conditional_response_headers: vec![],
     }
 }

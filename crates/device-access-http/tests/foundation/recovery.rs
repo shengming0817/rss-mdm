@@ -257,9 +257,9 @@ async fn restored_http(m: &material::Material, e: &Expected) -> Result<()> {
     assert_eq!(status.request, e.pending.request);
     assert_eq!(status.receipt.as_ref(), Some(&e.pending.receipt));
     let path = format!("{}/credential-operations/next", e.device_base);
-    assert_eq!(e.revoked_peer.get(&path).send().await?.status(), 401);
+    assert_eq!(e.revoked_peer.post(&path).send().await?.status(), 401);
     let current: rss_mdm_agent_wire::runtime::CredentialTaskSpec =
-        material::success(e.active_peer.get(&path).send().await?).await?;
+        material::success(e.active_peer.post(&path).send().await?).await?;
     assert_eq!(current.task_id, e.pending.request.operation_id);
     Ok(())
 }

@@ -311,6 +311,11 @@ fn programmatic_allowed(path: &str, authorization: bool, management: bool) -> bo
         && path != "/api/v1/tenants/{tenant}/registration-quotas/me"
 }
 
+fn api_key_allowed(path: &str) -> bool {
+    !path.contains("/device-access/credential-operations")
+        && !path.ends_with("/apple/platform-sso/status")
+}
+
 /// Mount the executing owner and its transport declaration through the same seam.
 pub fn mount_protection<M: rss_mdm_http_contract::module::Declaration>(
     router: rss_mdm_http_contract::Router<(), M>,
@@ -351,8 +356,12 @@ fn authentication_transport(
     management: bool,
 ) -> rss_mdm_http_contract::authentication::Description {
     use rss_mdm_http_contract::authentication::{ConditionalHeader, Description};
-    let alternatives =
-        crate::identity::credential_transport(method, programmatic_allowed(path, true, management));
+    let programmatic = programmatic_allowed(path, true, management);
+    let alternatives = rss_mdm_http_contract::authentication::identity_credentials(
+        method,
+        programmatic,
+        programmatic && api_key_allowed(path),
+    );
     // Conditions describe actual response decoration, including downstream 401 responses.
     let conditional_response_headers = CHALLENGES
         .iter()
@@ -367,7 +376,7 @@ fn authentication_transport(
         .collect();
     Description {
         owner: "management-http::authorization::http::authenticate_and_run",
-        rejections: crate::identity_contract::authentication_rejections(),
+        rejections: rss_mdm_http_contract::authentication::identity_rejections(),
         alternatives,
         conditional_response_headers,
     }
@@ -424,6 +433,9 @@ async fn authenticate_inner(
         .map(|v| v.as_str())
         .unwrap_or_default()
         .to_owned();
+    if parts.headers.contains_key("x-api-key") && !api_key_allowed(&path) {
+        return Error::Forbidden.into_response();
+    }
     let activity =
         if parts.method == axum::http::Method::GET || parts.method == axum::http::Method::HEAD {
             rss_identity_http_axum::SessionActivity::Passive

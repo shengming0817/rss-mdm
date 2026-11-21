@@ -197,8 +197,32 @@ async fn embedded_status(
     let allowed = cookie(&allowed)?;
     let denied = cookie(&denied)?;
     let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
-    let config =
+    let mut config =
         crate::host_t2_support::configuration(&c.inputs, "shared", address, Uuid::new_v4()).await?;
+    let provider = provider::Provider::new(&c.inputs.directory).await?;
+    let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+    let origin = format!("https://localhost:{}", address.port());
+    let trust = provider
+        .publish(
+            &c.operator,
+            &c.tenant.to_string(),
+            &c.inputs.installation.instance_id,
+            &origin,
+        )
+        .await?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(
+        provider.directory.join("provider.pk8"),
+        std::fs::Permissions::from_mode(0o600),
+    )?;
+    config["device_access"]["registration"] = serde_json::json!({
+        "listen":address,"origin":origin,"certificate_file":provider.directory.join("server.pem"),"private_key_file":provider.directory.join("server.key"),
+        "certificate_days":365,"configuration_lifetime":3600,
+        "providers":[{"purpose":"da_device","issuer":trust.issuers[0].digest,"origin":format!("https://localhost:{}",provider.port),"tls_root_file":provider.directory.join("task-trust-ca/ca.pem"),"provisioner":"rss-da-device","kid":"da-test","provisioner_key_file":provider.directory.join("provider.pk8")}]
+    });
+    let admin = c
+        .account(&[Permission::Enrollment, Permission::Credentials])
+        .await?;
     crate::host_t2_support::run(config, |client, base| async move {
         let url = format!(
             "{base}/api/v1/tenants/{}/apple/platform-sso/status",
@@ -220,7 +244,149 @@ async fn embedded_status(
         assert_eq!(status["device"], serde_json::json!(da.device));
         assert_eq!(status["login"], "unknown");
         assert_eq!(status["deployment"], "unobserved");
-        Ok(())
+        Box::pin(lifecycle_http(
+            c, &client, &base, &origin, &provider, &admin,
+        ))
+        .await
     })
     .await
+}
+
+#[path = "../../../../hack/test-support/da_provider.rs"]
+mod provider;
+
+async fn lifecycle_http(
+    c: &Context,
+    browser: &reqwest::Client,
+    base: &str,
+    origin: &str,
+    fixture: &provider::Provider,
+    admin: &crate::authority_t2_support::Account,
+) -> Result<()> {
+    use rss_mdm_agent_wire::{da, enroll};
+    use serde_json::{Value, json};
+    let management = format!("{base}/api/v1/tenants/{}/da", c.tenant);
+    let protocol = format!("{origin}/api/v1/da");
+    let login=browser.post(format!("{base}/api/v1/identity/tenants/{}/login",c.tenant))
+        .header("origin","https://mdm.example.test").header("x-identity-request","1")
+        .json(&json!({"login":format!("foundation-{}",admin.user.principal_id),"password":"foundation-only-valid-password"})).send().await?.error_for_status()?;
+    let cookie = login
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok()?.split(';').next())
+        .find(|v| v.starts_with("__Host-identity-session="))
+        .context("embedded Identity cookie")?
+        .to_owned();
+    let csrf = login.json::<Value>().await?["csrfToken"]
+        .as_str()
+        .context("embedded CSRF")?
+        .to_owned();
+    let post = |path: String| {
+        browser
+            .post(path)
+            .header("origin", "https://mdm.example.test")
+            .header("x-identity-request", "1")
+            .header("x-csrf-token", &csrf)
+            .header("cookie", &cookie)
+    };
+    let public = fixture.client(None)?;
+    let mut peer = None::<reqwest::Client>;
+    let mut first = None::<da::Registration>;
+    for index in 1..=2 {
+        let request = da::GrantRequest {
+            operation_id: Uuid::new_v4(),
+            secret: rss_mdm_agent_wire::runtime::Secret::parse(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA",
+            )?,
+            csr: fixture.csr(index)?,
+            expires_in_seconds: 600,
+        };
+        let source = match peer.as_ref() {
+            None => post(format!("{management}/grants")),
+            Some(peer) => peer.post(format!("{protocol}/renewal-grants")),
+        };
+        let grant: da::Grant = read_response(source.json(&request).send().await?).await?;
+        let issue = da::CertificateRequest {
+            operation_id: Uuid::new_v4(),
+            grant_id: grant.grant_id,
+            secret: request.secret,
+            csr: request.csr,
+        };
+        let candidate: enroll::Candidate = read_response(
+            public
+                .post(format!("{protocol}/certificates"))
+                .json(&issue)
+                .send()
+                .await?,
+        )
+        .await?;
+        let current = fixture.client(Some((&candidate, index)))?;
+        let registration: da::Registration = read_response(
+            current
+                .post(format!("{protocol}/activate"))
+                .json(&enroll::ActivationRequest {
+                    wire_version: 1,
+                    operation_id: Uuid::new_v4(),
+                    issuance_id: candidate.issuance_id,
+                })
+                .send()
+                .await?,
+        )
+        .await?;
+        if let Some(old) = &first {
+            assert_eq!(old.device, registration.device);
+            assert_ne!(old.credential, registration.credential);
+        } else {
+            first = Some(registration);
+        }
+        if let Some(previous) = peer.replace(current) {
+            assert_eq!(
+                previous
+                    .get(format!("{protocol}/configuration-trust"))
+                    .send()
+                    .await?
+                    .status(),
+                401
+            );
+        }
+    }
+    let device = first.context("initial activation")?.device;
+    let revoke = format!("{management}/devices/{device}/registration/revoke");
+    post(revoke.clone())
+        .json(&json!({"operationId":Uuid::new_v4()}))
+        .send()
+        .await?
+        .error_for_status()?;
+    assert_eq!(
+        peer.context("renewed peer")?
+            .get(format!("{protocol}/configuration-trust"))
+            .send()
+            .await?
+            .status(),
+        401
+    );
+    sqlx::query("DELETE FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(c.tenant.to_string())
+        .bind(admin.rule)
+        .execute(&c.operator)
+        .await?;
+    assert_eq!(
+        post(revoke)
+            .json(&json!({"operationId":Uuid::new_v4()}))
+            .send()
+            .await?
+            .status(),
+        403
+    );
+    Ok(())
+}
+async fn read_response<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T> {
+    let status = response.status();
+    let body = response.text().await?;
+    anyhow::ensure!(
+        status.is_success(),
+        "embedded registration {status}: {body}"
+    );
+    Ok(serde_json::from_str(&body)?)
 }

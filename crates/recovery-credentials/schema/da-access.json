@@ -89,6 +89,7 @@
     }
   ],
   "functions": [
+    {"name":"rss_da.release_targeted_credential","search_path":"search_path=pg_catalog"},
     {
       "name": "rss_da.credential_save_retired_run",
       "search_path": "search_path=pg_catalog"
