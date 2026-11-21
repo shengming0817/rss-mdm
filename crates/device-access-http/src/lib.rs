@@ -270,6 +270,7 @@ pub mod platform_sso;
 pub mod administration;
 mod identity_contract;
 pub struct Business {
+    pub recovery: Option<Arc<rss_mdm_recovery_credentials::Credentials>>,
     pub evidence: Arc<rss_mdm_device_access_postgres::evidence::Authorities>,
     pub service: Arc<rss_mdm_device_access_postgres::Service>,
     pub admission: Arc<dyn rss_mdm_device_access_postgres::device_access::Admission>,

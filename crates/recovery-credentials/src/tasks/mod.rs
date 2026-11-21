@@ -1,6 +1,7 @@
 //! Recovery owns credential tasks, candidate material correlation and durable reconciliation.
 pub mod actions;
 pub mod credential_tasks;
+pub mod device;
 mod error;
 pub mod policy;
 pub mod policy_recovery;

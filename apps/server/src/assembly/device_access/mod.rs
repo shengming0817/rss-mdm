@@ -220,7 +220,7 @@ pub(crate) async fn open(
                 StorageProfile::Da,
                 pool.clone(),
                 audit.clone(),
-                p.keys.clone(),
+                p.clone(),
                 Some(proof_audit),
                 Some(Arc::new(
                     rss_mdm_device_access_postgres::recovery::eligibility::AccessEligibility {
@@ -402,6 +402,7 @@ pub(crate) async fn listener(
     let services = Arc::new(rss_mdm_device_access_http::Services {
         request_budget: identity.request_budget,
         business: Some(Arc::new(rss_mdm_device_access_http::Business {
+            recovery: assembly.recovery.clone(),
             evidence: assembly.runtime.admission.evidence.clone(),
             service: assembly.runtime.business.clone(),
             admission: assembly.runtime.admission.clone(),

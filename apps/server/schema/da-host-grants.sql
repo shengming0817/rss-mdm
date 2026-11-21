@@ -54,6 +54,11 @@ GRANT EXECUTE ON FUNCTION rss_da.current_da_registration(uuid),rss_da.save_retir
 GRANT SELECT ON rss_da.agent_delivery,rss_da.access_runs TO mdm_access;
 GRANT UPDATE(enabled,revision) ON rss_da.agent_delivery TO mdm_access,mdm_command_runtime;
 GRANT SELECT ON rss_da.recovery_recipient_selection,rss_da.recovery_entries,rss_da.recovery_versions,rss_da.recovery_disclosures TO mdm_identity_runtime;
+CREATE POLICY credential_host_agent_path ON rss_da.credential_runs AS RESTRICTIVE
+ TO mdm_command_runtime,mdm_policy_runtime USING(da_execution IS NULL) WITH CHECK(da_execution IS NULL);
+GRANT SELECT,INSERT ON rss_da.credential_runs TO mdm_identity_runtime;
+CREATE POLICY credential_host_management ON rss_da.credential_runs AS RESTRICTIVE TO mdm_identity_runtime
+ USING(da_execution IS NOT NULL) WITH CHECK(da_execution IS NOT NULL);
 GRANT INSERT ON rss_da.recovery_disclosures TO mdm_identity_runtime;
 GRANT UPDATE(tenant_id) ON rss_da.recovery_entries,rss_da.recovery_versions TO mdm_identity_runtime;
 GRANT SELECT,INSERT ON rss_da.recovery_entries,rss_da.recovery_versions,rss_da.recovery_agent_materials,rss_da.recovery_rss_login_uses TO mdm_command_runtime;

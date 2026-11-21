@@ -66,8 +66,10 @@ fn service(s: &Services) -> Result<&crate::Business, BusinessError> {
     s.business.as_deref().ok_or(BusinessError::Unavailable)
 }
 pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
-    rss_mdm_http_contract::route_module! {struct DeviceReports for [Da] {status, application, current}}
+    rss_mdm_http_contract::route_module! {struct DeviceReports for [Da] {status, application, current, claim_credential, credential_event}}
     DeviceReports {
+        claim_credential:Route::new("/api/v1/da/credential-operations/next",get(claim_credential,&crate::PROTOCOL,&[Operation::Action])),
+        credential_event:Route::new("/api/v1/da/credential-operations/{id}/events",post(credential_event,&crate::PROTOCOL,&[Operation::Action])),
         status: Route::new(
             "/api/v1/da/status-reports",
             post(status, &crate::PROTOCOL, &[Operation::Action]),
@@ -293,4 +295,18 @@ async fn publication_operation(
     Ok(Json(
         s.business.publication_operation(&auth.proof, id).await?,
     ))
+}
+
+async fn claim_credential(State(s):State<Arc<Services>>,Extension(a):Extension<RequestAudit>,tls:Option<Extension<ClientCertificateEvidence>>)
+    ->Result<Json<Option<rss_mdm_agent_wire::runtime::CredentialTaskSpec>>,Error>{
+    let p=s.registrations.authenticate(&peer(tls)?).await?;
+    a.bind_scope(p.binding()).map_err(|_|Error::Unavailable)?;
+    Ok(Json(s.business.as_ref().ok_or(Error::Unavailable)?.service.claim_credential(&p,&a).await?))
+}
+async fn credential_event(State(s):State<Arc<Services>>,Extension(a):Extension<RequestAudit>,tls:Option<Extension<ClientCertificateEvidence>>,
+    Path(id):Path<Uuid>,event:Body<rss_mdm_recovery_credentials::tasks::device::Event>)->Result<Json<rss_mdm_recovery_credentials::tasks::device::Status>,Error>{
+    let p=s.registrations.authenticate(&peer(tls)?).await?;
+    a.bind_scope(p.binding()).map_err(|_|Error::Unavailable)?;
+    let b=s.business.as_ref().ok_or(Error::Unavailable)?;
+    Ok(Json(b.service.credential_event(b.recovery.as_deref().ok_or(Error::Unavailable)?,&p,id,&body(event)?,&a).await?))
 }

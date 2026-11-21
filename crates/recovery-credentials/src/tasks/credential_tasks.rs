@@ -71,7 +71,7 @@ pub(crate) async fn eligible(
             .is_some_and(|b| capable(&b, architecture)),
     )
 }
-fn operation(value: &Operation) -> wire::CredentialOperation {
+pub(super) fn operation(value: &Operation) -> wire::CredentialOperation {
     match value {
         Operation::RotateRssLogin {
             binding,
@@ -370,15 +370,35 @@ pub(crate) async fn escrow(
     let protection = service.recovery_credentials.clone();
     let product = service.product.clone();
     let anchor = run.material.clone();
-    let registration = anchor.as_ref().map_or_else(|| task.device_id, |a| a.device);
     let value = value.clone();
     tx.with_connection(move |c| {
         Box::pin(async move {
             let result = async {
+                escrow_on(c, super::product::custody(profile, product.as_deref()), &protection, anchor.as_ref(), &task, &value).await
+            }
+            .await;
+            Ok(result)
+        })
+    })
+    .await?
+    .map_err(Error::from)
+    .map_err(Into::into)
+}
+pub(super) async fn escrow_on(
+    c: &mut sqlx::PgConnection,
+    custody: vault::Custody<'_>,
+    protection: &vault::Protection,
+    anchor: Option<&vault::Binding>,
+    task: &wire::CredentialTaskSpec,
+    value: &wire::CredentialEscrow,
+) -> std::result::Result<Vec<wire::CredentialReceipt>, vault::Error> {
+    value.validate().map_err(|_| vault::Error::Malformed)?;
+    if value.definition_digest != task.definition_digest { return Err(vault::Error::Conflict); }
+    let registration = anchor.map_or(task.device_id, |a| a.device);
                 let recipient = protection.recipient(&task.recipient.key_id)?;
                 let mut receipts = Vec::new();
                 for item in &value.materials {
-                    if !allowed_subject(&task, &item.subject) {
+                    if !allowed_subject(task, &item.subject) {
                         return Err(vault::Error::Malformed);
                     }
                     let aad = task
@@ -395,7 +415,7 @@ pub(crate) async fn escrow(
                         &aad,
                     )?;
                     let binding = super::product::material(
-                        anchor.as_ref(),
+                        anchor,
                         &Target {
                             device: task.device_id,
                         },
@@ -409,7 +429,7 @@ pub(crate) async fn escrow(
                     );
                     let coordinates = if let Some(recovery) = &task.recovery {
                         if materials::agent_guard_in(
-                            super::product::custody(profile, product.as_deref()),
+                            custody,
                             c,
                             task.tenant_id,
                             registration,
@@ -420,7 +440,7 @@ pub(crate) async fn escrow(
                             return Err(vault::Error::Conflict);
                         }
                         materials::recovery_secret_in(
-                            super::product::custody(profile, product.as_deref()),
+                            custody,
                             c,
                             &protection.keys,
                             task.tenant_id,
@@ -432,7 +452,7 @@ pub(crate) async fn escrow(
                         .await?
                     } else if verifying {
                         materials::verify_existing_secret_in(
-                            super::product::custody(profile, product.as_deref()),
+                            custody,
                             c,
                             &protection.keys,
                             task.tenant_id,
@@ -443,7 +463,7 @@ pub(crate) async fn escrow(
                         .await?
                     } else {
                         let coordinates = materials::reserve_in(
-                            super::product::custody(profile, product.as_deref()),
+                            custody,
                             c,
                             task.tenant_id,
                             &binding,
@@ -456,7 +476,7 @@ pub(crate) async fn escrow(
                             wire::CredentialOperation::RotateLocalAdministrator { .. }
                         ) {
                             materials::unknown_in(
-                                super::product::custody(profile, product.as_deref()),
+                                custody,
                                 c,
                                 task.tenant_id,
                                 task.task_id,
@@ -464,7 +484,7 @@ pub(crate) async fn escrow(
                             .await?;
                         }
                         materials::ingest_in(
-                            super::product::custody(profile, product.as_deref()),
+                            custody,
                             c,
                             &protection.keys,
                             &coordinates,
@@ -475,7 +495,7 @@ pub(crate) async fn escrow(
                         coordinates
                     };
                     materials::link_agent_in(
-                        super::product::custody(profile, product.as_deref()),
+                        custody,
                         c,
                         task.task_id,
                         task.attempt_id,
@@ -489,14 +509,6 @@ pub(crate) async fn escrow(
                     });
                 }
                 Ok::<_, vault::Error>(receipts)
-            }
-            .await;
-            Ok(result)
-        })
-    })
-    .await?
-    .map_err(Error::from)
-    .map_err(Into::into)
 }
 pub(crate) async fn finish(
     profile: rss_mdm_install_support::StorageProfile,
@@ -517,7 +529,6 @@ pub(crate) async fn finish(
     }
     let product = service.product.clone();
     let anchor = run.material.clone();
-    let registration = anchor.as_ref().map_or_else(|| task.device_id, |a| a.device);
     let value = value.clone();
     let (success, uncertain, recovered) = tx
         .with_connection(move |c| {

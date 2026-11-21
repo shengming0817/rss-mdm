@@ -17,6 +17,17 @@ impl Product for AccessEligibility {
         target: &'a Target,
     ) -> Pending<'a, Binding> {
         Box::pin(async move {
+            let (b, anchor) = qualified(c, tenant, operation).await?;
+            let delivery = crate::delivery::for_binding_on(c, &b)
+                .await.map_err(super::custody_error)?.ok_or(Error::Forbidden)?;
+            if delivery.device != target.device { return Err(Error::Forbidden); }
+            Ok(anchor)
+        })
+    }
+}
+
+pub(super) async fn qualified(c: &mut PgConnection, tenant: Uuid, operation: &CredentialOperation)
+    -> Result<(crate::device_access::Binding, Binding), Error> {
             let (CredentialOperation::RotateRssLogin {
                 binding,
                 binding_generation,
@@ -33,12 +44,7 @@ impl Product for AccessEligibility {
             let b = crate::device_access::storage::locked_in(c, tenant, *binding)
                 .await
                 .map_err(super::custody_error)?;
-            let delivery = crate::delivery::for_binding_on(c, &b)
-                .await
-                .map_err(super::custody_error)?
-                .ok_or(Error::Forbidden)?;
-            if delivery.device != target.device
-                || b.generation != *binding_generation
+            if b.generation != *binding_generation
                 || !matches!(
                     &b.configuration.windows,
                     rss_mdm_agent_wire::runtime::AccessWindowsConfiguration::RssFactor { .. }
@@ -63,7 +69,7 @@ impl Product for AccessEligibility {
             if selected.version != b.policy_version || selected.configuration != b.configuration {
                 return Err(Error::Forbidden);
             }
-            Ok(Binding {
+            let anchor = Binding {
                 device: b.device,
 
                 subject: Subject::RssLogin {
@@ -71,7 +77,7 @@ impl Product for AccessEligibility {
                     binding_generation: *binding_generation,
                     sid: sid.clone(),
                 },
-            })
-        })
-    }
+            };
+
+Ok((b, anchor))
 }

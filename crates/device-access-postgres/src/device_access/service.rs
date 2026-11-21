@@ -37,7 +37,7 @@ async fn now(c: &mut PgConnection) -> Result<i64, Error> {
         .await
         .map_err(db)
 }
-pub(super) async fn authorize(
+pub(crate) async fn authorize(
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
     device: &rss_mdm_agent_wire::DeviceId,

@@ -59,7 +59,7 @@
       "table": "credential_runs",
       "read_write": false,
       "read_only": true,
-      "updates": [],
+      "updates": ["state", "result", "da_permit_until", "da_escrow_digest"],
       "delete_policy": null
     },
     {

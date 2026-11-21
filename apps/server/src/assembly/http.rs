@@ -413,7 +413,7 @@ pub(crate) fn from_state(
                         rss_mdm_install_support::StorageProfile::Mdm,
                         state.access.archive_pool(),
                         state.audit_store.clone(),
-                        p.keys.clone(),
+                        p.clone(),
                         None,
                         None,
                     ))
