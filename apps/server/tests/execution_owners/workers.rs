@@ -708,7 +708,7 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
     };
     let observer = &late.a.script_work;
     observer.observe_relay(binding, Some(&message), Err(&script::Error::CommitUnknown));
-    observer.verify_relay(binding).await;
+    crate::assembly::task_relay::verify_publication(binding, observer.relay_check(binding)).await;
     assert!(matches!(
         observer.health().relay,
         Some(rss_mdm_recovery_observation::Phase::Failed(_))
@@ -733,7 +733,7 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
     wait(format!("script.{b}"), "published").await?;
     wait(format!("collection.{collection}"), "published").await?;
     assert_eq!(status(format!("script.{a}")).await?, "publishing");
-    observer.verify_relay(binding).await;
+    crate::assembly::task_relay::verify_publication(binding, observer.relay_check(binding)).await;
     assert_eq!(
         observer.health().relay,
         Some(rss_mdm_recovery_observation::Phase::Healthy)

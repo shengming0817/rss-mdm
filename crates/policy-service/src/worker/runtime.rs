@@ -841,20 +841,21 @@ impl PolicyWork {
             .claim_relay(binding, limit, Duration::from_secs(18))
             .await
     }
-    pub async fn verify_relay(
+    pub fn relay_check(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
-    ) {
-        if let Some(config) = &self.service.configuration {
-            rss_mdm_recovery_observation::RelayMessage::verify_one(
-                &self.service.automation_observation,
-                crate::worker::jobs::domain(self.profile()),
-                binding,
-                &config.runtime,
-                &config.outbox,
-            )
-            .await;
-        }
+    ) -> Option<(
+        rss_mdm_recovery_observation::RelayCheck<'_>,
+        &rss_transactional_messaging_postgres::PgRuntime,
+        &rss_transactional_messaging_postgres::PgOutboxStore<()>,
+    )> {
+        let config = self.service.configuration.as_ref()?;
+        let check = rss_mdm_recovery_observation::RelayCheck::begin(
+            &self.service.automation_observation,
+            crate::worker::jobs::domain(self.profile()),
+            binding,
+        )?;
+        Some((check, &config.runtime, &config.outbox))
     }
     pub fn observe_relay(
         &self,

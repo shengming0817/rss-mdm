@@ -8,7 +8,6 @@ publish.workspace = true
 [dependencies]
 rss-reconcile.workspace = true
 rss-transactional-messaging.workspace = true
-rss-transactional-messaging-postgres.workspace = true
 rss-runtime.workspace = true
 uuid.workspace = true
 

@@ -663,13 +663,19 @@ impl Worker {
         self.record_relay_health(&result);
         result
     }
-    pub async fn verify_relay(
+    pub fn relay_check(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
-    ) {
-        self.readiness
-            .verify_relay(binding, &self.service.transactions.runtime, &self.outbox)
-            .await;
+    ) -> Option<(
+        rss_mdm_recovery_observation::RelayCheck<'_>,
+        &rss_transactional_messaging_postgres::PgRuntime,
+        &rss_transactional_messaging_postgres::PgOutboxStore<()>,
+    )> {
+        Some((
+            self.readiness.relay_check(binding)?,
+            &self.service.transactions.runtime,
+            &self.outbox,
+        ))
     }
     pub fn observe_relay(
         &self,

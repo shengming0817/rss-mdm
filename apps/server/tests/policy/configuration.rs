@@ -218,11 +218,11 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     // The production Policy role owns this outbox relay, including claim and settlement.
     let configuration = app.configuration.as_ref().expect("MDM configuration");
     let limit = std::num::NonZeroUsize::new(2).unwrap();
-    let mut claims = configuration
+    let claims = configuration
         .claim_relay(c.execution(), limit, Duration::from_secs(10))
         .await?;
     assert_eq!(claims.len(), 1);
-    let (original, delayed) = claims.pop().unwrap();
+    let (original, delayed) = claims.into_iter().next().unwrap();
     // Model a claim that arrives near drain: the operation cutoff has passed
     // but settlement can still release the original lease as a durable Retry.
     tokio::time::pause();

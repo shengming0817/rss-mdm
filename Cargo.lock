@@ -4717,7 +4717,6 @@ dependencies = [
  "rss-request-context",
  "rss-runtime",
  "rss-transactional-messaging",
- "rss-transactional-messaging-postgres",
  "tokio",
  "tokio-util",
  "uuid",

@@ -1,5 +1,5 @@
 //! Process-local observations of an exact recovery owner. RSS owns tasks and claims.
-//! Failed relay observations may be confirmed by reading the original RSS outbox receipt.
+//! The caller owns durable reads. Observations only correlate the resulting evidence.
 use rss_reconcile::{Completion, ErrorKind, Observation, Scope, Target};
 use rss_runtime::{TaskState, TaskStatus};
 use std::sync::{
@@ -10,7 +10,7 @@ use std::sync::{
 mod observations;
 mod relay;
 pub use observations::{Attempt, Observations, RelayPage, Scan, Snapshot};
-pub use relay::RelayMessage;
+pub use relay::{RelayCheck, RelayMessage};
 mod store;
 pub use store::ObservedStore;
 
@@ -154,13 +154,11 @@ impl Readiness {
     pub fn relay_page(&self, after: Option<(uuid::Uuid, i64)>) -> RelayPage<'_> {
         RelayPage::begin(&self.rounds, &self.domain, after)
     }
-    pub async fn verify_relay(
+    pub fn relay_check(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
-        runtime: &rss_transactional_messaging_postgres::PgRuntime,
-        outbox: &rss_transactional_messaging_postgres::PgOutboxStore<()>,
-    ) {
-        RelayMessage::verify_one(&self.rounds, &self.domain, binding, runtime, outbox).await;
+    ) -> Option<RelayCheck<'_>> {
+        RelayCheck::begin(&self.rounds, &self.domain, binding)
     }
     pub fn relay_scope(
         &self,

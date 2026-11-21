@@ -5,10 +5,8 @@ use rss_transactional_messaging::{
     fence::ExecutionBinding,
     message::{MessageFingerprint, MessageId, MessagingDomain},
     outbox::PendingMessage,
-    policy::OperationDeadline,
 };
-use rss_transactional_messaging_postgres::{PgOutboxStore, PgRuntime};
-use std::{sync::Mutex, time::Duration};
+use std::sync::Mutex;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct RelayMessage {
@@ -26,52 +24,40 @@ impl<P> From<&PendingMessage<P>> for RelayMessage {
     }
 }
 
-impl RelayMessage {
-    /// Called inside an admitted slot, before claiming. A failed read is
-    /// advisory and preserves the original failure and its retry policy.
-    pub async fn verify_one(
-        observations: &Mutex<Observations>,
+/// Captures the failed observation before the caller begins a durable read.
+pub struct RelayCheck<'a> {
+    state: &'a Mutex<Observations>,
+    scope: Scope,
+    epoch: i64,
+    sequence: u128,
+    pub message: RelayMessage,
+}
+impl<'a> RelayCheck<'a> {
+    pub fn begin(
+        state: &'a Mutex<Observations>,
         domain: &str,
         binding: ExecutionBinding,
-        runtime: &PgRuntime,
-        outbox: &PgOutboxStore<()>,
-    ) {
+    ) -> Option<Self> {
         let scope = Scope::new(binding.tenant(), domain).expect("registered owner domain");
         let epoch = binding.epoch().get();
-        let candidate = observations
+        let (message, sequence) = state
             .lock()
             .expect("relay observations")
-            .next_relay_check(&scope, epoch);
-        let Some((message, sequence)) = candidate else {
-            return;
-        };
-        let published = runtime
-            .local_tx_with_context(
-                binding,
-                OperationDeadline::from_remaining(Duration::from_secs(1)),
-                (outbox, &message),
-                |(store, message), tx| {
-                    Box::pin(async move {
-                        store
-                            .is_published(tx, &message.domain, &message.id, message.fingerprint)
-                            .await
-                    })
-                },
-            )
-            .await
-            .fold(
-                |published| published,
-                |_| false,
-                |_| false,
-                |_| false,
-                |_| false,
-                |_| false,
-            );
-        if published {
-            observations
-                .lock()
-                .expect("relay observations")
-                .confirm_publication(scope, epoch, message, sequence);
-        }
+            .next_relay_check(&scope, epoch)?;
+        Some(Self {
+            state,
+            scope,
+            epoch,
+            sequence,
+            message,
+        })
+    }
+
+    /// Call only after reading a published receipt for this exact message.
+    pub fn published(self) {
+        self.state
+            .lock()
+            .expect("relay observations")
+            .confirm_publication(self.scope, self.epoch, self.message, self.sequence);
     }
 }

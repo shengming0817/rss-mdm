@@ -104,6 +104,48 @@ impl Relay {
     }
 }
 
+/// An admitted slot can check one failed message before claiming more work.
+/// An unavailable or uncertain read preserves the original failure.
+pub(crate) async fn verify_publication(
+    binding: ExecutionBinding,
+    probe: Option<(
+        rss_mdm_recovery_observation::RelayCheck<'_>,
+        &rss_transactional_messaging_postgres::PgRuntime,
+        &rss_transactional_messaging_postgres::PgOutboxStore<()>,
+    )>,
+) {
+    let Some((probe, runtime, store)) = probe else {
+        return;
+    };
+    let published = runtime
+        .local_tx_with_context(
+            binding,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                Duration::from_secs(1),
+            ),
+            (store, &probe.message),
+            |(store, message), tx| {
+                Box::pin(async move {
+                    store
+                        .is_published(tx, &message.domain, &message.id, message.fingerprint)
+                        .await
+                })
+            },
+        )
+        .await
+        .fold(
+            |published| published,
+            |_| false,
+            |_| false,
+            |_| false,
+            |_| false,
+            |_| false,
+        );
+    if published {
+        probe.published();
+    }
+}
+
 async fn settle<E>(
     claims: Vec<(
         rss_mdm_recovery_observation::RelayMessage,
@@ -157,7 +199,7 @@ macro_rules! owner {
                         async move {
                             tokio::select! { biased;
                                 () = stop.cancelled() => return Ok(0),
-                                () = owner.verify_relay(binding) => {}
+                                () = verify_publication(binding, owner.relay_check(binding)) => {}
                             }
                             if stop.is_cancelled() {
                                 return Ok(0);
