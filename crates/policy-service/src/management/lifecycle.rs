@@ -44,10 +44,10 @@ impl crate::application::Application {
             rss_mdm_policy_postgres::schedules::triggers_in(profile, tx, version, now).await?;
         let reader = self.objects.clone();
         let scope = policy.definition.scope;
+        super::reconcile::lock_assignment_scope(profile, tx, scope).await?;
         let mut objects = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    rss_mdm_scope_postgres::admission_on(profile, c, tenant, scope).await?;
                     Ok(
                         rss_mdm_scope_service::channels::targets::lifecycle_objects_on(
                             profile,

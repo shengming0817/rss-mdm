@@ -662,6 +662,66 @@ async fn inventory_field(
     tx.commit().await?;
     Ok(())
 }
+async fn enqueue_policy_job(
+    runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
+    id: Uuid,
+    work: rss_mdm_policy_postgres::work::Work,
+) -> Result<()> {
+    let deadline = crate::authority_t2_support::deadline();
+    let store =
+        rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), binding, deadline).await?;
+    runtime
+        .local_tx_with_context(binding, deadline, (store, work), |(store, work), tx| {
+            Box::pin(async move {
+                rss_mdm_policy_service::worker::jobs::enqueue_job_in(
+                    StorageProfile::Mdm,
+                    store,
+                    tx,
+                    id,
+                    work,
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| sqlx::Error::Protocol(format!("{e:?}")).into())
+            })
+        })
+        .await
+        .fold(Ok, Err, Err, Err, Err, Err)?;
+    Ok(())
+}
+
+async fn policy_defers_locked_scope(
+    c: &Context,
+    workers: &Workers,
+    scope: Uuid,
+    policy: Uuid,
+) -> Result<()> {
+    let mut held = c.operator.begin().await?;
+    sqlx::query("SELECT id FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+        .bind(c.tenant.to_string())
+        .bind(scope)
+        .fetch_one(&mut *held)
+        .await?;
+    let job = Uuid::new_v4();
+    enqueue_policy_job(
+        workers
+            .policy_owner
+            .as_ref()
+            .context("Policy worker")?
+            .runtime
+            .clone(),
+        c.execution(),
+        job,
+        rss_mdm_policy_postgres::work::Work::PolicyReconcile { policy },
+    )
+    .await?;
+    let deferred = wait_sql(c,"SELECT epoch>0 AND token IS NULL AND next_run IS NOT NULL AND failures=0 AND result='pending' FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.policy' AND entity='job:'||$2::uuid::text",job).await;
+    held.rollback().await?;
+    deferred?;
+    wait_sql(c,"SELECT completed AND failure IS NULL FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2",job).await
+}
+
 #[tokio::test]
 #[ignore = "T2: actual listeners and workers recover committed registration facts, publish Group/Scope and atomically schedule Policy"]
 async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_polling() -> Result<()>
@@ -726,6 +786,7 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
         "idle baseline has no pending configuration command"
     );
     wait_sql(&c,"SELECT EXISTS(SELECT FROM mdm_scope.scopes s JOIN mdm_policy.work w ON(w.tenant_id,w.id)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND w.started AND w.completed)",scope).await?;
+    policy_defers_locked_scope(&c, &workers, scope, policy).await?;
     inventory(&c, &device.members[0].device, &definition, true).await?;
     wait_sql(
         &c,
@@ -2347,31 +2408,12 @@ async fn event_batch_commits_during_a_peer_receipt_lock() -> Result<()> {
         jobs.push(id);
     }
     let enqueue = |binding, id| {
-        let runtime = policy.runtime.clone();
-        async move {
-            let deadline = crate::authority_t2_support::deadline();
-            let store =
-                rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), binding, deadline)
-                    .await?;
-            runtime
-                .local_tx_with_context(binding, deadline, (store, id), |(store, id), tx| {
-                    Box::pin(async move {
-                        rss_mdm_policy_service::worker::jobs::enqueue_job_in(
-                            StorageProfile::Mdm,
-                            store,
-                            tx,
-                            *id,
-                            &rss_mdm_policy_postgres::work::Work::PolicyEvent { batch: *id },
-                        )
-                        .await
-                        .map(|_| ())
-                        .map_err(|e| sqlx::Error::Protocol(format!("{e:?}")).into())
-                    })
-                })
-                .await
-                .fold(Ok, Err, Err, Err, Err, Err)?;
-            Ok::<_, anyhow::Error>(())
-        }
+        enqueue_policy_job(
+            policy.runtime.clone(),
+            binding,
+            id,
+            rss_mdm_policy_postgres::work::Work::PolicyEvent { batch: id },
+        )
     };
     enqueue(a.execution(), jobs[0]).await?;
     let mut held = a.operator.begin().await?;

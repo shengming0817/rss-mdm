@@ -188,14 +188,31 @@ fn storage_error(error: PgError) -> rss_reconcile::Error {
         },
     )
 }
-fn fault(error: Fault, reason: &Mutex<Option<Error>>) -> PgError {
+enum JobRejection {
+    Request(Error),
+    LockUnavailable,
+}
+impl JobRejection {
+    fn request(self) -> Option<Error> {
+        match self {
+            Self::Request(error) => Some(error),
+            Self::LockUnavailable => None,
+        }
+    }
+}
+fn fault(error: Fault, reason: &Mutex<Option<JobRejection>>) -> PgError {
     match error {
         Fault::Request(error) => {
-            *reason.lock().expect("failure slot") = Some(error);
+            *reason.lock().expect("failure slot") = Some(JobRejection::Request(error));
             sqlx::Error::Protocol("asset automation rejected".into()).into()
         }
         Fault::Storage(error) => error,
-        Fault::Sql(error) => error.into(),
+        Fault::Sql(error) => {
+            if error.as_database_error().and_then(|e| e.code()).as_deref() == Some("55P03") {
+                *reason.lock().expect("failure slot") = Some(JobRejection::LockUnavailable);
+            }
+            error.into()
+        }
     }
 }
 impl PolicyWork {
@@ -253,6 +270,7 @@ impl PolicyWork {
                             .lock()
                             .expect("failure slot")
                             .take()
+                            .and_then(JobRejection::request)
                             .unwrap_or(Error::Unavailable(Failure::AutomationStorage)))
                     },
                     |_| Err(Error::RollbackFailed),
@@ -409,7 +427,13 @@ impl PolicyWork {
                         if error.kind() == rss_transactional_messaging::error::MessagingErrorKind::OwnershipLost {
                             return Err(Error::Conflict);
                         }
-                        let reason = failure.lock().expect("failure slot").take();
+                        let reason = match failure.lock().expect("failure slot").take() {
+                            Some(JobRejection::LockUnavailable) => {
+                                return Ok(Ok(ReconcileStep::Deferred(Duration::from_millis(50))));
+                            }
+                            Some(JobRejection::Request(error)) => Some(error),
+                            None => None,
+                        };
                         eprintln!("{}",serde_json::json!({"event":"mdm_automation_rollback","target":claim.target().entity(),"diagnostic":format!("{error:?}"),"reason":reason}));
                         reason.map(Err)
                             .ok_or(Error::Unavailable(Failure::AutomationStorage))

@@ -117,6 +117,7 @@ impl PolicyWork {
                         Err(e) => Err(rejected
                             .into_inner()
                             .expect("configuration rejection")
+                            .and_then(JobRejection::request)
                             .map(crate::transaction::Fault::Request)
                             .unwrap_or(crate::transaction::Fault::Storage(e))),
                     }
