@@ -223,7 +223,7 @@ async fn embedded_status(
         "providers":[{"purpose":"da_device","issuer":trust.issuers[0].digest,"origin":format!("https://localhost:{}",provider.port),"tls_root_file":provider.directory.join("task-trust-ca/ca.pem"),"provisioner":"rss-da-device","kid":"da-test","provisioner_key_file":provider.directory.join("provider.pk8")}]
     });
     config["recovery_credentials"] = serde_json::json!({"active_key":"native","key_files":{"native":c.inputs.directory.join("native.key")},
-        "recipients":[{"certificate_file":provider.directory.join("recovery.pem"),"private_key_file":provider.directory.join("recovery.key")}]});
+        "recipients":[{"certificate_file":c.inputs.directory.join("task-trust-ca/ca.pem"),"private_key_file":c.inputs.directory.join("task-trust-ca/ca.key")}]});
     let admin = c
         .account(&[
             Permission::Enrollment,
@@ -323,7 +323,6 @@ async fn lifecycle_http(
     );
     let id = Box::pin(embedded_credential(
         c,
-        fixture,
         admin,
         &renewed,
         &credentials,
@@ -444,7 +443,6 @@ async fn read_response<T: serde::de::DeserializeOwned>(response: reqwest::Respon
 mod da_recovery;
 async fn embedded_credential(
     c: &Context,
-    fixture: &provider::Provider,
     admin: &crate::authority_t2_support::Account,
     registration: &rss_mdm_agent_wire::da::Registration,
     base: &str,
@@ -453,10 +451,7 @@ async fn embedded_credential(
 ) -> Result<Uuid> {
     use serde_json::{Value, json};
     let native = std::fs::read(c.inputs.directory.join("native.key"))?;
-    let recipient = recovery::Recipient::from_pem(
-        &std::fs::read(fixture.directory.join("recovery.pem"))?,
-        &std::fs::read(fixture.directory.join("recovery.key"))?,
-    )?;
+    let recipient = super::recipient(c)?;
     let id = recipient.id().to_string();
     let protection = recovery::Protection::new(
         recovery::KeyRing::new(
@@ -534,22 +529,35 @@ async fn ordered(
     )
     .await?;
     let check = async {
-        let result=async {
-        tokio::time::timeout(std::time::Duration::from_secs(5),async {
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM pg_stat_activity a WHERE pg_backend_pid()=ANY(pg_blocking_pids(a.pid)))").fetch_one(&mut *tx).await?;
-                if waiting { break; }
+                let waiting: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT FROM pg_stat_activity a WHERE pg_backend_pid()=ANY(pg_blocking_pids(a.pid)))",
+                )
+                .fetch_one(&mut *tx)
+                .await?;
+                if waiting {
+                    break;
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            endpoints::lock_da_in(&mut tx,&tenant,&device).await?;
-            Ok::<_,anyhow::Error>(())
-        }).await??;
-        Ok::<_, anyhow::Error>(())
-        }.await;
+            endpoints::lock_da_in(&mut tx, &tenant, &device).await?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await;
         tx.rollback().await?;
         result
+            .context("observe the HTTP handler waiting on Agent while the DA fence is available")?
     };
     let (response, verified) = tokio::join!(request.send(), check);
+    let response = response?;
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "credential request returned {} at {}",
+            response.status(),
+            response.url().path()
+        );
+    }
     verified?;
-    Ok(response?)
+    Ok(response)
 }

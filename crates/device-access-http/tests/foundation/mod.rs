@@ -557,9 +557,22 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     ))
     .await
     .context("targeted RSS Login recovery")?;
-    let (renewed_receipt, renewed_peer) = renew(&material, &client, &peer, base, 2).await?;
-    let (current_survivor, current_peer) =
-        renew(&material, &client, &survivor_peer, base, 3).await?;
+    let (renewed_receipt, renewed_peer) = activate_grant(
+        &material,
+        &client,
+        peer.post(format!("{base}/renewal-grants")),
+        base,
+        2,
+    )
+    .await?;
+    let (current_survivor, current_peer) = activate_grant(
+        &material,
+        &client,
+        survivor_peer.post(format!("{base}/renewal-grants")),
+        base,
+        3,
+    )
+    .await?;
     assert_eq!(current_survivor.device, survivor.device);
     assert_ne!(current_survivor.credential, survivor.credential);
     assert_eq!(renewed_receipt.device, receipt.device);
@@ -585,7 +598,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     c.authority
         .inspect_session(
             c.execution(),
-            platform_session.clone(),
+            rss_identity_core::session::SessionSecret::parse(platform_session.expose().into())?,
             platform::deadline(),
         )
         .await
@@ -838,14 +851,14 @@ async fn unknown_recovery(
 }
 
 use rss_mdm_agent_wire::{da, enroll};
-async fn renew(
+async fn activate_grant(
     material: &material::Material,
     client: &reqwest::Client,
-    peer: &reqwest::Client,
+    request: reqwest::RequestBuilder,
     base: &str,
     key: u8,
 ) -> Result<(da::Registration, reqwest::Client)> {
-    let renewal = da::GrantRequest {
+    let input = da::GrantRequest {
         operation_id: Uuid::new_v4(),
         csr: material.csr(key)?,
         expires_in_seconds: 600,
@@ -853,38 +866,31 @@ async fn renew(
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA",
         )?,
     };
-    let renewed_grant: da::Grant = material::success(
-        peer.post(format!("{base}/renewal-grants"))
-            .json(&renewal)
-            .send()
-            .await?,
-    )
-    .await?;
-    let renewed: enroll::Candidate = material::success(
+    let grant: da::Grant = material::success(request.json(&input).send().await?).await?;
+    let candidate: enroll::Candidate = material::success(
         client
             .post(format!("{base}/certificates"))
             .json(&da::CertificateRequest {
                 operation_id: Uuid::new_v4(),
-                grant_id: renewed_grant.grant_id,
-                secret: renewal.secret,
-                csr: renewal.csr,
+                grant_id: grant.grant_id,
+                secret: input.secret,
+                csr: input.csr,
             })
             .send()
             .await?,
     )
     .await?;
-    let renewed_peer = material.client(Some((&renewed, key)))?;
-    let renewed_receipt: da::Registration = material::success(
-        renewed_peer
-            .post(format!("{base}/activate"))
+    let peer = material.client(Some((&candidate, key)))?;
+    let registration: da::Registration = material::success(
+        peer.post(format!("{base}/activate"))
             .json(&enroll::ActivationRequest {
                 wire_version: 1,
                 operation_id: Uuid::new_v4(),
-                issuance_id: renewed.issuance_id,
+                issuance_id: candidate.issuance_id,
             })
             .send()
             .await?,
     )
     .await?;
-    Ok((renewed_receipt, renewed_peer))
+    Ok((registration, peer))
 }

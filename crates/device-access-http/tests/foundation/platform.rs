@@ -779,7 +779,7 @@ pub async fn verify(
         m,
         client,
         &token,
-        &mut observation,
+        &observation,
         &publication,
         base,
     ))

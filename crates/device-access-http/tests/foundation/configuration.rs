@@ -530,7 +530,7 @@ pub async fn verify_override(
     m: &material::Material,
     client: &reqwest::Client,
     token: &str,
-    observation: &mut rss_mdm_device_access::deployment::Observation,
+    observation: &rss_mdm_device_access::deployment::Observation,
     device_policy: &policy::Publication,
     base: &str,
 ) -> Result<()> {
@@ -541,22 +541,54 @@ pub async fn verify_override(
     let mut default: policy::Publication = serde_json::from_value(read)?;
     default.managed_fields = vec![da::ConfigurationField::Mac];
     default.configuration = device_policy.configuration.clone();
+    let (separate, _) = super::activate_grant(
+        m,
+        client,
+        client
+            .post(format!("{management}/grants"))
+            .bearer_auth(token),
+        base,
+        1,
+    )
+    .await?;
+    let mut observation = observation.clone();
+    observation.device = separate.device;
     let mut target = device_policy.clone();
+    target.id = Uuid::new_v4();
+    target.version = Uuid::new_v4();
+    target.revision = 1;
+    target.target = policy::Target::Device {
+        device: separate.device,
+    };
     target.managed_fields.clear();
-    for p in [&mut target, &mut default] {
-        p.revision += 1;
-        p.version = Uuid::new_v4();
-        publish_protected(
-            c,
-            m,
-            &Change {
+    let _: policy::Publication = material::success(
+        client
+            .post(format!(
+                "{}/api/v1/tenants/{}/device-access/configurations",
+                c.browser_origin, c.tenant
+            ))
+            .bearer_auth(token)
+            .json(&Change {
                 operation_id: Uuid::new_v4(),
-                expected_revision: p.revision - 1,
-                publication: p.clone(),
-            },
-        )
-        .await?;
-    }
+                expected_revision: 0,
+                publication: target.clone(),
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    default.revision += 1;
+    default.version = Uuid::new_v4();
+    publish_protected(
+        c,
+        m,
+        &Change {
+            operation_id: Uuid::new_v4(),
+            expected_revision: default.revision - 1,
+            publication: default.clone(),
+        },
+    )
+    .await?;
     let export = |p: &policy::Publication, delivery| {
         client
             .post(format!("{management}/configurations"))
@@ -595,7 +627,7 @@ pub async fn verify_override(
     material::empty(
         client
             .post(format!("{base}/deployment-evidence"))
-            .json(&business::signed(observation)?)
+            .json(&business::signed(&observation)?)
             .send()
             .await?,
     )
