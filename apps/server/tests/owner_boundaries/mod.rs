@@ -106,7 +106,7 @@ impl Owners {
         let cancel = tokio_util::sync::CancellationToken::new();
         let control =
             rss_reconcile::Control::new(&timer, std::time::Duration::from_secs(15), &cancel);
-        let pool = c.inputs.pool("shared", "mdm_scheduler_runtime").await?;
+        let pool = c.inputs.pool(&c.profile, "mdm_scheduler_runtime").await?;
         let schedule = rss_mdm_work_page::scheduler::Scheduler::new(pool.clone(), &control).await?;
         let worker = group::runtime::GroupWork::new(self.groups.clone(), schedule.clone());
         let target = group::tasks::target(c.tenant, task);

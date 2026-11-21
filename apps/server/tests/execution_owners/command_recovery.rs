@@ -116,9 +116,47 @@ async fn legal_candidates_page_across_restart_and_late_orphans() -> Result<()> {
     h.close().await
 }
 
+async fn native_cursor(
+    h: &Harness,
+    table: &str,
+    credentials: bool,
+) -> Result<(
+    rss_reconcile::Target,
+    rss_reconcile::ResourceSet,
+    rss_mdm_agent_wire::DeviceId,
+)> {
+    use rss_mdm_registration_service::lifecycle::resources;
+    let device = crate::native_identity_t2_support::seed(&h.c, "windows")
+        .await?
+        .device;
+    let command_device = Uuid::new_v4();
+    let mut tx = command::seed_transaction(&h.c).await?;
+    sqlx::query("INSERT INTO mdm_access.command_authorities(tenant_id,device,command_device,generation,epoch) VALUES($1::uuid,$2,$3,1,1)")
+            .bind(h.c.tenant.to_string()).bind(device.into_uuid()).bind(command_device).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO rss_device_command.authorities(tenant_id,device_id,generation,authority_epoch) VALUES($1::uuid,$2,1,1)")
+            .bind(h.c.tenant.to_string()).bind(command_device).execute(&mut *tx).await?;
+    // The durable cursor models a restart after the last non-empty command page.
+    sqlx::query(sqlx::AssertSqlSafe(format!("INSERT INTO {table}(tenant_id,device,expected_epoch,authority_epoch,recovery_after) VALUES($1::uuid,$2,$3,1,$4)")))
+            .bind(h.c.tenant.to_string()).bind(device.into_uuid()).bind(h.c.execution().epoch().get()).bind(Uuid::new_v4().to_string()).execute(&mut *tx).await?;
+    tx.commit().await?;
+    let target = if credentials {
+        rss_mdm_recovery_credentials::native::target(h.c.tenant, &device)
+    } else {
+        rss_mdm_registration_service::installation::target(h.c.tenant, &device)
+    };
+    Ok((
+        target,
+        resources::device(h.c.tenant, &device, resources::Work::Exclusive),
+        device,
+    ))
+}
+
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "one transaction holds the original attempt through peer admission, receipt and worker shutdown"
+)]
 async fn native_cursor_isolation(credentials: bool) -> Result<()> {
     use crate::authority_t2_support::{blocked_attempt, wait_for_blocked_attempt};
-    use rss_mdm_registration_service::lifecycle::resources;
     use rss_reconcile::DurableStore;
     use std::time::Duration;
     let a = Harness::open().await?;
@@ -128,32 +166,10 @@ async fn native_cursor_isolation(credentials: bool) -> Result<()> {
     } else {
         "mdm_registration_tasks.device_recovery"
     };
-    let mut work = Vec::new();
-    for h in [&a, &b] {
-        let device = crate::native_identity_t2_support::seed(&h.c, "windows")
-            .await?
-            .device;
-        let command_device = Uuid::new_v4();
-        let mut tx = command::seed_transaction(&h.c).await?;
-        sqlx::query("INSERT INTO mdm_access.command_authorities(tenant_id,device,command_device,generation,epoch) VALUES($1::uuid,$2,$3,1,1)")
-            .bind(h.c.tenant.to_string()).bind(device.into_uuid()).bind(command_device).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO rss_device_command.authorities(tenant_id,device_id,generation,authority_epoch) VALUES($1::uuid,$2,1,1)")
-            .bind(h.c.tenant.to_string()).bind(command_device).execute(&mut *tx).await?;
-        // The durable cursor models a restart after the last non-empty command page.
-        sqlx::query(sqlx::AssertSqlSafe(format!("INSERT INTO {table}(tenant_id,device,expected_epoch,authority_epoch,recovery_after) VALUES($1::uuid,$2,$3,1,$4)")))
-            .bind(h.c.tenant.to_string()).bind(device.into_uuid()).bind(h.c.execution().epoch().get()).bind(Uuid::new_v4().to_string()).execute(&mut *tx).await?;
-        tx.commit().await?;
-        let target = if credentials {
-            rss_mdm_recovery_credentials::native::target(h.c.tenant, &device)
-        } else {
-            rss_mdm_registration_service::installation::target(h.c.tenant, &device)
-        };
-        work.push((
-            target,
-            resources::device(h.c.tenant, &device, resources::Work::Exclusive),
-            device,
-        ));
-    }
+    let work = [
+        native_cursor(&a, table, credentials).await?,
+        native_cursor(&b, table, credentials).await?,
+    ];
     let state = &a.a.resources;
     let notify = Arc::new(tokio::sync::Notify::new());
     let handles = [Arc::default(), notify.clone()];
@@ -195,9 +211,7 @@ async fn native_cursor_isolation(credentials: bool) -> Result<()> {
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(60), &cancel);
     let store = &state.storage.reconcile;
     let mut held = a.c.operator.begin().await?;
-    let pid = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT pg_backend_pid() FROM {table} WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE"
-    )))
+    let pid = sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE")
     .bind(a.c.tenant.to_string())
     .bind(work[0].2.into_uuid())
     .fetch_one(&mut *held)
@@ -211,7 +225,7 @@ async fn native_cursor_isolation(credentials: bool) -> Result<()> {
     launch.stage_deferred_task_with_token(registration.critical());
     launch.finish();
     let check = tokio::time::timeout(Duration::from_secs(30), async {
-        let attempt = wait_for_blocked_attempt(&a.c.operator, pid, table).await?;
+        let attempt = wait_for_blocked_attempt(&a.c.operator, pid, "command_authorities").await?;
         store.wake(&work[1].0, &work[1].1, &control).await?;
         notify.notify_one();
         let receipt = format!(
@@ -225,10 +239,19 @@ async fn native_cursor_isolation(credentials: bool) -> Result<()> {
         {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        anyhow::ensure!(blocked_attempt(&a.c.operator, pid, table).await? == Some(attempt));
+        anyhow::ensure!(
+            blocked_attempt(&a.c.operator, pid, "command_authorities").await? == Some(attempt)
+        );
         Ok::<_, anyhow::Error>(())
     })
     .await;
+    if !matches!(&check, Ok(Ok(()))) {
+        for (h, target) in [(&a, &work[0].0), (&b, &work[1].0)] {
+            let state: Option<(i64,String,i64)> = sqlx::query_as("SELECT epoch,result,failures FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity=$3")
+                .bind(h.c.tenant.to_string()).bind(target.scope().reconciler()).bind(target.entity()).fetch_optional(&h.c.operator).await?;
+            eprintln!("{table} tenant {} RSS state {state:?}", h.c.tenant);
+        }
+    }
     held.rollback().await?;
     anyhow::ensure!(stack.shutdown().join().await?.is_clean());
     b.close().await?;

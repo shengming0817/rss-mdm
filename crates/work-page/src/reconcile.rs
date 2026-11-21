@@ -29,7 +29,7 @@ pub async fn run<P, B>(
 ) -> Result<(), Error>
 where
     P: Future<Output = Result<Vec<Uuid>, ErrorKind>>,
-    B: Future<Output = Result<rss_reconcile::Report, Error>> + Send + 'static,
+    B: Future<Output = Result<Duration, Error>> + Send + 'static,
 {
     let limit = NonZeroUsize::new(policy.concurrency())
         .expect("validated policy")
@@ -58,26 +58,14 @@ where
                 if slots.is_empty() {
                     return Ok(RECOVERY);
                 }
-                let report = batch(tenant, slots, admission)
+                batch(tenant, slots, admission)
                     .await
                     .map_err(|error| match error.kind() {
                         ErrorKind::Transient | ErrorKind::Deadline | ErrorKind::CommitUnknown => {
                             Failure::Retry
                         }
                         _ => Failure::Fatal(error),
-                    })?;
-                let worked = [
-                    report.converged,
-                    report.reobserve,
-                    report.deferred,
-                    report.retried,
-                    report.suspended,
-                    report.fenced,
-                    report.execution_failed,
-                ]
-                .into_iter()
-                .any(|n| n > 0);
-                Ok(if worked { Duration::ZERO } else { RECOVERY })
+                    })
             }
         },
         |_| {},
@@ -94,7 +82,7 @@ pub async fn batch<S: DurableStore, R: Reconciler<S::Claim>>(
     policy: Policy,
     stop: &CancellationToken,
     observe: impl FnMut(Observation) + Send,
-) -> Result<rss_reconcile::Report, Error> {
+) -> Result<Duration, Error> {
     #[allow(
         clippy::disallowed_methods,
         reason = "monotonic execution clock boundary"
@@ -105,8 +93,9 @@ pub async fn batch<S: DurableStore, R: Reconciler<S::Claim>>(
     let store = Admitted {
         store,
         slots: Mutex::new(slots),
+        next_scan: Mutex::new(None),
     };
-    rss_reconcile::run_batch(
+    let report = rss_reconcile::run_batch(
         &store,
         &Delegate(reconciler),
         scope,
@@ -115,12 +104,26 @@ pub async fn batch<S: DurableStore, R: Reconciler<S::Claim>>(
         stop,
         observe,
     )
-    .await
+    .await?;
+    // A committed settlement owns the next useful scan. An immediate empty
+    // scan would otherwise discard a short reobserve deadline until recovery.
+    let next = store.next_scan.into_inner().expect("batch scan hint");
+    Ok(next.map_or_else(
+        || {
+            if report.converged > 0 {
+                Duration::ZERO
+            } else {
+                RECOVERY
+            }
+        },
+        |due| due.saturating_sub(timer.now()),
+    ))
 }
 
 struct Admitted<'a, S> {
     store: &'a S,
     slots: Mutex<Vec<Slot>>,
+    next_scan: Mutex<Option<Duration>>,
 }
 struct Leased<C> {
     claim: C,
@@ -172,6 +175,9 @@ impl<S: DurableStore> DurableStore for Admitted<'_, S> {
         if batch.claims.len() > slots.len() {
             return Err(Error::new(ErrorKind::Invariant));
         }
+        if batch.more {
+            *self.next_scan.lock().expect("batch scan hint") = Some(Duration::ZERO);
+        }
         Ok(ClaimBatch {
             claims: batch
                 .claims
@@ -196,7 +202,18 @@ impl<S: DurableStore> DurableStore for Admitted<'_, S> {
         completion: Completion,
         control: &Control<'_, T>,
     ) -> Result<(), Error> {
-        self.store.finish(&claim.claim, completion, control).await
+        let delay = match &completion {
+            Completion::Reobserve(after)
+            | Completion::Deferred(after)
+            | Completion::Retry { after, .. } => Some(*after),
+            _ => None,
+        };
+        self.store.finish(&claim.claim, completion, control).await?;
+        if let Some(due) = delay.and_then(|after| control.elapsed().checked_add(after)) {
+            let mut next = self.next_scan.lock().expect("batch scan hint");
+            *next = Some(next.map_or(due, |previous| previous.min(due)));
+        }
+        Ok(())
     }
     async fn release<T: Timer>(
         &self,

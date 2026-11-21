@@ -810,7 +810,38 @@ impl TaskOwner {
         }
     }
     async fn seed(self, h: &Harness) -> Result<Uuid> {
-        let (id, _) = owner_policy(h, matches!(self, Self::Collection)).await?;
+        let id = if matches!(self, Self::Access) {
+            use rss_mdm_policy_postgres::device_access::{Publication, Target, publish_on};
+            let policy = Publication {
+                id: Uuid::new_v4(),
+                version: Uuid::new_v4(),
+                revision: 1,
+                target: Target::TenantDefault,
+                enabled: false,
+                managed_fields: vec![],
+                configuration: w::AccessConfiguration {
+                    mac: None,
+                    windows: w::AccessWindowsConfiguration::Whfb,
+                    self_enrollment: false,
+                    enabled: false,
+                    role: None,
+                },
+            };
+            let mut tx = command::seed_transaction(&h.c).await?;
+            publish_on(
+                &mut tx,
+                Uuid::from_bytes(h.c.tenant.octets()),
+                &policy,
+                0,
+                json!({"kind":"system"}),
+                now(),
+            )
+            .await?;
+            tx.commit().await?;
+            policy.id
+        } else {
+            owner_policy(h, matches!(self, Self::Collection)).await?.0
+        };
         let runtime = h.a.resources.storage.runtime.clone();
         let messaging = rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
@@ -973,8 +1004,8 @@ fn start_owner(
 #[ignore = "T2: Script and Collection share eight execution slots, refill a single freed slot, and stop claiming on shutdown"]
 async fn registered_owners_share_capacity_and_drain() -> Result<()> {
     use crate::authority_t2_support::{blocked_attempt, wait_for_blocked_attempt};
-    let a = Harness::open().await?;
-    let b = Harness::open().await?;
+    let a = Harness::open_in("worker_capacity").await?;
+    let b = Harness::open_in("worker_capacity").await?;
     let config = &a.a.resources.background;
     let width = config.tasks.concurrency();
     anyhow::ensure!(width == 8);

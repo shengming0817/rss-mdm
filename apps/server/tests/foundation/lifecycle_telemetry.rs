@@ -172,7 +172,7 @@ pub(super) async fn exercise(
     }
     recovery::unrelated_rotation(root, source, first, &resources[0]).await?;
     runtime = maintenance::desired(root, first.host_id)?;
-    let running = maintenance::Running::open(&runtime).await?;
+    let running = Box::pin(maintenance::Running::open(&runtime)).await?;
     runtime_files::observe_installation(serde_json::from_value(source.clone())?).await?;
     let address = source["listen"]
         .as_str()
@@ -213,7 +213,7 @@ pub(super) async fn exercise(
         .unwrap()
         .remove("worker_password_file");
     available(&mut first_browser, a, true).await?;
-    let a_data = data::Upload::publish(
+    let a_data = Box::pin(data::Upload::publish(
         &running,
         &mut first_browser,
         a,
@@ -221,7 +221,7 @@ pub(super) async fn exercise(
         &runtime,
         inputs,
         11,
-    )
+    ))
     .await
     .context("A product intake")?;
     let (_, before) = platform.call(Method::GET, "/readyz", None, None).await?;
@@ -251,9 +251,11 @@ pub(super) async fn exercise(
         .unwrap()
         .remove("worker_password_file");
     available(&mut peer, b, true).await?;
-    let b_data = data::Upload::publish(&running, &mut peer, b, &primary, &runtime, inputs, 22)
-        .await
-        .context("B product intake")?;
+    let b_data = Box::pin(data::Upload::publish(
+        &running, &mut peer, b, &primary, &runtime, inputs, 22,
+    ))
+    .await
+    .context("B product intake")?;
     recovery::reader_isolation(root, &resources[0], a, b).await?;
     a_data
         .reject_foreign_cursor(&mut first_browser, &b_data)
@@ -293,7 +295,10 @@ pub(super) async fn exercise(
         "same password cannot rotate"
     );
     sqlx::raw_sql("CREATE FUNCTION public.pause_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'hold published receipt'; END $$; CREATE TRIGGER pause_receipt BEFORE UPDATE OF delivery ON mdm_telemetry.batches FOR EACH ROW WHEN (NEW.delivery='published') EXECUTE FUNCTION public.pause_receipt()").execute(&admin).await?;
-    let expired = b_data.more(service, 2).await?;
+    let expired = b_data
+        .more(service, 2)
+        .await
+        .context("intake before retry expiry")?;
     let mut tx = admin.begin().await?;
     sqlx::query("SELECT set_config('rss.storage_target',encode(s.target,'hex'),true),set_config('rss.storage_lineage',encode(s.lineage,'hex'),true),set_config('rss.tenant_id',e.tenant_id::text,true),set_config('rss.execution_epoch',e.epoch::text,true) FROM rss_transactional_messaging.storage_lineage s CROSS JOIN rss_transactional_messaging.tenant_epoch e WHERE s.singleton AND e.tenant_id=$1")
         .bind(b).fetch_one(&mut *tx).await?;
@@ -311,7 +316,10 @@ pub(super) async fn exercise(
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }).await.context("relay placed expired original in dead letter")??;
-    let awaiting = b_data.more(service, 4).await?;
+    let awaiting = b_data
+        .more(service, 4)
+        .await
+        .context("intake before reader rotation")?;
     sqlx::raw_sql("CREATE FUNCTION public.interrupt_reader_probe() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'interrupted reader'; END $$; CREATE TRIGGER interrupt_reader_probe BEFORE UPDATE ON mdm_telemetry.storage_binding FOR EACH ROW WHEN (NEW.probe_ready AND NOT OLD.probe_ready) EXECUTE FUNCTION public.interrupt_reader_probe()").execute(&admin).await?;
     ensure!(
         matches!(
@@ -325,8 +333,10 @@ pub(super) async fn exercise(
     )
     .execute(&admin)
     .await?;
-    b_data.published(service, awaiting).await?;
-    relay_isolation(&admin, service, a, &a_data, &b_data).await?;
+    b_data
+        .published(service, awaiting)
+        .await
+        .context("publish previously accepted batch during rotation")?;
     recovery::login(root, &resources[0], b, "b-password", false).await?;
     let mut different = request.clone();
     different["action"] = json!({"kind":"retire"});
@@ -365,13 +375,23 @@ pub(super) async fn exercise(
         .context("resume original reader rotation")?;
     available(&mut first_browser, a, true).await?;
     available(&mut peer, b, true).await?;
+    relay_isolation(&admin, service, a, &a_data, &b_data)
+        .await
+        .context("relay peer after reader rotation")?;
     let (t, mut shared) = provision(&mut platform).await?;
     attach(source, &resources[1], t, 0, json!({"kind":"select"})).await?;
     available(&mut shared, t, true).await?;
-    let shared_data =
-        data::Upload::publish(&running, &mut shared, t, &primary, &runtime, inputs, 33)
-            .await
-            .context("SharedRls product intake")?;
+    let shared_data = Box::pin(data::Upload::publish(
+        &running,
+        &mut shared,
+        t,
+        &primary,
+        &runtime,
+        inputs,
+        33,
+    ))
+    .await
+    .context("SharedRls product intake")?;
     a_data
         .replay(running.telemetry.get().unwrap(), &mut first_browser)
         .await?;
@@ -432,7 +452,7 @@ pub(super) async fn exercise(
     ))
     .await
     .context("shared storage cold recovery")?;
-    let restarted = maintenance::Running::open(&runtime).await?;
+    let restarted = Box::pin(maintenance::Running::open(&runtime)).await?;
     shared_data
         .published(restarted.telemetry.get().unwrap(), pending)
         .await?;
@@ -491,11 +511,14 @@ async fn relay_isolation(
 ) -> Result<()> {
     use crate::authority_t2_support::{blocked_attempt, wait_for_blocked_attempt};
     let (held, pid) = hold_receipt(pool, tenant).await?;
-    let accepted = a.more(service, 2).await?;
+    let accepted = a.more(service, 2).await.context("blocked tenant intake")?;
     let update = "mdm_telemetry.batches";
     let check = async {
         let attempt = wait_for_blocked_attempt(pool, pid, update).await?;
-        let peer = b.more(service, 6).await?;
+        let peer = b
+            .more(service, 6)
+            .await
+            .context("peer intake during blocked receipt")?;
         b.published(service, peer).await?;
         ensure!(blocked_attempt(pool, pid, update).await? == Some(attempt));
         Ok::<_, anyhow::Error>(())

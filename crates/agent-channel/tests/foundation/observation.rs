@@ -106,7 +106,7 @@ pub async fn enrollment(c: &Context, p: &registration::DevicePrincipal) -> Resul
         rss_mdm_inventory_service::inventory_runtime::Policy::new(
             Duration::from_secs(20),
             Duration::from_secs(20),
-            Duration::from_secs(5),
+            Duration::from_secs(20),
             32,
             64 * 1024 * 1024,
             64,

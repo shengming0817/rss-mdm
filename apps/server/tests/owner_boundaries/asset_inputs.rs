@@ -15,7 +15,7 @@ async fn cut(c: &Context) -> Result<rss_mdm_inventory::AssetCut> {
 async fn consumer(c: &Context) -> Result<Arc<PgRuntime>> {
     use rss_transactional_messaging::fence::StorageIdentity;
     use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa};
-    let db = c.inputs.database("shared", "mdm_asset_ingress_consumer");
+    let db = c.inputs.database(&c.profile, "mdm_asset_ingress_consumer");
     let pg = PgConfig::new(
         &db.host,
         db.port,
@@ -394,7 +394,7 @@ impl Workers {
         let mut config: crate::config::Config = serde_json::from_value(
             crate::host_t2_support::configuration(
                 &c.inputs,
-                "shared",
+                &c.profile,
                 "127.0.0.1:0".parse()?,
                 Uuid::new_v4(),
             )
@@ -407,7 +407,7 @@ impl Workers {
         let listener = worker_wake::Listener::new(config.access_options()?);
         let signals = listener.signals.clone();
         let (assets, groups) = projection_lanes(c, &config).await?;
-        let pool = c.inputs.pool("shared", "mdm_scheduler_runtime").await?;
+        let pool = c.inputs.pool(&c.profile, "mdm_scheduler_runtime").await?;
         let timer = rss_mdm_device_service::control::recovery::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
         let control =
@@ -666,7 +666,7 @@ async fn inventory_field(
 #[ignore = "T2: actual listeners and workers recover committed registration facts, publish Group/Scope and atomically schedule Policy"]
 async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_polling() -> Result<()>
 {
-    let c = Context::open("shared", &[]).await?;
+    let c = Context::open("planning_workers", &[]).await?;
     let account = c
         .account(&[P::InventoryRead, P::GroupRead, P::GroupWrite])
         .await?;
@@ -819,7 +819,13 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     let workers = Workers::start_policy(&c, &owners, scopes.clone(), Some(&policy_fixture)).await?;
     wait_sql(&c,"SELECT count(*)=34 AND bool_and(member_count=1) AND bool_or(id=$2) FROM mdm_group.groups WHERE tenant_id=$1::uuid AND NOT deleted",id).await?;
     inventory(&c, &device.members[0].device, &definition, false).await?;
-    wait_sql(&c,"SELECT count(*)=34 AND bool_and(member_count=0) AND bool_or(id=$2) FROM mdm_group.groups WHERE tenant_id=$1::uuid AND NOT deleted",id).await?;
+    let emptied = wait_sql(&c,"SELECT count(*)=34 AND bool_and(member_count=0) AND bool_or(id=$2) FROM mdm_group.groups WHERE tenant_id=$1::uuid AND NOT deleted",id).await;
+    if emptied.is_err() {
+        let trace: serde_json::Value = sqlx::query_scalar("SELECT jsonb_build_object('groups', (SELECT count(*) FROM mdm_group.groups WHERE tenant_id=$1::uuid AND member_count=0),'dispatch',(SELECT to_jsonb(d) FROM mdm_assets.group_dispatch d WHERE tenant_id=$1::uuid),'pending',(SELECT count(*) FROM mdm_assets.group_tasks WHERE tenant_id=$1::uuid AND NOT completed),'runner',(SELECT jsonb_agg(s) FROM (SELECT reconciler,result,count(*) FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND next_run IS NOT NULL GROUP BY 1,2) s))")
+            .bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
+        eprintln!("durable group checkpoints: {trace}");
+    }
+    emptied?;
     wait_sql(&c,"SELECT s.resolution IS NOT NULL AND NOT EXISTS(SELECT FROM mdm_scope.scope_channel_results r WHERE(r.tenant_id,r.run)=(s.tenant_id,s.resolution) AND r.channel='mdm' AND r.matched) FROM mdm_scope.scopes s WHERE s.tenant_id=$1::uuid AND s.id=$2",scope).await?;
     inventory(&c, &device.members[0].device, &definition, true).await?;
     wait_sql(&c,"SELECT EXISTS(SELECT FROM mdm_scope.scopes s JOIN mdm_scope.scope_channel_results r ON(r.tenant_id,r.run)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.channel='mdm' AND r.matched)",scope).await?;
@@ -914,7 +920,7 @@ async fn coalesced_static_edit_and_scope_request_are_not_acknowledged_by_old_tas
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(15), &cancel);
-    let pool = c.inputs.pool("shared", "mdm_scheduler_runtime").await?;
+    let pool = c.inputs.pool(&c.profile, "mdm_scheduler_runtime").await?;
     let schedule = rss_mdm_work_page::scheduler::Scheduler::new(pool.clone(), &control).await?;
     let worker = group::runtime::GroupWork::new(owners.groups.clone(), schedule.clone());
     let target =
@@ -1305,7 +1311,7 @@ async fn input_health_is_durable_across_instances() -> Result<()> {
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(30), &cancel);
-    let pool = c.inputs.pool("shared", "mdm_scheduler_runtime").await?;
+    let pool = c.inputs.pool(&c.profile, "mdm_scheduler_runtime").await?;
     let schedule = rss_mdm_work_page::scheduler::Scheduler::new(pool.clone(), &control).await?;
     let group = group::runtime::GroupWork::new(owners.groups.clone(), schedule.clone());
     let scope = rss_mdm_scope_service::runtime::ScopeWork::new(scopes.clone(), schedule.clone());
@@ -1457,7 +1463,7 @@ async fn association_health_recovers_after_another_instance_converges() -> Resul
     let timer = rss_mdm_policy_service::clock::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(30), &cancel);
-    let pool = c.inputs.pool("shared", "mdm_scheduler_runtime").await?;
+    let pool = c.inputs.pool(&c.profile, "mdm_scheduler_runtime").await?;
     let schedule = rss_mdm_work_page::scheduler::Scheduler::new(pool.clone(), &control).await?;
     let scope = rss_reconcile::Scope::new(c.tenant, "mdm.devices")?;
     let work = Uuid::new_v4();
@@ -1593,7 +1599,7 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
     for _ in 0..65 {
         planning::endpoint(&c).await?;
     }
-    let pool = c.inputs.pool("shared", "mdm_scheduler_runtime").await?;
+    let pool = c.inputs.pool(&c.profile, "mdm_scheduler_runtime").await?;
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(40), &cancel);
@@ -2016,7 +2022,7 @@ async fn local_delivery_refills_while_a_group_head_is_in_flight() -> Result<()> 
     // the second supplies the third independent head. Each needs a physical
     // connection for its effect after its initial RSS lease renewal.
     // Keep the observation connection independent of both lock holders.
-    let barrier = c.inputs.pool("shared", "postgres").await?;
+    let barrier = c.inputs.pool(&c.profile, "postgres").await?;
     let mut inputs = barrier.begin().await?;
     let tenant = Uuid::from_bytes(c.tenant.octets());
     let holder: i32 = sqlx::query_scalar("SELECT pg_backend_pid() FROM rss_reconcile.targets WHERE tenant_id=$1 AND reconciler='mdm.scopes' AND entity='inputs' FOR UPDATE")
@@ -2131,6 +2137,22 @@ async fn local_delivery_refills_while_a_group_head_is_in_flight() -> Result<()> 
     Ok(())
 }
 
+async fn wait_checkpoint(peer: &Context, receipt: &str) -> Result<()> {
+    while !sqlx::query_scalar::<_, bool>(sqlx::AssertSqlSafe(receipt))
+        .bind(peer.tenant.to_string())
+        .fetch_optional(&peer.operator)
+        .await?
+        .unwrap_or(false)
+    {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "one transaction holds the original attempt through peer admission, receipt and worker shutdown"
+)]
 async fn peer_advances_during_locked_checkpoint(
     table: &'static str,
     lock: &'static str,
@@ -2162,17 +2184,7 @@ async fn peer_advances_during_locked_checkpoint(
                 .await?;
         // B enters through the normal publisher and production consumer while A holds this exact attempt.
         planning::endpoint(peer).await?;
-        loop {
-            if sqlx::query_scalar::<_, bool>(receipt)
-                .bind(peer.tenant.to_string())
-                .fetch_optional(&peer.operator)
-                .await?
-                .unwrap_or(false)
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        wait_checkpoint(peer, receipt).await?;
         anyhow::ensure!(
             crate::authority_t2_support::blocked_attempt(&slow.operator, blocker, table).await?
                 == Some(attempt),

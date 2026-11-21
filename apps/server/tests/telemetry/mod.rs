@@ -599,10 +599,10 @@ async fn maintenance_commits_while_a_peer_gap_receipt_is_locked() -> Result<()> 
     };
     let f = Fixture::open(a).await?;
     let result = async {
-        let service = f.service(a,std::slice::from_ref(&f.config)).await?;
+        let service = f.service(a,std::slice::from_ref(&f.config)).await.context("open periodic telemetry service")?;
         let id = Uuid::new_v4();
+        service.admit_default(b.execution(), crate::authority_t2_support::deadline()).await.context("admit peer telemetry binding")?;
         for c in [a,b] {
-            fixture::persist_selection(c,&f.config).await?;
             let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
             sqlx::query("INSERT INTO mdm_telemetry.gap_reports(tenant_id,id,device,input_digest,report,received_at,expires_at) VALUES ($1::uuid,$2,$3,$4,'{}',1,2)")
                 .bind(c.tenant.to_string()).bind(id).bind(Uuid::new_v4()).bind([0u8;32].as_slice()).execute(&mut *tx).await?;
@@ -611,9 +611,9 @@ async fn maintenance_commits_while_a_peer_gap_receipt_is_locked() -> Result<()> 
         let mut held = a.operator.begin().await?;
         let pid = sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_telemetry.gap_reports WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
             .bind(a.tenant.to_string()).bind(id).fetch_one(&mut *held).await?;
-        let protocol = crate::planning_t2_support::owner(a,"mdm_command_runtime").await?;
+
         let token = tokio_util::sync::CancellationToken::new();
-        let task = tokio::spawn(service.run(protocol.runtime.clone(),token.clone()));
+        let task = tokio::spawn(service.run(f.owner.runtime.clone(),token.clone()));
         let check = tokio::time::timeout(Duration::from_secs(40), async {
             let attempt = wait_for_blocked_attempt(&a.operator,pid,"DELETE FROM mdm_telemetry.gap_reports").await?;
             while sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm_telemetry.gap_reports WHERE tenant_id=$1::uuid AND id=$2)")
@@ -626,7 +626,6 @@ async fn maintenance_commits_while_a_peer_gap_receipt_is_locked() -> Result<()> 
         token.cancel();
         held.rollback().await?;
         task.await??;
-        protocol.runtime.close().await;
         check??;
         Ok(())
     }.await;

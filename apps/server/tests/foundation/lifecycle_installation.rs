@@ -225,7 +225,7 @@ async fn fresh(root: &Path, administrator: &crate::config::Database) -> Result<I
         !root.join("installation/installation.json").exists(),
         "an invalid pool budget cannot bind the installation"
     );
-    let first = install(input)
+    let first = Box::pin(install(input))
         .await
         .context("initialize fresh installation")?;
     let public: Value = serde_json::from_slice(&std::fs::read(
@@ -362,7 +362,7 @@ pub(in crate::foundation_t2) async fn shared_telemetry() -> Result<()> {
     let admin = inputs.database("shared_telemetry", "postgres");
     let temp = tempfile::tempdir()?;
     let root = temp.path().canonicalize()?;
-    let installed = fresh(&root, &admin).await?;
+    let installed = Box::pin(fresh(&root, &admin)).await?;
     let original = maintenance::desired(&root, installed.first.host_id)?;
     let running = maintenance::Running::open(&original).await?;
     crate::installation::runtime_files::observe_installation(serde_json::from_value(
