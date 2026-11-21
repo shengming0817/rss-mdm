@@ -51,8 +51,24 @@ pub fn mount(
 }
 fn register() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
-        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { request_credential, credential_status, get_materials, post_material_step_up, post_material_disclose, get_list, get_binding, put_change, post_step_up, get_operation, get_offboarding, post_offboarding_identity, get_enterprise_list, post_enterprise_change, get_enterprise_detail, post_enterprise_step_up, post_offboarding_idp } }
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { publish_credential_policy, credential_policy, request_credential, credential_status, get_materials, post_material_step_up, post_material_disclose, get_list, get_binding, put_change, post_step_up, get_operation, get_offboarding, post_offboarding_identity, get_enterprise_list, post_enterprise_change, get_enterprise_detail, post_enterprise_step_up, post_offboarding_idp } }
         RegisterModule1 {
+            publish_credential_policy: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/device-access/credential-policies",
+                rss_mdm_http_contract::routing::post(
+                    publish_credential_policy,
+                    &contracts::DEVICE_ACCESS,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            credential_policy: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/device-access/credential-policies/{version}",
+                get(
+                    credential_policy,
+                    &contracts::DEVICE_ACCESS,
+                    &[RouteOperation::Get],
+                ),
+            ),
             request_credential: rss_mdm_http_contract::module::Route::new(
                 "/devices/{device}/device-access/credential-operations",
                 rss_mdm_http_contract::routing::post(
@@ -896,7 +912,7 @@ async fn material_disclose(
         Uuid,
         i64,
     )>,
-    OperationProofHeaders(headers): OperationProofHeaders,
+    RequiredOperationProof(proof): RequiredOperationProof,
     Json(input): Json<MaterialRequest>,
 ) -> Result<
     rss_mdm_http_contract::signature::NoStore<Json<rss_mdm_recovery_credentials::Disclosure>>,
@@ -904,7 +920,7 @@ async fn material_disclose(
 > {
     let input = rss_mdm_recovery_credentials::DisclosureRequest {
         operation_id: input.operation_id,
-        proof: operation_proof(&headers)?,
+        proof: Some(proof),
     };
     Ok(rss_mdm_http_contract::signature::NoStore(Json(
         s.recovery
@@ -972,6 +988,24 @@ impl rss_mdm_http_contract::query::DirectoryOwner for EnterpriseListQuery {
     }
 }
 
+struct RequiredOperationProof(rss_mdm_agent_wire::runtime::Secret);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for RequiredOperationProof {
+    type Rejection = Error;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        operation_proof(&parts.headers)?
+            .map(Self)
+            .ok_or(Error::Unauthorized)
+    }
+}
+impl rss_mdm_http_contract::signature::Input for RequiredOperationProof {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        use rss_mdm_http_contract::signature::{Direction, Request, Schema};
+        Request { headers: [("cookie".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string","description":"Requires the __Host-identity-operation proof bound to this session, operation, device and material version"}) })].into(), required_headers: vec!["cookie"], ..Request::default() }
+    }
+}
 struct OperationProofHeaders(pub axum::http::HeaderMap);
 impl<S: Send + Sync> axum::extract::FromRequestParts<S> for OperationProofHeaders {
     type Rejection = std::convert::Infallible;
@@ -995,6 +1029,31 @@ struct OffboardingIdentity {
     operation: access::lifecycle::Offboarding,
 }
 
+use rss_mdm_policy_postgres::device_access::CredentialPublication;
+async fn publish_credential_policy(
+    State(s): State<Arc<Services>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(a): Extension<RequestAudit>,
+    Path((_tenant, device)): Path<(Uuid, rss_mdm_agent_wire::DeviceId)>,
+    Json(input): Json<CredentialPublication>,
+) -> Result<Json<CredentialPublication>, Error> {
+    Ok(Json(
+        s.registration
+            .publish_credential_policy(&auth.proof, &device, &input, &a)
+            .await?,
+    ))
+}
+async fn credential_policy(
+    State(s): State<Arc<Services>>,
+    Extension(auth): Extension<RequestAuth>,
+    Path((_tenant, device, version)): Path<(Uuid, rss_mdm_agent_wire::DeviceId, Uuid)>,
+) -> Result<Json<CredentialPublication>, Error> {
+    Ok(Json(
+        s.registration
+            .credential_policy(&auth.proof, &device, version)
+            .await?,
+    ))
+}
 use rss_mdm_recovery_credentials::tasks::device as credential;
 async fn request_credential(
     State(s): State<Arc<Services>>,

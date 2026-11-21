@@ -44,6 +44,14 @@
     {
       "type": "ApplicationReport",
       "file": "application-report-v1.schema.json"
+    },
+    {
+      "type": "CredentialEvent",
+      "file": "credential-event-v1.schema.json"
+    },
+    {
+      "type": "CredentialSettlement",
+      "file": "credential-settlement-v1.schema.json"
     }
   ]
 }

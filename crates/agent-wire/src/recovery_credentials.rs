@@ -196,7 +196,7 @@ pub enum CredentialRecoveryOutcome {
     /// Persisted candidate verified applied; replaced protector cleanup completed.
     Applied,
 }
-/// Signed, bounded execution intent using the standard Offer/Received/Start lifecycle.
+/// Bounded credential execution parameters. Agent delivery uses its signed Start protocol. The DA device claims these parameters directly over its authenticated mTLS connection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CredentialTaskSpec {

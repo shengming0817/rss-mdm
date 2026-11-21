@@ -80,6 +80,7 @@ pub fn router(state: Option<&Arc<Services>>) -> Router<(), impl Declaration + us
 fn bearer_allowed(path: &str) -> bool {
     path.starts_with("/api/v1/tenants/{tenant}/da/")
         || path.ends_with("/apple/platform-sso/status")
+        || path.contains("/device-access/credential-policies")
         || path.contains("/device-access/credential-operations")
         || path.ends_with("/device-access/materials")
 }

@@ -179,6 +179,7 @@ async fn administrator_for(
         } else {
             [
                 access::Permission::AccountWrite,
+                access::Permission::PolicyWrite,
                 access::Permission::EnterpriseApplicationsRead,
                 access::Permission::OperationRead,
                 access::Permission::Enrollment,

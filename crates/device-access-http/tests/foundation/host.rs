@@ -55,14 +55,15 @@ pub async fn verify(
     ))?;
     let mut http = example["http"].clone();
     http["max_connections"] = 4.into();
-    let authorities = [
+    let authorities = [business::authority_id(), business::second_authority()].map(|id| {
         rss_mdm_device_access_runtime::platform::DeploymentAuthority {
-            id: business::authority_id(),
-            public_key: ring::signature::KeyPair::public_key(&business::key())
+            id,
+            public_key: ring::signature::KeyPair::public_key(&business::signing_key(id))
                 .as_ref()
-                .try_into()?,
-        },
-    ];
+                .try_into()
+                .unwrap(),
+        }
+    });
     let value = serde_json::json!({
         "identity_policy":example["identity_policy"],
         "http":http,

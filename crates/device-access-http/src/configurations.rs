@@ -373,8 +373,8 @@ async fn credential_event(
     Extension(a): Extension<RequestAudit>,
     tls: Option<Extension<ClientCertificateEvidence>>,
     Path(id): Path<Uuid>,
-    event: Body<rss_mdm_recovery_credentials::tasks::device::Event>,
-) -> Result<Json<rss_mdm_recovery_credentials::tasks::device::Status>, BusinessError> {
+    event: Body<rss_mdm_agent_wire::da::CredentialEvent>,
+) -> Result<Json<rss_mdm_agent_wire::da::CredentialSettlement>, BusinessError> {
     let p = credential_peer(&s, tls, &a).await?;
     let b = service(&s)?;
     Ok(Json(

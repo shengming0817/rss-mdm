@@ -5,14 +5,17 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use rss_identity_core::session::{BearerSecret, SessionSecret};
+use rss_mdm_agent_wire::da::{CredentialEvent as Event, CredentialSettlement};
 use rss_mdm_agent_wire::{da, runtime as w};
-use rss_mdm_device_access_postgres::{self as pg, device_access as access};
+use rss_mdm_device_access_postgres::device_access as access;
 use rss_mdm_recovery_credentials::{
     self as recovery,
-    tasks::device::{Action, Event, Request, State, Status},
+    tasks::device::{Action, Request, State, Status},
 };
 use serde_json::{Value, json};
-const SID: &str = "S-1-5-21-1-2-3-1001";
+#[path = "../../../../hack/test-support/da_recovery.rs"]
+mod fixture;
+use fixture::SID;
 fn envelope(
     task: &w::CredentialTaskSpec,
     subject: &w::CredentialSubject,
@@ -120,72 +123,6 @@ pub async fn verify(
         "{}/api/v1/tenants/{tenant}/devices/{}/device-access",
         c.browser_origin, registration.device
     );
-    let account = w::AccessAccount::Windows {
-        sid: SID.into(),
-        authority: w::AccessWindowsAuthority::Local,
-    };
-    let configuration = w::AccessConfiguration {
-        mac: None,
-        windows: w::AccessWindowsConfiguration::RssFactor {
-            accounts: vec![w::AccessWindowsKind::Local],
-        },
-        self_enrollment: false,
-        enabled: true,
-        role: None,
-    };
-    let publication = rss_mdm_policy_postgres::device_access::Publication {
-        managed_fields: vec![],
-        id: Uuid::new_v4(),
-        revision: 1,
-        version: Uuid::new_v4(),
-        target: rss_mdm_policy_postgres::device_access::Target::Device {
-            device: registration.device,
-        },
-        enabled: true,
-        configuration: configuration.clone(),
-    };
-    let mut binding = access::Binding {
-        operation_id: Uuid::new_v4(),
-        account_disposition: w::AccessAccountDisposition::Keep,
-        id: Uuid::new_v4(),
-        tenant,
-        device: registration.device,
-
-        person: rss_mdm_device_access::Person {
-            instance: registration.service_id,
-            principal,
-        },
-        origin: access::Origin::SelfEnrollment,
-        generation: 3,
-        factor_generation: 4,
-        revision: 1,
-        state: rss_mdm_device_access::State::Pending,
-        intent: rss_mdm_device_access::AccountIntent::Existing {
-            account: account.clone(),
-        },
-        account: Some(account.clone()),
-        policy: publication.id,
-        policy_version: publication.version,
-        configuration,
-        received_revision: None,
-        applied_revision: None,
-        deployment_application: None,
-        effect: None,
-        applied_windows: None,
-        created_by_rss: false,
-    };
-    let mut tx = c.seed().await?;
-    rss_mdm_policy_postgres::device_access::publish_on(
-        &mut tx,
-        tenant,
-        &publication,
-        0,
-        serde_json::json!({"kind":"system"}),
-        now(),
-    )
-    .await?;
-    access::storage::insert_in(&mut tx, &binding).await?;
-
     let config: rss_da_app::config::Config =
         rss_da_app::config::load(&m.directory.join("host-runtime.json"))?;
     let protection = config.recovery.unwrap().open()?;
@@ -193,50 +130,15 @@ pub async fn verify(
         &std::fs::read(m.directory.join("recovery.pem"))?,
         &std::fs::read(m.directory.join("recovery.key"))?,
     )?;
-    recovery::Protection::select_on(DA, &mut tx, tenant, recipient.id()).await?;
-    let qualification = pg::recovery::eligibility::AccessEligibility { admission: None };
-    let custody = recovery::Custody::new(DA, Some(&qualification));
-    let anchor = recovery::Binding {
-        device: registration.device,
-        subject: recovery::Subject::RssLogin {
-            binding: binding.id,
-            binding_generation: binding.generation,
-            sid: SID.into(),
-        },
-    };
-    let first = Uuid::new_v4();
-    let coordinates =
-        recovery::storage::reserve_in(custody, &mut tx, tenant, &anchor, first, 0).await?;
-    let original = URL_SAFE_NO_PAD.encode([81; 32]);
-    recovery::storage::ingest_in(
-        custody,
+    let mut tx = c.seed().await?;
+    let (binding, receipt, original) = fixture::seed(
         &mut tx,
-        &protection.keys,
-        &coordinates,
-        first,
-        original.as_bytes(),
+        registration,
+        principal,
+        &protection,
+        recipient.id(),
     )
     .await?;
-    recovery::storage::verify_in(custody, &mut tx, &coordinates, first).await?;
-    let receipt = w::CredentialReceipt {
-        subject: serde_json::from_value(serde_json::to_value(&anchor.subject)?)?,
-        material: coordinates.material,
-        version: coordinates.version,
-    };
-    binding.state = rss_mdm_device_access::State::Active;
-    binding.received_revision = Some(binding.revision);
-    binding.applied_revision = Some(binding.revision);
-    binding.applied_windows = Some(w::AccessWindowsFacts::RssFactor(w::AccessRssFacts {
-        factor_generation: binding.factor_generation,
-        recovery: receipt.clone(),
-    }));
-    binding.effect = Some(w::AccessEffect::Applied {
-        account,
-        role: w::AccessRole::Standard,
-        mac: None,
-        windows: binding.applied_windows.clone(),
-    });
-    access::storage::save_in(&mut tx, &binding, binding.revision).await?;
     tx.commit().await?;
     let page: Value = material::success(
         client
@@ -336,8 +238,40 @@ pub async fn verify(
         assert_eq!(attempt.status(), expected);
         assert!(attempt.json::<Value>().await?.get("secret").is_none());
     }
+    let mut versions = Vec::new();
+    for kind in ["verify_rss_login", "rotate_rss_login"] {
+        let version = Uuid::new_v4();
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let policy = json!({"id":Uuid::new_v4(),"version":version,"revision":1,"device":registration.device,
+            "operation":{"kind":kind,"binding":binding.id,"bindingGeneration":binding.generation,"sid":SID},
+            "enabled":true,"notBefore":now-1,"expiresAt":now+3600,"runLifetimeSeconds":1800});
+        let path = format!("{url}/credential-policies");
+        for _ in 0..2 {
+            let read: Value = material::success(
+                client
+                    .post(&path)
+                    .bearer_auth(&bearer)
+                    .json(&policy)
+                    .send()
+                    .await?,
+            )
+            .await?;
+            assert_eq!(read, policy);
+        }
+        let read: Value = material::success(
+            client
+                .get(format!("{path}/{version}"))
+                .bearer_auth(&bearer)
+                .send()
+                .await?,
+        )
+        .await?;
+        assert_eq!(read, policy);
+        versions.push(version);
+    }
+    let versions: [Uuid; 2] = versions.try_into().expect("verify and rotate policies");
     Box::pin(reconcile(
-        c, client, peer, base, &url, &binding, &bearer, &original,
+        c, client, peer, base, &url, &binding, &bearer, &original, versions,
     ))
     .await?;
     let native = |id, event: &Event| {
@@ -345,6 +279,7 @@ pub async fn verify(
             .json(event)
             .send()
     };
+    let original_for_replay = original.clone();
     let mut active_secret = original;
     for (action, finish) in [
         (Action::Verify, true),
@@ -352,6 +287,7 @@ pub async fn verify(
         (Action::Rotate, false),
     ] {
         let request = Request {
+            policy_version: versions[usize::from(action == Action::Rotate)],
             operation_id: Uuid::new_v4(),
             binding_id: binding.id,
             binding_generation: binding.generation,
@@ -386,9 +322,14 @@ pub async fn verify(
             attempt_id: spec.attempt_id,
             value: envelope(&spec, &spec.expected[0].subject, &candidate)?,
         };
-        let progress: Status =
+        let progress: CredentialSettlement =
             material::success(native(request.operation_id, &event).await?).await?;
         assert_eq!(progress.state, State::PendingApplication);
+        if action == Action::Rotate && active_secret == original_for_replay {
+            let response = reveal(operation, true).await?;
+            assert_eq!(response.status(), 409);
+            assert!(response.json::<Value>().await?.get("secret").is_none());
+        }
         let ack = progress.receipt.context("durable escrow coordinates")?;
         let mut wrong = ack.clone();
         wrong.version += 1;
@@ -412,7 +353,7 @@ pub async fn verify(
                 receipt: ack,
             });
         }
-        let confirmed: Status = material::success(
+        let confirmed: CredentialSettlement = material::success(
             native(
                 request.operation_id,
                 &Event::Applied {
@@ -443,6 +384,7 @@ async fn reconcile(
     binding: &access::Binding,
     guardian: &str,
     original: &str,
+    versions: [Uuid; 2],
 ) -> Result<()> {
     let path = format!("{url}/credential-operations");
     let first = material::administrator(c).await?;
@@ -464,6 +406,7 @@ async fn reconcile(
         Ok::<_, anyhow::Error>(())
     };
     let request = |action, replaces| Request {
+        policy_version: versions[usize::from(action == Action::Rotate)],
         operation_id: Uuid::new_v4(),
         binding_id: binding.id,
         binding_generation: binding.generation,
@@ -487,8 +430,39 @@ async fn reconcile(
             .json(input)
             .send()
     };
-    let unclaimed = request(Action::Rotate, None);
+    let policy_path = format!("{url}/credential-policies");
+    let mut policy: Value = material::success(
+        client
+            .get(format!("{policy_path}/{}", versions[1]))
+            .bearer_auth(guardian)
+            .send()
+            .await?,
+    )
+    .await?;
+    let temporary = Uuid::new_v4();
+    policy["id"] = json!(Uuid::new_v4());
+    policy["version"] = json!(temporary);
+    let publish = |v: &Value| {
+        client
+            .post(&policy_path)
+            .bearer_auth(guardian)
+            .json(v)
+            .send()
+    };
+    let _: Value = material::success(publish(&policy).await?).await?;
+    let mut unclaimed = request(Action::Rotate, None);
+    unclaimed.policy_version = temporary;
+    let mut denied = unclaimed.clone();
+    denied.policy_version = Uuid::new_v4();
+    assert_eq!(post(&first, &denied).await?.status(), 403);
+    denied.policy_version = versions[usize::from(denied.action != Action::Rotate)];
+    assert_eq!(post(&first, &denied).await?.status(), 403);
     material::success::<Status>(post(&first, &unclaimed).await?).await?;
+    policy["version"] = json!(Uuid::new_v4());
+    policy["revision"] = json!(2);
+    policy["enabled"] = json!(false);
+    let _: Value = material::success(publish(&policy).await?).await?;
+    assert_eq!(next().await?.status(), 403);
     revoked(first).await?;
     assert_eq!(next().await?.status(), 403);
     let rotate = request(Action::Rotate, Some(unclaimed.operation_id));
@@ -505,7 +479,8 @@ async fn reconcile(
         attempt_id: task.attempt_id,
         value: envelope(&task, &task.expected[0].subject, &candidate)?,
     };
-    let result: Status = material::success(event(rotate.operation_id, &escrow).await?).await?;
+    let result: CredentialSettlement =
+        material::success(event(rotate.operation_id, &escrow).await?).await?;
     let previous = result.receipt.context("candidate retained")?;
     revoked(second).await?;
     let old_apply = Event::Applied {
@@ -538,7 +513,8 @@ async fn reconcile(
         attempt_id: spec.attempt_id,
         value: envelope(&spec, &spec.expected[0].subject, original)?,
     };
-    let result: Status = material::success(event(verify.operation_id, &readback).await?).await?;
+    let result: CredentialSettlement =
+        material::success(event(verify.operation_id, &readback).await?).await?;
     let ack = Event::Applied {
         attempt_id: spec.attempt_id,
         definition_digest: spec.definition_digest,
@@ -546,7 +522,7 @@ async fn reconcile(
     };
     for _ in 0..2 {
         assert_eq!(
-            material::success::<Status>(event(verify.operation_id, &ack).await?)
+            material::success::<CredentialSettlement>(event(verify.operation_id, &ack).await?)
                 .await?
                 .state,
             State::Applied

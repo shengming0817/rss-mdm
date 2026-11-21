@@ -64,7 +64,6 @@ pub async fn publish_on(
     author: serde_json::Value,
     now: i64,
 ) -> Result<(), Error> {
-    use sha2::{Digest, Sha256};
     if value.id.is_nil()
         || value.version.is_nil()
         || expected < 0
@@ -80,24 +79,68 @@ pub async fn publish_on(
         .configuration
         .validate()
         .map_err(|_| Error::Malformed)?;
-    lock_on(c, value.id).await?;
-    let row=sqlx::query("SELECT revision,version_number FROM rss_da.policies WHERE tenant_id=$1 AND id=$2 FOR UPDATE").bind(tenant).bind(value.id).fetch_optional(&mut *c).await?;
-    let (revision, number) = match row {
-        Some(r) => (
-            r.try_get::<i64, _>("revision")?,
-            r.try_get::<i64, _>("version_number")?,
-        ),
+    let definition = serde_json::to_value(value).map_err(|_| Error::Malformed)?;
+    let frozen = serde_json::json!({"kind":"device_access","configuration":value.configuration,"publication":value});
+    persist(
+        c,
+        tenant,
+        value.id,
+        value.version,
+        value.revision,
+        expected,
+        value.enabled,
+        "device_access",
+        definition,
+        frozen,
+        author,
+        now,
+    )
+    .await
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shared Policy CAS and immutable version rows are written together on the caller's connection"
+)]
+async fn persist(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    id: Uuid,
+    version: Uuid,
+    revision: i64,
+    expected: i64,
+    enabled: bool,
+    kind: &str,
+    definition: serde_json::Value,
+    frozen: serde_json::Value,
+    author: serde_json::Value,
+    now: i64,
+) -> Result<(), Error> {
+    use sha2::{Digest, Sha256};
+    lock_on(c, id).await?;
+    let row=sqlx::query("SELECT revision,version_number,definition FROM rss_da.policies WHERE tenant_id=$1 AND id=$2 FOR UPDATE").bind(tenant).bind(id).fetch_optional(&mut *c).await?;
+    let (current_revision, number) = match row {
+        Some(r) => {
+            let previous: serde_json::Value = r.try_get("definition")?;
+            if previous.get("device") != definition.get("device")
+                || previous.get("target").is_some() != definition.get("target").is_some()
+            {
+                return Err(Error::Conflict);
+            }
+            (
+                r.try_get::<i64, _>("revision")?,
+                r.try_get::<i64, _>("version_number")?,
+            )
+        }
         None => (0, 0),
     };
-    if revision != expected {
+    if current_revision != expected {
         return Err(Error::Conflict);
     }
     let number = number.checked_add(1).ok_or(Error::Malformed)?;
-    let definition = serde_json::to_value(value).map_err(|_| Error::Malformed)?;
-    let frozen = serde_json::json!({"kind":"device_access","configuration":value.configuration,"publication":value});
     let fingerprint = Sha256::digest(serde_json::to_vec(&frozen).map_err(|_| Error::Malformed)?);
     let result=sqlx::query("INSERT INTO rss_da.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,id) DO UPDATE SET revision=excluded.revision,current_version=excluded.current_version,version_number=excluded.version_number,state=excluded.state,definition=excluded.definition,author=excluded.author,updated_at=excluded.updated_at")
-        .bind(tenant).bind(value.id).bind(value.revision).bind(value.version).bind(number).bind(if value.enabled{"enabled"}else{"disabled"}).bind(definition).bind(author).bind(now).execute(&mut *c).await;
+        .bind(tenant).bind(id).bind(revision).bind(version).bind(number).bind(if enabled{"enabled"}else{"disabled"}).bind(definition).bind(author).bind(now).execute(&mut *c).await;
     match result {
         Err(e)
             if e.as_database_error()
@@ -108,7 +151,7 @@ pub async fn publish_on(
         Err(e) => return Err(e.into()),
         Ok(_) => (),
     }
-    sqlx::query("INSERT INTO rss_da.policy_versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1,$2,$3,$4,'device_access',$5,$6)").bind(tenant).bind(value.version).bind(value.id).bind(number).bind(frozen).bind(fingerprint.as_slice()).execute(c).await?;
+    sqlx::query("INSERT INTO rss_da.policy_versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(tenant).bind(version).bind(id).bind(number).bind(kind).bind(frozen).bind(fingerprint.as_slice()).execute(c).await?;
     Ok(())
 }
 /// Assignment uniqueness is independent of enablement, so a disabled override cannot widen scope.
@@ -216,4 +259,114 @@ pub async fn history_on(
         .into_iter()
         .map(|v| serde_json::from_value(v).map_err(|_| Error::Malformed))
         .collect()
+}
+
+/// A Credential Policy assigned to one DA device, independent of login configuration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CredentialPublication {
+    /// Stable Policy aggregate.
+    pub id: Uuid,
+    /// Caller-selected immutable version and retry identity.
+    pub version: Uuid,
+    /// Next aggregate revision, starting at one.
+    pub revision: i64,
+    /// Exact device owned by the current DA tenant.
+    pub device: rss_mdm_agent_wire::DeviceId,
+    /// Exact RSS Login binding, generation, account and authorized action.
+    pub operation: rss_mdm_policy::CredentialOperation,
+    /// Whether new and in-flight executions can use this version.
+    pub enabled: bool,
+    /// First authorized UNIX second.
+    pub not_before: i64,
+    /// Exclusive end of the authorization window.
+    pub expires_at: i64,
+    /// Maximum lifetime of a single accepted execution in seconds.
+    pub run_lifetime_seconds: u32,
+}
+impl CredentialPublication {
+    /// Determine the original execution deadline under the current Policy window.
+    pub fn deadline(&self, now: i64) -> Option<i64> {
+        (self.enabled && self.not_before <= now && now < self.expires_at).then(|| {
+            self.expires_at
+                .min(now.saturating_add(i64::from(self.run_lifetime_seconds)))
+        })
+    }
+    /// Insert an immutable credential authorization, or replay its exact already-committed publication.
+    pub async fn publish(
+        &self,
+        c: &mut PgConnection,
+        tenant: Uuid,
+        author: serde_json::Value,
+        now: i64,
+    ) -> Result<bool, Error> {
+        use rss_mdm_policy::CredentialOperation::{RotateRssLogin, VerifyRssLogin};
+        if self.id.is_nil()
+            || self.version.is_nil()
+            || self.revision < 1
+            || self.not_before < 0
+            || self.expires_at <= self.not_before
+            || !(60..=604800).contains(&self.run_lifetime_seconds)
+            || !matches!(
+                self.operation,
+                VerifyRssLogin { .. } | RotateRssLogin { .. }
+            )
+            || self.operation.validate().is_err()
+        {
+            return Err(Error::Malformed);
+        }
+        lock_on(c, self.id).await?;
+        if let Some(prior) = Self::read(c, tenant, self.version, false).await? {
+            return if prior == *self {
+                Ok(true)
+            } else {
+                Err(Error::Conflict)
+            };
+        }
+        let definition = serde_json::to_value(self).map_err(|_| Error::Malformed)?;
+        let frozen = serde_json::json!({"kind":"credential","publication":self});
+        persist(
+            c,
+            tenant,
+            self.id,
+            self.version,
+            self.revision,
+            self.revision - 1,
+            self.enabled,
+            "credential",
+            definition,
+            frozen,
+            author,
+            now,
+        )
+        .await?;
+        Ok(false)
+    }
+    /// Read an exact immutable version and optionally fence the owning current policy for execution.
+    pub async fn read(
+        c: &mut PgConnection,
+        tenant: Uuid,
+        version: Uuid,
+        current: bool,
+    ) -> Result<Option<Self>, Error> {
+        let row: Option<(Uuid,serde_json::Value)> = sqlx::query_as(
+            "SELECT policy,frozen->'publication' FROM rss_da.policy_versions WHERE tenant_id=$1 AND id=$2 AND action_kind='credential'")
+            .bind(tenant).bind(version).fetch_optional(&mut *c).await?;
+        let Some((owner, frozen)) = row else {
+            return Ok(None);
+        };
+        if current {
+            lock_on(c, owner).await?;
+            let selected: Option<Uuid> = sqlx::query_scalar("SELECT current_version FROM rss_da.policies WHERE tenant_id=$1 AND id=$2 AND state='enabled'")
+                .bind(tenant).bind(owner).fetch_optional(c).await?;
+            if selected != Some(version) {
+                return Ok(None);
+            }
+        }
+        let result: Self = serde_json::from_value(frozen).map_err(|_| Error::Malformed)?;
+        if result.id != owner || result.version != version {
+            return Err(Error::Malformed);
+        }
+        Ok(Some(result))
+    }
 }

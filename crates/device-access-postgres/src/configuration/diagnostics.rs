@@ -137,8 +137,8 @@ impl Service {
                     }
                     if !o.revoked && proof.state == da::SourceState::Present
                         && current_readback((o.issued_at,o.expires_at),(config.issued_at,config.expires_at),now)
-                        && publication.as_ref().is_some_and(|p| p.enabled && p.id == o.policy && p.version == o.policy_version)
                         && let Some(readback) = proof.applied
+                        && policy::get_on(c, tenant, o.policy).await.map_err(fault)?.is_some_and(|source| source.enabled && source.version == o.policy_version)
                     {
                         signing.verify_on(c, p.binding().tenant(), &artifact, now).await?;
                         readbacks.push(readback);

@@ -247,6 +247,40 @@ pub async fn verify_sources(
         let read = diagnostic(client, &management, token, &observation.device).await?;
         assert_eq!(read["application"] == "verified_applied", expected);
     }
+    let mut other = observation.clone();
+    other.authority = business::second_authority();
+    other.sequence = 1;
+    other.configuration.as_mut().unwrap().applied = None;
+    material::empty(
+        client
+            .post(&url)
+            .json(&business::signed(&other)?)
+            .send()
+            .await?,
+    )
+    .await?;
+    let mut tx = c.seed().await?;
+    let anchor = registration::device::endpoints::current_da_in(
+        &mut tx,
+        &c.tenant.to_string(),
+        &other.device,
+    )
+    .await?
+    .unwrap();
+    business::assemble(c, m)?
+        .evidence
+        .native_on(&mut tx, c.tenant, other.installation, &anchor, now())
+        .await?;
+    // Remove the second witness before exercising subsequent single-authority withdrawals.
+    sqlx::query(
+        "DELETE FROM rss_da.deployment_evidence WHERE tenant_id=$1 AND device=$2 AND authority=$3",
+    )
+    .bind(other.tenant)
+    .bind(other.device.into_uuid())
+    .bind(other.authority)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     for configuration in [
         None,
         Some(ConfigurationDeployment {
@@ -488,5 +522,92 @@ pub async fn verify_sources(
     let restored = diagnostic(client, &management, token, &observation.device).await?;
     assert_eq!(restored["evidence"], "verified");
     assert_eq!(restored["resolution"]["fields"][0]["locked"], true);
+    Ok(())
+}
+
+pub async fn verify_override(
+    c: &Context,
+    client: &reqwest::Client,
+    token: &str,
+    observation: &mut rss_mdm_device_access::deployment::Observation,
+    source: &policy::Publication,
+    base: &str,
+) -> Result<()> {
+    let target = policy::Publication {
+        id: Uuid::new_v4(),
+        version: Uuid::new_v4(),
+        revision: 1,
+        target: policy::Target::Device {
+            device: observation.device,
+        },
+        managed_fields: vec![],
+        ..source.clone()
+    };
+    let management = c.management_base();
+    let principal = c
+        .authority
+        .inspect_bearer(
+            c.execution(),
+            rss_identity_core::session::BearerSecret::parse(token.to_owned())?,
+            platform::deadline(),
+        )
+        .await?
+        .account()
+        .principal
+        .as_uuid();
+    let (cookie, csrf) = super::credentials::login(c, client, principal).await?;
+    let _: policy::Publication = material::success(
+        client
+            .post(format!(
+                "{}/api/v1/tenants/{}/device-access/configurations",
+                c.browser_origin, c.tenant
+            ))
+            .header("origin", &c.browser_origin)
+            .header("x-identity-request", "1")
+            .header("x-csrf-token", csrf)
+            .header("cookie", cookie)
+            .json(&rss_mdm_device_access_postgres::configuration::Change {
+                operation_id: Uuid::new_v4(),
+                expected_revision: 0,
+                publication: target.clone(),
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    let artifact: da::SignedConfiguration = material::success(
+        client
+            .post(format!("{management}/configurations"))
+            .bearer_auth(token)
+            .json(&da::Export {
+                operation_id: Uuid::new_v4(),
+                policy: target.id,
+                version: target.version,
+                delivery: da::DeliveryPermission::Da,
+                lifetime_seconds: 600,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    let prior = diagnostic(client, &management, token, &observation.device).await?;
+    let managed = observation.configuration.as_mut().unwrap();
+    managed.applied = Some(rss_mdm_device_access::deployment::ConfigurationReadback {
+        backend_artifact: artifact.decode()?.operation_id,
+        effective: serde_json::from_value(prior["resolution"]["configuration"].clone())?,
+        managed_sources: [(da::ConfigurationField::Mac, managed.artifact)].into(),
+    });
+    observation.sequence += 1;
+    material::empty(
+        client
+            .post(format!("{base}/deployment-evidence"))
+            .json(&business::signed(observation)?)
+            .send()
+            .await?,
+    )
+    .await?;
+    let current = diagnostic(client, &management, token, &observation.device).await?;
+    assert_eq!(current["publication"]["id"], serde_json::json!(target.id));
+    assert_eq!(current["application"], "verified_applied");
     Ok(())
 }

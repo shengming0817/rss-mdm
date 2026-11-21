@@ -557,44 +557,11 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     ))
     .await
     .context("targeted RSS Login recovery")?;
-    let renewal = da::GrantRequest {
-        operation_id: Uuid::new_v4(),
-        csr: material.csr(2)?,
-        ..grant_request
-    };
-    let renewed_grant: da::Grant = material::success(
-        peer.post(format!("{base}/renewal-grants"))
-            .json(&renewal)
-            .send()
-            .await?,
-    )
-    .await?;
-    let renewed: enroll::Candidate = material::success(
-        client
-            .post(format!("{base}/certificates"))
-            .json(&da::CertificateRequest {
-                operation_id: Uuid::new_v4(),
-                grant_id: renewed_grant.grant_id,
-                secret: renewal.secret,
-                csr: renewal.csr,
-            })
-            .send()
-            .await?,
-    )
-    .await?;
-    let renewed_peer = material.client(Some((&renewed, 2)))?;
-    let renewed_receipt: da::Registration = material::success(
-        renewed_peer
-            .post(format!("{base}/activate"))
-            .json(&enroll::ActivationRequest {
-                wire_version: 1,
-                operation_id: Uuid::new_v4(),
-                issuance_id: renewed.issuance_id,
-            })
-            .send()
-            .await?,
-    )
-    .await?;
+    let (renewed_receipt, renewed_peer) = renew(&material, &client, &peer, base, 2).await?;
+    let (current_survivor, current_peer) =
+        renew(&material, &client, &survivor_peer, base, 3).await?;
+    assert_eq!(current_survivor.device, survivor.device);
+    assert_ne!(current_survivor.credential, survivor.credential);
     assert_eq!(renewed_receipt.device, receipt.device);
     assert_ne!(renewed_receipt.credential, receipt.credential);
     assert_eq!(
@@ -662,8 +629,9 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         &material,
         installed_host,
         recovery::Expected {
-            active: survivor,
-            active_peer: survivor_peer,
+            active: current_survivor,
+            active_peer: current_peer,
+            superseded_peer: survivor_peer,
             revoked: renewed_receipt,
             revoked_peer: renewed_peer,
             pending,
@@ -859,4 +827,56 @@ async fn unknown_recovery(
     );
     tx.rollback().await?;
     Ok((registration, peer))
+}
+
+use rss_mdm_agent_wire::{da, enroll};
+async fn renew(
+    material: &material::Material,
+    client: &reqwest::Client,
+    peer: &reqwest::Client,
+    base: &str,
+    key: u8,
+) -> Result<(da::Registration, reqwest::Client)> {
+    let renewal = da::GrantRequest {
+        operation_id: Uuid::new_v4(),
+        csr: material.csr(key)?,
+        expires_in_seconds: 600,
+        secret: rss_mdm_agent_wire::runtime::Secret::parse(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA",
+        )?,
+    };
+    let renewed_grant: da::Grant = material::success(
+        peer.post(format!("{base}/renewal-grants"))
+            .json(&renewal)
+            .send()
+            .await?,
+    )
+    .await?;
+    let renewed: enroll::Candidate = material::success(
+        client
+            .post(format!("{base}/certificates"))
+            .json(&da::CertificateRequest {
+                operation_id: Uuid::new_v4(),
+                grant_id: renewed_grant.grant_id,
+                secret: renewal.secret,
+                csr: renewal.csr,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    let renewed_peer = material.client(Some((&renewed, key)))?;
+    let renewed_receipt: da::Registration = material::success(
+        renewed_peer
+            .post(format!("{base}/activate"))
+            .json(&enroll::ActivationRequest {
+                wire_version: 1,
+                operation_id: Uuid::new_v4(),
+                issuance_id: renewed.issuance_id,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    Ok((renewed_receipt, renewed_peer))
 }

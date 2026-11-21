@@ -1,14 +1,16 @@
 //! Shared management admission and DA mTLS delivery for targeted credential operations.
 use crate::{Error, Service, service::Change};
+use rss_mdm_agent_wire::da::{CredentialEvent as Event, CredentialSettlement};
 use rss_mdm_agent_wire::{
     DeviceId,
     runtime::{AccessAccount, CredentialTaskSpec},
 };
 use rss_mdm_audit_integration::{AuditIntent, RequestAudit};
 use rss_mdm_authorization_service::{OperationAuthority, Permission, context::AuthorizedPrincipal};
+use rss_mdm_policy_postgres::device_access::CredentialPublication;
 use rss_mdm_recovery_credentials::{
     Credentials,
-    tasks::device::{self, Action, Event, Request, Status},
+    tasks::device::{self, Action, Request, Status},
 };
 use rss_mdm_registration_service::{DevicePrincipal, device::endpoints};
 use sqlx::PgConnection;
@@ -19,13 +21,80 @@ async fn target(
     device: &DeviceId,
 ) -> Result<Uuid, Error> {
     crate::device_access::service::authorize(c, actor, device, Permission::AccountWrite).await?;
-    endpoints::lock_da_in(c, actor.tenant_id(), device).await?;
+    crate::delivery::lock_da_target(c, actor.tenant_id(), device, None).await?;
     endpoints::current_da_in(c, actor.tenant_id(), device)
         .await?
         .ok_or(Error::NotFound)?;
     Uuid::parse_str(actor.tenant_id()).map_err(|_| Error::Malformed)
 }
+async fn current_policy(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    device: DeviceId,
+    version: Uuid,
+    operation: &rss_mdm_policy::CredentialOperation,
+    now: i64,
+) -> Result<CredentialPublication, Error> {
+    CredentialPublication::read(c, tenant, version, true)
+        .await
+        .map_err(crate::configuration::policy_fault)?
+        .filter(|p| p.device == device && &p.operation == operation && p.deadline(now).is_some())
+        .ok_or(Error::Forbidden)
+}
 impl Service {
+    pub async fn publish_credential_policy(
+        &self,
+        actor: &AuthorizedPrincipal,
+        device: &DeviceId,
+        policy: &CredentialPublication,
+        audit: &RequestAudit,
+    ) -> Result<CredentialPublication, Error> {
+        self.proof(actor, audit)?;
+        actor.session()?;
+        if *device != policy.device {
+            return Err(Error::Malformed);
+        }
+        audit.operation(
+            policy.version,
+            "da_credential_policy_publish",
+            AuditIntent::Management,
+        );
+        audit.target_device(device);
+        self.write_admitted(&self.access_audit, audit, (actor,device,policy),
+            |ctx,c| Box::pin(async move { crate::device_access::service::admit_session(c,ctx.0).await }),
+            |ctx,c| Box::pin(async move {
+                let (actor,device,policy)=*ctx;
+                crate::device_access::service::authorize(c,actor,device,Permission::PolicyWrite).await?;
+                crate::device_access::service::authorize(c,actor,device,Permission::AccountWrite).await?;
+                let tenant=Uuid::parse_str(actor.tenant_id()).map_err(|_|Error::Malformed)?;
+                crate::delivery::lock_da_target(c,actor.tenant_id(),device,None).await?;
+                let now=crate::platform_sso::store::now(c).await?;
+                let replay=policy.publish(c,tenant,serde_json::json!({"actor":actor.principal_id(),"instance":actor.instance_id()}),now)
+                    .await.map_err(crate::configuration::policy_fault)?;
+                Ok(Change { value:policy.clone(), replay })
+            })).await
+    }
+    pub async fn credential_policy(
+        &self,
+        actor: &AuthorizedPrincipal,
+        device: &DeviceId,
+        version: Uuid,
+    ) -> Result<CredentialPublication, Error> {
+        self.read_with_session(actor, (actor, device, version), |ctx, c| {
+            Box::pin(async move {
+                let (actor, device, version) = *ctx;
+                crate::device_access::service::authorize(c, actor, device, Permission::PolicyWrite)
+                    .await?;
+                let tenant = Uuid::parse_str(actor.tenant_id()).map_err(|_| Error::Malformed)?;
+                CredentialPublication::read(c, tenant, version, false)
+                    .await
+                    .map_err(crate::configuration::policy_fault)?
+                    .filter(|p| &p.device == device)
+                    .ok_or(Error::NotFound)
+            })
+        })
+        .await
+    }
     pub async fn credential_status(
         &self,
         actor: &AuthorizedPrincipal,
@@ -35,7 +104,14 @@ impl Service {
         self.read_with_session(actor, (actor, device, id), |ctx, c| {
             Box::pin(async move {
                 let (actor, device, id) = *ctx;
-                let tenant = target(c, actor, device).await?;
+                crate::device_access::service::authorize(
+                    c,
+                    actor,
+                    device,
+                    Permission::AccountWrite,
+                )
+                .await?;
+                let tenant = Uuid::parse_str(actor.tenant_id()).map_err(|_| Error::Malformed)?;
                 let run = device::load(c, tenant, *device, Some(id), false)
                     .await
                     .map_err(super::error)?
@@ -87,8 +163,7 @@ impl Service {
                         });
                     }
                     let binding =
-                        crate::device_access::storage::locked_in(c, tenant, input.binding_id)
-                            .await?;
+                        crate::device_access::storage::get_in(c, tenant, input.binding_id).await?;
                     if binding.device != *device || binding.generation != input.binding_generation {
                         return Err(Error::Conflict);
                     }
@@ -107,10 +182,9 @@ impl Service {
                             sid: sid.clone(),
                         },
                     };
-                    let (binding, anchor) =
-                        super::credential_tasks::qualified(c, tenant, &operation)
-                            .await
-                            .map_err(super::error)?;
+                    let (_, anchor) = super::credential_tasks::qualified(c, tenant, &operation)
+                        .await
+                        .map_err(super::error)?;
                     if let Some(id) = input.replaces {
                         let previous = device::load(c, tenant, *device, Some(id), false)
                             .await
@@ -158,6 +232,9 @@ impl Service {
                         Permission::AccountWrite,
                     )?;
                     let now = crate::platform_sso::store::now(c).await?;
+                    let policy =
+                        current_policy(c, tenant, *device, input.policy_version, &operation, now)
+                            .await?;
                     let value = device::accept(
                         c,
                         credentials,
@@ -165,8 +242,7 @@ impl Service {
                         input,
                         anchor,
                         operation,
-                        binding.policy,
-                        binding.policy_version,
+                        &policy,
                         authority,
                         now,
                     )
@@ -218,7 +294,7 @@ impl Service {
         id: Uuid,
         input: &Event,
         a: &RequestAudit,
-    ) -> Result<Status, Error> {
+    ) -> Result<CredentialSettlement, Error> {
         a.identify_device(p.device());
         let action = match input {
             Event::Escrow { .. } => "da_credential_escrow",
@@ -236,8 +312,13 @@ impl Service {
                     .settle(c, credentials, input, now)
                     .await
                     .map_err(super::error)?;
+                let status = run.status();
                 Ok(Change {
-                    value: run.status(),
+                    value: CredentialSettlement {
+                        operation_id: id,
+                        state: status.state,
+                        receipt: status.receipt,
+                    },
                     replay,
                 })
             })
@@ -259,6 +340,7 @@ async fn admitted_run(
     if let Some(run) = &hint {
         run.lock_authority(c).await.map_err(super::error)?;
     }
+    crate::delivery::lock_da_target(c, &tenant.to_string(), p.device(), None).await?;
     crate::reports::admit(c, service, p, None).await?;
     let run = device::load(c, tenant, *p.device(), id, true)
         .await
@@ -275,10 +357,22 @@ async fn admitted_run(
         {
             return Err(Error::Forbidden);
         }
-        let (binding, anchor) = super::credential_tasks::qualified(c, tenant, run.operation())
+        let (_, anchor) = super::credential_tasks::qualified(c, tenant, run.operation())
             .await
             .map_err(super::error)?;
-        run.admit(&anchor, binding.policy, binding.policy_version)
+        let policy = current_policy(
+            c,
+            tenant,
+            *p.device(),
+            run.status().request.policy_version,
+            run.operation(),
+            current_time,
+        )
+        .await?;
+        if current_time >= run.spec().deadline {
+            return Err(Error::Forbidden);
+        }
+        run.admit(&anchor, policy.id, policy.version)
             .map_err(super::error)?;
     }
     Ok(run)

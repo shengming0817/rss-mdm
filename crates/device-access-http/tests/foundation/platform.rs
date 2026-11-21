@@ -773,5 +773,15 @@ pub async fn verify(
     )
     .await?;
     let native_token = Box::pin(native_login(c, client, &b, &source, &device, &user)).await?;
-    Box::pin(browser_session(c, client, id, &source, &user, native_token)).await
+    let session = Box::pin(browser_session(c, client, id, &source, &user, native_token)).await?;
+    Box::pin(super::configuration::verify_override(
+        c,
+        client,
+        &token,
+        &mut observation,
+        &publication,
+        base,
+    ))
+    .await?;
+    Ok(session)
 }

@@ -57,7 +57,7 @@ GRANT UPDATE(enabled,revision) ON rss_da.agent_delivery TO mdm_access,mdm_comman
 GRANT SELECT ON rss_da.recovery_recipient_selection,rss_da.recovery_entries,rss_da.recovery_versions,rss_da.recovery_disclosures TO mdm_identity_runtime;
 CREATE POLICY credential_host_agent_path ON rss_da.credential_runs AS RESTRICTIVE
  TO mdm_command_runtime,mdm_policy_runtime USING(da_execution IS NULL) WITH CHECK(da_execution IS NULL);
-GRANT SELECT,INSERT ON rss_da.credential_runs TO mdm_identity_runtime;
+GRANT SELECT,INSERT,UPDATE(state) ON rss_da.credential_runs TO mdm_identity_runtime;
 CREATE POLICY credential_host_management ON rss_da.credential_runs AS RESTRICTIVE TO mdm_identity_runtime
  USING(da_execution IS NOT NULL) WITH CHECK(da_execution IS NOT NULL);
 GRANT INSERT ON rss_da.recovery_disclosures TO mdm_identity_runtime;

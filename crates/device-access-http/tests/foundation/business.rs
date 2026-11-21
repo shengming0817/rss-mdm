@@ -19,13 +19,25 @@ pub(super) fn key() -> Ed25519KeyPair {
 pub(super) fn authority_id() -> Uuid {
     Uuid::from_u128(0x229df54fe9804bc1aa8f006c14890c15)
 }
+pub(super) fn second_authority() -> Uuid {
+    Uuid::from_u128(0x229df54fe9804bc1aa8f006c14890c16)
+}
+pub(super) fn signing_key(id: Uuid) -> Ed25519KeyPair {
+    if id == second_authority() {
+        Ed25519KeyPair::from_seed_unchecked(&[50; 32]).unwrap()
+    } else {
+        key()
+    }
+}
 pub(super) fn authorities() -> Result<Arc<pg::evidence::Authorities>> {
-    Ok(Arc::new(pg::evidence::Authorities::new(vec![
-        pg::evidence::Authority {
-            id: authority_id(),
-            public_key: key().public_key().as_ref().try_into()?,
-        },
-    ])?))
+    let authorities = [authority_id(), second_authority()]
+        .into_iter()
+        .map(|id| pg::evidence::Authority {
+            id,
+            public_key: signing_key(id).public_key().as_ref().try_into().unwrap(),
+        })
+        .collect();
+    Ok(Arc::new(pg::evidence::Authorities::new(authorities)?))
 }
 pub fn assemble(
     c: &Context,
@@ -117,7 +129,7 @@ pub(super) fn signed(value: &Observation) -> Result<pg::evidence::SignedObservat
     message.extend_from_slice(&payload);
     Ok(pg::evidence::SignedObservation {
         payload: URL_SAFE_NO_PAD.encode(&payload),
-        signature: URL_SAFE_NO_PAD.encode(key().sign(&message).as_ref()),
+        signature: URL_SAFE_NO_PAD.encode(signing_key(value.authority).sign(&message).as_ref()),
     })
 }
 // Committed DA business effects; Identity and request-completion facts have separate owners.

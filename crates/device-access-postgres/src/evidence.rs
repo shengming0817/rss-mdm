@@ -201,7 +201,8 @@ impl Authorities {
                 return Err(Error::Forbidden);
             }
             if selected.as_ref().is_some_and(|old: &Observation| {
-                old.configuration != o.configuration
+                old.configuration.as_ref().map(|v| v.source())
+                    != o.configuration.as_ref().map(|v| v.source())
                     || old.local_session != o.local_session
                     || old.policy != o.policy
                     || old.policy_version != o.policy_version

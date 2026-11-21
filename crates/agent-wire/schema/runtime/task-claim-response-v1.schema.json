@@ -1510,7 +1510,7 @@
     },
     "CredentialTaskSpec": {
       "additionalProperties": false,
-      "description": "Signed, bounded execution intent using the standard Offer/Received/Start lifecycle.",
+      "description": "Bounded credential execution parameters. Agent delivery uses its signed Start protocol. The DA device claims these parameters directly over its authenticated mTLS connection.",
       "properties": {
         "architecture": {
           "$ref": "#/$defs/TaskArchitecture",

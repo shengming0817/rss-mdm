@@ -23,24 +23,15 @@ pub enum Action {
 pub struct Request {
     pub operation_id: Uuid,
     pub binding_id: Uuid,
+    pub policy_version: Uuid,
     pub binding_generation: i64,
     pub action: Action,
     /// Exact active operation to supersede or verify after its original execution stops.
     pub replaces: Option<Uuid>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum State {
-    Accepted,
-    PendingApplication,
-    Reconciling,
-    Superseded,
-    Unchanged,
-    Retired,
-    Applied,
-}
-
+use rss_mdm_agent_wire::da::CredentialEvent as Event;
+pub use rss_mdm_agent_wire::da::CredentialState as State;
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Status {
@@ -48,25 +39,6 @@ pub struct Status {
     pub request: Request,
     pub state: State,
     pub receipt: Option<wire::CredentialReceipt>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(
-    tag = "event",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum Event {
-    Escrow {
-        attempt_id: Uuid,
-        value: wire::CredentialEscrow,
-    },
-    Applied {
-        attempt_id: Uuid,
-        definition_digest: [u8; 32],
-        receipt: wire::CredentialReceipt,
-    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -250,8 +222,7 @@ pub async fn accept(
     request: &Request,
     anchor: Binding,
     operation: CredentialOperation,
-    policy: Uuid,
-    version: Uuid,
+    policy: &rss_mdm_policy_postgres::device_access::CredentialPublication,
     authority: OperationAuthority,
     now: i64,
 ) -> Result<Status, Error> {
@@ -294,6 +265,9 @@ pub async fn accept(
     let definition_digest =
         wire::CredentialTaskSpec::digest(&action, &recipient, &expected, &recovery)
             .map_err(|_| Error::Malformed)?;
+    let deadline = policy.deadline(now).ok_or(Error::Forbidden)?;
+    let version = policy.version;
+    let policy = policy.id;
     // The operation can wait offline. An mTLS claim issues a short-lived start permit.
     let spec = wire::CredentialTaskSpec {
         wire_version: wire::WIRE_VERSION,
@@ -305,7 +279,7 @@ pub async fn accept(
         attempt_id: Uuid::new_v4(),
         permit: wire::TaskPermit::Start,
         expires_at: now,
-        deadline: i64::MAX,
+        deadline,
         authorization: wire::TaskAuthorization::Policy {
             policy_id: policy,
             policy_version: version,
@@ -357,7 +331,7 @@ impl Run {
                 .recipient(&spec.recipient.key_id)?
                 .require_current(now)?;
         }
-        spec.expires_at = now.saturating_add(300);
+        spec.expires_at = now.saturating_add(300).min(spec.deadline);
         sqlx::query("UPDATE rss_da.credential_runs SET da_permit_until=$3 WHERE tenant_id=$1 AND id=$2 AND da_execution IS NOT NULL")
             .bind(spec.tenant_id).bind(spec.task_id).bind(spec.expires_at).execute(c).await?;
         Ok(spec)

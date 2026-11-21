@@ -35,6 +35,26 @@ pub struct ConfigurationDeployment {
     /// Complete native readback by this deployment authority, when actually observed.
     pub applied: Option<ConfigurationReadback>,
 }
+impl ConfigurationDeployment {
+    /// Facts used to qualify native deployment, independently of optional application observations.
+    pub fn source(
+        &self,
+    ) -> (
+        Uuid,
+        &str,
+        &str,
+        rss_mdm_agent_wire::da::DeliveryPermission,
+        rss_mdm_agent_wire::da::SourceState,
+    ) {
+        (
+            self.artifact,
+            &self.digest,
+            &self.native_digest,
+            self.delivery,
+            self.state,
+        )
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigurationReadback {

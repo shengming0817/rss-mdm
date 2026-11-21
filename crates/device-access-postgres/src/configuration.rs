@@ -181,6 +181,7 @@ pub struct Change {
     pub publication: rss_mdm_policy_postgres::device_access::Publication,
 }
 mod management;
+pub(crate) use management::fault as policy_fault;
 pub use management::{ConfigurationPage, CurrentConfiguration, DirectoryQuery, HISTORY};
 
 mod diagnostics;

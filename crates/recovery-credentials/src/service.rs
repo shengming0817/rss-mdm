@@ -217,6 +217,9 @@ impl Credentials {
                                     if matches!(material.binding.subject,Subject::RssLogin{..})!=access.is_some(){return Err(Error::Forbidden);}
                                     if matches!(material.binding.subject, Subject::RssLogin { .. }) {
                                         if !material.current || material.validity != Validity::Verified {return Err(Error::NotFound);}
+                                        let rotation_pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM rss_da.recovery_versions WHERE tenant_id=$1::uuid AND entry=$2 AND pending)")
+                                            .bind(principal.tenant_id()).bind(*id).fetch_one(&mut *c).await?;
+                                        if rotation_pending { return Err(Error::Conflict); }
                                         let eligibility=service.eligibility.as_ref().ok_or(Error::Unsupported)?;
                                         if eligibility.storage_profile()!=profile { return Err(Error::Forbidden); }
                                         eligibility.disclose(c, principal, &material.binding).await?;

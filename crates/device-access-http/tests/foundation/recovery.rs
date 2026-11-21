@@ -11,6 +11,7 @@ pub struct Expected {
     pub active_peer: reqwest::Client,
     pub revoked: rss_mdm_agent_wire::da::Registration,
     pub revoked_peer: reqwest::Client,
+    pub superseded_peer: reqwest::Client,
     pub pending: credentials::Pending,
     pub device_base: String,
     pub management_origin: String,
@@ -69,20 +70,16 @@ pub async fn verify(
     })?;
     let mut connection = sqlx::PgConnection::connect_with(&administrator.options()?).await?;
     let history = credential_history(&mut connection, &expected).await?;
-    assert!(
-        history
-            .iter()
-            .any(|(d, k, state)| *d == expected.active.device.into_uuid()
-                && *k == expected.active.credential
-                && state == "active")
-    );
-    assert!(
-        history
-            .iter()
-            .any(|(d, k, state)| *d == expected.revoked.device.into_uuid()
-                && *k == expected.revoked.credential
-                && state != "active")
-    );
+    assert!(history.iter().any(
+        |(d, k, state, _, _)| *d == expected.active.device.into_uuid()
+            && *k == expected.active.credential
+            && state == "active"
+    ));
+    assert!(history.iter().any(
+        |(d, k, state, _, _)| *d == expected.revoked.device.into_uuid()
+            && *k == expected.revoked.credential
+            && state != "active"
+    ));
     let old_vault_epoch = Uuid::new_v4();
     sqlx::query("INSERT INTO rss_da.vault_epochs(tenant_id,incarnation) VALUES($1,$2) ON CONFLICT(tenant_id) DO UPDATE SET incarnation=excluded.incarnation").bind(runtime.installation.tenant).bind(old_vault_epoch).execute(&mut connection).await?;
     connection.close().await?;
@@ -213,8 +210,8 @@ pub async fn verify(
 async fn credential_history(
     c: &mut sqlx::PgConnection,
     expected: &Expected,
-) -> Result<Vec<(Uuid, Uuid, String)>> {
-    Ok(sqlx::query_as("SELECT device,id,state FROM rss_da.credentials WHERE tenant_id=$1 AND device=ANY($2) ORDER BY device,id")
+) -> Result<Vec<(Uuid, Uuid, String, Uuid, String)>> {
+    Ok(sqlx::query_as("SELECT c.device,c.id,c.state,d.epoch,d.state FROM rss_da.credentials c JOIN rss_da.devices d ON (d.tenant_id,d.id)=(c.tenant_id,c.device) WHERE c.tenant_id=$1 AND c.device=ANY($2) ORDER BY c.device,c.id")
         .bind(expected.active.tenant).bind(vec![expected.active.device.into_uuid(),expected.revoked.device.into_uuid()]).fetch_all(c).await?)
 }
 async fn restored_http(m: &material::Material, e: &Expected) -> Result<()> {
@@ -258,6 +255,7 @@ async fn restored_http(m: &material::Material, e: &Expected) -> Result<()> {
     assert_eq!(status.receipt.as_ref(), Some(&e.pending.receipt));
     let path = format!("{}/credential-operations/next", e.device_base);
     assert_eq!(e.revoked_peer.post(&path).send().await?.status(), 401);
+    assert_eq!(e.superseded_peer.post(&path).send().await?.status(), 401);
     let current: rss_mdm_agent_wire::runtime::CredentialTaskSpec =
         material::success(e.active_peer.post(&path).send().await?).await?;
     assert_eq!(current.task_id, e.pending.request.operation_id);
