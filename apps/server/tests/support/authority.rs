@@ -1,6 +1,6 @@
 //! Legal tenant, subject and connection inputs shared by real product consumer proofs.
 use crate::{config, identity, migration};
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use rss_identity_core::{
     InstanceId,
     account::{LoginKey, Password, PasswordKdf},
@@ -480,4 +480,30 @@ pub(crate) fn inventory_policy() -> Result<rss_mdm_inventory_service::inventory_
     let config: crate::config::Config =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))?;
     Ok(config.inventory_runtime.compile()?)
+}
+
+/// Identify the exact PostgreSQL transaction waiting on a held business row.
+pub(crate) async fn blocked_attempt(
+    pool: &PgPool,
+    blocker: i32,
+    statement: &str,
+) -> Result<Option<(i32, String)>> {
+    Ok(sqlx::query_as("SELECT pid,extract(epoch FROM xact_start)::text FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND strpos(query,$2)>0 ORDER BY pid LIMIT 1")
+        .bind(blocker).bind(statement).fetch_optional(pool).await?)
+}
+pub(crate) async fn wait_for_blocked_attempt(
+    pool: &PgPool,
+    blocker: i32,
+    statement: &str,
+) -> Result<(i32, String)> {
+    tokio::time::timeout(std::time::Duration::from_secs(40), async {
+        loop {
+            if let Some(attempt) = blocked_attempt(pool, blocker, statement).await? {
+                return Ok(attempt);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .with_context(|| format!("owner did not wait on {statement}"))?
 }

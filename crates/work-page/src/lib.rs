@@ -1,4 +1,7 @@
 //! Bounded traversal of the product workers' ordered discovery pages.
+pub mod capacity;
+pub mod reconcile;
+
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     future::Future,
@@ -110,6 +113,58 @@ pub async fn run_grouped<K, G, R, P, F>(
     P: Future<Output = Result<R, ()>>,
     F: Future<Output = Result<Duration, ()>> + Send + 'static,
 {
+    let result: Result<(), std::convert::Infallible> = run_fallible(
+        capacity,
+        idle,
+        stop,
+        notify,
+        (group, |after| {
+            let future = page(after);
+            async move { future.await.map_err(|()| Failure::Retry) }
+        }),
+        |key, _admission| {
+            let future = batch(key);
+            async move { future.await.map_err(|()| Failure::Retry) }
+        },
+        observed,
+    )
+    .await;
+    match result {
+        Ok(()) => {}
+        Err(never) => match never {},
+    }
+}
+
+/// A transient failure retains the durable cursor or the key's retry delay.
+/// A fatal result stops new admissions and is returned after owned work drains.
+pub enum Failure<E = std::convert::Infallible> {
+    Retry,
+    Fatal(E),
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "process-owned monotonic worker deadlines"
+)]
+pub async fn run_fallible<K, G, R, P, F, E>(
+    capacity: NonZeroUsize,
+    idle: Duration,
+    stop: &CancellationToken,
+    notify: &Notify,
+    (group, page): (impl Fn(K) -> G, impl Fn(Option<K>) -> P),
+    batch: impl Fn(K, CancellationToken) -> F,
+    observed: impl Fn(bool),
+) -> Result<(), E>
+where
+    K: Copy + Ord + Send + 'static,
+    G: Copy + Ord,
+    R: Into<Page<K>>,
+    P: Future<Output = Result<R, Failure<E>>>,
+    F: Future<Output = Result<Duration, Failure<E>>> + Send + 'static,
+    E: Send + 'static,
+{
+    let admission = stop.child_token();
+    let mut fatal = None;
     let retry = Duration::from_secs(5);
     let mut active = BTreeSet::new();
     let mut groups = BTreeSet::new();
@@ -150,7 +205,7 @@ pub async fn run_grouped<K, G, R, P, F>(
                 if !first_scan_finished {
                     first_batches.insert(key);
                 }
-                let attempt = batch(key);
+                let attempt = batch(key, admission.clone());
                 tasks.spawn(async move { (key, attempt.await) });
                 continue;
             }
@@ -177,7 +232,11 @@ pub async fn run_grouped<K, G, R, P, F>(
                         }
                     }
                 }
-                Err(()) => discovery_retry = Some(Instant::now() + retry),
+                Err(Failure::Retry) => discovery_retry = Some(Instant::now() + retry),
+                Err(Failure::Fatal(error)) => {
+                    fatal = Some(error);
+                    break;
+                }
             }
             let failed = discovery_retry.is_some() || !failures.is_empty();
             if failed || (first_scan_finished && first_batches.is_empty()) {
@@ -202,7 +261,8 @@ pub async fn run_grouped<K, G, R, P, F>(
                         failures.remove(&key);
                         delay.min(idle)
                     }
-                    Err(()) => {
+                    Err(Failure::Fatal(error)) => {fatal = Some(error); break;}
+                    Err(Failure::Retry) => {
                         failures.insert(key);
                         retry
                     }
@@ -230,16 +290,23 @@ pub async fn run_grouped<K, G, R, P, F>(
                     // Faulted bindings still observe their own retry delay.
                     due.retain(|key, _| failures.contains(key));
                 }
-                unseen = due.keys().copied().collect();
-                after = None;
+                if discovery_retry.take().is_none() {
+                    unseen = due.keys().copied().collect();
+                    after = None;
+                }
                 scanning = true;
                 wake = Instant::now() + idle;
             }
         }
     }
+    admission.cancel();
     while let Some(result) = tasks.join_next().await {
-        let _outcome = result.expect("owned worker batch panicked during drain");
+        let (_, outcome) = result.expect("owned worker batch panicked during drain");
+        if let Err(Failure::Fatal(error)) = outcome {
+            fatal.get_or_insert(error);
+        }
     }
+    fatal.map_or(Ok(()), Err)
 }
 
 #[cfg(test)]

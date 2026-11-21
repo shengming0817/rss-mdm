@@ -3,6 +3,7 @@ use crate::{ConfigIssue, Error, config::Config};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+pub(crate) const ACCESS_CONNECTIONS: u32 = 4;
 pub(crate) const IDENTITY_CONNECTIONS: u32 = 10;
 pub(crate) const AUXILIARY_CONNECTIONS: u32 = 10;
 pub(crate) const SCHEDULER_CONNECTIONS: u32 = 2;
@@ -14,6 +15,7 @@ pub(crate) const CONTENT_CONNECTIONS: u32 = 4;
 #[serde(deny_unknown_fields)]
 pub struct BackgroundConfig {
     pub device_concurrency: usize,
+    pub planning_concurrency: usize,
     pub scheduling: SchedulingConfig,
     pub command_recovery_batch_size: u16,
     pub command_supersede_batch_size: u16,
@@ -149,35 +151,21 @@ pub(crate) struct Compiled {
 impl BackgroundConfig {
     pub(crate) fn compile(&self, config: &Config) -> Result<Compiled, Error> {
         let bad = || Error::Configuration(ConfigIssue::Budget);
-        if self.device_concurrency == 0
-            || self.device_concurrency > tokio::sync::Semaphore::MAX_PERMITS
+        if [self.device_concurrency, self.planning_concurrency]
+            .into_iter()
+            .any(|value| value == 0 || value > tokio::sync::Semaphore::MAX_PERMITS)
         {
             return Err(bad());
         }
         let device = self.scheduling.device.compile(self.device_concurrency)?;
         let commands = self.scheduling.commands.compile(self.device_concurrency)?;
         let tasks = self.scheduling.tasks.compile(self.device_concurrency)?;
-        let inventory = self
+        let planning = self
             .scheduling
             .planning
-            .compile(rss_mdm_inventory_service::assets::runtime::CONCURRENCY)?;
-        let group = self
-            .scheduling
-            .planning
-            .compile(rss_mdm_group_service::runtime::CONCURRENCY)?;
-        let scope = self
-            .scheduling
-            .planning
-            .compile(rss_mdm_scope_service::runtime::CONCURRENCY)?;
-        let compliance = self
-            .scheduling
-            .planning
-            .compile(rss_mdm_compliance_service::runtime::CONCURRENCY)?;
+            .compile(self.planning_concurrency)?;
         let policy = self.scheduling.policy.compile(self.device_concurrency)?;
-        let policy_events = self
-            .scheduling
-            .policy
-            .compile(rss_mdm_policy_service::worker::EVENT_CONCURRENCY)?;
+        let policy_events = self.scheduling.policy.compile(self.planning_concurrency)?;
         let sum = |values: &[usize], extra: u32| -> Result<u32, Error> {
             values
                 .iter()
@@ -208,13 +196,13 @@ impl BackgroundConfig {
             )?,
             inventory_connections: sum(
                 &[
-                    group.concurrency(),
-                    inventory.concurrency(),
-                    compliance.concurrency(),
+                    planning.concurrency(),
+                    planning.concurrency(),
+                    planning.concurrency(),
                 ],
                 2,
             )?,
-            scope_connections: sum(&[scope.concurrency()], 2)?,
+            scope_connections: sum(&[planning.concurrency()], 2)?,
             policy_connections: sum(
                 &[
                     policy.concurrency(),
@@ -229,16 +217,16 @@ impl BackgroundConfig {
             device,
             commands,
             tasks,
-            inventory,
-            group,
-            scope,
-            compliance,
+            inventory: planning,
+            group: planning,
+            scope: planning,
+            compliance: planning,
             policy,
             policy_events,
         };
         // One entry per physical pool. Audit and domain adapters borrow these pools.
         let mut pools = vec![
-            ("access", 4),
+            ("access", ACCESS_CONNECTIONS),
             ("da-access", 4),
             ("da-transactions", 4),
             ("observation", 4),

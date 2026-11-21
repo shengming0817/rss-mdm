@@ -584,3 +584,54 @@ async fn default_queries(
     c.close().await;
     result
 }
+
+#[tokio::test]
+#[ignore = "T2: periodic telemetry maintenance commits a peer's expired receipt before its blocked transaction drains"]
+async fn maintenance_commits_while_a_peer_gap_receipt_is_locked() -> Result<()> {
+    use crate::authority_t2_support::{blocked_attempt, wait_for_blocked_attempt};
+    use std::time::Duration;
+    let first = Context::open("shared", &[]).await?;
+    let second = Context::open("shared", &[]).await?;
+    let (a, b) = if first.tenant.to_string() < second.tenant.to_string() {
+        (&first, &second)
+    } else {
+        (&second, &first)
+    };
+    let f = Fixture::open(a).await?;
+    let result = async {
+        let service = f.service(a,std::slice::from_ref(&f.config)).await?;
+        let id = Uuid::new_v4();
+        for c in [a,b] {
+            fixture::persist_selection(c,&f.config).await?;
+            let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
+            sqlx::query("INSERT INTO mdm_telemetry.gap_reports(tenant_id,id,device,input_digest,report,received_at,expires_at) VALUES ($1::uuid,$2,$3,$4,'{}',1,2)")
+                .bind(c.tenant.to_string()).bind(id).bind(Uuid::new_v4()).bind([0u8;32].as_slice()).execute(&mut *tx).await?;
+            tx.commit().await?;
+        }
+        let mut held = a.operator.begin().await?;
+        let pid = sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_telemetry.gap_reports WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+            .bind(a.tenant.to_string()).bind(id).fetch_one(&mut *held).await?;
+        let protocol = crate::planning_t2_support::owner(a,"mdm_command_runtime").await?;
+        let token = tokio_util::sync::CancellationToken::new();
+        let task = tokio::spawn(service.run(protocol.runtime.clone(),token.clone()));
+        let check = tokio::time::timeout(Duration::from_secs(40), async {
+            let attempt = wait_for_blocked_attempt(&a.operator,pid,"DELETE FROM mdm_telemetry.gap_reports").await?;
+            while sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm_telemetry.gap_reports WHERE tenant_id=$1::uuid AND id=$2)")
+                .bind(b.tenant.to_string()).bind(id).fetch_one(&b.operator).await? {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            anyhow::ensure!(blocked_attempt(&a.operator,pid,"DELETE FROM mdm_telemetry.gap_reports").await? == Some(attempt));
+            Ok::<_,anyhow::Error>(())
+        }).await;
+        token.cancel();
+        held.rollback().await?;
+        task.await??;
+        protocol.runtime.close().await;
+        check??;
+        Ok(())
+    }.await;
+    let result = fixture::with_cleanup(result, f.close(a).await);
+    first.close().await;
+    second.close().await;
+    result
+}

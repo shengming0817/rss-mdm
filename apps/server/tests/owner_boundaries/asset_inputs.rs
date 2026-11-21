@@ -2130,3 +2130,253 @@ async fn local_delivery_refills_while_a_group_head_is_in_flight() -> Result<()> 
     c.close().await;
     Ok(())
 }
+
+async fn peer_advances_during_locked_checkpoint(
+    table: &'static str,
+    lock: &'static str,
+    receipt: &'static str,
+) -> Result<()> {
+    let first = Context::open("shared", &[]).await?;
+    let second = Context::open("shared", &[]).await?;
+    let (slow, peer) = if first.tenant.to_string() < second.tenant.to_string() {
+        (&first, &second)
+    } else {
+        (&second, &first)
+    };
+    let owners = Owners::open(slow).await?;
+    let scopes = crate::scope_t2::open(slow).await?;
+    let fixture = crate::policy_configuration_t2::fixture::Fixture::open(slow).await?;
+    planning::endpoint(slow).await?;
+    let (event, _) = message(slow).await?;
+    let (runtime, _) = deliver_input(slow, &event).await?;
+    runtime.close().await;
+    let mut held = slow.operator.begin().await?;
+    let blocker: i32 = sqlx::query_scalar(lock)
+        .bind(slow.tenant.to_string())
+        .fetch_one(&mut *held)
+        .await?;
+    let workers = Workers::start_policy(slow, &owners, scopes, Some(&fixture)).await?;
+    let check = tokio::time::timeout(Duration::from_secs(20), async {
+        let attempt =
+            crate::authority_t2_support::wait_for_blocked_attempt(&slow.operator, blocker, table)
+                .await?;
+        // B enters through the normal publisher and production consumer while A holds this exact attempt.
+        planning::endpoint(peer).await?;
+        loop {
+            if sqlx::query_scalar::<_, bool>(receipt)
+                .bind(peer.tenant.to_string())
+                .fetch_optional(&peer.operator)
+                .await?
+                .unwrap_or(false)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        anyhow::ensure!(
+            crate::authority_t2_support::blocked_attempt(&slow.operator, blocker, table).await?
+                == Some(attempt),
+            "{table}: peer did not commit before the blocked attempt ended"
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .await;
+    held.rollback().await?;
+    workers.close().await?;
+    fixture.close().await?;
+    first.close().await;
+    second.close().await;
+    check.with_context(|| format!("owner checkpoint {table}"))?
+}
+
+macro_rules! checkpoint_isolation {
+    ($test:ident, $table:literal) => {
+        #[tokio::test]
+        #[ignore = "T2: a late tenant commits while its peer waits on the owner's business checkpoint"]
+        async fn $test() -> Result<()> {
+            peer_advances_during_locked_checkpoint(
+                $table,
+                concat!("SELECT pg_backend_pid() FROM ", $table, " WHERE tenant_id=$1::uuid FOR UPDATE"),
+                concat!("SELECT from_cut IS NOT NULL OR to_cut IS NOT NULL FROM ", $table, " WHERE tenant_id=$1::uuid"),
+            ).await
+        }
+    }
+}
+checkpoint_isolation!(
+    group_advances_while_a_peer_checkpoint_is_locked,
+    "mdm_assets.group_dispatch"
+);
+checkpoint_isolation!(
+    scope_advances_while_a_peer_checkpoint_is_locked,
+    "mdm_scope.asset_dispatch"
+);
+checkpoint_isolation!(
+    compliance_advances_while_a_peer_checkpoint_is_locked,
+    "mdm_compliance.dispatch"
+);
+checkpoint_isolation!(
+    policy_configuration_advances_while_a_peer_checkpoint_is_locked,
+    "mdm_planning.configuration_source_dispatch"
+);
+checkpoint_isolation!(
+    device_association_advances_while_a_peer_checkpoint_is_locked,
+    "mdm_devices.checkpoints"
+);
+checkpoint_isolation!(
+    device_control_advances_while_a_peer_checkpoint_is_locked,
+    "mdm_devices.control_source_dispatch"
+);
+checkpoint_isolation!(
+    software_recovery_advances_while_a_peer_checkpoint_is_locked,
+    "mdm_software_deployment.device_source_dispatch"
+);
+
+#[tokio::test]
+#[ignore = "T2: a peer asset query finishes while an earlier tenant cannot commit its query run"]
+async fn asset_query_commits_during_a_peer_run_lock() -> Result<()> {
+    use crate::authority_t2_support::{blocked_attempt, wait_for_blocked_attempt};
+    use rss_mdm_inventory_service::assets;
+    use rss_reconcile::DurableStore;
+    let a = Context::open("shared", &[]).await?;
+    let b = Context::open("shared", &[]).await?;
+    let fixture = crate::assembly::software_assets_t2::fixture::Fixture::open(&a).await?;
+    let mut tasks = Vec::new();
+    for c in [&a, &b] {
+        let account = c.account(&[P::InventoryRead]).await?;
+        let scope = assets::ReadScope::from_proof(&c.authenticate(&account).await?)?;
+        let id = Uuid::new_v4();
+        let input = json!({"query":{},"scope":scope,"asset_cut":cut(c).await?,"as_of":1700000000});
+        let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
+        sqlx::query("INSERT INTO mdm_assets.asset_query_runs(tenant_id,id,input,expected_epoch) VALUES($1::uuid,$2,$3,$4)").bind(c.tenant.to_string()).bind(id).bind(input).bind(c.execution().epoch().get()).execute(&mut *tx).await?;
+        tx.commit().await?;
+        tasks.push(assets::tasks::target(c.tenant, id));
+    }
+    let timer = rss_mdm_device_service::control::recovery::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(60), &cancel);
+    let pool = a.inputs.pool("shared", "mdm_scheduler_runtime").await?;
+    let schedule = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
+    let mut held = a.operator.begin().await?;
+    let pid=sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid FOR UPDATE").bind(a.tenant.to_string()).fetch_one(&mut *held).await?;
+    schedule
+        .wake(
+            &tasks[0],
+            &rss_reconcile::ResourceSet::empty(a.tenant),
+            &control,
+        )
+        .await?;
+    let config: crate::config::Config = serde_json::from_value(
+        crate::host_t2_support::configuration(
+            &a.inputs,
+            "shared",
+            "127.0.0.1:0".parse()?,
+            Uuid::new_v4(),
+        )
+        .await?,
+    )?;
+    let background = config.background.compile(&config)?;
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let worker = Arc::new(assets::runtime::QueryWork::new(
+        fixture.assets,
+        schedule.clone(),
+    ));
+    let mut stack = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(25))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut launch = stack.startup()?.commit();
+    launch.stage_deferred_task_with_token(
+        worker
+            .registration(
+                background.inventory,
+                background.planning_drain,
+                notify.clone(),
+            )
+            .critical(),
+    );
+    launch.finish();
+    let statement = "mdm_assets.asset_query_runs";
+    let result=async {
+        let attempt=wait_for_blocked_attempt(&a.operator,pid,statement).await?;
+        schedule.wake(&tasks[1],&rss_reconcile::ResourceSet::empty(b.tenant),&control).await?;
+        notify.notify_one();
+        wait_sql(&b,"SELECT completed AND failure IS NULL FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND id=$2",Uuid::parse_str(tasks[1].entity().strip_prefix("task:").unwrap())?).await?;
+        anyhow::ensure!(blocked_attempt(&a.operator,pid,statement).await?==Some(attempt));
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    held.rollback().await?;
+    anyhow::ensure!(stack.shutdown().join().await?.is_clean());
+    pool.close().await;
+    a.close().await;
+    b.close().await;
+    result
+}
+
+#[tokio::test]
+#[ignore = "T2: the Policy event worker commits a peer batch while a prior event's final work receipt is locked"]
+async fn event_batch_commits_during_a_peer_receipt_lock() -> Result<()> {
+    use crate::authority_t2_support::{blocked_attempt, wait_for_blocked_attempt};
+    let a = Context::open("shared", &[]).await?;
+    let b = Context::open("shared", &[]).await?;
+    let owners = Owners::open(&a).await?;
+    let scopes = crate::scope_t2::open(&a).await?;
+    let fixture = crate::policy_configuration_t2::fixture::Fixture::open(&a).await?;
+    let policy = planning::owner(&a, "mdm_policy_runtime").await?;
+    let mut jobs = Vec::new();
+    for c in [&a, &b] {
+        let id = Uuid::new_v4();
+        let account = c.account(&[P::InventoryRead]).await?;
+        let actor = c.authenticate(&account).await?.actor();
+        let caller = rss_mdm_policy_service::events::Caller::Management { actor };
+        let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
+        sqlx::query("INSERT INTO mdm_policy.event_batches(tenant_id,id,request,actor,caller,device,input,fingerprint,created_at,deadline) VALUES($1::uuid,$2,$2,$3,$4,$5,$6,$7,1700000000,1700000010)")
+            .bind(c.tenant.to_string()).bind(id).bind(serde_json::to_string(&caller)?).bind(serde_json::to_value(caller)?).bind(Uuid::new_v4()).bind(json!({"operationId":id,"event":"peer","source":{"kind":"human"},"executionContext":null})).bind([17u8;32].as_slice()).execute(&mut *tx).await?;
+        tx.commit().await?;
+        jobs.push(id);
+    }
+    let enqueue = |binding, id| {
+        let runtime = policy.runtime.clone();
+        async move {
+            let deadline = crate::authority_t2_support::deadline();
+            let store =
+                rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), binding, deadline)
+                    .await?;
+            runtime
+                .local_tx_with_context(binding, deadline, (store, id), |(store, id), tx| {
+                    Box::pin(async move {
+                        rss_mdm_policy_service::worker::jobs::enqueue_job_in(
+                            StorageProfile::Mdm,
+                            store,
+                            tx,
+                            *id,
+                            &rss_mdm_policy_postgres::work::Work::PolicyEvent { batch: *id },
+                        )
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| sqlx::Error::Protocol(format!("{e:?}")).into())
+                    })
+                })
+                .await
+                .fold(Ok, Err, Err, Err, Err, Err)?;
+            Ok::<_, anyhow::Error>(())
+        }
+    };
+    enqueue(a.execution(), jobs[0]).await?;
+    let mut held = a.operator.begin().await?;
+    let pid=sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(a.tenant.to_string()).bind(jobs[0]).fetch_one(&mut *held).await?;
+    let workers = Workers::start_policy(&a, &owners, scopes, Some(&fixture)).await?;
+    let check=async {
+        let attempt=wait_for_blocked_attempt(&a.operator,pid,"mdm_policy.work").await?;
+        enqueue(b.execution(),jobs[1]).await?;
+        wait_sql(&b,"SELECT completed AND failure IS NULL FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2",jobs[1]).await?;
+        anyhow::ensure!(blocked_attempt(&a.operator,pid,"mdm_policy.work").await?==Some(attempt));
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    held.rollback().await?;
+    workers.close().await?;
+    fixture.close().await?;
+    policy.runtime.close().await;
+    b.close().await;
+    a.close().await;
+    check
+}

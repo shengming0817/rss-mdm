@@ -6,35 +6,6 @@ use rss_transactional_messaging::outbox::{OutboxRelayStore, OutboxSettlement};
 use sqlx::Row;
 use std::sync::Mutex;
 
-pub struct Timer(tokio::time::Instant);
-impl Default for Timer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-impl Timer {
-    #[allow(clippy::disallowed_methods)]
-    // Concrete monotonic injection boundary shared by all command controls.
-    pub fn new() -> Self {
-        Self(tokio::time::Instant::now())
-    }
-}
-impl rss_reconcile::Timer for Timer {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "concrete monotonic clock implementation"
-    )]
-    fn now(&self) -> Duration {
-        self.0.elapsed()
-    }
-    async fn sleep_until(&self, at: Duration) {
-        match self.0.checked_add(at) {
-            Some(deadline) => tokio::time::sleep_until(deadline).await,
-            // An unbounded controller still races this wait against cancellation.
-            None => std::future::pending().await,
-        }
-    }
-}
 fn failure(error: Error) -> rss_reconcile::Error {
     if matches!(error, Error::Unavailable(Failure::NativeInputIntegrity)) {
         eprintln!(
@@ -115,162 +86,65 @@ impl SoftwareService {
             self.run_worker(policy, &cancel, &signals).await
         })
     }
-    /// Retry this discovery page before advancing the outer tenant cursor.
-    async fn discover_tenants(
-        &self,
-        after: Option<Uuid>,
-        cancel: &tokio_util::sync::CancellationToken,
-    ) -> std::result::Result<Option<Vec<Uuid>>, rss_runtime::ShutdownError> {
-        loop {
-            if cancel.is_cancelled() {
-                self.readiness.stop();
-                return Ok(None);
-            }
-            let discovered = tokio::select! { biased;
-                    () = cancel.cancelled() => { self.readiness.stop(); return Ok(None); },
-                    result = tokio::time::timeout(Duration::from_secs(5), sqlx::query_scalar(
-                "SELECT tenant_id FROM mdm_software_deployment.work_scopes($1)",
-            )
-            .bind(after)
-            .fetch_all(&self.read_pool)) =>
-                        result.map_err(|_| rss_reconcile::ErrorKind::Deadline)
-                            .and_then(|page| page.map_err(|error| crate::discovery::classify(&error))),
-                };
-            if cancel.is_cancelled() {
-                self.readiness.stop();
-                return Ok(None);
-            }
-            self.readiness
-                .discovery(discovered.as_ref().map(|_| ()).map_err(|kind| *kind));
-            match discovered {
-                Ok(page) => return Ok(Some(page)),
-                Err(rss_reconcile::ErrorKind::Transient | rss_reconcile::ErrorKind::Deadline) => {
-                    // A failed page is not empty. Keep its cursor and rate-limit retries even under wake storms.
-                    tokio::select! { biased;
-                        () = cancel.cancelled() => { self.readiness.stop(); return Ok(None); },
-                        () = tokio::time::sleep(Duration::from_secs(5)) => {},
-                    }
-                    continue;
-                }
-                Err(kind) => {
-                    return Err(rss_runtime::ShutdownError::new(rss_reconcile::Error::new(
-                        kind,
-                    )));
-                }
-            };
-        }
-    }
     pub async fn run_worker(
-        &self,
+        self: &Arc<Self>,
         policy: rss_reconcile::Policy,
         cancel: &tokio_util::sync::CancellationToken,
         signals: &crate::deployment::worker_wake::Signals,
     ) -> std::result::Result<(), rss_runtime::ShutdownError> {
-        let timer = Timer::new();
-        let force = tokio_util::sync::CancellationToken::new();
-        let control = rss_reconcile::Control::new(&timer, Duration::MAX, &force);
-        let mut after: Option<Uuid> = None;
-        let mut worked = false;
-        loop {
-            let Some(tenants) = self.discover_tenants(after, cancel).await? else {
-                return Ok(());
-            };
-            if tenants.is_empty() {
-                after = None;
-                if std::mem::take(&mut worked) {
-                    continue;
-                }
-
-                tokio::select! {()=cancel.cancelled()=>{self.readiness.stop();return Ok(())},()=signals.command_recovery().notified()=>{},()=tokio::time::sleep(Duration::from_secs(5))=>{}}
-                continue;
-            }
-            for tenant in tenants {
-                after = Some(tenant);
-                let tenant = TenantId::parse(&tenant.to_string())
-                    .map_err(rss_runtime::ShutdownError::new)?;
-                let scope = recovery_scope(tenant);
-
-                let report = match rss_reconcile::run_batch(
-                    &self.recovery_store(),
-                    self,
-                    &scope,
-                    policy,
-                    &control,
-                    cancel,
-                    |event| {
-                        self.readiness.observe(&event);
-                        diagnostic(event);
-                    },
+        let service = self.as_ref();
+        let owner = self.clone();
+        let budget = self.worker_budget.clone();
+        let result = rss_mdm_work_page::reconcile::run(
+            &budget,
+            policy,
+            cancel,
+            signals.command_recovery(),
+            |after| async move {
+                let discovered = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    sqlx::query_scalar(
+                        "SELECT tenant_id FROM mdm_software_deployment.work_scopes($1)",
+                    )
+                    .bind(after)
+                    .fetch_all(&service.read_pool),
                 )
                 .await
-                {
-                    Ok(report) => report,
-                    Err(error)
-                        if control.check().is_ok()
-                            && matches!(
-                                error.kind(),
-                                rss_reconcile::ErrorKind::Transient
-                                    | rss_reconcile::ErrorKind::Deadline
-                                    | rss_reconcile::ErrorKind::CommitUnknown
-                            ) =>
-                    {
-                        // The observer retained this scope's failure. Advance the tenant cursor;
-                        // an unconfirmed claim is not an empty or successfully drained batch.
-                        continue;
-                    }
-                    Err(error) => return Err(rss_runtime::ShutdownError::new(error)),
-                };
-                worked |= [
-                    report.converged,
-                    report.reobserve,
-                    report.deferred,
-                    report.retried,
-                    report.suspended,
-                    report.fenced,
-                    report.execution_failed,
-                ]
-                .into_iter()
-                .any(|count| count > 0);
-            }
-        }
-    }
-
-    pub async fn run_recovery<T: rss_reconcile::Timer>(
-        &self,
-        scope: &rss_reconcile::Scope,
-        policy: rss_reconcile::Policy,
-        control: &rss_reconcile::Control<'_, T>,
-        stop: &tokio_util::sync::CancellationToken,
-        notify: &tokio::sync::Notify,
-    ) -> std::result::Result<rss_reconcile::Report, rss_reconcile::Error> {
-        let result = Box::pin(rss_reconcile::run_with_notify(
-            &self.recovery_store(),
-            self,
-            scope,
-            policy,
-            control,
-            stop,
-            notify,
-            |event| {
-                // The runner can expire and drop the claim future before the store returns.
-                self.readiness.observe(&event);
-                if let rss_reconcile::Observation::AttemptFailed { target, error, .. } = &event
-                    && target.entity() == "inputs"
-                {
-                    self.readiness.inputs(target, Err(error.kind()));
-                }
-                diagnostic(event);
+                .map_err(|_| rss_reconcile::ErrorKind::Deadline)
+                .and_then(|page| page.map_err(|error| crate::discovery::classify(&error)));
+                service
+                    .readiness
+                    .discovery(discovered.as_ref().map(|_| ()).map_err(|kind| *kind));
+                discovered
             },
-        ))
-        .await;
-        if let Err(error) = &result {
-            eprintln!(
-                "{}",
-                serde_json::json!({"event":"mdm_command_recovery_failure","phase":"runner","scope":scope.reconciler(),"reason":format!("{:?}",error.kind())})
-            );
-        }
+            move |tenant, slots, stop| {
+                let owner = owner.clone();
+                async move {
+                    let tenant = TenantId::parse(&tenant.to_string()).map_err(|_| {
+                        rss_reconcile::Error::new(rss_reconcile::ErrorKind::InvalidInput)
+                    })?;
+                    let scope = recovery_scope(tenant);
+                    rss_mdm_work_page::reconcile::batch(
+                        (&owner.recovery_store(), owner.as_ref()),
+                        slots,
+                        &scope,
+                        policy,
+                        &stop,
+                        |event| {
+                            owner.readiness.observe(&event);
+                            diagnostic(event);
+                        },
+                    )
+                    .await
+                }
+            },
+        )
+        .await
+        .map_err(rss_runtime::ShutdownError::new);
+        self.readiness.stop();
         result
     }
+
     pub fn record_relay_health<T>(&self, result: &std::result::Result<T, Error>) {
         self.readiness.relay_round(
             result
@@ -827,9 +701,6 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for SoftwareService {
     > + Send {
         Box::pin(async move {
             let execution = self.binding_for(claim, control).await?;
-            let Ok(_permit) = self.worker_budget.try_acquire() else {
-                return Ok(ReconcileStep::Deferred(Duration::from_millis(50)));
-            };
 
             if claim.target().scope().reconciler() != DOMAIN {
                 return Err(rss_reconcile::Error::new(

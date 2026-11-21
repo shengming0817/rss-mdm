@@ -266,6 +266,7 @@ fn configured_worker_capacity_and_pool_arithmetic_are_checked_together() {
     let mut config: Config =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
     config.background.device_concurrency = 128;
+    config.background.planning_concurrency = 3;
     config.background.database_connection_budget = 4096;
     config.background.scheduling.device.claim_batch_size = 1024;
     config.background.scheduling.device.scan_budget = 4096;
@@ -275,10 +276,13 @@ fn configured_worker_capacity_and_pool_arithmetic_are_checked_together() {
     assert_eq!(compiled.device.scan_budget(), 4096);
     assert_eq!(compiled.access_connections, 136);
     assert_eq!(compiled.command_connections, 128 + 4 + 6);
-    assert_eq!(compiled.policy_connections, 128 + 2 + 3);
+    assert_eq!(compiled.policy_connections, 128 + 3 + 3);
+    assert_eq!(compiled.group.concurrency(), 3);
+    assert_eq!(compiled.inventory_connections, 11);
     config.background.device_concurrency = u32::MAX as usize;
     assert!(config.background.compile(&config).is_err());
     config.background.device_concurrency = 128;
+    config.background.planning_concurrency = 3;
     for claim in [0, 1025] {
         config.background.scheduling.device.claim_batch_size = claim;
         assert!(config.background.compile(&config).is_err());

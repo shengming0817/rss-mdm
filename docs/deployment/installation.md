@@ -72,7 +72,7 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 `init` 等待数据库健康后运行并退出；`server` 仅在 init 成功后启动。init 的短暂容器内 root 只将部署 secrets 复制为卷内 0600 文件，然后降为 UID10001 执行 Rust 初始化；没有宿主 root 操作或基础设施管理权限。运行后端、网关均为 UID10001，分别只读挂载自己的运行子目录；PostgreSQL 由官方镜像管理数据属主。
 
-正式 Compose 通过 `MDM_PG_MAX_CONNECTIONS` 配置 PostgreSQL 的 `max_connections`。安装器读取实际容量，扣除数据库保留连接与部署维护连接；应用启动按实际物理池与并发配置核对预算。连接池由进程共享，新增租户不增加池、数据库、监听器或运行配置。
+8 核部署的 Compose 默认值为 `MDM_PLANNING_CONCURRENCY=8`、`MDM_DEVICE_CONCURRENCY=8`、`MDM_PG_MAX_CONNECTIONS=200`。PostgreSQL 按最后一个变量设置 `max_connections`。默认卷存储、租户管理和 PostgreSQL 遥测组合的各连接池上限合计 188。保留 3 个超级用户连接和 1 个维护连接时，应用可用 196 个连接。安装器读取实际容量，扣除数据库保留连接与部署维护连接；应用启动按实际物理池与并发配置核对预算。连接池由进程共享，新增租户不增加池、数据库、监听器或运行配置。
 
 `installation.json` 的 `stage=initialized` 表示安装身份、账户与基础授权已持久化；业务初始化由 baseline 的原步骤回执推进。检查 HTTPS `/readyz`、实际登录与授权，并通过平台会话读取首租户的开通操作，直到 `phase=configured`。`pending` 表示仍在推进，`blocked` 携带实际阻塞原因；缺少尚未选择的 APNs、OIDC 等外部能力不阻塞普通开通。
 
@@ -335,7 +335,7 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 运行配置必须显式包含 `identity.runtime`、`background.scheduling`、`http`、`inventory_runtime` 与 `audit_query`，完整形状见 [MDM 配置示例](../../fixtures/mdm-config.example.json)。安装生成器写入当前保守值；恢复时保留原安装 target、lineage、tenant epoch 和 `rp_generation`，新安装 RP generation 为 1。Identity 公共数据库 schema 使用 owner 的版本 18，自有 HTTP、Agent 和安装格式仍为 V1。
 
-`background.scheduling` 分别配置 device、commands、tasks、planning、policy 的领取量、扫描量、lease、执行、重试及排空预算。设备并发默认 4，领取／扫描默认 64；领取支持至 1024，扫描独立配置。`command_recovery_batch_size` 和 `command_supersede_batch_size` 分别控制恢复遍历与替代命令的处理批次，默认 64。并发对应的物理池预算在启动前统一 checked 校验。
+`background.scheduling` 分别配置 device、commands、tasks、planning、policy 的领取量、扫描量、lease、执行、重试及排空预算。标准部署的 `MDM_DEVICE_CONCURRENCY` 和 `MDM_PLANNING_CONCURRENCY` 各取 8，由安装器写入 background 配置。设备恢复共用执行容量，每类计算的租户共享该类总额度。领取／扫描默认 64；领取支持至 1024，扫描独立配置。`command_recovery_batch_size` 和 `command_supersede_batch_size` 分别控制恢复遍历与替代命令的处理批次，默认 64。并发对应的物理池预算在启动前统一 checked 校验。
 
 Identity 默认 KDF 并发 4、预留内存 128 MiB，请求 10 秒、认证 claim 60 秒、KDF 排空 5 秒。claim 必须覆盖当前配置允许的请求与维护密码操作总时长；密码计算在请求取消后仍由原 KDF 排空。OIDC 请求／连接默认 5／3 秒；JWKS TTL 60 秒、128 租户、刷新间隔 1 秒，租户容量可配置至 1024。独立 DA 使用 [DA 配置示例](../../deployment/da-config.example.json) 中必填的 `identity_policy` 和 `http`：启动总预算默认 60 秒，请求／连接排空 15 秒，宿主总排空 45 秒，维护总排空 30 秒。请求与 KDF 排空必须放入对应父预算；增大请求时需同步请求和连接排空。
 

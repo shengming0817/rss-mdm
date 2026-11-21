@@ -101,7 +101,7 @@ pub(crate) struct Storage {
     pub discovery_pool: sqlx::PgPool,
     pub reconcile: rss_reconcile_postgres::PgStore,
     pub read_pool: sqlx::PgPool,
-    pub worker_budget: Arc<tokio::sync::Semaphore>,
+    pub worker_budget: Arc<rss_mdm_work_page::capacity::Capacity>,
 }
 impl Storage {
     pub(crate) async fn open(
@@ -216,9 +216,10 @@ impl Storage {
             discovery_pool,
             reconcile,
             read_pool,
-            worker_budget: Arc::new(tokio::sync::Semaphore::new(
-                background.commands.concurrency(),
-            )),
+            worker_budget: rss_mdm_work_page::capacity::Capacity::new(
+                std::num::NonZeroUsize::new(background.commands.concurrency())
+                    .expect("validated policy"),
+            ),
         })
     }
 }

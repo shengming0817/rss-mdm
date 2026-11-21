@@ -13,6 +13,7 @@ pub(crate) struct Database {
     registration: std::sync::Arc<rss_mdm_registration_service::Store>,
     authorization: std::sync::Arc<rss_mdm_authorization_service::Store>,
     pool: PgPool,
+    pub(crate) long_operations: std::sync::Arc<tokio::sync::Semaphore>,
 }
 impl Database {
     pub(crate) fn archive_pool(&self) -> PgPool {
@@ -49,7 +50,7 @@ impl Database {
         audit: &crate::config::AuditConfig,
     ) -> Result<Self, Error> {
         let pool = PgPoolOptions::new()
-            .max_connections(4)
+            .max_connections(crate::background::ACCESS_CONNECTIONS)
             .acquire_timeout(Duration::from_secs(1))
             .connect_with(options)
             .await
@@ -72,6 +73,10 @@ impl Database {
                 rss_mdm_install_support::StorageProfile::Mdm,
                 pool.clone(),
                 std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
+            )),
+            // Long-running operations can call back into this same four-connection pool.
+            long_operations: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                (crate::background::ACCESS_CONNECTIONS - 1) as usize,
             )),
             pool,
         })

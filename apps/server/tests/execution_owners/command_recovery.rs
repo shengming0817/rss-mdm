@@ -115,3 +115,133 @@ async fn legal_candidates_page_across_restart_and_late_orphans() -> Result<()> {
         .bind(h.c.tenant.to_string()).fetch_one(&h.c.operator).await?, foreign_version);
     h.close().await
 }
+
+async fn native_cursor_isolation(credentials: bool) -> Result<()> {
+    use crate::authority_t2_support::{blocked_attempt, wait_for_blocked_attempt};
+    use rss_mdm_registration_service::lifecycle::resources;
+    use rss_reconcile::DurableStore;
+    use std::time::Duration;
+    let a = Harness::open().await?;
+    let b = Harness::open().await?;
+    let table = if credentials {
+        "mdm_recovery_tasks.device_recovery"
+    } else {
+        "mdm_registration_tasks.device_recovery"
+    };
+    let mut work = Vec::new();
+    for h in [&a, &b] {
+        let device = crate::native_identity_t2_support::seed(&h.c, "windows")
+            .await?
+            .device;
+        let command_device = Uuid::new_v4();
+        let mut tx = command::seed_transaction(&h.c).await?;
+        sqlx::query("INSERT INTO mdm_access.command_authorities(tenant_id,device,command_device,generation,epoch) VALUES($1::uuid,$2,$3,1,1)")
+            .bind(h.c.tenant.to_string()).bind(device.into_uuid()).bind(command_device).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO rss_device_command.authorities(tenant_id,device_id,generation,authority_epoch) VALUES($1::uuid,$2,1,1)")
+            .bind(h.c.tenant.to_string()).bind(command_device).execute(&mut *tx).await?;
+        // The durable cursor models a restart after the last non-empty command page.
+        sqlx::query(sqlx::AssertSqlSafe(format!("INSERT INTO {table}(tenant_id,device,expected_epoch,authority_epoch,recovery_after) VALUES($1::uuid,$2,$3,1,$4)")))
+            .bind(h.c.tenant.to_string()).bind(device.into_uuid()).bind(h.c.execution().epoch().get()).bind(Uuid::new_v4().to_string()).execute(&mut *tx).await?;
+        tx.commit().await?;
+        let target = if credentials {
+            rss_mdm_recovery_credentials::native::target(h.c.tenant, &device)
+        } else {
+            rss_mdm_registration_service::installation::target(h.c.tenant, &device)
+        };
+        work.push((
+            target,
+            resources::device(h.c.tenant, &device, resources::Work::Exclusive),
+            device,
+        ));
+    }
+    let state = &a.a.resources;
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let handles = [Arc::default(), notify.clone()];
+    let registration = if credentials {
+        let assembly = crate::assembly::credential_execution::assemble(
+            state.storage.discovery_pool.clone(),
+            &state.config,
+            &state.background,
+            state.storage.runtime.clone(),
+            a.c.execution(),
+            state.storage.audit.clone(),
+            state.protection.clone(),
+            crate::assembly::credential_owners_t2::protection(&a.c, "old")?,
+            state.source.clone(),
+            state.storage.reconcile.clone(),
+            state.storage.worker_budget.clone(),
+        )
+        .await?;
+        assembly.native.registration(
+            state.background.commands,
+            state.background.commands_drain,
+            Arc::new(
+                rss_mdm_recovery_credentials::native::worker_wake::Signals::from_handles(handles),
+            ),
+        )
+    } else {
+        a.a.registration.native.clone().registration(
+            state.background.commands,
+            state.background.commands_drain,
+            Arc::new(
+                rss_mdm_registration_service::installation::worker_wake::Signals::from_handles(
+                    handles,
+                ),
+            ),
+        )
+    };
+    let timer = rss_mdm_device_service::control::recovery::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(60), &cancel);
+    let store = &state.storage.reconcile;
+    let mut held = a.c.operator.begin().await?;
+    let pid = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT pg_backend_pid() FROM {table} WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE"
+    )))
+    .bind(a.c.tenant.to_string())
+    .bind(work[0].2.into_uuid())
+    .fetch_one(&mut *held)
+    .await?;
+    store.wake(&work[0].0, &work[0].1, &control).await?;
+    let mut stack = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(25))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut launch = stack.startup()?.commit();
+    launch.stage_deferred_task_with_token(registration.critical());
+    launch.finish();
+    let check = tokio::time::timeout(Duration::from_secs(30), async {
+        let attempt = wait_for_blocked_attempt(&a.c.operator, pid, table).await?;
+        store.wake(&work[1].0, &work[1].1, &control).await?;
+        notify.notify_one();
+        let receipt = format!(
+            "SELECT recovery_after IS NULL FROM {table} WHERE tenant_id=$1::uuid AND device=$2"
+        );
+        while !sqlx::query_scalar::<_, bool>(sqlx::AssertSqlSafe(receipt.as_str()))
+            .bind(b.c.tenant.to_string())
+            .bind(work[1].2.into_uuid())
+            .fetch_one(&b.c.operator)
+            .await?
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        anyhow::ensure!(blocked_attempt(&a.c.operator, pid, table).await? == Some(attempt));
+        Ok::<_, anyhow::Error>(())
+    })
+    .await;
+    held.rollback().await?;
+    anyhow::ensure!(stack.shutdown().join().await?.is_clean());
+    b.close().await?;
+    a.close().await?;
+    check?
+}
+#[tokio::test]
+#[ignore = "T2: an installation cursor commits while another tenant cannot finish its native recovery page"]
+async fn registration_native_cursor_isolation() -> Result<()> {
+    native_cursor_isolation(false).await
+}
+#[tokio::test]
+#[ignore = "T2: a native credentials cursor commits during a peer's locked page"]
+async fn credentials_native_cursor_isolation() -> Result<()> {
+    native_cursor_isolation(true).await
+}

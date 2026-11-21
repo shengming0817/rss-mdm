@@ -67,6 +67,8 @@ pub struct Input {
     pub database: DatabaseInput,
     #[serde(default)]
     pub audit_mode: AuditMode,
+    pub planning_concurrency: usize,
+    pub device_concurrency: usize,
     pub organization_name: String,
     pub platform_login: String,
     pub administrator_login: String,
@@ -124,6 +126,9 @@ impl Input {
             || self.trusted_gateway.is_unspecified()
             || self.listen.port() == 0
             || self.database.name.is_empty()
+            || [self.planning_concurrency, self.device_concurrency]
+                .into_iter()
+                .any(|v| v == 0 || v > tokio::sync::Semaphore::MAX_PERMITS)
             || self.organization_name.trim().is_empty()
             || self.organization_name.chars().count() > 128
             || self.organization_name.contains('\0')
@@ -537,7 +542,7 @@ fn runtime(
     Ok(serde_json::json!({
         "http": crate::config::http::Http::installation(),
         "inventory_runtime":crate::config::InventoryRuntimeConfig::installation(),
-        "background":{"device_concurrency":4,"command_recovery_batch_size":64,"command_supersede_batch_size":64,"scheduling":crate::background::SchedulingConfig::installation(),"database_connection_budget":connection_budget},
+        "background":{"planning_concurrency":input.planning_concurrency,"device_concurrency":input.device_concurrency,"command_recovery_batch_size":64,"command_supersede_batch_size":64,"scheduling":crate::background::SchedulingConfig::installation(),"database_connection_budget":connection_budget},
         "runtime_binding":{"host_id":saved.receipt.host_id,"operation_id":saved.receipt.operation_id,"revision":1,"material_digest":saved.fingerprint_digest()},
         "device_access":{"database":input.database("da_access")?,"deployment_authorities":[],"platform_sso":null,"registration":null},
         "agent_pki":{"mode":"disabled"},"device_pki":[],"native_protocols":{},"native_protection":{"active_file":journal.path("native.key")?,"historical_files":[],"fingerprint_file":journal.path("native-fingerprint.key")?},

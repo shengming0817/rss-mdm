@@ -15,7 +15,6 @@ impl Health {
 }
 #[derive(Clone)]
 pub(super) struct ProjectionObservation {
-    pub tenant: TenantId,
     pub run: RunObservation,
     pub started_at: Instant,
     pub last_completed_at: Option<Instant>,
@@ -51,8 +50,8 @@ impl InventoryRuntime {
             .latest_projection
             .lock()
             .expect("projection observation")
-            .clone()
-            .filter(|p| p.tenant == binding.tenant());
+            .get(&binding.tenant())
+            .cloned();
         Diagnostics {
             delivery: delivery
                 .map_err(|_| ProbeFailure::Deadline)

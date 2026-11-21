@@ -6,6 +6,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-reconcile.workspace = true
+uuid.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
 tokio-util.workspace = true
 

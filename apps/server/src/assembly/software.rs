@@ -29,7 +29,7 @@ pub(crate) async fn assemble(
     sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
     read_pool: sqlx::PgPool,
     reconcile: rss_reconcile_postgres::PgStore,
-    budget: Arc<tokio::sync::Semaphore>,
+    budget: Arc<rss_mdm_work_page::capacity::Capacity>,
 ) -> Result<Assembly, crate::Error> {
     let input_materials = Arc::new(owner::InputMaterials {
         software_distribution: config.software_distribution,

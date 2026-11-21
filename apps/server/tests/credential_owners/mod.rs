@@ -102,7 +102,7 @@ impl Owners {
             audit.clone(),
             credentials,
             Some(Arc::new(copies)),
-            Arc::new(tokio::sync::Semaphore::new(2)),
+            rss_mdm_work_page::capacity::Capacity::new(std::num::NonZeroUsize::new(2).unwrap()),
             None,
         );
         Ok(Self {

@@ -174,6 +174,7 @@ pub async fn serve(
                             observation_store,
                             projection_store,
                             access.inventory(),
+            access.long_operations.clone(),
                             audit_store.clone(),
                             probe.storage(),
                             rss_transactional_messaging::fence::Epoch::new(compiled.config.storage_binding.epoch)
@@ -965,37 +966,59 @@ pub(crate) fn baseline_registration(
     wake: Arc<tokio::sync::Notify>,
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) = rss_runtime::ManagedTask::prepare("tenant-baseline", Duration::from_secs(20));
-    task.into_registration(move|cancel|async move {
-        let Some(tenants)=tenants else {cancel.cancelled().await;return Ok(())};
-        let mut after=None;
-        let mut advanced=false;
-        loop {
-            if cancel.is_cancelled() {return Ok(())}
-            let page=match tenants.pending_initializations(after).await {
-                Ok(page)=>page,
-                Err(error)=>{eprintln!("baseline discovery failed: {error}");Vec::new()},
-            };
-            if page.is_empty() {
-                after=None;
-                if std::mem::take(&mut advanced) { continue; }
-                tokio::select! {()=cancel.cancelled()=>return Ok(()),()=wake.notified()=>{},()=tokio::time::sleep(crate::worker_wake::RECOVERY)=>{}}
-                continue;
-            }
-            for tenant in page {
-                after=Some(tenant);
-                if cancel.is_cancelled() {return Ok(())}
-                let tenant=rss_request_context::TenantId::parse(&tenant.to_string()).map_err(ShutdownError::new)?;
-                let cutoff = rss_request_context::Deadline::from_timeout(&crate::lifecycle::RuntimeTimer, Duration::from_secs(120)).expect("fixed initialization budget");
-                let result=match crate::administration::baseline::resume(&state,tenant,&cancel,cutoff).await {
-                    Ok((binding, steps))=>{
-                        advanced |= steps > 0;
-                        match binding { Some(binding)=>tenants.complete_initialization(binding, cutoff).await, None=>Ok(()) }
-                    },
-                    Err(error)=>Err(error),
-                };
-                if let Err(error)=result {eprintln!("baseline initialization for {tenant} blocked: {error}");}
-            }
-        }
+    task.into_registration(move |cancel| async move {
+        let Some(tenants) = tenants else {
+            cancel.cancelled().await;
+            return Ok(());
+        };
+        let idle = crate::worker_wake::RECOVERY;
+        rss_mdm_work_page::run(
+            std::num::NonZeroUsize::new(2).unwrap(),
+            idle,
+            &cancel,
+            &wake,
+            |after| {
+                let tenants = tenants.clone();
+                async move {
+                    tenants
+                        .pending_initializations(after)
+                        .await
+                        .map_err(|error| eprintln!("baseline discovery failed: {error}"))
+                }
+            },
+            |id| {
+                let state = state.clone();
+                let tenants = tenants.clone();
+                let stop = cancel.clone();
+                async move {
+                    let tenant =
+                        rss_request_context::TenantId::parse(&id.to_string()).map_err(|_| ())?;
+                    let cutoff = rss_request_context::Deadline::from_timeout(
+                        &RuntimeTimer,
+                        Duration::from_secs(120),
+                    )
+                    .expect("fixed initialization budget");
+                    let (binding, steps) =
+                        crate::administration::baseline::resume(&state, tenant, &stop, cutoff)
+                            .await
+                            .map_err(|error| {
+                                eprintln!("baseline initialization for {tenant} blocked: {error}")
+                            })?;
+                    if let Some(binding) = binding {
+                        tenants
+                            .complete_initialization(binding, cutoff)
+                            .await
+                            .map_err(|error| {
+                                eprintln!("baseline receipt for {tenant} unconfirmed: {error}")
+                            })?;
+                    }
+                    Ok(if steps > 0 { Duration::ZERO } else { idle })
+                }
+            },
+            |_| {},
+        )
+        .await;
+        Ok(())
     })
 }
 

@@ -17,7 +17,7 @@ pub(crate) async fn assemble(
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
     recovery: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     reconcile: rss_reconcile_postgres::PgStore,
-    budget: Arc<tokio::sync::Semaphore>,
+    budget: Arc<rss_mdm_work_page::capacity::Capacity>,
     enabled: bool,
 ) -> Result<Assembly, crate::Error> {
     let materials = Arc::new(access::Materials {

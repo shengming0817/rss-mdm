@@ -20,6 +20,7 @@ pub enum Phase {
 
 /// Dependencies required to resume the persisted tenant initialization intent.
 pub(crate) struct Service {
+    pub(crate) long_operations: std::sync::Arc<tokio::sync::Semaphore>,
     pub instance: rss_identity_core::InstanceId,
     pub pool: sqlx::PgPool,
     pub authorization: std::sync::Arc<rss_mdm_authorization_service::Store>,
@@ -70,6 +71,18 @@ pub(crate) async fn resume(
     if stop.is_cancelled() {
         return Ok((None, 0));
     }
+    let _slot = tokio::select! { biased;
+        () = stop.cancelled() => return Ok((None, 0)),
+        result = tokio::time::timeout(remaining, state.long_operations.acquire()) => match result {
+            Ok(Ok(slot)) => slot,
+            _ => return Ok((None, 0)),
+        },
+    };
+    let Some(remaining) = cutoff.remaining(rss_request_context::Clock::now(
+        &crate::lifecycle::RuntimeTimer,
+    )) else {
+        return Ok((None, 0));
+    };
     let tenant = tenant.to_string();
     let pool = state.pool.clone();
     let Ok(acquired) = tokio::time::timeout(remaining, pool.acquire()).await else {
@@ -170,6 +183,9 @@ pub(crate) async fn resume(
                 };
             }
         }
+    }
+    if stop.is_cancelled() {
+        return Ok((None, advanced));
     }
     let blocked = match &state.telemetry {
         Some(telemetry) => {

@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-work-page.workspace = true
 rss-mdm-native-protection.workspace = true
 zeroize.workspace = true
 rss-mdm-install-support.workspace = true

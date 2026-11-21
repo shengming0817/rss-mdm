@@ -300,93 +300,137 @@ impl Service {
             )
             .map_err(|_| Error::Storage)?,
         );
-        let publisher = PublisherService(self.clone());
-        let local = cancel.child_token();
-        let relay_cancel = local.clone();
-        let maintenance_cancel = local.clone();
-        let (relay, maintenance) = tokio::join!(
-            async {
-                let mut after = None;
-                loop {
-                    if relay_cancel.is_cancelled() {
-                        return Ok::<(), Error>(());
+        tokio::join!(
+            self.relay_scopes(store, &cancel),
+            self.maintain_scopes(&cancel)
+        );
+        Ok(())
+    }
+
+    async fn relay_scopes(
+        self: &Arc<Self>,
+        store: Arc<PgOutboxStore<Published>>,
+        stop: &tokio_util::sync::CancellationToken,
+    ) {
+        let idle = Duration::from_millis(500);
+        // The probe flag is an attribute of this page, not a durable cursor coordinate.
+        let probes = std::sync::Mutex::new(std::collections::BTreeSet::new());
+        rss_mdm_work_page::run_grouped(
+            NonZeroUsize::new(crate::RELAY_CONCURRENCY as usize).unwrap(),
+            idle,
+            stop,
+            &tokio::sync::Notify::new(),
+            (
+                |(tenant, _)| tenant,
+                |after| {
+                    let probes = &probes;
+                    async move {
+                        let rows = self
+                            .work_scopes(after)
+                            .await
+                            .map_err(|_| eprintln!("telemetry relay discovery unconfirmed"))?;
+                        *probes.lock().expect("relay discovery") = rows
+                            .iter()
+                            .filter(|row| row.2)
+                            .map(|row| (row.0, row.1))
+                            .collect();
+                        Ok(rows
+                            .into_iter()
+                            .map(|(tenant, epoch, _)| (tenant, epoch))
+                            .collect::<Vec<_>>())
                     }
-                    let scopes = match self.work_scopes(after).await {
-                        Ok(scopes) => scopes,
-                        Err(_) => {
-                            eprintln!("telemetry scope discovery unconfirmed");
-                            Vec::new()
-                        }
-                    };
-                    if scopes.is_empty() {
-                        after = None;
-                        tokio::select! {()=relay_cancel.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_millis(500))=>{}}
-                        continue;
+                },
+            ),
+            |key| {
+                let probe = probes.lock().expect("relay discovery").contains(&key);
+                let owner = self.clone();
+                let store = store.clone();
+                let stop = stop.clone();
+                async move {
+                    if stop.is_cancelled() {
+                        return Ok(idle);
                     }
-                    for (tenant, epoch, probe) in scopes {
-                        if relay_cancel.is_cancelled() {
-                            return Ok(());
-                        }
-                        after = Some((tenant, epoch));
-                        let binding = self.work_binding(tenant, epoch)?;
-                        if probe && self.qualify_reader(binding).await.is_err() {
-                            eprintln!("telemetry selection qualification unconfirmed");
-                        }
-                        if relay_once(
-                            binding,
-                            store.as_ref(),
-                            &publisher,
-                            &SystemClock,
-                            &Diagnostics,
-                            NonZeroUsize::new(crate::RELAY_CONCURRENCY as usize)
-                                .expect("positive concurrency"),
-                        )
-                        .await
-                        .is_err()
-                        {
-                            eprintln!("telemetry relay unconfirmed");
-                        }
+                    let binding = owner.work_binding(key.0, key.1).map_err(|_| ())?;
+                    if probe && owner.qualify_reader(binding).await.is_err() {
+                        eprintln!("telemetry selection qualification unconfirmed");
                     }
+                    if stop.is_cancelled() {
+                        return Ok(idle);
+                    }
+                    let report = relay_once(
+                        binding,
+                        store.as_ref(),
+                        &PublisherService(owner),
+                        &SystemClock,
+                        &Diagnostics,
+                        NonZeroUsize::MIN,
+                    )
+                    .await
+                    .map_err(|_| eprintln!("telemetry relay unconfirmed"))?;
+                    Ok(if report.claimed() > 0 {
+                        Duration::ZERO
+                    } else {
+                        idle
+                    })
                 }
             },
-            async {
-                let mut after = None;
-                loop {
-                    if maintenance_cancel.is_cancelled() {
-                        return Ok::<(), Error>(());
+            |_| {},
+        )
+        .await;
+    }
+
+    async fn maintain_scopes(self: &Arc<Self>, stop: &tokio_util::sync::CancellationToken) {
+        let idle = Duration::from_secs(30);
+        rss_mdm_work_page::run_grouped(
+            NonZeroUsize::new(crate::MAINTENANCE_CONCURRENCY as usize).unwrap(),
+            idle,
+            stop,
+            &tokio::sync::Notify::new(),
+            (
+                |(tenant, _)| tenant,
+                |after| async move {
+                    self.work_scopes(after)
+                        .await
+                        .map(|rows| {
+                            rows.into_iter()
+                                .map(|(tenant, epoch, _)| (tenant, epoch))
+                                .collect::<Vec<_>>()
+                        })
+                        .map_err(|_| eprintln!("telemetry maintenance discovery unconfirmed"))
+                },
+            ),
+            |(tenant, epoch)| {
+                let owner = self.clone();
+                let stop = stop.clone();
+                async move {
+                    let binding = owner.work_binding(tenant, epoch).map_err(|_| ())?;
+                    if stop.is_cancelled() {
+                        return Ok(idle);
                     }
-                    let scopes = match self.work_scopes(after).await {
-                        Ok(scopes) => scopes,
-                        Err(_) => {
-                            eprintln!("telemetry maintenance discovery unconfirmed");
-                            Vec::new()
-                        }
-                    };
-                    if scopes.is_empty() {
-                        after = None;
-                        tokio::select! {()=maintenance_cancel.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_secs(30))=>{}}
-                        continue;
+                    let gaps = owner
+                        .prune_gaps(binding)
+                        .await
+                        .map_err(|_| eprintln!("telemetry gap maintenance unconfirmed"));
+                    if stop.is_cancelled() {
+                        return gaps.map(|()| idle);
                     }
-                    for (tenant, epoch, _) in scopes {
-                        if maintenance_cancel.is_cancelled() {
-                            return Ok(());
-                        }
-                        after = Some((tenant, epoch));
-                        let binding = self.work_binding(tenant, epoch)?;
-                        if self.prune_gaps(binding).await.is_err() {
-                            eprintln!("telemetry gap maintenance unconfirmed");
-                        }
-                        if self.retain(binding).await.is_err() {
-                            eprintln!("telemetry retention maintenance unconfirmed");
-                        }
-                        if self.retire_definitions(binding).await.is_err() {
-                            eprintln!("telemetry definition maintenance unconfirmed");
-                        }
+                    let retained = owner
+                        .retain(binding)
+                        .await
+                        .map_err(|_| eprintln!("telemetry retention unconfirmed"));
+                    if stop.is_cancelled() {
+                        return gaps.and(retained).map(|()| idle);
                     }
+                    let retired = owner
+                        .retire_definitions(binding)
+                        .await
+                        .map_err(|_| eprintln!("telemetry definition maintenance unconfirmed"));
+                    gaps.and(retained).and(retired).map(|()| idle)
                 }
-            }
-        );
-        relay.and(maintenance)
+            },
+            |_| {},
+        )
+        .await;
     }
 }
 

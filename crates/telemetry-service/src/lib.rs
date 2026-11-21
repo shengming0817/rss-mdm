@@ -349,10 +349,12 @@ async fn verify_owner(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
 
 pub mod profile_validation;
 
-/// Two relay deliveries and one sequential maintenance loop can use control storage.
+/// Process-wide slots for the telemetry relay.
 pub const RELAY_CONCURRENCY: u32 = 2;
-/// Relay consumers plus the sequential maintenance loop.
-pub const CONTROL_WORKERS: u32 = RELAY_CONCURRENCY + 1;
+/// Independent tenants admitted to periodic maintenance.
+pub const MAINTENANCE_CONCURRENCY: u32 = 2;
+/// Control storage used by both worker registrations.
+pub const CONTROL_WORKERS: u32 = RELAY_CONCURRENCY + MAINTENANCE_CONCURRENCY;
 
 mod snapshot;
 

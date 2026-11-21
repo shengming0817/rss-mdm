@@ -193,7 +193,7 @@ async fn collection_policy_change_and_worker_share_lock_order() -> Result<()> {
 #[ignore = "T2: real Script and Agent Collection claims overlap on one device"]
 async fn independent_run_recovery_overlaps_on_one_device() -> Result<()> {
     let h = Harness::open().await?;
-    assert!(h.a.resources.storage.worker_budget.available_permits() >= 2);
+    assert!(h.a.resources.storage.worker_budget.limit().get() >= 2);
     let (_, version) = h.policy("resource-coordination").await?;
     let first = h.run(version, "resource-coordination", now() + 300).await?;
     let second = h.run(version, "resource-coordination", now() + 300).await?;

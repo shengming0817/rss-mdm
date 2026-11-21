@@ -262,76 +262,83 @@ impl DeviceWork {
     ) -> rss_runtime::ManagedTaskRegistration {
         let (task, status) = rss_runtime::ManagedTask::prepare("device-associations", drain);
         let _ = self.owner.worker_status.set(status);
-        task.into_registration(move |stop|async move {
-            #[allow(clippy::disallowed_methods,reason="monotonic runner clock")]
-            let timer=DeviceTimer(tokio::time::Instant::now());
-            let force=tokio_util::sync::CancellationToken::new();
-            let control=Control::new(&timer,Duration::MAX,&force);
-            let mut after:Option<Uuid>=None;
-            let mut worked = false;
-            loop {
-                if stop.is_cancelled(){return Ok(())}
-                let discovered = tokio::select! { biased;
-                    () = stop.cancelled() => return Ok(()),
-                    result = tokio::time::timeout(Duration::from_secs(5), sqlx::query_scalar("SELECT tenant_id FROM mdm_devices.association_work_scopes($1)").bind(after).fetch_all(&self.read_pool)) =>
-                        result.map_err(|_| rss_reconcile::ErrorKind::Deadline)
-                            .and_then(|page| page.map_err(|error| crate::discovery::classify(&error))),
-                };
-                if stop.is_cancelled() { return Ok(()) }
-                match &discovered {
-                    Ok(_) => {
-                        if let Ok(mut failures) = self.owner.worker_failures.lock() { failures.remove("!discovery"); }
-                        self.owner.worker_observed.store(true, std::sync::atomic::Ordering::Release);
-                    }
-                    Err(kind) => self.owner.record_worker_failure("!discovery".into(), *kind),
-                }
-                let tenants: Vec<Uuid> = match discovered {
-                    Ok(page) => page,
-                    Err(rss_reconcile::ErrorKind::Transient | rss_reconcile::ErrorKind::Deadline) => {
-                        // A failed page is not empty. Keep its cursor and rate-limit retries even under wake storms.
-                        tokio::select! { biased;
-                            () = stop.cancelled() => return Ok(()),
-                            () = tokio::time::sleep(Duration::from_secs(5)) => {},
+        task.into_registration(move |stop| async move {
+            let service = self.as_ref();
+            let owner = self.clone();
+            let budget = rss_mdm_work_page::capacity::Capacity::new(
+                std::num::NonZeroUsize::new(policy.concurrency()).expect("validated policy"),
+            );
+            rss_mdm_work_page::reconcile::run(
+                &budget,
+                policy,
+                &stop,
+                &notify,
+                |after| async move {
+                    let discovered = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        sqlx::query_scalar(
+                            "SELECT tenant_id FROM mdm_devices.association_work_scopes($1)",
+                        )
+                        .bind(after)
+                        .fetch_all(&service.read_pool),
+                    )
+                    .await
+                    .map_err(|_| rss_reconcile::ErrorKind::Deadline)
+                    .and_then(|page| page.map_err(|error| crate::discovery::classify(&error)));
+                    match &discovered {
+                        Ok(_) => {
+                            if let Ok(mut failures) = service.owner.worker_failures.lock() {
+                                failures.remove("!discovery");
+                            }
+                            service
+                                .owner
+                                .worker_observed
+                                .store(true, std::sync::atomic::Ordering::Release);
                         }
-                        continue;
+                        Err(kind) => service
+                            .owner
+                            .record_worker_failure("!discovery".into(), *kind),
                     }
-                    Err(kind) => return Err(rss_runtime::ShutdownError::new(rss_reconcile::Error::new(kind))),
-                };
-                if tenants.is_empty(){after=None;
-                    if std::mem::take(&mut worked) { continue; }
-tokio::select!{biased;()=stop.cancelled()=>return Ok(()),()=notify.notified()=>{},()=tokio::time::sleep(Duration::from_secs(5))=>{}}continue}
-                for tenant in tenants {
-                    after=Some(tenant);
-                    let tenant=rss_request_context::TenantId::parse(&tenant.to_string()).map_err(rss_runtime::ShutdownError::new)?;
-                    let scope=Self::scope(tenant);
-                    let report = match rss_reconcile::run_batch(self.as_ref(),
-self.as_ref(),
-&scope,
-policy,
-&control,
-&stop,
-|event|{
-                        let (key,kind)=match &event {
-                            rss_reconcile::Observation::Deferred{..}=>return,
-                            rss_reconcile::Observation::AttemptFailed{target,error,..}=>(format!("{}:{}",target.scope().tenant(),target.entity()),error.kind()),
-                            rss_reconcile::Observation::ScanFailed{error,..}=>(format!("!scan:{tenant}"),error.kind()),
-                        };
-                        self.owner.record_worker_failure(key,kind);
-                    }).await {
-      Ok(report) => report,
-      Err(error) if control.check().is_ok() && matches!(error.kind(),
-          rss_reconcile::ErrorKind::Transient | rss_reconcile::ErrorKind::Deadline | rss_reconcile::ErrorKind::CommitUnknown) => {
-          // The observer retained this scope's failure. Advance the tenant cursor;
-          // an unconfirmed claim is not an empty or successfully drained batch.
-          continue;
-      }
-      Err(error) => return Err(rss_runtime::ShutdownError::new(error)),
-  };
-                    worked |= [report.converged, report.reobserve, report.deferred, report.retried,
-                        report.suspended, report.fenced, report.execution_failed]
-                        .into_iter().any(|count| count > 0);
-                }
-            }
+                    discovered
+                },
+                move |tenant, slots, stop| {
+                    let owner = owner.clone();
+                    async move {
+                        let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
+                            .map_err(|_| {
+                                rss_reconcile::Error::new(rss_reconcile::ErrorKind::InvalidInput)
+                            })?;
+                        let scope = Self::scope(tenant);
+                        rss_mdm_work_page::reconcile::batch(
+                            (owner.as_ref(), owner.as_ref()),
+                            slots,
+                            &scope,
+                            policy,
+                            &stop,
+                            |event| {
+                                let (key, kind) = match &event {
+                                    rss_reconcile::Observation::Deferred { .. } => return,
+                                    rss_reconcile::Observation::AttemptFailed {
+                                        target,
+                                        error,
+                                        ..
+                                    } => (
+                                        format!("{}:{}", target.scope().tenant(), target.entity()),
+                                        error.kind(),
+                                    ),
+                                    rss_reconcile::Observation::ScanFailed { error, .. } => {
+                                        (format!("!scan:{tenant}"), error.kind())
+                                    }
+                                };
+                                owner.owner.record_worker_failure(key, kind);
+                            },
+                        )
+                        .await
+                    }
+                },
+            )
+            .await
+            .map_err(rss_runtime::ShutdownError::new)
         })
     }
 }
@@ -598,19 +605,6 @@ impl DurableStore for DeviceWork {
             );
         }
         result
-    }
-}
-struct DeviceTimer(tokio::time::Instant);
-impl Timer for DeviceTimer {
-    #[allow(clippy::disallowed_methods, reason = "monotonic runner clock")]
-    fn now(&self) -> Duration {
-        self.0.elapsed()
-    }
-    async fn sleep_until(&self, at: Duration) {
-        match self.0.checked_add(at) {
-            Some(at) => tokio::time::sleep_until(at).await,
-            None => std::future::pending().await,
-        }
     }
 }
 

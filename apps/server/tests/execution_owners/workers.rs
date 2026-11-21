@@ -362,7 +362,7 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
         h.c.execution().storage(),
         h.a.scripts.clone(),
         store,
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        rss_mdm_work_page::capacity::Capacity::new(std::num::NonZeroUsize::new(1).unwrap()),
     )?;
     let held = pool.acquire().await?;
     let scope = script::wake::scope(h.c.tenant);
@@ -513,7 +513,7 @@ async fn recoverable_batch_scan_failure_does_not_stop_other_tenants() -> Result<
         h.c.execution().storage(),
         h.a.scripts.clone(),
         store,
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        rss_mdm_work_page::capacity::Capacity::new(std::num::NonZeroUsize::new(1).unwrap()),
     )?);
     let held = pool.acquire().await?;
     let mut stack = rss_runtime::ShutdownStack::try_new(
@@ -782,3 +782,170 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
     late.close().await?;
     h.close().await
 }
+
+#[derive(Clone, Copy)]
+enum TaskOwner {
+    Script,
+    Collection,
+    Enrollment,
+    Access,
+    Credentials(rss_mdm_install_support::StorageProfile),
+}
+impl TaskOwner {
+    fn table(self) -> &'static str {
+        use rss_mdm_install_support::StorageProfile::*;
+        match self {
+            Self::Script => "mdm_script.policy_recovery",
+            Self::Collection => "mdm_inventory.collection_policy_recovery",
+            Self::Enrollment => "mdm_registration_tasks.policy_recovery",
+            Self::Access => "rss_da.access_policy_recovery",
+            Self::Credentials(Mdm) => "mdm_recovery_tasks.policy_recovery",
+            Self::Credentials(Da) => "rss_da.credential_policy_recovery",
+        }
+    }
+    async fn seed(self, h: &Harness) -> Result<Uuid> {
+        let (id, _) = owner_policy(h, matches!(self, Self::Collection)).await?;
+        let runtime = h.a.resources.storage.runtime.clone();
+        let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+            runtime.clone(),
+            h.c.execution(),
+            script::transaction::deadline(),
+        )
+        .await?;
+        runtime.local_tx_with_context(h.c.execution(),script::transaction::deadline(),(&messaging,self),|(store,owner),tx| Box::pin(async move {
+            let result=match owner {
+                Self::Script => script::wake::policy_in(store,tx,id).await.map_err(|e| format!("{e:?}")),
+                Self::Collection => collection::wake::policy_in(store,tx,id).await.map_err(|e| format!("{e:?}")),
+                Self::Enrollment => rss_mdm_registration_service::enrollment::tasks::wake::policy_in(rss_mdm_install_support::StorageProfile::Mdm,store,tx,id).await.map_err(|e| format!("{e:?}")),
+                Self::Access => rss_mdm_device_access_postgres::device_access::execution::wake::policy_in(store,tx,id).await.map_err(|e| format!("{e:?}")),
+                Self::Credentials(profile) => rss_mdm_recovery_credentials::tasks::wake::policy_in(*profile,store,tx,id).await.map_err(|e| format!("{e:?}")),
+            };
+            result.map_err(|e| sqlx::Error::Protocol(e).into())
+        })).await.fold(Ok,Err,Err,Err,Err,Err)?;
+        Ok(id)
+    }
+}
+
+async fn locked_policy_admits_peer(owner: TaskOwner) -> Result<()> {
+    use crate::authority_t2_support::{blocked_attempt, wait_for_blocked_attempt};
+    let first = Harness::open().await?;
+    let second = Harness::open().await?;
+    let (a, b) = if first.c.tenant.to_string() < second.c.tenant.to_string() {
+        (&first, &second)
+    } else {
+        (&second, &first)
+    };
+    let slow = owner.seed(a).await?;
+    let mut blocker = a.c.operator.begin().await?;
+    // Table names come exclusively from the closed TaskOwner enum.
+    let lock = sqlx::AssertSqlSafe(format!(
+        "SELECT pg_backend_pid() FROM {} WHERE tenant_id=$1::uuid AND policy=$2 FOR UPDATE",
+        owner.table()
+    ));
+    let pid = sqlx::query_scalar(lock)
+        .bind(a.c.tenant.to_string())
+        .bind(slow)
+        .fetch_one(&mut *blocker)
+        .await?;
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let config = &a.a.resources.background;
+    let registration = match owner {
+        TaskOwner::Script => {
+            a.a.script_work
+                .clone()
+                .registration(config.tasks, config.tasks_drain, notify.clone())
+        }
+        TaskOwner::Collection => a.a.collection_work.clone().registration(
+            config.tasks,
+            config.tasks_drain,
+            notify.clone(),
+        ),
+        TaskOwner::Enrollment => a.a.registration.worker.clone().registration(
+            config.tasks,
+            config.tasks_drain,
+            notify.clone(),
+        ),
+        TaskOwner::Access => a.a.access_execution.worker.clone().registration(
+            config.tasks,
+            config.tasks_drain,
+            notify.clone(),
+        ),
+        TaskOwner::Credentials(profile) => {
+            let r = &a.a.resources;
+            let assembly = crate::assembly::credential_execution::assemble(
+                r.storage.discovery_pool.clone(),
+                &r.config,
+                &r.background,
+                r.storage.runtime.clone(),
+                a.c.execution(),
+                r.storage.audit.clone(),
+                r.protection.clone(),
+                crate::assembly::credential_owners_t2::protection(&a.c, "old")?,
+                r.source.clone(),
+                r.storage.reconcile.clone(),
+                r.storage.worker_budget.clone(),
+            )
+            .await?;
+            assembly
+                .worker
+                .into_iter()
+                .find(|w| w.profile() == profile)
+                .expect("configured credential owner")
+                .registration(config.tasks, config.tasks_drain, notify.clone())
+        }
+    };
+    let mut stack = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(25))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut launch = stack.startup()?.commit();
+    launch.stage_deferred_task_with_token(registration.critical());
+    launch.finish();
+    let check=tokio::time::timeout(Duration::from_secs(25),async {
+        let attempt=wait_for_blocked_attempt(&a.c.operator,pid,owner.table()).await?;
+        let peer=owner.seed(b).await?;
+        notify.notify_one();
+        let receipt=format!("SELECT input_consumed=input_revision AND runs_done FROM {} WHERE tenant_id=$1::uuid AND policy=$2",owner.table());
+        while !sqlx::query_scalar::<_,bool>(sqlx::AssertSqlSafe(receipt.as_str())).bind(b.c.tenant.to_string()).bind(peer).fetch_optional(&b.c.operator).await?.unwrap_or(false){
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        anyhow::ensure!(blocked_attempt(&a.c.operator,pid,owner.table()).await?==Some(attempt),"peer missed the blocked business attempt for {}",owner.table());
+        Ok::<_,anyhow::Error>(())
+    }).await;
+    blocker.rollback().await?;
+    anyhow::ensure!(stack.shutdown().join().await?.is_clean());
+    second.close().await?;
+    first.close().await?;
+    check?
+}
+macro_rules! recovery_isolation {
+    ($test:ident,$owner:expr) => {
+        #[tokio::test]
+        #[ignore = "T2: the registered recovery owner commits a late tenant's original receipt during a peer business lock"]
+        async fn $test() -> Result<()> { locked_policy_admits_peer($owner).await }
+    };
+}
+recovery_isolation!(
+    script_recovery_commits_during_a_peer_business_lock,
+    TaskOwner::Script
+);
+recovery_isolation!(
+    collection_recovery_commits_during_a_peer_business_lock,
+    TaskOwner::Collection
+);
+recovery_isolation!(
+    enrollment_recovery_commits_during_a_peer_business_lock,
+    TaskOwner::Enrollment
+);
+recovery_isolation!(
+    device_access_recovery_commits_during_a_peer_business_lock,
+    TaskOwner::Access
+);
+recovery_isolation!(
+    mdm_credentials_recovery_commits_during_a_peer_business_lock,
+    TaskOwner::Credentials(rss_mdm_install_support::StorageProfile::Mdm)
+);
+recovery_isolation!(
+    da_credentials_recovery_commits_during_a_peer_business_lock,
+    TaskOwner::Credentials(rss_mdm_install_support::StorageProfile::Da)
+);

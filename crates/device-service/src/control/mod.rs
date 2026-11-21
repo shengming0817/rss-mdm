@@ -61,7 +61,7 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 pub struct Service {
     pub(crate) read_pool: sqlx::PgPool,
     pub(crate) storage: rss_transactional_messaging::fence::StorageIdentity,
-    pub(crate) worker_budget: Arc<tokio::sync::Semaphore>,
+    pub(crate) worker_budget: Arc<rss_mdm_work_page::capacity::Capacity>,
     pub(crate) recovery_batch: rss_device_command::BatchLimit,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
     pub(crate) reconcile: rss_reconcile_postgres::PgStore,
@@ -73,7 +73,7 @@ pub mod capacity;
 pub struct Dependencies {
     pub read_pool: sqlx::PgPool,
     pub retirement: Arc<dyn rss_mdm_registration_service::Retirement>,
-    pub worker_budget: Arc<tokio::sync::Semaphore>,
+    pub worker_budget: Arc<rss_mdm_work_page::capacity::Capacity>,
     pub capacity: Arc<dyn capacity::DeviceCapacity>,
     pub task_cleanup: Arc<dyn crate::control::task_cleanup::TaskCleanup>,
     pub configuration_cleanup: Arc<dyn crate::control::configuration_cleanup::ConfigurationCleanup>,

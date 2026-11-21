@@ -1,7 +1,8 @@
 {
   "background": {
-    "device_concurrency": 4,
-    "database_connection_budget": 128,
+    "device_concurrency": 8,
+    "planning_concurrency": 8,
+    "database_connection_budget": 196,
     "scheduling": {
       "device": {
         "claim_batch_size": 64,

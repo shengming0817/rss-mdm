@@ -156,6 +156,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
         observation.store.clone(),
         projection.store.clone(),
         h.c.database.inventory(),
+        h.c.database.long_operations.clone(),
         h.c.audit.clone(),
         h.c.execution().storage(),
         h.c.execution().epoch(),

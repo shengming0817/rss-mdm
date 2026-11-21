@@ -278,7 +278,7 @@ pub(super) async fn exercise(
     let request = json!({"product":source,"installation":resources[0],"operationId":Uuid::new_v4(),"tenant":b,"expectedRevision":1,"action":rotation});
     // Interrupt after the provider changed the password and before PostgreSQL accepts the probe.
     let admin = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
+        .max_connections(2)
         .connect_with(primary.options()?)
         .await?;
     let service = running.telemetry.get().context("installed ingress")?;
@@ -326,6 +326,7 @@ pub(super) async fn exercise(
     .execute(&admin)
     .await?;
     b_data.published(service, awaiting).await?;
+    relay_isolation(&admin, service, a, &a_data, &b_data).await?;
     recovery::login(root, &resources[0], b, "b-password", false).await?;
     let mut different = request.clone();
     different["action"] = json!({"kind":"retire"});
@@ -437,4 +438,41 @@ pub(super) async fn exercise(
     recovery::retained(&primary, a, b, expired).await?;
     restarted.close().await?;
     Ok(())
+}
+
+async fn relay_isolation(
+    pool: &sqlx::PgPool,
+    service: &Arc<rss_mdm_telemetry_service::Service>,
+    tenant: Uuid,
+    a: &data::Upload,
+    b: &data::Upload,
+) -> Result<()> {
+    use crate::authority_t2_support::{blocked_attempt, wait_for_blocked_attempt};
+    // Only the first tenant's published receipt waits. Uploads and the other tenant use the ordinary service.
+    let ddl = sqlx::AssertSqlSafe(format!(
+        "CREATE FUNCTION public.wait_one_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(hashtextextended(NEW.tenant_id::text,3210)); RETURN NEW; END $$; CREATE TRIGGER wait_one_receipt BEFORE UPDATE OF delivery ON mdm_telemetry.batches FOR EACH ROW WHEN (NEW.delivery='published' AND NEW.tenant_id='{tenant}'::uuid) EXECUTE FUNCTION public.wait_one_receipt()"
+    ));
+    sqlx::raw_sql(ddl).execute(pool).await?;
+    let mut held = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,3210))")
+        .bind(tenant.to_string())
+        .execute(&mut *held)
+        .await?;
+    let pid = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *held)
+        .await?;
+    let accepted = a.more(service, 2).await?;
+    let update = "mdm_telemetry.batches";
+    let check = async {
+        let attempt = wait_for_blocked_attempt(pool, pid, update).await?;
+        let peer = b.more(service, 6).await?;
+        b.published(service, peer).await?;
+        ensure!(blocked_attempt(pool, pid, update).await? == Some(attempt));
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    held.rollback().await?;
+    sqlx::raw_sql("DROP TRIGGER wait_one_receipt ON mdm_telemetry.batches; DROP FUNCTION public.wait_one_receipt()").execute(pool).await?;
+    check?;
+    a.published(service, accepted).await
 }

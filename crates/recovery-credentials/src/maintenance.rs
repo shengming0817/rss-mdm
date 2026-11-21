@@ -20,7 +20,7 @@ pub struct Maintenance {
     audit_store: Arc<AuditStore>,
     protection: Arc<Protection>,
     copies: Option<Arc<dyn InputCopies>>,
-    budget: Arc<tokio::sync::Semaphore>,
+    budget: Arc<rss_mdm_work_page::capacity::Capacity>,
     retention: Option<Arc<dyn crate::eligibility::Retention>>,
 }
 impl Maintenance {
@@ -40,7 +40,7 @@ impl Maintenance {
         audit_store: Arc<AuditStore>,
         protection: Arc<Protection>,
         copies: Option<Arc<dyn InputCopies>>,
-        budget: Arc<tokio::sync::Semaphore>,
+        budget: Arc<rss_mdm_work_page::capacity::Capacity>,
         retention: Option<Arc<dyn crate::eligibility::Retention>>,
     ) -> Self {
         Self {
@@ -101,31 +101,48 @@ impl Maintenance {
             Duration::from_secs(8),
         );
         task.into_registration(move |stop| async move {
-            let mut after = None;
-            loop {
-                if stop.is_cancelled() { return Ok(()); }
-                let scopes: Vec<Uuid> = match sqlx::query_scalar(crate::storage_profile::sql(self.profile).maintenance_scopes)
-                    .bind(after).fetch_all(&self.read_pool).await {
-                    Ok(scopes) => scopes,
-                    Err(_) => {eprintln!("recovery_maintenance_discovery_failed");Vec::new()}
-                };
-                if scopes.is_empty() {
-                    after=None;
-                    tokio::select!{()=stop.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_secs(60))=>{}}
-                    continue;
-                }
-                for tenant in scopes {
-                    if stop.is_cancelled(){return Ok(())}
-                    after=Some(tenant);
-                    let tenant=TenantId::parse(&tenant.to_string()).map_err(rss_runtime::ShutdownError::new)?;
-                    // Expiry and key maintenance are new operations over existing material;
-                    // unfinished delivery work keeps its separately persisted original epoch.
-                    let execution=rss_transactional_messaging::fence::ExecutionBinding::new(self.storage,tenant,self.epoch);
-                    if let Ok(_permit)=self.budget.try_acquire() && let Err(error)=self.run_once(execution).await {
-                        eprintln!("{}",serde_json::json!({"event":"recovery_credential_maintenance_failed","reason":error.to_string()}));
+            let idle = Duration::from_secs(60);
+            rss_mdm_work_page::run(
+                self.budget.limit(),
+                idle,
+                &stop,
+                &tokio::sync::Notify::new(),
+                |after| {
+                    let owner = self.clone();
+                    async move {
+                        sqlx::query_scalar(
+                            crate::storage_profile::sql(owner.profile).maintenance_scopes,
+                        )
+                        .bind(after)
+                        .fetch_all(&owner.read_pool)
+                        .await
+                        .map_err(|_| eprintln!("recovery maintenance discovery failed"))
                     }
-                }
-            }
+                },
+                |id: Uuid| {
+                    let owner = self.clone();
+                    let stop = stop.clone();
+                    async move {
+                        let slots = owner.budget.acquire(id, 1, &stop).await;
+                        if slots.is_empty() {
+                            return Ok(idle);
+                        }
+                        let tenant = TenantId::parse(&id.to_string()).map_err(|_| ())?;
+                        let execution = rss_transactional_messaging::fence::ExecutionBinding::new(
+                            owner.storage,
+                            tenant,
+                            owner.epoch,
+                        );
+                        owner.run_once(execution).await.map_err(|error| {
+                            eprintln!("recovery credential maintenance failed: {error}")
+                        })?;
+                        Ok(idle)
+                    }
+                },
+                |_| {},
+            )
+            .await;
+            Ok(())
         })
     }
 

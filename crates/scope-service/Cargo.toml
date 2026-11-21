@@ -7,6 +7,7 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
+rss-mdm-work-page.workspace = true
 rss-mdm-recovery-observation.workspace = true
 rss-mdm-agent-wire.workspace = true
 rss-mdm-install-support.workspace = true

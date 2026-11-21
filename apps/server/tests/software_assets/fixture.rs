@@ -29,6 +29,7 @@ impl Fixture {
             observation.store.clone(),
             projection.store.clone(),
             c.database.inventory(),
+            c.database.long_operations.clone(),
             c.audit.clone(),
             c.execution().storage(),
             c.execution().epoch(),

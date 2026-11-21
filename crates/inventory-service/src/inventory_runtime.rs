@@ -330,6 +330,11 @@ pub enum WorkerFailure {
     ProjectionRun,
 }
 
+type ProjectionHandles = (
+    Arc<PgSource<Clock>>,
+    rss_projection_postgres::PgProjection<rss_mdm_inventory_postgres::Inventory<Clock>>,
+);
+
 pub struct InventoryRuntime {
     observation: Arc<Observation<Clock>>,
     projection: Arc<Projection>,
@@ -339,7 +344,10 @@ pub struct InventoryRuntime {
 
     clock: Clock,
     pub readiness: Arc<Readiness>,
-    latest_projection: std::sync::Mutex<Option<diagnostics::ProjectionObservation>>,
+    long_operations: Arc<tokio::sync::Semaphore>,
+    projections: std::sync::Mutex<std::collections::BTreeMap<uuid::Uuid, Arc<ProjectionHandles>>>,
+    latest_projection:
+        std::sync::Mutex<std::collections::HashMap<TenantId, diagnostics::ProjectionObservation>>,
 }
 impl InventoryRuntime {
     #[allow(
@@ -350,6 +358,7 @@ impl InventoryRuntime {
         observation: Arc<Observation<Clock>>,
         projection: Arc<Projection>,
         access: Arc<Store>,
+        long_operations: Arc<tokio::sync::Semaphore>,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         storage: StorageIdentity,
         expected_epoch: Epoch,
@@ -365,7 +374,9 @@ impl InventoryRuntime {
 
             clock,
             readiness,
-            latest_projection: std::sync::Mutex::new(None),
+            long_operations,
+            projections: Default::default(),
+            latest_projection: Default::default(),
         }
     }
     pub fn registration(
@@ -503,161 +514,166 @@ impl InventoryRuntime {
         Ok(true)
     }
     async fn work(
-        &self,
+        self: &Arc<Self>,
         token: &CancellationToken,
         notify: &tokio::sync::Notify,
     ) -> Result<(), WorkerFailure> {
-        // These are RSS claim handles over the same two stores, not tenant runtimes.
-        let mut projections = std::collections::BTreeMap::new();
-        let mut after = None;
-        let mut pass_ready = true;
-        loop {
-            if token.is_cancelled() {
-                return Ok(());
-            }
-            let scopes = match self.delivery.scopes(after).await {
-                Ok(scopes) => scopes,
-                Err(_) => {
-                    self.readiness.initialized.store(false, Ordering::Release);
-                    crate::wake::wait(notify, token, None).await;
-                    continue;
-                }
-            };
-            if scopes.is_empty() {
-                after = None;
-                self.readiness
-                    .initialized
-                    .store(pass_ready, Ordering::Release);
-                pass_ready = true;
-                crate::wake::wait(notify, token, None).await;
-                continue;
-            }
-            for (tenant, epoch) in scopes {
-                if token.is_cancelled() {
-                    return Ok(());
-                }
-                after = Some((tenant, epoch));
-                let tenant_id = TenantId::parse(&tenant.to_string())
-                    .map_err(|_| WorkerFailure::ReportAuthority)?;
-                let original = ExecutionBinding::new(
-                    self.storage,
-                    tenant_id,
-                    Epoch::new(epoch).map_err(|_| WorkerFailure::ReportAuthority)?,
-                );
-                let delivered = async {
-                    self.delivery
-                        .expire_timed(original)
+        let idle = Duration::from_secs(5);
+        rss_mdm_work_page::run_grouped(
+            std::num::NonZeroUsize::new(2).unwrap(),
+            idle,
+            token,
+            notify,
+            (
+                |(tenant, _)| tenant,
+                |after| async move { self.delivery.scopes(after).await.map_err(|_| ()) },
+            ),
+            |(tenant, epoch)| {
+                let owner = self.clone();
+                let stop = token.clone();
+                async move {
+                    let _slot = tokio::select! { biased;
+                        () = stop.cancelled() => return Ok(idle),
+                        slot = owner.long_operations.acquire() => slot.expect("live access pool"),
+                    };
+                    owner
+                        .work_scope(tenant, epoch, &stop)
                         .await
-                        .map_err(|_| WorkerFailure::PendingReports)?;
-                    let deadline = self.clock.deadline();
-                    let reports = self
-                        .delivery
-                        .pending_reports(
-                            original,
-                            self.clock.policy.delivery,
-                            self.clock.policy.delivery_bytes,
-                        )
-                        .await
-                        .map_err(|_| WorkerFailure::PendingReports)?;
-                    self.deliver_pending(reports, deadline, token).await
+                        .map_err(|phase| {
+                            eprintln!("inventory work for {tenant} deferred: {phase}")
+                        })?;
+                    Ok(idle)
                 }
-                .await;
-                if let Err(phase) = delivered {
-                    pass_ready = false;
-                    eprintln!(
-                        "{}",
-                        serde_json::json!({"event":"mdm_inventory_delivery_deferred","tenant":tenant,"phase":phase})
-                    );
-                }
-                if token.is_cancelled() {
-                    return Ok(());
-                }
-                // A new projection operation may consume already committed facts from an older
-                // execution. Its authorization does not rebind any unfinished collection run.
-                let current = ExecutionBinding::new(self.storage, tenant_id, self.expected_epoch);
-                let Ok(guard) = self.delivery.execution(current).await else {
-                    pass_ready = false;
-                    continue;
-                };
-                if let std::collections::btree_map::Entry::Vacant(entry) = projections.entry(tenant)
-                {
-                    let handles = self.projection_handles(current, token).await;
-                    match handles {
-                        Ok(handles) => {
-                            entry.insert(handles);
-                        }
-                        Err(phase) => {
-                            pass_ready = false;
-                            eprintln!(
-                                "{}",
-                                serde_json::json!({"event":"mdm_inventory_projection_deferred","tenant":tenant,"phase":phase})
-                            );
-                            continue;
-                        }
-                    }
-                }
-                let (source, execution) = projections.get(&tenant).expect("initialized projection");
-                let deadline = self.clock.deadline();
-                let control = Control::new(
-                    &self.clock,
-                    deadline
-                        .instant()
-                        .saturating_duration_since(self.clock.origin),
-                    token,
-                );
-                let run = rss_projection::run(
-                    source.as_ref(),
-                    execution,
-                    &control,
-                    self.clock.policy.run,
-                );
-                {
-                    let mut latest = self
-                        .latest_projection
-                        .lock()
-                        .expect("projection observation");
-                    let last_completed_at = latest
-                        .as_ref()
-                        .filter(|p| p.tenant == tenant_id)
-                        .and_then(|p| p.last_completed_at);
-                    *latest = Some(diagnostics::ProjectionObservation {
-                        tenant: tenant_id,
-                        run: run.observation(),
-                        started_at: self.clock.now.now(),
-                        last_completed_at,
-                    });
-                }
-                let result = run.await.into_result();
-                if let Some(latest) = self
-                    .latest_projection
+            },
+            |failed| self.readiness.initialized.store(!failed, Ordering::Release),
+        )
+        .await;
+        Ok(())
+    }
+
+    async fn work_scope(
+        &self,
+        tenant: uuid::Uuid,
+        epoch: i64,
+        token: &CancellationToken,
+    ) -> Result<(), WorkerFailure> {
+        let tenant_id =
+            TenantId::parse(&tenant.to_string()).map_err(|_| WorkerFailure::ReportAuthority)?;
+        let original = ExecutionBinding::new(
+            self.storage,
+            tenant_id,
+            Epoch::new(epoch).map_err(|_| WorkerFailure::ReportAuthority)?,
+        );
+        let delivered = async {
+            self.delivery
+                .expire_timed(original)
+                .await
+                .map_err(|_| WorkerFailure::PendingReports)?;
+            let deadline = self.clock.deadline();
+            let reports = self
+                .delivery
+                .pending_reports(
+                    original,
+                    self.clock.policy.delivery,
+                    self.clock.policy.delivery_bytes,
+                )
+                .await
+                .map_err(|_| WorkerFailure::PendingReports)?;
+            self.deliver_pending(reports, deadline, token).await
+        }
+        .await;
+        if let Err(phase) = delivered {
+            eprintln!(
+                "{}",
+                serde_json::json!({"event":"mdm_inventory_delivery_deferred","tenant":tenant,"phase":phase})
+            );
+        }
+        if token.is_cancelled() {
+            return Ok(());
+        }
+        // A new projection operation may consume already committed facts from an older
+        // execution. Its authorization does not rebind any unfinished collection run.
+        let current = ExecutionBinding::new(self.storage, tenant_id, self.expected_epoch);
+        let guard = self
+            .delivery
+            .execution(current)
+            .await
+            .map_err(|_| WorkerFailure::ReportAuthority)?;
+        let drain = CancellationToken::new();
+        // Discovery groups all epochs of a tenant together. Keep the first claim
+        // for the lifetime of this registration, including after a fence.
+        let cached = self
+            .projections
+            .lock()
+            .expect("projection handles")
+            .get(&tenant)
+            .cloned();
+        let handles = match cached {
+            Some(handles) => handles,
+            None => {
+                let handles = Arc::new(self.projection_handles(current, &drain).await?);
+                self.projections
                     .lock()
-                    .expect("projection observation")
-                    .as_mut()
-                {
-                    latest.last_completed_at = Some(self.clock.now.now());
-                }
-                // The source guard also covers duplicate-event checkpoint advancement, which
-                // intentionally skips the application effect. It has no writes to commit.
-                let _ = guard.rollback().await;
-                match result {
-                    Ok(report) if report.applied > 0 => eprintln!(
-                        "{}",
-                        serde_json::json!({"event":"mdm_inventory_progress","tenant":tenant,"applied":report.applied})
-                    ),
-                    Ok(_) => {}
-                    Err(error) => {
-                        pass_ready = false;
-                        // Keep the claim, including when fenced. Retaking every pass would
-                        // repeatedly evict another running process and lose ownership semantics.
-                        self.readiness.initialized.store(false, Ordering::Release);
-                        eprintln!(
-                            "{}",
-                            serde_json::json!({"event":"mdm_projection_deferred","tenant":tenant,"kind":format!("{:?}",error.kind()),"sqlstate":error.diagnostic().and_then(|d|d.sqlstate())})
-                        );
-                    }
-                }
+                    .expect("projection handles")
+                    .insert(tenant, handles.clone());
+                handles
+            }
+        };
+        let (source, execution) = handles.as_ref();
+        let deadline = self.clock.deadline();
+        let control = Control::new(
+            &self.clock,
+            deadline
+                .instant()
+                .saturating_duration_since(self.clock.origin),
+            &drain,
+        );
+        let run = rss_projection::run(source.as_ref(), execution, &control, self.clock.policy.run);
+        {
+            let mut latest = self
+                .latest_projection
+                .lock()
+                .expect("projection observation");
+            let last_completed_at = latest.get(&tenant_id).and_then(|p| p.last_completed_at);
+            latest.insert(
+                tenant_id,
+                diagnostics::ProjectionObservation {
+                    run: run.observation(),
+                    started_at: self.clock.now.now(),
+                    last_completed_at,
+                },
+            );
+        }
+        let result = run.await.into_result();
+        if let Some(latest) = self
+            .latest_projection
+            .lock()
+            .expect("projection observation")
+            .get_mut(&tenant_id)
+        {
+            latest.last_completed_at = Some(self.clock.now.now());
+        }
+        // The source guard also covers duplicate-event checkpoint advancement, which
+        // intentionally skips the application effect. It has no writes to commit.
+        let _ = guard.rollback().await;
+        match result {
+            Ok(report) if report.applied > 0 => eprintln!(
+                "{}",
+                serde_json::json!({"event":"mdm_inventory_progress","tenant":tenant,"applied":report.applied})
+            ),
+            Ok(_) => {}
+            Err(error) => {
+                // Keep the claim, including when fenced. Retaking every pass would
+                // repeatedly evict another running process and lose ownership semantics.
+                self.readiness.initialized.store(false, Ordering::Release);
+                eprintln!(
+                    "{}",
+                    serde_json::json!({"event":"mdm_projection_deferred","tenant":tenant,"kind":format!("{:?}",error.kind()),"sqlstate":error.diagnostic().and_then(|d|d.sqlstate())})
+                );
+                return Err(WorkerFailure::ProjectionRun);
             }
         }
+        delivered.map(|_| ())
     }
     async fn projection_handles(
         &self,
