@@ -104,8 +104,14 @@ impl Harness {
             scope,
         })
     }
-    async fn endpoint(c: &Context, trust: &rss_mdm_agent_wire::task_trust::Trust)
-        -> Result<(rss_mdm_registration_service::DevicePrincipal, rss_mdm_inventory_service::objects::DeviceObject, Uuid)> {
+    async fn endpoint(
+        c: &Context,
+        trust: &rss_mdm_agent_wire::task_trust::Trust,
+    ) -> Result<(
+        rss_mdm_registration_service::DevicePrincipal,
+        rss_mdm_inventory_service::objects::DeviceObject,
+        Uuid,
+    )> {
         let (device, grant) = material::seed_registration(c).await?;
         let caps = vec![
             w::Capability::InventoryCollectionV1,
@@ -138,7 +144,12 @@ impl Harness {
     async fn policy_as(&self, resource: &str, run_as: &str) -> Result<(Uuid, Uuid)> {
         self.policy_in_scope(resource, run_as, self.scope).await
     }
-    async fn policy_in_scope(&self, resource: &str, run_as: &str, scope: Uuid) -> Result<(Uuid, Uuid)> {
+    async fn policy_in_scope(
+        &self,
+        resource: &str,
+        run_as: &str,
+        scope: Uuid,
+    ) -> Result<(Uuid, Uuid)> {
         use sha2::{Digest, Sha256};
         let policy = Uuid::new_v4();
         let version = Uuid::new_v4();
@@ -225,7 +236,12 @@ impl Harness {
     async fn admit(&self, version: Uuid, id: Uuid) -> Result<w::PolicyEventDecision> {
         self.admit_on(version, id, *self.p.device()).await
     }
-    async fn admit_on(&self, version: Uuid, id: Uuid, device: rss_mdm_agent_wire::DeviceId) -> Result<w::PolicyEventDecision> {
+    async fn admit_on(
+        &self,
+        version: Uuid,
+        id: Uuid,
+        device: rss_mdm_agent_wire::DeviceId,
+    ) -> Result<w::PolicyEventDecision> {
         let transactions = script::Transactions::bind(
             self.a.resources.storage.runtime.clone(),
             self.c.execution(),

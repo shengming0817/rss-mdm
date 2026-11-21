@@ -73,7 +73,7 @@ pub async fn serve(
                         _,
                         _,
                         runtime,
-                        protocol_runtime, windows_business, _, task_registrations,
+                        protocol_runtime, windows_business, _, (task_registrations, command_relay),
                         automation,
                         group_work,
                         scope_work,
@@ -631,24 +631,23 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                     .clone()
                                     .registration(background.tasks, background.tasks_drain, signals.handle(Work::EnrollmentRecovery))
                                     .critical(),
-                                crate::assembly::task_relay::registration(
-                                    automation.work.clone(),
-                                    control.clone(),
-                                    script_work.clone(),
-                                    collection_work.clone(),
-                                    software_owner.service.clone(),
-                                    registration_owner.native.clone(),
-                                    registration_owner.worker.clone(),
-                                    access_execution.worker.clone(),
-                                    credential_execution.as_ref().map(|v| v.worker.clone()).unwrap_or_default(),
-                                    credential_execution.as_ref().map(|v| v.native.clone()),
-                                    background.commands.concurrency(),
-                                    probe.storage(),
-                                    signals.handle(Work::CommandRelay),
-                                )
-                                .critical(),
                             ]);
-                            tasks
+                            let relay = crate::assembly::task_relay::registration(
+                                automation.work.clone(),
+                                control.clone(),
+                                script_work.clone(),
+                                collection_work.clone(),
+                                software_owner.service.clone(),
+                                registration_owner.native.clone(),
+                                registration_owner.worker.clone(),
+                                access_execution.worker.clone(),
+                                credential_execution.as_ref().map(|v| v.worker.clone()).unwrap_or_default(),
+                                credential_execution.as_ref().map(|v| v.native.clone()),
+                                background.commands.concurrency(),
+                                probe.storage(),
+                                signals.handle(Work::CommandRelay),
+                            ).critical();
+                            (tasks, relay)
                         };
                         let windows_business = Arc::new(crate::assembly::windows_business::WindowsBusiness(
                             control.clone(),
@@ -795,8 +794,9 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                     );
                     launch.stage_deferred_task_with_token(archive.registration().critical());
                     for task in task_registrations { launch.stage_deferred_task_with_token(task); }
-                    launch.stage_deferred_task_with_token(scope_delivery.registration(signals.handle(crate::worker_wake::Work::GroupEvents)).critical());
-                    launch.stage_deferred_task_with_token(asset_delivery.registration(signals.handle(crate::worker_wake::Work::AssetInputs)).critical());
+                    launch.stage_task_with_token(command_relay);
+                    launch.stage_task_with_token(scope_delivery.registration(signals.handle(crate::worker_wake::Work::GroupEvents)).critical());
+                    launch.stage_task_with_token(asset_delivery.registration(signals.handle(crate::worker_wake::Work::AssetInputs)).critical());
                     launch.stage_deferred_task_with_token(
                         query_work
                             .registration(background.inventory, background.planning_drain, signals.handle(crate::worker_wake::Work::AssetQueries))

@@ -187,7 +187,10 @@ impl Worker {
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
         limit: std::num::NonZeroUsize,
-    ) -> std::result::Result<Vec<impl Future<Output = std::result::Result<(), Error>> + Send + '_>, Error> {
+    ) -> std::result::Result<
+        Vec<impl Future<Output = std::result::Result<(), Error>> + Send + '_>,
+        Error,
+    > {
         if !self.service.accepts_new_work() {
             return Ok(Vec::new());
         }
@@ -200,7 +203,10 @@ impl Worker {
             )
             .await
             .map_err(|_| Error::Unavailable)?;
-        Ok(claims.into_iter().map(|claim| self.relay_claim(binding, claim)).collect())
+        Ok(claims
+            .into_iter()
+            .map(|claim| self.relay_claim(binding, claim))
+            .collect())
     }
     async fn relay_claim(
         &self,

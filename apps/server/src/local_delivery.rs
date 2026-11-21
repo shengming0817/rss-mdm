@@ -1,7 +1,7 @@
 //! Bounded lifecycle for the two fixed product local projection lanes.
+use crate::delivery_capacity::{Capacity, PROJECTION_SLOTS, Slot};
 use crate::{Error, Failure};
 use futures::{Stream, StreamExt};
-use crate::delivery_capacity::{Capacity, Slot, PROJECTION_SLOTS};
 use rss_transactional_messaging::transaction::IngressValidator;
 use rss_transactional_messaging::{
     fence::ExecutionBinding,
@@ -194,13 +194,15 @@ where
         if let Some(upper) = batch.size_hint().1 {
             slots.truncate(upper);
         }
-        let outcomes = batch.map(|item| {
-            let slot = slots.pop().expect("claimed head has an execution slot");
-            async move {
-                let _slot = slot;
-                self.outcome(item, cancel).await
-            }
-        }).buffer_unordered(PROJECTION_SLOTS);
+        let outcomes = batch
+            .map(|item| {
+                let slot = slots.pop().expect("claimed head has an execution slot");
+                async move {
+                    let _slot = slot;
+                    self.outcome(item, cancel).await
+                }
+            })
+            .buffer_unordered(PROJECTION_SLOTS);
         tokio::pin!(outcomes);
         let mut progress = 0;
         let mut failure = None;
@@ -220,42 +222,45 @@ where
         item: rss_transactional_messaging_postgres::PgProjectionItem,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<bool, PollFailure> {
-            match item.into_outcome() {
-                Ok(PgProjectionOutcome::Attempt(attempt)) => {
-                    let (outcome, recovery) = attempt.into_parts();
-                    use rss_transactional_messaging::observability::TransactionalMessagingTransactionStatus as Status;
-                    match outcome.status() {
-                        Status::Committed => Ok(true),
-                        Status::CommitUnknown | Status::RollbackFailed => match read_while_running(
-                            cancel,
-                            self.projection.resolve(&recovery, deadline()),
-                        )
-                        .await
-                        {
-                            None => Ok(false),
-                            Some(result) => result
-                                .ok()
-                                .flatten()
-                                .map(|_| true)
-                                .ok_or(PollFailure::Unavailable),
-                        },
-                        _ => Err(PollFailure::Unavailable),
-                    }
+        match item.into_outcome() {
+            Ok(PgProjectionOutcome::Attempt(attempt)) => {
+                let (outcome, recovery) = attempt.into_parts();
+                use rss_transactional_messaging::observability::TransactionalMessagingTransactionStatus as Status;
+                match outcome.status() {
+                    Status::Committed => Ok(true),
+                    Status::CommitUnknown | Status::RollbackFailed => match read_while_running(
+                        cancel,
+                        self.projection.resolve(&recovery, deadline()),
+                    )
+                    .await
+                    {
+                        None => Ok(false),
+                        Some(result) => result
+                            .ok()
+                            .flatten()
+                            .map(|_| true)
+                            .ok_or(PollFailure::Unavailable),
+                    },
+                    _ => Err(PollFailure::Unavailable),
                 }
-                Ok(PgProjectionOutcome::InProgress) => Ok(false),
-                Ok(PgProjectionOutcome::DeliveryExpired | PgProjectionOutcome::Rejected(_)) => {
-                    Err(PollFailure::RecoveryRequired)
-                }
-                Err(_) => Err(PollFailure::Unavailable),
             }
+            Ok(PgProjectionOutcome::InProgress) => Ok(false),
+            Ok(PgProjectionOutcome::DeliveryExpired | PgProjectionOutcome::Rejected(_)) => {
+                Err(PollFailure::RecoveryRequired)
+            }
+            Err(_) => Err(PollFailure::Unavailable),
+        }
     }
 
     async fn batch(
         &self,
         key: (uuid::Uuid, i64),
         stop: &tokio_util::sync::CancellationToken,
-        slots: Vec<Slot>,
+        budget: &Arc<Capacity>,
     ) -> Result<Duration, PollFailure> {
+        let Some(slots) = budget.acquire(self.name, key.0, stop).await else {
+            return Ok(Duration::ZERO);
+        };
         let tenant = rss_request_context::TenantId::parse(&key.0.to_string())
             .map_err(|_| PollFailure::Unavailable)?;
         let epoch = rss_transactional_messaging::fence::Epoch::new(key.1)
@@ -264,6 +269,10 @@ where
         if self.poll(binding, stop, slots).await? > 0 {
             return Ok(Duration::ZERO);
         }
+        // The advisory read uses this same pool. Keep its renewal connection available.
+        let Some(_slots) = budget.acquire(self.name, key.0, stop).await else {
+            return Ok(Duration::ZERO);
+        };
         let Some(wake) =
             read_while_running(stop, self.projection.next_wakeup(binding, deadline())).await
         else {
@@ -289,28 +298,30 @@ where
         task.into_registration(move |stop| async move {
             let budget = Capacity::projection();
             rss_mdm_work_page::run_partitioned(
-                budget.total(), budget.batches_per_binding(),
+                (budget.total(), budget.batches_per_binding()),
                 Duration::from_secs(60),
                 &stop,
                 &notify,
-                (|key: (uuid::Uuid, i64)| key.0, |after: Option<(uuid::Uuid, i64)>| {
-                    let lane = &self;
-                    async move {
-                        sqlx::query_as(lane.scopes)
-                            .bind(after.map(|key| key.0))
-                            .bind(after.map(|key| key.1))
-                            .fetch_all(&lane.read_pool)
-                            .await
-                            .map_err(|_| eprintln!("{} discovery failed", lane.name))
-                    }
-                }),
+                (
+                    |key: (uuid::Uuid, i64)| key.0,
+                    |after: Option<(uuid::Uuid, i64)>| {
+                        let lane = &self;
+                        async move {
+                            sqlx::query_as(lane.scopes)
+                                .bind(after.map(|key| key.0))
+                                .bind(after.map(|key| key.1))
+                                .fetch_all(&lane.read_pool)
+                                .await
+                                .map_err(|_| eprintln!("{} discovery failed", lane.name))
+                        }
+                    },
+                ),
                 |key| {
                     let lane = self.clone();
                     let budget = budget.clone();
                     let cancel = stop.clone();
                     async move {
-                        let Some(slots) = budget.acquire(lane.name, key.0, &cancel).await else { return Ok(Duration::ZERO) };
-                        lane.batch(key, &cancel, slots).await.map_err(|error| {
+                        lane.batch(key, &cancel, &budget).await.map_err(|error| {
                             let event = serde_json::json!({
                                 "event":"local_delivery_unavailable", "worker":lane.name,
                                 "tenant":key.0, "epoch":key.1,

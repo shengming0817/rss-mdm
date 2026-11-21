@@ -818,11 +818,16 @@ impl PolicyWork {
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
         limit: std::num::NonZeroUsize,
-    ) -> std::result::Result<Vec<impl Future<Output = std::result::Result<(), Error>> + Send + '_>, Error> {
+    ) -> std::result::Result<
+        Vec<impl Future<Output = std::result::Result<(), Error>> + Send + '_>,
+        Error,
+    > {
         let Some(configuration) = self.service.configuration.as_ref() else {
             return Ok(Vec::new());
         };
-        configuration.claim_relay(binding, limit, Duration::from_secs(20)).await
+        configuration
+            .claim_relay(binding, limit, Duration::from_secs(20))
+            .await
     }
     pub fn observe_relay(
         &self,

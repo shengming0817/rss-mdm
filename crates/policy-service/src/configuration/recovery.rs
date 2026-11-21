@@ -231,28 +231,31 @@ impl Transactions {
         binding: rss_transactional_messaging::fence::ExecutionBinding,
         limit: std::num::NonZeroUsize,
         budget: std::time::Duration,
-    ) -> std::result::Result<Vec<impl Future<Output = std::result::Result<(), Error>> + Send + '_>, Error> {
+    ) -> std::result::Result<
+        Vec<impl Future<Output = std::result::Result<(), Error>> + Send + '_>,
+        Error,
+    > {
         let timer = Arc::new(crate::clock::Timer::new());
         let claims = self
             .outbox
             .claim_partition_heads(
                 binding,
                 limit,
-                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                    budget,
-                ),
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),
             )
             .await
             .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
-        Ok(claims.into_iter().map(|claim| {
-            let timer = timer.clone();
-            async move {
-                let cancel = tokio_util::sync::CancellationToken::new();
-                let remaining = budget.saturating_sub(rss_reconcile::Timer::now(timer.as_ref()));
-                let control = rss_reconcile::Control::new(timer.as_ref(), remaining, &cancel);
-                self.relay_claim(binding, claim, &control).await
-            }
-        }).collect())
+        Ok(claims
+            .into_iter()
+            .map(|claim| {
+                let timer = timer.clone();
+                async move {
+                    let cancel = tokio_util::sync::CancellationToken::new();
+                    let control = rss_reconcile::Control::new(timer.as_ref(), budget, &cancel);
+                    self.relay_claim(binding, claim, &control).await
+                }
+            })
+            .collect())
     }
     async fn relay_claim<T: rss_reconcile::Timer>(
         &self,

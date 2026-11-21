@@ -280,7 +280,11 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     );
     step(&h, retirement).await?;
     assert_eq!(state(&h, retirement).await?.0, "unenroll");
-    for claim in h.a.service.claim_relay(h.c.execution(), std::num::NonZeroUsize::new(2).unwrap()).await? {
+    for claim in
+        h.a.service
+            .claim_relay(h.c.execution(), std::num::NonZeroUsize::new(2).unwrap())
+            .await?
+    {
         claim.await?;
     }
     let offer = h.claim().await?;

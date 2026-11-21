@@ -238,9 +238,19 @@ async fn reconcile(
         audit.finalize(None);
         crate::policy_configuration_t2::step(worker, c.tenant, device).await?;
         loop {
-            let batch = cfg.claim_relay(c.execution(), std::num::NonZeroUsize::new(2).unwrap(), Duration::from_secs(10)).await?;
-            if batch.is_empty() { break; }
-            for claim in batch { claim.await?; }
+            let batch = cfg
+                .claim_relay(
+                    c.execution(),
+                    std::num::NonZeroUsize::new(2).unwrap(),
+                    Duration::from_secs(10),
+                )
+                .await?;
+            if batch.is_empty() {
+                break;
+            }
+            for claim in batch {
+                claim.await?;
+            }
         }
     }
     Ok(())

@@ -52,8 +52,7 @@ pub async fn run<K, P, F>(
 /// item capacity while that batch still owns a slow head. The database
 /// cursor remains the owner's key; positions exist only inside this process.
 pub async fn run_partitioned<K, G, P, F>(
-    capacity: NonZeroUsize,
-    positions: NonZeroUsize,
+    (capacity, positions): (NonZeroUsize, NonZeroUsize),
     idle: Duration,
     stop: &CancellationToken,
     notify: &Notify,
@@ -71,18 +70,23 @@ pub async fn run_partitioned<K, G, P, F>(
         idle,
         stop,
         notify,
-        (|(key, position)| (tenant(key), position), |after: Option<(K, usize)>| {
-            let rows = page(after.map(|(key, _)| key));
-            async move {
-                let rows = rows.await?;
-                Ok(rows.into_iter().flat_map(|key| {
-                    (0..positions.get()).map(move |position| (key, position))
-                }).collect::<Vec<_>>())
-            }
-        }),
+        (
+            |(key, position)| (tenant(key), position),
+            |after: Option<(K, usize)>| {
+                let rows = page(after.map(|(key, _)| key));
+                async move {
+                    let rows = rows.await?;
+                    Ok(rows
+                        .into_iter()
+                        .flat_map(|key| (0..positions.get()).map(move |position| (key, position)))
+                        .collect::<Vec<_>>())
+                }
+            },
+        ),
         |(key, _)| batch(key),
         observed,
-    ).await;
+    )
+    .await;
 }
 
 /// A group occupies at most one slot, so multiple keys sharing a tenant resource

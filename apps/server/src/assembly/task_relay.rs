@@ -22,7 +22,11 @@ pub(super) struct Relay {
     owners: Mutex<Vec<Arc<Notify>>>,
 }
 impl Relay {
-    pub(super) fn new(parallelism: usize, storage: StorageIdentity, stop: &CancellationToken) -> Arc<Self> {
+    pub(super) fn new(
+        parallelism: usize,
+        storage: StorageIdentity,
+        stop: &CancellationToken,
+    ) -> Arc<Self> {
         let capacity = NonZeroUsize::new(parallelism).expect("positive relay budget");
         Arc::new(Self {
             capacity: Capacity::commands(capacity),
@@ -57,30 +61,35 @@ impl Relay {
         let observe = Arc::new(observe);
         let rounds = Arc::new(Mutex::new(BTreeMap::<Key, Round>::new()));
         rss_mdm_work_page::run_partitioned(
-            self.capacity.total(), self.capacity.batches_per_binding(),
+            (self.capacity.total(), self.capacity.batches_per_binding()),
             IDLE,
             &self.stop,
             &notify,
-            (|key: Key| key.0, |after| {
-                let query = page(after);
-                async move {
-                    query.await.map_err(|error| {
-                        let event = serde_json::json!({
-                            "event": "command_relay_discovery_failed",
-                            "owner": name,
-                            "reason": error.to_string()
-                        });
-                        eprintln!("{event}");
-                    })
-                }
-            }),
+            (
+                |key: Key| key.0,
+                |after| {
+                    let query = page(after);
+                    async move {
+                        query.await.map_err(|error| {
+                            let event = serde_json::json!({
+                                "event": "command_relay_discovery_failed",
+                                "owner": name,
+                                "reason": error.to_string()
+                            });
+                            eprintln!("{event}");
+                        })
+                    }
+                },
+            ),
             |key| {
-                let (relay, rounds, batch, observe) = (self.clone(), rounds.clone(), batch.clone(), observe.clone());
+                let (relay, rounds, batch, observe) =
+                    (self.clone(), rounds.clone(), batch.clone(), observe.clone());
                 async move {
                     let Some(slots) = relay.capacity.acquire(name, key.0, &relay.stop).await else {
                         return Ok(IDLE);
                     };
-                    let tenant = rss_request_context::TenantId::parse(&key.0.to_string()).expect("UUID tenant");
+                    let tenant = rss_request_context::TenantId::parse(&key.0.to_string())
+                        .expect("UUID tenant");
                     let epoch = Epoch::new(key.1).map_err(|error| {
                         let _ = relay.failure.set(rss_runtime::ShutdownError::new(error));
                         relay.stop.cancel();
@@ -105,7 +114,9 @@ impl Relay {
                     if round.active == 0 {
                         running.remove(&key);
                     }
-                    result.map(|count| if count > 0 { Duration::ZERO } else { IDLE }).map_err(|_| ())
+                    result
+                        .map(|count| if count > 0 { Duration::ZERO } else { IDLE })
+                        .map_err(|_| ())
                 }
             },
             |_| {},
@@ -120,13 +131,19 @@ struct Round {
     failed: bool,
 }
 
-async fn settle<E>(claims: Vec<impl Future<Output = Result<(), E>>>, slots: Vec<Slot>) -> Result<usize, E> {
+async fn settle<E>(
+    claims: Vec<impl Future<Output = Result<(), E>>>,
+    slots: Vec<Slot>,
+) -> Result<usize, E> {
     let count = claims.len();
     assert!(count <= slots.len(), "owner exceeded the admitted batch");
-    let work = claims.into_iter().zip(slots).map(|(claim, slot)| async move {
-        let _slot = slot;
-        claim.await
-    });
+    let work = claims
+        .into_iter()
+        .zip(slots)
+        .map(|(claim, slot)| async move {
+            let _slot = slot;
+            claim.await
+        });
     // Poll every admitted effect through settlement, including after a sibling fails.
     for outcome in futures::future::join_all(work).await {
         outcome?;

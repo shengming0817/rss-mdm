@@ -218,10 +218,19 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     // The production Policy role owns this outbox relay, including claim and settlement.
     let configuration = app.configuration.as_ref().expect("MDM configuration");
     let limit = std::num::NonZeroUsize::new(2).unwrap();
-    let claims = configuration.claim_relay(c.execution(), limit, Duration::from_secs(10)).await?;
+    let claims = configuration
+        .claim_relay(c.execution(), limit, Duration::from_secs(10))
+        .await?;
     assert_eq!(claims.len(), 1);
-    for claim in claims { claim.await?; }
-    assert!(configuration.claim_relay(c.execution(), limit, Duration::from_secs(10)).await?.is_empty());
+    for claim in claims {
+        claim.await?;
+    }
+    assert!(
+        configuration
+            .claim_relay(c.execution(), limit, Duration::from_secs(10))
+            .await?
+            .is_empty()
+    );
     let committed = counts(&c, device).await?;
     assert_eq!(committed, (2, 2, 1, 1, 1, 1, 1, 1));
     let identity:(Uuid,serde_json::Value,String)=sqlx::query_as("SELECT o.id, o.authority, r.actor FROM mdm_planning.configuration_operations AS o INNER JOIN mdm_planning.configuration_receipts AS r USING (tenant_id, id) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2").bind(c.tenant.to_string()).bind(device.into_uuid()).fetch_one(&c.operator).await?;

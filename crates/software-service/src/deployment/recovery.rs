@@ -283,7 +283,10 @@ impl SoftwareService {
         &self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,
         limit: std::num::NonZeroUsize,
-    ) -> std::result::Result<Vec<impl Future<Output = std::result::Result<(), Error>> + Send + '_>, Error> {
+    ) -> std::result::Result<
+        Vec<impl Future<Output = std::result::Result<(), Error>> + Send + '_>,
+        Error,
+    > {
         let claims = self
             .outbox
             .claim_partition_heads(execution, limit, deadline())
@@ -293,7 +296,10 @@ impl SoftwareService {
                 relay_diagnostic("claim", None, &e);
                 e
             })?;
-        Ok(claims.into_iter().map(|claim| self.relay_claim(execution, claim)).collect())
+        Ok(claims
+            .into_iter()
+            .map(|claim| self.relay_claim(execution, claim))
+            .collect())
     }
     async fn relay_claim(
         &self,

@@ -463,7 +463,8 @@ async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         Ok::<_, anyhow::Error>(())
-    }).await;
+    })
+    .await;
     stop.cancel();
     task.await?;
     observed??;
@@ -559,25 +560,69 @@ async fn recoverable_batch_scan_failure_does_not_stop_other_tenants() -> Result<
 #[path = "discovery.rs"]
 mod discovery;
 
-async fn registered_relay(h: &Harness, hint: Arc<tokio::sync::Notify>) -> Result<rss_runtime::ShutdownStack> {
+async fn registered_relay(
+    h: &Harness,
+    hint: Arc<tokio::sync::Notify>,
+) -> Result<rss_runtime::ShutdownStack> {
     let r = &h.a.resources;
     let owner = planning::owner(&h.c, "mdm_policy_runtime").await?;
-    let app = crate::assembly::policy::application(&r.background, &owner, h.c.execution(), &[7;32],
-        Arc::new(crate::clock::SystemClock), r.protection.clone(), None).await?;
-    let events = crate::assembly::policy::events(h.c.execution(), app.clone(),
-        Arc::new(crate::assembly::policy::EventInputs { source: r.source.clone(), protection: r.protection.clone(), instance: h.c.inputs.installation.instance_id.clone() }),
-        h.a.software.materials.clone(), h.a.registration.materials.clone(), Vec::new()).await?;
-    let policy = rss_mdm_policy_service::worker::PolicyWork::new(h.c.database.archive_pool(),
-        h.c.execution().storage(), app, events, r.storage.reconcile.clone());
-    let mut stack = rss_runtime::ShutdownStack::try_new(rss_runtime::TotalDrainBudget::new(Duration::from_secs(25))?, Arc::new(crate::lifecycle::RuntimeTimer))?;
+    let app = crate::assembly::policy::application(
+        &r.background,
+        &owner,
+        h.c.execution(),
+        &[7; 32],
+        Arc::new(crate::clock::SystemClock),
+        r.protection.clone(),
+        None,
+    )
+    .await?;
+    let events = crate::assembly::policy::events(
+        h.c.execution(),
+        app.clone(),
+        Arc::new(crate::assembly::policy::EventInputs {
+            source: r.source.clone(),
+            protection: r.protection.clone(),
+            instance: h.c.inputs.installation.instance_id.clone(),
+        }),
+        h.a.software.materials.clone(),
+        h.a.registration.materials.clone(),
+        Vec::new(),
+    )
+    .await?;
+    let policy = rss_mdm_policy_service::worker::PolicyWork::new(
+        h.c.database.archive_pool(),
+        h.c.execution().storage(),
+        app,
+        events,
+        r.storage.reconcile.clone(),
+    );
+    let mut stack = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(25))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
     let mut startup = stack.startup()?;
-    startup.stage_resource(rss_runtime::DynManagedResource::new_box(crate::owner_storage::Resource::new(owner.runtime, "relay-policy-test")));
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        crate::owner_storage::Resource::new(owner.runtime, "relay-policy-test"),
+    ));
     let mut launch = startup.commit();
-    launch.stage_task_with_token(crate::assembly::task_relay::registration(
-        policy, h.a.service.clone(), h.a.script_work.clone(), h.a.collection_work.clone(),
-        h.a.software.service.clone(), h.a.registration.native.clone(), h.a.registration.worker.clone(),
-        h.a.access_execution.worker.clone(), Vec::new(), None, 4, h.c.execution().storage(), hint,
-    ).critical());
+    launch.stage_task_with_token(
+        crate::assembly::task_relay::registration(
+            policy,
+            h.a.service.clone(),
+            h.a.script_work.clone(),
+            h.a.collection_work.clone(),
+            h.a.software.service.clone(),
+            h.a.registration.native.clone(),
+            h.a.registration.worker.clone(),
+            h.a.access_execution.worker.clone(),
+            Vec::new(),
+            None,
+            4,
+            h.c.execution().storage(),
+            hint,
+        )
+        .critical(),
+    );
     launch.finish();
     Ok(stack)
 }
@@ -588,14 +633,47 @@ async fn accept_collection(h: &Harness) -> Result<Uuid> {
     let id = Uuid::new_v4();
     let binding = h.c.execution();
     let r = &h.a.resources;
-    let transactions = collection::Transactions::bind(r.storage.runtime.clone(), binding, h.audit.clone(),
-        Arc::new(collection::Materials { agent_store: Arc::new(crate::assembly::agent_facts::AgentFacts),
+    let transactions = collection::Transactions::bind(
+        r.storage.runtime.clone(),
+        binding,
+        h.audit.clone(),
+        Arc::new(collection::Materials {
+            agent_store: Arc::new(crate::assembly::agent_facts::AgentFacts),
             source: Arc::new(crate::assembly::collection_ports::Source(r.source.clone())),
-            capacity: Arc::new(crate::assembly::capacity::Capacity), native: Arc::new(crate::assembly::collection_ports::Delivery { protection: r.protection.clone() }) })).await?;
+            capacity: Arc::new(crate::assembly::capacity::Capacity),
+            native: Arc::new(crate::assembly::collection_ports::Delivery {
+                protection: r.protection.clone(),
+            }),
+        }),
+    )
+    .await?;
     let device = *h.p.device();
-    let result = transaction::run(&h.audit, &r.storage.runtime, binding, &request(&h.c), transactions,
-        move |owner, tx| Box::pin(async move { owner.accept_event_in(binding, tx, version, &collection::model::Target { device },
-            (id, rss_mdm_audit_integration::activity::ActivityOrigin::Policy), now()+300).await }), TransactionOwner::Collections).await?;
+    let result = transaction::run(
+        &h.audit,
+        &r.storage.runtime,
+        binding,
+        &request(&h.c),
+        transactions,
+        move |owner, tx| {
+            Box::pin(async move {
+                owner
+                    .accept_event_in(
+                        binding,
+                        tx,
+                        version,
+                        &collection::model::Target { device },
+                        (
+                            id,
+                            rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
+                        ),
+                        now() + 300,
+                    )
+                    .await
+            })
+        },
+        TransactionOwner::Collections,
+    )
+    .await?;
     assert!(matches!(result, w::PolicyEventDecision::Accepted { .. }));
     Ok(id)
 }
@@ -609,8 +687,14 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
         .bind(Uuid::from_bytes(h.c.tenant.octets())).fetch_one(&h.c.operator).await?;
     let (second, _, scope) = Harness::endpoint(&h.c, &serde_json::from_value(trust)?).await?;
     for (host, agent) in [(&h, &h.p), (&h, &second), (&late, &late.p)] {
-        let announcement = w::TaskClaimRequest::new(Uuid::new_v4(), vec![w::ExecutorProfile::PowerShell7], context())?;
-        host.delivery.claim(agent, &announcement, &request(&host.c)).await?;
+        let announcement = w::TaskClaimRequest::new(
+            Uuid::new_v4(),
+            vec![w::ExecutorProfile::PowerShell7],
+            context(),
+        )?;
+        host.delivery
+            .claim(agent, &announcement, &request(&host.c))
+            .await?;
     }
     let a = Uuid::new_v4();
     let b = Uuid::new_v4();
@@ -618,35 +702,56 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
     let (_, peer_version) = h.policy_in_scope("relay-peer", "system", scope).await?;
     let (_, late_version) = late.policy("relay-late").await?;
     let (_, restart_version) = late.policy("relay-restart").await?;
-    assert!(matches!(h.admit(version,a).await?, w::PolicyEventDecision::Accepted { .. }));
-    assert!(matches!(h.admit_on(peer_version,b,*second.device()).await?, w::PolicyEventDecision::Accepted { .. }));
+    assert!(matches!(
+        h.admit(version, a).await?,
+        w::PolicyEventDecision::Accepted { .. }
+    ));
+    assert!(matches!(
+        h.admit_on(peer_version, b, *second.device()).await?,
+        w::PolicyEventDecision::Accepted { .. }
+    ));
     let collection = accept_collection(&h).await?;
     let mut lock = command::seed_transaction(&h.c).await?;
     sqlx::query("SELECT 1 FROM mdm_script.runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
-        .bind(Uuid::from_bytes(h.c.tenant.octets())).bind(a).fetch_one(&mut *lock).await?;
+        .bind(Uuid::from_bytes(h.c.tenant.octets()))
+        .bind(a)
+        .fetch_one(&mut *lock)
+        .await?;
     let hint = Arc::new(tokio::sync::Notify::new());
     let stack = registered_relay(&h, hint.clone()).await?;
-    let status = |message: String| sqlx::query_scalar::<_,String>(
-        "SELECT status FROM rss_transactional_messaging.outbox WHERE message_id=$1").bind(message).fetch_one(&h.c.operator);
+    let status = |message: String| {
+        sqlx::query_scalar::<_, String>(
+            "SELECT status FROM rss_transactional_messaging.outbox WHERE message_id=$1",
+        )
+        .bind(message)
+        .fetch_one(&h.c.operator)
+    };
     let wait = |message: String, expected: &'static str| async move {
         tokio::time::timeout(Duration::from_secs(15), async {
             while status(message.clone()).await? != expected {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             Ok::<_, anyhow::Error>(())
-        }).await?
+        })
+        .await?
     };
     wait(format!("script.{b}"), "published").await?;
     wait(format!("collection.{collection}"), "published").await?;
     assert_eq!(status(format!("script.{a}")).await?, "publishing");
     let arrived = Uuid::new_v4();
-    assert!(matches!(late.admit(late_version, arrived).await?, w::PolicyEventDecision::Accepted { .. }));
+    assert!(matches!(
+        late.admit(late_version, arrived).await?,
+        w::PolicyEventDecision::Accepted { .. }
+    ));
     hint.notify_one();
     wait(format!("script.{arrived}"), "published").await?;
     assert_eq!(status(format!("script.{a}")).await?, "publishing");
     let drain = stack.shutdown();
     let restart = Uuid::new_v4();
-    assert!(matches!(late.admit(restart_version, restart).await?, w::PolicyEventDecision::Accepted { .. }));
+    assert!(matches!(
+        late.admit(restart_version, restart).await?,
+        w::PolicyEventDecision::Accepted { .. }
+    ));
     hint.notify_one();
     lock.rollback().await?;
     assert!(drain.join().await?.is_clean());
@@ -660,8 +765,13 @@ async fn command_relay_settles_another_tenant_while_first_run_is_locked() -> Res
         WHERE r.id=ANY($1) AND r.gateway_accepted AND o.status='published' AND o.fingerprint=r.dispatch_fingerprint")
         .bind([a,b,arrived,restart].as_slice()).fetch_one(&h.c.operator).await?;
     assert_eq!(scripts, 4);
-    let accepted: bool = sqlx::query_scalar("SELECT gateway_accepted FROM mdm_inventory.collection_tasks WHERE tenant_id=$1 AND id=$2")
-        .bind(Uuid::from_bytes(h.c.tenant.octets())).bind(collection).fetch_one(&h.c.operator).await?;
+    let accepted: bool = sqlx::query_scalar(
+        "SELECT gateway_accepted FROM mdm_inventory.collection_tasks WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(Uuid::from_bytes(h.c.tenant.octets()))
+    .bind(collection)
+    .fetch_one(&h.c.operator)
+    .await?;
     assert!(accepted);
     late.close().await?;
     h.close().await

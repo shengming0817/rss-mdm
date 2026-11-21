@@ -184,17 +184,19 @@ impl Worker {
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
         limit: std::num::NonZeroUsize,
-    ) -> std::result::Result<Vec<impl Future<Output = std::result::Result<(), Error>> + Send + '_>, Error> {
+    ) -> std::result::Result<
+        Vec<impl Future<Output = std::result::Result<(), Error>> + Send + '_>,
+        Error,
+    > {
         let claims = self
             .outbox
-            .claim_partition_heads(
-                binding,
-                limit,
-                crate::transaction::deadline(),
-            )
+            .claim_partition_heads(binding, limit, crate::transaction::deadline())
             .await
             .map_err(|_| Error::Unavailable(crate::Failure::CollectionQuery))?;
-        Ok(claims.into_iter().map(|claim| self.relay_claim(binding, claim)).collect())
+        Ok(claims
+            .into_iter()
+            .map(|claim| self.relay_claim(binding, claim))
+            .collect())
     }
     async fn relay_claim(
         &self,
