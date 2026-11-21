@@ -15,6 +15,7 @@ GRANT UPDATE(gateway_accepted) ON rss_da.access_runs TO mdm_command_runtime;
 GRANT UPDATE(input_revision,input_consumed,input_window,recovery_after,runs_done) ON rss_da.access_policy_recovery TO mdm_command_runtime;
 GRANT EXECUTE ON FUNCTION rss_da.save_retired_access_run(uuid,uuid,jsonb,jsonb) TO mdm_command_runtime;
 GRANT SELECT ON rss_da.psso_sources,rss_da.psso_tokens TO mdm_identity_runtime;
+GRANT SELECT(id,tenant_id,source,version,state,expires_at) ON rss_da.psso_password_attempts TO mdm_identity_runtime;
 GRANT UPDATE(tenant_id) ON rss_da.psso_sources TO mdm_identity_runtime;
 GRANT SELECT ON rss_da.psso_password_providers TO mdm_identity_runtime;
 GRANT USAGE ON SCHEMA rss_da TO mdm_identity_runtime;

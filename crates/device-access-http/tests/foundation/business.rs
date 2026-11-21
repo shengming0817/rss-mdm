@@ -61,6 +61,7 @@ pub fn assemble(
     )?;
     c.platform.bind(&runtime.platform)?;
     let business = Arc::new(rss_mdm_device_access_http::Business {
+        recovery:None,
         evidence,
         service: runtime.business,
         admission: runtime.admission,

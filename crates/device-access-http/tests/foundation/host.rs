@@ -24,6 +24,8 @@ pub async fn verify(
         sqlx::query_scalar("SELECT management_tenant_id FROM rss_da.authorization_installation")
             .fetch_one(&c.operator)
             .await?;
+    sqlx::query("INSERT INTO rss_da.api_network_policy(tenant_id,instance,revision,networks) VALUES($1,$2::uuid,1,$3) ON CONFLICT DO NOTHING")
+        .bind(management).bind(&c.inputs.installation.instance_id).bind(serde_json::json!(["127.0.0.1/32","::1/128"])).execute(&c.operator).await?;
     let browser_address = browser.local_addr()?;
     let protocol_address = protocol.local_addr()?;
     let origin = format!("https://localhost:{}", browser_address.port());

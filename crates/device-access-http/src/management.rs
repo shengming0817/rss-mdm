@@ -17,8 +17,8 @@ pub struct Services {
 }
 
 pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
-    rss_mdm_http_contract::route_module! {struct Management for [Browser] {lifecycle,configurations}}
-    Management {lifecycle:lifecycle(),configurations:crate::configurations::management()}.assemble()
+    rss_mdm_http_contract::route_module! {struct Management for [Browser] {lifecycle,configurations,platform_status}}
+    Management {platform_status:Route::new("/api/v1/tenants/{tenant}/apple/platform-sso/status",get(platform_status,&rss_mdm_http_contract::catalog::PROTOCOL_APPLE_CHANNEL,&[Operation::Action])),lifecycle:lifecycle(),configurations:crate::configurations::management()}.assemble()
 }
 pub(crate) fn lifecycle() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     rss_mdm_http_contract::route_module! {struct DaAdministration for [Browser] {grant, recover_issuance, recover, revoke, trust_read, trust_change, trust_operation, export, export_operation, templates}}
@@ -181,4 +181,12 @@ async fn recover_issuance(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OperationRequest {
     operation_id: Uuid,
+}
+
+#[derive(serde::Deserialize,schemars::JsonSchema)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+struct PlatformQuery { device_id:rss_mdm_agent_wire::DeviceId,binding_id:Option<Uuid> }
+async fn platform_status(State(s):State<Arc<Services>>, Extension(auth):Extension<RequestAuth>, Path(_tenant):Path<Uuid>,
+    axum::extract::Query(q):axum::extract::Query<PlatformQuery>)->Result<Json<rss_mdm_device_access_postgres::platform_sso::status::ManagementStatus>,crate::business_error::Error>{
+    Ok(Json(s.business.platform_status(&s.platform.context,&auth.proof,q.device_id,q.binding_id).await?))
 }
