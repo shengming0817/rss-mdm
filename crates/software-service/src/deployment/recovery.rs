@@ -867,15 +867,20 @@ impl SoftwareService {
     > {
         control.check()?;
         let tenant = claim.target().scope().tenant();
-        let epoch: i64 =
-            sqlx::query_scalar("SELECT mdm_software_deployment.work_epoch($1::uuid,$2)")
-                .bind(tenant.to_string())
-                .bind(claim.target().entity())
-                .fetch_one(&self.read_pool)
-                .await
-                .map_err(|_| failure(Error::Unavailable(Failure::CommandStorage)))?;
-        let epoch = rss_transactional_messaging::fence::Epoch::new(epoch)
-            .map_err(|_| failure(Error::Unavailable(Failure::CommandInvariant)))?;
+        let entity = claim.target().entity();
+        let epoch = if let Some(work) = actions::scheduled::Work::parse(entity) {
+            work.epoch
+        } else {
+            let epoch: i64 =
+                sqlx::query_scalar("SELECT mdm_software_deployment.work_epoch($1::uuid,$2)")
+                    .bind(tenant.to_string())
+                    .bind(entity)
+                    .fetch_one(&self.read_pool)
+                    .await
+                    .map_err(|_| failure(Error::Unavailable(Failure::CommandStorage)))?;
+            rss_transactional_messaging::fence::Epoch::new(epoch)
+                .map_err(|_| failure(Error::Unavailable(Failure::CommandInvariant)))?
+        };
         Ok(rss_transactional_messaging::fence::ExecutionBinding::new(
             self.storage,
             tenant,

@@ -2395,18 +2395,10 @@ async fn event_batch_commits_during_a_peer_receipt_lock() -> Result<()> {
     let scopes = crate::scope_t2::open(&a).await?;
     let fixture = crate::policy_configuration_t2::fixture::Fixture::open(&a).await?;
     let policy = planning::owner(&a, "mdm_policy_runtime").await?;
-    let mut jobs = Vec::new();
-    for c in [&a, &b] {
-        let id = Uuid::new_v4();
-        let account = c.account(&[P::InventoryRead]).await?;
-        let actor = c.authenticate(&account).await?.actor();
-        let caller = rss_mdm_policy_service::events::Caller::Management { actor };
-        let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-        sqlx::query("INSERT INTO mdm_policy.event_batches(tenant_id,id,request,actor,caller,device,input,fingerprint,created_at,deadline) VALUES($1::uuid,$2,$2,$3,$4,$5,$6,$7,1700000000,1700000010)")
-            .bind(c.tenant.to_string()).bind(id).bind(serde_json::to_string(&caller)?).bind(serde_json::to_value(caller)?).bind(Uuid::new_v4()).bind(json!({"operationId":id,"event":"peer","source":{"kind":"human"},"executionContext":null})).bind([17u8;32].as_slice()).execute(&mut *tx).await?;
-        tx.commit().await?;
-        jobs.push(id);
-    }
+    let jobs = [
+        pending_policy_event(&a, &fixture.resources.protection).await?,
+        pending_policy_event(&b, &fixture.resources.protection).await?,
+    ];
     let enqueue = |binding, id| {
         enqueue_policy_job(
             policy.runtime.clone(),
@@ -2422,7 +2414,7 @@ async fn event_batch_commits_during_a_peer_receipt_lock() -> Result<()> {
     let check=async {
         let attempt=wait_for_blocked_attempt(&a.operator,pid,"mdm_policy.work").await?;
         enqueue(b.execution(),jobs[1]).await?;
-        wait_sql(&b,"SELECT completed AND failure IS NULL FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2",jobs[1]).await?;
+        wait_sql(&b,"SELECT w.completed AND w.failure IS NULL AND m.decision->>'state'='expired' FROM mdm_policy.work w JOIN mdm_policy.event_members m ON (m.tenant_id,m.batch)=(w.tenant_id,w.id) WHERE w.tenant_id=$1::uuid AND w.id=$2",jobs[1]).await?;
         anyhow::ensure!(blocked_attempt(&a.operator,pid,"mdm_policy.work").await?==Some(attempt));
         Ok::<_,anyhow::Error>(())
     }.await;
@@ -2433,4 +2425,34 @@ async fn event_batch_commits_during_a_peer_receipt_lock() -> Result<()> {
     b.close().await;
     a.close().await;
     check
+}
+
+async fn pending_policy_event(
+    c: &Context,
+    key: &rss_mdm_native_protection::Protector,
+) -> Result<Uuid> {
+    let object = planning::endpoint(c).await?;
+    let scope = super::scope(c, &[]).await?;
+    let policy = crate::policy_configuration_t2::seed(c, scope, &object, key).await?;
+    let device = object.members[0].device;
+    let id = Uuid::new_v4();
+    let account = c.account(&[P::InventoryRead]).await?;
+    let actor = c.authenticate(&account).await?.actor();
+    let caller = rss_mdm_policy_service::events::Caller::Management { actor };
+    let input = rss_mdm_agent_wire::runtime::PolicyEventRequest {
+        operation_id: id,
+        event: rss_mdm_agent_wire::runtime::PolicyEventName::parse("peer")?,
+        source: rss_mdm_agent_wire::runtime::PolicyEventSource::Human,
+        execution_context: None,
+    };
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
+    sqlx::query("INSERT INTO mdm_policy.event_batches(tenant_id,id,request,actor,caller,device,input,fingerprint,created_at,deadline) VALUES($1::uuid,$2,$2,$3,$4,$5,$6,$7,1700000000,1700000010)")
+        .bind(c.tenant.to_string()).bind(id).bind(serde_json::to_string(&caller)?).bind(serde_json::to_value(caller)?)
+        .bind(device.into_uuid()).bind(serde_json::to_value(input)?).bind([17u8;32].as_slice()).execute(&mut *tx).await?;
+    let member = sqlx::query("INSERT INTO mdm_policy.event_members(tenant_id,batch,id,policy,revision,version,target,authority,decision) SELECT tenant_id,$2,$3,id,revision,current_version,$5,$6,$7 FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$4")
+        .bind(c.tenant.to_string()).bind(id).bind(Uuid::new_v4()).bind(policy).bind(json!({"device":device}))
+        .bind(json!({"permissions":[],"retirement_target":null})).bind(json!({"state":"pending"})).execute(&mut *tx).await?;
+    anyhow::ensure!(member.rows_affected() == 1);
+    tx.commit().await?;
+    Ok(id)
 }

@@ -612,10 +612,14 @@ async fn maintenance_commits_while_a_peer_gap_receipt_is_locked() -> Result<()> 
         let pid = sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_telemetry.gap_reports WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
             .bind(a.tenant.to_string()).bind(id).fetch_one(&mut *held).await?;
 
+        let mut peer = b.operator.begin().await?;
+        sqlx::query("SELECT id FROM mdm_telemetry.gap_reports WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+            .bind(b.tenant.to_string()).bind(id).fetch_one(&mut *peer).await?;
         let token = tokio_util::sync::CancellationToken::new();
         let task = tokio::spawn(service.run(f.owner.runtime.clone(),token.clone()));
         let check = tokio::time::timeout(Duration::from_secs(40), async {
             let attempt = wait_for_blocked_attempt(&a.operator,pid,"DELETE FROM mdm_telemetry.gap_reports").await?;
+            peer.rollback().await?;
             while sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm_telemetry.gap_reports WHERE tenant_id=$1::uuid AND id=$2)")
                 .bind(b.tenant.to_string()).bind(id).fetch_one(&b.operator).await? {
                 tokio::time::sleep(Duration::from_millis(10)).await;

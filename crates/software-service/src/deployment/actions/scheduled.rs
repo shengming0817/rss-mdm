@@ -1,6 +1,7 @@
 //! Policy discovery creates device targets; admission never holds a page of device locks.
 use super::storage as db;
 use crate::deployment::{Error, Result, SoftwareService, Target, storage};
+use rss_transactional_messaging::fence::Epoch;
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;
 use uuid::Uuid;
@@ -69,29 +70,29 @@ impl<'a> VerifiedSoftwareVersion<'a> {
             return Ok(());
         }
         let work = Work {
+            epoch: tx.expected_epoch(),
             version: self.version,
             device: target.device,
         };
-        if let Some(device) = device_in(self.reader, tx, &work).await?
-            && device != target.device
-        {
-            return Err(Error::Unavailable(crate::deployment::Failure::CommandInvariant).into());
+        let tenant = tx.tenant_id().to_string();
+        let version = self.version;
+        let device = target.device.into_uuid();
+        let channel = target.channel.as_str();
+        let epoch = work.epoch.get();
+        let current = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT FROM mdm_policy.assignments WHERE tenant_id=$1::uuid AND version=$2 AND channel=$3 AND target->>'device'=$4::uuid::text AND expected_epoch=$5)")
+                .bind(tenant).bind(version).bind(channel).bind(device).bind(epoch).fetch_one(c).await
+        })).await?;
+        if current {
+            wake_in(reconcile, tx, self, &work).await?;
         }
-        wake_in(
-            reconcile,
-            tx,
-            self,
-            &Work {
-                version: self.version,
-                device: target.device,
-            },
-        )
-        .await
+        Ok(())
     }
 }
 
 #[derive(Clone)]
 pub(crate) struct Work {
+    pub epoch: Epoch,
     pub version: Uuid,
     pub device: rss_mdm_agent_wire::DeviceId,
 }
@@ -99,13 +100,19 @@ impl Work {
     pub(crate) fn parse(entity: &str) -> Option<Self> {
         let mut fields = entity.strip_prefix("scheduled:")?.split(':');
         let value = Self {
+            epoch: Epoch::new(fields.next()?.parse().ok()?).ok()?,
             version: fields.next()?.parse().ok()?,
             device: fields.next()?.parse().ok()?,
         };
         fields.next().is_none().then_some(value)
     }
     fn entity(&self) -> String {
-        format!("scheduled:{}:{}", self.version, self.device)
+        format!(
+            "scheduled:{}:{}:{}",
+            self.epoch.get(),
+            self.version,
+            self.device
+        )
     }
 }
 
@@ -115,7 +122,7 @@ pub(crate) async fn wake_in(
     verified: &VerifiedSoftwareVersion<'_>,
     work: &Work,
 ) -> Result<()> {
-    if verified.version != work.version {
+    if verified.version != work.version || tx.expected_epoch() != work.epoch {
         return Err((crate::deployment::Error::Unavailable(
             crate::deployment::Failure::CommandInvariant,
         ))
@@ -189,7 +196,7 @@ pub(crate) async fn dispatch_in(
     let rows = if verified.is_some() {
         let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("SELECT DISTINCT r.id AS device, r.id FROM mdm_policy.assignments AS a INNER JOIN mdm_access.devices AS r ON r.tenant_id = a.tenant_id AND r.id = (a.target ->> 'device')::uuid AND r.channel = a.channel AND r.state = 'active' AND r.purpose = 'primary' WHERE a.tenant_id = CAST($1 AS uuid) AND a.policy = $2 AND a.version = $3 AND a.availability = 'ready' AND ($4::uuid IS NULL OR r.id > $4) ORDER BY r.id LIMIT 33").bind(tenant).bind(policy).bind(version).bind(after).fetch_all(c).await
+            sqlx::query("SELECT DISTINCT r.id AS device, r.id FROM mdm_policy.assignments AS a INNER JOIN mdm_access.devices AS r ON r.tenant_id = a.tenant_id AND r.id = (a.target ->> 'device')::uuid AND r.channel = a.channel AND r.state = 'active' AND r.purpose = 'primary' WHERE a.tenant_id = CAST($1 AS uuid) AND a.policy = $2 AND a.version = $3 AND a.expected_epoch=current_setting('rss.execution_epoch')::bigint AND a.availability = 'ready' AND ($4::uuid IS NULL OR r.id > $4) ORDER BY r.id LIMIT 33").bind(tenant).bind(policy).bind(version).bind(after).fetch_all(c).await
         })).await?
     } else {
         Vec::new()
@@ -201,6 +208,7 @@ pub(crate) async fn dispatch_in(
                 tx,
                 verified,
                 &Work {
+                    epoch: tx.expected_epoch(),
                     version,
                     device: row
                         .try_get::<Uuid, _>("id")

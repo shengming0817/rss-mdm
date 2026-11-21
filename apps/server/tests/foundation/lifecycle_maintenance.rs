@@ -125,6 +125,7 @@ impl Gateway {
     }
 }
 pub(super) struct Running {
+    pub(super) admission: Arc<std::sync::OnceLock<rss_runtime::AdmissionGate>>,
     pub(super) telemetry: Arc<std::sync::OnceLock<Arc<rss_mdm_telemetry_service::Service>>>,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<std::result::Result<(), crate::ProcessError>>,
@@ -146,19 +147,24 @@ impl Running {
         let address = config.listen;
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let telemetry = Arc::new(std::sync::OnceLock::new());
-        let task = tokio::spawn(crate::telemetry::INSTALLED_SERVICE.scope(
-            telemetry.clone(),
-            crate::serve(
-                config,
-                async move {
-                    stopped
-                        .await
-                        .map_err(|_| std::io::Error::other("test shutdown"))
-                },
-                Arc::new(crate::Monotonic(std::time::Instant::now)),
+        let admission = Arc::new(std::sync::OnceLock::new());
+        let task = tokio::spawn(crate::lifecycle::INSTALLED_ADMISSION.scope(
+            admission.clone(),
+            crate::telemetry::INSTALLED_SERVICE.scope(
+                telemetry.clone(),
+                Box::pin(crate::serve(
+                    config,
+                    async move {
+                        stopped
+                            .await
+                            .map_err(|_| std::io::Error::other("test shutdown"))
+                    },
+                    Arc::new(crate::Monotonic(std::time::Instant::now)),
+                )),
             ),
         ));
         let mut running = Self {
+            admission,
             telemetry,
             stop: Some(stop),
             task,

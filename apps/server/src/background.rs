@@ -6,6 +6,7 @@ use std::time::Duration;
 pub(crate) const ACCESS_CONNECTIONS: u32 = 4;
 pub(crate) const IDENTITY_CONNECTIONS: u32 = 10;
 pub(crate) const AUXILIARY_CONNECTIONS: u32 = 10;
+pub(crate) const COMMAND_READ_CONNECTIONS: u32 = 2;
 pub(crate) const SCHEDULER_CONNECTIONS: u32 = 2;
 pub(crate) const PROVISIONING_SLOTS: u32 = 2;
 pub(crate) const PROVISIONING_CONNECTIONS: u32 = 1;
@@ -275,6 +276,7 @@ impl BackgroundConfig {
             ("resource-owner", 2),
             ("software-owner", 2),
             ("command", compiled.command_connections),
+            ("command-reads", COMMAND_READ_CONNECTIONS),
             ("execution-scheduler", SCHEDULER_CONNECTIONS),
             ("business-scheduler", SCHEDULER_CONNECTIONS),
             ("notifications", 1),

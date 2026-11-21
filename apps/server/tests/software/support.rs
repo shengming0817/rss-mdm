@@ -156,6 +156,16 @@ pub async fn policy(
     channel: rss_mdm_policy::SoftwareChannel,
     stages: Vec<rss_mdm_policy::SoftwareRolloutStage>,
 ) -> Result<(Uuid, Uuid)> {
+    policy_with_schedule(c, resource, scope, channel, stages, schedule()).await
+}
+pub(super) async fn policy_with_schedule(
+    c: &Context,
+    resource: &r::Version,
+    scope: Uuid,
+    channel: rss_mdm_policy::SoftwareChannel,
+    stages: Vec<rss_mdm_policy::SoftwareRolloutStage>,
+    schedule: rss_mdm_policy::schedule::Schedule,
+) -> Result<(Uuid, Uuid)> {
     let id = Uuid::new_v4();
     let version = Uuid::new_v4();
     let variants = BTreeMap::from([(
@@ -187,11 +197,11 @@ pub async fn policy(
         variants: variants.clone(),
         resource_digest: resource.digest().bytes(),
         intent: rss_mdm_policy::SoftwareIntent::RequiredInstall,
-        schedule: schedule(),
+        schedule: schedule.clone(),
         run_lifetime_seconds: 300,
     };
     let definition: rss_mdm_policy::Definition = serde_json::from_value(
-        json!({"scope":scope,"action":{"kind":"software","resource":{"kind":"software","id":resource.resource().as_str(),"version":resource.label().as_str(),"variants":variants},"channel":channel,"delivery":{"kind":"direct"},"intent":"required_install","schedule":schedule(),"runLifetimeSeconds":300,"rollout":{"stages":stages}}}),
+        json!({"scope":scope,"action":{"kind":"software","resource":{"kind":"software","id":resource.resource().as_str(),"version":resource.label().as_str(),"variants":variants},"channel":channel,"delivery":{"kind":"direct"},"intent":"required_install","schedule":schedule,"runLifetimeSeconds":300,"rollout":{"stages":stages}}}),
     )?;
     definition.validate()?;
     let frozen = serde_json::to_value(owner::frozen::Published::Software {

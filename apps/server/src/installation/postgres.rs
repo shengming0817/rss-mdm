@@ -20,13 +20,28 @@ pub(super) async fn connection_budget(connection: &mut sqlx::PgConnection) -> Re
     u32::try_from(available).map_err(|_| Error::Input)
 }
 
-pub(super) async fn prepare(input: &Input, instance: uuid::Uuid) -> Result<()> {
-    tokio::time::timeout(
-        std::time::Duration::from_secs(90),
-        prepare_inner(input, instance),
-    )
+const PREPARE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+pub(super) async fn available_connections(input: &Input) -> Result<u32> {
+    tokio::time::timeout(PREPARE_TIMEOUT, async {
+        let options = input
+            .database
+            .administrator
+            .options()
+            .map_err(|_| Error::Input)?;
+        let mut connection = sqlx::PgConnection::connect_with(&options)
+            .await
+            .map_err(|_| Error::Storage)?;
+        let budget = connection_budget(&mut connection).await?;
+        connection.close().await.map_err(|_| Error::Storage)?;
+        Ok(budget)
+    })
     .await
     .map_err(|_| Error::Storage)?
+}
+pub(super) async fn prepare(input: &Input, instance: uuid::Uuid) -> Result<()> {
+    tokio::time::timeout(PREPARE_TIMEOUT, prepare_inner(input, instance))
+        .await
+        .map_err(|_| Error::Storage)?
 }
 async fn prepare_inner(input: &Input, instance: uuid::Uuid) -> Result<()> {
     let admin = &input.database.administrator;

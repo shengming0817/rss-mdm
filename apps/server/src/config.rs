@@ -231,7 +231,8 @@ impl Config {
         let inventory_runtime = self.inventory_runtime.compile()?;
         let http = self.http.compile(&self.identity.runtime)?;
         if (!self.telemetry.is_empty()
-            && rss_mdm_telemetry_service::WORKER_DRAIN > http.total_drain)
+            && rss_mdm_telemetry_service::WORKER_DRAIN.max(http.admission_drain)
+                >= http.total_drain)
             || [
                 std::time::Duration::from_secs(self.inventory_runtime.drain_seconds),
                 background.device_drain,

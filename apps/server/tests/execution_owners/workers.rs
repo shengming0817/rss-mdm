@@ -1110,6 +1110,10 @@ async fn scheduler_connections_remain_available_to_a_late_tenant() -> Result<()>
             )
             .await?;
     }
+    // Hold both physical task-read connections through the peer's scheduler settlement.
+    let reads = &a.a.resources.storage.read_pool;
+    let read_one = reads.acquire().await?;
+    let read_two = reads.acquire().await?;
     let leases = store
         .claim_due(&scope_a, 2, 64, Duration::from_secs(30), &control)
         .await?
@@ -1149,6 +1153,7 @@ async fn scheduler_connections_remain_available_to_a_late_tenant() -> Result<()>
     checked?;
     one?;
     two?;
+    drop((read_one, read_two));
     b.close().await;
     a.close().await
 }

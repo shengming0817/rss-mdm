@@ -134,6 +134,16 @@ async fn provision(platform: &mut Browser) -> Result<(Uuid, Browser)> {
         .await?;
     Ok((tenant, browser))
 }
+fn check_shutdown_budget(runtime: &Value) -> Result<()> {
+    let mut tight: crate::config::Config = serde_json::from_value(runtime.clone())?;
+    tight.http.admission_drain_seconds = tight.http.total_drain_seconds;
+    ensure!(matches!(
+        tight.compile(),
+        Err(crate::Error::Configuration(crate::ConfigIssue::Budget))
+    ));
+    Ok(())
+}
+
 #[allow(
     clippy::cognitive_complexity,
     reason = "one installed host proves tenant isolation, interrupted rotation, and cold recovery across the same receipts"
@@ -172,6 +182,7 @@ pub(super) async fn exercise(
     }
     recovery::unrelated_rotation(root, source, first, &resources[0]).await?;
     runtime = maintenance::desired(root, first.host_id)?;
+    check_shutdown_budget(&runtime)?;
     let running = Box::pin(maintenance::Running::open(&runtime)).await?;
     runtime_files::observe_installation(serde_json::from_value(source.clone())?).await?;
     let address = source["listen"]
@@ -412,20 +423,34 @@ pub(super) async fn exercise(
     let draining = a_data.more(running.telemetry.get().unwrap(), 4).await?;
     crate::authority_t2_support::wait_for_blocked_attempt(&admin, blocker, "mdm_telemetry.batches")
         .await?;
-    let mut shutdown = Box::pin(running.close());
-    ensure!(
-        tokio::time::timeout(Duration::from_millis(100), &mut shutdown)
-            .await
-            .is_err()
-    );
+    let admission = running.admission.get().unwrap().clone();
+    let permit = admission.try_admit()?;
+    let service = running.telemetry.get().unwrap().clone();
+    let shutdown = tokio::spawn(running.close());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while admission.try_admit().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    // A request admitted before shutdown can still persist intake. Its new batch
+    // must wait for restart while the already claimed delivery finishes.
     gate.rollback().await?;
-    shutdown.await?;
+    Box::pin(a_data.published(&service, draining)).await?;
+    Box::pin(a_data.wait_for_worker_exit(&service)).await?;
+    ensure!(sqlx::query_scalar::<_, bool>(
+        "SELECT status='published' FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND domain='mdm-telemetry' AND message_id=$2"
+    ).bind(a).bind(draining.to_string()).fetch_one(&admin).await?);
+    let next = Box::pin(a_data.more(&service, 6)).await?;
+    ensure!(!shutdown.is_finished());
+    drop(permit);
+    shutdown.await??;
     ensure!(
         sqlx::query_scalar::<_, bool>(
-            "SELECT delivery='published' FROM mdm_telemetry.batches WHERE tenant_id=$1 AND id=$2"
+            "SELECT delivery='pending' FROM mdm_telemetry.batches WHERE tenant_id=$1 AND id=$2"
         )
         .bind(a)
-        .bind(draining)
+        .bind(next)
         .fetch_one(&admin)
         .await?
     );
@@ -453,6 +478,7 @@ pub(super) async fn exercise(
     .await
     .context("shared storage cold recovery")?;
     let restarted = Box::pin(maintenance::Running::open(&runtime)).await?;
+    Box::pin(a_data.published(restarted.telemetry.get().unwrap(), next)).await?;
     shared_data
         .published(restarted.telemetry.get().unwrap(), pending)
         .await?;

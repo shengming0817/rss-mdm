@@ -192,19 +192,24 @@ impl Storage {
                 },
             )?;
 
-        let read_pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(crate::background::SCHEDULER_CONNECTIONS)
-            .acquire_timeout(Duration::from_secs(5))
-            .connect_with(config.command_database.options()?)
-            .await
-            .map_err(|_| bad())?;
-        acquire(rss_runtime::DynManagedResource::new_box(ReadPool(
-            read_pool.clone(),
-        )));
+        let read_pool = ReadPool::open(
+            config,
+            "command-reads-postgres",
+            crate::background::COMMAND_READ_CONNECTIONS,
+            &mut acquire,
+        )
+        .await?;
+        let scheduler_pool = ReadPool::open(
+            config,
+            "command-scheduler-postgres",
+            crate::background::SCHEDULER_CONNECTIONS,
+            &mut acquire,
+        )
+        .await?;
         let timer = Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-        let reconcile = rss_mdm_work_page::scheduler::Scheduler::new(read_pool.clone(), &control)
+        let reconcile = rss_mdm_work_page::scheduler::Scheduler::new(scheduler_pool, &control)
             .await
             .map_err(|_| bad())?;
         Ok(Self {
@@ -223,16 +228,36 @@ impl Storage {
         })
     }
 }
-struct ReadPool(sqlx::PgPool);
+struct ReadPool(&'static str, sqlx::PgPool);
+impl ReadPool {
+    async fn open(
+        config: &crate::config::Config,
+        name: &'static str,
+        limit: u32,
+        acquire: &mut impl FnMut(Box<rss_runtime::DynManagedResource<'static>>),
+    ) -> Result<sqlx::PgPool, Error> {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(limit)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect_with(config.command_database.options()?)
+            .await
+            .map_err(|_| Error::Configuration(crate::ConfigIssue::CommandStorage))?;
+        acquire(rss_runtime::DynManagedResource::new_box(Self(
+            name,
+            pool.clone(),
+        )));
+        Ok(pool)
+    }
+}
 impl rss_runtime::ManagedResource for ReadPool {
     fn name(&self) -> &str {
-        "command-scheduler-postgres"
+        self.0
     }
     fn shutdown_timeout(&self) -> Duration {
         Duration::from_secs(8)
     }
     async fn shutdown(&self) -> Result<(), rss_runtime::ShutdownError> {
-        self.0.close().await;
+        self.1.close().await;
         Ok(())
     }
 }

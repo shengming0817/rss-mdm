@@ -270,13 +270,7 @@ pub async fn install(input: Input) -> Result<Receipt> {
     let previous = journal.load::<Saved>("installation.json")?;
     let first = previous.is_none();
     if first {
-        let mut connection = sqlx::PgConnection::connect_with(
-            &input.database.administrator.options().map_err(invalid)?,
-        )
-        .await
-        .map_err(|_| Error::Storage)?;
-        let budget = super::postgres::connection_budget(&mut connection).await?;
-        connection.close().await.map_err(|_| Error::Storage)?;
+        let budget = super::postgres::available_connections(&input).await?;
         input
             .background(budget)
             .compile_pools(

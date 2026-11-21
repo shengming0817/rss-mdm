@@ -34,6 +34,10 @@ impl ManagedResource for AccessResource {
         Duration::from_secs(5)
     }
 }
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static INSTALLED_ADMISSION: Arc<std::sync::OnceLock<rss_runtime::AdmissionGate>>;
+}
 pub async fn serve(
     config: Config,
     stop: impl std::future::Future<Output = Result<(), std::io::Error>>,
@@ -765,12 +769,6 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                     let signals = notifications.signals.clone();
                     let mut launch = startup.commit();
                     launch.stage_deferred_task_with_token(app.baseline);
-                    if let Some(service) = app.telemetry.clone() {
-                        launch.stage_deferred_task_with_token(
-                            crate::telemetry::registration(service, protocol_runtime.clone())
-                                .critical(),
-                        );
-                    }
                     launch.stage_deferred_task_with_token(
                         crate::assembly::webhooks::registration(app.webhooks.clone()).critical(),
                     );
@@ -849,8 +847,18 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                         )
                         .critical(),
                     );
+                    // Root cancellation stops telemetry admission alongside HTTP. Its task
+                    // drains concurrently while the final request gate waits for admitted work.
+                    if let Some(service) = app.telemetry.clone() {
+                        launch.stage_task_with_token(
+                            crate::telemetry::registration(service, protocol_runtime.clone())
+                                .critical(),
+                        );
+                    }
                     let (control, gate) = launch
                         .finish_with_admission("native-accepted-requests", http.admission_drain);
+                    #[cfg(test)]
+                    let _ = INSTALLED_ADMISSION.try_with(|slot| slot.set(gate.clone()));
                     admission.set(gate).map_err(|_| ProcessError::Stage {
                         stage: "startup.admission",
                         kind: "admission already bound",
