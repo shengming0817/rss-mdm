@@ -242,9 +242,10 @@ pub async fn verify(
     for kind in ["verify_rss_login", "rotate_rss_login"] {
         let version = Uuid::new_v4();
         let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let lifetime = if kind == "verify_rss_login" { 60 } else { 1800 };
         let policy = json!({"id":Uuid::new_v4(),"version":version,"revision":1,"device":registration.device,
             "operation":{"kind":kind,"binding":binding.id,"bindingGeneration":binding.generation,"sid":SID},
-            "enabled":true,"notBefore":now-1,"expiresAt":now+3600,"runLifetimeSeconds":1800});
+            "enabled":true,"notBefore":now-1,"expiresAt":now+3600,"runLifetimeSeconds":lifetime});
         let path = format!("{url}/credential-policies");
         for _ in 0..2 {
             let read: Value = material::success(
@@ -270,7 +271,7 @@ pub async fn verify(
         versions.push(version);
     }
     let versions: [Uuid; 2] = versions.try_into().expect("verify and rotate policies");
-    Box::pin(reconcile(
+    let expired = Box::pin(reconcile(
         c, client, peer, base, &url, &binding, &bearer, &original, versions,
     ))
     .await?;
@@ -281,6 +282,7 @@ pub async fn verify(
     };
     let original_for_replay = original.clone();
     let mut active_secret = original;
+    let mut replaces = Some(expired);
     for (action, finish) in [
         (Action::Verify, true),
         (Action::Rotate, true),
@@ -291,7 +293,7 @@ pub async fn verify(
             operation_id: Uuid::new_v4(),
             binding_id: binding.id,
             binding_generation: binding.generation,
-            replaces: None,
+            replaces: replaces.take(),
             action,
         };
         let send = || {
@@ -385,7 +387,7 @@ async fn reconcile(
     guardian: &str,
     original: &str,
     versions: [Uuid; 2],
-) -> Result<()> {
+) -> Result<Uuid> {
     let path = format!("{url}/credential-operations");
     let first = material::administrator(c).await?;
     let second = material::administrator(c).await?;
@@ -520,16 +522,41 @@ async fn reconcile(
         definition_digest: spec.definition_digest,
         receipt: result.receipt.context("verified predecessor")?,
     };
-    for _ in 0..2 {
-        assert_eq!(
-            material::success::<CredentialSettlement>(event(verify.operation_id, &ack).await?)
-                .await?
-                .state,
-            State::Applied
-        );
-    }
+    let committed: CredentialSettlement =
+        material::success(event(verify.operation_id, &ack).await?).await?;
+    assert_eq!(committed.state, State::Applied);
+    let late = request(Action::Verify, None);
+    material::success::<Status>(post(guardian, &late).await?).await?;
+    let late_spec: w::CredentialTaskSpec = material::success(next().await?).await?;
+    let observed = Event::Escrow {
+        attempt_id: late_spec.attempt_id,
+        value: envelope(&late_spec, &late_spec.expected[0].subject, original)?,
+    };
+    let pending: CredentialSettlement =
+        material::success(event(late.operation_id, &observed).await?).await?;
+    let first_ack = Event::Applied {
+        attempt_id: late_spec.attempt_id,
+        definition_digest: late_spec.definition_digest,
+        receipt: pending.receipt.context("pending verify receipt")?,
+    };
+    let seconds =
+        (late_spec.deadline - time::OffsetDateTime::now_utc().unix_timestamp() + 1).max(0);
+    tokio::time::sleep(std::time::Duration::from_secs(seconds.try_into()?)).await;
+    let replayed: CredentialSettlement =
+        material::success(event(verify.operation_id, &ack).await?).await?;
+    assert_eq!(replayed.operation_id, committed.operation_id);
+    assert_eq!(replayed.state, committed.state);
+    assert_eq!(replayed.receipt, committed.receipt);
+    assert_eq!(event(verify.operation_id, &first_ack).await?.status(), 409);
+    assert_eq!(event(late.operation_id, &first_ack).await?.status(), 403);
+    assert_eq!(
+        material::success::<Status>(get(late.operation_id).await?)
+            .await?
+            .state,
+        State::PendingApplication
+    );
     let result: Status = material::success(get(rotate.operation_id).await?).await?;
     assert_eq!(result.state, State::Unchanged);
     assert_eq!(result.receipt, Some(previous));
-    Ok(())
+    Ok(late.operation_id)
 }

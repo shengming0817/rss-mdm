@@ -217,7 +217,7 @@ pub struct CredentialTaskSpec {
     pub attempt_id: Uuid,
     /// Offer or Start.
     pub permit: TaskPermit,
-    /// Signed permit expiry.
+    /// Expiration of this execution permit, in UNIX seconds.
     pub expires_at: i64,
     /// Original execution deadline.
     pub deadline: i64,

@@ -376,7 +376,7 @@ Agent 使用设备证书读取 `GET /api/v1/agent/runtime/management-activities`
 用 `GET /api/v1/tenants/{tenant}/devices/{device}/device-access/credential-operations/{id}` 查询原操作。请求携带唯一的 `operationId`、`policyVersion`、绑定 ID、当前绑定代际和 `verify` 或 `rotate`。该版本必须明确授权该设备、本地账户和动作。独立 DA 设备以当前 mTLS 身份从
 `POST /api/v1/da/credential-operations/next` 领取，按执行规范加密托管材料，将托管及原生应用读回分别提交给
 `POST /api/v1/da/credential-operations/{id}/events`。操作记录依次显示 `accepted`、`pending_application` 和 `applied`。
-现任管理员可在新请求中填入原操作的 `replaces`。尚未托管的操作进入 `superseded`。已有托管回执的轮换须用 `verify` 接替。设备先停止原尝试，再读取实际生效的凭据并加密回报。原操作的候选版本确认后显示 `applied`，前一版本确认后显示 `unchanged`。已退役代际的设备确认保留为 `retired`。各状态均保留原回执。
+现任管理员可在新请求中填入原操作的 `replaces`。尚未托管的操作进入 `superseded`。已有托管回执的轮换须用 `verify` 接替。设备先停止原尝试，再读取实际生效的凭据并加密回报。原操作的候选版本确认后显示 `applied`，前一版本确认后显示 `unchanged`。已退役代际的设备确认保留为 `retired`。各状态均保留原回执。当前注册设备可用相同操作、尝试与事件内容重取已经提交的回执，即使原执行期限已经过去。领取及首次结算仍须通过当前凭据策略和期限校验。
 恢复材料的专用披露响应带有 `Cache-Control: no-store`。断线重试需要原操作、原管理会话和仍在有效期内的原用途证明。
 
 管理员可用 `GET /api/v1/tenants/{tenant}/apple/platform-sso/status?deviceId=...&bindingId=...` 读取登录资格。

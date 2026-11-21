@@ -279,10 +279,11 @@ impl Service {
         self.write(a, (self, credentials, p), |ctx, c| {
             Box::pin(async move {
                 let (service, credentials, p) = *ctx;
-                let run = admitted_run(c, service, p, None).await?;
+                let run = locked_run(c, service, p, None).await?;
                 let value = match run {
                     Some(run) => {
                         let now = crate::platform_sso::store::now(c).await?;
+                        authorize_execution(c, &run, now).await?;
                         Some(
                             run.permit(c, credentials, now)
                                 .await
@@ -316,14 +317,17 @@ impl Service {
         self.write(a, (self, credentials, p, id, input), |ctx, c| {
             Box::pin(async move {
                 let (service, credentials, p, id, input) = *ctx;
-                let mut run = admitted_run(c, service, p, Some(id))
+                let mut run = locked_run(c, service, p, Some(id))
                     .await?
                     .ok_or(Error::NotFound)?;
-                let now = crate::platform_sso::store::now(c).await?;
-                let replay = run
-                    .settle(c, credentials, input, now)
-                    .await
-                    .map_err(super::error)?;
+                let replay = run.recorded(input).map_err(super::error)?;
+                if !replay {
+                    let now = crate::platform_sso::store::now(c).await?;
+                    authorize_execution(c, &run, now).await?;
+                    run.settle(c, credentials, input, now)
+                        .await
+                        .map_err(super::error)?;
+                }
                 let status = run.status();
                 Ok(Change {
                     value: CredentialSettlement {
@@ -339,7 +343,7 @@ impl Service {
     }
 }
 /// Acquire the frozen authorization fence before the device fence, then re-read the locked run.
-async fn admitted_run(
+async fn locked_run(
     c: &mut PgConnection,
     service: &Service,
     p: &DevicePrincipal,
@@ -360,32 +364,37 @@ async fn admitted_run(
     if hint.as_ref().map(|r| r.spec().task_id) != run.as_ref().map(|r| r.spec().task_id) {
         return Err(Error::ReadConflict);
     }
-    if let Some(run) = &run {
-        let current_time = crate::platform_sso::store::now(c).await?;
-        if !run
-            .authority_current(c, current_time)
-            .await
-            .map_err(super::error)?
-        {
-            return Err(Error::Forbidden);
-        }
-        let (_, anchor) = super::credential_tasks::qualified(c, tenant, run.operation())
-            .await
-            .map_err(super::error)?;
-        let policy = current_policy(
-            c,
-            tenant,
-            *p.device(),
-            run.status().request.policy_version,
-            run.operation(),
-            current_time,
-        )
-        .await?;
-        if current_time >= run.spec().deadline {
-            return Err(Error::Forbidden);
-        }
-        run.admit(&anchor, policy.id, policy.version)
-            .map_err(super::error)?;
-    }
     Ok(run)
+}
+
+async fn authorize_execution(
+    c: &mut PgConnection,
+    run: &device::Run,
+    current_time: i64,
+) -> Result<(), Error> {
+    let tenant = run.spec().tenant_id;
+    if !run
+        .authority_current(c, current_time)
+        .await
+        .map_err(super::error)?
+    {
+        return Err(Error::Forbidden);
+    }
+    let (_, anchor) = super::credential_tasks::qualified(c, tenant, run.operation())
+        .await
+        .map_err(super::error)?;
+    let policy = current_policy(
+        c,
+        tenant,
+        run.spec().device_id,
+        run.status().request.policy_version,
+        run.operation(),
+        current_time,
+    )
+    .await?;
+    if current_time >= run.spec().deadline {
+        return Err(Error::Forbidden);
+    }
+    run.admit(&anchor, policy.id, policy.version)
+        .map_err(super::error)
 }

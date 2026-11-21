@@ -51,11 +51,23 @@ struct Frozen {
     predecessor: wire::CredentialReceipt,
     spec: wire::CredentialTaskSpec,
 }
+#[derive(Serialize, Deserialize)]
+struct RecordedReceipt {
+    receipt: wire::CredentialReceipt,
+    applied_event: Option<[u8; 32]>,
+}
+
+fn event_digest(event: &Event) -> Result<[u8; 32], Error> {
+    use sha2::{Digest, Sha256};
+    Ok(Sha256::digest(serde_json::to_vec(event).map_err(|_| Error::Malformed)?).into())
+}
+
 pub struct Run {
     frozen: Frozen,
     anchor: Binding,
     state: State,
     receipt: Option<wire::CredentialReceipt>,
+    applied_event: Option<[u8; 32]>,
     escrow_digest: Option<[u8; 32]>,
     permit_until: i64,
 }
@@ -66,6 +78,18 @@ impl Run {
             request: self.frozen.request.clone(),
             state: self.state,
             receipt: self.receipt.clone(),
+        }
+    }
+    /// Match the typed event against the digest committed with its original receipt.
+    pub fn recorded(&self, event: &Event) -> Result<bool, Error> {
+        let existing = match event {
+            Event::Escrow { .. } => self.escrow_digest,
+            Event::Applied { .. } => self.applied_event,
+        };
+        match existing {
+            None => Ok(false),
+            Some(digest) if digest == event_digest(event)? => Ok(true),
+            Some(_) => Err(Error::Conflict),
         }
     }
     pub fn owned(&self, p: &rss_mdm_authorization_service::context::AuthorizedPrincipal) -> bool {
@@ -130,7 +154,12 @@ pub async fn load(
         .fetch_optional(c)
         .await?
         .map(|row| {
+            let recorded: Option<RecordedReceipt> = row
+                .try_get::<Option<serde_json::Value>, _>("result")?
+                .map(decode)
+                .transpose()?;
             Ok(Run {
+                applied_event: recorded.as_ref().and_then(|result| result.applied_event),
                 permit_until: row.try_get("da_permit_until")?,
                 escrow_digest: row
                     .try_get::<Option<Vec<u8>>, _>("da_escrow_digest")?
@@ -139,10 +168,7 @@ pub async fn load(
                 frozen: decode(row.try_get("da_execution")?)?,
                 anchor: decode(row.try_get("material_binding")?)?,
                 state: decode(row.try_get("state")?)?,
-                receipt: row
-                    .try_get::<Option<serde_json::Value>, _>("result")?
-                    .map(decode)
-                    .transpose()?,
+                receipt: recorded.map(|result| result.receipt),
             })
         })
         .transpose()
@@ -305,6 +331,7 @@ pub async fn accept(
         anchor,
         state: State::Accepted,
         receipt: None,
+        applied_event: None,
         escrow_digest: None,
         permit_until: 0,
     };
@@ -342,7 +369,7 @@ impl Run {
         credentials: &Credentials,
         event: &Event,
         now: i64,
-    ) -> Result<bool, Error> {
+    ) -> Result<(), Error> {
         if credentials.profile() != DA {
             return Err(Error::Forbidden);
         }
@@ -356,16 +383,6 @@ impl Run {
                     || value.materials[0].expected_revision != spec.expected[0].revision
                 {
                     return Err(Error::Conflict);
-                }
-                use sha2::{Digest, Sha256};
-                let digest: [u8; 32] =
-                    Sha256::digest(serde_json::to_vec(value).map_err(|_| Error::Malformed)?).into();
-                if let Some(previous) = self.escrow_digest {
-                    return if previous == digest {
-                        Ok(true)
-                    } else {
-                        Err(Error::Conflict)
-                    };
                 }
                 if now >= self.permit_until {
                     return Err(Error::Forbidden);
@@ -419,7 +436,7 @@ impl Run {
                         return Err(Error::Conflict);
                     }
                 }
-                self.escrow_digest = Some(digest);
+                self.escrow_digest = Some(event_digest(event)?);
                 self.state = State::PendingApplication;
                 candidate.clone()
             }
@@ -433,9 +450,6 @@ impl Run {
                     || self.receipt.as_ref() != Some(receipt)
                 {
                     return Err(Error::Conflict);
-                }
-                if self.state == State::Applied {
-                    return Ok(true);
                 }
                 if self.state != State::PendingApplication {
                     return Err(Error::Conflict);
@@ -508,16 +522,21 @@ impl Run {
                         return Err(Error::Conflict);
                     }
                 }
+                self.applied_event = Some(event_digest(event)?);
                 self.state = State::Applied;
                 receipt.clone()
             }
         };
-        self.receipt = Some(receipt);
+        self.receipt = Some(receipt.clone());
+        let result = RecordedReceipt {
+            receipt,
+            applied_event: self.applied_event,
+        };
         sqlx::query("UPDATE rss_da.credential_runs SET state=$3,result=$4,da_escrow_digest=$5 WHERE tenant_id=$1 AND id=$2 AND da_execution IS NOT NULL")
-            .bind(self.spec().tenant_id).bind(self.spec().task_id).bind(encode(&self.state)?).bind(encode(&self.receipt)?).bind(self.escrow_digest.as_ref().map(|v|v.as_slice())).execute(&mut *c).await?;
+            .bind(self.spec().tenant_id).bind(self.spec().task_id).bind(encode(&self.state)?).bind(encode(&result)?).bind(self.escrow_digest.as_ref().map(|v|v.as_slice())).execute(&mut *c).await?;
         if self.state == State::Applied && self.frozen.request.action == Action::Rotate {
             release_guard(c, self.spec().task_id, self.spec().attempt_id).await?;
         }
-        Ok(false)
+        Ok(())
     }
 }
