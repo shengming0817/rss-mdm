@@ -438,6 +438,7 @@ pub async fn verify(
         policy: publication.id,
         policy_version: publication.version,
         configuration: Some(rss_mdm_device_access::deployment::ConfigurationDeployment {
+            applied: None,
             artifact: managed.decode()?.operation_id,
             digest: managed.digest.clone(),
             native_digest: managed.decode()?.native.digest,

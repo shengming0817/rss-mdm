@@ -222,9 +222,24 @@ pub async fn verify_sources(
         "managed_mandatory"
     );
     assert_eq!(initial["resolution"]["fields"][0]["locked"], true);
+    let effective = serde_json::from_value(initial["resolution"]["configuration"].clone())?;
+    let managed_artifact = managed.as_ref().unwrap().artifact;
+    let applied = rss_mdm_device_access::deployment::ConfigurationReadback {
+        backend_artifact: ordinary.decode()?.operation_id, effective,
+        managed_sources: [(da::ConfigurationField::Mac, managed_artifact)].into(),
+    };
+    for (artifact, expected) in [(Uuid::new_v4(),false), (applied.backend_artifact,true)] {
+        observation.configuration.as_mut().unwrap().applied = Some(
+            rss_mdm_device_access::deployment::ConfigurationReadback {backend_artifact:artifact, ..applied.clone()});
+        observation.sequence += 1;
+        material::empty(client.post(&url).json(&business::signed(observation)?).send().await?).await?;
+        let read = diagnostic(client, &management, token, &observation.device).await?;
+        assert_eq!(read["application"] == "verified_applied", expected);
+    }
     for configuration in [
         None,
         Some(ConfigurationDeployment {
+            applied: None,
             artifact: ordinary.decode()?.operation_id,
             digest: ordinary.digest.clone(),
             native_digest: ordinary.decode()?.native.digest,
@@ -293,6 +308,7 @@ pub async fn verify_sources(
     .await?;
     let content = broader.decode()?;
     observation.configuration = Some(ConfigurationDeployment {
+            applied: None,
         artifact: content.operation_id,
         digest: broader.digest,
         native_digest: content.native.digest,

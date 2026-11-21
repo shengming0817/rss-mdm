@@ -208,7 +208,7 @@ DA 状态上报为 `POST /api/v1/da/status-reports`；注册进度查询为 `POS
 `POST /api/v1/da/configuration-reports` 分别报告 received、validated、applied、rejected 或 unknown，不推导状态链，不写入认证资格、绑定效果或签名钥匙 ACK。
 报告可以记录已过期或已撤回候选的拒绝/未知事实，但不能使其重新成为可领取或可信应用的候选。
 客户端 source 声明始终为 reported；预置信任的部署 authority 才能通过 deployment-evidence 的 configuration 字段证明精确 artifact/digest/nativeDigest 与实际投递。
-`GET /api/v1/tenants/{tenant}/da/admin/devices/{device}/configuration` 将可信证明与后台配置裁决分开展示。可信 managed-mandatory 设置优先于 DA 后台设置；授权字段锁定并标明后台值被忽略。合法受管版本在后台发布新版本后仍按授权字段优先；配置来源证明与登录资格的当前策略版本校验分开。已存在强制来源的读取失败、过期或冲突会阻断回退；没有配置时安全默认不启用集成。role、selfEnrollment 与服务端启用规则继续取自后台授权。
+`GET /api/v1/tenants/{tenant}/da/admin/devices/{device}/configuration` 将可信证明与后台配置裁决分开展示。可信 managed-mandatory 设置优先于 DA 后台设置；授权字段锁定并标明后台值被忽略。合法受管版本在后台发布新版本后仍按授权字段优先；配置来源证明与登录资格的当前策略版本校验分开。设备诊断返回当前签名操作、字段锁及设备自报。确认实际应用需要预置部署方签署完整本地读回，匹配当前后台制品、有效强制字段来源和裁决后的配置。服务端最近回执已过新鲜期且当前制品仍待确认时可显示离线待应用；没有回执时连接状态未知。已存在强制来源的读取失败、过期或冲突会阻断回退；没有配置时安全默认不启用集成。role、selfEnrollment 与服务端启用规则继续取自后台授权。
 客户端启动时先读取完整的托管引导快照，再裁决 DA 后台候选；签名内容整体替换，不将省略字段视为增量补丁。服务端按 authority/注册代际及 Policy/字段保留强制来源引用，新的空快照、普通 DA 来源或字段较窄的旧强制包不会清除其他字段的记录；只有通过 step-up 修改原签发 Policy 的 managedFields 才释放相应字段。读取失败、无效或撤除不等同于首次缺失。
 原生模板消费者须保持内层 payload 字节和签名绑定的 profile/payload UUID、identifier、version；外层 CMS 可重新签名。完整原生导出装配由 #3093 承接。
 
