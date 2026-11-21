@@ -52,7 +52,7 @@ pub fn assemble(
             proof_audit: c.proof_audit.clone(),
             cursor: rss_mdm_query::cursor::CursorCodec::new(&[37; 32])?,
             protection: m.protection.clone(),
-            platform: Some(super::platform::runtime(&m.directory,&c.browser_origin)?),
+            platform: Some(super::platform::runtime(&m.directory, &c.browser_origin)?),
             evidence: evidence.clone(),
             broker_query: None,
             agent_facts: None,
@@ -61,7 +61,7 @@ pub fn assemble(
     )?;
     c.platform.bind(&runtime.platform)?;
     let business = Arc::new(rss_mdm_device_access_http::Business {
-        recovery:None,
+        recovery: None,
         evidence,
         service: runtime.business,
         admission: runtime.admission,
@@ -281,14 +281,7 @@ pub async fn verify(
         serde_json::to_value(&accepted)?
     );
     assert_eq!(counts(c).await?, settled);
-    directory_http(
-        c,
-        m,
-        &session_secret,
-        &receipt.device,
-        binding,
-    )
-    .await?;
+    directory_http(c, m, &session_secret, &receipt.device, binding).await?;
     c.authority
         .revoke_current_session(
             c.authority
@@ -608,75 +601,75 @@ async fn directory_http(
 ) -> Result<()> {
     let origin = &c.browser_origin;
     let client = m.client(None)?;
-        let page = material::success::<serde_json::Value>(
-            client
-                .get(format!(
-                    "{origin}/api/v1/tenants/{}/devices/{}/device-access",
-                    c.tenant, device
-                ))
-                .header(
-                    "cookie",
-                    format!("__Host-identity-session={}", secret.expose()),
-                )
-                .query(&[(
-                    "filter",
-                    format!("id=={binding};desired.windows.kind==whfb"),
-                )])
-                .send()
-                .await?,
-        )
-        .await?;
-        assert_eq!(
-            page["items"]
-                .as_array()
-                .context("DA binding directory")?
-                .len(),
-            1
-        );
-        assert_eq!(page["items"][0]["id"], binding.to_string());
-        let missing = material::success::<serde_json::Value>(
-            client
-                .get(format!(
-                    "{origin}/api/v1/tenants/{}/devices/{}/device-access",
-                    c.tenant, device
-                ))
-                .header(
-                    "cookie",
-                    format!("__Host-identity-session={}", secret.expose()),
-                )
-                .query(&[("filter", format!("id=={}", Uuid::new_v4()))])
-                .send()
-                .await?,
-        )
-        .await?;
-        assert_eq!(missing["items"], serde_json::json!([]));
+    let page = material::success::<serde_json::Value>(
+        client
+            .get(format!(
+                "{origin}/api/v1/tenants/{}/devices/{}/device-access",
+                c.tenant, device
+            ))
+            .header(
+                "cookie",
+                format!("__Host-identity-session={}", secret.expose()),
+            )
+            .query(&[(
+                "filter",
+                format!("id=={binding};desired.windows.kind==whfb"),
+            )])
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(
+        page["items"]
+            .as_array()
+            .context("DA binding directory")?
+            .len(),
+        1
+    );
+    assert_eq!(page["items"][0]["id"], binding.to_string());
+    let missing = material::success::<serde_json::Value>(
+        client
+            .get(format!(
+                "{origin}/api/v1/tenants/{}/devices/{}/device-access",
+                c.tenant, device
+            ))
+            .header(
+                "cookie",
+                format!("__Host-identity-session={}", secret.expose()),
+            )
+            .query(&[("filter", format!("id=={}", Uuid::new_v4()))])
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(missing["items"], serde_json::json!([]));
 
-        let page = material::success::<serde_json::Value>(
-            client
-                .get(format!(
-                    "{origin}/api/v1/tenants/{}/device-access/enterprise/configuration",
-                    c.tenant
-                ))
-                .header(
-                    "cookie",
-                    format!("__Host-identity-session={}", secret.expose()),
-                )
-                .query(&[(
-                    "filter",
-                    "kind==relying_party;value.id==directory-target;value.enabled==true",
-                )])
-                .send()
-                .await?,
-        )
-        .await?;
-        assert_eq!(
-            page["items"]
-                .as_array()
-                .context("enterprise directory")?
-                .len(),
-            1
-        );
-        assert_eq!(page["items"][0]["id"], "rp:directory-target");
+    let page = material::success::<serde_json::Value>(
+        client
+            .get(format!(
+                "{origin}/api/v1/tenants/{}/device-access/enterprise/configuration",
+                c.tenant
+            ))
+            .header(
+                "cookie",
+                format!("__Host-identity-session={}", secret.expose()),
+            )
+            .query(&[(
+                "filter",
+                "kind==relying_party;value.id==directory-target;value.enabled==true",
+            )])
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(
+        page["items"]
+            .as_array()
+            .context("enterprise directory")?
+            .len(),
+        1
+    );
+    assert_eq!(page["items"][0]["id"], "rp:directory-target");
 
     Ok(())
 }

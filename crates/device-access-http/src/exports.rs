@@ -1,6 +1,5 @@
 //! Read-only native wrapping of the original authorized signing receipt.
 use crate::{Error, management::Services};
-use rss_mdm_authorization_service::context::RequestAuth;
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
@@ -9,6 +8,7 @@ use rss_mdm_apple_mdm::{
     applicability::{Channel, Context, Enrollment, Version},
     native::{Target, ddm::DeclarationInput, profiles::ProfileInput},
 };
+use rss_mdm_authorization_service::context::RequestAuth;
 use std::sync::Arc;
 #[derive(Default, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

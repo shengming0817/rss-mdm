@@ -30,11 +30,7 @@ pub struct ConditionalHeader {
 }
 
 /// Identity credential presentations described by the executing browser middleware.
-pub fn identity_credentials(
-    method: &str,
-    bearer: bool,
-    api_key: bool,
-) -> Vec<Credential> {
+pub fn identity_credentials(method: &str, bearer: bool, api_key: bool) -> Vec<Credential> {
     use crate::signature::{Direction, Schema};
     fn header(value: serde_json::Value) -> Schema {
         Schema {
@@ -73,7 +69,9 @@ pub fn identity_credentials(
                 "Product API key secret",
             ),
         ] {
-            if kind == "api_key" && !api_key || kind == "bearer" && !bearer {continue;}
+            if kind == "api_key" && !api_key || kind == "bearer" && !bearer {
+                continue;
+            }
             credentials.push(Credential {
                 kind, owner,
                 headers: [(name.into(), header(serde_json::json!({"type":"string", "description":description})))].into(),

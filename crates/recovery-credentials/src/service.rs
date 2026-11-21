@@ -38,7 +38,9 @@ impl Credentials {
             eligibility,
         }
     }
-    pub fn protection(&self) -> &Protection { &self.protection }
+    pub fn protection(&self) -> &Protection {
+        &self.protection
+    }
     pub fn keys(&self) -> &Arc<KeyRing> {
         &self.protection.keys
     }
@@ -214,6 +216,7 @@ impl Credentials {
                                     }
                                     if matches!(material.binding.subject,Subject::RssLogin{..})!=access.is_some(){return Err(Error::Forbidden);}
                                     if matches!(material.binding.subject, Subject::RssLogin { .. }) {
+                                        if !material.current || material.validity != Validity::Verified {return Err(Error::NotFound);}
                                         let eligibility=service.eligibility.as_ref().ok_or(Error::Unsupported)?;
                                         if eligibility.storage_profile()!=profile { return Err(Error::Forbidden); }
                                         eligibility.disclose(c, principal, &material.binding).await?;
@@ -361,9 +364,14 @@ impl Credentials {
     }
 }
 
-async fn require_current_device(c: &mut PgConnection, p: &AuthorizedPrincipal, device: &rss_mdm_agent_wire::DeviceId) -> Result<(), Error> {
+async fn require_current_device(
+    c: &mut PgConnection,
+    p: &AuthorizedPrincipal,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<(), Error> {
     rss_mdm_registration_service::device::endpoints::current_da_in(c, p.tenant_id(), device)
-        .await?.ok_or(Error::NotFound)?;
+        .await?
+        .ok_or(Error::NotFound)?;
     Ok(())
 }
 async fn configure(
@@ -547,7 +555,8 @@ async fn disclosure_receipt(
         {
             return Err(Error::Conflict);
         }
-        if !row.try_get::<bool, _>("live")? || row.try_get::<String, _>("session_id")? != p.session_id()?
+        if !row.try_get::<bool, _>("live")?
+            || row.try_get::<String, _>("session_id")? != p.session_id()?
             || row.try_get::<Vec<u8>, _>("proof_digest")? != input.proof_digest()?
         {
             return Err(Error::Unauthorized);

@@ -190,9 +190,7 @@ impl Context {
                 .await?,
         );
         let platform = Arc::new(
-            rss_mdm_device_access_postgres::platform_sso::bridge::Verifier::new(
-                &browser_origin,
-            ),
+            rss_mdm_device_access_postgres::platform_sso::bridge::Verifier::new(&browser_origin),
         );
         let authority = rss_identity_postgres::Authority::connect_runtime(
             identity_runtime.clone(),

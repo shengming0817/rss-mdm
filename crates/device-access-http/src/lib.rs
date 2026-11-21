@@ -95,7 +95,8 @@ pub fn router(
     }
 }
 
-pub(crate) fn declarations() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+pub(crate) fn declarations()
+-> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     rss_mdm_http_contract::route_module! {struct DaDevice for [Da] {issue, activate, status, renew, pki_trust, pki_ack, configuration_trust, configuration_ack, retrieve}}
     DaDevice {
         issue: Route::new(
@@ -258,7 +259,6 @@ async fn retrieve(
         .await?;
     Ok(Json(current.artifact.ok_or(Error::Conflict)?))
 }
-
 
 pub mod agent_access;
 pub mod business_error;

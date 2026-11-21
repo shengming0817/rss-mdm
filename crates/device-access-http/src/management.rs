@@ -1,10 +1,17 @@
 //! Tenant management routes, mounted behind the host's Identity request middleware.
 use super::{Body, Error, PROTOCOL, body, exports, trust};
-use axum::{Extension, Json, extract::{Path, State}};
-use rss_mdm_agent_wire::{da,enroll};
+use axum::{
+    Extension, Json,
+    extract::{Path, State},
+};
+use rss_mdm_agent_wire::{da, enroll};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::context::RequestAuth;
-use rss_mdm_http_contract::{Router, Operation, module::Route, routing::{get,post}};
+use rss_mdm_http_contract::{
+    Operation, Router,
+    module::Route,
+    routing::{get, post},
+};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -17,10 +24,15 @@ pub struct Services {
 }
 
 pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
-    rss_mdm_http_contract::route_module! {struct Management for [Browser] {lifecycle,configurations,platform_status}}
-    Management {platform_status:Route::new("/api/v1/tenants/{tenant}/apple/platform-sso/status",get(platform_status,&rss_mdm_http_contract::catalog::PROTOCOL_APPLE_CHANNEL,&[Operation::Action])),lifecycle:lifecycle(),configurations:crate::configurations::management()}.assemble()
+    rss_mdm_http_contract::route_module! {struct Management for [Browser] {lifecycle,configurations}}
+    Management {
+        lifecycle: lifecycle(),
+        configurations: crate::configurations::management(),
+    }
+    .assemble()
 }
-pub(crate) fn lifecycle() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+pub(crate) fn lifecycle()
+-> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     rss_mdm_http_contract::route_module! {struct DaAdministration for [Browser] {grant, recover_issuance, recover, revoke, trust_read, trust_change, trust_operation, export, export_operation, templates}}
     DaAdministration {
         grant: Route::new(
@@ -73,7 +85,9 @@ async fn grant(
     Extension(auth): Extension<RequestAuth>,
     v: Body<da::GrantRequest>,
 ) -> Result<Json<da::Grant>, Error> {
-    Ok(Json(s.registrations.grant(&auth.proof, &body(v)?, &a).await?))
+    Ok(Json(
+        s.registrations.grant(&auth.proof, &body(v)?, &a).await?,
+    ))
 }
 async fn recover(
     State(s): State<Arc<Services>>,
@@ -82,7 +96,11 @@ async fn recover(
     Path((_tenant, id)): Path<(Uuid, rss_mdm_agent_wire::DeviceId)>,
     v: Body<da::GrantRequest>,
 ) -> Result<Json<da::Grant>, Error> {
-    Ok(Json(s.registrations.recover(&auth.proof, id, &body(v)?, &a).await?))
+    Ok(Json(
+        s.registrations
+            .recover(&auth.proof, id, &body(v)?, &a)
+            .await?,
+    ))
 }
 async fn revoke(
     State(s): State<Arc<Services>>,
@@ -181,12 +199,4 @@ async fn recover_issuance(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OperationRequest {
     operation_id: Uuid,
-}
-
-#[derive(serde::Deserialize,schemars::JsonSchema)]
-#[serde(rename_all="camelCase",deny_unknown_fields)]
-struct PlatformQuery { device_id:rss_mdm_agent_wire::DeviceId,binding_id:Option<Uuid> }
-async fn platform_status(State(s):State<Arc<Services>>, Extension(auth):Extension<RequestAuth>, Path(_tenant):Path<Uuid>,
-    axum::extract::Query(q):axum::extract::Query<PlatformQuery>)->Result<Json<rss_mdm_device_access_postgres::platform_sso::status::ManagementStatus>,crate::business_error::Error>{
-    Ok(Json(s.business.platform_status(&s.platform.context,&auth.proof,q.device_id,q.binding_id).await?))
 }

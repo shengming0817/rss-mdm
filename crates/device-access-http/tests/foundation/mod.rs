@@ -3,6 +3,7 @@ mod admission;
 mod business;
 mod configuration;
 mod context;
+mod credentials;
 mod exports;
 mod host;
 mod installation;
@@ -38,7 +39,14 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     admission::verify_and_reject_drift(&c).await?;
     let material = material::Material::new(&c).await?;
     let registration = material.assemble(&c, &device_origin).await?;
-    let (installed_host, stop, running) = Box::pin(host::verify(&c, &material, &registration, browser, protocol)).await?;
+    let (installed_host, stop, running) = Box::pin(host::verify(
+        &c,
+        &material,
+        &registration,
+        browser,
+        protocol,
+    ))
+    .await?;
     let token = material::administrator(&c).await?;
     let proof = c
         .sessions
@@ -497,16 +505,10 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     let retained:i64=sqlx::query_scalar("SELECT max_verify_until FROM rss_da.signing_keys WHERE tenant_id=$1::uuid AND usage='da_configuration' AND key_id=$2").bind(c.tenant.to_string()).bind(old_key).fetch_one(&c.operator).await?;
     assert!(retained >= signed.decode()?.expires_at);
     // Verify configuration trust before the business proof changes current policy selection.
-    Box::pin(business::verify(
-        &c,
-        &material,
-        &receipt,
-        &client,
-        base,
-    ))
-    .await
-    .context("DA business owner proof")?;
-    unknown_recovery(
+    Box::pin(business::verify(&c, &material, &receipt, &client, base))
+        .await
+        .context("DA business owner proof")?;
+    let (survivor, survivor_peer) = unknown_recovery(
         &c,
         &material,
         &client,
@@ -517,6 +519,16 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     )
     .await?;
 
+    let pending = Box::pin(credentials::verify(
+        &c,
+        &material,
+        &client,
+        &survivor_peer,
+        base,
+        &survivor,
+    ))
+    .await
+    .context("targeted RSS Login recovery")?;
     let renewal = da::GrantRequest {
         operation_id: Uuid::new_v4(),
         csr: material.csr(2)?,
@@ -612,13 +624,27 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         "revoked DA registration cannot access the PSSO channel"
     );
 
-    stop.send(()).map_err(|_| anyhow::anyhow!("DA host stopped early"))?;
+    stop.send(())
+        .map_err(|_| anyhow::anyhow!("DA host stopped early"))?;
     tokio::time::timeout(Duration::from_secs(50), running).await???;
     c.close().await;
 
-    Box::pin(recovery::verify(&c.inputs, &material, installed_host))
-        .await
-        .context("DA cold recovery proof")?;
+    Box::pin(recovery::verify(
+        &c.inputs,
+        &material,
+        installed_host,
+        recovery::Expected {
+            active: survivor,
+            active_peer: survivor_peer,
+            revoked: renewed_receipt,
+            revoked_peer: renewed_peer,
+            pending,
+            device_base: base.to_string(),
+            management_origin: c.browser_origin.clone(),
+        },
+    ))
+    .await
+    .context("DA cold recovery proof")?;
     drop(material);
     Ok(())
 }
@@ -631,7 +657,7 @@ async fn unknown_recovery(
     token: &str,
     old_export: Uuid,
     old_device: &rss_mdm_agent_wire::DeviceId,
-) -> Result<()> {
+) -> Result<(rss_mdm_agent_wire::da::Registration, reqwest::Client)> {
     let management = c.management_base();
     use base64::{Engine, engine::general_purpose::STANDARD};
     use rss_mdm_agent_wire::{da, enroll};
@@ -804,5 +830,5 @@ async fn unknown_recovery(
         0
     );
     tx.rollback().await?;
-    Ok(())
+    Ok((registration, peer))
 }

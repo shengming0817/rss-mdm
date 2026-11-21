@@ -20,20 +20,35 @@ pub struct Diagnostics {
     pub artifact: Option<uuid::Uuid>,
     pub reported: Option<da::ApplicationState>,
     pub application: Application,
-
 }
 
 #[derive(serde::Serialize, schemars::JsonSchema, Debug, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum Application { Unknown, AwaitingExport, Pending, OfflinePending, Received, Rejected, VerifiedApplied }
+pub enum Application {
+    Unknown,
+    AwaitingExport,
+    Pending,
+    OfflinePending,
+    Received,
+    Rejected,
+    VerifiedApplied,
+}
 
 fn application_state(
-    reported: Option<da::ApplicationState>, offline: bool, verified: bool,
+    reported: Option<da::ApplicationState>,
+    offline: bool,
+    verified: bool,
 ) -> Application {
-    if verified { return Application::VerifiedApplied; }
+    if verified {
+        return Application::VerifiedApplied;
+    }
     match reported {
         Some(da::ApplicationState::Rejected) => Application::Rejected,
-        Some(da::ApplicationState::Received | da::ApplicationState::Validated | da::ApplicationState::Applied) => Application::Received,
+        Some(
+            da::ApplicationState::Received
+            | da::ApplicationState::Validated
+            | da::ApplicationState::Applied,
+        ) => Application::Received,
         Some(da::ApplicationState::Unknown) => Application::Unknown,
         None if offline => Application::OfflinePending,
         None => Application::Pending,
@@ -185,5 +200,40 @@ impl Service {
             }
             Ok(Diagnostics { publication, managed_state: state, evidence, resolution, locked_fields: locked, artifact: artifact_id, reported, application })
         })).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn application_requires_an_independent_readback_and_offline_requires_a_watermark() {
+        for report in [
+            da::ApplicationState::Received,
+            da::ApplicationState::Validated,
+            da::ApplicationState::Applied,
+        ] {
+            assert_eq!(
+                application_state(Some(report), false, false),
+                Application::Received
+            );
+        }
+        assert_eq!(application_state(None, false, false), Application::Pending);
+        assert_eq!(
+            application_state(None, true, false),
+            Application::OfflinePending
+        );
+        assert_eq!(
+            application_state(Some(da::ApplicationState::Unknown), false, false),
+            Application::Unknown
+        );
+        assert_eq!(
+            application_state(Some(da::ApplicationState::Rejected), false, false),
+            Application::Rejected
+        );
+        assert_eq!(
+            application_state(None, false, true),
+            Application::VerifiedApplied
+        );
     }
 }

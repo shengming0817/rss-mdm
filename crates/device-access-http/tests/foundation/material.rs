@@ -244,6 +244,7 @@ async fn administrator_for(
                 access::Permission::OperationRead,
                 access::Permission::Enrollment,
                 access::Permission::Credentials,
+                access::Permission::InventoryRead,
                 access::Permission::ConfigurationWrite,
                 access::Permission::RegistrationConfigurationWrite,
                 access::Permission::RegistrationConfigurationRead,
@@ -277,4 +278,3 @@ async fn administrator_for(
     kdf.wait_closed().await;
     Ok(issued.secret().expose().into())
 }
-

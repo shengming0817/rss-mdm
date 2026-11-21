@@ -37,26 +37,46 @@ impl Key {
         })
     }
 }
-pub fn configuration(dir: &std::path::Path) -> Result<rss_mdm_device_access_runtime::platform::PlatformSso> {
+pub fn configuration(
+    dir: &std::path::Path,
+) -> Result<rss_mdm_device_access_runtime::platform::PlatformSso> {
     let key = dir.join("platform-signer.pem");
     host::private(&key, &Key::new()?.private.private_key_to_pem_pkcs8()?)?;
     Ok(rss_mdm_device_access_runtime::platform::PlatformSso {
         configuration: wire::Configuration {
-            team_id: "ABCDEFGHIJ".into(), extension_id: "com.example.da.extension".into(),
-            application_id: "com.example.da".into(), application_version: "1.0".into(),
+            team_id: "ABCDEFGHIJ".into(),
+            extension_id: "com.example.da.extension".into(),
+            application_id: "com.example.da".into(),
+            application_version: "1.0".into(),
             client_id: Uuid::new_v4(),
         },
-        active_key: "active".into(), signing_keys: [("active".into(),key)].into(),
+        active_key: "active".into(),
+        signing_keys: [("active".into(), key)].into(),
         password_providers: vec![],
     })
 }
-pub fn runtime(dir: &std::path::Path, origin:&str) -> Result<Arc<psso::Runtime>> {
-    let config:rss_da_app::config::Config = rss_da_app::config::load(&dir.join("host-runtime.json"))?;
-    Ok(config.platform_sso.unwrap().load(origin, business::authorities()?.as_ref())?)
+pub fn runtime(dir: &std::path::Path, origin: &str) -> Result<Arc<psso::Runtime>> {
+    let config: rss_da_app::config::Config =
+        rss_da_app::config::load(&dir.join("host-runtime.json"))?;
+    Ok(config
+        .platform_sso
+        .unwrap()
+        .load(origin, business::authorities()?.as_ref())?)
 }
-async fn post(c:&Context,client:&reqwest::Client,path:&str,content_type:&str,body:String)->Result<(axum::http::StatusCode,String)>{
-    let response=client.post(format!("{}{path}",c.browser_origin)).header("content-type",content_type).body(body).send().await?;
-    Ok((response.status(),response.text().await?))
+async fn post(
+    c: &Context,
+    client: &reqwest::Client,
+    path: &str,
+    content_type: &str,
+    body: String,
+) -> Result<(axum::http::StatusCode, String)> {
+    let response = client
+        .post(format!("{}{path}", c.browser_origin))
+        .header("content-type", content_type)
+        .body(body)
+        .send()
+        .await?;
+    Ok((response.status(), response.text().await?))
 }
 async fn register(
     peer: &reqwest::Client,
@@ -164,7 +184,7 @@ fn decrypt(key: &Key, token: &str) -> Result<Value> {
 }
 async fn native_login(
     c: &Context,
-    client:&reqwest::Client,
+    client: &reqwest::Client,
     b: &rss_mdm_device_access_http::Business,
     source: &wire::RegistrationReceipt,
     device: &Key,
@@ -223,17 +243,39 @@ async fn native_login(
 }
 async fn browser_session(
     c: &Context,
-    client:&reqwest::Client,
+    client: &reqwest::Client,
     binding: Uuid,
     source: &wire::RegistrationReceipt,
     user: &Key,
     token: String,
 ) -> Result<SessionSecret> {
-    let url=format!("{}/api/v1/apple/platform-sso/{}/browser",c.browser_origin,c.tenant);
-    let response=client.post(format!("{url}/begin")).header("origin",&c.browser_origin).json(&wire::BrowserBegin{binding_id:binding}).send().await?.error_for_status()?;
-    let cookie=response.headers().get("set-cookie").context("browser challenge cookie")?.to_str()?.split(';').next().unwrap().to_owned();
-    let challenge:wire::BrowserChallenge=response.json().await?;
-    assert_eq!(challenge.audience,psso::browser_audience(&c.browser_origin));
+    let url = format!(
+        "{}/api/v1/apple/platform-sso/{}/browser",
+        c.browser_origin, c.tenant
+    );
+    let response = client
+        .post(format!("{url}/begin"))
+        .header("origin", &c.browser_origin)
+        .json(&wire::BrowserBegin {
+            binding_id: binding,
+        })
+        .send()
+        .await?
+        .error_for_status()?;
+    let cookie = response
+        .headers()
+        .get("set-cookie")
+        .context("browser challenge cookie")?
+        .to_str()?
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let challenge: wire::BrowserChallenge = response.json().await?;
+    assert_eq!(
+        challenge.audience,
+        psso::browser_audience(&c.browser_origin)
+    );
     let proof = user.signer.sign(
         wire::BRIDGE_TYPE,
         &serde_json::to_value(wire::BrowserClaims {
@@ -246,14 +288,40 @@ async fn browser_session(
             exp: now() + 120,
         })?,
     )?;
-    let input=wire::BrowserComplete{challenge_id:challenge.id,nonce:challenge.nonce,proof};
-    let complete=||client.post(format!("{url}/complete")).header("origin",&c.browser_origin).json(&input);
-    assert_eq!(complete().send().await?.status(),401);
-    let response=complete().header("cookie",&cookie).send().await?.error_for_status()?;
-    let issued=response.headers().get_all("set-cookie").iter().filter_map(|h|h.to_str().ok())
-        .filter_map(|h|h.split(';').next()?.strip_prefix("__Host-identity-session=")).next().context("Identity session cookie")?;
-    let secret=SessionSecret::parse(issued.to_owned())?;
-    assert_eq!(complete().header("cookie",&cookie).send().await?.status(),401);
+    let input = wire::BrowserComplete {
+        challenge_id: challenge.id,
+        nonce: challenge.nonce,
+        proof,
+    };
+    let complete = || {
+        client
+            .post(format!("{url}/complete"))
+            .header("origin", &c.browser_origin)
+            .json(&input)
+    };
+    assert_eq!(complete().send().await?.status(), 401);
+    let response = complete()
+        .header("cookie", &cookie)
+        .send()
+        .await?
+        .error_for_status()?;
+    let issued = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|h| h.to_str().ok())
+        .filter_map(|h| {
+            h.split(';')
+                .next()?
+                .strip_prefix("__Host-identity-session=")
+        })
+        .next()
+        .context("Identity session cookie")?;
+    let secret = SessionSecret::parse(issued.to_owned())?;
+    assert_eq!(
+        complete().header("cookie", &cookie).send().await?.status(),
+        401
+    );
     Box::pin(c.authority.inspect_session(
         c.execution(),
         SessionSecret::parse(secret.expose().into())?,
@@ -627,13 +695,27 @@ pub async fn verify(
         "removing the configured authority rejects persisted application evidence"
     );
     tx.rollback().await?;
-    let projection=||client.get(format!("{}/api/v1/tenants/{}/apple/platform-sso/status",c.browser_origin,c.tenant))
-        .query(&[("deviceId",registration.device.to_string()),("bindingId",id.to_string())]).bearer_auth(&token).send();
-    let view:Value=material::success(projection().await?).await?;
-    assert_eq!(view["login"],"ready");
-    assert_eq!(view["deployment"],"trusted");
-    assert_eq!(view["userRegistration"],"current");
-    assert_eq!(view["evidence"][0]["authority"],json!(business::authority_id()));
+    let projection = || {
+        client
+            .get(format!(
+                "{}/api/v1/tenants/{}/apple/platform-sso/status",
+                c.browser_origin, c.tenant
+            ))
+            .query(&[
+                ("deviceId", registration.device.to_string()),
+                ("bindingId", id.to_string()),
+            ])
+            .bearer_auth(&token)
+            .send()
+    };
+    let view: Value = material::success(projection().await?).await?;
+    assert_eq!(view["login"], "ready");
+    assert_eq!(view["deployment"], "trusted");
+    assert_eq!(view["userRegistration"], "current");
+    assert_eq!(
+        view["evidence"][0]["authority"],
+        json!(business::authority_id())
+    );
     assert!(view.get("userSource").is_none());
     let native_token = Box::pin(native_login(c, client, &b, &source, &device, &user)).await?;
     let session = Box::pin(browser_session(c, client, id, &source, &user, native_token)).await?;
@@ -649,9 +731,9 @@ pub async fn verify(
             .await?,
     )
     .await?;
-    let view:Value=material::success(projection().await?).await?;
-    assert_eq!(view["deployment"],"revoked");
-    assert_ne!(view["login"],"ready");
+    let view: Value = material::success(projection().await?).await?;
+    assert_eq!(view["deployment"], "revoked");
+    assert_ne!(view["login"], "ready");
     let diagnostic =
         super::configuration::diagnostic(client, &management, &token, &registration.device).await?;
     assert_eq!(diagnostic["resolution"]["blocked"], "withdrawn");

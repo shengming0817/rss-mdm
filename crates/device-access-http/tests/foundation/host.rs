@@ -19,7 +19,11 @@ pub async fn verify(
     registration: &registration::agent::da::RegistrationService,
     browser: tokio::net::TcpListener,
     protocol: tokio::net::TcpListener,
-) -> Result<(InstalledHost, tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<rss_da_app::Result<()>>)> {
+) -> Result<(
+    InstalledHost,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<rss_da_app::Result<()>>,
+)> {
     let management: Uuid =
         sqlx::query_scalar("SELECT management_tenant_id FROM rss_da.authorization_installation")
             .fetch_one(&c.operator)
@@ -51,9 +55,14 @@ pub async fn verify(
     ))?;
     let mut http = example["http"].clone();
     http["max_connections"] = 4.into();
-    let authorities = [rss_mdm_device_access_runtime::platform::DeploymentAuthority {
-        id: business::authority_id(), public_key: ring::signature::KeyPair::public_key(&business::key()).as_ref().try_into()?,
-    }];
+    let authorities = [
+        rss_mdm_device_access_runtime::platform::DeploymentAuthority {
+            id: business::authority_id(),
+            public_key: ring::signature::KeyPair::public_key(&business::key())
+                .as_ref()
+                .try_into()?,
+        },
+    ];
     let value = serde_json::json!({
         "identity_policy":example["identity_policy"],
         "http":http,
@@ -68,7 +77,7 @@ pub async fn verify(
           "certificate_days":365,"configuration_revision":null,"configuration_lifetime":3600},
         "protection":{"active_file":c.inputs.directory.join("native.key"),"historical_files":[],
           "fingerprint_file":c.inputs.directory.join("fingerprint.key")},"cursor_key_file":cursor,
-        "reports":{"historySeconds":2592000,"historyCount":2,"staleSeconds":900,"bodyBytes":65536,"reportsPerMinute":10,"bytesPerMinute":67108864},"deployment_authorities":authorities,"platform_sso":platform::configuration(&m.directory)?,"enterprise":null,"oidc":null,"recovery":null
+        "reports":{"historySeconds":2592000,"historyCount":2,"staleSeconds":900,"bodyBytes":65536,"reportsPerMinute":10,"bytesPerMinute":67108864},"deployment_authorities":authorities,"platform_sso":platform::configuration(&m.directory)?,"enterprise":null,"oidc":null,"recovery":{"active_key":"fixture","key_files":{"fixture":c.inputs.directory.join("native.key")},"recipients":[{"certificate_file":m.directory.join("recovery.pem"),"private_key_file":m.directory.join("recovery.key")}] }
     });
     private(&runtime_file, &serde_json::to_vec(&value)?)?;
     let password_file = m.directory.join("host-password");
@@ -188,18 +197,22 @@ pub async fn verify(
     }
     .await;
     result?;
-    Ok((InstalledHost {
-        runtime_file,
-        accounts: tenants
-            .into_iter()
-            .map(|tenant| rss_da_app::maintenance::OriginalAccount {
-                tenant,
-                principal,
-                login: login.clone(),
-                password_file: password_file.clone(),
-            })
-            .collect(),
-    }, stop, running))
+    Ok((
+        InstalledHost {
+            runtime_file,
+            accounts: tenants
+                .into_iter()
+                .map(|tenant| rss_da_app::maintenance::OriginalAccount {
+                    tenant,
+                    principal,
+                    login: login.clone(),
+                    password_file: password_file.clone(),
+                })
+                .collect(),
+        },
+        stop,
+        running,
+    ))
 }
 
 async fn vault_user_http(c: &Context, client: &reqwest::Client, origin: &str) -> Result<()> {

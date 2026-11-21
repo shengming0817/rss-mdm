@@ -1,8 +1,5 @@
 //! Actual anonymous TLS peers exercise the production RSS connection owner.
-use super::{
-    material::Material,
-    *,
-};
+use super::{material::Material, *};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -47,7 +44,10 @@ pub async fn bounded_connections(
     let mut peers = Vec::new();
     // The host's four slots include established HTTP connections, not just TLS preparation.
     for _ in 0..4 {
-        peers.push(tokio::time::timeout(Duration::from_secs(2), connect_origin(material, origin)).await??);
+        peers.push(
+            tokio::time::timeout(Duration::from_secs(2), connect_origin(material, origin))
+                .await??,
+        );
     }
     peers[0]
         .write_all(b"GET /api/v1/da/pki/trust HTTP/1.1\r\nHost:")

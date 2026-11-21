@@ -34,14 +34,14 @@ pub struct ConfigurationDeployment {
     pub state: rss_mdm_agent_wire::da::SourceState,
     /// Complete native readback by this deployment authority, when actually observed.
     pub applied: Option<ConfigurationReadback>,
-
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigurationReadback {
     pub backend_artifact: Uuid,
     pub effective: rss_mdm_agent_wire::runtime::AccessConfiguration,
-    pub managed_sources: std::collections::BTreeMap<rss_mdm_agent_wire::da::ConfigurationField, Uuid>,
+    pub managed_sources:
+        std::collections::BTreeMap<rss_mdm_agent_wire::da::ConfigurationField, Uuid>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
@@ -84,7 +84,8 @@ impl Observation {
                 || !rss_mdm_agent_wire::da::valid_digest(&proof.digest)
                 || !rss_mdm_agent_wire::da::valid_digest(&proof.native_digest)
                 || proof.applied.as_ref().is_some_and(|read| {
-                    read.backend_artifact.is_nil() || read.effective.validate().is_err()
+                    read.backend_artifact.is_nil()
+                        || read.effective.validate().is_err()
                         || read.managed_sources.values().any(Uuid::is_nil)
                         || proof.state != rss_mdm_agent_wire::da::SourceState::Present
                 }))

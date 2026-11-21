@@ -25,6 +25,7 @@ def main():
     (directory / 'provider.pk8').write_bytes(run('pkcs8', '-topk8', '-nocrypt', '-outform', 'DER', '-in', root / 'ca.key'))
     (directory / 'provider.pub').write_bytes(run('pkey', '-in', root / 'ca.key', '-pubout'))
     server_ext = directory / 'server.conf'
+    run('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '2', '-subj', '/CN=DA Recovery Fixture', '-keyout', directory / 'recovery.key', '-out', directory / 'recovery.pem')
     server_ext.write_text('basicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost\n')
     run('req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=localhost', '-keyout', directory / 'server.key', '-out', directory / 'server.csr')
     run('x509', '-req', '-in', directory / 'server.csr', '-CA', root / 'ca.pem', '-CAkey', root / 'ca.key', '-set_serial', '99999', '-days', '2', '-extfile', server_ext, '-out', directory / 'server.pem')

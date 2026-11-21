@@ -228,14 +228,24 @@ impl ConfigurationService {
     }
     /// Authenticate an existing export against the current installation's configuration keys.
     pub async fn verify_on(
-        &self, c: &mut PgConnection, tenant: rss_request_context::TenantId,
-        value: &SignedConfiguration, now: i64,
+        &self,
+        c: &mut PgConnection,
+        tenant: rss_request_context::TenantId,
+        value: &SignedConfiguration,
+        now: i64,
     ) -> Result<Configuration, Error> {
-        let current = trust::current(self.trust.signing.profile, Use::DaConfiguration, c, tenant).await?;
-        verify(value, &ConfigurationTrust {
-            service_id: current.service_id, tenant: current.tenant,
-            revision: current.revision, keys: current.keys,
-        }, now)
+        let current =
+            trust::current(self.trust.signing.profile, Use::DaConfiguration, c, tenant).await?;
+        verify(
+            value,
+            &ConfigurationTrust {
+                service_id: current.service_id,
+                tenant: current.tenant,
+                revision: current.revision,
+                keys: current.keys,
+            },
+            now,
+        )
     }
     /// Current identity, exact artifact audience and independently installed trust are mandatory.
     pub async fn admit_device_on(

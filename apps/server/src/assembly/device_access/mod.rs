@@ -343,9 +343,15 @@ pub(crate) fn browser(
     let protected = DaProtected {
         registration: http::management::routes()
             .bind_with(registration.as_ref(), Arc::clone)
-            .when("device_access_registration", state.is_none() || registration.is_some()),
+            .when(
+                "device_access_registration",
+                state.is_none() || registration.is_some(),
+            ),
         access,
-        platform: http::platform_sso::management_routes().bind_with(psso.as_ref(), Arc::clone),
+        platform: http::platform_sso::management_routes(
+            psso.clone()
+                .zip(business.as_ref().map(|s| s.registration.clone())),
+        ),
     }
     .assemble();
     let protected = rss_mdm_management_http::authorization::http::mount_protection(

@@ -133,6 +133,9 @@ async fn delivery_lifecycle(
     assert!(delivery::resolve_on(&mut tx, agent).await.is_err());
     tx.rollback().await?;
     let anchor = DaRegistration { device: *device };
+    Box::pin(embedded_status(c, &anchor))
+        .await
+        .context("embedded DA management HTTP")?;
     let person = Box::pin(super::da_authorization::authorize(c, agent, &anchor))
         .await
         .context("authorize Agent delivery using the real Identity proof")?;
@@ -176,4 +179,48 @@ async fn delivery_lifecycle(
     tx.rollback().await?;
     da_pool.close().await;
     Ok(())
+}
+
+async fn embedded_status(
+    c: &Context,
+    da: &rss_mdm_registration_service::device::endpoints::DaRegistration,
+) -> Result<()> {
+    use rss_mdm_authorization_service::{Permission, credential::RequestCredential};
+    let allowed = c.account(&[Permission::OperationRead]).await?;
+    let denied = c.account(&[Permission::AccountWrite]).await?;
+    let cookie = |account: &crate::authority_t2_support::Account| -> Result<String> {
+        let RequestCredential::Cookie(secret) = account.credential()? else {
+            anyhow::bail!("expected account session");
+        };
+        Ok(format!("__Host-identity-session={}", secret.expose()))
+    };
+    let allowed = cookie(&allowed)?;
+    let denied = cookie(&denied)?;
+    let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+    let config =
+        crate::host_t2_support::configuration(&c.inputs, "shared", address, Uuid::new_v4()).await?;
+    crate::host_t2_support::run(config, |client, base| async move {
+        let url = format!(
+            "{base}/api/v1/tenants/{}/apple/platform-sso/status",
+            c.tenant
+        );
+        let get = |cookie: &str| {
+            client
+                .get(&url)
+                .query(&[("deviceId", da.device.to_string())])
+                .header("cookie", cookie)
+                .send()
+        };
+        assert_eq!(get(&denied).await?.status(), 403);
+        let status = get(&allowed)
+            .await?
+            .error_for_status()?
+            .json::<serde_json::Value>()
+            .await?;
+        assert_eq!(status["device"], serde_json::json!(da.device));
+        assert_eq!(status["login"], "unknown");
+        assert_eq!(status["deployment"], "unobserved");
+        Ok(())
+    })
+    .await
 }
