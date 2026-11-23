@@ -615,12 +615,30 @@ async fn original_trigger_reports_later_scope_acceptance_after_its_own_scan_expi
     let account = manager(&c).await?;
     let v = policy(&c, &f, &account, 1).await?;
     let worker = Worker::open(&c, &f).await?;
+    let mut latest_expiry = 0;
+    for _ in 0..130 {
+        latest_expiry = now(&c).await? + 4;
+        rerun(&c, &f, &account, &v, latest_expiry).await?;
+    }
+    while now(&c).await? < latest_expiry {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let expires = now(&c).await? + 15;
     let (op, parent) = rerun(&c, &f, &account, &v, expires).await?;
     worker.step(&c, jobs([parent])).await?;
     assert!(children(&c, op.operation_id).await?.is_empty());
     let publication = publish(&c, &v).await?;
     worker.step(&c, jobs([publication])).await?;
+    assert_eq!(
+        refresh_members(&c, publication).await?,
+        [op.operation_id].into()
+    );
+    let continuations:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_policy.work WHERE tenant_id=$1::uuid AND kind='retirement_refresh' AND input#>>'{page,publication}'=$2")
+        .bind(c.tenant.to_string()).bind(publication.to_string()).fetch_one(&c.operator).await?;
+    assert_eq!(
+        continuations, 0,
+        "expired requests must consume no slots on the first business page"
+    );
     let refresh:Uuid=sqlx::query_scalar("SELECT id FROM mdm_policy.work WHERE tenant_id=$1::uuid AND input->>'publication'=$2 AND input#>>'{occurrence,trigger}'=$3")
         .bind(c.tenant.to_string()).bind(publication.to_string()).bind(op.operation_id.to_string()).fetch_one(&c.operator).await?;
     worker.step(&c, jobs([refresh])).await?;
@@ -674,18 +692,26 @@ async fn queued_calendar_page_expires_at_original_lateness_cutoff() -> Result<()
     let worker = Worker::open(&c, &f).await?;
     let device = planning::endpoint(&c).await?.members[0].device;
     let at = now(&c).await?;
-    let view=submit(&c,&f,&account,json!({"scope":{"targets":[{"kind":"device","id":device}],"exclusions":[],"limitations":null},
+    let definition = json!({"scope":{"targets":[{"kind":"device","id":device}],"exclusions":[],"limitations":null},
         "action":{"kind":"unmanage_device","runLifetimeSeconds":300,"schedule":{"trigger":{"kind":"once","at":at},"notBefore":0,"jitterSeconds":0,
-        "misfire":{"kind":"skip","maxLatenessSeconds":5}}}})).await?;
+        "misfire":{"kind":"skip","maxLatenessSeconds":10}}}});
+    let view = submit(&c, &f, &account, definition.clone()).await?;
+    let timely = submit(&c, &f, &account, definition).await?;
     worker.step(&c, ["schedules".to_owned()].into()).await?;
-    let page:Uuid=sqlx::query_scalar("SELECT id FROM mdm_policy.work WHERE tenant_id=$1::uuid AND kind='retirement_page' AND input->>'version'=$2")
-        .bind(c.tenant.to_string()).bind(view.version_id.to_string()).fetch_one(&c.operator).await?;
+    let page = calendar_page(&c, view.version_id).await?;
+    let timely_page = calendar_page(&c, timely.version_id).await?;
     publish(&c, &view).await?;
-    while now(&c).await? <= at + 5 {
+    publish(&c, &timely).await?;
+    worker.step(&c, jobs([timely_page])).await?;
+    assert_eq!(outcome(&c, timely_page).await?["state"], "dispatched");
+    let child:Uuid=sqlx::query_scalar("SELECT id FROM mdm_policy.work WHERE tenant_id=$1::uuid AND kind='policy_lifecycle' AND input->>'version'=$2")
+        .bind(c.tenant.to_string()).bind(timely.version_id.to_string()).fetch_one(&c.operator).await?;
+    while now(&c).await? <= at + 10 {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    worker.step(&c, jobs([page])).await?;
+    worker.step(&c, jobs([page, child])).await?;
     assert_eq!(outcome(&c, page).await?["state"], "expired");
+    assert_eq!(outcome(&c, child).await?["state"], "accepted");
     let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_policy.work WHERE tenant_id=$1::uuid AND kind='policy_lifecycle' AND input->>'version'=$2")
         .bind(c.tenant.to_string()).bind(view.version_id.to_string()).fetch_one(&c.operator).await?;
     assert_eq!(count, 0);
@@ -693,4 +719,9 @@ async fn queued_calendar_page_expires_at_original_lateness_cutoff() -> Result<()
     f.close().await?;
     c.close().await;
     Ok(())
+}
+
+async fn calendar_page(c: &Context, version: Uuid) -> Result<Uuid> {
+    Ok(sqlx::query_scalar("SELECT id FROM mdm_policy.work WHERE tenant_id=$1::uuid AND kind='retirement_page' AND input->>'version'=$2 AND input->>'publication' IS NULL")
+        .bind(c.tenant.to_string()).bind(version.to_string()).fetch_one(&c.operator).await?)
 }

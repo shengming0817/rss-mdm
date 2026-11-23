@@ -36,10 +36,12 @@ impl RetirementOccurrence {
 pub struct TriggerPage {
     /// Initiating Policy reconciliation job.
     pub publication: Uuid,
-    /// Last inspected (monotone admission second, ordinal), exclusive.
+    /// Last returned (deadline, admission ordinal), exclusive.
     pub after: (i64, i64),
     /// Maximum committed admission ordinal under the original Policy lock.
-    pub through: (i64, i64),
+    pub through: i64,
+    /// Last expiry in the captured range; later admissions cannot extend the scan.
+    pub last_deadline: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

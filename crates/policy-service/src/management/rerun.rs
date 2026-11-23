@@ -1,6 +1,6 @@
 //! Explicit rerun is one durable trigger, consumed lazily by each eligible device.
 use super::*;
-pub(super) const MAX_LIFETIME_SECONDS: i64 = 7 * 24 * 60 * 60;
+const MAX_LIFETIME_SECONDS: i64 = 7 * 24 * 60 * 60;
 #[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Rerun {

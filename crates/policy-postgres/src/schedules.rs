@@ -28,19 +28,21 @@ pub async fn trigger_page_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     version: Uuid,
+    now: i64,
     page: crate::work::TriggerPage,
     limit: u16,
-) -> Result<Vec<(Uuid, i64, i64, i64, i64)>, PgError> {
+) -> Result<Vec<(Uuid, i64, i64, i64)>, PgError> {
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
             sqlx::query_as(crate::storage_profile::sql(profile).trigger_page)
                 .bind(tenant)
                 .bind(version)
+                .bind(now)
+                .bind(page.through)
                 .bind(page.after.0)
                 .bind(page.after.1)
-                .bind(page.through.0)
-                .bind(page.through.1)
+                .bind(page.last_deadline)
                 .bind(i64::from(limit) + 1)
                 .fetch_all(c)
                 .await

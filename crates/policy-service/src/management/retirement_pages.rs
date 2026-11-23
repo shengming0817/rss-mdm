@@ -126,22 +126,19 @@ impl crate::application::Application {
                     .await?;
                 schedules::trigger_bound_in(profile, tx, policy.version, now)
                     .await?
-                    .map(|through| TriggerPage {
+                    .map(|(through, last_deadline)| TriggerPage {
                         publication: task,
-                        after: (now.saturating_sub(super::rerun::MAX_LIFETIME_SECONDS), 0),
+                        after: (now, i64::MAX),
+                        last_deadline,
                         through,
                     })
             }
         };
         if let Some(page) = page {
             let rows =
-                schedules::trigger_page_in(profile, tx, policy.version, page, TRIGGER_PAGE).await?;
-            for &(trigger, created_at, deadline, _, _) in
-                rows.iter().take(usize::from(TRIGGER_PAGE))
-            {
-                if deadline <= now {
-                    continue;
-                }
+                schedules::trigger_page_in(profile, tx, policy.version, now, page, TRIGGER_PAGE)
+                    .await?;
+            for &(trigger, created_at, deadline, _) in rows.iter().take(usize::from(TRIGGER_PAGE)) {
                 enqueue_occurrence_in(
                     profile,
                     &self.reconcile_messaging,
@@ -158,9 +155,9 @@ impl crate::application::Application {
                 .await?;
             }
             if rows.len() > usize::from(TRIGGER_PAGE) {
-                let (_, _, _, scan_second, admitted) = rows[usize::from(TRIGGER_PAGE) - 1];
+                let (_, _, deadline, admitted) = rows[usize::from(TRIGGER_PAGE) - 1];
                 let page = TriggerPage {
-                    after: (scan_second, admitted),
+                    after: (deadline, admitted),
                     ..page
                 };
                 let id = work_id(
@@ -241,24 +238,15 @@ impl crate::application::Application {
         let version = policy.version;
         let now = crate::action_admission::now(tx).await?;
         let slot = schedule.occurrence(coordinate, version.as_bytes())?;
-        let calendar_end = match (occurrence, slot, &schedule.misfire) {
-            (
-                RetirementOccurrence::Calendar { .. },
-                Some(slot),
-                rss_mdm_policy::schedule::Misfire::Skip {
-                    max_lateness_seconds,
-                },
-            ) => slot
-                .available_at
-                .saturating_add(i64::from(*max_lateness_seconds))
-                .saturating_add(1),
-            _ => i64::MAX,
-        };
         let end = expiry
-            .min(calendar_end)
             .min(schedule.ends_at())
             .min(slot.and_then(|s| s.window_end).unwrap_or(i64::MAX));
-        let Some(slot) = slot.filter(|s| now < end && s.available_at < end) else {
+        let calendar = matches!(occurrence, RetirementOccurrence::Calendar { .. });
+        let Some(slot) = slot.filter(|s| {
+            now < end
+                && s.available_at < end
+                && (!calendar || !schedule.missed(s.available_at, now))
+        }) else {
             self.finish_retirement_in(binding, tx, task, json!({"state":"expired"}))
                 .await?;
             return Ok(ProtectedStep::Ready(()));
@@ -296,6 +284,14 @@ impl crate::application::Application {
             })
             .await?
             .map_err(Error::from)?;
+        // Misfire governs the dispatch decision. A device job already emitted on
+        // time keeps its own run lifetime and the original hard admission bounds.
+        let now = crate::action_admission::now(tx).await?;
+        if now >= end || (calendar && schedule.missed(slot.available_at, now)) {
+            self.finish_retirement_in(binding, tx, task, json!({"state":"expired"}))
+                .await?;
+            return Ok(ProtectedStep::Ready(()));
+        }
         let more = objects.len() > DEVICE_PAGE;
         objects.truncate(DEVICE_PAGE);
         let next = objects.last().map(|o| o.cursor);

@@ -100,11 +100,11 @@ ALTER TABLE "###, $policies, " ADD FOREIGN KEY(tenant_id,current_version) REFERE
 "###, $index_24, " ON ", $policies, r###"(tenant_id, (definition->>'customEvent'), id) WHERE state<>'archived' AND definition->>'customEvent' IS NOT NULL;
 "###, $index_25, " ON ", $policies, r###"(tenant_id,((definition->>'scope')::uuid),id);
 CREATE TABLE "###, $triggers, r###" (
- tenant_id uuid NOT NULL,id uuid NOT NULL,version uuid NOT NULL,created_at bigint NOT NULL,deadline bigint NOT NULL CHECK(deadline>created_at), scan_second bigint NOT NULL CHECK(scan_second>=created_at), admitted bigint NOT NULL CHECK(admitted>0),
- UNIQUE(tenant_id,version,scan_second,admitted),
+ tenant_id uuid NOT NULL,id uuid NOT NULL,version uuid NOT NULL,created_at bigint NOT NULL,deadline bigint NOT NULL CHECK(deadline>created_at), admitted bigint NOT NULL CHECK(admitted>0),
+ UNIQUE(tenant_id,version,admitted),
  PRIMARY KEY(tenant_id,id),FOREIGN KEY(tenant_id,version) REFERENCES "###, $versions, r###"(tenant_id,id)
 );
-"###, $index_26, " ON ", $triggers, r###"(tenant_id,version,deadline,admitted);
+"###, $index_26, " ON ", $triggers, r###"(tenant_id,version,deadline,admitted) INCLUDE(id,created_at);
 
 CREATE TABLE "###, $schedule_scan, r###" (
  tenant_id uuid PRIMARY KEY, expected_epoch bigint NOT NULL CHECK(expected_epoch>0), after_policy uuid, next_scan_at bigint NOT NULL DEFAULT 0 CHECK(next_scan_at>=0)
@@ -361,16 +361,16 @@ FROM "###, $policies, r###" WHERE tenant_id=$1::uuid
                 store_publish_in_2: concat!("INSERT INTO ", $versions, "(tenant_id,id,policy,number,resource,resource_version,frozen,fingerprint,action_kind) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)"),
                 store_replay_in_1: concat!("SELECT fingerprint,receipt FROM ", $requests, " WHERE tenant_id=$1::uuid AND id=$2"),
                 store_receipt_in_1: concat!("INSERT INTO ", $requests, " VALUES($1::uuid,$2,$3,$4)"),
-                // The Policy lock serializes admission. scan_second cannot retreat if the database clock steps back.
-                store_trigger_in_1: concat!("INSERT INTO ", $triggers, "(tenant_id,id,version,created_at,deadline,scan_second,admitted) SELECT $1::uuid,$2,$3,$4,$5,greatest($4::bigint,previous.scan_second),coalesce(previous.admitted,0)+1 FROM (VALUES(1)) seed(n) LEFT JOIN LATERAL (SELECT scan_second,admitted FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$3 ORDER BY scan_second DESC,admitted DESC LIMIT 1) previous ON true"),
+                // The original Policy lock serializes ordinal allocation for this version.
+                store_trigger_in_1: concat!("INSERT INTO ", $triggers, "(tenant_id,id,version,created_at,deadline,admitted) VALUES($1::uuid,$2,$3,$4,$5,1+coalesce((SELECT admitted FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$3 ORDER BY admitted DESC LIMIT 1),0))"),
                 store_read_snapshot_on_1: concat!("SELECT revision,current_version,version_number,state,definition,execution_binding FROM ", $policies, " WHERE tenant_id=$1::uuid AND id=$2"),
                 store_version_snapshot_on_1: concat!("SELECT policy,number,action_kind,frozen FROM ", $versions, " WHERE tenant_id=$1::uuid AND id=$2"),
                 resource_reference_facts: concat!("SELECT v.policy::text AS id,v.id::text AS version,(p.current_version=v.id) AS current FROM ", $versions, " v JOIN ", $policies, " p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE v.tenant_id=$1::uuid AND v.resource=$2 AND v.resource_version=$3"),
                 store_resolve_in_1: concat!("SELECT id FROM ", $policies, " WHERE tenant_id=$1::uuid AND definition->>'alias'=$2 AND state<>'archived'"),
                 store_locked_in_1: concat!("SELECT ", $policy_schema, "lock_policy($1)"),
                 store_action_kinds_in_1: concat!("SELECT DISTINCT action_kind FROM ", $versions, " WHERE tenant_id=$1::uuid AND policy=$2 ORDER BY action_kind"),
-                trigger_scan_bound: concat!("SELECT scan_second,admitted FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$2 AND EXISTS(SELECT FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$2 AND deadline>$3) ORDER BY scan_second DESC,admitted DESC LIMIT 1"),
-                trigger_page: concat!("SELECT id,created_at,deadline,scan_second,admitted FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$2 AND (scan_second,admitted)>($3,$4) AND (scan_second,admitted)<=($5,$6) ORDER BY scan_second,admitted LIMIT $7"),
+                trigger_scan_bound: concat!("SELECT (SELECT admitted FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$2 ORDER BY admitted DESC LIMIT 1),deadline FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$2 AND deadline>$3 ORDER BY deadline DESC LIMIT 1"),
+                trigger_page: concat!("SELECT id,created_at,deadline,admitted FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$2 AND deadline>$3 AND admitted<=$4 AND (deadline,admitted)>($5,$6) AND deadline<=$7 ORDER BY deadline,admitted LIMIT $8"),
                 schedules_retirement_in_1: concat!("SELECT p.id,v.id,v.frozen FROM ", $policies, " p JOIN ", $versions, " v ON(v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND v.action_kind='unmanage_device' AND ($2::uuid IS NULL OR p.id>$2) ORDER BY p.id LIMIT 64"),
                 schedules_scan_due_in_1: concat!("SELECT coalesce((SELECT next_scan_at FROM ", $schedule_scan, " WHERE tenant_id=$1::uuid),0)<=$2"),
                 schedules_scan_cursor_in_1: concat!("INSERT INTO ", $schedule_scan, "(tenant_id,expected_epoch) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING"),
