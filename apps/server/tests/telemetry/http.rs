@@ -152,6 +152,7 @@ impl Http {
             .header("origin", &self.origin)
             .header("cookie", &self.cookie)
             .header("x-csrf-token", &self.csrf)
+            .header("x-identity-request", "1")
             .header("content-type", "application/json")
             .body(reqwest::Body::wrap_stream(chunks))
             .send();
