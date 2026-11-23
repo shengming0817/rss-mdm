@@ -15,6 +15,7 @@ use uuid::Uuid;
 pub mod lifecycle;
 pub mod reconcile;
 pub mod rerun;
+mod retirement_pages;
 pub mod storage;
 pub mod telemetry;
 

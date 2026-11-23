@@ -60,7 +60,7 @@
       "update_policy": "da_executionisnotnull",
       "read_write": false,
       "read_only": true,
-      "updates": ["state", "result", "da_permit_until", "da_escrow_digest"],
+      "updates": ["state", "result", "da_permit_until", "da_escrow_digest", "da_received_at"],
       "delete_policy": null
     },
     {

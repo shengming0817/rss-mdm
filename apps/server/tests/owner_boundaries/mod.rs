@@ -1,6 +1,7 @@
 //! Real independent Group and Compliance consumers of Inventory's bounded facts.
 mod asset_inputs;
 mod preview;
+mod retirement_reruns;
 mod scope_preview;
 use crate::{authority_t2_support::Context, planning_t2_support as planning};
 use anyhow::{Context as _, Result};

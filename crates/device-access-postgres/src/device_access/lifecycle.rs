@@ -160,7 +160,10 @@ pub(super) async fn accept_offboarding_on(
         binding.state = State::Revoked;
         binding.configuration.enabled = false;
         binding.account_disposition = current.account_disposition;
+        binding.account_delivery = super::account_delivery::refresh_target(c, &binding).await?;
         super::storage::save_in(c, &binding, revision).await?;
+        super::account_delivery::accept(c, &binding, Some(actor), actor.binding().epoch().get())
+            .await?;
         emit_on(
             c,
             &binding,
@@ -581,20 +584,7 @@ impl crate::service::Service {
         device: &rss_mdm_agent_wire::DeviceId,
         operation: Uuid,
     ) -> Result<Progress, Error> {
-        use sqlx::Row;
         let operation = self.offboarding(actor, device, operation).await?;
-        let targets = operation
-            .targets
-            .iter()
-            .map(|b| {
-                Ok(serde_json::json!({
-                    "id":b.id,"generation":b.generation,"revision":b.revision,
-                    "digest":b.definition_digest()?,"disposition":b.account_disposition,
-                    "factorGeneration":b.factor_generation,
-                    "hello":b.intent.platform()==rss_mdm_agent_wire::runtime::TaskPlatform::Windows && matches!(b.configuration.windows,rss_mdm_agent_wire::runtime::AccessWindowsConfiguration::Whfb)
-                }))
-            })
-            .collect::<Result<Vec<_>, Error>>()?;
         let mut tx = self.store.begin(actor.tenant_id()).await?;
         super::service::authorize(&mut tx, actor, device, Permission::AccountWrite).await?;
         let current = rss_mdm_authorization_service::snapshot_on(
@@ -613,33 +603,7 @@ impl crate::service::Service {
                 .map_err(|_| Error::Forbidden)?;
         }
 
-        let rows=sqlx::query("SELECT (t->>'id')::uuid AS id,coalesce(bool_or(r.document#>'{effect,disposition}'=t->'disposition' AND CASE WHEN t->>'hello'='true' THEN r.document#>>'{effect,state}'='whfb_retired' AND r.document#>>'{effect,facts,policy}'='absent' AND r.document#>>'{effect,facts,registration}'='absent' AND r.document#>'{effect,facts,factorGeneration}'=t->'factorGeneration' ELSE r.document#>>'{effect,state}'='unbound' END),false) AS confirmed,coalesce(bool_or(r.document#>>'{effect,state}'='unknown'),false) AS unknown,coalesce(bool_or(r.document#>>'{effect,state}'='failed'),false) AS failed FROM jsonb_array_elements($2) t LEFT JOIN rss_da.results r ON r.tenant_id=$1::uuid AND r.binding=(t->>'id')::uuid AND r.document->'bindingGeneration'=t->'generation' AND r.document->'revision'=t->'revision' AND r.document->'definitionDigest'=t->'digest' GROUP BY t")
-            .bind(actor.tenant_id()).bind(serde_json::Value::Array(targets)).fetch_all(&mut *tx).await.map_err(crate::database::db)?;
-        let mut phases = std::collections::BTreeMap::new();
-        for row in rows {
-            let phase = if row
-                .try_get::<bool, _>("confirmed")
-                .map_err(crate::database::db)?
-            {
-                ExternalPhase::Confirmed
-            } else if row
-                .try_get::<bool, _>("unknown")
-                .map_err(crate::database::db)?
-            {
-                ExternalPhase::Unknown
-            } else if row
-                .try_get::<bool, _>("failed")
-                .map_err(crate::database::db)?
-            {
-                ExternalPhase::Failed
-            } else {
-                ExternalPhase::Pending
-            };
-            phases.insert(
-                row.try_get::<Uuid, _>("id").map_err(crate::database::db)?,
-                phase,
-            );
-        }
+        let phases = cleanup_phases(&mut tx, actor.tenant_id(), &operation.targets).await?;
         tx.rollback().await.map_err(crate::database::db)?;
         let devices = operation
             .targets
@@ -663,4 +627,77 @@ impl crate::service::Service {
             complete,
         })
     }
+}
+
+/// Project committed native cleanup or an exact confirmation that no local cleanup was necessary.
+pub(super) async fn cleanup_phases(
+    c: &mut PgConnection,
+    tenant: &str,
+    bindings: &[Binding],
+) -> Result<std::collections::BTreeMap<Uuid, ExternalPhase>, Error> {
+    use sqlx::Row;
+    let targets = bindings
+            .iter()
+            .map(|b| {
+                Ok(serde_json::json!({
+                    "operation":b.operation_id,"id":b.id,"generation":b.generation,"revision":b.revision,
+                    "digest":b.definition_digest()?,"disposition":b.account_disposition,
+                    "factorGeneration":b.factor_generation,
+                    "hello":b.intent.platform()==rss_mdm_agent_wire::runtime::TaskPlatform::Windows && matches!(b.configuration.windows,rss_mdm_agent_wire::runtime::AccessWindowsConfiguration::Whfb)
+                }))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+    let rows = sqlx::query(
+        "SELECT (t->>'id')::uuid AS id,
+            COALESCE(bool_or(r.document#>'{effect,disposition}'=t->'disposition' AND
+                CASE WHEN t->>'hello'='true' THEN
+                    r.document#>>'{effect,state}'='whfb_retired' AND
+                    r.document#>>'{effect,facts,policy}'='absent' AND
+                    r.document#>>'{effect,facts,registration}'='absent' AND
+                    r.document#>'{effect,facts,factorGeneration}'=t->'factorGeneration'
+                ELSE r.document#>>'{effect,state}'='unbound' END), false)
+            OR EXISTS (
+                SELECT FROM rss_da.access_runs u
+                WHERE u.tenant_id=$1::uuid AND u.binding_id=(t->>'id')::uuid AND u.da_target IS NOT NULL
+                  AND u.access_binding->'operationId'=t->'operation' AND u.access_binding->'revision'=t->'revision'
+                  AND u.access_binding->'generation'=t->'generation' AND u.state->>'cancellation'='confirmed'
+            ) AS confirmed,
+            COALESCE(bool_or(r.document#>>'{effect,state}'='unknown'),false) AS unknown,
+            COALESCE(bool_or(r.document#>>'{effect,state}'='failed'),false) AS failed
+         FROM jsonb_array_elements($2) t
+         LEFT JOIN rss_da.results r ON r.tenant_id=$1::uuid AND r.binding=(t->>'id')::uuid
+            AND r.document->'bindingGeneration'=t->'generation' AND r.document->'revision'=t->'revision'
+            AND r.document->'definitionDigest'=t->'digest'
+         GROUP BY t"
+    )
+    .bind(tenant)
+    .bind(serde_json::Value::Array(targets))
+    .fetch_all(c)
+    .await.map_err(crate::database::db)?;
+    let mut phases = std::collections::BTreeMap::new();
+    for row in rows {
+        let phase = if row
+            .try_get::<bool, _>("confirmed")
+            .map_err(crate::database::db)?
+        {
+            ExternalPhase::Confirmed
+        } else if row
+            .try_get::<bool, _>("unknown")
+            .map_err(crate::database::db)?
+        {
+            ExternalPhase::Unknown
+        } else if row
+            .try_get::<bool, _>("failed")
+            .map_err(crate::database::db)?
+        {
+            ExternalPhase::Failed
+        } else {
+            ExternalPhase::Pending
+        };
+        phases.insert(
+            row.try_get::<Uuid, _>("id").map_err(crate::database::db)?,
+            phase,
+        );
+    }
+    Ok(phases)
 }

@@ -652,7 +652,16 @@ pub async fn verify(
     .await?;
     let ready: wire::Status = material::success(peer.get(&status_url).send().await?).await?;
     assert!(ready.device_registered && ready.user_registered && ready.login_ready);
-    let no_tasks: (i64,i64,i64) = sqlx::query_as("SELECT (SELECT count(*) FROM rss_da.agent_delivery),(SELECT count(*) FROM rss_da.access_runs),(SELECT count(*) FROM rss_da.results)").fetch_one(&c.operator).await?;
+    let no_tasks: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM rss_da.agent_delivery WHERE tenant_id=$1 AND da_device=$2),
+                (SELECT count(*) FROM rss_da.access_runs WHERE tenant_id=$1 AND binding_id=$3),
+                (SELECT count(*) FROM rss_da.results WHERE tenant_id=$1 AND binding=$3)",
+    )
+    .bind(binding.tenant)
+    .bind(binding.device.into_uuid())
+    .bind(binding.id)
+    .fetch_one(&c.operator)
+    .await?;
     assert_eq!(
         no_tasks,
         (0, 0, 0),

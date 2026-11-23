@@ -31,6 +31,13 @@ pub enum CredentialState {
 )]
 /// Device evidence for an exact DA credential execution.
 pub enum CredentialEvent {
+    /// Device durably received this exact permit.
+    Received {
+        /// Attempt from the claim.
+        attempt_id: Uuid,
+        /// Frozen task definition.
+        definition_digest: [u8; 32],
+    },
     /// Submit encrypted material for this attempt.
     Escrow {
         /// Attempt issued by the server in the claimed task.
@@ -55,6 +62,8 @@ pub enum CredentialEvent {
 pub struct CredentialSettlement {
     /// Operation addressed by the device event.
     pub operation_id: Uuid,
+    /// First device acknowledgement or correlated escrow, in server Unix seconds.
+    pub received_at: Option<i64>,
     /// Current settlement state.
     pub state: CredentialState,
     /// Exact stored credential version when custody has completed.

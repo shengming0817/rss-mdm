@@ -1,5 +1,6 @@
 //! Device Access association authority. Registration and local-account generations are distinct.
 //! ref: kanidm server/lib/src/idm/credupdatesession.rs (explicit credential ceremony state).
+pub mod account_delivery;
 pub mod directory;
 pub mod lifecycle;
 pub(crate) mod service;
@@ -42,6 +43,8 @@ pub struct DeploymentApplication {
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Binding {
+    /// Frozen transport for a locally manageable Windows RSS-factor revision.
+    pub account_delivery: Option<account_delivery::Target>,
     /// Operation that owns the current desired revision.
     pub operation_id: Uuid,
     pub account_disposition: rss_mdm_agent_wire::runtime::AccessAccountDisposition,

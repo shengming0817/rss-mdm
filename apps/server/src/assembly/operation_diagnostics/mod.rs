@@ -476,7 +476,7 @@ impl Diagnostics {
             O::ScopeTask => s.scopes.task_receipt(p, id).await.map_err(Into::into),
             O::AssetQuery => s.assets.query_receipt(p, id).await.map_err(Into::into),
             O::PolicyWork => {
-                rss_mdm_policy_service::management::read::work_receipt(&s.policies, p, id)
+                rss_mdm_policy_service::management::read::work_receipt(&s.policies, p, id, q.device)
                     .await
                     .map_err(Into::into)
             }

@@ -141,75 +141,197 @@ pub async fn operation_receipt(
     id: Uuid,
 ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
     p.manage(Permission::PolicyRead)?;
-    crate::transaction::inspect(&service.runtime, p.binding(), (service, p), |(s, p), tx| {
-        Box::pin(async move {
-            crate::action_admission::current(tx, p).await?.require(
-                p,
-                Permission::PolicyRead,
+    crate::transaction::inspect(
+        &service.runtime,
+        p.binding(),
+        (service, p),
+        move |(s, p), tx| Box::pin(original_summary(s, p, tx, id)),
+    )
+    .await
+}
+
+async fn original_summary(
+    service: &Policies,
+    p: &AuthorizedPrincipal,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>> {
+    let grant = crate::action_admission::current(tx, p).await?;
+    grant.require(p, Permission::PolicyRead, None)?;
+    let Some(value) = checked(service.policy_store.operation_in(tx, id).await?)? else {
+        return Ok(None);
+    };
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Original {
+        Changed(Box<super::View>),
+        Rerun(crate::management::rerun::Receipt),
+    }
+    let mut summary = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+    match serde_json::from_value::<Original>(value).map_err(|_| Error::Conflict)? {
+        Original::Changed(v) => {
+            summary.object = Some(v.id.to_string());
+            summary.revision = Some(v.revision);
+            summary
+                .executions
+                .extend(v.scopes.iter().filter_map(|scope| scope.task));
+        }
+        Original::Rerun(v) => {
+            if v.operation_id != id {
+                return Err(Error::Conflict.into());
+            }
+            summary.object = Some(v.policy_id.to_string());
+            summary.accepted = Some(true);
+            let root = super::retirement_pages::occurrence_job(
+                tx.tenant_id(),
+                v.policy_id,
+                v.version_id,
+                &format!("explicit:{id}"),
                 None,
             )?;
-            let value = checked(s.policy_store.operation_in(tx, id).await?)?;
-            value
-                .map(|v| {
-                    let mut s = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
-                    #[derive(serde::Deserialize)]
-                    #[serde(untagged)]
-                    enum Original {
-                        Changed(Box<super::View>),
-                        Rerun(crate::management::rerun::Receipt),
-                    }
-                    match serde_json::from_value::<Original>(v).map_err(|_| Error::Conflict)? {
-                        Original::Changed(v) => {
-                            s.object = Some(v.id.to_string());
-                            s.revision = Some(v.revision);
-                            s.executions
-                                .extend(v.scopes.iter().filter_map(|scope| scope.task));
-                        }
-                        Original::Rerun(v) => {
-                            if v.operation_id != id {
-                                return Err(Error::Conflict.into());
-                            }
-                            s.object = Some(v.policy_id.to_string());
-                            s.accepted = Some(true);
-                        }
-                    }
-                    Ok(s)
-                })
-                .transpose()
-        })
-    })
-    .await
+            if let Some(row) =
+                rss_mdm_policy_postgres::work::read_in(service.profile(), tx, root).await?
+                && matches!(row.input,crate::worker::Work::RetirementPage {policy,version,..} if policy==v.policy_id && version==v.version_id)
+            {
+                summary.executions.push(root);
+            }
+        }
+    }
+    p.check_live()?;
+    Ok(Some(summary))
+}
+
+fn work_state(row: &rss_mdm_policy_postgres::work::Record) -> &str {
+    let result = row.retirement_result.as_ref();
+    if row.failure.as_deref() == Some("superseded") && result.is_some() {
+        "superseded"
+    } else if row.failure.is_some() {
+        "failed"
+    } else if let Some(state) = result.and_then(|r| r["state"].as_str()) {
+        state
+    } else if row.completed {
+        "completed"
+    } else if row.started {
+        "running"
+    } else {
+        "pending"
+    }
+}
+
+fn project_work(
+    p: &AuthorizedPrincipal,
+    grant: &crate::authorization::Snapshot,
+    row: &rss_mdm_policy_postgres::work::Record,
+    summary: &mut rss_mdm_audit_integration::operation::ReceiptSummary,
+) -> Result<()> {
+    if let crate::worker::Work::Lifecycle { object, .. } = &row.input {
+        let target: rss_mdm_inventory_service::objects::DeviceObject =
+            stored(serde_json::from_value(object.clone()))?;
+        if target.members.is_empty() || target.members.len() > 2 {
+            return Err(Error::Conflict.into());
+        }
+        for member in target.members {
+            grant.require(p, Permission::InventoryRead, Some(&member.device))?;
+        }
+    }
+    let result = row.retirement_result.as_ref();
+    summary.state = Some(work_state(row).into());
+
+    if let Some(value) =
+        result.and_then(|r| r.get("operation").or_else(|| r.get("previousOperation")))
+    {
+        summary
+            .executions
+            .push(stored(serde_json::from_value(value.clone()))?);
+    }
+    Ok(())
 }
 
 pub async fn work_receipt(
     service: &Policies,
     p: &AuthorizedPrincipal,
     id: Uuid,
+    device: Option<rss_mdm_agent_wire::DeviceId>,
 ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
     crate::transaction::inspect(&service.runtime, p.binding(), (service, p), |(s, p), tx| {
         Box::pin(async move {
             let grant = crate::action_admission::current(tx, p).await?;
-            let (work, complete, failure, _, started) =
-                crate::worker::jobs::read_in(s.profile(), tx, id).await?;
             grant.require(p, Permission::PolicyRead, None)?;
-            let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
-            value.object = Some(work.target());
-            value.accepted = Some(true);
-            value.executions.push(id);
-            value.state = Some(
-                if failure.is_some() {
-                    "failed"
-                } else if complete {
-                    "completed"
-                } else if started {
-                    "running"
-                } else {
-                    "pending"
+            let Some(row) = rss_mdm_policy_postgres::work::read_in(s.profile(), tx, id).await?
+            else {
+                return Ok(None);
+            };
+            let mut summary = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+            summary.object = Some(row.input.target());
+            summary.accepted = Some(true);
+            summary.executions.push(id);
+            project_work(p, &grant, &row, &mut summary)?;
+            if let crate::worker::Work::RetirementPage {
+                occurrence:
+                    rss_mdm_policy_postgres::work::RetirementOccurrence::Explicit { trigger, .. },
+                publication,
+                ..
+            } = &row.input
+            {
+                summary
+                    .stages
+                    .push(rss_mdm_audit_integration::operation::ReceiptStage {
+                        phase: "assignment_scan".into(),
+                        revision: None,
+                        state: summary.state.clone(),
+                    });
+                if let Some(device) = device {
+                    grant.require(p, Permission::InventoryRead, Some(&device))?;
+                    if let Some(child) = rss_mdm_policy_postgres::work::device_evidence_in(
+                        s.profile(),
+                        tx,
+                        *trigger,
+                        device,
+                    )
+                    .await?
+                    {
+                        let child_row =
+                            rss_mdm_policy_postgres::work::read_in(s.profile(), tx, child)
+                                .await?
+                                .ok_or(Error::Conflict)?;
+                        summary.executions.push(child);
+                        project_work(p, &grant, &child_row, &mut summary)?;
+                    } else {
+                        summary.state = Some("no_device_evidence".into());
+                        summary.accepted = None;
+                        summary.executions.clear();
+                    }
+                } else if publication.is_none() {
+                    let (accepted, dispatched, latest) =
+                        rss_mdm_policy_postgres::work::trigger_evidence_in(
+                            s.profile(),
+                            tx,
+                            *trigger,
+                        )
+                        .await?;
+                    if let Some(refresh) = latest {
+                        let refresh_row =
+                            rss_mdm_policy_postgres::work::read_in(s.profile(), tx, refresh)
+                                .await?
+                                .ok_or(Error::Conflict)?;
+                        summary.executions.push(refresh);
+                        summary
+                            .stages
+                            .push(rss_mdm_audit_integration::operation::ReceiptStage {
+                                phase: "latest_scope_scan".into(),
+                                revision: None,
+                                state: Some(work_state(&refresh_row).into()),
+                            });
+                    }
+                    if accepted {
+                        summary.state = Some("has_accepted_devices".into());
+                    } else if dispatched {
+                        summary.state = Some("has_device_work".into());
+                    }
                 }
-                .into(),
-            );
+            }
             p.check_live()?;
-            Ok(Some(value))
+            Ok(Some(summary))
         })
     })
     .await

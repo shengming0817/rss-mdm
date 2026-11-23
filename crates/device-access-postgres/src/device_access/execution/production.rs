@@ -86,7 +86,7 @@ pub(crate) async fn queue_run_in(
     service.validate_in(tx)?;
     let agent = tx
         .with_connection_context(&mut access, |b, c| {
-            Box::pin(async move { Ok(crate::delivery::for_binding_on(c, b).await) })
+            Box::pin(async move { Ok(crate::device_access::account_delivery::agent(c, b).await) })
         })
         .await??
         .ok_or(Error::Forbidden)?;
