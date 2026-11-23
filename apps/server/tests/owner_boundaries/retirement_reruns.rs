@@ -1,5 +1,6 @@
 //! Real management admission, Scope publication and one protected Policy claim per step.
-use super::{AuthorizedPrincipal, Context, P, planning};
+use super::{Context, P, planning};
+use crate::authority_t2_support::Account;
 use crate::policy_management_t2_support::Fixture;
 use anyhow::{Context as _, Result, ensure};
 use rss_mdm_policy_service::{
@@ -117,26 +118,20 @@ impl Worker {
 fn jobs(ids: impl IntoIterator<Item = Uuid>) -> BTreeSet<String> {
     ids.into_iter().map(|id| format!("job:{id}")).collect()
 }
-async fn principal(c: &Context) -> Result<AuthorizedPrincipal> {
-    let account = c
-        .account(&[
-            P::PolicyRead,
-            P::PolicyWrite,
-            P::InventoryRead,
-            P::DeviceUnmanage,
-        ])
-        .await?;
-    c.authenticate(&account).await
+async fn manager(c: &Context) -> Result<Account> {
+    c.account(&[
+        P::PolicyRead,
+        P::PolicyWrite,
+        P::InventoryRead,
+        P::DeviceUnmanage,
+    ])
+    .await
 }
-async fn submit(
-    c: &Context,
-    f: &Fixture,
-    p: &AuthorizedPrincipal,
-    definition: Value,
-) -> Result<View> {
+async fn submit(c: &Context, f: &Fixture, account: &Account, definition: Value) -> Result<View> {
+    let p = c.authenticate(account).await?;
     Ok(f.policies
         .change(
-            p,
+            &p,
             Uuid::new_v4(),
             &Operation {
                 operation_id: Uuid::new_v4(),
@@ -146,11 +141,11 @@ async fn submit(
                     enabled: true,
                 },
             },
-            &c.request(p)?,
+            &c.request(&p)?,
         )
         .await?)
 }
-async fn policy(c: &Context, f: &Fixture, p: &AuthorizedPrincipal, size: usize) -> Result<View> {
+async fn policy(c: &Context, f: &Fixture, account: &Account, size: usize) -> Result<View> {
     let mut targets = vec![];
     for _ in 0..size {
         let object = planning::endpoint(c).await?;
@@ -159,7 +154,7 @@ async fn policy(c: &Context, f: &Fixture, p: &AuthorizedPrincipal, size: usize) 
     submit(
         c,
         f,
-        p,
+        account,
         json!({"scope":{"targets":targets,"limitations":null,"exclusions":[]},
         "action":{"kind":"unmanage_device","runLifetimeSeconds":300}}),
     )
@@ -192,7 +187,7 @@ async fn now(c: &Context) -> Result<i64> {
 async fn rerun(
     c: &Context,
     f: &Fixture,
-    p: &AuthorizedPrincipal,
+    account: &Account,
     v: &View,
     deadline: i64,
 ) -> Result<(Operation<Rerun>, Uuid)> {
@@ -201,7 +196,10 @@ async fn rerun(
         expected_revision: v.revision as u64,
         input: Rerun { deadline },
     };
-    let receipt = f.policies.rerun(p, v.id, &op, &c.request(p)?).await?;
+    let p = c.authenticate(account).await?;
+    let audit = c.request(&p)?;
+    let receipt = f.policies.rerun(&p, v.id, &op, &audit).await?;
+    audit.finalize(None);
     assert_eq!(
         (
             receipt.operation_id,
@@ -233,21 +231,21 @@ async fn outcome(c: &Context, task: Uuid) -> Result<Value> {
 async fn every_receipt_reaches_its_device_even_as_new_triggers_arrive() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let f = Fixture::open(&c).await?;
-    let p = principal(&c).await?;
-    let v = policy(&c, &f, &p, 1).await?;
+    let account = manager(&c).await?;
+    let v = policy(&c, &f, &account, 1).await?;
     let publication = publish(&c, &v).await?;
     let worker = Worker::open(&c, &f).await?;
     let expires = now(&c).await? + 600;
     let mut accepted = vec![];
     for _ in 0..65 {
-        accepted.push(rerun(&c, &f, &p, &v, expires).await?);
+        accepted.push(rerun(&c, &f, &account, &v, expires).await?);
     }
     worker.step(&c, jobs([publication, accepted[0].1])).await?;
     assert_eq!(
         refresh_members(&c, publication).await?,
         accepted[..64].iter().map(|r| r.0.operation_id).collect()
     );
-    accepted.push(rerun(&c, &f, &p, &v, expires).await?);
+    accepted.push(rerun(&c, &f, &account, &v, expires).await?);
     let resume:Uuid=sqlx::query_scalar("SELECT id FROM mdm_policy.work WHERE tenant_id=$1::uuid AND kind='retirement_refresh' AND input->'page'->>'publication'=$2")
         .bind(c.tenant.to_string()).bind(publication.to_string()).fetch_one(&c.operator).await?;
     worker
@@ -305,6 +303,7 @@ async fn every_receipt_reaches_its_device_even_as_new_triggers_arrive() -> Resul
         "receipts must reconcile to the Device owner's original retirement"
     );
     for ((op, _), child) in accepted.iter().zip(device_work) {
+        let p = c.authenticate(&account).await?;
         let receipt = f.policies.rerun(&p, v.id, op, &c.request(&p)?).await?;
         assert_eq!(
             (receipt.operation_id, receipt.version_id, receipt.deadline),
@@ -332,7 +331,7 @@ async fn every_receipt_reaches_its_device_even_as_new_triggers_arrive() -> Resul
         assert!(summary.executions.contains(&child) && summary.executions.contains(&operation));
     }
     let expiry = now(&c).await? + 5;
-    let (_, unresolved) = rerun(&c, &f, &p, &v, expiry).await?;
+    let (_, unresolved) = rerun(&c, &f, &account, &v, expiry).await?;
     worker.step(&c, jobs([unresolved])).await?;
     let queued: bool = sqlx::query_scalar(
         "SELECT NOT completed FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2",
@@ -352,6 +351,7 @@ async fn every_receipt_reaches_its_device_even_as_new_triggers_arrive() -> Resul
     }).await??;
     worker.step(&c, jobs([unresolved])).await?;
     assert_eq!(outcome(&c, unresolved).await?["state"], "expired");
+    let p = c.authenticate(&account).await?;
     let mut changed = accepted[0].0.clone();
     changed.input.deadline -= 1;
     ensure!(matches!(
@@ -369,12 +369,12 @@ async fn every_receipt_reaches_its_device_even_as_new_triggers_arrive() -> Resul
 async fn one_occurrence_resumes_after_a_committed_device_page() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let f = Fixture::open(&c).await?;
-    let p = principal(&c).await?;
-    let v = policy(&c, &f, &p, 65).await?;
+    let account = manager(&c).await?;
+    let v = policy(&c, &f, &account, 65).await?;
     publish(&c, &v).await?;
-    let (op, parent) = rerun(&c, &f, &p, &v, now(&c).await? + 600).await?;
+    let (op, parent) = rerun(&c, &f, &account, &v, now(&c).await? + 600).await?;
     let worker = Worker::open(&c, &f).await?;
-    let (_, interrupted) = rerun(&c, &f, &p, &v, now(&c).await? + 600).await?;
+    let (_, interrupted) = rerun(&c, &f, &account, &v, now(&c).await? + 600).await?;
     worker.step(&c, jobs([parent, interrupted])).await?;
     let initial = children(&c, op.operation_id).await?;
     assert_eq!(initial.len(), 64);
@@ -394,6 +394,7 @@ async fn one_occurrence_resumes_after_a_committed_device_page() -> Result<()> {
     let matched:i64=sqlx::query_scalar("SELECT count(DISTINCT r.id) FROM mdm_policy.work w JOIN mdm_devices.retirements r ON r.tenant_id=w.tenant_id AND r.id=(w.retirement_result->>'operation')::uuid WHERE w.tenant_id=$1::uuid AND w.input->>'occurrence'=$2 AND w.completed AND r.target=w.input->'object' AND r.occurrence=$2 AND r.version=$3")
         .bind(c.tenant.to_string()).bind(format!("explicit:{}",op.operation_id)).bind(v.version_id).fetch_one(&c.operator).await?;
     assert_eq!(matched, 65);
+    let p = c.authenticate(&account).await?;
     fresh
         .policies
         .change(
@@ -422,93 +423,86 @@ async fn one_occurrence_resumes_after_a_committed_device_page() -> Result<()> {
 async fn calendar_window_and_queued_reruns_recheck_current_authority() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let f = Fixture::open(&c).await?;
-    let p = principal(&c).await?;
+    let account = manager(&c).await?;
+    let worker = Worker::open(&c, &f).await?;
     let object = planning::endpoint(&c).await?;
     let scope = json!({"targets":[{"kind":"device","id":object.members[0].device}],"limitations":null,"exclusions":[]});
-    let t = now(&c).await?;
-    let calendar=submit(&c,&f,&p,json!({"scope":scope,"action":{"kind":"unmanage_device","runLifetimeSeconds":300,"schedule":{"trigger":{"kind":"once","at":t},"notBefore":0,"jitterSeconds":0}}})).await?;
-    publish(&c, &calendar).await?;
-    let worker = Worker::open(&c, &f).await?;
-    worker.step(&c, ["schedules".to_owned()].into()).await?;
+    Box::pin(calendar_authority(&c, &f, &account, &worker, &scope)).await?;
+    Box::pin(future_window(&c, &f, &account, &worker, &scope)).await?;
+    worker.close().await;
+    f.close().await?;
+    c.close().await;
+    Ok(())
+}
+
+async fn calendar_authority(
+    c: &Context,
+    f: &Fixture,
+    account: &Account,
+    worker: &Worker,
+    scope: &Value,
+) -> Result<()> {
+    let t = now(c).await?;
+    let calendar=submit(c,f,account,json!({"scope":scope,"action":{"kind":"unmanage_device","runLifetimeSeconds":300,"schedule":{"trigger":{"kind":"once","at":t},"notBefore":0,"jitterSeconds":0}}})).await?;
+    publish(c, &calendar).await?;
+    worker.step(c, ["schedules".to_owned()].into()).await?;
     let page:Uuid=sqlx::query_scalar("SELECT id FROM mdm_policy.work WHERE tenant_id=$1::uuid AND kind='retirement_page' AND input->'occurrence'->>'kind'='calendar' AND (input->'occurrence'->>'at')::bigint=$2")
         .bind(c.tenant.to_string()).bind(t).fetch_one(&c.operator).await?;
-    let (old, parent) = rerun(&c, &f, &p, &calendar, t + 600).await?;
-    let (withdrawn, withdrawn_page) = rerun(&c, &f, &p, &calendar, t + 600).await?;
-    worker
-        .step(&c, jobs([page, parent, withdrawn_page]))
-        .await?;
-    assert_eq!(outcome(&c, page).await?["eligible"], 1);
-    let revoked = children(&c, withdrawn.operation_id).await?[0];
-    let stale = children(&c, old.operation_id).await?[0];
-    let expiry = now(&c).await? + 5;
-    let (short, short_page) = rerun(&c, &f, &p, &calendar, expiry).await?;
-    worker.step(&c, jobs([short_page])).await?;
-    let short_children = children(&c, short.operation_id).await?;
-    assert_eq!(short_children.len(), 1);
-    while now(&c).await? < expiry {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    worker
-        .step(&c, jobs(short_children.iter().copied()))
-        .await?;
-    assert_eq!(outcome(&c, short_children[0]).await?["state"], "expired");
-    assert_eq!(
-        f.policies
-            .rerun(&p, calendar.id, &short, &c.request(&p)?)
-            .await?
-            .deadline,
-        expiry
-    );
+    let (old, parent) = rerun(c, f, account, &calendar, t + 600).await?;
+    let (withdrawn, withdrawn_page) = rerun(c, f, account, &calendar, t + 600).await?;
+    worker.step(c, jobs([page, parent, withdrawn_page])).await?;
+    assert_eq!(outcome(c, page).await?["eligible"], 1);
+    let revoked = children(c, withdrawn.operation_id).await?[0];
+    let stale = children(c, old.operation_id).await?[0];
+    Box::pin(queued_expiry(c, f, account, worker, &calendar)).await?;
     let mut definition = calendar.definition.clone();
     definition.scope.limitations = Some(Default::default());
-    let revised = f
-        .policies
-        .change(
-            &p,
-            calendar.id,
-            &Operation {
-                operation_id: Uuid::new_v4(),
-                expected_revision: calendar.revision as u64,
-                input: Change::Put {
-                    definition: Box::new(definition),
-                    enabled: true,
-                },
+    let p = c.authenticate(account).await?;
+    let revised = Box::pin(f.policies.change(
+        &p,
+        calendar.id,
+        &Operation {
+            operation_id: Uuid::new_v4(),
+            expected_revision: calendar.revision as u64,
+            input: Change::Put {
+                definition: Box::new(definition),
+                enabled: true,
             },
-            &c.request(&p)?,
-        )
-        .await?;
+        },
+        &c.request(&p)?,
+    ))
+    .await?;
     assert_eq!(revised.version_id, calendar.version_id);
-    publish(&c, &revised).await?;
-    worker.step(&c, jobs([revoked])).await?;
-    assert_eq!(outcome(&c, revoked).await?["state"], "ineligible");
-    let restored = f
-        .policies
-        .change(
-            &p,
-            calendar.id,
-            &Operation {
-                operation_id: Uuid::new_v4(),
-                expected_revision: revised.revision as u64,
-                input: Change::Put {
-                    definition: Box::new(calendar.definition.clone()),
-                    enabled: true,
-                },
+    publish(c, &revised).await?;
+    worker.step(c, jobs([revoked])).await?;
+    assert_eq!(outcome(c, revoked).await?["state"], "ineligible");
+    let p = c.authenticate(account).await?;
+    let restored = Box::pin(f.policies.change(
+        &p,
+        calendar.id,
+        &Operation {
+            operation_id: Uuid::new_v4(),
+            expected_revision: revised.revision as u64,
+            input: Change::Put {
+                definition: Box::new(calendar.definition.clone()),
+                enabled: true,
             },
-            &c.request(&p)?,
-        )
-        .await?;
-    let generation = publish(&c, &restored).await?;
-    worker.step(&c, jobs([generation])).await?;
+        },
+        &c.request(&p)?,
+    ))
+    .await?;
+    let generation = publish(c, &restored).await?;
+    worker.step(c, jobs([generation])).await?;
     let retry:Uuid=sqlx::query_scalar("SELECT id FROM mdm_policy.work WHERE tenant_id=$1::uuid AND kind='retirement_page' AND input->'occurrence'->>'trigger'=$2 AND id<>$3")
         .bind(c.tenant.to_string()).bind(withdrawn.operation_id.to_string()).bind(withdrawn_page).fetch_one(&c.operator).await?;
-    worker.step(&c, jobs([retry])).await?;
-    let replacement = children(&c, withdrawn.operation_id)
+    worker.step(c, jobs([retry])).await?;
+    let replacement = children(c, withdrawn.operation_id)
         .await?
         .into_iter()
         .find(|id| *id != revoked)
         .context("newly eligible object")?;
-    worker.step(&c, jobs([replacement])).await?;
-    assert_eq!(outcome(&c, replacement).await?["state"], "accepted");
+    worker.step(c, jobs([replacement])).await?;
+    assert_eq!(outcome(c, replacement).await?["state"], "accepted");
     let mut new_version = restored.definition.clone();
     if let rss_mdm_policy::Action::UnmanageDevice {
         run_lifetime_seconds,
@@ -517,25 +511,25 @@ async fn calendar_window_and_queued_reruns_recheck_current_authority() -> Result
     {
         *run_lifetime_seconds += 60;
     }
-    let next = f
-        .policies
-        .change(
-            &p,
-            calendar.id,
-            &Operation {
-                operation_id: Uuid::new_v4(),
-                expected_revision: restored.revision as u64,
-                input: Change::Put {
-                    definition: Box::new(new_version),
-                    enabled: true,
-                },
+    let p = c.authenticate(account).await?;
+    let next = Box::pin(f.policies.change(
+        &p,
+        calendar.id,
+        &Operation {
+            operation_id: Uuid::new_v4(),
+            expected_revision: restored.revision as u64,
+            input: Change::Put {
+                definition: Box::new(new_version),
+                enabled: true,
             },
-            &c.request(&p)?,
-        )
-        .await?;
+        },
+        &c.request(&p)?,
+    ))
+    .await?;
     assert_ne!(next.version_id, calendar.version_id);
-    worker.step(&c, jobs([stale])).await?;
-    assert_eq!(outcome(&c, stale).await?["state"], "superseded");
+    worker.step(c, jobs([stale])).await?;
+    assert_eq!(outcome(c, stale).await?["state"], "superseded");
+    let p = c.authenticate(account).await?;
     assert_eq!(
         f.policies
             .rerun(&p, calendar.id, &old, &c.request(&p)?)
@@ -544,13 +538,58 @@ async fn calendar_window_and_queued_reruns_recheck_current_authority() -> Result
         calendar.version_id
     );
 
-    let minute = (now(&c).await? / 60 + 10) % 1440;
-    let delayed=submit(&c,&f,&p,json!({"scope":scope,"action":{"kind":"unmanage_device","runLifetimeSeconds":300,
+    let effects: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND policy=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(calendar.id)
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(effects, 1);
+    Ok(())
+}
+async fn queued_expiry(
+    c: &Context,
+    f: &Fixture,
+    account: &Account,
+    worker: &Worker,
+    calendar: &View,
+) -> Result<()> {
+    let expiry = now(c).await? + 5;
+    let (short, short_page) = rerun(c, f, account, &calendar, expiry).await?;
+    worker.step(c, jobs([short_page])).await?;
+    let short_children = children(c, short.operation_id).await?;
+    assert_eq!(short_children.len(), 1);
+    while now(c).await? < expiry {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    worker.step(c, jobs(short_children.iter().copied())).await?;
+    assert_eq!(outcome(c, short_children[0]).await?["state"], "expired");
+    let p = c.authenticate(account).await?;
+    assert_eq!(
+        f.policies
+            .rerun(&p, calendar.id, &short, &c.request(&p)?)
+            .await?
+            .deadline,
+        expiry
+    );
+    Ok(())
+}
+async fn future_window(
+    c: &Context,
+    f: &Fixture,
+    account: &Account,
+    worker: &Worker,
+    scope: &Value,
+) -> Result<()> {
+    let minute = (now(c).await? / 60 + 10) % 1440;
+    let delayed=submit(c,f,account,json!({"scope":scope,"action":{"kind":"unmanage_device","runLifetimeSeconds":300,
         "schedule":{"trigger":{"kind":"manual"},"notBefore":0,"jitterSeconds":0,"window":{"zone":"UTC","weekdays":[1,2,3,4,5,6,7],"startMinute":minute,"endMinute":(minute+1)%1440}}}})).await?;
-    let (future, future_page) = rerun(&c, &f, &p, &delayed, now(&c).await? + 3600).await?;
-    let (_, expires) = rerun(&c, &f, &p, &delayed, now(&c).await? + 45).await?;
-    worker.step(&c, jobs([future_page, expires])).await?;
-    assert_eq!(outcome(&c, expires).await?["state"], "expired");
+    let (future, future_page) = rerun(c, f, account, &delayed, now(c).await? + 3600).await?;
+    let (_, expires) = rerun(c, f, account, &delayed, now(c).await? + 45).await?;
+    worker.step(c, jobs([future_page, expires])).await?;
+    assert_eq!(outcome(c, expires).await?["state"], "expired");
+    let p = c.authenticate(account).await?;
     assert_eq!(
         rss_mdm_policy_service::management::read::work_receipt(&f.policies, &p, expires, None)
             .await?
@@ -562,17 +601,6 @@ async fn calendar_window_and_queued_reruns_recheck_current_authority() -> Result
     let deferred:bool=sqlx::query_scalar("SELECT NOT w.completed AND t.next_run>clock_timestamp() FROM mdm_policy.work w JOIN rss_reconcile.targets t ON t.tenant_id=w.tenant_id AND t.reconciler='mdm.policy' AND t.entity='job:'||w.id::text WHERE w.tenant_id=$1::uuid AND w.id=$2")
         .bind(c.tenant.to_string()).bind(future_page).fetch_one(&c.operator).await?;
     assert!(deferred);
-    assert!(children(&c, future.operation_id).await?.is_empty());
-    let effects: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND policy=$2",
-    )
-    .bind(c.tenant.to_string())
-    .bind(calendar.id)
-    .fetch_one(&c.operator)
-    .await?;
-    assert_eq!(effects, 1);
-    worker.close().await;
-    f.close().await?;
-    c.close().await;
+    assert!(children(c, future.operation_id).await?.is_empty());
     Ok(())
 }
