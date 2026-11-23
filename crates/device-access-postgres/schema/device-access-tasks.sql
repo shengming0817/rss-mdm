@@ -37,6 +37,25 @@ CREATE POLICY tenant ON rss_da.access_runs
  USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)
  WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 
+-- Event receipts are immutable and scoped to the authenticated run. An offline
+-- device can renew an unstarted permit without consuming its final result slot.
+CREATE TABLE rss_da.account_events (
+    tenant_id uuid NOT NULL,
+    run uuid NOT NULL,
+    event uuid NOT NULL,
+    digest bytea NOT NULL CHECK (octet_length(digest)=32),
+    permit_until bigint,
+    receipt jsonb,
+    PRIMARY KEY (tenant_id,run,event),
+    FOREIGN KEY (tenant_id,run) REFERENCES rss_da.access_runs(tenant_id,id)
+);
+ALTER TABLE rss_da.account_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE rss_da.account_events FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON rss_da.account_events
+ USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)
+ WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+GRANT SELECT,INSERT ON rss_da.account_events TO da_access;
+
 CREATE TABLE rss_da.access_policy_recovery (
     expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     tenant_id uuid NOT NULL,
@@ -76,7 +95,7 @@ GRANT UPDATE(state,result) ON rss_da.access_runs TO da_command_runtime,da_policy
 GRANT UPDATE(gateway_accepted) ON rss_da.access_runs TO da_command_runtime;
 GRANT SELECT,UPDATE(state,result,da_journal) ON rss_da.access_runs TO da_access;
 GRANT SELECT,INSERT ON rss_da.access_runs TO da_identity_runtime;
-CREATE POLICY access_device_update ON rss_da.access_runs AS RESTRICTIVE FOR UPDATE TO da_access
+CREATE POLICY targeted_update ON rss_da.access_runs AS RESTRICTIVE FOR UPDATE TO da_access
  USING(da_target IS NOT NULL) WITH CHECK(da_target IS NOT NULL);
 CREATE POLICY access_management_insert ON rss_da.access_runs AS RESTRICTIVE FOR INSERT TO da_identity_runtime
  WITH CHECK(da_target IS NOT NULL);

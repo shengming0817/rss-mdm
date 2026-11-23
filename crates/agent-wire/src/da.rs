@@ -138,6 +138,6 @@ pub struct Progress {
 
 /// Fingerprint of the generated Device Access protocol schema.
 pub const SCHEMA_FINGERPRINT: &str =
-    "acf52d95db8ba18ca424741c79f041d56ee4ab394e9a4c7886ad6b597a8dcdb4";
+    "721f614bb99e3b1f317b89e67aebff3861f214ca87e68570ca85777344170014";
 /// Canonical current Device Access schema manifest.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/da/manifest.json");

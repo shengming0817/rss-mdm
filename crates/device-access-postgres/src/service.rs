@@ -7,6 +7,7 @@ use sqlx::PgConnection;
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 pub struct Assembly {
+    pub recovery: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub report_limits: crate::reports::Limits,
     pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub instance: Uuid,
@@ -16,6 +17,7 @@ pub struct Assembly {
     pub protection: Arc<rss_mdm_native_protection::Protector>,
 }
 pub struct Service {
+    pub(crate) recovery: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub(crate) report_limits: crate::reports::Limits,
     pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
     instance: Uuid,
@@ -35,6 +37,7 @@ impl Service {
         }
         a.report_limits.validate()?;
         Ok(Self {
+            recovery: a.recovery,
             report_limits: a.report_limits,
             cursor: a.cursor,
             instance: a.instance,
@@ -122,6 +125,21 @@ impl Service {
         before: impl for<'a> FnOnce(&'a mut C, &'a mut PgConnection) -> Pending<'a, ()> + Send,
         f: impl for<'a> FnOnce(&'a mut C, &'a mut PgConnection) -> Pending<'a, Change<R>> + Send,
     ) -> Result<R, Error> {
+        self.write_keyed(source, a, None, context, before, f).await
+    }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Event identity and caller-owned admission share the settlement transaction"
+    )]
+    pub(crate) async fn write_keyed<C: Send, R: Send>(
+        &self,
+        source: &AuditStore,
+        a: &RequestAudit,
+        fact_key: Option<String>,
+        context: C,
+        before: impl for<'a> FnOnce(&'a mut C, &'a mut PgConnection) -> Pending<'a, ()> + Send,
+        f: impl for<'a> FnOnce(&'a mut C, &'a mut PgConnection) -> Pending<'a, Change<R>> + Send,
+    ) -> Result<R, Error> {
         let profile = self.profile();
         let installation = self.service_id()?;
 
@@ -130,10 +148,15 @@ impl Service {
             .write(
                 a.binding()?,
                 &budget.source_control(),
-                (source, a, (a.tenant(), context, Some(f), Some(before))),
+                (
+                    source,
+                    a,
+                    (a.tenant(), context, Some(f), Some(before)),
+                    fact_key,
+                ),
                 |ctx, tx| {
                     Box::pin(async move {
-                        let (store, a, context) = ctx;
+                        let (store, a, context, fact_key) = ctx;
                         let change = tx
                             .with_connection_context(context, |ctx, c| {
                                 Box::pin(async move {
@@ -159,7 +182,9 @@ impl Service {
                         let snapshot = a.snapshot();
                         if snapshot.intent != rss_mdm_audit_integration::AuditIntent::Routine {
                             let op = snapshot.operation_id.ok_or(Error::Malformed)?;
-                            let key = format!("device-access:{}:{op}", snapshot.action);
+                            let key = fact_key.clone().unwrap_or_else(|| {
+                                format!("device-access:{}:{op}", snapshot.action)
+                            });
                             let fact = match snapshot.operation_owner {
                                 Some(owner) => Fact::business(a, owner, &key, 200, "success", None),
                                 None => Fact::observation(a, &key, 200, "success", None),

@@ -672,10 +672,25 @@
             "kind": {
               "const": "not_started",
               "type": "string"
+            },
+            "value": {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "description": "Expiry of the exact unused permit in the local journal.",
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "expiresAt"
+              ],
+              "type": "object"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "value"
           ],
           "type": "object"
         },

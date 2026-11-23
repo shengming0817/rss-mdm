@@ -324,6 +324,7 @@ impl Service {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.target_device(device.device());
+        let has_custody = self.recovery.is_some();
         self.write_admitted(&self.access_audit,audit,(device,employee,input,admission,who,audit),
             |ctx,c| Box::pin(async move { admit_session(c, ctx.1).await }),|ctx,c|Box::pin(async move {
             let (device,employee,input,admission,who,audit)=ctx;
@@ -359,7 +360,7 @@ impl Service {
             if selected.version!=row.try_get::<Uuid,_>("policy_version").map_err(db)? || !selected.configuration.self_enrollment || !selected.configuration.enabled || !selected.configuration.admits(&local.account) { return Err(Error::Forbidden); }
             if !storage::first_in(c,tenant_uuid(device.tenant())?,device.device(),who,&local.account).await? {return Err(Error::Conflict);}
             let mut binding=Binding{account_delivery:None,deployment_application:None,operation_id:input.operation_id,account_disposition:rss_mdm_agent_wire::runtime::AccessAccountDisposition::Keep,id:Uuid::new_v4(),tenant:tenant_uuid(device.tenant())?,device:*device.device(),person:who.clone(),origin:Origin::SelfEnrollment,generation:1,factor_generation:1,revision:1,state:State::Pending,intent:AccountIntent::Existing{account:local.account.clone()},account:Some(local.account),policy:selected.policy,policy_version:selected.version,configuration:selected.configuration,received_revision:None,applied_revision:None,effect:None,applied_windows:None,created_by_rss:false};
-            binding.account_delivery=super::account_delivery::select(c,&binding,authenticated.installation()).await?;
+            binding.account_delivery=super::account_delivery::select(c,&binding,authenticated.installation(),has_custody).await?;
             storage::insert_in(c,&binding).await?;
             super::account_delivery::accept(c,&binding,None,employee.binding().epoch().get()).await?;
             super::lifecycle::emit_on(c,&binding,None,input.operation_id,"accepted").await?;
@@ -405,6 +406,7 @@ impl Service {
         {
             return Ok(value);
         }
+        let has_custody = self.recovery.is_some();
         let result = self.write_admitted(
             &self.access_audit,
             audit,
@@ -515,7 +517,7 @@ impl Service {
                                 .checked_add(1)
                                 .ok_or(Error::Capacity)?;
                             Binding {
-                                account_delivery:None,
+                                account_delivery:old.as_ref().filter(|b|b.state!=State::Revoked).and_then(|b|b.account_delivery.clone()),
                                 deployment_application: None,
                                 operation_id: input.operation_id,
                                 account_disposition: rss_mdm_agent_wire::runtime::AccessAccountDisposition::Keep,
@@ -605,7 +607,7 @@ impl Service {
                         super::lifecycle::accept_offboarding_on(c,actor,&value,idp_fingerprints).await?;
                     }
                     let installation=rss_mdm_registration_service::device::installation_in(rss_mdm_install_support::StorageProfile::Da,c).await?;
-                    value.account_delivery=super::account_delivery::select(c,&value,installation).await?;
+                    value.account_delivery=super::account_delivery::select(c,&value,installation,has_custody).await?;
                     if old.is_some() {
                         storage::save_in(c, &value, input.expected_revision).await?;
                     } else {

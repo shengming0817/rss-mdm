@@ -415,15 +415,5 @@ async fn account_event(
 ) -> Result<Json<rss_mdm_agent_wire::da::AccountSettlement>, BusinessError> {
     let p = credential_peer(&s, tls, &a).await?;
     let b = service(&s)?;
-    Ok(Json(
-        b.service
-            .account_event(
-                &p,
-                b.recovery.as_deref().ok_or(BusinessError::Unavailable)?,
-                id,
-                &event?.0,
-                &a,
-            )
-            .await?,
-    ))
+    Ok(Json(b.service.account_event(&p, id, &event?.0, &a).await?))
 }

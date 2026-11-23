@@ -19,17 +19,17 @@ use std::sync::Arc;
 use uuid::Uuid;
 pub struct AccessMaterials {
     direct: Option<rss_mdm_registration_service::DevicePrincipal>,
-    protection: Arc<Protection>,
+    protection: Option<Arc<Protection>>,
     eligibility: Arc<dyn rss_mdm_recovery_credentials::eligibility::Eligibility>,
 }
 impl AccessMaterials {
     pub(crate) fn for_device(
-        credentials: &rss_mdm_recovery_credentials::Credentials,
+        protection: Option<Arc<Protection>>,
         p: &rss_mdm_registration_service::DevicePrincipal,
     ) -> Self {
         Self {
             direct: Some(p.clone()),
-            protection: credentials.protection().clone(),
+            protection,
             eligibility: Arc::new(eligibility::AccessEligibility { admission: None }),
         }
     }
@@ -45,7 +45,7 @@ impl AccessMaterials {
     ) -> Self {
         Self {
             direct: None,
-            protection,
+            protection: Some(protection),
             eligibility,
         }
     }
@@ -181,6 +181,8 @@ impl AccessRecovery for AccessMaterials {
                 }
                 let recipient = self
                     .protection
+                    .as_deref()
+                    .ok_or(Error::Unsupported)?
                     .selected_on(rss_mdm_install_support::StorageProfile::Da, c, b.tenant)
                     .await?;
                 recipient.require_current(now)?;
@@ -221,9 +223,8 @@ impl AccessRecovery for AccessMaterials {
             let Some(wire::AccessWindowsPlan::Initialize { recipient, expected_revision }) = &task.windows else { return Err(Error::Conflict) };
             let item = &value.materials[0];
             if item.expected_revision != *expected_revision { return Err(Error::Conflict); }
-            let key = self.protection.recipient(&recipient.key_id)?;
-            let now = crate::platform_sso::store::now(c).await.map_err(custody_error)?;
-            key.require_current(now)?;
+            let protection=self.protection.as_deref().ok_or(Error::Unsupported)?;
+            let key = protection.recipient(&recipient.key_id)?;
             let aad = task.material_aad(&item.subject, item.expected_revision).map_err(|_| Error::Malformed)?;
             let secret = key.open_envelope(
                 &STANDARD.decode(&item.wrapped_key).map_err(|_| Error::Malformed)?, item.nonce,
@@ -235,7 +236,7 @@ impl AccessRecovery for AccessMaterials {
                 || !matches!(&b.account, Some(wire::AccessAccount::Windows { sid: current, .. }) if current == sid) { return Err(Error::Conflict) }
             let binding = task_binding(self.direct.as_ref(), c, task, &item.subject).await?;
             let coordinates = storage::reserve_in(self.custody(), c, task.tenant_id, &binding, task.task_id, item.expected_revision).await?;
-            storage::ingest_in(self.custody(), c, &self.protection.keys, &coordinates, task.task_id, &secret).await?;
+            storage::ingest_in(self.custody(), c, &protection.keys, &coordinates, task.task_id, &secret).await?;
             storage::link_agent_in(self.custody(), c, task.task_id, task.attempt_id, &coordinates).await?;
             Ok(vec![wire::CredentialReceipt { subject: item.subject.clone(), material: coordinates.material, version: coordinates.version }])
         }.await.map_err(error)
@@ -325,7 +326,7 @@ impl AccessRecovery for AccessMaterials {
                 .await?;
                 if matches!(disposition, BindingDisposition::Withdrawn) {
                     if terminal {
-                        for v in values {
+                        for v in values.into_iter().filter(|v| v.validity.readable()) {
                             storage::settled_in(
                                 self.custody(),
                                 c,

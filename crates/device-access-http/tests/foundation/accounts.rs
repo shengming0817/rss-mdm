@@ -406,5 +406,60 @@ pub(super) async fn verify(
     assert_eq!(completed["execution"], "succeeded");
     let previous: Value = material::success(progress(op, &admin.cookie).await?).await?;
     assert_eq!(read, previous);
+    // A queued creation has never received permission to create a SID.
+    let owner = Manager::new(c, client).await?;
+    let pending_binding = Uuid::new_v4();
+    let creation = rss_mdm_device_access::AccountIntent::Create {
+        platform: w::TaskPlatform::Windows,
+        name: "queueduser".into(),
+    };
+    let put = access::Change {
+        operation_id: Uuid::new_v4(),
+        expected_revision: 0,
+        action: access::Action::Put {
+            person: rss_mdm_device_access::Person {
+                instance: r.service_id,
+                principal: owner.principal,
+            },
+            intent: creation.clone(),
+            policy: policy.id,
+        },
+    };
+    Box::pin(owner.change(
+        c,
+        client,
+        &r,
+        pending_binding,
+        put,
+        json!({"kind":"put","instance":r.service_id,
+        "principal":owner.principal,"account":creation,"policy":policy.id}),
+    ))
+    .await?;
+    let remover = Manager::new(c, client).await?;
+    let cancellation = Uuid::new_v4();
+    let remove = access::Change {
+        operation_id: cancellation,
+        expected_revision: 1,
+        action: access::Action::Unbind {
+            disposition: w::AccessAccountDisposition::Keep,
+        },
+    };
+    Box::pin(remover.change(
+        c,
+        client,
+        &r,
+        pending_binding,
+        remove,
+        json!({"kind":"unbind","disposition":"keep"}),
+    ))
+    .await?;
+    let cancelled: Value =
+        material::success(progress(cancellation, &remover.cookie).await?).await?;
+    assert_eq!(cancelled["cleanupPending"], false);
+    assert_eq!(cancelled["received"], false);
+    assert_eq!(
+        material::success::<Option<da::AccountOffer>>(next().await?).await?,
+        None
+    );
     Ok(())
 }

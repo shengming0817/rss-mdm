@@ -6,12 +6,10 @@ use rss_mdm_audit_integration::{AuditIntent, RequestAudit};
 use rss_mdm_authorization_service::{OperationAuthority, Permission, context::AuthorizedPrincipal};
 use rss_mdm_device_access::State;
 use rss_mdm_install_support::StorageProfile;
-use rss_mdm_recovery_credentials::Credentials;
 use rss_mdm_registration_service::{DevicePrincipal, device::endpoints};
 use rss_mdm_task_state::{Execution, RunState};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, Row};
-use std::collections::BTreeMap;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -58,7 +56,18 @@ pub(super) async fn select(
     c: &mut PgConnection,
     b: &Binding,
     installation: Uuid,
+    has_custody: bool,
 ) -> Result<Option<Target>, Error> {
+    // A change can only clean or update the endpoint which owned the preceding execution.
+    if b.state == State::Revoked || b.account_delivery.is_some() {
+        if b.state != State::Revoked
+            && matches!(b.account_delivery, Some(Target::Da { .. }))
+            && !has_custody
+        {
+            return Err(Error::Unsupported);
+        }
+        return Ok(b.account_delivery.clone());
+    }
     if b.intent.platform() != w::TaskPlatform::Windows
         || !b
             .configuration
@@ -79,6 +88,9 @@ pub(super) async fn select(
             revision,
             epoch,
         }));
+    }
+    if !has_custody {
+        return Err(Error::Unsupported);
     }
     let epoch = endpoints::current_da_epoch_in(c, &b.tenant.to_string(), &b.device).await?;
     Ok(Some(Target::Da {
@@ -155,7 +167,23 @@ pub(super) async fn accept(
     let now = crate::platform_sso::store::now(c).await?;
     // An offline cleanup remains queued; a finite execution permit starts only after receipt.
     let deadline = i64::MAX;
-    let state = RunState::new(deadline, now).map_err(|_| Error::Corrupt)?;
+    let mut state = RunState::new(deadline, now).map_err(|_| Error::Corrupt)?;
+    if b.state == State::Revoked && b.account.is_none() {
+        let started: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT FROM rss_da.access_runs WHERE tenant_id=$1 AND binding_id=$2
+               AND da_target->>'epoch'=$3 AND state->>'startedAt' IS NOT NULL
+               AND access_binding->>'state'<>'revoked')",
+        )
+        .bind(b.tenant)
+        .bind(b.id)
+        .bind(epoch.to_string())
+        .fetch_one(&mut *c)
+        .await
+        .map_err(db)?;
+        if !started {
+            state.cancel();
+        }
+    }
     sqlx::query("INSERT INTO rss_da.access_runs(expected_epoch,tenant_id,id,policy_version,origin,access_binding,device,occurrence,created_at,available_at,deadline,state,da_target) VALUES($1,$2,$3,$4,'\"human\"',$5,$6,$7,$8,$8,$9,$10,$11)")
         .bind(expected_epoch).bind(b.tenant).bind(Uuid::new_v4()).bind(b.policy_version).bind(sqlx::types::Json(b))
         .bind(b.device.into_uuid()).bind(format!("device-access:{}:{}",b.id,b.revision)).bind(now).bind(deadline)
@@ -163,17 +191,13 @@ pub(super) async fn accept(
     Ok(())
 }
 
-#[derive(Serialize, Deserialize)]
-struct Recorded {
-    grant: bool,
-    digest: [u8; 32],
-    receipt: Option<w::CredentialReceipt>,
-}
 #[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
 struct Journal {
     start: Option<w::AccessTaskSpec>,
-    #[serde(default)]
-    events: BTreeMap<Uuid, Recorded>,
+    native_observed: bool,
+    prepared: Option<w::AccessAccount>,
+    custody: Option<w::CredentialReceipt>,
 }
 struct Run {
     id: Uuid,
@@ -317,6 +341,15 @@ impl Service {
                     let mut run = load_run(c, p, id, target).await?;
                     match run.authorize(c, now).await {
                         Ok(_) => (),
+                        Err(Error::Conflict | Error::Forbidden)
+                            if run.journal.start.is_some()
+                                && matches!(
+                                    run.state.execution,
+                                    Execution::Running | Execution::Unknown
+                                ) =>
+                        {
+                            ()
+                        }
                         Err(Error::Conflict | Error::Forbidden) => continue,
                         Err(error) => return Err(error),
                     }
@@ -342,19 +375,24 @@ impl Service {
     pub async fn account_event(
         &self,
         p: &DevicePrincipal,
-        credentials: &Credentials,
         id: Uuid,
         input: &da::AccountEvent,
         a: &RequestAudit,
     ) -> Result<da::AccountSettlement, Error> {
-        if input.event_id.is_nil() || credentials.profile() != StorageProfile::Da {
+        if input.event_id.is_nil() {
             return Err(Error::Malformed);
         }
         a.identify_device(p.device());
-        a.operation(input.event_id, "da_account_event", AuditIntent::Management);
-        self.write(a, (self, p, credentials, id, input), |ctx, c| {
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::DeviceAccessTask,
+            id,
+            "da_account_event",
+            AuditIntent::Management,
+        );
+        let key = format!("da-account:{id}:{}:{}", input.attempt_id, input.event_id);
+        self.write_keyed(&self.audit,a,Some(key),(self, p, id, input), |_,_|Box::pin(async{Ok(())}), |ctx, c| {
             Box::pin(async move {
-                let (s, p, credentials, id, input) = *ctx;
+                let (s, p, id, input) = *ctx;
                 let (_, sqlx::types::Json(target)) = candidates(c, s, p, Some(id))
                     .await?
                     .pop()
@@ -371,20 +409,23 @@ impl Service {
                     Sha256::digest(serde_json::to_vec(input).map_err(|_| Error::Malformed)?).into();
                 let grant = matches!(
                     input.event,
-                    da::AccountObservation::Received | da::AccountObservation::NotStarted
+                    da::AccountObservation::Received | da::AccountObservation::NotStarted{..}
                 );
-                if let Some(old) = run.journal.events.get(&input.event_id) {
-                    if old.digest != digest {
+                let old=sqlx::query("SELECT digest,permit_until,receipt FROM rss_da.account_events WHERE tenant_id=$1 AND run=$2 AND event=$3")
+                    .bind(run.binding.tenant).bind(id).bind(input.event_id).fetch_optional(&mut *c).await.map_err(db)?;
+                if let Some(old)=old {
+                    if old.try_get::<Vec<u8>,_>("digest").map_err(db)? != digest {
                         return Err(Error::Conflict);
                     }
-                    let receipt = old.receipt.clone();
+                    let receipt = old.try_get::<Option<sqlx::types::Json<w::CredentialReceipt>>,_>("receipt").map_err(db)?.map(|v|v.0);
+                    let issued=old.try_get::<Option<i64>,_>("permit_until").map_err(db)?;
                     let permit = if grant
                         && run.state.execution == Execution::Running
                         && run
                             .journal
                             .start
                             .as_ref()
-                            .is_some_and(|t| t.expires_at > now)
+                            .is_some_and(|t| Some(t.expires_at)==issued && t.expires_at > now)
                     {
                         run.authorize(c, now).await?;
                         run.journal.start.clone()
@@ -400,50 +441,31 @@ impl Service {
                         replay: true,
                     });
                 }
-                if run.journal.events.len() >= 64 {
-                    return Err(Error::Capacity);
-                }
-                // A delayed stable SID from a started creation lets the exact successor unbind
-                // clean up after a disconnect. This observation grants no execution permission.
-                let mut retired_creation = false;
-                let b = match &input.event {
-                    da::AccountObservation::Prepared(v)
-                        if run.journal.start.as_ref().is_some_and(|t| {
-                            matches!(t.action, w::AccessAction::Create { .. })
-                        }) =>
-                    {
-                        let latest =
-                            storage::locked_in(c, run.binding.tenant, run.binding.id).await?;
-                        if latest.state == State::Revoked
-                            && latest.generation == run.binding.generation + 1
-                            && latest.created_by_rss
-                            && latest.intent == run.binding.intent
-                            && latest.account.is_none()
-                            && local(&v.account)
-                        {
-                            retired_creation = true;
-                            run.binding.clone()
-                        } else {
-                            run.authorize(c, now).await?
+                let (binding,current)=match run.authorize(c,now).await {
+                    Ok(b)=>(b,true),
+                    Err(Error::Forbidden|Error::Conflict) if run.journal.start.is_some()
+                        && matches!(run.state.execution,Execution::Running|Execution::Unknown)
+                        && matches!(input.event,da::AccountObservation::Prepared(_)|da::AccountObservation::Result(_)) => {
+                        let latest=storage::locked_in(c,run.binding.tenant,run.binding.id).await?;
+                        if matches!(input.event,da::AccountObservation::Prepared(_))
+                            && latest.definition_digest()?!=input.definition_digest
+                            && !(latest.state==State::Revoked && latest.generation==run.binding.generation+1
+                                 && latest.intent==run.binding.intent && latest.created_by_rss && latest.account.is_none()){
+                            return Err(Error::Conflict);
                         }
+                        let mut frozen=run.binding.clone();
+                        if frozen.account.is_none(){frozen.account=run.journal.prepared.clone();}
+                        (frozen,false)
                     }
-                    _ => run.authorize(c, now).await?,
+                    Err(e)=>return Err(e),
                 };
-                let materials = AccessMaterials::for_device(credentials, p);
-                let receipt = run.observe(c, &materials, input, &b, now).await?;
-                if retired_creation {
-                    run.state
-                        .uncertain_result(input.attempt_id)
-                        .map_err(|_| Error::Conflict)?;
-                }
-                run.journal.events.insert(
-                    input.event_id,
-                    Recorded {
-                        grant,
-                        digest,
-                        receipt: receipt.clone(),
-                    },
-                );
+                let materials=AccessMaterials::for_device(s.recovery.clone(),p);
+                let receipt=run.observe(c,&materials,input,&binding,now,current).await?;
+                run.journal.native_observed |= !grant;
+                let permit_until=run.journal.start.as_ref().filter(|_|grant).map(|t|t.expires_at);
+                sqlx::query("INSERT INTO rss_da.account_events(tenant_id,run,event,digest,permit_until,receipt) VALUES($1,$2,$3,$4,$5,$6)")
+                    .bind(binding.tenant).bind(id).bind(input.event_id).bind(digest.as_slice()).bind(permit_until)
+                    .bind(receipt.as_ref().map(sqlx::types::Json)).execute(&mut *c).await.map_err(db)?;
                 run.save(c).await?;
                 Ok(Change {
                     value: da::AccountSettlement {
@@ -467,6 +489,7 @@ impl Run {
         input: &da::AccountEvent,
         b: &Binding,
         now: i64,
+        current: bool,
     ) -> Result<Option<w::CredentialReceipt>, Error> {
         use da::AccountObservation as E;
         if matches!(input.event, E::Received) {
@@ -517,23 +540,31 @@ impl Run {
         ) {
             return Err(Error::Conflict);
         }
-        if matches!(input.event, E::NotStarted) {
+        if let E::NotStarted { expires_at } = input.event {
             let start = self.journal.start.as_mut().ok_or(Error::Conflict)?;
             if self.state.execution != Execution::Running
                 || start.expires_at > now
-                || self.journal.events.values().any(|e| !e.grant)
+                || start.expires_at != expires_at
+                || self.journal.native_observed
             {
                 return Err(Error::Conflict);
             }
             // The earlier permit has expired, and the device proved the local attempt never started.
+            if b.state != State::Revoked {
+                start.windows = Some(materials.plan(c, b, now).await?);
+            }
             start.expires_at = now + 300;
             start.deadline = start.expires_at;
             self.state.deadline = start.deadline;
+            self.state.delivery = rss_mdm_task_state::Delivery::Received {
+                attempt: input.attempt_id,
+                lease_until: start.deadline,
+            };
             return Ok(None);
         }
         let task = self.journal.start.as_ref().ok_or(Error::Conflict)?;
         match &input.event {
-            E::Received | E::NotStarted => unreachable!(),
+            E::Received | E::NotStarted { .. } => unreachable!(),
             E::Prepared(v) => {
                 if !local(&v.account)
                     || matches!(task.action, w::AccessAction::Unbind { .. })
@@ -545,10 +576,13 @@ impl Run {
                     return Err(Error::Conflict);
                 }
                 storage::prepared_in(c, b.tenant, v).await?;
+                self.journal.prepared = Some(v.account.clone());
             }
             E::Escrow(v) => {
                 let mut receipts = materials.escrow(c, task, v).await?;
-                return Ok(Some(receipts.pop().ok_or(Error::Corrupt)?));
+                let receipt = receipts.pop().ok_or(Error::Corrupt)?;
+                self.journal.custody = Some(receipt.clone());
+                return Ok(Some(receipt));
             }
             E::Result(v) => {
                 if v.binding_id != b.id
@@ -579,46 +613,62 @@ impl Run {
                         && facts.factor_generation == task.factor_generation
                         && b.account.as_ref() == Some(account) =>
                     {
-                        materials.settle(c, task, facts).await?;
+                        if let (
+                            w::AccessAction::Create { configuration, .. },
+                            w::AccessEffect::Applied { role, .. },
+                        ) = (&task.action, &v.effect)
+                            && *role != configuration.role.unwrap_or(w::AccessRole::Standard)
+                        {
+                            return Err(Error::Conflict);
+                        }
+                        let expected = match &task.windows {
+                            Some(w::AccessWindowsPlan::Initialize { .. }) => {
+                                self.journal.custody.as_ref()
+                            }
+                            Some(w::AccessWindowsPlan::Preserve { facts }) => Some(&facts.recovery),
+                            _ => None,
+                        };
+                        if expected != Some(&facts.recovery) {
+                            return Err(Error::Conflict);
+                        }
+                        if current {
+                            materials.settle(c, task, facts).await?;
+                        }
                     }
                     _ => return Err(Error::Conflict),
                 }
-                let projected = storage::result_in(
-                    c,
-                    b.tenant,
-                    self.id,
-                    input.attempt_id,
-                    input.event_id,
-                    v,
-                    true,
-                )
-                .await?;
-                if !projected {
+                if current
+                    && !storage::result_in(
+                        c,
+                        b.tenant,
+                        self.id,
+                        input.attempt_id,
+                        input.event_id,
+                        v,
+                        true,
+                    )
+                    .await?
+                {
                     return Err(Error::Conflict);
                 }
-                if matches!(v.effect, w::AccessEffect::Unbound { .. }) {
+                if current && matches!(v.effect, w::AccessEffect::Unbound { .. }) {
+                    let stopped:Vec<Uuid>=sqlx::query_scalar(
+                        "SELECT id FROM rss_da.access_runs WHERE tenant_id=$1 AND binding_id=$2 AND device=$3
+                         AND da_target->>'epoch'=$4 AND da_target->>'installation'=$5
+                         AND (access_binding->>'generation')::bigint<$6 AND state->>'execution' IN ('running','unknown')"
+                    ).bind(b.tenant).bind(b.id).bind(b.device.into_uuid()).bind(self.target.epoch.to_string())
+                     .bind(self.target.installation.to_string()).bind(b.generation).fetch_all(&mut *c).await.map_err(db)?;
                     rss_mdm_recovery_credentials::tasks::device::retire_unbound(
                         c,
                         b.tenant,
                         b.device,
                         b.id,
                         b.generation,
+                        (self.target.installation, self.target.epoch),
+                        &stopped,
                     )
                     .await
                     .map_err(crate::recovery::error)?;
-                    // Only this registration's stopped first-escrow attempts lose their pending barrier.
-                    sqlx::query(
-                        "UPDATE rss_da.recovery_versions v SET pending=false FROM rss_da.recovery_entries e,
-                            rss_da.recovery_agent_materials m,rss_da.access_runs a
-                         WHERE (v.tenant_id,v.entry)=(e.tenant_id,e.id)
-                           AND (m.tenant_id,m.entry,m.version)=(v.tenant_id,v.entry,v.version)
-                           AND (a.tenant_id,a.id)=(m.tenant_id,m.task)
-                           AND a.da_target->>'epoch'=$5 AND a.binding_id=$2 AND a.device=$3
-                           AND e.tenant_id=$1 AND e.device=$3 AND e.subject->>'kind'='rss_login'
-                           AND e.subject->>'binding'=a.binding_id::text AND (e.subject->>'bindingGeneration')::bigint<$4
-                           AND v.operation=a.id AND v.pending"
-                    ).bind(b.tenant).bind(b.id).bind(b.device.into_uuid()).bind(b.generation)
-                     .bind(self.target.epoch.to_string()).execute(&mut *c).await.map_err(db)?;
                     materials
                         .unbound(c, b.tenant, b.id, b.generation, b.revision)
                         .await?;
@@ -630,8 +680,16 @@ impl Run {
                     .unresolved(
                         c,
                         task,
-                        super::participants::BindingDisposition::Current,
-                        !success,
+                        if current {
+                            super::participants::BindingDisposition::Current
+                        } else {
+                            super::participants::BindingDisposition::Withdrawn
+                        },
+                        if current {
+                            !success
+                        } else {
+                            !matches!(v.effect, w::AccessEffect::Unknown)
+                        },
                     )
                     .await?;
                 if unresolved || matches!(v.effect, w::AccessEffect::Unknown) {
@@ -689,6 +747,7 @@ impl Service {
                     state.expire(crate::platform_sso::store::now(c).await?);
                     progress.task_id=Some(row.try_get("id").map_err(db)?);
                     progress.execution=state.execution;
+                    progress.cleanup_pending &= state.cancellation!=rss_mdm_task_state::Cancellation::Confirmed;
                     progress.received=matches!(state.delivery,rss_mdm_task_state::Delivery::Received{..});
                     progress.effect=row.try_get::<Option<sqlx::types::Json<w::AccessResult>>,_>("result")
                         .map_err(db)?.map(|r|r.0.effect);

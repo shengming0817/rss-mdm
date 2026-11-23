@@ -2,6 +2,14 @@
   "tables": [
     {
       "schema": "rss_da",
+      "table": "account_events",
+      "read_write": true,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
       "table": "access_runs",
       "read_write": false,
       "read_only": true,

@@ -45,7 +45,11 @@ pub enum AccountObservation {
     /// The device journaled the offer and requests execution permission.
     Received,
     /// The durable device journal proves that native execution never began before the permit expired.
-    NotStarted,
+    NotStarted {
+        /// Expiry of the exact unused permit in the local journal.
+        #[serde(rename = "expiresAt")]
+        expires_at: i64,
+    },
     /// Stable local account established by the device.
     Prepared(w::AccessPrepared),
     /// Encrypted RSS factor recovery material.

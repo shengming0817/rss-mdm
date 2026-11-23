@@ -605,9 +605,11 @@ pub async fn retire_unbound(
     device: DeviceId,
     binding: Uuid,
     generation: i64,
+    registration: (Uuid, Uuid),
+    stopped: &[Uuid],
 ) -> Result<(), Error> {
-    let ids:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM rss_da.credential_runs WHERE tenant_id=$1 AND device=$2 AND da_execution->'request'->>'bindingId'=$3 AND (da_execution->'request'->>'bindingGeneration')::bigint<$4 AND state IN ('\"accepted\"','\"pending_application\"','\"reconciling\"') ORDER BY id FOR UPDATE")
-        .bind(tenant).bind(device.into_uuid()).bind(binding.to_string()).bind(generation).fetch_all(&mut *c).await?;
+    let ids:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM rss_da.credential_runs WHERE tenant_id=$1 AND device=$2 AND da_execution->'request'->>'bindingId'=$3 AND (da_execution->'request'->>'bindingGeneration')::bigint<$4 AND da_execution->>'installation'=$5 AND da_execution->>'registration_epoch'=$6 AND state IN ('\"accepted\"','\"pending_application\"','\"reconciling\"') ORDER BY id FOR UPDATE")
+        .bind(tenant).bind(device.into_uuid()).bind(binding.to_string()).bind(generation).bind(registration.0.to_string()).bind(registration.1.to_string()).fetch_all(&mut *c).await?;
     for id in ids {
         let run = load(c, tenant, device, Some(id), true)
             .await?
@@ -621,5 +623,22 @@ pub async fn retire_unbound(
             release_guard(c, id, run.frozen.spec.attempt_id).await?;
         }
     }
+    // Original account journals were stopped by the same authenticated cleanup.
+    sqlx::query(
+        "UPDATE rss_da.recovery_versions v SET pending=false
+        FROM rss_da.recovery_entries e,rss_da.recovery_agent_materials m
+        WHERE (v.tenant_id,v.entry)=(e.tenant_id,e.id)
+          AND (m.tenant_id,m.entry,m.version)=(v.tenant_id,v.entry,v.version)
+          AND e.tenant_id=$1 AND e.device=$2 AND e.subject->>'kind'='rss_login'
+          AND e.subject->>'binding'=$3 AND (e.subject->>'bindingGeneration')::bigint<$4
+          AND m.task=ANY($5) AND v.operation=m.task AND v.pending",
+    )
+    .bind(tenant)
+    .bind(device.into_uuid())
+    .bind(binding.to_string())
+    .bind(generation)
+    .bind(stopped)
+    .execute(c)
+    .await?;
     Ok(())
 }
