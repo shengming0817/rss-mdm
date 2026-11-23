@@ -314,7 +314,7 @@ impl Service {
         p: &DevicePrincipal,
         id: Option<Uuid>,
         a: &RequestAudit,
-    ) -> Result<CurrentConfiguration, Error> {
+    ) -> Result<da::CurrentConfiguration, Error> {
         a.identify_device(p.device());
         self.write(a, (self, signing, p, id), |ctx, c| {
             Box::pin(async move {
@@ -325,26 +325,34 @@ impl Service {
                 policy::lock_publications_on(c, tenant)
                     .await
                     .map_err(fault)?;
-                let publication = policy::selected_on(c, tenant, p.device())
+                let issuers = policy::applicable_on(c, tenant, p.device())
                     .await
                     .map_err(fault)?;
-                let Some(publication) = publication else {
+                let publication = issuers.first().map(|(publication, _)| publication.clone());
+                let mut current = da::CurrentConfiguration {
+                    identity: da::ReportIdentity {
+                        service_id: service.service_id()?,
+                        tenant,
+                        device_id: *p.device(),
+                    },
+                    state: da::SourceState::Missing,
+                    publication,
+                    artifact: None,
+                    authorities: issuers
+                        .into_iter()
+                        .map(|(_, authority)| authority)
+                        .collect(),
+                };
+                let Some(publication) = &current.publication else {
                     return Ok(Changed {
-                        value: CurrentConfiguration {
-                            state: da::SourceState::Missing,
-                            publication: None,
-                            artifact: None,
-                        },
+                        value: current,
                         replay: false,
                     });
                 };
                 if !publication.enabled {
+                    current.state = da::SourceState::Withdrawn;
                     return Ok(Changed {
-                        value: CurrentConfiguration {
-                            state: da::SourceState::Withdrawn,
-                            publication: Some(publication),
-                            artifact: None,
-                        },
+                        value: current,
                         replay: false,
                     });
                 }
@@ -365,29 +373,18 @@ impl Service {
                         return Err(Error::Conflict);
                     }
                 }
+                if artifact.is_some() {
+                    current.state = da::SourceState::Present;
+                }
+                current.artifact = artifact;
                 Ok(Changed {
-                    value: CurrentConfiguration {
-                        state: if artifact.is_some() {
-                            da::SourceState::Present
-                        } else {
-                            da::SourceState::Missing
-                        },
-                        publication: Some(publication),
-                        artifact,
-                    },
+                    value: current,
                     replay: false,
                 })
             })
         })
         .await
     }
-}
-#[derive(Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CurrentConfiguration {
-    pub state: da::SourceState,
-    pub publication: Option<Publication>,
-    pub artifact: Option<da::SignedConfiguration>,
 }
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

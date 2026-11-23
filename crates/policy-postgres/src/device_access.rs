@@ -1,39 +1,11 @@
 //! Minimal DA configuration publications in the existing Policy provider.
 //! These publications have no Scope identity or Group backend dependency.
+use rss_mdm_agent_wire::da::{ConfigurationField, FieldAuthority, PolicyAuthority};
+pub use rss_mdm_agent_wire::da::{Publication, Target};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, Row};
+use std::collections::BTreeMap;
 use uuid::Uuid;
-/// The only supported DA assignment selectors.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Target {
-    /// Default for DA registrations without an explicit override.
-    TenantDefault,
-    /// An override applies to exactly one DA device.
-    Device {
-        /// DA device identity, never an Inventory object or Group ID.
-        device: rss_mdm_agent_wire::DeviceId,
-    },
-}
-/// One current publication; previous immutable versions remain queryable.
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Publication {
-    /// Policy identity.
-    pub id: Uuid,
-    /// Configuration CAS.
-    pub revision: i64,
-    /// Immutable definition version.
-    pub version: Uuid,
-    /// Closed assignment selector.
-    pub target: Target,
-    /// Disabled overrides deliberately block fallback to the tenant default.
-    pub enabled: bool,
-    /// Client groups authorized for managed-mandatory transport.
-    pub managed_fields: Vec<rss_mdm_agent_wire::da::ConfigurationField>,
-    /// Validated device access configuration.
-    pub configuration: rss_mdm_agent_wire::runtime::AccessConfiguration,
-}
 /// Errors before persistence; the host owns audit and settlement.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -79,8 +51,36 @@ pub async fn publish_on(
         .configuration
         .validate()
         .map_err(|_| Error::Malformed)?;
+    let previous: Option<sqlx::types::Json<BTreeMap<ConfigurationField, FieldAuthority>>> =
+        sqlx::query_scalar(
+            "SELECT v.frozen->'fieldAuthority' FROM rss_da.policies p
+             JOIN rss_da.policy_versions v ON (v.tenant_id,v.id)=(p.tenant_id,p.current_version)
+             WHERE p.tenant_id=$1 AND p.id=$2 AND p.revision=$3 AND v.action_kind='device_access'",
+        )
+        .bind(tenant)
+        .bind(value.id)
+        .bind(expected)
+        .fetch_optional(&mut *c)
+        .await?;
+    if expected > 0 && previous.is_none() {
+        return Err(Error::Conflict);
+    }
+    let mut fields = previous.map(|v| v.0).unwrap_or_default();
+    for field in [ConfigurationField::Mac, ConfigurationField::Windows] {
+        let authorized = value.managed_fields.contains(&field);
+        if fields.get(&field).is_some_and(|v| v.authorized) != authorized {
+            fields.insert(
+                field,
+                FieldAuthority {
+                    authorized,
+                    revision: value.revision as u64,
+                },
+            );
+        }
+    }
     let definition = serde_json::to_value(value).map_err(|_| Error::Malformed)?;
-    let frozen = serde_json::json!({"kind":"device_access","configuration":value.configuration,"publication":value});
+    let frozen = serde_json::json!({"kind":"device_access","configuration":value.configuration,
+        "publication":value, "fieldAuthority":fields});
     persist(
         c,
         tenant,
@@ -183,17 +183,37 @@ pub async fn get_on(
         .map(|v| serde_json::from_value(v).map_err(|_| Error::Malformed))
         .transpose()
 }
-/// Device override or tenant default, including explicit disabled overrides.
-pub async fn selected_on(
+/// All applicable issuers under the publication fence, with the selected backend first.
+pub async fn applicable_on(
     c: &mut PgConnection,
     tenant: Uuid,
     device: &rss_mdm_agent_wire::DeviceId,
-) -> Result<Option<Publication>, Error> {
-    let value: Option<serde_json::Value> = sqlx::query_scalar("SELECT definition FROM rss_da.policies WHERE tenant_id=$1 AND (definition#>>'{target,kind}'='tenant_default' OR (definition#>>'{target,kind}'='device' AND (definition#>>'{target,device}')::uuid=$2)) ORDER BY (definition#>>'{target,kind}'='device') DESC LIMIT 1")
-        .bind(tenant).bind(device.into_uuid()).fetch_optional(c).await?;
-    value
-        .map(|v| serde_json::from_value(v).map_err(|_| Error::Malformed))
-        .transpose()
+) -> Result<Vec<(Publication, PolicyAuthority)>, Error> {
+    let rows = sqlx::query(
+        "SELECT p.definition, v.frozen->'fieldAuthority' AS fields
+         FROM rss_da.policies p LEFT JOIN rss_da.policy_versions v
+           ON (v.tenant_id,v.id)=(p.tenant_id,p.current_version)
+         WHERE p.tenant_id=$1 AND (p.definition#>>'{target,kind}'='tenant_default'
+             OR (p.definition#>>'{target,kind}'='device' AND (p.definition#>>'{target,device}')::uuid=$2))
+         ORDER BY (p.definition#>>'{target,kind}'='device') DESC",
+    )
+    .bind(tenant).bind(device.into_uuid()).fetch_all(c).await?;
+    rows.into_iter()
+        .map(|row| {
+            let publication = row
+                .try_get::<sqlx::types::Json<Publication>, _>("definition")?
+                .0;
+            let fields = row.try_get::<sqlx::types::Json<_>, _>("fields")?.0;
+            let authority = PolicyAuthority {
+                policy: publication.id,
+                version: publication.version,
+                revision: publication.revision as u64,
+                enabled: publication.enabled,
+                fields,
+            };
+            Ok((publication, authority))
+        })
+        .collect()
 }
 
 /// Ordered current publications for a tenant directory or an explicitly selected device.

@@ -13,7 +13,12 @@ use sqlx::{PgConnection, Row};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 /// Historical locks are bounded by the two setting groups per immutable Policy.
-pub(crate) type Mandatory = BTreeMap<Uuid, BTreeMap<da::ConfigurationField, Uuid>>;
+pub(crate) type Mandatory = BTreeMap<Uuid, BTreeMap<da::ConfigurationField, MandatoryField>>;
+#[derive(serde::Deserialize, serde::Serialize)]
+pub(crate) struct MandatoryField {
+    pub artifact: Uuid,
+    pub revision: u64,
+}
 #[derive(Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SignedObservation {
@@ -130,7 +135,19 @@ impl Authorities {
             if config.delivery == da::DeliveryPermission::ManagedMandatory {
                 let locked = mandatory.entry(config.id).or_default();
                 for field in config.managed_fields {
-                    locked.insert(field, proof.artifact);
+                    // An older carrier cannot erase a lock from a later grant of this field.
+                    if locked
+                        .get(&field)
+                        .is_none_or(|old| old.revision <= config.revision)
+                    {
+                        locked.insert(
+                            field,
+                            MandatoryField {
+                                artifact: proof.artifact,
+                                revision: config.revision,
+                            },
+                        );
+                    }
                 }
             }
         }

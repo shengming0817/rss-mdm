@@ -108,7 +108,7 @@ async fn revoke(
     Extension(auth): Extension<RequestAuth>,
     Path((_tenant, id)): Path<(Uuid, rss_mdm_agent_wire::DeviceId)>,
     v: Body<OperationRequest>,
-) -> Result<Json<rss_mdm_registration_service::device::RevocationReceipt>, Error> {
+) -> Result<Json<da::RevocationReceipt>, Error> {
     Ok(Json(
         s.registrations
             .revoke(&auth.proof, id, body(v)?.operation_id, &a)

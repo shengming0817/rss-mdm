@@ -76,8 +76,13 @@ pub struct PolicyAuthority {
 }
 
 impl PolicyAuthority {
-    /// A signed managed artifact must fall within the issuer's uninterrupted current grant.
-    pub fn authorizes(&self, artifact: &Configuration, field: ConfigurationField) -> bool {
+    /// Test the signed field against the issuer's uninterrupted grant. A disabled policy
+    /// retains locks; applying a value also requires enabled policy and valid source evidence.
+    pub fn covers_managed_field(
+        &self,
+        artifact: &Configuration,
+        field: ConfigurationField,
+    ) -> bool {
         self.policy == artifact.id
             && artifact.delivery == DeliveryPermission::ManagedMandatory
             && artifact.managed_fields.contains(&field)

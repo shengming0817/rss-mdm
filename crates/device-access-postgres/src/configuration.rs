@@ -182,7 +182,7 @@ pub struct Change {
 }
 mod management;
 pub(crate) use management::fault as policy_fault;
-pub use management::{ConfigurationPage, CurrentConfiguration, DirectoryQuery, HISTORY};
+pub use management::{ConfigurationPage, DirectoryQuery, HISTORY};
 
 mod diagnostics;
 pub use diagnostics::Diagnostics;

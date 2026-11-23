@@ -404,7 +404,7 @@ impl RegistrationService {
         registration: rss_mdm_agent_wire::DeviceId,
         operation: Uuid,
         a: &RequestAudit,
-    ) -> Result<crate::device::RevocationReceipt, Failure> {
+    ) -> Result<da::RevocationReceipt, Failure> {
         let s = &self.inner;
         s.proof(p, a)?;
         version(wire::API_VERSION, operation)?;
@@ -465,6 +465,16 @@ impl RegistrationService {
                     RegistrationKind::DaDevice,
                 )
                 .await?;
+                // Freeze the actual credential before retirement changes its state.
+                let current =
+                    sqlx::query(crate::storage_profile::sql(profile).da_current_registration)
+                        .bind(&tenant)
+                        .bind(device.into_uuid())
+                        .fetch_optional(&mut *c)
+                        .await
+                        .map_err(db)?
+                        .ok_or(Error::Conflict)?;
+                let credential: Uuid = current.try_get("credential").map_err(db)?;
                 a.target_device(&device);
                 rss_mdm_pki_service::certificates::revoke_registration_in(
                     profile,
@@ -483,7 +493,10 @@ impl RegistrationService {
                     s.store.retirement.events(),
                 )
                 .await?;
-                let value = crate::device::RevocationReceipt {
+                let value = da::RevocationReceipt {
+                    service_id: s.service_id()?,
+                    tenant: Uuid::parse_str(&tenant).map_err(|_| Error::Corrupt)?,
+                    credential,
                     operation_id: *operation,
                     device: *registration,
                 };
@@ -504,6 +517,48 @@ impl RegistrationService {
         })
         .await
         .map_err(Into::into)
+    }
+    /// TLS proves key possession. The previously activated leaf may recover only its own
+    /// committed revoke result, even after ordinary device authorization has ended.
+    pub async fn revocation_receipt(
+        &self,
+        peer: &ClientCertificateEvidence,
+        a: &RequestAudit,
+    ) -> Result<da::RevocationReceipt, Failure> {
+        let s = &self.inner;
+        let leaf = peer.chain().first().ok_or(Error::Unauthorized)?;
+        let fingerprint: [u8; 32] = Sha256::digest(leaf.as_ref()).into();
+        let tenant = s
+            .store
+            .locate_certificate(fingerprint)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        let binding = s.execution(tenant);
+        let tenant = tenant.to_string();
+        let mut tx = s.store.snapshot(&tenant).await?;
+        let result: Option<String> = sqlx::query_scalar(
+            "SELECT o.result FROM rss_da.certificate_issuances i
+             JOIN rss_da.credentials k ON (k.tenant_id,k.id)=(i.tenant_id,i.credential)
+             JOIN rss_da.registration_operations o ON (o.tenant_id,o.device)=(k.tenant_id,k.device)
+             WHERE i.tenant_id=$1::uuid AND i.fingerprint=$2
+               AND k.purpose='da_device' AND k.channel IS NULL AND k.state='revoked'
+               AND o.action='da_registration_revoke' AND o.result::jsonb->>'credential'=k.id::text",
+        )
+        .bind(&tenant)
+        .bind(hex(fingerprint))
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
+        let receipt: da::RevocationReceipt =
+            serde_json::from_str(&result.ok_or(Error::Unauthorized)?)
+                .map_err(|_| Error::Corrupt)?;
+        if receipt.service_id != s.service_id()? || receipt.tenant.to_string() != tenant {
+            return Err(Error::Unauthorized.into());
+        }
+        tx.commit().await.map_err(db)?;
+        a.bind_scope(binding).map_err(|_| Error::Unauthorized)?;
+        a.identify_device(&receipt.device);
+        Ok(receipt)
     }
 }
 enum Authority<'a> {

@@ -317,6 +317,8 @@ pub async fn current_da_epoch_in(
 
 /// Shared registrar projection installed only for DA's independent registration profile.
 pub const DA_INSTALL_SQL: &str = r#"
+CREATE UNIQUE INDEX da_registration_revocation ON rss_da.registration_operations(tenant_id,device)
+ WHERE action='da_registration_revoke';
 CREATE FUNCTION rss_da.current_da_registration(p_device uuid) RETURNS jsonb
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  SELECT jsonb_build_object('device',r.id)
