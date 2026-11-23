@@ -227,9 +227,15 @@ impl Upload {
         let (input, history) = issued(&c, &config, &principal, sample)
             .await
             .context("issue signed historical configuration")?;
+        let request = crate::authority_t2_support::telemetry_intake(principal.binding());
         c.close().await;
         let accepted = service
-            .receive(&principal, &input, serde_json::to_vec(&input)?.len())
+            .receive(
+                &principal,
+                &input,
+                serde_json::to_vec(&input)?.len(),
+                request,
+            )
             .await
             .context("admit device upload")?;
         ensure!(!accepted.replayed);
@@ -266,7 +272,12 @@ impl Upload {
             point.observed_at += 100 * offset as i64;
         }
         let receipt = service
-            .receive(&self.principal, &upload, serde_json::to_vec(&upload)?.len())
+            .receive(
+                &self.principal,
+                &upload,
+                serde_json::to_vec(&upload)?.len(),
+                crate::authority_t2_support::telemetry_intake(self.principal.binding()),
+            )
             .await?;
         ensure!(!receipt.replayed && matches!(receipt.delivery, wire::TelemetryDelivery::Pending));
         Ok(upload.batch_id)
@@ -310,6 +321,7 @@ impl Upload {
                 &self.principal,
                 &self.input,
                 serde_json::to_vec(&self.input)?.len(),
+                crate::authority_t2_support::telemetry_intake(self.principal.binding()),
             )
             .await?;
         ensure!(receipt.replayed && matches!(receipt.delivery, wire::TelemetryDelivery::Published));
@@ -345,6 +357,7 @@ impl Upload {
                 &self.principal,
                 &self.input,
                 serde_json::to_vec(&self.input)?.len(),
+                crate::authority_t2_support::telemetry_intake(self.principal.binding()),
             )
             .await?;
         ensure!(replay.replayed && matches!(replay.delivery, wire::TelemetryDelivery::Published));

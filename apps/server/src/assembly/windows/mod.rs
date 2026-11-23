@@ -77,6 +77,7 @@ pub(crate) fn routers(
     app: Arc<rss_mdm_windows_channel::HttpState>,
     clock: Arc<dyn rss_observation::Clock>,
     request_budget: rss_axum::RequestBudget,
+    buffered_bytes: Arc<tokio::sync::Semaphore>,
 ) -> Option<(ChannelRouter, Vec<ChannelRouter>)> {
     let windows = windows?;
     let boundary = |origin: &str| Envelope {
@@ -84,7 +85,7 @@ pub(crate) fn routers(
         host: origin.trim_start_matches("https://").into(),
         clock: clock.clone(),
         audit_store: app.audit_store.clone(),
-        buffered_bytes: app.buffered_bytes.clone(),
+        buffered_bytes: buffered_bytes.clone(),
     };
     let (enrollment, management) = rss_mdm_windows_channel::routers(
         app.clone(),

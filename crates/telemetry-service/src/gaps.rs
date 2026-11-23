@@ -6,7 +6,7 @@ use rss_mdm_agent_wire::runtime::{
 use rss_mdm_registration_service::device::{DevicePrincipal, Purpose, store};
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use uuid::Uuid;
 
 const FUTURE_MICROS: i64 = 300 * 1_000_000;
@@ -93,42 +93,20 @@ impl Service {
         principal: &DevicePrincipal,
         input: &TelemetryGapReport,
         wire_bytes: usize,
+        request: crate::IntakeRequest,
     ) -> Result<TelemetryGapReceipt, Error> {
-        let rejection = Arc::new(Mutex::new(None));
-        let rejected = rejection.clone();
+        request.audit.operation(
+            input.report_id,
+            "agent_telemetry_gap_upload",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
         let service = self.clone();
-        let principal = principal.clone();
+        let device = principal.clone();
         let input = input.clone();
-        self.runtime
-            .local_tx(principal.binding(), crate::deadline(), move |tx| {
-                Box::pin(async move {
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            receive_on(&service, c, &principal, &input, wire_bytes)
-                                .await
-                                .map_err(|error| {
-                                    *rejected.lock().expect("gap rejection") = Some(error);
-                                    sqlx::Error::Protocol("telemetry gap rejected".into())
-                                })
-                        })
-                    })
-                    .await
-                })
-            })
-            .await
-            .fold(
-                Ok,
-                |_| Err(Error::Storage),
-                |_| {
-                    Err(rejection
-                        .lock()
-                        .expect("gap rejection")
-                        .unwrap_or(Error::Storage))
-                },
-                |_| Err(Error::Unknown),
-                |_| Err(Error::Unknown),
-                |_| Err(Error::Storage),
-            )
+        self.intake(principal.binding(), request, move |c| {
+            Box::pin(async move { receive_on(&service, c, &device, &input, wire_bytes).await })
+        })
+        .await
     }
 
     /// Recover a receipt under the current credential for the same registration incarnation.

@@ -27,7 +27,7 @@ impl Store {
                 let mut tx = self.pool.begin().await.map_err(db)?;
                 let remaining = deadline.remaining(rss_mdm_audit_integration::budget::RuntimeTimer.now()).ok_or_else(timeout)?;
                 let millis = remaining.as_millis().clamp(1, i32::MAX as u128).to_string();
-                sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)")
+                sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true),set_config('transaction_timeout',$2,true)")
                     .bind(tenant).bind(millis).execute(&mut *tx).await.map_err(db)?;
                 Ok(tx)
             } => result,
@@ -37,7 +37,7 @@ impl Store {
 pub(crate) fn db(e: sqlx::Error) -> Error {
     if e.as_database_error()
         .and_then(|e| e.code())
-        .is_some_and(|code| matches!(code.as_ref(), "57014" | "55P03"))
+        .is_some_and(|code| matches!(code.as_ref(), "57014" | "55P03" | "25P04"))
     {
         return Error::Unavailable(Failure::RequestDeadline);
     }

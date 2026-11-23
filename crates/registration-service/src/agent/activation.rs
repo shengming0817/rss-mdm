@@ -356,40 +356,63 @@ impl Service {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<DevicePrincipal, Failure>> + Send + 'a>,
     > {
-        // Keep the transaction future's layout inside its owner, rather than expanding
-        // the complete PostgreSQL authentication chain into every native HTTP handler.
-        Box::pin(async move {
-            let fingerprint: [u8; 32] =
-                Sha256::digest(peer.chain().first().ok_or(Error::Unauthorized)?.as_ref()).into();
-            let tenant = self
-                .store
-                .locate_certificate(fingerprint)
-                .await?
-                .ok_or(Error::Unauthorized)?;
-            let binding = self.execution(tenant);
-            let trust = self.trust(binding).await?;
-            let profile = self.profile();
-
-            let tenant = binding.tenant().to_string();
-            let mut tx = self.store.begin(&tenant).await?;
-            let fingerprint = hex(Sha256::digest(&peer.chain()[0]));
-            let expiry: Option<i64> = sqlx::query_scalar(
-                crate::storage_profile::sql(profile).agent_activation_authenticate_1,
-            )
+        Box::pin(self.authenticate_peer(peer, None, None))
+    }
+    pub async fn authenticate_at_origin(
+        &self,
+        peer: &ClientCertificateEvidence,
+        origin: &rss_mdm_certificate::GatewayOrigin,
+        deadline: rss_request_context::Deadline,
+    ) -> Result<DevicePrincipal, Failure> {
+        self.authenticate_peer(peer, Some(origin), Some(deadline))
+            .await
+    }
+    async fn authenticate_peer(
+        &self,
+        peer: &ClientCertificateEvidence,
+        origin: Option<&rss_mdm_certificate::GatewayOrigin>,
+        deadline: Option<rss_request_context::Deadline>,
+    ) -> Result<DevicePrincipal, Failure> {
+        let fingerprint: [u8; 32] =
+            Sha256::digest(peer.chain().first().ok_or(Error::Unauthorized)?.as_ref()).into();
+        let mut tx = match deadline {
+            Some(until) => self.store.begin_until(until).await?,
+            None => self.store.begin("").await?,
+        };
+        let tenant = self
+            .store
+            .certificate_tenant_on(&mut tx, fingerprint)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        let binding = self.execution(tenant);
+        let tenant = tenant.to_string();
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
             .bind(&tenant)
-            .bind(&fingerprint)
-            .fetch_optional(&mut *tx)
+            .execute(&mut *tx)
             .await
             .map_err(db)?;
-            if expiry.is_some_and(|end| end <= self.now().unwrap_or(i64::MAX)) {
-                return Err(Error::Agent(wire::ErrorCode::CertificateExpired).into());
-            }
-            let proof = trust
-                .verify_peer(peer, self.now()?)
-                .map_err(|_| Error::Unauthorized)?;
-            let p = device::authenticate_endpoint_in(profile, &mut tx, binding, &proof).await?;
-            tx.commit().await.map_err(db)?;
-            Ok(p)
-        })
+        let trust = self.issuer.trust_on(&mut tx, binding).await?;
+        let profile = self.profile();
+        let fingerprint = hex(Sha256::digest(&peer.chain()[0]));
+        let expiry: Option<i64> = sqlx::query_scalar(
+            crate::storage_profile::sql(profile).agent_activation_authenticate_1,
+        )
+        .bind(&tenant)
+        .bind(&fingerprint)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
+        if expiry.is_some_and(|end| end <= self.now().unwrap_or(i64::MAX)) {
+            return Err(Error::Agent(wire::ErrorCode::CertificateExpired).into());
+        }
+        let proof = trust
+            .verify_peer(peer, self.now()?)
+            .map_err(|_| Error::Unauthorized)?;
+        let p = device::authenticate_endpoint_in(profile, &mut tx, binding, &proof).await?;
+        if let Some(origin) = origin {
+            self.check_origin_on(&mut tx, &tenant, origin).await?;
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(p)
     }
 }

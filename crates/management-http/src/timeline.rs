@@ -154,6 +154,15 @@ async fn activity(
         .map_err(error)
 }
 
+pub(crate) fn history_parameters() -> rss_mdm_http_contract::signature::Schema {
+    let mut schema =
+        rss_mdm_http_contract::signature::Schema::request::<rss_mdm_timeline_service::Query>();
+    let limit = &mut schema.value["properties"]["limit"];
+    limit["minimum"] = 1.into();
+    limit["maximum"] = rss_mdm_timeline_service::AUDIT.max_limit.into();
+    limit["description"] = "Omit to use the lesser of 50 and the host audit_query.max_rows.".into();
+    schema
+}
 struct DeviceQuery;
 impl rss_mdm_http_contract::query::QueryOwner for DeviceQuery {
     type Parsed = rss_mdm_timeline_service::Query;
@@ -164,13 +173,7 @@ impl rss_mdm_http_contract::query::QueryOwner for DeviceQuery {
         ))
     }
     fn parameters() -> rss_mdm_http_contract::signature::Schema {
-        let mut schema = rss_mdm_http_contract::signature::Schema::request::<Self::Parsed>();
-        schema.value["properties"]["limit"]["minimum"] = 1.into();
-        schema.value["properties"]["limit"]["maximum"] =
-            rss_mdm_timeline_service::DEVICE_TIMELINE.max_limit.into();
-        schema.value["properties"]["limit"]["default"] = rss_mdm_timeline_service::DEVICE_TIMELINE
-            .default_limit
-            .into();
+        let mut schema = history_parameters();
         schema.value["properties"]
             .as_object_mut()
             .unwrap()
@@ -192,14 +195,7 @@ impl rss_mdm_http_contract::query::QueryOwner for AuditQuery {
         ))
     }
     fn parameters() -> rss_mdm_http_contract::signature::Schema {
-        let mut schema = rss_mdm_http_contract::signature::Schema::request::<Self::Parsed>();
-        schema.value["properties"]["limit"]["minimum"] = 1.into();
-        schema.value["properties"]["limit"]["maximum"] =
-            rss_mdm_timeline_service::AUDIT.max_limit.into();
-        schema.value["properties"]["limit"]["default"] =
-            rss_mdm_timeline_service::AUDIT.default_limit.into();
-
-        schema
+        history_parameters()
     }
     fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
         rss_mdm_timeline_service::Query::parse(raw, false)

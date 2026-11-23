@@ -11,6 +11,12 @@ pub mod selection;
 pub const DIAGNOSTIC_ACCESS_CONTRACT: &str = include_str!("diagnostic-access.json");
 pub mod query;
 mod samples;
+/// Caller-owned admission and settlement for an authenticated batch or gap.
+pub struct IntakeRequest {
+    pub deadline: rss_request_context::Deadline,
+    pub cancellation: std::sync::Arc<dyn rss_request_context::CancellationObserver>,
+    pub audit: rss_mdm_audit_integration::RequestAudit,
+}
 /// Closed failures never retain sampled values, credentials or provider diagnostics.
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 pub enum Error {
@@ -219,40 +225,93 @@ impl Service {
         principal: &DevicePrincipal,
         input: &TelemetryUpload,
         wire_bytes: usize,
+        request: IntakeRequest,
     ) -> Result<TelemetryReceipt, Error> {
-        let rejection = Arc::new(Mutex::new(None));
-        let failure = rejection.clone();
+        request.audit.operation(
+            input.batch_id,
+            "agent_telemetry_upload",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
         let service = self.clone();
-        let principal = principal.clone();
+        let device = principal.clone();
         let input = input.clone();
+        self.intake(principal.binding(), request, move |c| {
+            Box::pin(async move {
+                admission::receive_on(&service, c, &device, &input, wire_bytes).await
+            })
+        })
+        .await
+    }
+    async fn intake<T: Send, F>(
+        &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        request: IntakeRequest,
+        work: F,
+    ) -> Result<T, Error>
+    where
+        F: for<'a> FnOnce(
+                &'a mut sqlx::PgConnection,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<T, Error>> + Send + 'a>,
+            > + Send
+            + 'static,
+    {
+        let rejection = Arc::new(Mutex::new(None));
+        let failed = rejection.clone();
+        let audit = request.audit.clone();
+        let cutoff = rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+            request.deadline,
+            &backend::SystemClock,
+        );
         self.runtime
-            .local_tx(principal.binding(), deadline(), move |tx| {
+            .local_tx(binding, cutoff, move |tx| {
                 Box::pin(async move {
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            admission::receive_on(&service, c, &principal, &input, wire_bytes)
-                                .await
-                                .map_err(|error| {
-                                    *failure.lock().expect("telemetry rejection") = Some(error);
-                                    sqlx::Error::Protocol("telemetry input rejected".into())
+                    let value = tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                let result = tokio::select! {
+                                    biased;
+                                    ()=request.cancellation.cancelled()=>Err(Error::Deadline),
+                                    result=work(c)=>result,
+                                };
+                                result.map_err(|error| {
+                                    *failed.lock().expect("telemetry admission") = Some(error);
+                                    sqlx::Error::Protocol("telemetry admission rejected".into())
                                 })
+                            })
                         })
-                    })
-                    .await
+                        .await?;
+                    request.audit.mark_commit_started();
+                    Ok(value)
                 })
             })
             .await
             .fold(
-                Ok,
-                |_| Err(Error::Storage),
-                |_| {
+                |value| {
+                    audit.mark_committed();
+                    Ok(value)
+                },
+                |e| Err(maintenance::tx_error(e)),
+                |e| {
+                    audit.mark_rolled_back();
                     Err(rejection
                         .lock()
-                        .expect("telemetry rejection")
-                        .unwrap_or(Error::Storage))
+                        .expect("telemetry admission")
+                        .unwrap_or_else(|| maintenance::tx_error(e)))
                 },
-                |_| Err(Error::Unknown),
-                |_| Err(Error::Unknown),
+                |_| {
+                    audit.mark_rollback_failed();
+                    Err(Error::Unknown)
+                },
+                |e| {
+                    if audit.snapshot().write_outcome
+                        == rss_mdm_audit_integration::WriteOutcome::CommitNotStarted
+                    {
+                        Err(maintenance::tx_error(e))
+                    } else {
+                        Err(Error::Unknown)
+                    }
+                },
                 |_| Err(Error::Storage),
             )
     }

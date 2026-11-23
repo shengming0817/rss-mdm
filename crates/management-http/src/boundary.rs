@@ -66,9 +66,21 @@ async fn controlled_body(
     request: Request,
     next: Next,
 ) -> Response {
-    let mut response = body(request, next, requests).await;
+    let mut response = if request.extensions().get::<AuthenticatedBody>().is_some() {
+        next.run(request).await
+    } else {
+        body(request, next, requests).await
+    };
     response.extensions_mut().insert(DownstreamResponse);
     response
+}
+#[derive(Clone)]
+struct AuthenticatedBody(Arc<tokio::sync::Semaphore>);
+pub(crate) async fn after_authentication(mut request: Request, next: Next) -> Response {
+    match request.extensions_mut().remove::<AuthenticatedBody>() {
+        Some(budget) => body(request, next, budget.0).await,
+        None => next.run(request).await,
+    }
 }
 fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
     match error {
@@ -128,13 +140,14 @@ async fn admit(
     } else {
         8192
     };
-    let intent = endpoints
+    let endpoint = endpoints
         .iter()
-        .find(|endpoint| endpoint.path == route && endpoint.method == request.method().as_str())
-        .map_or(
-            rss_mdm_audit_integration::AuditIntent::Routine,
-            request_intent,
-        );
+        .find(|endpoint| endpoint.path == route && endpoint.method == request.method().as_str());
+    let protected = endpoint.is_some_and(|endpoint| endpoint.authentication.is_some());
+    let intent = endpoint.map_or(
+        rss_mdm_audit_integration::AuditIntent::Routine,
+        request_intent,
+    );
     let audit = match admission {
         Admission::Bound => RequestAudit::new(
             rss_mdm_audit_integration::Origin::Request,
@@ -150,6 +163,11 @@ async fn admit(
             rss_mdm_audit_integration::AuditIntent::Routine,
         ),
     };
+    if protected {
+        request
+            .extensions_mut()
+            .insert(AuthenticatedBody(envelope.buffered_bytes.clone()));
+    }
     let id = audit.request_id();
     request.extensions_mut().insert(audit.clone());
     request.extensions_mut().insert(envelope.clock.clone());
@@ -384,16 +402,30 @@ async fn body(request: Request, next: Next, bytes: Arc<tokio::sync::Semaphore>) 
         BodyPolicy::Streaming => return next.run(request).await,
         BodyPolicy::Buffered(limit) | BodyPolicy::Sdk(limit) => limit,
     };
-    let Ok(_reservation) = bytes.try_acquire_many_owned(
-        u32::try_from(crate::BodyLimits::reservation(limit))
-            .expect("compiled buffered route fits a byte reservation"),
-    ) else {
+    let normal = crate::body_limits().default_bytes();
+    // Keep one default-size request available while a larger wire body is resident.
+    // Two full-size requests compete for admission before either reads its first frame.
+    let admission = if limit > normal {
+        crate::BodyLimits::reservation(limit)
+    } else {
+        limit
+    };
+    let Ok(mut reservation) =
+        bytes.try_acquire_many_owned(u32::try_from(admission).expect("compiled route admission"))
+    else {
         let id = request
             .extensions()
             .get::<RequestAudit>()
             .map_or_else(uuid::Uuid::new_v4, RequestAudit::request_id);
         return limited(id);
     };
+    if admission > limit {
+        drop(
+            reservation
+                .split(normal)
+                .expect("reserved small-request headroom"),
+        );
+    }
     if matches!(policy, BodyPolicy::Sdk(_)) {
         return next.run(request).await;
     }

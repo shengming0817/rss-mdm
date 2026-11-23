@@ -376,7 +376,7 @@ Group、Scope、查询、合规与剩余任务共享容量为 2 的调度池，G
 
 资源、Scope 与执行使用当前全新安装结构。产品配置中的 `storage_binding` 持有 target/lineage/epoch，`business_databases` 持有具名 owner 的独立数据库身份，`publication` 持有发布数据库与 sources，`command_database` 持有共享命令 runtime 数据库连接；具体字段以[配置示例](../../fixtures/mdm-config.example.json)为准。旧 `flow`、综合 `management` 和混合 `tasks` 配置不再接受。`content.storage` 显式选择 `volume` 或启用版本控制的 HTTPS `s3`（[S3 配置示例](../../fixtures/mdm-content-s3.example.json)）；PostgreSQL 持有内容控制状态，`content` 配置共享内容仓，任务签名由当前租户的签名 owner 读取；脚本执行要求内容与有效私钥齐备，软件入库/启用不需要任务私钥，原生协议的 `management` 公开 origin 配置保持独立。本版本按全新安装交付，安装清单只持有当前完整 schema。
 
-安装器把当前管理接口的方法、路径、正文上限与读取方式一并写入每个宿主的 `deployment.json`。配置变更后用相同候选的 renderer 重新生成网关。大正文在网关流送。Compose 的 `MDM_HTTP_REQUEST_SLOTS` 配置 MDM 在途请求数（默认 32），`MDM_HTTP_BUFFERED_BODY_BYTES` 配置缓冲正文总字节（默认 128 MiB）；缓冲路由按两份最大正文预留原始字节和解码期间可能持有的正文副本，处理结束释放。解析后的业务结构和数据库驱动另占内存。监听连接和数据库物理池分别按各自预算准入。内容目录须以可写持久卷提供给服务，签名秘密仍使用独立只读挂载。
+安装器把当前管理接口的方法、路径、正文上限与读取方式一并写入每个宿主的 `deployment.json`。配置变更后用相同候选的 renderer 重新生成网关。大正文在网关流送。Compose 的 `MDM_HTTP_REQUEST_SLOTS` 配置 MDM 在途请求数（默认 32），`MDM_HTTP_BUFFERED_BODY_BYTES` 配置缓冲正文总字节（默认 128 MiB）；受保护的管理路由先验证请求头和权限。大正文开始读取时须有两份路由上限的可用空间，读入与解码期间保留其中绝大部分，归还一份普通请求额度（16 KiB）供登录等小请求使用。普通请求按其正文上限预留，各请求处理结束时释放。解析后的业务结构和数据库驱动另占内存。监听连接和数据库物理池分别按各自预算准入。内容目录须以可写持久卷提供给服务，签名秘密仍使用独立只读挂载。
 
 ## 时间线索引恢复
 

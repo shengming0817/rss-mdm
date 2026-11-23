@@ -184,11 +184,7 @@ async fn large_audit_records_and_complete_query_pages_share_current_capacity() -
             full.query(
                 &proof,
                 "audit",
-                &Query {
-                    action: Some("capacity_read".into()),
-                    limit: None,
-                    ..Query::default()
-                }
+                &Query::parse("action=capacity_read", false)?
             )
             .await?
             .items
@@ -196,15 +192,8 @@ async fn large_audit_records_and_complete_query_pages_share_current_capacity() -
             2
         );
         assert!(matches!(
-            full.query(
-                &proof,
-                "audit",
-                &Query {
-                    limit: Some(21),
-                    ..Query::default()
-                }
-            )
-            .await,
+            full.query(&proof, "audit", &Query::parse("limit=50", false)?)
+                .await,
             Err(rss_mdm_timeline_service::Error::BudgetExceeded)
         ));
         let one_document: i64 = sqlx::query_scalar("SELECT max(octet_length(document::text))::bigint FROM mdm_timeline.facts WHERE tenant_id=$1::uuid AND action='capacity_read'")

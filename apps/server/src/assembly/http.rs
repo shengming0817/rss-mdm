@@ -70,7 +70,6 @@ pub(crate) fn from_state(
                 state.identity.authority.clone(),
             ),
         ),
-        buffered_bytes: state.buffered_bytes.clone(),
     });
     if let Some(da) = &state.da {
         da.runtime
@@ -129,7 +128,6 @@ pub(crate) fn from_state(
                 state.identity.authority.clone(),
             ),
         ),
-        buffered_bytes: state.buffered_bytes.clone(),
         windows: state.windows.as_ref().map(|w| w.channel.clone()),
     });
     let channels = Arc::new(crate::registration_channels::Channels {
@@ -471,6 +469,7 @@ pub(crate) fn from_state(
         windows_state.clone(),
         monotonic.clone(),
         state.identity.request_budget,
+        state.buffered_bytes.clone(),
     ) {
         listeners.push((crate::native::ChannelKind::WindowsEnrollment, enrollment));
         listeners.extend(
@@ -484,6 +483,7 @@ pub(crate) fn from_state(
         apple_state.clone(),
         monotonic.clone(),
         state.identity.request_budget,
+        state.buffered_bytes.clone(),
     ) {
         listeners.push((crate::native::ChannelKind::AppleManagement, apple));
     }

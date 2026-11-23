@@ -56,7 +56,10 @@ pub fn body_limits() -> &'static BodyLimits {
     &LIMITS
 }
 impl BodyLimits {
-    /// One contiguous request and one retained wire-size copy during decoding.
+    pub(crate) fn default_bytes(&self) -> usize {
+        self.default_bytes
+    }
+    /// A large body starts only when there is also room for a same-sized decode.
     pub(crate) fn reservation(wire_bytes: usize) -> usize {
         wire_bytes
             .checked_mul(2)

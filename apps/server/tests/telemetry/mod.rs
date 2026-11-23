@@ -16,6 +16,62 @@ use std::{
 };
 use uuid::Uuid;
 
+// Delay a specific durable ID at COMMIT, after all intake SQL has completed.
+async fn uncertain_intake<T>(
+    c: &Context,
+    table: &str,
+    id: Uuid,
+    run: impl FnOnce(rss_mdm_telemetry_service::IntakeRequest) -> T,
+) -> Result<()>
+where
+    T: std::future::Future<Output = std::result::Result<(), rss_mdm_telemetry_service::Error>>,
+{
+    anyhow::ensure!(matches!(table, "batches" | "gap_reports"));
+    let name = format!("commit_{}", id.simple());
+    let key = id.as_u128() as i64;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE FUNCTION mdm_telemetry.{name}() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN PERFORM pg_advisory_xact_lock({key}::bigint); RETURN NULL; END$$;
+        CREATE CONSTRAINT TRIGGER {name} AFTER INSERT ON mdm_telemetry.{table} DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+        WHEN (NEW.id='{id}'::uuid) EXECUTE FUNCTION mdm_telemetry.{name}()"))).execute(&c.operator).await?;
+    let result = async {
+        let mut hold = c.operator.begin().await?;
+        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid() FROM pg_advisory_xact_lock($1)")
+            .bind(key)
+            .fetch_one(&mut *hold)
+            .await?;
+        let mut request = crate::authority_t2_support::telemetry_intake(c.execution());
+        request.deadline = rss_request_context::Deadline::from_timeout(
+            &crate::lifecycle::RuntimeTimer,
+            std::time::Duration::from_millis(900),
+        )?;
+        let audit = request.audit.clone();
+        let observe = async {
+            c.wait_blocked(pid).await?;
+            let facts = audit.snapshot();
+            anyhow::ensure!(
+                facts.operation_id == Some(id)
+                    && facts.write_outcome == rss_mdm_audit_integration::WriteOutcome::Unknown,
+                "COMMIT did not expose the original ID and uncertain outcome"
+            );
+            anyhow::Ok(())
+        };
+        let (observed, settled) = tokio::join!(observe, run(request));
+        hold.rollback().await?;
+        observed?;
+        anyhow::ensure!(
+            matches!(settled, Err(rss_mdm_telemetry_service::Error::Unknown)),
+            "blocked COMMIT returned {settled:?}"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "DROP TRIGGER {name} ON mdm_telemetry.{table}; DROP FUNCTION mdm_telemetry.{name}()"
+    )))
+    .execute(&c.operator)
+    .await?;
+    result
+}
+
 #[expect(
     clippy::cognitive_complexity,
     reason = "One legal fixture keeps definition, samples and durable summary on the same series coordinates"
@@ -360,7 +416,14 @@ async fn exercise(c: &Context, f: &Fixture, default: &Fixture) -> Result<()> {
     };
     upload.validate()?;
     assert!(matches!(
-        service.receive(&principal, &upload, 0).await,
+        service
+            .receive(
+                &principal,
+                &upload,
+                0,
+                crate::authority_t2_support::telemetry_intake(principal.binding())
+            )
+            .await,
         Err(rss_mdm_telemetry_service::Error::Capacity)
     ));
     let persisted: bool = sqlx::query_scalar(
@@ -386,11 +449,24 @@ async fn exercise(c: &Context, f: &Fixture, default: &Fixture) -> Result<()> {
         "createdAt": now,
         "gaps": [{"reason": "capacity", "count": 1, "first": now, "last": now}]
     }))?;
-    let accepted = service.receive_gap(&principal, &gap, 0).await?;
+    uncertain_intake(c, "gap_reports", gap.report_id, |request| async {
+        service
+            .receive_gap(&principal, &gap, 0, request)
+            .await
+            .map(|_| ())
+    })
+    .await?;
+    let accepted = service
+        .receive_gap(
+            &principal,
+            &gap,
+            0,
+            crate::authority_t2_support::telemetry_intake(principal.binding()),
+        )
+        .await?;
     let recovered = service.gap_status(&principal, gap.report_id).await?;
     anyhow::ensure!(
         accepted.report_id == gap.report_id
-            && !accepted.replayed
             && recovered.report_id == gap.report_id
             && recovered.replayed
             && recovered.received_at == accepted.received_at,
@@ -411,13 +487,42 @@ async fn exercise(c: &Context, f: &Fixture, default: &Fixture) -> Result<()> {
     sqlx::query("LOCK TABLE rss_timeseries.samples IN ACCESS EXCLUSIVE MODE")
         .execute(&mut *hold)
         .await?;
-    let (status, error) = short
-        .call("/telemetry/history", query(&device, "custom.minimum"))
+    let locker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *hold)
         .await?;
+    let mut witness = f.provider_observer(c).await?;
+    let observe = async {
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let waiting: Option<i32>=sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) LIMIT 1")
+                    .bind(locker).fetch_optional(&mut witness).await?;
+                if let Some(pid)=waiting {break anyhow::Ok(pid);}
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }).await?
+    };
+    let (pid, response) = tokio::join!(
+        observe,
+        short.call("/telemetry/history", query(&device, "custom.minimum"))
+    );
+    let waiter = pid?;
+    let (status, error) = response?;
     anyhow::ensure!(
         status == 504 && error["code"] == "request_deadline",
         "provider deadline: {status} {error}"
     );
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while sqlx::query_scalar::<_, bool>("SELECT $1=ANY(pg_blocking_pids($2))")
+            .bind(locker)
+            .bind(waiter)
+            .fetch_one(&mut witness)
+            .await?
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        anyhow::Ok(())
+    })
+    .await??;
     hold.rollback().await?;
     let mut too_many = query(&device, "custom.minimum");
     too_many["maxPoints"] = json!(129);

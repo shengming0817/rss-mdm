@@ -280,7 +280,7 @@ async fn report_inner(
     body: contract::Buffered<ReportDecoder>,
 ) -> Result<WithStatus<202, Json<wire::ReportAck>>, AgentError> {
     let input = body.decode(headers, wire::MAX_REPORT_BYTES)?.value;
-    let principal = authenticate(origin, &app.enrollment, headers, peer).await?;
+    let principal = authenticate(origin, &app.enrollment, headers, peer, control).await?;
     let scope = device::scope(
         principal.profile(),
         principal.tenant(),
@@ -365,7 +365,7 @@ async fn status_inner(
     if id.is_nil() {
         return Err(Error::Malformed.into());
     }
-    let principal = authenticate(origin, &app.enrollment, headers, peer).await?;
+    let principal = authenticate(origin, &app.enrollment, headers, peer, control).await?;
     let scope = device::scope(
         principal.profile(),
         principal.tenant(),
@@ -479,19 +479,18 @@ pub(crate) async fn authenticate(
     service: &rss_mdm_registration_service::agent::Service,
     headers: &HeaderMap,
     peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,
+    control: &rss_axum::RequestControl,
 ) -> Result<device::DevicePrincipal, AgentError> {
     if headers.contains_key(header::AUTHORIZATION) {
         return Err(Error::Unauthorized.into());
     }
-    let principal = service
-        .authenticate(peer.ok_or(Error::Unauthorized)?)
-        .await
-        .map_err(|e| AgentError::Enrollment(e.code))?;
-    service
-        .require_connection_origin(principal.binding(), origin)
-        .await
-        .map_err(|e| AgentError::Enrollment(e.code))?;
-    Ok(principal)
+    bounded(control, async {
+        service
+            .authenticate_at_origin(peer.ok_or(Error::Unauthorized)?, origin, control.deadline())
+            .await
+            .map_err(|e| AgentError::Enrollment(e.code))
+    })
+    .await
 }
 /// Convert validated wire observations; authentication and durable admission remain separate.
 pub fn report_batch(input: &wire::ReportRequest) -> Result<Batch, Error> {

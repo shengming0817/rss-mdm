@@ -16,6 +16,7 @@ import sys
 import tempfile
 import socket
 import time
+import threading
 import uuid
 from release import sha
 from candidate_fixture import INSTANCE, ADMIN, TENANTS, installation
@@ -33,7 +34,7 @@ class Browser:
         self.host=host
         self.port, self.context = port, ssl.create_default_context(cafile=ca)
         self.cookie, self.csrf = "", ""
-    def call(self, method, path, data=None, operation=None, *, chunked=False, after_first_chunk=None):
+    def call(self, method, path, data=None, operation=None, *, chunked=False, during_upload=None):
         remaining = Browser.last_request + 0.125 - time.monotonic()
         if remaining > 0:
             time.sleep(remaining)
@@ -49,10 +50,10 @@ class Browser:
             body = json.dumps(data).encode() if data is not None else None
             if chunked and body is not None:
                 def chunks():
-                    for offset in range(0, len(body), 4096):
-                        yield body[offset:offset+4096]
-                        if offset == 0 and after_first_chunk is not None:
-                            after_first_chunk()
+                    for offset in range(0, len(body), 65536):
+                        yield body[offset:offset+65536]
+                        if offset == 8*1024**2 and during_upload is not None:
+                            during_upload()
                 connection.request(method, path, body=chunks(), headers=headers, encode_chunked=True)
             else:
                 connection.request(method, path, body=body, headers=headers)
@@ -124,23 +125,51 @@ def ingress_capacity(browser, principal, deployed):
 
     base = f'/api/v1/tenants/{TENANT}'
     source = base + '/software/source-snapshots/candidate-source'
-    document = [{'name': f'item-{n}', 'version': '1', 'description': 'x'*200} for n in range(4096)]
-    change = dict(operationId=str(uuid.uuid4()), expectedRevision=0, input=dict(document=document))
-    def peak():
-        return int(deployed.command('exec', deployed.server, 'cat', '/sys/fs/cgroup/memory.peak', stage=Stage.SQL).strip())
+    records = [{'name':f'item-{n}', 'version':'1'} for n in range(4096)]
+    document = {'records':records, 'padding':'x'*(63*1024**2)}
+    change = dict(operationId=str(uuid.uuid4()), expectedRevision=0,
+                  input=dict(document=document, extraction={'records':'/records','name':'/name','version':'/version'}))
     def check_reservation():
-        # The partial upload holds the full byte budget with four host request slots still free.
-        wait(lambda: browser.call('GET', profile)[0] == 429 and browser.retry_after == '1',
-             'snapshot reserved the whole buffered budget before decode', seconds=3)
         status, rejection = browser.call('POST', source, {})
         require(status == 429 and rejection == {'code':'request_limited'} and browser.retry_after == '1',
                 'second snapshot exceeded buffered bytes')
-    before = peak()
-    require(browser.call('POST', source, change, chunked=True, after_first_chunk=check_reservation)[0] == 200,
-            'buffered software snapshot import')
-    after = peak()
-    memory = dict(snapshotWireBytes=len(json.dumps(change).encode()), hostHighWaterBeforeBytes=before,
-                  hostHighWaterAfterBytes=after, bufferedReservationBytes=deployed.config['http']['buffered_body_bytes'])
+        require(browser.call('GET', profile)[0] == 200, 'small request kept its reserved capacity')
+        anonymous=Browser(browser.port,deployed.root/'ca.crt')
+        require(anonymous.call('POST',source,{})[0]==401, 'anonymous snapshot rejected before reserving bytes')
+    samples = []
+    stopped = threading.Event()
+    def sample():
+        script = ('if test -r /sys/fs/cgroup/memory.current; then echo cgroup-v2 $(cat /sys/fs/cgroup/memory.current); '
+                  'elif test -r /sys/fs/cgroup/memory/memory.usage_in_bytes; then echo cgroup-v1 $(cat /sys/fs/cgroup/memory/memory.usage_in_bytes); '
+                  'elif test -r /proc/1/status; then awk \'/^VmRSS:/{printf "process-rss %.0f\\n",$2*1024}\' /proc/1/status; fi')
+        while not stopped.is_set():
+            try:
+                source_name, raw=deployed.command('exec',deployed.server,'sh','-c',script,stage=Stage.SQL).split()
+                samples.append((source_name,int(raw)))
+            except (RuntimeError,ValueError,OSError):
+                return
+            stopped.wait(.08)
+    sampler=threading.Thread(target=sample)
+    sampler.start()
+    try:
+        wire_bytes=len(json.dumps(change).encode())
+        status, receipt=browser.call('POST',source,change,chunked=True,during_upload=check_reservation)
+        require(status==200 and receipt['entryCount']==len(records),'near-limit snapshot extract and import')
+    finally:
+        stopped.set()
+        sampler.join()
+    memory=dict(snapshotWireBytes=wire_bytes,bufferedAdmissionBytes=deployed.config['http']['buffered_body_bytes'],
+                sampleCount=len(samples), source=samples[0][0] if samples else 'unavailable',
+                requestStartBytes=samples[0][1] if samples else None,
+                requestSampledPeakBytes=max((value for _,value in samples),default=None))
+    # A declared over-limit Content-Length is enough for the official gateway to reject before upload.
+    connection=http.client.HTTPSConnection('127.0.0.1',browser.port,context=browser.context,timeout=15)
+    try:
+        connection.sock=browser.context.wrap_socket(socket.create_connection(('127.0.0.1',browser.port),timeout=15),server_hostname=browser.host)
+        connection.request('POST',source,headers={'Host':browser.host,'Content-Length':str(64*1024**2+1)})
+        require(connection.getresponse().status==413, 'snapshot wire ceiling')
+    finally:
+        connection.close()
     for path in ('policies/missing/previews', 'policies/missing/scope/previews',
                  'policies/missing/stages/missing/scope/previews'):
         status, _ = browser.call('POST', base + '/' + path, dict(unrecognized='x'*20000))

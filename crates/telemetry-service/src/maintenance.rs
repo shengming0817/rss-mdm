@@ -239,7 +239,7 @@ async fn qualify(
     auth: &rss_mdm_authorization_service::context::RequestAuth,
     input: &Request,
     cutoff: Deadline,
-) -> Result<(), Error> {
+) -> Result<Option<Progress>, Error> {
     tokio::select! {
         biased;
         () = auth.cancellation.cancelled() => Err(Error::Deadline),
@@ -248,7 +248,7 @@ async fn qualify(
     }
 }
 
-fn tx_error(error: rss_transactional_messaging_postgres::PgError) -> Error {
+pub(crate) fn tx_error(error: rss_transactional_messaging_postgres::PgError) -> Error {
     if error.kind() == rss_transactional_messaging::error::MessagingErrorKind::DeadlineElapsed {
         Error::Deadline
     } else {
@@ -261,7 +261,7 @@ async fn authorize(
     tenant: rss_request_context::TenantId,
     proof: &AuthorizedPrincipal,
     input: &Request,
-) -> Result<(), Error> {
+) -> Result<Option<Progress>, Error> {
     proof.check_live().map_err(|_| Error::Denied)?;
     if proof.tenant_id() != tenant.to_string() {
         return Err(Error::Denied);
@@ -296,6 +296,18 @@ async fn authorize(
             Some(&input.device),
         )
         .map_err(|_| Error::Denied)?;
+    let terminal: Option<(Vec<u8>,Json)> = sqlx::query_as(
+        "SELECT binding,result FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 AND result->>'state'='complete'"
+    ).bind(tenant.to_string()).bind(input.id).fetch_optional(&mut *c).await?;
+    if let Some((bound, result)) = terminal {
+        use sha2::Digest;
+        if bound.as_slice() != sha2::Sha256::digest(serde_json::to_vec(input)?).as_slice() {
+            return Err(Error::Conflict);
+        }
+        return Ok(Some(
+            serde_json::from_value(result).map_err(|_| Error::Storage)?,
+        ));
+    }
     let key = rss_mdm_inventory::FieldKey::parse(&input.field).map_err(|_| Error::Invalid)?;
     let (field, _) = rss_mdm_inventory_postgres::historical_field_in(c, tenant, key)
         .await
@@ -468,7 +480,7 @@ async fn authorize(
         }
         Action::Restore { .. } => {}
     }
-    Ok(())
+    Ok(None)
 }
 impl Service {
     /// Persist the audited intent before any backend effect. Retry the same request to
@@ -519,13 +531,13 @@ impl Service {
         let rejection = Arc::new(Mutex::new(None));
         let rejected = rejection.clone();
         let execution = proof.binding();
-        self.runtime.local_tx(execution,rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff, &crate::backend::SystemClock),move|tx|Box::pin(async move {
+        let completed = self.runtime.local_tx(execution,rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff, &crate::backend::SystemClock),move|tx|Box::pin(async move {
             service.audit_store.prepare_in(tx, &audit, &[]).await.map_err(crate::storage_error)?;
             let tenant=execution.tenant();
             let authority = service.clone();
-            let replayed = tx.with_connection(move|c|Box::pin(async move {
+            let (replayed,completed) = tx.with_connection(move|c|Box::pin(async move {
                 let result=async {
-                    qualify(&authority,c,&actor,&intent,cutoff).await?;
+                    if let Some(result)=qualify(&authority,c,&actor,&intent,cutoff).await? {return Ok((true,Some(result)));}
                     crate::selection::lock_read(c,tenant).await?;
                     if crate::selection::pending(c,tenant).await?.is_some() && !sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2)").bind(tenant.to_string()).bind(intent.id).fetch_one(&mut *c).await? {return Err(Error::Conflict);}
                     let inserted=sqlx::query("INSERT INTO mdm_telemetry.maintenance(tenant_id,id,binding,request) VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING")
@@ -533,18 +545,21 @@ impl Service {
                     let stored:Vec<u8>=sqlx::query_scalar("SELECT binding FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
                         .bind(tenant.to_string()).bind(intent.id).fetch_one(c).await?;
                     if stored.as_slice()!=binding.as_slice() {return Err(Error::Conflict);}
-                    Ok(inserted==0)
+                    Ok((inserted==0,None))
                 }.await;
                 result.map_err(|e|{*rejected.lock().expect("maintenance intent")=Some(e);sqlx::Error::Protocol("maintenance intent rejected".into())})
             })).await?;
             (if replayed { Ok(()) } else { service.audit_store.append_in(tx, &fact).await }).map_err(crate::storage_error)?;
-            audit.mark_commit_started();
-            Ok(())
-        })).await.fold(|v|{settlement_audit.mark_intent_committed();Ok(v)},|e|Err(tx_error(e)),|e|{settlement_audit.mark_rolled_back();Err(rejection.lock().expect("maintenance intent").unwrap_or_else(||tx_error(e)))},|_|{settlement_audit.mark_rollback_failed();Err(Error::Unknown)},|e|{
+            if completed.is_none() {audit.mark_commit_started();}
+            Ok(completed)
+        })).await.fold(|v|{if v.is_none(){settlement_audit.mark_intent_committed();}Ok(v)},|e|Err(tx_error(e)),|e|{settlement_audit.mark_rolled_back();Err(rejection.lock().expect("maintenance intent").unwrap_or_else(||tx_error(e)))},|_|{settlement_audit.mark_rollback_failed();Err(Error::Unknown)},|e|{
             if settlement_audit.snapshot().write_outcome == rss_mdm_audit_integration::WriteOutcome::CommitNotStarted {
                 Err(tx_error(e))
             } else { Err(Error::Unknown) }
         },|_|Err(Error::Storage))?;
+        if let Some(result) = completed {
+            return Ok(result);
+        }
         let service = self.clone();
         let actor = auth.clone();
         let input = input.clone();
@@ -609,10 +624,9 @@ async fn step_on(
     effect: &RequestAudit,
 ) -> Result<Progress, Error> {
     let proof = &auth.proof;
-    qualify(service, c, auth, input, deadline).await?;
-    let backend = service
-        .backend_until(c, proof.binding().tenant(), deadline, true)
-        .await?;
+    if let Some(result) = qualify(service, c, auth, input, deadline).await? {
+        return Ok(result);
+    }
     let (stored, previous): (Json, Option<Json>) = sqlx::query_as("SELECT request,result FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
         .bind(proof.binding().tenant().to_string()).bind(input.id).fetch_one(&mut *c).await?;
     let stored: Stored = serde_json::from_value(stored)?;
@@ -629,6 +643,9 @@ async fn step_on(
         return serde_json::from_value(previous.expect("confirmed result"))
             .map_err(|_| Error::Storage);
     }
+    let backend = service
+        .backend_until(c, proof.binding().tenant(), deadline, true)
+        .await?;
     let binding = request.binding()?;
     // The backend resumes its durable current step by original identity, including after token expiry.
     let authorized =

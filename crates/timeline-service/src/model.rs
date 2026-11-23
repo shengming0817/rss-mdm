@@ -139,7 +139,7 @@ impl Query {
             };
             value.insert(key, v);
         }
-        value.insert("limit".into(), serde_json::json!(page.limit()));
+        value.insert("limit".into(), serde_json::json!(page.explicit_limit()));
         value.insert("cursor".into(), serde_json::json!(page.cursor()));
         let q: Self = serde_json::from_value(serde_json::Value::Object(value))
             .map_err(|_| Error::Malformed)?;

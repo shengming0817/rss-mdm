@@ -65,8 +65,9 @@ async fn principal(
     headers: &HeaderMap,
     peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,
     audit: &RequestAudit,
+    control: &rss_axum::RequestControl,
 ) -> Result<rss_mdm_registration_service::DevicePrincipal, AgentError> {
-    let p = crate::authenticate(origin, &s.enrollment, headers, peer).await?;
+    let p = crate::authenticate(origin, &s.enrollment, headers, peer, control).await?;
     audit.identify_device(p.device());
     audit.target_device(p.device());
     Ok(p)
@@ -81,7 +82,15 @@ async fn configuration(
     RuntimeHeaders(headers): RuntimeHeaders,
 ) -> Result<Json<w::Configuration>, AgentError> {
     crate::bounded(&control, async {
-        let p = principal(&origin, &s, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let p = principal(
+            &origin,
+            &s,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+            &control,
+        )
+        .await?;
         s.recovery.configuration(&p).await.map(Json).map_err(error)
     })
     .await
@@ -97,7 +106,15 @@ async fn upload(
     input: Result<Json<w::Upload>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<w::Receipt>, AgentError> {
     crate::bounded(&control, async {
-        let p = principal(&origin, &s, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let p = principal(
+            &origin,
+            &s,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+            &control,
+        )
+        .await?;
         let Json(input) = input.map_err(|_| Error::Malformed)?;
         s.recovery
             .receive(&p, &input, &audit)
@@ -118,7 +135,15 @@ async fn receipt(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Option<w::Receipt>>, AgentError> {
     crate::bounded(&control, async {
-        let p = principal(&origin, &s, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let p = principal(
+            &origin,
+            &s,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+            &control,
+        )
+        .await?;
         s.recovery.receipt(&p, id).await.map(Json).map_err(error)
     })
     .await

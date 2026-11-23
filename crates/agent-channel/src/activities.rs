@@ -114,6 +114,7 @@ async fn page(
             &s.tasks.enrollment,
             &headers,
             peer.as_ref().map(|p| &p.0),
+            &control,
         )
         .await?;
         audit.set_action("management_activity_read", AuditIntent::Routine);
@@ -164,6 +165,7 @@ async fn detail(
             &s.tasks.enrollment,
             &headers,
             peer.as_ref().map(|p| &p.0),
+            &control,
         )
         .await?;
         audit.set_action("management_activity_read", AuditIntent::Routine);

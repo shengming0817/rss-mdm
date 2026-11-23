@@ -111,6 +111,7 @@ async fn upload(
         &app.enrollment,
         &headers,
         peer.as_ref().map(|p| &p.0),
+        &control,
     )
     .await?;
     audit.set_action(
@@ -122,13 +123,15 @@ async fn upload(
     let bytes = body.map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
     let decoded = bytes.decode(&headers, service.request_bytes())?;
     let input = decoded.value;
-    let result = bounded(&control, async {
-        service
-            .receive(&principal, &input, decoded.bytes)
-            .await
-            .map_err(failure)
-    })
-    .await?;
+    let request = rss_mdm_telemetry_service::IntakeRequest {
+        deadline: control.deadline(),
+        cancellation: Arc::new(control),
+        audit,
+    };
+    let result = service
+        .receive(&principal, &input, decoded.bytes, request)
+        .await
+        .map_err(failure)?;
     Ok(WithStatus(Json(result)))
 }
 async fn gap_upload(
@@ -151,6 +154,7 @@ async fn gap_upload(
         &app.enrollment,
         &headers,
         peer.as_ref().map(|p| &p.0),
+        &control,
     )
     .await?;
     audit.set_action(
@@ -165,13 +169,15 @@ async fn gap_upload(
         service.request_bytes().min(wire::TELEMETRY_GAP_MAX_BYTES),
     )?;
     let input = decoded.value;
-    let result = bounded(&control, async {
-        service
-            .receive_gap(&principal, &input, decoded.bytes)
-            .await
-            .map_err(failure)
-    })
-    .await?;
+    let request = rss_mdm_telemetry_service::IntakeRequest {
+        deadline: control.deadline(),
+        cancellation: Arc::new(control),
+        audit,
+    };
+    let result = service
+        .receive_gap(&principal, &input, decoded.bytes, request)
+        .await
+        .map_err(failure)?;
     Ok(WithStatus(Json(result)))
 }
 async fn gap_receipt(
@@ -189,6 +195,7 @@ async fn gap_receipt(
         &app.enrollment,
         &headers,
         peer.as_ref().map(|p| &p.0),
+        &control,
     )
     .await?;
     audit.set_action(
@@ -222,6 +229,7 @@ async fn receipt(
         &app.enrollment,
         &headers,
         peer.as_ref().map(|p| &p.0),
+        &control,
     )
     .await?;
     audit.set_action(
@@ -255,6 +263,7 @@ async fn configuration(
         &app.enrollment,
         &headers,
         peer.as_ref().map(|p| &p.0),
+        &control,
     )
     .await?;
     audit.set_action(
@@ -288,6 +297,7 @@ async fn current(
         &app.enrollment,
         &headers,
         peer.as_ref().map(|p| &p.0),
+        &control,
     )
     .await?;
     audit.set_action(
@@ -375,6 +385,7 @@ async fn material(
         &app.enrollment,
         &headers,
         peer.as_ref().map(|p| &p.0),
+        &control,
     )
     .await?;
     audit.set_action(
@@ -410,6 +421,7 @@ async fn directory(
         &app.enrollment,
         &headers,
         peer.as_ref().map(|p| &p.0),
+        &control,
     )
     .await?;
     audit.set_action(

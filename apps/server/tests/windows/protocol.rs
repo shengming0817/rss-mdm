@@ -243,7 +243,6 @@ async fn host_with_provider(
         identity: Arc::new(
             rss_mdm_authorization_service::session::SessionAuthority::new(c.authority.clone()),
         ),
-        buffered_bytes: requests.clone(),
         windows: Some(windows),
     });
     let boundary = || rss_mdm_windows_channel::boundary::Envelope {

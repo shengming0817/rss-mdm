@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 type Cursor = (Uuid, Uuid);
-const PAGE: i64 = 16;
+const PAGE: usize = 16;
 
 pub(super) async fn verify(
     service: &Service,
@@ -28,44 +28,57 @@ pub(super) async fn verify(
     rss_mdm_inventory_postgres::lock_catalog_read_in(c, tenant)
         .await
         .map_err(|_| Error::Storage)?;
-    let mut cursor: Option<Cursor> = None;
+    let mut cursor = (Uuid::nil(), Uuid::nil());
     let mut found = false;
     loop {
-        let page: Vec<Cursor> = sqlx::query_as(
-            "SELECT DISTINCT policy,policy_version FROM mdm_telemetry.batches
-             WHERE tenant_id=$1::uuid AND device=$2 AND source=$3 AND epoch=$4
-             AND ($5::uuid IS NULL OR (policy,policy_version)>($5,$6))
-             ORDER BY policy,policy_version LIMIT $7",
+        // Each index seek skips all batches with the previous publication. A long-lived
+        // stream with one frozen version costs the same number of seeks as a new stream.
+        let mut page: Vec<Cursor> = sqlx::query_as(
+            "WITH RECURSIVE publications(policy,version,n) AS (
+               (SELECT policy,policy_version,1 FROM mdm_telemetry.batches
+                WHERE tenant_id=$1::uuid AND device=$2 AND source=$3 AND epoch=$4
+                  AND (policy,policy_version) >= ($5::uuid,$6::uuid)
+                ORDER BY policy,policy_version LIMIT 1)
+               UNION ALL
+               SELECT next.policy,next.policy_version,p.n+1 FROM publications p
+               CROSS JOIN LATERAL (SELECT policy,policy_version FROM mdm_telemetry.batches
+                 WHERE tenant_id=$1::uuid AND device=$2 AND source=$3 AND epoch=$4
+                   AND (policy,policy_version)>(p.policy,p.version)
+                 ORDER BY policy,policy_version LIMIT 1) next WHERE p.n < $7
+             ) SELECT policy,version FROM publications ORDER BY n",
         )
         .bind(tenant.to_string())
         .bind(input.device.into_uuid())
         .bind(target.source.as_str())
         .bind(target.epoch)
-        .bind(cursor.map(|v| v.0))
-        .bind(cursor.map(|v| v.1))
-        .bind(PAGE)
+        .bind(cursor.0)
+        .bind(cursor.1)
+        .bind(i32::try_from(PAGE + 1).expect("bounded authorization page"))
         .fetch_all(&mut *c)
         .await?;
-        let last_page = page.len() < PAGE as usize;
+        let next = if page.len() > PAGE { page.pop() } else { None };
         for (policy, version) in page {
             let fields = qualified_fields(service, c, tenant, target, policy, version).await?;
             found |= fields.contains(&input.field);
             let keys: Vec<_> = fields.into_iter().collect();
-            // Compare every admitted batch in this indexed publication range in the database.
-            // Frequent repeats of an unchanged profile consume no additional host memory or round trips.
-            let differs: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_telemetry.batches
-                WHERE tenant_id=$1::uuid AND device=$2 AND source=$3 AND epoch=$4
-                  AND policy=$5 AND policy_version=$6
-                  AND NOT (cardinality(fields)=cardinality($7::text[]) AND fields @> $7 AND fields <@ $7))")
+            // An ordered index covers every admission. Equal minimum and maximum prove
+            // that every batch matches this frozen version without reading its repetitions.
+            let differs: bool = sqlx::query_scalar("SELECT
+                (SELECT field_set_digest FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND device=$2
+                 AND source=$3 AND epoch=$4 AND policy=$5 AND policy_version=$6 ORDER BY field_set_digest LIMIT 1)
+                  <> mdm_telemetry.field_set_digest($7::text[]) OR
+                (SELECT field_set_digest FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND device=$2
+                 AND source=$3 AND epoch=$4 AND policy=$5 AND policy_version=$6 ORDER BY field_set_digest DESC LIMIT 1)
+                  <> mdm_telemetry.field_set_digest($7::text[])")
                 .bind(tenant.to_string()).bind(input.device.into_uuid()).bind(target.source.as_str())
                 .bind(target.epoch).bind(policy).bind(version).bind(&keys).fetch_one(&mut *c).await?;
             if differs {
                 return Err(Error::Denied);
             }
-            cursor = Some((policy, version));
         }
-        if last_page {
-            return if found { Ok(()) } else { Err(Error::Denied) };
+        match next {
+            Some(key) => cursor = key,
+            None => return if found { Ok(()) } else { Err(Error::Denied) },
         }
     }
 }

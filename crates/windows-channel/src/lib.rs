@@ -757,7 +757,6 @@ pub struct HttpState {
     pub credentials: std::sync::Arc<crate::enrollment::credentials::Credentials>,
     pub devices: std::sync::Arc<crate::device::DeviceService>,
     pub identity: std::sync::Arc<rss_mdm_authorization_service::session::SessionAuthority>,
-    pub buffered_bytes: std::sync::Arc<tokio::sync::Semaphore>,
     pub windows: Option<Arc<runtime_materials::Runtime>>,
 }
 impl HttpState {

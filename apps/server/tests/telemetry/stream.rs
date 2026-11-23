@@ -113,10 +113,25 @@ async fn upload(
         }],
     };
     input.validate()?;
-    let receipt = service
-        .receive(principal, &input, serde_json::to_vec(&input)?.len())
+    if page == 0 {
+        let bytes = serde_json::to_vec(&input)?.len();
+        super::uncertain_intake(c, "batches", input.batch_id, |request| async {
+            service
+                .receive(principal, &input, bytes, request)
+                .await
+                .map(|_| ())
+        })
         .await?;
-    anyhow::ensure!(!receipt.replayed);
+    }
+    let receipt = service
+        .receive(
+            principal,
+            &input,
+            serde_json::to_vec(&input)?.len(),
+            crate::authority_t2_support::telemetry_intake(principal.binding()),
+        )
+        .await?;
+    anyhow::ensure!(receipt.batch_id == input.batch_id && (page == 0 || !receipt.replayed));
     Ok(input.batch_id)
 }
 
@@ -174,6 +189,7 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         tx.commit().await?;
         let mut ids=Vec::new();
         for page in 0..17 { ids.push(upload(c,&service,&prepared.signing,&principal,epoch,page).await?); }
+        let final_batch=*ids.last().unwrap();
         let keys:i64=sqlx::query_scalar("SELECT count(DISTINCT field) FROM mdm_telemetry.batches CROSS JOIN LATERAL unnest(fields) field WHERE tenant_id=$1::uuid AND device=$2 AND epoch=$3")
             .bind(c.tenant.to_string()).bind(principal.device().into_uuid()).bind(epoch).fetch_one(&c.operator).await?;
         anyhow::ensure!(keys==1025);
@@ -189,6 +205,14 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         cancel.cancel();
         worker.await??;
         delivery??;
+        // Repeated historical admissions share an indexed field set. Only one earlier real batch is changed below.
+        let mut tx=crate::command_runtime_t2_support::seed_transaction(c).await?;
+        let copied=sqlx::query("INSERT INTO mdm_telemetry.batches(expected_epoch,tenant_id,id,device,credential,source,epoch,policy,policy_version,input_digest,context_digest,fields,received_at,delivery,first_observed,last_observed,quality,observations,current_assets)
+            SELECT expected_epoch,tenant_id,gen_random_uuid(),device,credential,source,epoch,policy,policy_version,input_digest,context_digest,fields,received_at,delivery,first_observed,last_observed,quality,observations,current_assets
+            FROM mdm_telemetry.batches CROSS JOIN generate_series(1,8192) WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(c.tenant.to_string()).bind(final_batch).execute(&mut *tx).await?.rows_affected();
+        anyhow::ensure!(copied==8192);
+        tx.commit().await?;
         let account=c.account(&[Permission::InventoryRead,Permission::TelemetryMaintain]).await?;
         let short=http::Http::with_timeout(c,service.clone(),&account,std::time::Duration::from_millis(750)).await?;
         let http=http::Http::open(c,service.clone(),&account).await?;
@@ -242,14 +266,14 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
 
         for replacement in [json!(["unknown.field"]),json!(["custom.history_0000"])] {
             let mut tx=crate::command_runtime_t2_support::seed_transaction(c).await?;
-            sqlx::query("UPDATE mdm_telemetry.batches SET fields=ARRAY(SELECT jsonb_array_elements_text($3)) WHERE tenant_id=$1::uuid AND policy=$2")
-                .bind(c.tenant.to_string()).bind(Uuid::from_u128(17)).bind(replacement).execute(&mut *tx).await?;
+            sqlx::query("UPDATE mdm_telemetry.batches SET fields=ARRAY(SELECT jsonb_array_elements_text($3)) WHERE tenant_id=$1::uuid AND policy=$2 AND id=$4")
+                .bind(c.tenant.to_string()).bind(Uuid::from_u128(17)).bind(replacement).bind(final_batch).execute(&mut *tx).await?;
             tx.commit().await?;
             assert_eq!(http.call("/telemetry/maintenance",expire.clone()).await?.0,403);
         }
         let mut tx=crate::command_runtime_t2_support::seed_transaction(c).await?;
-        sqlx::query("UPDATE mdm_telemetry.batches SET fields=ARRAY[$3::text] WHERE tenant_id=$1::uuid AND policy=$2")
-            .bind(c.tenant.to_string()).bind(Uuid::from_u128(17)).bind(bad_page).execute(&mut *tx).await?;
+        sqlx::query("UPDATE mdm_telemetry.batches SET fields=ARRAY[$3::text] WHERE tenant_id=$1::uuid AND policy=$2 AND id=$4")
+            .bind(c.tenant.to_string()).bind(Uuid::from_u128(17)).bind(bad_page).bind(final_batch).execute(&mut *tx).await?;
         sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND device=$2 AND source='agent.script' AND epoch=$3")
             .bind(c.tenant.to_string()).bind(principal.device().into_uuid()).bind(epoch).execute(&mut *tx).await?;
         tx.commit().await?;
@@ -260,6 +284,7 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         for command in [expire,close] {
             let progress=http.post("/telemetry/maintenance",command.clone()).await?;
             assert_eq!(progress["state"],"complete");
+            assert_eq!(limited.post("/telemetry/maintenance",command.clone()).await?,progress);
             assert_eq!(http.post("/telemetry/maintenance",command).await?,progress);
         }
         let expired:bool=sqlx::query_scalar("SELECT expired FROM rss_timeseries.batches WHERE tenant_id=$1::uuid AND generation=$2")

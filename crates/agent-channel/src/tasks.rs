@@ -164,7 +164,7 @@ async fn authenticate_for(
     control: &rss_axum::RequestControl,
     task_required: bool,
 ) -> Result<crate::device::DevicePrincipal, crate::AgentError> {
-    let principal = crate::authenticate(origin, &app.enrollment, headers, peer).await?;
+    let principal = crate::authenticate(origin, &app.enrollment, headers, peer, control).await?;
     let mut tx = app
         .access
         .begin(&principal.tenant().to_string(), control)

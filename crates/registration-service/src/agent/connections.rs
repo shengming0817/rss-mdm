@@ -370,8 +370,17 @@ impl Service {
     ) -> Result<(), Failure> {
         let tenant = binding.tenant().to_string();
         let mut tx = self.store.begin(&tenant).await?;
-        let configuration = published_on(self.profile(), &mut tx, &tenant, None).await?;
+        self.check_origin_on(&mut tx, &tenant, origin).await?;
         tx.rollback().await.map_err(db)?;
+        Ok(())
+    }
+    pub(super) async fn check_origin_on(
+        &self,
+        c: &mut PgConnection,
+        tenant: &str,
+        origin: &rss_mdm_certificate::GatewayOrigin,
+    ) -> Result<(), Failure> {
+        let configuration = published_on(self.profile(), c, tenant, None).await?;
         // Until this tenant publishes a policy, the gateway's installed origins apply.
         if configuration.is_some_and(|value| {
             !value

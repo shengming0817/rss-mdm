@@ -28,6 +28,7 @@ pub(crate) fn router(
     app: Arc<rss_mdm_apple_channel::HttpState>,
     clock: Arc<dyn rss_observation::Clock>,
     request_budget: rss_axum::RequestBudget,
+    buffered_bytes: Arc<tokio::sync::Semaphore>,
 ) -> Option<crate::native::ChannelRouter> {
     use crate::native::{ChannelRouter, admission};
     use axum::middleware;
@@ -45,7 +46,7 @@ pub(crate) fn router(
                 .into(),
             clock: clock.clone(),
             audit_store: app.audit_store.clone(),
-            buffered_bytes: app.buffered_bytes.clone(),
+            buffered_bytes: buffered_bytes.clone(),
         },
     )
     .layer(middleware::from_fn(admission::admit));

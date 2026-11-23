@@ -8,6 +8,7 @@ use axum::{
     extract::{Extension, State},
     routing::get,
 };
+use sqlx::Connection as _;
 use std::{sync::Arc, time::Duration};
 use tower::ServiceExt;
 
@@ -35,7 +36,15 @@ async fn agent_sql_observes_request_cutoff() -> Result<()> {
             let started = started.clone();
             async move {
                 let mut tx = store.begin(&tenant.to_string(), &control).await.unwrap();
-                started.send(()).await.unwrap();
+                let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .unwrap();
+                started.send(pid).await.unwrap();
+                sqlx::query("SELECT pg_sleep(0.08)")
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
                 let result = sqlx::query("SELECT pg_advisory_xact_lock($1)")
                     .bind(key)
                     .execute(&mut *tx)
@@ -73,16 +82,32 @@ async fn agent_sql_observes_request_cutoff() -> Result<()> {
         .execute(&mut *lock)
         .await?;
     let short = tokio::spawn(make(Duration::from_millis(150)).oneshot(request()));
-    ready
+    let waiter = ready
         .recv()
         .await
         .context("Agent acquired short transaction")?;
+    let locker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *lock)
+        .await?;
+    let mut observer = sqlx::PgConnection::connect_with(&database.options()?).await?;
     assert!(
         !tokio::time::timeout(Duration::from_secs(1), short)
             .await???
             .status()
             .is_success()
     );
+    tokio::time::timeout(Duration::from_millis(65), async {
+        while sqlx::query_scalar::<_, bool>("SELECT $1=ANY(pg_blocking_pids($2))")
+            .bind(locker)
+            .bind(waiter)
+            .fetch_one(&mut observer)
+            .await?
+        {
+            tokio::time::sleep(Duration::from_millis(3)).await;
+        }
+        anyhow::Ok(())
+    })
+    .await??;
     lock.rollback().await?;
     assert_eq!(
         make(Duration::from_secs(2))

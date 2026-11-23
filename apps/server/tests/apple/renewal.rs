@@ -71,7 +71,6 @@ pub(super) async fn state(
             c.audit.clone(),
         )),
         identity: a.resources.sessions.clone(),
-        buffered_bytes: Arc::new(tokio::sync::Semaphore::new(128 * 1024 * 1024)),
     })
 }
 #[tokio::test]
@@ -394,7 +393,7 @@ async fn profile_url(c: &Context, app: HttpState) -> Result<()> {
         host: "localhost".into(),
         clock: monotonic,
         audit_store: c.audit.clone(),
-        buffered_bytes: app.buffered_bytes.clone(),
+        buffered_bytes: Arc::new(tokio::sync::Semaphore::new(128 * 1024 * 1024)),
     };
     let mut lifecycle = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
