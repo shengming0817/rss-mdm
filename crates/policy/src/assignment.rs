@@ -861,7 +861,7 @@ mod tests {
 }
 
 /// Product-owned native credential intent; scheduling remains ordinary Policy behavior.
-#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",

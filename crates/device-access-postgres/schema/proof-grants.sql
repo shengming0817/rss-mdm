@@ -5,6 +5,7 @@ GRANT EXECUTE ON FUNCTION rss_da.deployment_valid_until(uuid,jsonb,uuid,bigint) 
 GRANT EXECUTE ON FUNCTION rss_da.platform_session_qualifications(uuid,jsonb,bigint) TO da_identity_runtime;
 GRANT EXECUTE ON FUNCTION rss_da.access_policy(uuid,uuid,bigint) TO da_identity_runtime;
 GRANT SELECT ON rss_da.psso_sources,rss_da.psso_tokens TO da_identity_runtime;
+GRANT SELECT(id,tenant_id,source,version,state,expires_at) ON rss_da.psso_password_attempts TO da_identity_runtime;
 GRANT UPDATE(tenant_id) ON rss_da.psso_sources TO da_identity_runtime;
 GRANT SELECT ON rss_da.psso_password_providers TO da_identity_runtime;
 GRANT USAGE ON SCHEMA rss_da TO da_identity_runtime;

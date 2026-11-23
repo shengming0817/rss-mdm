@@ -83,6 +83,8 @@ pub enum DeliveryPermission {
     ManagedMandatory,
 }
 mod configuration;
+mod credentials;
+pub use credentials::*;
 mod status;
 pub use configuration::*;
 pub use status::*;
@@ -134,6 +136,6 @@ pub struct Progress {
 
 /// Fingerprint of the generated Device Access protocol schema.
 pub const SCHEMA_FINGERPRINT: &str =
-    "a6fc193311a01978d0656220a6f9cd1ba1718a04f164f52c2f76cb5f1143a89e";
+    "75cf87de338f18df50fe27e555644698018e9d4c80a719a1e5cf799a8b5c92b0";
 /// Canonical current Device Access schema manifest.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/da/manifest.json");

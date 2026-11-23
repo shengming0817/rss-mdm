@@ -19,13 +19,25 @@ pub(super) fn key() -> Ed25519KeyPair {
 pub(super) fn authority_id() -> Uuid {
     Uuid::from_u128(0x229df54fe9804bc1aa8f006c14890c15)
 }
-fn authorities() -> Result<Arc<pg::evidence::Authorities>> {
-    Ok(Arc::new(pg::evidence::Authorities::new(vec![
-        pg::evidence::Authority {
-            id: authority_id(),
-            public_key: key().public_key().as_ref().try_into()?,
-        },
-    ])?))
+pub(super) fn second_authority() -> Uuid {
+    Uuid::from_u128(0x229df54fe9804bc1aa8f006c14890c16)
+}
+pub(super) fn signing_key(id: Uuid) -> Ed25519KeyPair {
+    if id == second_authority() {
+        Ed25519KeyPair::from_seed_unchecked(&[50; 32]).unwrap()
+    } else {
+        key()
+    }
+}
+pub(super) fn authorities() -> Result<Arc<pg::evidence::Authorities>> {
+    let authorities = [authority_id(), second_authority()]
+        .into_iter()
+        .map(|id| pg::evidence::Authority {
+            id,
+            public_key: signing_key(id).public_key().as_ref().try_into().unwrap(),
+        })
+        .collect();
+    Ok(Arc::new(pg::evidence::Authorities::new(authorities)?))
 }
 pub fn assemble(
     c: &Context,
@@ -52,7 +64,7 @@ pub fn assemble(
             proof_audit: c.proof_audit.clone(),
             cursor: rss_mdm_query::cursor::CursorCodec::new(&[37; 32])?,
             protection: m.protection.clone(),
-            platform: Some(super::platform::runtime()?),
+            platform: Some(super::platform::runtime(&m.directory, &c.browser_origin)?),
             evidence: evidence.clone(),
             broker_query: None,
             agent_facts: None,
@@ -61,13 +73,14 @@ pub fn assemble(
     )?;
     c.platform.bind(&runtime.platform)?;
     let business = Arc::new(rss_mdm_device_access_http::Business {
+        recovery: None,
         evidence,
         service: runtime.business,
         admission: runtime.admission,
         platform: Arc::new(rss_mdm_device_access_http::platform_sso::HttpState {
             context: runtime.platform,
             authority: c.authority.clone(),
-            origin: "https://localhost".into(),
+            origin: c.browser_origin.clone(),
         }),
     });
     anyhow::ensure!(
@@ -116,7 +129,7 @@ pub(super) fn signed(value: &Observation) -> Result<pg::evidence::SignedObservat
     message.extend_from_slice(&payload);
     Ok(pg::evidence::SignedObservation {
         payload: URL_SAFE_NO_PAD.encode(&payload),
-        signature: URL_SAFE_NO_PAD.encode(key().sign(&message).as_ref()),
+        signature: URL_SAFE_NO_PAD.encode(signing_key(value.authority).sign(&message).as_ref()),
     })
 }
 // Committed DA business effects; Identity and request-completion facts have separate owners.
@@ -134,7 +147,6 @@ pub async fn verify(
     receipt: &da::Registration,
     client: &reqwest::Client,
     base: &str,
-    browser_configuration: &std::path::Path,
 ) -> Result<()> {
     use rss_mdm_policy_postgres::device_access::{Publication, Target};
     let business = assemble(c, m)?;
@@ -281,15 +293,7 @@ pub async fn verify(
         serde_json::to_value(&accepted)?
     );
     assert_eq!(counts(c).await?, settled);
-    directory_http(
-        c,
-        m,
-        browser_configuration,
-        &session_secret,
-        &receipt.device,
-        binding,
-    )
-    .await?;
+    directory_http(c, m, &session_secret, &receipt.device, binding).await?;
     c.authority
         .revoke_current_session(
             c.authority
@@ -536,7 +540,7 @@ pub(super) async fn operation_proof(
     context: rss_identity_core::step_up::StepUpContext,
 ) -> Result<wire::Secret> {
     use webauthn_authenticator_rs::{WebauthnAuthenticator, softpasskey::SoftPasskey};
-    let origin = url::Url::parse(c.browser_origin.get().expect("initialized host origin"))?;
+    let origin = url::Url::parse(&c.browser_origin)?;
     let webauthn = rss_identity_postgres::WebauthnAuthority::new(
         c.authority.clone(),
         "localhost".into(),
@@ -603,120 +607,81 @@ pub(super) async fn operation_proof(
 async fn directory_http(
     c: &Context,
     m: &material::Material,
-    configuration: &std::path::Path,
     secret: &SessionSecret,
     device: &rss_mdm_agent_wire::DeviceId,
     binding: Uuid,
 ) -> Result<()> {
-    let origin = c.browser_origin.get().context("browser listener origin")?;
-    let config = rss_da_app::config::load(configuration)?;
-    let (stop, stopped) = tokio::sync::oneshot::channel();
-    let mut running = tokio::spawn(rss_da_app::host::serve(config, async move {
-        stopped.await.map_err(std::io::Error::other)
-    }));
-    let result = async {
-        let client = m.client(None)?;
-        tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                if running.is_finished() {
-                    anyhow::bail!("browser host stopped before directory proof");
-                }
-                if client
-                    .get(format!(
-                        "{origin}/api/v1/identity/tenants/{}/session",
-                        c.tenant
-                    ))
-                    .send()
-                    .await
-                    .is_ok()
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            Ok::<_, anyhow::Error>(())
-        })
-        .await??;
-        let page = material::success::<serde_json::Value>(
-            client
-                .get(format!(
-                    "{origin}/api/v1/tenants/{}/devices/{}/device-access",
-                    c.tenant, device
-                ))
-                .header(
-                    "cookie",
-                    format!("__Host-identity-session={}", secret.expose()),
-                )
-                .query(&[(
-                    "filter",
-                    format!("id=={binding};desired.windows.kind==whfb"),
-                )])
-                .send()
-                .await?,
-        )
-        .await?;
-        assert_eq!(
-            page["items"]
-                .as_array()
-                .context("DA binding directory")?
-                .len(),
-            1
-        );
-        assert_eq!(page["items"][0]["id"], binding.to_string());
-        let missing = material::success::<serde_json::Value>(
-            client
-                .get(format!(
-                    "{origin}/api/v1/tenants/{}/devices/{}/device-access",
-                    c.tenant, device
-                ))
-                .header(
-                    "cookie",
-                    format!("__Host-identity-session={}", secret.expose()),
-                )
-                .query(&[("filter", format!("id=={}", Uuid::new_v4()))])
-                .send()
-                .await?,
-        )
-        .await?;
-        assert_eq!(missing["items"], serde_json::json!([]));
+    let origin = &c.browser_origin;
+    let client = m.client(None)?;
+    let page = material::success::<serde_json::Value>(
+        client
+            .get(format!(
+                "{origin}/api/v1/tenants/{}/devices/{}/device-access",
+                c.tenant, device
+            ))
+            .header(
+                "cookie",
+                format!("__Host-identity-session={}", secret.expose()),
+            )
+            .query(&[(
+                "filter",
+                format!("id=={binding};desired.windows.kind==whfb"),
+            )])
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(
+        page["items"]
+            .as_array()
+            .context("DA binding directory")?
+            .len(),
+        1
+    );
+    assert_eq!(page["items"][0]["id"], binding.to_string());
+    let missing = material::success::<serde_json::Value>(
+        client
+            .get(format!(
+                "{origin}/api/v1/tenants/{}/devices/{}/device-access",
+                c.tenant, device
+            ))
+            .header(
+                "cookie",
+                format!("__Host-identity-session={}", secret.expose()),
+            )
+            .query(&[("filter", format!("id=={}", Uuid::new_v4()))])
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(missing["items"], serde_json::json!([]));
 
-        let page = material::success::<serde_json::Value>(
-            client
-                .get(format!(
-                    "{origin}/api/v1/tenants/{}/device-access/enterprise/configuration",
-                    c.tenant
-                ))
-                .header(
-                    "cookie",
-                    format!("__Host-identity-session={}", secret.expose()),
-                )
-                .query(&[(
-                    "filter",
-                    "kind==relying_party;value.id==directory-target;value.enabled==true",
-                )])
-                .send()
-                .await?,
-        )
-        .await?;
-        assert_eq!(
-            page["items"]
-                .as_array()
-                .context("enterprise directory")?
-                .len(),
-            1
-        );
-        assert_eq!(page["items"][0]["id"], "rp:directory-target");
+    let page = material::success::<serde_json::Value>(
+        client
+            .get(format!(
+                "{origin}/api/v1/tenants/{}/device-access/enterprise/configuration",
+                c.tenant
+            ))
+            .header(
+                "cookie",
+                format!("__Host-identity-session={}", secret.expose()),
+            )
+            .query(&[(
+                "filter",
+                "kind==relying_party;value.id==directory-target;value.enabled==true",
+            )])
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(
+        page["items"]
+            .as_array()
+            .context("enterprise directory")?
+            .len(),
+        1
+    );
+    assert_eq!(page["items"][0]["id"], "rp:directory-target");
 
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-    let _ = stop.send(());
-    let stopped = tokio::time::timeout(Duration::from_secs(50), &mut running).await;
-    if stopped.is_err() {
-        running.abort();
-        let _ = running.await;
-        anyhow::bail!("browser directory host drain timed out");
-    }
-    stopped.unwrap()??;
-    result
+    Ok(())
 }

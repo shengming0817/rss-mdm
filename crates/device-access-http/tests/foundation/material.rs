@@ -1,27 +1,16 @@
 use super::*;
-use base64::{Engine, engine::general_purpose::STANDARD};
-use rss_mdm_agent_wire::{da, enroll, pki};
+use rss_mdm_agent_wire::{da, pki};
 use rss_mdm_native_protection::Protector;
-use rss_mdm_task_trust::{Signing, Use};
-use sha2::{Digest, Sha256};
-use tokio::io::{AsyncBufReadExt, BufReader};
+#[path = "../../../../hack/test-support/da_provider.rs"]
+mod provider;
 pub struct Material {
-    pub directory: std::path::PathBuf,
+    provider: provider::Provider,
     pub protection: Arc<Protector>,
-    pub port: u16,
-    _provider: tokio::process::Child,
 }
-pub struct Server {
-    pub origin: String,
-    owner: rss_runtime::ShutdownStack,
-}
-impl Server {
-    pub async fn shutdown(self) -> Result<()> {
-        anyhow::ensure!(
-            self.owner.shutdown().join().await?.is_clean(),
-            "DA listener drain"
-        );
-        Ok(())
+impl std::ops::Deref for Material {
+    type Target = provider::Provider;
+    fn deref(&self) -> &Self::Target {
+        &self.provider
     }
 }
 impl registration::certificate_issuance::Clock for context::Timer {
@@ -31,36 +20,14 @@ impl registration::certificate_issuance::Clock for context::Timer {
 }
 impl Material {
     pub async fn new(c: &Context) -> Result<Self> {
-        let directory = c.inputs.directory.join(format!("da-{}", Uuid::new_v4()));
-        let mut child = tokio::process::Command::new("python3")
-            .arg(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../hack/da_foundation_materials.py"
-            ))
-            .arg(&directory)
-            .stdout(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()?;
-        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-        let ready = tokio::time::timeout(Duration::from_secs(60), lines.next_line())
-            .await??
-            .ok_or_else(|| anyhow::anyhow!("issuer did not start"))?;
-        let value: serde_json::Value = serde_json::from_str(&ready)?;
         Ok(Self {
-            directory,
-            port: value["port"].as_u64().unwrap() as u16,
-            _provider: child,
+            provider: provider::Provider::new(&c.inputs.directory).await?,
             protection: Arc::new(Protector::with_fingerprint(
                 &std::fs::read(c.inputs.directory.join("native.key"))?,
                 &[],
                 &std::fs::read(c.inputs.directory.join("fingerprint.key"))?,
             )?),
         })
-    }
-    pub fn csr(&self, index: u8) -> Result<String> {
-        Ok(STANDARD.encode(std::fs::read(
-            self.directory.join(format!("device{index}.der")),
-        )?))
     }
     pub fn issued_count(&self) -> Result<usize> {
         Ok(
@@ -69,38 +36,19 @@ impl Material {
                 .count(),
         )
     }
-    async fn der(&self, kind: &str, path: &str) -> Result<Vec<u8>> {
-        let result = tokio::process::Command::new("openssl")
-            .args([kind, "-in"])
-            .arg(self.directory.join(path))
-            .args(["-outform", "DER"])
-            .output()
-            .await?;
-        anyhow::ensure!(result.status.success(), "DER conversion failed");
-        Ok(result.stdout)
-    }
     pub async fn assemble(
         &self,
         c: &Context,
+        device_origin: &str,
     ) -> Result<Arc<registration::agent::da::RegistrationService>> {
-        let root = self.der("x509", "task-trust-ca/ca.pem").await?;
-        let crl = self.der("crl", "task-trust-ca/ca.crl").await?;
-        let trust: pki::Trust = serde_json::from_value(
-            serde_json::json!({"version":1,"service_id":c.inputs.installation.instance_id,"origin":"https://localhost","tenant":c.tenant.to_string(),"purpose":"da_device","revision":1,"issuers":[{"digest":format!("{:x}",Sha256::digest(&root)),"mode":"active","certificate":STANDARD.encode(&root),"root":STANDARD.encode(&root),"crl":STANDARD.encode(&crl),"root_crl":STANDARD.encode(&crl),"provisioner":"rss-da-device","kid":"da-test"}]}),
-        )?;
-        let identity = Arc::new(
-            rss_mdm_device_trust::device_identity::DeviceIdentityTrust::from_trust(
-                rss_mdm_device_trust::DeviceTrust::new(
-                    trust.clone(),
-                    pki::Purpose::DaDevice,
-                    now(),
-                )?,
-                2,
-            )?,
-        );
-        // Existing published issuer is a prerequisite; issuance/activation are never seeded.
-        sqlx::query("INSERT INTO rss_da.pki_issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES($1::uuid,'da_device',$2,1,'active',$3,'step_ca',$4)").bind(c.tenant.to_string()).bind(&trust.issuers[0].digest).bind(serde_json::to_vec(&trust.issuers[0])?).bind(identity.expires()).execute(&c.operator).await?;
-        sqlx::query("INSERT INTO rss_da.pki_trust(tenant_id,purpose,revision,body) VALUES($1::uuid,'da_device',1,$2)").bind(c.tenant.to_string()).bind(serde_json::to_vec(&trust)?).execute(&c.operator).await?;
+        let trust = self
+            .publish(
+                &c.operator,
+                &c.tenant.to_string(),
+                &c.inputs.installation.instance_id,
+                device_origin,
+            )
+            .await?;
         let client = Arc::new(rss_mdm_pki_service::StepCa::at_address(
             rss_mdm_pki_service::Configuration {
                 origin: format!("https://localhost:{}", self.port),
@@ -152,111 +100,19 @@ impl Material {
             },
         )?))
     }
-    pub async fn listen(&self, mut state: rss_mdm_device_access_http::Services) -> Result<Server> {
-        use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let addr = listener.local_addr()?;
-        state.host = format!("localhost:{}", addr.port());
-        let cert = CertificateDer::pem_file_iter(self.directory.join("server.pem"))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let key = PrivateKeyDer::from_pem_file(self.directory.join("server.key"))?;
-        let state = Arc::new(state);
-        let policy = rss_axum::Http1ServePolicy::new(
-            rss_axum::ServePolicy::new(
-                4,
-                Duration::from_secs(5),
-                Duration::from_secs(3),
-                Duration::from_secs(10),
-            )?,
-            Duration::from_secs(3),
-            64,
-            32768,
-        )?;
-        let mut owner = rss_runtime::ShutdownStack::try_new(
-            rss_runtime::TotalDrainBudget::new(Duration::from_secs(12))?,
-            Arc::new(context::Timer),
-        )?;
-        owner
-            .startup()?
-            .stage_task_with_token(rss_mdm_device_access_http::tls::registration(
-                listener, cert, key, state, policy,
-            )?);
-        Ok(Server {
-            origin: format!("https://localhost:{}/api/v1/da", addr.port()),
-            owner,
-        })
-    }
-    pub fn client(&self, peer: Option<(&enroll::Candidate, u8)>) -> Result<reqwest::Client> {
-        let mut builder = reqwest::Client::builder()
-            .no_proxy()
-            .tls_built_in_root_certs(false)
-            .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(
-                self.directory.join("task-trust-ca/ca.pem"),
-            )?)?)
-            .timeout(Duration::from_secs(20));
-        if let Some((certificate, index)) = peer {
-            let mut pem = std::fs::read(self.directory.join(format!("device{index}.key")))?;
-            for certificate in &certificate.certificate_chain {
-                let der = STANDARD.decode(certificate)?;
-                let encoded = STANDARD.encode(der);
-                pem.extend_from_slice(b"\n-----BEGIN CERTIFICATE-----\n");
-                for line in encoded.as_bytes().chunks(64) {
-                    pem.extend_from_slice(line);
-                    pem.push(b'\n');
-                }
-                pem.extend_from_slice(b"-----END CERTIFICATE-----\n");
-            }
-            builder = builder.identity(reqwest::Identity::from_pem(&pem)?);
-        }
-        Ok(builder.build()?)
-    }
-}
-pub fn state(
-    c: &Context,
-    registration: Arc<registration::agent::da::RegistrationService>,
-    signing: Arc<Signing>,
-    m: &Material,
-) -> Result<rss_mdm_device_access_http::Services> {
-    let trust = Arc::new(rss_mdm_task_trust::Service::for_configurations(
-        signing,
-        m.protection.clone(),
-        c.access_audit.clone(),
-    )?);
-    let configurations = Arc::new(
-        rss_mdm_task_trust::configuration::ConfigurationService::new(
-            trust,
-            std::num::NonZeroU32::new(3600).unwrap(),
-        )?,
-    );
-    Ok(rss_mdm_device_access_http::Services {
-        request_budget: rss_axum::RequestBudget::new(std::time::Duration::from_secs(10))?,
-        business: Some(super::business::assemble(c, m)?),
-        registrations: registration,
-        configurations,
-        authorization: c.authorization.clone(),
-        sessions: c.sessions.clone(),
-        audit: c.access_audit.clone(),
-        host: String::new(),
-        requests: Arc::new(tokio::sync::Semaphore::new(16)),
-    })
-}
-pub fn signing(m: &Material) -> Result<Arc<Signing>> {
-    Ok(Arc::new(Signing::new(
-        DA,
-        Use::DaConfiguration,
-        m.protection.clone(),
-    )?))
 }
 pub async fn success<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T> {
+    let path = response.url().path().to_owned();
     let status = response.status();
     let text = response.text().await?;
-    anyhow::ensure!(status.is_success(), "HTTP {status}: {text}");
+    anyhow::ensure!(status.is_success(), "{path} returned HTTP {status}: {text}");
     Ok(serde_json::from_str(&text)?)
 }
 pub async fn empty(response: reqwest::Response) -> Result<()> {
+    let path = response.url().path().to_owned();
     let status = response.status();
     let text = response.text().await?;
-    anyhow::ensure!(status.is_success(), "HTTP {status}: {text}");
+    anyhow::ensure!(status.is_success(), "{path} returned HTTP {status}: {text}");
     Ok(())
 }
 pub fn verify(signed: &da::SignedConfiguration, trust: &da::ConfigurationTrust) -> Result<()> {
@@ -323,10 +179,12 @@ async fn administrator_for(
         } else {
             [
                 access::Permission::AccountWrite,
+                access::Permission::PolicyWrite,
                 access::Permission::EnterpriseApplicationsRead,
                 access::Permission::OperationRead,
                 access::Permission::Enrollment,
                 access::Permission::Credentials,
+                access::Permission::InventoryRead,
                 access::Permission::ConfigurationWrite,
                 access::Permission::RegistrationConfigurationWrite,
                 access::Permission::RegistrationConfigurationRead,
@@ -359,13 +217,4 @@ async fn administrator_for(
     kdf.close();
     kdf.wait_closed().await;
     Ok(issued.secret().expose().into())
-}
-
-pub fn management_base(device_base: &str, tenant: rss_request_context::TenantId) -> String {
-    format!(
-        "{}/api/v1/tenants/{tenant}/da",
-        device_base
-            .strip_suffix("/api/v1/da")
-            .expect("DA device base")
-    )
 }

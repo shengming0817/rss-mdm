@@ -10,7 +10,7 @@ pub struct Credentials {
     profile: rss_mdm_install_support::StorageProfile,
     pool: PgPool,
     audit: Arc<AuditStore>,
-    keys: Arc<KeyRing>,
+    protection: Arc<Protection>,
     access_audit: Option<Arc<AuditStore>>,
     eligibility: Option<Arc<dyn crate::eligibility::Eligibility>>,
 }
@@ -25,7 +25,7 @@ impl Credentials {
         profile: rss_mdm_install_support::StorageProfile,
         pool: PgPool,
         audit: Arc<AuditStore>,
-        keys: Arc<KeyRing>,
+        protection: Arc<Protection>,
         access_audit: Option<Arc<AuditStore>>,
         eligibility: Option<Arc<dyn crate::eligibility::Eligibility>>,
     ) -> Self {
@@ -33,13 +33,16 @@ impl Credentials {
             profile,
             pool,
             audit,
-            keys,
+            protection,
             access_audit,
             eligibility,
         }
     }
+    pub fn protection(&self) -> &Protection {
+        &self.protection
+    }
     pub fn keys(&self) -> &Arc<KeyRing> {
-        &self.keys
+        &self.protection.keys
     }
 
     pub async fn list(
@@ -72,6 +75,9 @@ impl Credentials {
             .require(principal, Permission::InventoryRead, Some(device))
             .map_err(rss_mdm_authorization_service::Error::from)?;
         let grant = snapshot.query_binding(principal)?;
+        if profile == rss_mdm_install_support::StorageProfile::Da {
+            require_current_device(&mut tx, principal, device).await?;
+        }
         let page =
             crate::directory::read(profile, &mut tx, principal, device, &grant, query, codec)
                 .await?;
@@ -94,6 +100,9 @@ impl Credentials {
             principal.instance_id(),
         )
         .await?;
+        if profile == rss_mdm_install_support::StorageProfile::Da {
+            require_current_device(&mut current, principal, device).await?;
+        }
         if request.current_binding(&snapshot, fresh.as_ref())? != grant {
             return Err(Error::ReadConflict);
         }
@@ -171,13 +180,27 @@ impl Credentials {
                             .with_connection_context(context, |context, c| {
                                 Box::pin(async move {
                                     let (service, principal, device, id, version, _, _, access, replay, _) = context;
-                                    if let Some(input)=access {
-                                        if *replay {rss_identity_postgres::recheck_authenticated_session_on(c,principal.session()?).await.map_err(|_|Error::Unauthorized)?;} else {rss_identity_postgres::consume_step_up_on(c,principal.session()?,&input.context(principal,device,*id,*version)?,input.proof.as_ref().ok_or(Error::Unauthorized)?.expose()).await.map_err(|e|match e.kind(){rss_transactional_messaging::error::MessagingErrorKind::Conflict=>Error::Unauthorized,_=>Error::Storage})?;}
-                                    }
+                                    let grant_expiry = match (*access, *replay) {
+                                        (Some(_), true) => {
+                                            rss_identity_postgres::recheck_authenticated_session_on(c, principal.session()?).await.map_err(|_|Error::Unauthorized)?;
+                                            None
+                                        }
+                                        (Some(input), false) => {
+                                            let grant = rss_identity_postgres::consume_step_up_on(
+                                                c, principal.session()?, &input.context(principal,device,*id,*version)?,
+                                                input.proof.as_ref().ok_or(Error::Unauthorized)?.expose(),
+                                            ).await.map_err(|e| match e.kind() {
+                                                rss_transactional_messaging::error::MessagingErrorKind::Conflict => Error::Unauthorized,
+                                                _ => Error::Storage,
+                                            })?;
+                                            Some(grant.expires_at)
+                                        }
+                                        (None, _) => None,
+                                    };
                                     authorize(profile, c, principal, device, Permission::Credentials)
                                         .await?;
                                     if let Some(input)=access {
-                                        let exists=disclosure_receipt(profile, c,principal,device,*id,*version,input.operation_id).await?;
+                                        let exists=disclosure_receipt(profile, c,principal,device,*id,*version,input).await?;
                                         if exists!=*replay{return Err(Error::Conflict);}
                                     }
                                     let (material, key, sealed) = read_locked(service.custody(),
@@ -193,6 +216,10 @@ impl Credentials {
                                     }
                                     if matches!(material.binding.subject,Subject::RssLogin{..})!=access.is_some(){return Err(Error::Forbidden);}
                                     if matches!(material.binding.subject, Subject::RssLogin { .. }) {
+                                        if !material.current || material.validity != Validity::Verified {return Err(Error::NotFound);}
+                                        let rotation_pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM rss_da.recovery_versions WHERE tenant_id=$1::uuid AND entry=$2 AND pending)")
+                                            .bind(principal.tenant_id()).bind(*id).fetch_one(&mut *c).await?;
+                                        if rotation_pending { return Err(Error::Conflict); }
                                         let eligibility=service.eligibility.as_ref().ok_or(Error::Unsupported)?;
                                         if eligibility.storage_profile()!=profile { return Err(Error::Forbidden); }
                                         eligibility.disclose(c, principal, &material.binding).await?;
@@ -204,7 +231,7 @@ impl Credentials {
                                         binding: material.binding.clone(),
                                         version: *version,
                                     };
-                                    let secret = service.keys.open(
+                                    let secret = service.keys().open(
                                         &key.ok_or(Error::NotFound)?,
                                         &coordinates,
                                         &sealed.ok_or(Error::NotFound)?,
@@ -212,8 +239,8 @@ impl Credentials {
                                     let value = std::str::from_utf8(secret.expose())
                                         .map_err(|_| Error::Integrity)?;
                                     principal.check_live()?;
-                                    if let Some(input)=access && !*replay {
-                                        sqlx::query(crate::storage_profile::sql(profile).service_disclose_inner_1).bind(principal.tenant_id()).bind(principal.principal_id()).bind(input.operation_id).bind(device.into_uuid()).bind(*id).bind(*version).execute(c).await?;
+                                    if let (Some(input), Some(expires_at)) = (access, grant_expiry) {
+                                        sqlx::query(crate::storage_profile::sql(profile).service_disclose_inner_1).bind(principal.tenant_id()).bind(principal.principal_id()).bind(input.operation_id).bind(device.into_uuid()).bind(*id).bind(*version).bind(principal.session_id()?).bind(input.proof_digest()?.as_slice()).bind(expires_at).execute(c).await?;
                                     }
                                     Ok::<_, Error>(Disclosure {
                                         material,
@@ -340,6 +367,16 @@ impl Credentials {
     }
 }
 
+async fn require_current_device(
+    c: &mut PgConnection,
+    p: &AuthorizedPrincipal,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<(), Error> {
+    rss_mdm_registration_service::device::endpoints::current_da_in(c, p.tenant_id(), device)
+        .await?
+        .ok_or(Error::NotFound)?;
+    Ok(())
+}
 async fn configure(
     _profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
@@ -460,6 +497,12 @@ pub struct DisclosureRequest {
     pub proof: Option<rss_mdm_agent_wire::runtime::Secret>,
 }
 impl DisclosureRequest {
+    fn proof_digest(&self) -> Result<[u8; 32], Error> {
+        use sha2::{Digest, Sha256};
+        let proof = self.proof.as_ref().ok_or(Error::Unauthorized)?;
+        Ok(Sha256::digest(proof.expose().as_bytes()).into())
+    }
+
     pub fn context(
         &self,
         p: &AuthorizedPrincipal,
@@ -498,12 +541,12 @@ async fn disclosure_receipt(
     device: &rss_mdm_agent_wire::DeviceId,
     id: Uuid,
     version: i64,
-    operation: Uuid,
+    input: &DisclosureRequest,
 ) -> Result<bool, Error> {
     let row = sqlx::query(crate::storage_profile::sql(profile).service_disclosure_receipt_1)
         .bind(p.tenant_id())
         .bind(p.principal_id())
-        .bind(operation)
+        .bind(input.operation_id)
         .fetch_optional(c)
         .await?;
     if let Some(row) = row {
@@ -514,6 +557,12 @@ async fn disclosure_receipt(
             || row.try_get::<i64, _>("version")? != version
         {
             return Err(Error::Conflict);
+        }
+        if !row.try_get::<bool, _>("live")?
+            || row.try_get::<String, _>("session_id")? != p.session_id()?
+            || row.try_get::<Vec<u8>, _>("proof_digest")? != input.proof_digest()?
+        {
+            return Err(Error::Unauthorized);
         }
         Ok(true)
     } else {
@@ -527,7 +576,7 @@ impl Credentials {
         device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
         version: i64,
-        operation: Uuid,
+        input: &DisclosureRequest,
     ) -> Result<bool, Error> {
         let profile = self.profile();
 
@@ -535,7 +584,7 @@ impl Credentials {
         let mut tx = self.pool.begin().await?;
         configure(profile, &mut tx, p.tenant_id()).await?;
         authorize(profile, &mut tx, p, device, Permission::Credentials).await?;
-        let found = disclosure_receipt(profile, &mut tx, p, device, id, version, operation).await?;
+        let found = disclosure_receipt(profile, &mut tx, p, device, id, version, input).await?;
         tx.rollback().await?;
         p.check_live()?;
         Ok(found)
@@ -561,7 +610,7 @@ impl Credentials {
             ),
         );
         let replay = self
-            .disclosure_committed(p, device, id, version, input.operation_id)
+            .disclosure_committed(p, device, id, version, input)
             .await?;
         let result = self
             .disclose_inner(p, device, id, version, Some(input), replay, audit)
@@ -571,7 +620,7 @@ impl Credentials {
             Err(error) if !replay => {
                 // Includes proof races and unknown commit: recover only this committed operation.
                 if self
-                    .disclosure_committed(p, device, id, version, input.operation_id)
+                    .disclosure_committed(p, device, id, version, input)
                     .await?
                 {
                     self.disclose_inner(p, device, id, version, Some(input), true, audit)

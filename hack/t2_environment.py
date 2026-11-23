@@ -61,7 +61,7 @@ def prepared(root, modules, binary, command, resources):
                 path.write_bytes(bytes([value]) * 32)
                 path.chmod(0o600)
 
-        if set(profiles(modules)) & {'shared', 'agent_foundation', 'da_foundation', 'shared_telemetry'}:
+        if set(profiles(modules)) & {'shared', 'agent_foundation', 'da_foundation', 'da_embedded', 'shared_telemetry'}:
             from task_trust_materials import prepare
             material = directory / 'task-trust-ca'
             existed = material.exists()

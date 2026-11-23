@@ -782,22 +782,21 @@ pub async fn verify_existing_secret_in(
 
     active_in(custody, c, tenant, binding).await?;
     let subject = serde_json::to_value(&binding.subject).map_err(|_| Error::Malformed)?;
-    let id = sqlx::query_scalar(
-        crate::storage_profile::sql(profile).storage_verify_existing_secret_in_1,
-    )
-    .bind(tenant)
-    .bind(binding.device.into_uuid())
-    .bind(subject)
-    .bind(revision)
-    .fetch_optional(&mut *c)
-    .await?
-    .ok_or(Error::Conflict)?;
+    let (id, current_version): (Uuid, i64) =
+        sqlx::query_as(crate::storage_profile::sql(profile).storage_verify_existing_secret_in_1)
+            .bind(tenant)
+            .bind(binding.device.into_uuid())
+            .bind(subject)
+            .bind(revision)
+            .fetch_optional(&mut *c)
+            .await?
+            .ok_or(Error::Conflict)?;
     let coordinates = Coordinates {
         profile,
         tenant,
         material: id,
         binding: binding.clone(),
-        version: revision,
+        version: current_version,
     };
     let current = secret_in(custody, c, keys, &coordinates).await?;
     if !bool::from(current.expose().ct_eq(secret)) {

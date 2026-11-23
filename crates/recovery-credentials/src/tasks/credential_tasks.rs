@@ -71,7 +71,7 @@ pub(crate) async fn eligible(
             .is_some_and(|b| capable(&b, architecture)),
     )
 }
-fn operation(value: &Operation) -> wire::CredentialOperation {
+pub(super) fn operation(value: &Operation) -> wire::CredentialOperation {
     match value {
         Operation::RotateRssLogin {
             binding,
@@ -370,125 +370,19 @@ pub(crate) async fn escrow(
     let protection = service.recovery_credentials.clone();
     let product = service.product.clone();
     let anchor = run.material.clone();
-    let registration = anchor.as_ref().map_or_else(|| task.device_id, |a| a.device);
     let value = value.clone();
     tx.with_connection(move |c| {
         Box::pin(async move {
             let result = async {
-                let recipient = protection.recipient(&task.recipient.key_id)?;
-                let mut receipts = Vec::new();
-                for item in &value.materials {
-                    if !allowed_subject(&task, &item.subject) {
-                        return Err(vault::Error::Malformed);
-                    }
-                    let aad = task
-                        .material_aad(&item.subject, item.expected_revision)
-                        .map_err(|_| vault::Error::Conflict)?;
-                    let secret = recipient.open_envelope(
-                        &STANDARD
-                            .decode(&item.wrapped_key)
-                            .map_err(|_| vault::Error::Malformed)?,
-                        item.nonce,
-                        &STANDARD
-                            .decode(&item.ciphertext)
-                            .map_err(|_| vault::Error::Malformed)?,
-                        &aad,
-                    )?;
-                    let binding = super::product::material(
-                        anchor.as_ref(),
-                        &Target {
-                            device: task.device_id,
-                        },
-                        subject(&item.subject),
-                    )?;
-                    let verifying = matches!(
-                        task.operation,
-                        wire::CredentialOperation::VerifyRssLogin { .. }
-                            | wire::CredentialOperation::VerifyBitlocker { .. }
-                            | wire::CredentialOperation::VerifyLocalAdministrator { .. }
-                    );
-                    let coordinates = if let Some(recovery) = &task.recovery {
-                        if materials::agent_guard_in(
-                            super::product::custody(profile, product.as_deref()),
-                            c,
-                            task.tenant_id,
-                            registration,
-                        )
-                        .await?
-                            != Some((recovery.task_id, recovery.attempt_id))
-                        {
-                            return Err(vault::Error::Conflict);
-                        }
-                        materials::recovery_secret_in(
-                            super::product::custody(profile, product.as_deref()),
-                            c,
-                            &protection.keys,
-                            task.tenant_id,
-                            &binding,
-                            item.expected_revision,
-                            recovery.task_id,
-                            &secret,
-                        )
-                        .await?
-                    } else if verifying {
-                        materials::verify_existing_secret_in(
-                            super::product::custody(profile, product.as_deref()),
-                            c,
-                            &protection.keys,
-                            task.tenant_id,
-                            &binding,
-                            item.expected_revision,
-                            &secret,
-                        )
-                        .await?
-                    } else {
-                        let coordinates = materials::reserve_in(
-                            super::product::custody(profile, product.as_deref()),
-                            c,
-                            task.tenant_id,
-                            &binding,
-                            task.task_id,
-                            item.expected_revision,
-                        )
-                        .await?;
-                        if matches!(
-                            task.operation,
-                            wire::CredentialOperation::RotateLocalAdministrator { .. }
-                        ) {
-                            materials::unknown_in(
-                                super::product::custody(profile, product.as_deref()),
-                                c,
-                                task.tenant_id,
-                                task.task_id,
-                            )
-                            .await?;
-                        }
-                        materials::ingest_in(
-                            super::product::custody(profile, product.as_deref()),
-                            c,
-                            &protection.keys,
-                            &coordinates,
-                            task.task_id,
-                            &secret,
-                        )
-                        .await?;
-                        coordinates
-                    };
-                    materials::link_agent_in(
-                        super::product::custody(profile, product.as_deref()),
-                        c,
-                        task.task_id,
-                        task.attempt_id,
-                        &coordinates,
-                    )
-                    .await?;
-                    receipts.push(wire::CredentialReceipt {
-                        subject: item.subject.clone(),
-                        material: coordinates.material,
-                        version: coordinates.version,
-                    });
-                }
-                Ok::<_, vault::Error>(receipts)
+                escrow_on(
+                    c,
+                    super::product::custody(profile, product.as_deref()),
+                    &protection,
+                    anchor.as_ref(),
+                    &task,
+                    &value,
+                )
+                .await
             }
             .await;
             Ok(result)
@@ -497,6 +391,115 @@ pub(crate) async fn escrow(
     .await?
     .map_err(Error::from)
     .map_err(Into::into)
+}
+pub(super) async fn escrow_on(
+    c: &mut sqlx::PgConnection,
+    custody: vault::Custody<'_>,
+    protection: &vault::Protection,
+    anchor: Option<&vault::Binding>,
+    task: &wire::CredentialTaskSpec,
+    value: &wire::CredentialEscrow,
+) -> std::result::Result<Vec<wire::CredentialReceipt>, vault::Error> {
+    value.validate().map_err(|_| vault::Error::Malformed)?;
+    if value.definition_digest != task.definition_digest {
+        return Err(vault::Error::Conflict);
+    }
+    let registration = anchor.map_or(task.device_id, |a| a.device);
+    let recipient = protection.recipient(&task.recipient.key_id)?;
+    let mut receipts = Vec::new();
+    for item in &value.materials {
+        if !allowed_subject(task, &item.subject) {
+            return Err(vault::Error::Malformed);
+        }
+        let aad = task
+            .material_aad(&item.subject, item.expected_revision)
+            .map_err(|_| vault::Error::Conflict)?;
+        let secret = recipient.open_envelope(
+            &STANDARD
+                .decode(&item.wrapped_key)
+                .map_err(|_| vault::Error::Malformed)?,
+            item.nonce,
+            &STANDARD
+                .decode(&item.ciphertext)
+                .map_err(|_| vault::Error::Malformed)?,
+            &aad,
+        )?;
+        let binding = super::product::material(
+            anchor,
+            &Target {
+                device: task.device_id,
+            },
+            subject(&item.subject),
+        )?;
+        let verifying = matches!(
+            task.operation,
+            wire::CredentialOperation::VerifyRssLogin { .. }
+                | wire::CredentialOperation::VerifyBitlocker { .. }
+                | wire::CredentialOperation::VerifyLocalAdministrator { .. }
+        );
+        let coordinates = if let Some(recovery) = &task.recovery {
+            if materials::agent_guard_in(custody, c, task.tenant_id, registration).await?
+                != Some((recovery.task_id, recovery.attempt_id))
+            {
+                return Err(vault::Error::Conflict);
+            }
+            materials::recovery_secret_in(
+                custody,
+                c,
+                &protection.keys,
+                task.tenant_id,
+                &binding,
+                item.expected_revision,
+                recovery.task_id,
+                &secret,
+            )
+            .await?
+        } else if verifying {
+            materials::verify_existing_secret_in(
+                custody,
+                c,
+                &protection.keys,
+                task.tenant_id,
+                &binding,
+                item.expected_revision,
+                &secret,
+            )
+            .await?
+        } else {
+            let coordinates = materials::reserve_in(
+                custody,
+                c,
+                task.tenant_id,
+                &binding,
+                task.task_id,
+                item.expected_revision,
+            )
+            .await?;
+            if matches!(
+                task.operation,
+                wire::CredentialOperation::RotateLocalAdministrator { .. }
+            ) {
+                materials::unknown_in(custody, c, task.tenant_id, task.task_id).await?;
+            }
+            materials::ingest_in(
+                custody,
+                c,
+                &protection.keys,
+                &coordinates,
+                task.task_id,
+                &secret,
+            )
+            .await?;
+            coordinates
+        };
+        materials::link_agent_in(custody, c, task.task_id, task.attempt_id, &coordinates).await?;
+        receipts.push(wire::CredentialReceipt {
+            subject: item.subject.clone(),
+            material: coordinates.material,
+            version: coordinates.version,
+        });
+    }
+    Ok::<_, vault::Error>(receipts)
 }
 pub(crate) async fn finish(
     profile: rss_mdm_install_support::StorageProfile,
@@ -517,7 +520,7 @@ pub(crate) async fn finish(
     }
     let product = service.product.clone();
     let anchor = run.material.clone();
-    let registration = anchor.as_ref().map_or_else(|| task.device_id, |a| a.device);
+    let registration = anchor.as_ref().map_or(task.device_id, |a| a.device);
     let value = value.clone();
     let (success, uncertain, recovered) = tx
         .with_connection(move |c| {

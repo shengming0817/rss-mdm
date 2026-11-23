@@ -99,16 +99,16 @@ pub(super) async fn authorize(
     agent: &DevicePrincipal,
     da: &DaRegistration,
 ) -> Result<Uuid> {
-    let pool = c.inputs.pool("shared", "da_access").await?;
+    let pool = c.inputs.pool(&c.profile, "da_access").await?;
     let runtime = crate::identity::open_runtime(
-        &c.inputs.database("shared", "da_access"),
+        &c.inputs.database(&c.profile, "da_access"),
         &c.inputs.installation.target,
         &c.inputs.installation.lineage,
         2,
     )
     .await?;
     let identity_runtime = crate::identity::open_runtime(
-        &c.inputs.database("shared", "mdm_identity_runtime"),
+        &c.inputs.database(&c.profile, "mdm_identity_runtime"),
         &c.inputs.installation.target,
         &c.inputs.installation.lineage,
         2,

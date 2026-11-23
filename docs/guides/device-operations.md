@@ -193,24 +193,26 @@ serverState、receivedRevision、appliedRevision、effect 各自表达不同事�
 普通配置和角色更新只增加 revision；重新关联人员增加绑定代际及因子世代，Windows 的 `reset_factors` 显式增加因子世代。
 撤销立即停止服务端授权；离线本机保持原效果直到实际执行清理，不将接口成功视为即时端侧撤销。
 
-DA 状态上报为 `POST /api/v1/da/status-reports`；注册进度查询为 `POST /api/v1/da/registrations/status`。
-状态绑定 mTLS 当前设备身份，sequence 在该设备内严格递增；设备时间仅作描述。精确重试返回原 receivedAt，冲突和历史已清理的旧序号均拒绝。管理员通过 `GET /api/v1/da/admin/devices/{device}/status` 和 `/reports?kind=status|application&limit=64&cursor=...` 读取最新与历史；新页面不会把旧报告重新算作在线。读取要求 OperationRead，游标绑定主体、权限、设备和查询。
+DA 注册授权、凭据替换、撤销、配置签发与查询使用宿主的管理监听器及租户会话。设备注册、续期、获取配置和上报使用设备 TLS 监听器。
 
-`GET /api/v1/da/admin/configurations`（可用 `device` 精确筛选）、`/{id}`、`/{id}/versions` 读取配置与不可变历史；`/api/v1/da/admin/configuration-operations/{operationId}` 为原操作者恢复发布回执。
+DA 状态上报为 `POST /api/v1/da/status-reports`；注册进度查询为 `POST /api/v1/da/registrations/status`。
+状态绑定 mTLS 当前设备身份，sequence 在该设备内严格递增；设备时间仅作描述。精确重试返回原 receivedAt，冲突和历史已清理的旧序号均拒绝。管理员通过 `GET /api/v1/tenants/{tenant}/da/admin/devices/{device}/status` 和 `/reports?kind=status|application&limit=64&cursor=...` 读取最新与历史；新页面不会把旧报告重新算作在线。读取要求 OperationRead，游标绑定主体、权限、设备和查询。
+
+`GET /api/v1/tenants/{tenant}/da/admin/configurations`（可用 `device` 精确筛选）、`/{id}`、`/{id}/versions` 读取配置与不可变历史；`/api/v1/tenants/{tenant}/da/admin/configuration-operations/{operationId}` 为原操作者恢复发布回执。
 租户配置要求 RegistrationConfigurationRead/Write；设备配置写入要求 ConfigurationWrite。修改服务端账号角色、自助开通或启用规则同时要求 AccountWrite。
 发布 `managedFields` 只授权 mac/windows 客户端设置组；新增或更改授权、受保护配置停用与重新启用须通过 `/device-access/configurations/step-up` 完成用途绑定证明。
-`POST /api/v1/da/configurations` 导出正文只接受 operationId、policy、version、delivery 和 lifetimeSeconds，不能临时提供另一份配置内容。
-响应为原始 payload、keyId、signature、digest；`GET /api/v1/da/configuration-operations/{operationId}` 恢复同一签名回执。
+`POST /api/v1/tenants/{tenant}/da/configurations` 导出正文只接受 operationId、policy、version、delivery 和 lifetimeSeconds，不能临时提供另一份配置内容。
+响应为原始 payload、keyId、signature、digest；`GET /api/v1/tenants/{tenant}/da/configuration-operations/{operationId}` 恢复同一签名回执。
 设备安装独立配置签名信任并 ACK 后，以 `GET /api/v1/da/configuration` 获取当前候选，或 `/configurations/{operationId}` 领取精确候选；已撤回或不再选中的版本不能领取。
 
 `POST /api/v1/da/configuration-reports` 分别报告 received、validated、applied、rejected 或 unknown，不推导状态链，不写入认证资格、绑定效果或签名钥匙 ACK。
 报告可以记录已过期或已撤回候选的拒绝/未知事实，但不能使其重新成为可领取或可信应用的候选。
 客户端 source 声明始终为 reported；预置信任的部署 authority 才能通过 deployment-evidence 的 configuration 字段证明精确 artifact/digest/nativeDigest 与实际投递。
-`GET /api/v1/da/admin/devices/{device}/configuration` 将可信证明与后台配置裁决分开展示。可信 managed-mandatory 设置优先于 DA 后台设置；授权字段锁定并标明后台值被忽略。合法受管版本在后台发布新版本后仍按授权字段优先；配置来源证明与登录资格的当前策略版本校验分开。已存在强制来源的读取失败、过期或冲突会阻断回退；没有配置时安全默认不启用集成。role、selfEnrollment 与服务端启用规则继续取自后台授权。
+`GET /api/v1/tenants/{tenant}/da/admin/devices/{device}/configuration` 将可信证明与后台配置裁决分开展示。可信 managed-mandatory 设置优先于 DA 后台设置；授权字段锁定并标明后台值被忽略。合法受管版本在后台发布新版本后仍按授权字段优先；配置来源证明与登录资格的当前策略版本校验分开。设备诊断返回当前签名操作、字段锁及设备自报。确认实际应用需要预置部署方签署完整本地读回，匹配当前后台制品、有效强制字段来源和裁决后的配置。服务端最近回执已过新鲜期且当前制品仍待确认时可显示离线待应用；没有回执时连接状态未知。已存在强制来源的读取失败、过期或冲突会阻断回退；没有配置时安全默认不启用集成。role、selfEnrollment 与服务端启用规则继续取自后台授权。
 客户端启动时先读取完整的托管引导快照，再裁决 DA 后台候选；签名内容整体替换，不将省略字段视为增量补丁。服务端按 authority/注册代际及 Policy/字段保留强制来源引用，新的空快照、普通 DA 来源或字段较窄的旧强制包不会清除其他字段的记录；只有通过 step-up 修改原签发 Policy 的 managedFields 才释放相应字段。读取失败、无效或撤除不等同于首次缺失。
 原生模板消费者须保持内层 payload 字节和签名绑定的 profile/payload UUID、identifier、version；外层 CMS 可重新签名。完整原生导出装配由 #3093 承接。
 
-RSS 登录恢复密钥沿用本页的恢复凭据列表/查阅入口及 Credentials 权限，轮换/核对使用现有 Credential Policy。
+RSS 登录恢复密钥沿用本页的恢复凭据列表/查阅入口及 Credentials 权限，轮换/核对使用现有 Credential Policy。独立与嵌入 DA 的管理员须同时拥有租户级 PolicyWrite 和该设备的 AccountWrite，经 `POST /api/v1/tenants/{tenant}/devices/{device}/device-access/credential-policies` 发布精确设备的凭据策略。发布体包含策略 `id`、不可变 `version`、递增 `revision`、设备、RSS Login 操作及绑定、`enabled`、`notBefore`、`expiresAt` 和 `runLifetimeSeconds`。按同一内容和版本重试可取回原结果，`GET /api/v1/tenants/{tenant}/devices/{device}/device-access/credential-policies/{version}` 可读取原版本。定向操作引用该版本；发布新版本、禁用策略或到期会阻止旧版本继续执行。轮换托管后，先完成核验再披露当前值。
 它只恢复 Windows 的 RSS 附加因子，仍需正确系统密码；Mac 沿用原生系统及磁盘恢复。
 普通列表和事件不返回秘密，系统密码与 Secure Token 不作为可查阅 RSS 恢复材料。
 

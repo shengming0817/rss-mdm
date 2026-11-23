@@ -80,7 +80,7 @@ impl rss_request_context::ExecutionTimer for Timer {
     }
 }
 pub struct Context {
-    pub browser_origin: std::sync::OnceLock<String>,
+    pub browser_origin: String,
     pub platform: Arc<rss_mdm_device_access_postgres::platform_sso::bridge::Verifier>,
     pub business: std::sync::OnceLock<Arc<rss_mdm_device_access_http::Business>>,
     pub inputs: Inputs,
@@ -109,7 +109,10 @@ impl Context {
             Epoch::new(1).unwrap(),
         )
     }
-    pub async fn open() -> Result<Self> {
+    pub fn management_base(&self) -> String {
+        format!("{}/api/v1/tenants/{}/da", self.browser_origin, self.tenant)
+    }
+    pub async fn open(browser_origin: String) -> Result<Self> {
         let inputs: Inputs =
             serde_json::from_slice(&std::fs::read(std::env::var("RSS_MDM_T2_ENV")?)?)?;
         let operator = inputs.database("postgres").pool().await?;
@@ -187,9 +190,7 @@ impl Context {
                 .await?,
         );
         let platform = Arc::new(
-            rss_mdm_device_access_postgres::platform_sso::bridge::Verifier::new(
-                "https://localhost",
-            ),
+            rss_mdm_device_access_postgres::platform_sso::bridge::Verifier::new(&browser_origin),
         );
         let authority = rss_identity_postgres::Authority::connect_runtime(
             identity_runtime.clone(),
@@ -224,7 +225,7 @@ impl Context {
             Arc::new(Timer),
         ));
         Ok(Self {
-            browser_origin: std::sync::OnceLock::new(),
+            browser_origin,
             platform,
             business: std::sync::OnceLock::new(),
             proof_audit,

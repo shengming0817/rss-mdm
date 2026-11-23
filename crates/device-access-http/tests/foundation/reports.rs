@@ -10,7 +10,7 @@ pub async fn verify(
     registration: &da::Registration,
     signed: &da::SignedConfiguration,
 ) -> Result<()> {
-    let management = material::management_base(base, c.tenant);
+    let management = c.management_base();
     let identity = da::ReportIdentity {
         service_id: registration.service_id,
         tenant: registration.tenant,

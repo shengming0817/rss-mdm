@@ -566,7 +566,7 @@ pub async fn assemble(
                 DA,
                 pool,
                 audit.clone(),
-                p.keys.clone(),
+                p.clone(),
                 Some(proof_audit.clone()),
                 Some(Arc::new(
                     rss_mdm_device_access_postgres::recovery::eligibility::AccessEligibility {
@@ -584,7 +584,7 @@ pub async fn assemble(
 
     let business = Arc::new(http::device_access::Services {
         cursor: cursor.clone(),
-        recovery,
+        recovery: recovery.clone(),
         registration: runtime.business.clone(),
         admission: runtime.admission.clone(),
         identity: identity.clone(),
@@ -593,6 +593,13 @@ pub async fn assemble(
     let request_budget = rss_axum::RequestBudget::new(compiled.identity.request)
         .map_err(|_| Error::Configuration)?;
     let state = Arc::new(http::browser::Services {
+        management: Arc::new(http::management::Services {
+            registrations: runtime.registrations.clone().ok_or(Error::Admission)?,
+            configurations: runtime.configurations.clone().ok_or(Error::Admission)?,
+            business: runtime.business.clone(),
+            evidence: evidence.clone(),
+            platform: platform_http.clone(),
+        }),
         request_budget,
         vault: Arc::new(rss_mdm_vault_sync::Service::new(
             config.installation.instance,
@@ -660,6 +667,7 @@ pub async fn assemble(
     let protocol = Arc::new(http::Services {
         request_budget,
         business: Some(Arc::new(http::Business {
+            recovery,
             evidence,
             service: runtime.business,
             admission: runtime.admission,

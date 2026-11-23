@@ -1,5 +1,6 @@
 pub mod credential_tasks;
 pub mod eligibility;
+mod targeted;
 // Material participation in the original DA transaction.
 use crate::{
     Pending,

@@ -226,6 +226,27 @@ impl ConfigurationService {
             .await?;
         Ok(value)
     }
+    /// Authenticate an existing export against the current installation's configuration keys.
+    pub async fn verify_on(
+        &self,
+        c: &mut PgConnection,
+        tenant: rss_request_context::TenantId,
+        value: &SignedConfiguration,
+        now: i64,
+    ) -> Result<Configuration, Error> {
+        let current =
+            trust::current(self.trust.signing.profile, Use::DaConfiguration, c, tenant).await?;
+        verify(
+            value,
+            &ConfigurationTrust {
+                service_id: current.service_id,
+                tenant: current.tenant,
+                revision: current.revision,
+                keys: current.keys,
+            },
+            now,
+        )
+    }
     /// Current identity, exact artifact audience and independently installed trust are mandatory.
     pub async fn admit_device_on(
         &self,
@@ -234,12 +255,12 @@ impl ConfigurationService {
         signed: &SignedConfiguration,
     ) -> Result<Configuration, Error> {
         self.trust.signing.revalidate(c, p).await?;
-        let config = signed.decode().map_err(|_| Error::Conflict)?;
         let now: i64 =
             sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
                 .fetch_one(&mut *c)
                 .await
                 .map_err(db)?;
+        let config = self.verify_on(c, p.tenant(), signed, now).await?;
         let identity = rss_mdm_agent_wire::da::ReportIdentity {
             service_id: p.installation(),
             tenant: Uuid::parse_str(&p.tenant().to_string()).map_err(|_| Error::Malformed)?,
