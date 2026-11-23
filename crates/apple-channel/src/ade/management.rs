@@ -411,9 +411,12 @@ pub(super) fn remote(error: client::RemoteError) -> Error {
         _ => Error::Conflict,
     }
 }
+pub(super) fn lock_key(tenant: &str, id: Uuid) -> String {
+    format!("apple-ade:{tenant}:{id}")
+}
 pub(super) async fn lock(c: &mut sqlx::PgConnection, tenant: &str, id: Uuid) -> Result<(), Error> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2673))")
-        .bind(format!("apple-ade:{tenant}:{id}"))
+        .bind(lock_key(tenant, id))
         .execute(c)
         .await
         .map_err(db)?;

@@ -132,9 +132,12 @@ fn token_at(
     time: i64,
 ) -> Result<client::Token, Error> {
     if !row.try_get::<bool, _>("enabled").map_err(db)?
-        || row.try_get::<i64, _>("token_expires").map_err(db)? <= time
         || !row.try_get::<bool, _>("verified").map_err(db)?
         || row.try_get::<bool, _>("token_invalid").map_err(db)?
+        || row
+            .try_get::<Option<i64>, _>("token_expires")
+            .map_err(db)?
+            .is_none_or(|expires| expires <= time)
     {
         return Err(Error::Conflict);
     }

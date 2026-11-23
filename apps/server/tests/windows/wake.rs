@@ -335,7 +335,19 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
         assert!(!allowed,"406 applies to the same OAuth identity across tenants");
         // Make the original provider deadline due. The same durable work becomes eligible again.
         sqlx::query("UPDATE mdm_wns.provider_throttles SET retry_at=clock_timestamp()+interval '1 second' WHERE tenant_id=$1::uuid").bind(&t).execute(&c.operator).await?;
+        let mut held_material=command::seed_transaction(&other).await?;
+        let holder:i32=sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_wns.versions WHERE tenant_id=$1::uuid AND selected FOR UPDATE")
+            .bind(other.tenant.to_string()).fetch_one(&mut *held_material).await?;
         owner.resume_claim.cancel();
+        other.wait_blocked(holder).await?;
+        // The claim snapshot observed a cooldown, which expires before the query can return.
+        loop {
+            let expired:bool=sqlx::query_scalar("SELECT retry_at<=clock_timestamp() FROM mdm_wns.provider_throttles WHERE tenant_id=$1::uuid")
+                .bind(&t).fetch_one(&c.operator).await?;
+            if expired {break;}
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        held_material.rollback().await?;
         loop {
             if sqlx::query_scalar::<_,bool>("SELECT settled_id IS NOT NULL AND status=410 FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND device=$2").bind(other.tenant.to_string()).bind(blocked.into_uuid()).fetch_one(&c.operator).await? {break;}
             tokio::time::sleep(Duration::from_millis(10)).await;

@@ -58,11 +58,54 @@ async fn pending(
     tx.commit().await?;
     Ok(org)
 }
+async fn sync_before_token_import(
+    c: &Context,
+    state: Arc<rss_mdm_apple_channel::HttpState>,
+    configured: Uuid,
+) -> Result<()> {
+    use tower::ServiceExt;
+    let id = Uuid::new_v4();
+    let mut tx = command::seed_transaction(c).await?;
+    sqlx::query("INSERT INTO mdm_apple.organizations(tenant_id,id) VALUES($1::uuid,$2)")
+        .bind(c.tenant.to_string())
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO mdm_apple.ade_servers(tenant_id,organization,revision,enabled,server_uuid,org_id,key_id,certificate,private_key)
+       SELECT tenant_id,$3,1,true,$3,org_id,key_id,certificate,private_key FROM mdm_apple.ade_servers WHERE tenant_id=$1::uuid AND organization=$2")
+       .bind(c.tenant.to_string()).bind(configured).bind(id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    let account = c
+        .account(&[rss_mdm_authorization_service::Permission::RegistrationConfigurationWrite])
+        .await?;
+    let proof = Arc::new(c.authenticate(&account).await?);
+    let request = axum::http::Request::post(format!(
+        "/api/v1/tenants/{}/apple/organizations/{id}/ade/operations",
+        c.tenant
+    ))
+    .header("content-type", "application/json")
+    .header("idempotency-key", Uuid::new_v4().to_string())
+    .extension(c.request(&proof)?)
+    .extension(c.read_auth(proof))
+    .body(axum::body::Body::from(r#"{"kind":"sync","full":true}"#))?;
+    let response = rss_mdm_apple_channel::management_routes(state)
+        .into_axum()
+        .oneshot(request)
+        .await?;
+    assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+    Ok(())
+}
+
 #[tokio::test]
 #[ignore = "T2: APNs and multipage ADE commit for an independent tenant while the first provider response is held"]
 async fn independent_tenants_progress_through_live_apple_workers() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let other = Context::open("shared", &[]).await?;
+    let (c, other) = if c.tenant.to_string() < other.tenant.to_string() {
+        (c, other)
+    } else {
+        (other, c)
+    };
     let a = Fixture::open(&c).await?;
     let n = identity::seed(&c, "apple").await?;
     let other_n = identity::seed(&other, "apple").await?;
@@ -206,9 +249,10 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
         .with_loopback_provider(port, reqwest::Certificate::from_pem(&root)?),
     ));
     let state = Arc::new(state);
+    Box::pin(sync_before_token_import(&c, state.clone(), org)).await?;
     let push_hint = Arc::new(Notify::new());
     let ade_hint = Arc::new(Notify::new());
-    let register = || -> Result<rss_runtime::ShutdownStack> {
+    let register = |ade_capacity: usize| -> Result<rss_runtime::ShutdownStack> {
         let mut stack = rss_runtime::ShutdownStack::try_new(
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
             Arc::new(crate::lifecycle::RuntimeTimer),
@@ -225,7 +269,7 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
         launch.stage_task_with_token(
             rss_mdm_apple_channel::ade::registration(
                 state.clone(),
-                8.try_into()?,
+                ade_capacity.try_into()?,
                 ade_hint.clone(),
             )
             .critical(),
@@ -233,7 +277,7 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
         launch.finish();
         Ok(stack)
     };
-    let stack = register()?;
+    let stack = register(8)?;
     let result=tokio::time::timeout(Duration::from_secs(15),async {
         tokio::join!(apns_waiting.notified(),ade_waiting.notified());
         let sibling_org=pending(&c,&sibling,&key).await?;
@@ -292,7 +336,7 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
     sqlx::query("INSERT INTO mdm_apple.ade_sync_devices(tenant_id,operation,serial,operation_date,deleted) VALUES($1::uuid,$2,'staged',clock_timestamp(),false)")
         .bind(other.tenant.to_string()).bind(expired).execute(&mut *staging).await?;
     staging.commit().await?;
-    let restart = register()?;
+    let restart = register(8)?;
     let recovered=tokio::time::timeout(Duration::from_secs(10),async{
         loop {
             let done:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND device=$2 AND push_material_revision=2 AND push_outcome='accepted') AND EXISTS(SELECT FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND id=$3 AND state='succeeded') AND EXISTS(SELECT FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND id=$4 AND state='unknown' AND attempts=1 AND result->>'reason'='interrupted_external_effect')").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(op).bind(unknown).fetch_one(&c.operator).await?;
@@ -303,23 +347,31 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
         Ok::<_,anyhow::Error>(())
     }).await;
     recovered??;
+    assert!(restart.shutdown().join().await?.is_clean());
     let waiting = Uuid::new_v4();
     let mut lock = command::seed_transaction(&c).await?;
-    let holder: i32 = sqlx::query_scalar(
-        "SELECT pg_backend_pid() FROM pg_advisory_xact_lock(hashtextextended($1,2673))",
-    )
-    .bind(format!("apple-ade:{}:{org}", c.tenant))
-    .fetch_one(&mut *lock)
-    .await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2673))")
+        .bind(format!("apple-ade:{}:{org}", c.tenant))
+        .fetch_one(&mut *lock)
+        .await?;
     let mut queued = command::seed_transaction(&c).await?;
     sqlx::query("INSERT INTO mdm_apple.ade_operations(tenant_id,organization,expected_epoch,id,kind,digest,actor,instance,server_revision,token_revision,request,state,receipt,created_at) VALUES($1::uuid,$2,1,$3,'clear',repeat('3',64),'service','service',1,1,$4,'pending','{}',1)")
         .bind(c.tenant.to_string()).bind(org).bind(waiting).bind(json!({"kind":"clear","devices":["first"]})).execute(&mut *queued).await?;
     queued.commit().await?;
-    ade_hint.notify_one();
-    c.wait_blocked(holder).await?;
-    let drain = restart.shutdown();
+    // With one slot and sorted tenants the locked organization must yield for the peer to commit.
+    sqlx::query("UPDATE mdm_apple.ade_servers SET cursor=NULL,token_expires=4070908800,next_sync=1 WHERE tenant_id=$1::uuid AND organization=$2")
+        .bind(other.tenant.to_string()).bind(organization).execute(&other.operator).await?;
+    let serial = register(1)?;
+    tokio::time::timeout(Duration::from_secs(8),async {
+        loop {
+            let committed:bool=sqlx::query_scalar("SELECT cursor IS NOT DISTINCT FROM 'complete' FROM mdm_apple.ade_servers WHERE organization=$1")
+                .bind(organization).fetch_one(&other.operator).await?;
+            if committed {return Ok::<_,anyhow::Error>(());}
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+    }).await??;
+    assert!(serial.shutdown().join().await?.is_clean());
     lock.rollback().await?;
-    assert!(drain.join().await?.is_clean());
     let pending:bool=sqlx::query_scalar("SELECT state='pending' AND attempts=0 AND lease IS NULL FROM mdm_apple.ade_operations WHERE id=$1").bind(waiting).fetch_one(&c.operator).await?;
     assert!(
         pending,

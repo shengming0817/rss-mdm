@@ -216,10 +216,16 @@ async fn claim_in(
     ),
     Error,
 > {
-    tokio::select! {
-        biased;
-        () = stop.cancelled() => return Ok((None, Vec::new())),
-        lock = management::lock(c, tenant, organization) => lock?,
+    if stop.is_cancelled()
+        || !sqlx::query_scalar::<_, bool>(
+            "SELECT pg_try_advisory_xact_lock(hashtextextended($1,2673))",
+        )
+        .bind(management::lock_key(tenant, organization))
+        .fetch_one(&mut *c)
+        .await
+        .map_err(db)?
+    {
+        return Ok((None, Vec::new()));
     }
     let time = now(app)?;
     let mut changes = Vec::new();
@@ -312,8 +318,8 @@ async fn claim_in(
     let token = match super::token_at(&s, app, tenant, organization, time) {
         Ok(token) => token,
         Err(Error::Malformed | Error::Conflict) => {
-            let expires: i64 = s.try_get("token_expires").map_err(db)?;
-            let reason = if expires <= time {
+            let expires: Option<i64> = s.try_get("token_expires").map_err(db)?;
+            let reason = if expires.is_some_and(|at| at <= time) {
                 "token_expired"
             } else {
                 "token_unavailable"

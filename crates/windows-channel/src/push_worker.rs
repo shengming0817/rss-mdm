@@ -150,27 +150,83 @@ async fn attempt(
     let id = Uuid::new_v4();
     let audit = audit(execution, id, &device);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(3));
-    let outcome=store.write(
+    let outcome = store
+        .write(
             audit.binding()?,
-            &budget.source_control(),(store,&audit,eligibility,tenant,&device,revision,id,push.configuration,push.material_revision),|inputs,tx|Box::pin(async move {
-                let (store,audit,eligibility,tenant,device,revision,id,configuration,material_revision)=*inputs;
-                let (sealed, wait)=tx.with_connection_context(&mut (audit.binding()?,eligibility,tenant,device,revision,id,configuration,material_revision),|(execution,eligibility,tenant,device,revision,id,configuration,material_revision),c|Box::pin(async move {
-                    if !eligibility.pending(*execution, c, device).await? { return Ok::<_,Error>((None,None)) }
-                    let sealed = sqlx::query_scalar::<_,Vec<u8>>("UPDATE mdm_windows.push_channels SET lease_id = $5, outcome=CASE WHEN outcome='rejected' AND material_revision IS DISTINCT FROM $6 THEN NULL ELSE outcome END, material_revision=$6, lease_until = clock_timestamp() + CAST('30 seconds' AS interval), settled_id = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND revision = $3 AND configuration = $4 AND attempt_until > clock_timestamp() AND next_push <= clock_timestamp() AND (lease_until IS NULL OR lease_until <= clock_timestamp()) AND (outcome IS NULL OR outcome IN ('accepted', 'retryable', 'unknown') OR (outcome='rejected' AND material_revision IS DISTINCT FROM $6)) AND EXISTS (SELECT FROM mdm_wns.versions w JOIN mdm_wns.heads h ON (h.tenant_id,h.desired_revision)=(w.tenant_id,w.revision) WHERE w.tenant_id=$1::uuid AND w.revision=$6 AND w.selected AND NOT w.revoked AND w.qualified_at IS NOT NULL AND mdm_wns.provider_available(w.sid_digest) FOR SHARE OF h,w) RETURNING uri")
-                        .bind(*tenant).bind(device.into_uuid()).bind(*revision).bind(configuration.as_slice()).bind(*id).bind(*material_revision).fetch_optional(&mut *c).await.map_err(db)?;
-                    let wait = if sealed.is_none() {
-                        sqlx::query_scalar::<_, Option<f64>>("SELECT mdm_wns.provider_wait($1)")
-                            .bind(*material_revision).fetch_one(c).await.map_err(db)?
-                    } else { None };
-                    Ok((sealed,wait))
-                })).await?;
-                if sealed.is_some() {
-
-                    let fact=Fact::observation(audit, &format!("windows-push:{id}:lease"), 200, "success", None).map_err(Error::from)?;
-                    store.append(tx, &fact).await.map_err(Error::from)?;audit.mark_commit_started();
-                }
-                Ok((sealed,wait))
-            })).await;
+            &budget.source_control(),
+            (
+                store,
+                &audit,
+                eligibility,
+                tenant,
+                &device,
+                revision,
+                id,
+                push,
+            ),
+            |inputs, tx| {
+                Box::pin(async move {
+                    let (store, audit, eligibility, tenant, device, revision, id, push) = *inputs;
+                    let (sealed, wait) = tx
+                        .with_connection_context(
+                            &mut (
+                                audit.binding()?,
+                                eligibility,
+                                tenant,
+                                device,
+                                revision,
+                                id,
+                                push,
+                            ),
+                            |(execution, eligibility, tenant, device, revision, id, push), c| {
+                                Box::pin(async move {
+                                    if !eligibility.pending(*execution, c, device).await? {
+                                        return Ok::<_, Error>((None, None));
+                                    }
+                                    let observed = push.now();
+                                    let (sealed, wait) =
+                                        sqlx::query_as::<_, (Option<Vec<u8>>, Option<f64>)>(
+                                            include_str!("claim-wake.sql"),
+                                        )
+                                        .bind(*tenant)
+                                        .bind(device.into_uuid())
+                                        .bind(*revision)
+                                        .bind(push.configuration.as_slice())
+                                        .bind(*id)
+                                        .bind(push.material_revision)
+                                        .fetch_one(c)
+                                        .await
+                                        .map_err(db)?;
+                                    Ok((
+                                        sealed,
+                                        wait.map(|s| {
+                                            observed
+                                                + Duration::from_secs_f64(
+                                                    s.clamp(0., RECONCILE.as_secs_f64()),
+                                                )
+                                        }),
+                                    ))
+                                })
+                            },
+                        )
+                        .await?;
+                    if sealed.is_some() {
+                        let fact = Fact::observation(
+                            audit,
+                            &format!("windows-push:{id}:lease"),
+                            200,
+                            "success",
+                            None,
+                        )
+                        .map_err(Error::from)?;
+                        store.append(tx, &fact).await.map_err(Error::from)?;
+                        audit.mark_commit_started();
+                    }
+                    Ok((sealed, wait))
+                })
+            },
+        )
+        .await;
     let sealed = crate::operations::settle(outcome, &audit);
     audit.finalize(
         sealed
@@ -182,7 +238,7 @@ async fn attempt(
     let Some(sealed) = sealed else {
         return Ok((
             false,
-            wait.map(|s| Duration::from_secs_f64(s.clamp(0., RECONCILE.as_secs_f64()))),
+            wait.map(|deadline| deadline.saturating_duration_since(push.now())),
         ));
     };
     let aad = crate::protection::native_aad(
