@@ -111,8 +111,65 @@ async fn configured_wns_capacity_measures_actual_sends_and_settlements() -> Resu
             },
         )
     };
-    let router=axum::Router::new().route("/accesstoken.srf",axum::routing::post(|body:String|async move {let index=usize::from(body.contains("capacity-b"));axum::Json(serde_json::json!({"token_type":"bearer","access_token":format!("capacity-{index}"),"expires_in":600}))})).route("/capacity/{index}",route);
+    use axum::response::IntoResponse;
+    use tokio_util::sync::CancellationToken;
+    let cold = Arc::new(AtomicBool::new(true));
+    let entered = CancellationToken::new();
+    let release = CancellationToken::new();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let oauth = {
+        let (cold, entered, release, attempts) = (
+            cold.clone(),
+            entered.clone(),
+            release.clone(),
+            attempts.clone(),
+        );
+        axum::routing::post(move |body: String| {
+            let (cold, entered, release, attempts) = (
+                cold.clone(),
+                entered.clone(),
+                release.clone(),
+                attempts.clone(),
+            );
+            async move {
+                if cold.load(Ordering::Acquire) {
+                    attempts.fetch_add(1, Ordering::AcqRel);
+                    entered.cancel();
+                    release.cancelled().await;
+                    return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+                }
+                let index = usize::from(body.contains("capacity-b"));
+                axum::Json(serde_json::json!({"token_type":"bearer","access_token":format!("capacity-{index}"),"expires_in":600})).into_response()
+            }
+        })
+    };
+    let router = axum::Router::new()
+        .route("/accesstoken.srf", oauth)
+        .route("/capacity/{index}", route);
     let server = tokio::spawn(axum::serve(listener, router).into_future());
+    let mut stack = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut launch = stack.startup()?.commit();
+    launch.stage_task_with_token(
+        push::registration(
+            h.state.clone(),
+            owner.clone(),
+            rss_mdm_work_page::external::Limits::new(8.try_into()?, 7.try_into()?).unwrap(),
+            Arc::new(tokio::sync::Notify::new()),
+        )
+        .critical(),
+    );
+    launch.finish();
+    tokio::time::timeout(Duration::from_secs(6), entered.cancelled()).await?;
+    let claimed:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_windows.push_channels WHERE tenant_id=ANY($1) AND lease_id IS NOT NULL").bind(&tenants).fetch_one(&c.operator).await?;
+    let drain = stack.shutdown();
+    release.cancel();
+    assert!(drain.join().await?.is_clean());
+    assert_eq!(claimed, 0, "slow OAuth must precede every durable lease");
+    assert!(attempts.load(Ordering::Acquire) <= tenants.len());
+    cold.store(false, Ordering::Release);
     let mut measurements = Vec::new();
     for (total, resource) in [(1usize, 1usize), (4, 3), (8, 7), (16, 15), (8, 1)] {
         sqlx::query("UPDATE mdm_windows.push_channels SET status=NULL,outcome=NULL,settled_id=NULL,next_push=clock_timestamp() WHERE tenant_id=ANY($1)").bind(&tenants).execute(&c.operator).await?;

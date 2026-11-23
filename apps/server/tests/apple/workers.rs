@@ -109,7 +109,7 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
         .bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(key.seal_bytes(&bytes,&aad)?)
         .bind(key.mac(&bytes,&compare)?.to_vec()).execute(&mut *tx).await?;
     tx.commit().await?;
-    let gate = Arc::new(Notify::new());
+    let gate = tokio_util::sync::CancellationToken::new();
     let apns_waiting = Arc::new(Notify::new());
     let ade_waiting = Arc::new(Notify::new());
     let blocked_push_id = Arc::new(std::sync::OnceLock::new());
@@ -136,7 +136,7 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
                 }
                 if target == token.simple().to_string() && blocked.set(id).is_ok() {
                     waiting.notify_one();
-                    gate.notified().await;
+                    gate.cancelled().await;
                     return (
                         axum::http::StatusCode::FORBIDDEN,
                         Json(json!({"reason":"BadCertificate"})),
@@ -153,16 +153,20 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
             json!({"auth_session_token":if auth.contains(&org.to_string()) {"blocked"}else{"ready"}}),
         )
     };
+    let first_pages = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let pages = {
+        let first_pages = first_pages.clone();
         let gate = gate.clone();
         let waiting = ade_waiting.clone();
         move |headers: HeaderMap, Json(request): Json<Value>| {
+            let first_pages = first_pages.clone();
             let gate = gate.clone();
             let waiting = waiting.clone();
             async move {
                 if headers["x-adm-auth-session"] == "blocked" && request.get("cursor").is_none() {
+                    first_pages.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     waiting.notify_one();
-                    gate.notified().await;
+                    gate.cancelled().await;
                 }
                 let more = request.get("cursor").is_none();
                 Json(
@@ -260,7 +264,7 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
     sqlx::query("INSERT INTO mdm_apple_runtime.versions(tenant_id,purpose,revision,key_id,public_digest,private_key,csr,certificate,certificate_digest,topic,expires_at,selected) SELECT tenant_id,purpose,2,$2,public_digest,$3,csr,certificate,certificate_digest,topic,expires_at,true FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND purpose='apns' AND revision=1").bind(c.tenant.to_string()).bind(key_id).bind(sealed).execute(&mut *rotation).await?;
     sqlx::query("UPDATE mdm_apple_runtime.heads SET revision=2,desired_revision=2 WHERE tenant_id=$1::uuid AND purpose='apns'").bind(c.tenant.to_string()).execute(&mut *rotation).await?;
     rotation.commit().await?;
-    gate.notify_waiters();
+    gate.cancel();
     assert!(drain.join().await?.is_clean());
     let sibling_org = result??;
     let old:(i32,i64)=sqlx::query_as("SELECT push_status,push_material_revision FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND device=$2 AND push_id=$3").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(*blocked_push_id.get().unwrap()).fetch_one(&c.operator).await?;
@@ -282,6 +286,7 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
     }).await;
     assert!(restart.shutdown().join().await?.is_clean());
     recovered??;
+    assert_eq!(first_pages.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 2);
     server.abort();
     let _stopped = server.await;

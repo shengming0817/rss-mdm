@@ -210,7 +210,7 @@ where
     let mut pending_page = None;
     let mut first_scan_finished = false;
     let mut first_batches = BTreeSet::new();
-    let mut tasks = JoinSet::new();
+    let mut tasks = JoinSet::<(K, Result<Duration, Failure<E>>)>::new();
     let mut queued = VecDeque::new();
     let mut after = None;
     let mut scanning = true;
