@@ -182,7 +182,10 @@ class RuntimeOwnership(unittest.TestCase):
             factory.return_value.__enter__.side_effect=RuntimeError('fixture failure')
             with self.assertRaisesRegex(RuntimeError,'fixture failure'):
                 smoke.smoke(Path(temp))
-            factory.assert_called_once_with(Path(temp),diagnostic_filename='smoke-failure.json')
+            factory.assert_called_once_with(Path(temp),prepare=mock.ANY,diagnostic_filename='smoke-failure.json')
+            host = mock.Mock(config={'http': {}})
+            factory.call_args.kwargs['prepare'](host)
+            self.assertEqual(host.config['http']['request_slots'], 5)
 
 
 class ExternalReviewRegressions(unittest.TestCase):
