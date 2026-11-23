@@ -30,15 +30,18 @@ impl Policies {
             s.audit_store.prepare_in(tx,audit,&[]).await?;
             let policy=checked(s.policy_store.read_for_update_in(tx,id).await?)?.ok_or(Error::NotFound)?;
             authorize_policy_snapshot(&snapshot,proof,&policy.definition)?;
-            if matches!(&policy.definition.action,Action::Execution{parameters,..} if parameters.has_input()) {return Err(Error::Malformed.into());}
             let hash=fingerprint(&(id,op,proof.actor()))?;
             if let Some(value)=checked(s.policy_store.replay_in(tx,op.operation_id,&hash).await?)? {return stored(serde_json::from_value(value));}
+            if matches!(&policy.definition.action,Action::Execution{parameters,..} if parameters.has_input()) {return Err(Error::Malformed.into());}
             let now=crate::action_admission::now(tx).await?;
             if !policy.state.is_enabled() || policy.revision as u64!=op.expected_revision {return Err(Error::Conflict.into());}
             if !policy.definition.action.kind().supports_rerun() || op.operation_id.is_nil() || op.input.deadline<=now || op.input.deadline>now.saturating_add(604800) {return Err(Error::Malformed.into());}
             checked(s.policy_store.trigger_in(tx,op.operation_id,policy.version,now,op.input.deadline).await?)?;
             if matches!(policy.definition.action, Action::UnmanageDevice { .. }) {
-                crate::worker::jobs::enqueue_job_in( profile, &s.reconcile_messaging, tx,Uuid::new_v4(),&crate::worker::Work::PolicyReconcile { policy:id }).await?;
+                let occurrence = rss_mdm_policy_postgres::work::RetirementOccurrence::Explicit {
+                    trigger: op.operation_id, created_at: now, deadline: op.input.deadline,
+                };
+                super::retirement_pages::enqueue_occurrence_in(profile, &s.reconcile_messaging, tx, id, policy.version, occurrence, None).await?;
             }
 
             let value=Receipt {operation_id:op.operation_id,policy_id:id,version_id:policy.version,deadline:op.input.deadline};

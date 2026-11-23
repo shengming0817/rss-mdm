@@ -1,182 +1,8 @@
-//! Scope qualification and ordinary Policy triggers feed the device lifecycle owner.
+//! Accept one frozen retirement target under current Policy and complete-object Scope evidence.
 use super::*;
+use rss_mdm_device_service::control::frozen::Frozen;
 use rss_mdm_device_service::lifecycle::{self, Acceptance};
 use rss_mdm_scope_service::channels::ScopeAdmission;
-
-pub(crate) struct PreparedLifecycle {
-    policy: Policy,
-    frozen: Frozen,
-    objects: Vec<rss_mdm_scope_service::channels::DeviceAssignment>,
-    triggers: Vec<(Uuid, i64)>,
-    more: bool,
-    next: Option<rss_mdm_agent_wire::ObjectRef>,
-    now: i64,
-}
-
-impl crate::application::Application {
-    pub(crate) async fn prepare_lifecycle_assignment_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        policy: &Policy,
-        after: Option<rss_mdm_agent_wire::ObjectRef>,
-    ) -> Result<Option<PreparedLifecycle>> {
-        let profile = self.profile();
-
-        if !policy.state.is_enabled() {
-            return Ok(None);
-        }
-        let published = checked(
-            rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone())
-                .version_in(tx, policy.version)
-                .await?,
-        )?
-        .ok_or(Error::NotFound)?;
-        let frozen: Frozen = stored(serde_json::from_value(published.frozen))?;
-        let Frozen::UnmanageDevice {
-            schedule,
-            run_lifetime_seconds,
-            actor,
-        } = frozen;
-        let tenant = tx.tenant_id();
-        let version = policy.version;
-        let now = crate::action_admission::now(tx).await?;
-        let triggers =
-            rss_mdm_policy_postgres::schedules::triggers_in(profile, tx, version, now).await?;
-        let reader = self.objects.clone();
-        let scope = policy.definition.scope;
-        super::reconcile::lock_assignment_scope(profile, tx, scope).await?;
-        let mut objects = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(
-                        rss_mdm_scope_service::channels::targets::lifecycle_objects_on(
-                            profile,
-                            Some(reader.as_ref()),
-                            c,
-                            tenant,
-                            scope,
-                            after,
-                            64,
-                        )
-                        .await,
-                    )
-                })
-            })
-            .await?
-            .map_err(Error::from)?;
-        let more = objects.len() > 64;
-        objects.truncate(64);
-        let next = objects.last().map(|o| o.cursor);
-        Ok(Some(PreparedLifecycle {
-            policy: policy.clone(),
-            frozen: Frozen::UnmanageDevice {
-                schedule,
-                run_lifetime_seconds,
-                actor,
-            },
-            objects,
-            triggers,
-            more,
-            next,
-            now,
-        }))
-    }
-    pub(crate) async fn advance_lifecycle_assignment_in(
-        &self,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-        tx: &mut PgTransaction<'_>,
-        task: Uuid,
-        prepared: PreparedLifecycle,
-    ) -> Result<()> {
-        let profile = self.profile();
-
-        let PreparedLifecycle {
-            policy,
-            frozen,
-            objects,
-            triggers,
-            more,
-            next,
-            now,
-        } = prepared;
-        let Frozen::UnmanageDevice {
-            schedule,
-            run_lifetime_seconds,
-            actor: _,
-        } = frozen;
-        let version = policy.version;
-        for item in objects {
-            if !matches!(item.admission, ScopeAdmission::Eligible { .. }) {
-                continue;
-            }
-            let key = item.object.object;
-            let mut occurrences = Vec::new();
-            for (trigger, at) in &triggers {
-                if let Some(slot) = schedule.occurrence(*at, version.as_bytes())?
-                    && slot.available_at <= now
-                    && slot.window_end.is_none_or(|end| now < end)
-                {
-                    occurrences.push((
-                        format!("explicit:{trigger}"),
-                        slot.window_end.unwrap_or(i64::MAX),
-                    ));
-                }
-            }
-            if let Some(slot) = schedule.due(-1, now, version.as_bytes())?
-                && slot.available_at <= now
-            {
-                occurrences.push((
-                    format!("calendar:{}", slot.coordinate),
-                    slot.window_end.unwrap_or(i64::MAX),
-                ));
-            }
-            let object = stored(serde_json::to_value(&item.object))?;
-            for (occurrence, end) in occurrences {
-                use sha2::{Digest, Sha256};
-                // An occurrence keeps its identity while newer registration/member
-                // evidence receives a successor work item instead of colliding with
-                // a superseded frozen input. Device acceptance remains idempotent.
-                let encoded = stored(serde_json::to_vec(&(
-                    policy.id,
-                    version,
-                    &key,
-                    &occurrence,
-                    &object,
-                )))?;
-                let digest =
-                    Sha256::digest([b"device-lifecycle-work/v1".as_slice(), &encoded].concat());
-                let mut id = [0; 16];
-                id.copy_from_slice(&digest[..16]);
-                let id = Uuid::from_bytes(id);
-                if rss_mdm_policy_postgres::work::exists_in(profile, tx, id, false).await? {
-                    continue;
-                }
-                let input = crate::worker::Work::Lifecycle {
-                    policy: policy.id,
-                    version,
-                    object: object.clone(),
-                    occurrence,
-                    deadline: end.min(now.saturating_add(i64::from(run_lifetime_seconds))),
-                };
-                crate::worker::jobs::enqueue_job_in(
-                    profile,
-                    &self.reconcile_messaging,
-                    tx,
-                    id,
-                    &input,
-                )
-                .await?;
-            }
-        }
-        if more {
-            rss_mdm_policy_postgres::work::cursor_in(profile, tx, task, next).await?;
-            Ok(())
-        } else {
-            crate::worker::jobs::finish_job_in(binding, profile, tx, &self.audit_store, task, None)
-                .await
-        }
-    }
-}
 
 impl crate::application::Application {
     pub(crate) async fn advance_lifecycle_work_in(
@@ -185,7 +11,7 @@ impl crate::application::Application {
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         input: &crate::worker::Work,
-    ) -> Result<()> {
+    ) -> Result<rss_reconcile_postgres::ProtectedStep<()>> {
         let profile = self.profile();
 
         let crate::worker::Work::Lifecycle {
@@ -198,43 +24,15 @@ impl crate::application::Application {
         else {
             return Err(Error::Malformed.into());
         };
-        let policy_id = *policy;
         let tenant = tx.tenant_id();
-        tx.with_connection(move |c| {
-            Box::pin(async move {
-                sqlx::query(
-                    crate::storage_profile::sql(profile)
-                        .management_lifecycle_advance_lifecycle_work_in_1,
-                )
-                .bind(policy_id)
-                .execute(c)
-                .await?;
-                Ok(())
-            })
-        })
-        .await?;
-        let current = storage::read_in(
-            &rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone()),
-            tx,
-            *policy,
-        )
-        .await?;
-        let now = crate::action_admission::now(tx).await?;
-        if current
-            .as_ref()
-            .is_none_or(|p| !p.state.is_enabled() || p.version != *version)
-            || now >= *deadline
-        {
-            return crate::worker::jobs::finish_job_in(
-                binding,
-                profile,
-                tx,
-                &self.audit_store,
-                task,
-                Some("superseded"),
-            )
-            .await;
-        }
+        let Some(current) = self.retirement_policy_in(tx, *policy, *version).await? else {
+            return self
+                .finish_retirement_in(binding, tx, task, json!({"state":"superseded"}))
+                .await
+                .map(rss_reconcile_postgres::ProtectedStep::Ready);
+        };
+        let fresh =
+            super::reconcile::lock_assignment_scope(profile, tx, current.definition.scope).await?;
         let published = checked(
             rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone())
                 .version_in(tx, *version)
@@ -249,6 +47,52 @@ impl crate::application::Application {
         let object: rss_mdm_inventory_service::objects::DeviceObject =
             stored(serde_json::from_value(object.clone()))?;
         let key = object.object;
+        let scope = current.definition.scope;
+        let reader = self.objects.clone();
+        let assignment = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(
+                        rss_mdm_scope_service::channels::targets::lifecycle_object_on(
+                            profile,
+                            reader.as_ref(),
+                            c,
+                            tenant,
+                            scope,
+                            key,
+                        )
+                        .await,
+                    )
+                })
+            })
+            .await?
+            .map_err(Error::from)?;
+        let now = crate::action_admission::now(tx).await?;
+        if now >= *deadline {
+            return self
+                .finish_retirement_in(binding, tx, task, json!({"state":"expired"}))
+                .await
+                .map(rss_reconcile_postgres::ProtectedStep::Ready);
+        }
+        if !fresh
+            || assignment
+                .as_ref()
+                .is_some_and(|item| item.admission == ScopeAdmission::Pending)
+        {
+            let remaining = std::time::Duration::from_secs((*deadline - now) as u64);
+            return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(
+                crate::worker_wake::RECOVERY.min(remaining),
+            ));
+        }
+        if !assignment.is_some_and(|item| {
+            matches!(item.admission, ScopeAdmission::Eligible { .. }) && item.object == object
+        }) {
+            return self
+                .finish_retirement_in(binding, tx, task, json!({"state":"ineligible"}))
+                .await
+                .map(rss_reconcile_postgres::ProtectedStep::Ready);
+        }
+        let policy_id = *policy;
         let version = *version;
         let occurrence = occurrence.clone();
         let reader = self.objects.clone();
@@ -310,89 +154,13 @@ impl crate::application::Application {
                 .map_err(Error::from)?;
             audit.finalize(None);
         }
-        crate::worker::jobs::finish_job_in(binding, profile, tx, &self.audit_store, task, None)
-            .await
-    }
-}
-
-impl crate::application::Application {
-    /// One claimed calendar page; occurrence identities and the page cursor commit together.
-    pub(crate) async fn advance_lifecycle_schedules_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-    ) -> Result<()> {
-        let profile = self.profile();
-
-        use sha2::{Digest, Sha256};
-        let after = rss_mdm_policy_postgres::schedules::scan_cursor_in(profile, tx).await?;
-        let now = crate::action_admission::now(tx).await?;
-        let rows = rss_mdm_policy_postgres::schedules::retirement_in(profile, tx, after).await?;
-        let next = if rows.len() == 64 {
-            rows.last().map(|r| r.0)
-        } else {
-            None
-        };
-        for (policy, version, value) in rows {
-            let Frozen::UnmanageDevice { schedule, .. } = stored(serde_json::from_value(value))?;
-            let mut occurrences = Vec::new();
-            if let Some(slot) = schedule.due(-1, now, version.as_bytes())?
-                && slot.available_at <= now
-            {
-                occurrences.push(format!("calendar:{}", slot.coordinate));
-            }
-            let triggers =
-                rss_mdm_policy_postgres::schedules::triggers_in(profile, tx, version, now).await?;
-            for (trigger, at) in triggers {
-                if let Some(slot) = schedule.occurrence(at, version.as_bytes())?
-                    && slot.available_at <= now
-                    && slot.window_end.is_none_or(|end| now < end)
-                {
-                    occurrences.push(format!("explicit:{trigger}"));
-                }
-            }
-            for occurrence in occurrences {
-                let digest = Sha256::digest(
-                    serde_json::to_vec(&(
-                        "unmanage-scheduled",
-                        tx.tenant_id().to_string(),
-                        version,
-                        occurrence,
-                    ))
-                    .map_err(|_| Error::Malformed)?,
-                );
-                let mut bytes = [0u8; 16];
-                bytes.copy_from_slice(&digest[..16]);
-                let id = Uuid::from_bytes(bytes);
-
-                let exists =
-                    rss_mdm_policy_postgres::work::exists_in(profile, tx, id, false).await?;
-                if !exists {
-                    crate::worker::jobs::enqueue_job_in(
-                        profile,
-                        &self.reconcile_messaging,
-                        tx,
-                        id,
-                        &crate::worker::Work::PolicyReconcile { policy },
-                    )
-                    .await?;
-                }
-            }
-        }
-        // Finishing a cycle yields to ordinary work; an unfinished cycle resumes promptly.
-        rss_mdm_policy_postgres::schedules::complete_scan_in(
-            profile,
+        self.finish_retirement_in(
+            binding,
             tx,
-            next,
-            if next.is_some() {
-                now
-            } else {
-                now.saturating_add(5)
-            },
+            task,
+            json!({"state":"accepted","operation":accepted.0}),
         )
-        .await?;
-        Ok(())
+        .await
+        .map(rss_reconcile_postgres::ProtectedStep::Ready)
     }
 }
-
-/// The exact frozen lifecycle publication consumed by Policy.
-use rss_mdm_device_service::control::frozen::Frozen;

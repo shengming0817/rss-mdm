@@ -5,24 +5,25 @@ pub(super) async fn lock_assignment_scope(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     scope: Uuid,
-) -> Result<()> {
+) -> Result<bool> {
     let tenant = tx.tenant_id();
-    tx.with_connection(move |connection| {
-        Box::pin(async move {
-            Ok(
-                rss_mdm_scope_postgres::admission_on(profile, connection, tenant, scope)
-                    .await
-                    .map(|_| ()),
-            )
+    let fresh = tx
+        .with_connection(move |connection| {
+            Box::pin(async move {
+                Ok(
+                    rss_mdm_scope_postgres::admission_on(profile, connection, tenant, scope)
+                        .await
+                        .map(|status| status["state"] == "fresh"),
+                )
+            })
         })
-    })
-    .await??;
-    Ok(())
+        .await??;
+    Ok(fresh)
 }
 
 pub(crate) enum PreparedAssignment {
     Empty,
-    Lifecycle(Box<super::lifecycle::PreparedLifecycle>),
+    Lifecycle(Box<Policy>),
     Ordinary {
         policy: Box<Policy>,
         assignments: Vec<rss_mdm_scope_service::channels::AssignmentObject>,
@@ -49,12 +50,11 @@ impl crate::application::Application {
             return Ok(PreparedAssignment::Empty);
         };
         if matches!(p.definition.action, Action::UnmanageDevice { .. }) {
-            return Ok(
-                match self.prepare_lifecycle_assignment_in(tx, &p, after).await? {
-                    Some(prepared) => PreparedAssignment::Lifecycle(Box::new(prepared)),
-                    None => PreparedAssignment::Empty,
-                },
-            );
+            return Ok(if p.state.is_enabled() {
+                PreparedAssignment::Lifecycle(Box::new(p))
+            } else {
+                PreparedAssignment::Empty
+            });
         }
         let channel = match p.definition.action.target_channel() {
             Some(rss_mdm_policy::SoftwareChannel::Mdm) => rss_mdm_inventory::Channel::Mdm,
@@ -112,7 +112,7 @@ impl crate::application::Application {
             }
             PreparedAssignment::Lifecycle(batch) => {
                 return self
-                    .advance_lifecycle_assignment_in(binding, tx, task, *batch)
+                    .refresh_retirement_in(binding, tx, task, &batch, None)
                     .await;
             }
             PreparedAssignment::Ordinary {

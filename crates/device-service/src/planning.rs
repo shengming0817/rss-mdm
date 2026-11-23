@@ -273,7 +273,7 @@ impl ObjectReader for PlanningObjects {
 /// Normalize source objects before keyset pagination; source SQL is owner-authored and binds tenant/run/source indices.
 pub fn complete_source_objects_sql(source_facts: &'static str) -> String {
     format!(
-        "SELECT DISTINCT ON(object_kind,object_id) input,unknown FROM (SELECT m.input,m.unknown,CASE WHEN a.id IS NOT NULL OR m.input->'object'->>'kind'='association' THEN 1::smallint ELSE 0::smallint END AS object_kind,coalesce(a.id,(m.input->'object'->>'id')::uuid) AS object_id FROM ({}) m LEFT JOIN mdm_devices.members d ON d.tenant_id=m.tenant_id AND m.input->'object'->>'kind'='endpoint' AND d.device=(m.input->'object'->>'id')::uuid AND NOT d.released LEFT JOIN mdm_devices.associations a ON(a.tenant_id,a.id)=(d.tenant_id,d.association_id) AND a.state<>'revoked') objects WHERE ($4::smallint IS NULL OR (object_kind,object_id)>($4,$5::uuid)) ORDER BY object_kind,object_id,unknown LIMIT $6",
+        "SELECT DISTINCT ON(object_kind,object_id) input,unknown FROM (SELECT m.input,m.unknown,CASE WHEN a.id IS NOT NULL OR m.input->'object'->>'kind'='association' THEN 1::smallint ELSE 0::smallint END AS object_kind,coalesce(a.id,(m.input->'object'->>'id')::uuid) AS object_id FROM ({}) m LEFT JOIN mdm_devices.members d ON d.tenant_id=m.tenant_id AND m.input->'object'->>'kind'='endpoint' AND d.device=(m.input->'object'->>'id')::uuid AND NOT d.released LEFT JOIN mdm_devices.associations a ON(a.tenant_id,a.id)=(d.tenant_id,d.association_id) AND a.state<>'revoked') objects WHERE ($4::smallint IS NULL OR CASE WHEN $7::boolean THEN (object_kind,object_id)=($4,$5::uuid) ELSE (object_kind,object_id)>($4,$5::uuid) END) ORDER BY object_kind,object_id,unknown LIMIT $6",
         source_facts
     )
 }

@@ -362,11 +362,11 @@ impl PolicyWork {
                                     |(ctx, prepared), tx| {
                                         let prepared = prepared.take();
                                         Box::pin(async move {
-                                            let result: Result<()> = async {
-                                                let (id, job, done, _cursor, assignment) =
+                                            let result: Result<ProtectedStep<()>> = async {
+                                                let (id, job, done, cursor, assignment) =
                                                     prepared.ok_or(Error::Malformed)?;
                                                 if done {
-                                                    return Ok(());
+                                                    return Ok(ProtectedStep::Ready(()));
                                                 }
                                                 rss_mdm_policy_postgres::work::started_in(
                                                     profile, tx, id,
@@ -380,6 +380,18 @@ impl PolicyWork {
                                                             )
                                                             .await
                                                     }
+                                                    Work::RetirementPage { policy, version, occurrence } => {
+                                                        match ctx.0.retirement_policy_in(tx, policy, version).await? {
+                                                            Some(p) => ctx.0.advance_retirement_page_in(binding, tx, id, &p, occurrence, cursor).await,
+                                                            None => ctx.0.finish_retirement_in(binding, tx, id, serde_json::json!({"state":"superseded"})).await.map(ProtectedStep::Ready),
+                                                        }
+                                                    }
+                                                    Work::RetirementRefresh { policy, version, page } => {
+                                                        match ctx.0.retirement_policy_in(tx, policy, version).await? {
+                                                            Some(p) => ctx.0.refresh_retirement_in(binding, tx, id, &p, Some(page)).await,
+                                                            None => ctx.0.finish_retirement_in(binding, tx, id, serde_json::json!({"state":"superseded"})).await,
+                                                        }.map(ProtectedStep::Ready)
+                                                    }
                                                     Work::PolicyEvent { batch } => {
                                                         ctx.0
                                                             .advance_event_in(
@@ -390,7 +402,7 @@ impl PolicyWork {
                                                                 tx,
                                                                 batch,
                                                             )
-                                                            .await
+                                                            .await.map(ProtectedStep::Ready)
                                                     }
                                                     Work::PolicyReconcile { .. } => {
                                                         ctx.0
@@ -401,13 +413,12 @@ impl PolicyWork {
                                                                 assignment
                                                                     .ok_or(Error::Malformed)?,
                                                             )
-                                                            .await
+                                                            .await.map(ProtectedStep::Ready)
                                                     }
                                                 }
                                             }
                                             .await;
                                             result
-                                                .map(ProtectedStep::Ready)
                                                 .map_err(|e| fault(e, ctx.2))
                                         })
                                     },

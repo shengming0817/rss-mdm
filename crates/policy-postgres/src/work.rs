@@ -1,6 +1,47 @@
 //! Policy-owned durable work records, borrowed from the initiating transaction.
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+/// Original retirement coordinate, independent of the Scope publication that discovers it.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RetirementOccurrence {
+    /// One management request and its original exclusive deadline.
+    Explicit {
+        /// Original accepted operation.
+        trigger: Uuid,
+        /// Database acceptance time used to calculate the schedule slot.
+        created_at: i64,
+        /// Exclusive request deadline in Unix seconds.
+        deadline: i64,
+    },
+    /// Immutable coordinate of one calendar occurrence.
+    Calendar {
+        /// Scheduled Unix second before jitter.
+        at: i64,
+    },
+}
+impl RetirementOccurrence {
+    /// Identity understood by the Device owner.
+    pub fn identity(self) -> String {
+        match self {
+            Self::Explicit { trigger, .. } => format!("explicit:{trigger}"),
+            Self::Calendar { at } => format!("calendar:{at}"),
+        }
+    }
+}
+
+/// Immutable continuation of one Scope publication's active-trigger scan.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TriggerPage {
+    /// Initiating Policy reconciliation job.
+    pub publication: Uuid,
+    /// Last committed trigger (exclusive).
+    pub after: Uuid,
+    /// Captured greatest trigger ID (inclusive).
+    pub through: Uuid,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 /// Policy-local durable work; no cross-domain dispatcher consumes this type.
@@ -18,6 +59,24 @@ pub enum Work {
         /// Last admissible acceptance time, in Unix seconds.
         deadline: i64,
     },
+    /// Fan out one fixed occurrence using the work row's device cursor.
+    RetirementPage {
+        /// Authored Policy identity.
+        policy: Uuid,
+        /// Frozen publication version.
+        version: Uuid,
+        /// Original retirement trigger.
+        occurrence: RetirementOccurrence,
+    },
+    /// Resume one publication's bounded scan of active explicit triggers.
+    RetirementRefresh {
+        /// Authored Policy identity.
+        policy: Uuid,
+        /// Frozen publication version.
+        version: Uuid,
+        /// Trigger scan checkpoint.
+        page: TriggerPage,
+    },
     /// Advance one independently identified event batch.
     PolicyEvent {
         /// Original accepted event batch.
@@ -33,6 +92,8 @@ impl Work {
     /// Stable persisted work kind.
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::RetirementPage { .. } => "retirement_page",
+            Self::RetirementRefresh { .. } => "retirement_refresh",
             Self::Lifecycle { .. } => "policy_lifecycle",
             Self::PolicyReconcile { .. } => "policy_reconcile",
             Self::PolicyEvent { .. } => "policy_event",
@@ -41,7 +102,9 @@ impl Work {
     /// Business target identifier.
     pub fn target(&self) -> String {
         match self {
-            Self::Lifecycle { policy, .. } => policy.to_string(),
+            Self::Lifecycle { policy, .. }
+            | Self::RetirementPage { policy, .. }
+            | Self::RetirementRefresh { policy, .. } => policy.to_string(),
             Self::PolicyReconcile { policy } => policy.to_string(),
             Self::PolicyEvent { batch } => batch.to_string(),
         }
@@ -56,7 +119,7 @@ pub async fn enqueue_in(
     tx: &mut PgTransaction<'_>,
     id: Uuid,
     input: &Work,
-) -> Result<(), PgError> {
+) -> Result<bool, PgError> {
     let epoch = tx.expected_epoch().get();
 
     let tenant = tx.tenant_id().to_string();
@@ -66,19 +129,44 @@ pub async fn enqueue_in(
     let target = input.target();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            sqlx::query(crate::storage_profile::sql(profile).work_enqueue_in_1)
-                .bind(tenant)
+            let inserted = sqlx::query(crate::storage_profile::sql(profile).work_enqueue_in_1)
+                .bind(&tenant)
                 .bind(id)
                 .bind(kind)
                 .bind(target)
-                .bind(document)
+                .bind(&document)
                 .bind(epoch)
                 .execute(&mut *c)
                 .await?;
+            if inserted.rows_affected() == 0 {
+                let prior: serde_json::Value =
+                    sqlx::query(crate::storage_profile::sql(profile).work_read_in_1)
+                        .bind(&tenant)
+                        .bind(id)
+                        .fetch_one(&mut *c)
+                        .await?
+                        .try_get("input")?;
+                let same = match kind {
+                    "retirement_page" | "retirement_refresh" => prior == document,
+                    "policy_lifecycle" => {
+                        // A later scan must keep the first device work's lifetime.
+                        ["kind", "policy", "version", "occurrence", "object"]
+                            .iter()
+                            .all(|key| prior[*key] == document[*key])
+                    }
+                    _ => false,
+                };
+                if !same {
+                    return Err(sqlx::Error::Protocol(
+                        "policy work identity conflict".into(),
+                    ));
+                }
+                return Ok(false);
+            }
             sqlx::query("SELECT pg_notify('mdm_work','policy')")
                 .execute(c)
                 .await?;
-            Ok(())
+            Ok(true)
         })
     })
     .await
@@ -151,6 +239,54 @@ pub async fn cursor_in(
                 .bind(id)
                 .bind(cursor.map(|o| o.kind()))
                 .bind(cursor.map(|o| o.uuid()))
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// Count a committed device page; empty or unresolved scopes remain distinguishable from dispatch.
+pub async fn record_retirement_page_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+    eligible: i64,
+    pending: i64,
+    more: bool,
+) -> Result<(), PgError> {
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query(crate::storage_profile::sql(profile).work_retirement_counts)
+                .bind(tenant)
+                .bind(id)
+                .bind(eligible)
+                .bind(pending)
+                .bind(more)
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// Persist the business result in the same protected transaction as task settlement.
+pub async fn retirement_result_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+    result: serde_json::Value,
+) -> Result<(), PgError> {
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query(crate::storage_profile::sql(profile).work_retirement_result)
+                .bind(tenant)
+                .bind(id)
+                .bind(result)
                 .execute(c)
                 .await?;
             Ok(())

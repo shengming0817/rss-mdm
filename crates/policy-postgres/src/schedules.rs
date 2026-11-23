@@ -2,20 +2,46 @@
 use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 use serde_json::Value;
 use uuid::Uuid;
-/// Bounded unexpired triggers for an immutable publication.
-pub async fn triggers_in(
+/// Fix the upper bound of one Scope publication's scan.
+pub async fn trigger_bound_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     version: Uuid,
     now: i64,
-) -> Result<Vec<(Uuid, i64)>, PgError> {
+) -> Result<Option<Uuid>, PgError> {
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            sqlx::query_as(crate::storage_profile::sql(profile).schedules_triggers_in_1)
+            sqlx::query_scalar(crate::storage_profile::sql(profile).trigger_scan_bound)
                 .bind(tenant)
                 .bind(version)
                 .bind(now)
+                .fetch_optional(c)
+                .await
+        })
+    })
+    .await
+}
+
+/// One ordered page through a fixed upper bound, including one lookahead row.
+pub async fn trigger_page_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    version: Uuid,
+    now: i64,
+    page: crate::work::TriggerPage,
+    limit: u16,
+) -> Result<Vec<(Uuid, i64, i64)>, PgError> {
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query_as(crate::storage_profile::sql(profile).trigger_page)
+                .bind(tenant)
+                .bind(version)
+                .bind(now)
+                .bind(page.after)
+                .bind(page.through)
+                .bind(i64::from(limit) + 1)
                 .fetch_all(c)
                 .await
         })

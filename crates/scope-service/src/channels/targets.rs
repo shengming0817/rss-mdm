@@ -672,6 +672,58 @@ pub async fn lifecycle_objects_on(
     after: Option<rss_mdm_agent_wire::ObjectRef>,
     limit: usize,
 ) -> Result<Vec<DeviceAssignment>, SourceError> {
+    lifecycle_selection_on(
+        profile,
+        reader,
+        c,
+        tenant,
+        scope,
+        LifecycleSelection::Page { after, limit },
+    )
+    .await
+}
+
+/// Recheck the exact complete object with the same Scope algebra used for discovery.
+pub async fn lifecycle_object_on(
+    profile: rss_mdm_install_support::StorageProfile,
+    reader: &dyn rss_mdm_inventory_service::objects::ObjectReader,
+    c: &mut PgConnection,
+    tenant: TenantId,
+    scope: Uuid,
+    object: ObjectRef,
+) -> Result<Option<DeviceAssignment>, SourceError> {
+    Ok(lifecycle_selection_on(
+        profile,
+        Some(reader),
+        c,
+        tenant,
+        scope,
+        LifecycleSelection::Exact(object),
+    )
+    .await?
+    .pop())
+}
+
+enum LifecycleSelection {
+    Page {
+        after: Option<ObjectRef>,
+        limit: usize,
+    },
+    Exact(ObjectRef),
+}
+
+async fn lifecycle_selection_on(
+    profile: rss_mdm_install_support::StorageProfile,
+    reader: Option<&dyn rss_mdm_inventory_service::objects::ObjectReader>,
+    c: &mut PgConnection,
+    tenant: TenantId,
+    scope: Uuid,
+    selection: LifecycleSelection,
+) -> Result<Vec<DeviceAssignment>, SourceError> {
+    let (after, count, exact) = match selection {
+        LifecycleSelection::Page { after, limit } => (after, limit + 1, false),
+        LifecycleSelection::Exact(object) => (Some(object), 1, true),
+    };
     if profile != rss_mdm_install_support::StorageProfile::Mdm || reader.is_none() {
         return Err(SourceError::Unsupported);
     }
@@ -697,7 +749,8 @@ pub async fn lifecycle_objects_on(
     .bind(targets)
     .bind(after.map(|o| o.kind()))
     .bind(after.map(|o| o.uuid()))
-    .bind((limit + 1) as i64)
+    .bind(count as i64)
+    .bind(exact)
     .fetch_all(&mut *c)
     .await?;
     let at = Timepoint::try_from(frozen.as_of).map_err(|_| SourceError::Invariant)?;

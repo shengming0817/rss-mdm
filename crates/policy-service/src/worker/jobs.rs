@@ -51,7 +51,9 @@ pub async fn enqueue_job_in(
     id: Uuid,
     input: &Work,
 ) -> Result<Value> {
-    rss_mdm_policy_postgres::work::enqueue_in(profile, tx, id, input).await?;
+    if !rss_mdm_policy_postgres::work::enqueue_in(profile, tx, id, input).await? {
+        return Ok(accepted(tx.tenant_id(), id, input));
+    }
     let event = matches!(input, Work::PolicyEvent { .. });
     let tenant = tx.tenant_id();
     let target = if event {
@@ -87,7 +89,9 @@ pub fn accepted(tenant: TenantId, id: Uuid, input: &Work) -> Value {
         Work::PolicyEvent { batch } => {
             format!("/api/v1/tenants/{tenant}/policy-event-batches/{batch}")
         }
-        Work::Lifecycle { policy, .. } => format!("/api/v1/tenants/{tenant}/policies/{policy}"),
+        Work::RetirementRefresh { policy, .. }
+        | Work::RetirementPage { policy, .. }
+        | Work::Lifecycle { policy, .. } => format!("/api/v1/tenants/{tenant}/policies/{policy}"),
         Work::PolicyReconcile { policy } => format!("/api/v1/tenants/{tenant}/policies/{policy}"),
     };
     serde_json::json!({"task":id,"kind":input.kind(),"target":input.target(),"statusUrl":status_url})
