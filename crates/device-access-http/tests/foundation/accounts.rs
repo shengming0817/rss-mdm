@@ -103,7 +103,7 @@ pub(super) async fn verify(
     base: &str,
     token: &str,
     wrong: &reqwest::Client,
-) -> Result<()> {
+) -> Result<(da::Registration, reqwest::Client, Uuid)> {
     let (r, peer) = activate_grant(
         m,
         client,
@@ -114,7 +114,7 @@ pub(super) async fn verify(
         2,
     )
     .await?;
-    let admin = Manager::new(c, client).await?;
+    let admin = Box::pin(Manager::new(c, client)).await?;
     let management = format!(
         "{}/api/v1/tenants/{}/devices/{}/device-access",
         c.browser_origin, c.tenant, r.device
@@ -379,7 +379,7 @@ pub(super) async fn verify(
         )
         .await?;
         if action == Action::Rotate {
-            let manager = Manager::new(c, client).await?;
+            let manager = Box::pin(Manager::new(c, client)).await?;
             let reset = access::Change {
                 operation_id: Uuid::new_v4(),
                 expected_revision: 1,
@@ -408,7 +408,7 @@ pub(super) async fn verify(
         .await?;
         assert_eq!(settled.state, State::Applied);
     }
-    let cleanup = Manager::new(c, client).await?;
+    let cleanup = Box::pin(Manager::new(c, client)).await?;
     let unlink = Uuid::new_v4();
     let change = access::Change {
         operation_id: unlink,
@@ -473,7 +473,7 @@ pub(super) async fn verify(
     let previous: Value = material::success(progress(op, &admin.cookie).await?).await?;
     assert_eq!(read, previous);
     // A queued creation has never received permission to create a SID.
-    let owner = Manager::new(c, client).await?;
+    let owner = Box::pin(Manager::new(c, client)).await?;
     let pending_binding = Uuid::new_v4();
     let creation = rss_mdm_device_access::AccountIntent::Create {
         platform: w::TaskPlatform::Windows,
@@ -523,7 +523,7 @@ pub(super) async fn verify(
         .status(),
         403
     );
-    let remover = Manager::new(c, client).await?;
+    let remover = Box::pin(Manager::new(c, client)).await?;
     // Offboarding also requires tenant Identity administration.
     let grant = serde_json::to_value(rss_mdm_authorization_service::Grant {
         operation: rss_mdm_authorization_service::Permission::IdentityAccountsManage,
@@ -567,18 +567,18 @@ pub(super) async fn verify(
         material::success::<Option<da::AccountOffer>>(next().await?).await?,
         None
     );
-    Box::pin(interrupted_create(c, client, &r, &peer, base, policy.id)).await
+    Ok((r, peer, policy.id))
 }
 
-async fn interrupted_create(
+pub(super) async fn interrupted_create(
     c: &Context,
     client: &reqwest::Client,
     r: &da::Registration,
     peer: &reqwest::Client,
     base: &str,
     policy: Uuid,
-) -> Result<()> {
-    let manager = Manager::new(c, client).await?;
+) -> Result<Uuid> {
+    let manager = Box::pin(Manager::new(c, client)).await?;
     let binding = Uuid::new_v4();
     let person = rss_mdm_device_access::Person {
         instance: r.service_id,
@@ -633,7 +633,7 @@ async fn interrupted_create(
     assert!(historical.permit.is_none());
     assert_eq!(historical.issued_expires_at, Some(expired));
     let renewed_expiry = expire_permit(c, offer.task_id, renewal.event_id).await?;
-    let remover = Manager::new(c, client).await?;
+    let remover = Box::pin(Manager::new(c, client)).await?;
     let unlink = Uuid::new_v4();
     Box::pin(remover.change(
         c,
@@ -650,7 +650,7 @@ async fn interrupted_create(
         json!({"kind":"unbind","disposition":"keep"}),
     ))
     .await?;
-    let stale = Manager::new(c, client).await?;
+    let stale = Box::pin(Manager::new(c, client)).await?;
     let conflict = Box::pin(stale.change(c, client, r, binding, put(2), body.clone()))
         .await
         .unwrap_err();
@@ -686,10 +686,21 @@ async fn interrupted_create(
             .await?
             .is_none()
     );
-    let replacement = Manager::new(c, client).await?;
+    let replacement = Box::pin(Manager::new(c, client)).await?;
     Box::pin(replacement.change(c, client, r, binding, put(2), body)).await?;
+    Ok(binding)
+}
+pub(super) async fn stopped_create(
+    c: &Context,
+    client: &reqwest::Client,
+    r: &da::Registration,
+    peer: &reqwest::Client,
+    base: &str,
+    binding: Uuid,
+) -> Result<()> {
+    let next = || peer.post(format!("{base}/account-operations/next")).send();
     let fresh: da::AccountOffer = material::success(next().await?).await?;
-    assert_ne!(fresh.task_id, offer.task_id);
+    assert_eq!(fresh.binding_id, binding);
     let start = observe(peer, base, &fresh, da::AccountObservation::Received).await?;
     // Exercise the end of a renewal window. All earlier permits have been attested unused.
     let expired = expire_permit(c, fresh.task_id, start.event_id).await?;
@@ -725,7 +736,7 @@ async fn interrupted_create(
     )
     .await?;
     let expired = expire_permit(c, resumed.task_id, start.event_id).await?;
-    let cleanup = Manager::new(c, client).await?;
+    let cleanup = Box::pin(Manager::new(c, client)).await?;
     Box::pin(cleanup.change(
         c,
         client,

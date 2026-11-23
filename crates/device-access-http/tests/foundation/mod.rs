@@ -548,7 +548,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     )
     .await?;
 
-    Box::pin(accounts::verify(
+    let (account_registration, account_peer, account_policy) = Box::pin(accounts::verify(
         &c,
         &material,
         &client,
@@ -558,6 +558,26 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     ))
     .await
     .context("independent Windows account protocol")?;
+    let pending_create = Box::pin(accounts::interrupted_create(
+        &c,
+        &client,
+        &account_registration,
+        &account_peer,
+        base,
+        account_policy,
+    ))
+    .await
+    .context("recover the original expired create permit")?;
+    Box::pin(accounts::stopped_create(
+        &c,
+        &client,
+        &account_registration,
+        &account_peer,
+        base,
+        pending_create,
+    ))
+    .await
+    .context("reconcile the stopped native create after renewal")?;
     let pending = Box::pin(credentials::verify(
         &c,
         &material,
