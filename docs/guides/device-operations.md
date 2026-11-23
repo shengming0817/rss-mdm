@@ -195,6 +195,8 @@ serverState、receivedRevision、appliedRevision、effect 各自表达不同事�
 
 DA 注册授权、凭据替换、撤销、配置签发与查询使用宿主的管理监听器及租户会话。设备注册、续期、获取配置和上报使用设备 TLS 监听器。
 
+设备端使用以下两项能力前，部署方须选用已接入当前 V1 配置快照及撤销回执的 Agent 版本。旧 Agent 会拒绝新的配置响应，也无法领取撤销回执。跨策略本机应用和系统密钥清理由配套 Agent 验收。
+
 管理员通过现有 `POST /api/v1/tenants/{tenant}/da/devices/{device}/registration/revoke` 撤销一次即可。提交前保存 `operationId`；超时或回包丢失时，由原操作者以同一 `operationId` 重试原请求，取回已提交结果。设备回连时用原证书读取 `GET /api/v1/da/registrations/revocation`，得到与管理员相同的原操作回执。安装端将回执的服务、租户、设备和凭据与该安装的 DA 激活记录核对，在本机保存原操作后按该记录释放 DA 密钥；共存的 MDM 继续运行。断网或普通接口返回 401 时保留本机状态。回执表示服务端已撤销，实际清理由安装端记录。
 
 DA 状态上报为 `POST /api/v1/da/status-reports`；注册进度查询为 `POST /api/v1/da/registrations/status`。
@@ -206,7 +208,7 @@ DA 状态上报为 `POST /api/v1/da/status-reports`；注册进度查询为 `POS
 `POST /api/v1/tenants/{tenant}/da/configurations` 导出正文只接受 operationId、policy、version、delivery 和 lifetimeSeconds，不能临时提供另一份配置内容。
 响应为原始 payload、keyId、signature、digest；`GET /api/v1/tenants/{tenant}/da/configuration-operations/{operationId}` 恢复同一签名回执。
 设备安装独立配置签名信任并 ACK 后，以 `GET /api/v1/da/configuration` 获取当前候选，或 `/configurations/{operationId}` 领取精确候选；已撤回或不再选中的版本不能领取。
-当前配置响应一次返回后台候选和本设备所有适用策略的 `authorities`。设备尚未确认候选的签名钥时，响应保留这些授权，候选状态为 `invalid`、制品为空。按每个原签发策略、字段和修订裁决：字段的修订是最近一次授予或显式释放时的策略修订。连续授权期间的旧托管制品可以继续使用；释放后重新授权只接纳新授权期间的制品。按策略保留已见的最高修订，停用、来源缺失和读取失败均不解除已有锁。
+配套 Agent 使用的当前配置响应一次返回后台候选和本设备所有适用策略的 `authorities`。设备尚未确认候选的签名钥时，响应保留这些授权，候选状态为 `invalid`、制品为空。按每个原签发策略、字段和修订裁决：字段的修订是最近一次授予或显式释放时的策略修订。连续授权期间的旧托管制品可以继续使用；释放后重新授权只接纳新授权期间的制品。按策略保留已见的最高修订，停用、来源缺失和读取失败均不解除已有锁。
 
 `POST /api/v1/da/configuration-reports` 分别报告 received、validated、applied、rejected 或 unknown，不推导状态链，不写入认证资格、绑定效果或签名钥匙 ACK。
 报告可以记录已过期或已撤回候选的拒绝/未知事实，但不能使其重新成为可领取或可信应用的候选。

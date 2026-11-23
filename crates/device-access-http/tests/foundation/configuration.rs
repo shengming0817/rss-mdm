@@ -773,7 +773,48 @@ pub async fn verify_override(
         }
     );
     assert!(!release.covers_managed_field(&signed, da::ConfigurationField::Mac));
-    let diagnostic = diagnostic(client, &management, token, &observation.device).await?;
-    assert_eq!(diagnostic["resolution"]["fields"][0]["locked"], false);
+    let released = diagnostic(client, &management, token, &observation.device).await?;
+    assert_eq!(released["resolution"]["fields"][0]["locked"], false);
+    // Damage only this device's backend envelope. The independent issuer release
+    // remains readable to both the device and the administrator.
+    let operation = backend.decode()?.operation_id;
+    let update =
+        "UPDATE rss_da.configuration_exports SET result=$3 WHERE tenant_id=$1 AND operation=$2";
+    assert_eq!(
+        sqlx::query(update)
+            .bind(separate.tenant)
+            .bind(operation)
+            .bind(serde_json::json!({}))
+            .execute(&c.operator)
+            .await?
+            .rows_affected(),
+        1
+    );
+    let invalid: da::CurrentConfiguration =
+        material::success(peer.get(&current_url).send().await?).await?;
+    assert_eq!(invalid.state, da::SourceState::Invalid);
+    assert!(invalid.artifact.is_none());
+    let issuer = invalid
+        .authorities
+        .iter()
+        .find(|a| a.policy == default.id)
+        .unwrap();
+    assert_eq!(issuer.fields, release.fields);
+    assert_eq!(
+        peer.get(format!("{base}/configurations/{operation}"))
+            .send()
+            .await?
+            .status(),
+        409
+    );
+    let invalid = diagnostic(client, &management, token, &observation.device).await?;
+    assert_eq!(invalid["resolution"], released["resolution"]);
+    assert_eq!(invalid["application"], "unknown");
+    sqlx::query(update)
+        .bind(separate.tenant)
+        .bind(operation)
+        .bind(serde_json::to_value(&backend)?)
+        .execute(&c.operator)
+        .await?;
     Ok(())
 }

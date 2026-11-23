@@ -12,6 +12,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
 use uuid::Uuid;
+pub(super) fn matches_backend(publication: &Publication, config: &da::Configuration) -> bool {
+    config.id == publication.id
+        && config.version == publication.version
+        && config.revision == publication.revision as u64
+        && config.delivery == da::DeliveryPermission::Da
+}
 pub(crate) fn fault(e: policy::Error) -> Error {
     match e {
         policy::Error::Malformed => Error::Malformed,
@@ -357,45 +363,37 @@ impl Service {
                         replay: false,
                     });
                 }
-                let artifact = match id {
-                    Some(id) => Some(signing.read_on(p.binding(), c, id).await?),
-                    None => {
-                        signing
-                            .current_on(p.binding(), c, publication.id, publication.revision)
-                            .await?
-                    }
-                };
-                if let Some(value) = artifact {
-                    let admitted = signing
-                        .admit_device_on(c, p, &value)
-                        .await
-                        .map_err(Error::from)
-                        .and_then(|config| {
-                            if config.id == publication.id
-                                && config.version == publication.version
-                                && config.revision == publication.revision as u64
-                                && config.delivery == da::DeliveryPermission::Da
-                            {
-                                Ok(())
-                            } else {
-                                Err(Error::Conflict)
-                            }
-                        });
-                    match admitted {
-                        Ok(()) => {
-                            current.state = da::SourceState::Present;
-                            current.artifact = Some(value);
+                let candidate = async {
+                    let artifact = match id {
+                        Some(id) => Some(signing.read_on(p.binding(), c, id).await?),
+                        None => {
+                            signing
+                                .current_on(p.binding(), c, publication.id, publication.revision)
+                                .await?
                         }
-                        Err(Error::Forbidden | Error::Conflict | Error::Malformed)
-                            if id.is_none() =>
-                        {
-                            // A withheld backend candidate does not hide a protected field release.
-                            // Only the artifact may fail admission; reconfirm the caller itself.
-                            crate::reports::admit(c, service, p, None).await?;
-                            current.state = da::SourceState::Invalid;
-                        }
-                        Err(error) => return Err(error),
+                    };
+                    let Some(value) = artifact else {
+                        return Ok(None);
+                    };
+                    let config = signing.admit_device_on(c, p, &value).await?;
+                    if !matches_backend(publication, &config) {
+                        return Err(Error::Conflict);
                     }
+                    Ok(Some(value))
+                }
+                .await;
+                match candidate {
+                    Ok(Some(value)) => {
+                        current.state = da::SourceState::Present;
+                        current.artifact = Some(value);
+                    }
+                    Ok(None) => {}
+                    Err(Error::Forbidden | Error::Conflict | Error::Malformed) if id.is_none() => {
+                        // A withheld or undecodable candidate does not hide a protected release.
+                        crate::reports::admit(c, service, p, None).await?;
+                        current.state = da::SourceState::Invalid;
+                    }
+                    Err(error) => return Err(error),
                 }
                 Ok(Changed {
                     value: current,

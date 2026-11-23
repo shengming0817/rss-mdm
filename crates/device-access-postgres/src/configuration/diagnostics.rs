@@ -1,5 +1,5 @@
 //! Configuration delivery credibility is independent of current login-policy qualification.
-use super::management::{authorize, fault, tenant};
+use super::management::{authorize, fault, matches_backend, tenant};
 use crate::{Error, Service, evidence::Authorities};
 use rss_mdm_agent_wire::da;
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
@@ -161,13 +161,23 @@ impl Service {
             if let Some(selected) = publication.as_ref().filter(|v| v.enabled)
                 && resolution.blocked.is_none()
             {
-                application = Application::AwaitingExport;
-                if let Some(signed) = signing.current_on(p.binding(), c, selected.id, selected.revision).await? {
+                let candidate = async {
+                    let Some(signed) = signing.current_on(p.binding(), c, selected.id, selected.revision).await? else {
+                        return Ok(None);
+                    };
                     let config = signing.verify_on(c, p.binding().tenant(), &signed, now).await?;
-                    if !config.permits(&identity, device) || config.version != selected.version || config.id != selected.id
-                        || config.delivery != da::DeliveryPermission::Da {
-                        return Err(Error::Corrupt);
+                    if !config.permits(&identity, device) || !matches_backend(selected, &config) {
+                        return Err(Error::Conflict);
                     }
+                    Ok(Some((signed, config)))
+                }.await;
+                let qualified = match candidate {
+                    Ok(None) => { application = Application::AwaitingExport; None }
+                    Ok(value) => value,
+                    Err(Error::Forbidden | Error::Conflict | Error::Malformed) => None,
+                    Err(error) => return Err(error),
+                };
+                if let Some((signed, config)) = qualified {
                     artifact_id = Some(config.operation_id);
                     let head: Option<serde_json::Value> = sqlx::query_scalar(
                         "SELECT document FROM rss_da.report_heads WHERE tenant_id=$1 AND device=$2 AND kind='application'")

@@ -535,7 +535,8 @@ impl RegistrationService {
             .ok_or(Error::Unauthorized)?;
         let binding = s.execution(tenant);
         let tenant = tenant.to_string();
-        let mut tx = s.store.snapshot(&tenant).await?;
+        let mut tx = s.store.begin(&tenant).await?;
+        super::fence_on(&mut tx, binding).await?;
         let result: Option<String> = sqlx::query_scalar(
             "SELECT o.result FROM rss_da.certificate_issuances i
              JOIN rss_da.credentials k ON (k.tenant_id,k.id)=(i.tenant_id,i.credential)
