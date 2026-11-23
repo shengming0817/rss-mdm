@@ -372,6 +372,9 @@ Agent 使用设备证书读取 `GET /api/v1/agent/runtime/management-activities`
 
 授权管理员可以读回他人原操作，但写入继续使用当前认证主体。null 仅表示没有找到指定原回执；链已关联、该次管理操作已提交、设备已持证激活是不同事实。刷新、重新登录、超时或未知结果都不授权自动重放写入。查询不返回 secret、原始 CSR、签发配置，也不会重新签发或延长期限。
 
+Windows 本地账号使用 RSS 附加因子时，管理员沿原绑定入口提交期望状态。独立 DA 设备用当前 mTLS 身份向 `POST /api/v1/da/account-operations/next` 领取任务；空响应值为 `null`。设备先持久记录操作、任务、尝试及摘要，再向 `POST /api/v1/da/account-operations/{taskId}/events` 报告收到，读取本次 Start 许可。许可仅在有效期内授权开始动作。重连后核对原任务和本机日志；已开始的创建或重置只能核对原生结果。Start 过期且本机持久日志确认从未执行时，设备用同一尝试报告 `not_started`，取得新许可。已开始的尝试可在重新授权后补交托管及原生结果。创建成功先报告稳定本地 SID，然后按许可的加密目标托管材料，使用精确材料回执上报原生应用结果。解绑先停止旧代际本机日志，再回读指定处置并报告清理。设备按同一 eventId 和相同内容重放丢失响应的事件。身份失效重新认证，目标、尝试或内容冲突应核对原操作。
+管理员以 `GET .../devices/{device}/device-access/operations/{id}/execution` 核对该次受理后的接收、应用与待清理事实。设备报告未知时保留原尝试；离线解绑在回读前持续待清理。存在显式 Agent 投递目标时，原修订始终由该目标承接。
+
 指定设备的恢复操作通过租户浏览器入口 `POST /api/v1/tenants/{tenant}/devices/{device}/device-access/credential-operations` 创建，
 用 `GET /api/v1/tenants/{tenant}/devices/{device}/device-access/credential-operations/{id}` 查询原操作。请求携带唯一的 `operationId`、`policyVersion`、绑定 ID、当前绑定代际和 `verify` 或 `rotate`。该版本必须明确授权该设备、本地账户和动作。独立 DA 设备以当前 mTLS 身份从
 `POST /api/v1/da/credential-operations/next` 领取，按执行规范加密托管材料，将托管及原生应用读回分别提交给

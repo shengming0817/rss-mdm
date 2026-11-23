@@ -1,4 +1,5 @@
 //! Fresh PostgreSQL, Identity, actual provider dispatch and the production DA TLS listener.
+mod accounts;
 mod admission;
 mod business;
 mod configuration;
@@ -547,6 +548,16 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     )
     .await?;
 
+    Box::pin(accounts::verify(
+        &c,
+        &material,
+        &client,
+        base,
+        &token,
+        &survivor_peer,
+    ))
+    .await
+    .context("independent Windows account protocol")?;
     let pending = Box::pin(credentials::verify(
         &c,
         &material,
