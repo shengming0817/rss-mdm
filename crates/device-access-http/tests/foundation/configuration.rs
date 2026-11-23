@@ -519,6 +519,44 @@ pub async fn verify_sources(
             .await?,
     )
     .await?;
+    let stale = diagnostic(client, &management, token, &observation.device).await?;
+    assert_eq!(
+        stale["resolution"]["fields"][0]["locked"], false,
+        "regranting a field cannot restore authority to a pre-release artifact"
+    );
+    let renewed: da::SignedConfiguration = material::success(
+        client
+            .post(format!("{management}/configurations"))
+            .bearer_auth(token)
+            .json(&da::Export {
+                operation_id: Uuid::new_v4(),
+                policy: publication.id,
+                version: publication.version,
+                delivery: da::DeliveryPermission::ManagedMandatory,
+                lifetime_seconds: 600,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    let content = renewed.decode()?;
+    observation.configuration = Some(ConfigurationDeployment {
+        artifact: content.operation_id,
+        digest: renewed.digest,
+        native_digest: content.native.digest,
+        delivery: content.delivery,
+        state: da::SourceState::Present,
+        applied: None,
+    });
+    observation.sequence += 1;
+    material::empty(
+        client
+            .post(&url)
+            .json(&business::signed(observation)?)
+            .send()
+            .await?,
+    )
+    .await?;
     let restored = diagnostic(client, &management, token, &observation.device).await?;
     assert_eq!(restored["evidence"], "verified");
     assert_eq!(restored["resolution"]["fields"][0]["locked"], true);
@@ -541,7 +579,7 @@ pub async fn verify_override(
     let mut default: policy::Publication = serde_json::from_value(read)?;
     default.managed_fields = vec![da::ConfigurationField::Mac];
     default.configuration = device_policy.configuration.clone();
-    let (separate, _) = super::activate_grant(
+    let (separate, peer) = super::activate_grant(
         m,
         client,
         client
@@ -622,14 +660,46 @@ pub async fn verify_override(
             .await?;
     let backend: da::SignedConfiguration =
         material::success(export(&target, da::DeliveryPermission::Da).await?).await?;
+    let trust: da::ConfigurationTrust = material::success(
+        peer.get(format!("{base}/configuration-trust"))
+            .send()
+            .await?,
+    )
+    .await?;
+    material::empty(
+        peer.post(format!("{base}/configuration-trust/acknowledgements"))
+            .json(&rss_mdm_agent_wire::task_trust::Acknowledgement {
+                version: 1,
+                operation: Uuid::new_v4(),
+                device_id: separate.device,
+                revision: trust.revision,
+                digest: trust.installation_digest()?,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    let current_url = format!("{base}/configuration");
+    let snapshot: da::CurrentConfiguration =
+        material::success(peer.get(&current_url).send().await?).await?;
+    assert_eq!(snapshot.identity.device_id, separate.device);
+    assert_eq!(snapshot.publication.unwrap().id, target.id);
+    assert_eq!(snapshot.artifact.unwrap().digest, backend.digest);
+    assert_eq!(snapshot.authorities.len(), 2);
+    let authority = snapshot
+        .authorities
+        .iter()
+        .find(|a| a.policy == default.id)
+        .unwrap();
     let signed = source.decode()?;
+    assert!(authority.covers_managed_field(&signed, da::ConfigurationField::Mac));
     observation.policy = default.id;
     observation.policy_version = default.version;
     observation.applications.clear();
     observation.configuration = Some(ConfigurationDeployment {
         artifact: signed.operation_id,
         digest: source.digest,
-        native_digest: signed.native.digest,
+        native_digest: signed.native.digest.clone(),
         delivery: da::DeliveryPermission::ManagedMandatory,
         state: da::SourceState::Present,
         applied: Some(ConfigurationReadback {
@@ -650,5 +720,36 @@ pub async fn verify_override(
     let current = diagnostic(client, &management, token, &observation.device).await?;
     assert_eq!(current["publication"]["id"], serde_json::json!(target.id));
     assert_eq!(current["application"], "verified_applied");
+    default.managed_fields.clear();
+    default.revision += 1;
+    default.version = Uuid::new_v4();
+    publish_protected(
+        c,
+        m,
+        &Change {
+            operation_id: Uuid::new_v4(),
+            expected_revision: default.revision - 1,
+            publication: default.clone(),
+        },
+    )
+    .await?;
+    let after: da::CurrentConfiguration =
+        material::success(peer.get(&current_url).send().await?).await?;
+    assert_eq!(after.publication.unwrap().id, target.id);
+    let release = after
+        .authorities
+        .iter()
+        .find(|a| a.policy == default.id)
+        .unwrap();
+    assert_eq!(
+        release.fields[&da::ConfigurationField::Mac],
+        da::FieldAuthority {
+            authorized: false,
+            revision: default.revision as u64
+        }
+    );
+    assert!(!release.covers_managed_field(&signed, da::ConfigurationField::Mac));
+    let diagnostic = diagnostic(client, &management, token, &observation.device).await?;
+    assert_eq!(diagnostic["resolution"]["fields"][0]["locked"], false);
     Ok(())
 }

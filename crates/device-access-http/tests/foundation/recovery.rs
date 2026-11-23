@@ -10,6 +10,7 @@ pub struct Expected {
     pub active: rss_mdm_agent_wire::da::Registration,
     pub active_peer: reqwest::Client,
     pub revoked: rss_mdm_agent_wire::da::Registration,
+    pub revocation: da::RevocationReceipt,
     pub revoked_peer: reqwest::Client,
     pub superseded_peer: reqwest::Client,
     pub pending: credentials::Pending,
@@ -253,6 +254,14 @@ async fn restored_http(m: &material::Material, e: &Expected) -> Result<()> {
     );
     assert_eq!(status.request, e.pending.request);
     assert_eq!(status.receipt.as_ref(), Some(&e.pending.receipt));
+    // The original device was offline throughout revocation. Its first read uses a
+    // fresh TLS connection after the host and database have both restarted.
+    let url = format!("{}/registrations/revocation", e.device_base);
+    for _ in 0..2 {
+        let receipt: da::RevocationReceipt =
+            material::success(e.revoked_peer.get(&url).send().await?).await?;
+        assert_eq!(receipt, e.revocation);
+    }
     let path = format!("{}/credential-operations/next", e.device_base);
     assert_eq!(e.revoked_peer.post(&path).send().await?.status(), 401);
     assert_eq!(e.superseded_peer.post(&path).send().await?.status(), 401);

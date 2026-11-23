@@ -634,18 +634,34 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         )
         .await
         .context("platform session is active before registration revocation")?;
-    material::empty(
+    let revoke_id = Uuid::new_v4();
+    let revoke = || {
         client
             .post(format!(
                 "{management}/devices/{}/registration/revoke",
                 receipt.device
             ))
             .bearer_auth(&token)
-            .json(&serde_json::json!({"operationId":Uuid::new_v4()}))
+            .json(&serde_json::json!({"operationId":revoke_id}))
             .send()
-            .await?,
-    )
-    .await?;
+    };
+    let revocation: da::RevocationReceipt = material::success(revoke().await?).await?;
+    assert_eq!(
+        revocation,
+        da::RevocationReceipt {
+            operation_id: revoke_id,
+            service_id: renewed_receipt.service_id,
+            tenant: renewed_receipt.tenant,
+            device: renewed_receipt.device,
+            credential: renewed_receipt.credential,
+        }
+    );
+    let replay: da::RevocationReceipt = material::success(revoke().await?).await?;
+    assert_eq!(revocation, replay);
+    let recovery_url = format!("{base}/registrations/revocation");
+    for other in [&client, &peer, &current_peer] {
+        assert_eq!(other.get(&recovery_url).send().await?.status(), 401);
+    }
     assert_eq!(
         renewed_peer
             .get(format!("{base}/configuration-trust"))
@@ -685,6 +701,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             active_peer: current_peer,
             superseded_peer: survivor_peer,
             revoked: renewed_receipt,
+            revocation,
             revoked_peer: renewed_peer,
             pending,
             device_base: base.to_string(),
