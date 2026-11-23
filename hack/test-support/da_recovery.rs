@@ -64,6 +64,7 @@ pub async fn seed(
         configuration,
         received_revision: None,
         applied_revision: None,
+        account_delivery: None,
         deployment_application: None,
         effect: None,
         applied_windows: None,

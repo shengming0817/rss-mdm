@@ -82,8 +82,10 @@ pub enum DeliveryPermission {
     /// Managed mandatory delivery is required by the consuming policy.
     ManagedMandatory,
 }
+mod accounts;
 mod configuration;
 mod credentials;
+pub use accounts::*;
 pub use credentials::*;
 mod status;
 pub use configuration::*;
@@ -136,6 +138,6 @@ pub struct Progress {
 
 /// Fingerprint of the generated Device Access protocol schema.
 pub const SCHEMA_FINGERPRINT: &str =
-    "75cf87de338f18df50fe27e555644698018e9d4c80a719a1e5cf799a8b5c92b0";
+    "e5b3fdb72ea070e82c5cba55f3a7da8d3efda7e49cc2b8ba6639cbc1c7d7ce1f";
 /// Canonical current Device Access schema manifest.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/da/manifest.json");

@@ -136,12 +136,9 @@ async fn delivery_lifecycle(
     Box::pin(embedded_status(c, &anchor, *agent.device()))
         .await
         .context("embedded DA management HTTP")?;
-    let person = Box::pin(super::da_authorization::authorize(c, agent, &anchor))
+    Box::pin(super::da_authorization::authorize(c, agent, &anchor))
         .await
-        .context("authorize Agent delivery using the real Identity proof")?;
-    Box::pin(super::da_materials::verify(c, agent, &anchor, person))
-        .await
-        .context("prove RSS custody and recovery across distinct DA and Agent identities")?;
+        .context("authorize Agent delivery and verify custody across the distinct DA and Agent identities")?;
     let mut tx = c.database.archive_pool().begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(tenant.to_string())

@@ -16,12 +16,29 @@ use serde_json::{Value, json};
 #[path = "../../../../hack/test-support/da_recovery.rs"]
 mod fixture;
 use fixture::SID;
-fn envelope(
+pub(super) fn envelope(
     task: &w::CredentialTaskSpec,
     subject: &w::CredentialSubject,
     secret: &str,
 ) -> Result<w::CredentialEscrow> {
     let aad = task.material_aad(subject, task.expected[0].revision)?;
+    seal(
+        task.definition_digest,
+        &task.recipient.public_key,
+        subject,
+        task.expected[0].revision,
+        &aad,
+        secret,
+    )
+}
+pub(super) fn seal(
+    digest: [u8; 32],
+    public_key: &str,
+    subject: &w::CredentialSubject,
+    revision: i64,
+    aad: &[u8],
+    secret: &str,
+) -> Result<w::CredentialEscrow> {
     let mut key = [0; 32];
     let mut nonce = [0; 12];
     openssl::rand::rand_bytes(&mut key)?;
@@ -38,8 +55,7 @@ fn envelope(
             &mut ciphertext,
         )
         .map_err(|_| anyhow::anyhow!("escrow test encryption"))?;
-    let public =
-        openssl::pkey::PKey::public_key_from_der(&STANDARD.decode(&task.recipient.public_key)?)?;
+    let public = openssl::pkey::PKey::public_key_from_der(&STANDARD.decode(public_key)?)?;
     let mut encrypt = openssl::encrypt::Encrypter::new(&public)?;
     encrypt.set_rsa_padding(openssl::rsa::Padding::PKCS1_OAEP)?;
     encrypt.set_rsa_oaep_md(openssl::hash::MessageDigest::sha256())?;
@@ -48,10 +64,10 @@ fn envelope(
     let len = encrypt.encrypt(&key, &mut wrapped)?;
     wrapped.truncate(len);
     Ok(w::CredentialEscrow {
-        definition_digest: task.definition_digest,
+        definition_digest: digest,
         materials: vec![w::CredentialEnvelope {
             subject: subject.clone(),
-            expected_revision: task.expected[0].revision,
+            expected_revision: revision,
             wrapped_key: STANDARD.encode(wrapped),
             nonce,
             ciphertext: STANDARD.encode(ciphertext),

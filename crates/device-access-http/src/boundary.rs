@@ -38,7 +38,11 @@ pub async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: N
     let credential = request
         .uri()
         .path()
-        .starts_with("/api/v1/da/credential-operations/");
+        .starts_with("/api/v1/da/credential-operations/")
+        || request
+            .uri()
+            .path()
+            .starts_with("/api/v1/da/account-operations/");
     request.extensions_mut().insert(a.clone());
     // Completion retains the admission lease even if the HTTP client disconnects.
     tokio::spawn(async move {

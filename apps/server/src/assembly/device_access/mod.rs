@@ -185,8 +185,14 @@ pub(crate) async fn open(
             )
             .await?,
     );
+    let custody = config
+        .recovery_credentials
+        .as_ref()
+        .map(crate::recovery_credentials::open)
+        .transpose()?;
     let business = rss_mdm_device_access_runtime::Runtime::assemble(
         rss_mdm_device_access_runtime::Resources {
+            recovery: custody.clone(),
             report_limits: d.reports.clone(),
             probe: config
                 .storage_binding
@@ -210,25 +216,20 @@ pub(crate) async fn open(
     )
     .map_err(|_| invalid())?;
     let authorization = Arc::new(authorization.for_product(StorageProfile::Da));
-    let recovery = config
-        .recovery_credentials
-        .as_ref()
-        .map(crate::recovery_credentials::open)
-        .transpose()?
-        .map(|p| {
-            Arc::new(rss_mdm_recovery_credentials::Credentials::new(
-                StorageProfile::Da,
-                pool.clone(),
-                audit.clone(),
-                p.clone(),
-                Some(proof_audit),
-                Some(Arc::new(
-                    rss_mdm_device_access_postgres::recovery::eligibility::AccessEligibility {
-                        admission: Some(business.admission.clone()),
-                    },
-                )),
-            ))
-        });
+    let recovery = custody.map(|p| {
+        Arc::new(rss_mdm_recovery_credentials::Credentials::new(
+            StorageProfile::Da,
+            pool.clone(),
+            audit.clone(),
+            p.clone(),
+            Some(proof_audit),
+            Some(Arc::new(
+                rss_mdm_device_access_postgres::recovery::eligibility::AccessEligibility {
+                    admission: Some(business.admission.clone()),
+                },
+            )),
+        ))
+    });
     Ok(Assembly {
         runtime: business,
         authorization,

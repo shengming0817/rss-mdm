@@ -247,6 +247,13 @@ impl Service {
                     let policy =
                         current_policy(c, tenant, *device, input.policy_version, &operation, now)
                             .await?;
+                    let epoch =
+                        endpoints::current_da_epoch_in(c, actor.tenant_id(), device).await?;
+                    let installation = rss_mdm_registration_service::device::installation_in(
+                        rss_mdm_install_support::StorageProfile::Da,
+                        c,
+                    )
+                    .await?;
                     let value = device::accept(
                         c,
                         credentials,
@@ -256,6 +263,9 @@ impl Service {
                         operation,
                         &policy,
                         authority,
+                        installation,
+                        epoch,
+                        binding.factor_generation,
                         now,
                     )
                     .await
@@ -310,6 +320,7 @@ impl Service {
     ) -> Result<CredentialSettlement, Error> {
         a.identify_device(p.device());
         let action = match input {
+            Event::Received { .. } => "da_credential_received",
             Event::Escrow { .. } => "da_credential_escrow",
             Event::Applied { .. } => "da_credential_applied",
         };
@@ -332,6 +343,7 @@ impl Service {
                 Ok(Change {
                     value: CredentialSettlement {
                         operation_id: id,
+                        received_at: status.received_at,
                         state: status.state,
                         receipt: status.receipt,
                     },
@@ -364,6 +376,12 @@ async fn locked_run(
     if hint.as_ref().map(|r| r.spec().task_id) != run.as_ref().map(|r| r.spec().task_id) {
         return Err(Error::ReadConflict);
     }
+    if run
+        .as_ref()
+        .is_some_and(|r| !r.matches_registration(p.installation(), p.epoch()))
+    {
+        return Err(Error::Forbidden);
+    }
     Ok(run)
 }
 
@@ -380,7 +398,7 @@ async fn authorize_execution(
     {
         return Err(Error::Forbidden);
     }
-    let (_, anchor) = super::credential_tasks::qualified(c, tenant, run.operation())
+    let (binding, anchor) = super::credential_tasks::qualified(c, tenant, run.operation())
         .await
         .map_err(super::error)?;
     let policy = current_policy(
@@ -392,7 +410,7 @@ async fn authorize_execution(
         current_time,
     )
     .await?;
-    if current_time >= run.spec().deadline {
+    if current_time >= run.spec().deadline || binding.factor_generation != run.factor_generation() {
         return Err(Error::Forbidden);
     }
     run.admit(&anchor, policy.id, policy.version)
