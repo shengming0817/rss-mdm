@@ -33,7 +33,7 @@ class Browser:
         self.host=host
         self.port, self.context = port, ssl.create_default_context(cafile=ca)
         self.cookie, self.csrf = "", ""
-    def call(self, method, path, data=None, operation=None, *, chunked=False):
+    def call(self, method, path, data=None, operation=None, *, chunked=False, after_first_chunk=None):
         remaining = Browser.last_request + 0.125 - time.monotonic()
         if remaining > 0:
             time.sleep(remaining)
@@ -48,8 +48,12 @@ class Browser:
             connection.sock=self.context.wrap_socket(socket.create_connection(("127.0.0.1",self.port),timeout=15),server_hostname=self.host)
             body = json.dumps(data).encode() if data is not None else None
             if chunked and body is not None:
-                chunks = (body[i:i+4096] for i in range(0,len(body),4096))
-                connection.request(method, path, body=chunks, headers=headers, encode_chunked=True)
+                def chunks():
+                    for offset in range(0, len(body), 4096):
+                        yield body[offset:offset+4096]
+                        if offset == 0 and after_first_chunk is not None:
+                            after_first_chunk()
+                connection.request(method, path, body=chunks(), headers=headers, encode_chunked=True)
             else:
                 connection.request(method, path, body=body, headers=headers)
             response = connection.getresponse()
@@ -124,11 +128,19 @@ def ingress_capacity(browser, principal, deployed):
     change = dict(operationId=str(uuid.uuid4()), expectedRevision=0, input=dict(document=document))
     def peak():
         return int(deployed.command('exec', deployed.server, 'cat', '/sys/fs/cgroup/memory.peak', stage=Stage.SQL).strip())
+    def check_reservation():
+        # The partial upload holds the full byte budget with four host request slots still free.
+        wait(lambda: browser.call('GET', profile)[0] == 429 and browser.retry_after == '1',
+             'snapshot reserved the whole buffered budget before decode', seconds=3)
+        status, rejection = browser.call('POST', source, {})
+        require(status == 429 and rejection == {'code':'request_limited'} and browser.retry_after == '1',
+                'second snapshot exceeded buffered bytes')
     before = peak()
-    require(browser.call('POST', source, change, chunked=True)[0] == 200, 'buffered software snapshot import')
+    require(browser.call('POST', source, change, chunked=True, after_first_chunk=check_reservation)[0] == 200,
+            'buffered software snapshot import')
     after = peak()
     memory = dict(snapshotWireBytes=len(json.dumps(change).encode()), hostHighWaterBeforeBytes=before,
-                  hostHighWaterAfterBytes=after, bufferedReservationBytes=128*1024**2)
+                  hostHighWaterAfterBytes=after, bufferedReservationBytes=deployed.config['http']['buffered_body_bytes'])
     for path in ('policies/missing/previews', 'policies/missing/scope/previews',
                  'policies/missing/stages/missing/scope/previews'):
         status, _ = browser.call('POST', base + '/' + path, dict(unrecognized='x'*20000))
@@ -295,7 +307,7 @@ def run_smoke(directory):
         require("mdm_request" in logs, "candidate request diagnostics missing")
         require(elapsed<45 and docker("inspect","--format","{{.State.ExitCode}}",server,stage=Stage.EXIT)=="0" and "mdm_shutdown_failure" not in logs,"candidate bounded shutdown failed")
         result=dict(ingressMemory=memory,source=manifest["source"],candidate_sha256=sha(directory/"candidate.json"),manifest_digest=digest,archive_sha256=sha(archive),platform=manifest["platform"],
-                    checks=pki_checks+["five_shared_request_slots","cancel_releases_request_slot","large_profile_write_read_replay","large_field_publication","management_bootstrap","management_login","management_grants","management_business_isolation","migrate","migration_replay","initialize","authorization_initialize","authorization_replay","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
+                    checks=pki_checks+["concurrent_snapshot_byte_reservation","five_shared_request_slots","cancel_releases_request_slot","large_profile_write_read_replay","large_field_publication","management_bootstrap","management_login","management_grants","management_business_isolation","migrate","migration_replay","initialize","authorization_initialize","authorization_replay","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
                     shutdown_seconds=round(elapsed,3),limits=["disposable MDM PostgreSQL and TLS namespace","no real Windows or macOS device T3"])
         if deployed.web is not None:
             result["ui"] = deployed.web
