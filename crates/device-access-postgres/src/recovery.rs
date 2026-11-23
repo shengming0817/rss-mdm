@@ -18,10 +18,21 @@ use sqlx::PgConnection;
 use std::sync::Arc;
 use uuid::Uuid;
 pub struct AccessMaterials {
+    direct: Option<rss_mdm_registration_service::DevicePrincipal>,
     protection: Arc<Protection>,
     eligibility: Arc<dyn rss_mdm_recovery_credentials::eligibility::Eligibility>,
 }
 impl AccessMaterials {
+    pub(crate) fn for_device(
+        credentials: &rss_mdm_recovery_credentials::Credentials,
+        p: &rss_mdm_registration_service::DevicePrincipal,
+    ) -> Self {
+        Self {
+            direct: Some(p.clone()),
+            protection: credentials.protection().clone(),
+            eligibility: Arc::new(eligibility::AccessEligibility { admission: None }),
+        }
+    }
     pub fn custody(&self) -> rss_mdm_recovery_credentials::Custody<'_> {
         rss_mdm_recovery_credentials::Custody::new(self.profile(), Some(self.eligibility.as_ref()))
     }
@@ -33,12 +44,13 @@ impl AccessMaterials {
         eligibility: Arc<dyn rss_mdm_recovery_credentials::eligibility::Eligibility>,
     ) -> Self {
         Self {
+            direct: None,
             protection,
             eligibility,
         }
     }
 }
-fn error(e: Error) -> crate::Error {
+pub(crate) fn error(e: Error) -> crate::Error {
     use crate::Error as R;
     match e {
         Error::Malformed => R::Malformed,
@@ -77,6 +89,7 @@ fn custody_error(e: crate::Error) -> Error {
     }
 }
 async fn task_binding(
+    direct: Option<&rss_mdm_registration_service::DevicePrincipal>,
     c: &mut PgConnection,
     task: &wire::AccessTaskSpec,
     value: &wire::CredentialSubject,
@@ -95,11 +108,30 @@ async fn task_binding(
     let b = access::storage::locked_in(c, task.tenant_id, task.binding_id)
         .await
         .map_err(custody_error)?;
-    let agent = crate::delivery::for_binding_on(c, &b)
+    let target = if let Some(p) = direct {
+        if p.kind() != rss_mdm_registration_service::device::RegistrationKind::DaDevice
+            || p.profile() != rss_mdm_install_support::StorageProfile::Da
+            || p.tenant().to_string() != task.tenant_id.to_string()
+            || p.device() != &b.device
+        {
+            return Err(Error::Forbidden);
+        }
+        rss_mdm_registration_service::device::require_use_in(
+            c,
+            p,
+            rss_mdm_registration_service::device::ConsumerUse::DaConfiguration,
+        )
         .await
-        .map_err(custody_error)?
-        .ok_or(Error::Forbidden)?;
-    if agent.device != task.device_id || b.generation != task.binding_generation {
+        .map_err(|_| Error::Forbidden)?;
+        b.device
+    } else {
+        crate::delivery::for_binding_on(c, &b)
+            .await
+            .map_err(custody_error)?
+            .ok_or(Error::Forbidden)?
+            .device
+    };
+    if target != task.device_id || b.generation != task.binding_generation {
         return Err(Error::Conflict);
     }
     Ok(Binding {
@@ -186,10 +218,14 @@ impl AccessRecovery for AccessMaterials {
             async {
             value.validate().map_err(|_| Error::Malformed)?;
             if value.materials.len() != 1 || value.definition_digest != task.definition_digest { return Err(Error::Conflict) }
-            let Some(wire::AccessWindowsPlan::Initialize { recipient, .. }) = &task.windows else { return Err(Error::Conflict) };
+            let Some(wire::AccessWindowsPlan::Initialize { recipient, expected_revision }) = &task.windows else { return Err(Error::Conflict) };
             let item = &value.materials[0];
+            if item.expected_revision != *expected_revision { return Err(Error::Conflict); }
+            let key = self.protection.recipient(&recipient.key_id)?;
+            let now = crate::platform_sso::store::now(c).await.map_err(custody_error)?;
+            key.require_current(now)?;
             let aad = task.material_aad(&item.subject, item.expected_revision).map_err(|_| Error::Malformed)?;
-            let secret = self.protection.recipient(&recipient.key_id)?.open_envelope(
+            let secret = key.open_envelope(
                 &STANDARD.decode(&item.wrapped_key).map_err(|_| Error::Malformed)?, item.nonce,
                 &STANDARD.decode(&item.ciphertext).map_err(|_| Error::Malformed)?, &aad)?;
             let b = access::storage::locked_in(c, task.tenant_id, task.binding_id).await.map_err(custody_error)?;
@@ -197,7 +233,7 @@ impl AccessRecovery for AccessMaterials {
             if b.generation != task.binding_generation || b.factor_generation != task.factor_generation
                 || b.revision != task.revision || b.definition_digest().map_err(custody_error)? != task.definition_digest
                 || !matches!(&b.account, Some(wire::AccessAccount::Windows { sid: current, .. }) if current == sid) { return Err(Error::Conflict) }
-            let binding = task_binding(c, task, &item.subject).await?;
+            let binding = task_binding(self.direct.as_ref(), c, task, &item.subject).await?;
             let coordinates = storage::reserve_in(self.custody(), c, task.tenant_id, &binding, task.task_id, item.expected_revision).await?;
             storage::ingest_in(self.custody(), c, &self.protection.keys, &coordinates, task.task_id, &secret).await?;
             storage::link_agent_in(self.custody(), c, task.task_id, task.attempt_id, &coordinates).await?;
@@ -213,7 +249,8 @@ impl AccessRecovery for AccessMaterials {
     ) -> Pending<'a, ()> {
         Box::pin(async move {
             async {
-                let binding = task_binding(c, task, &facts.recovery.subject).await?;
+                let binding =
+                    task_binding(self.direct.as_ref(), c, task, &facts.recovery.subject).await?;
                 let coordinates = storage::coordinates_in(
                     self.custody(),
                     c,

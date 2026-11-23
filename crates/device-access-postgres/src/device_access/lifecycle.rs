@@ -160,7 +160,16 @@ pub(super) async fn accept_offboarding_on(
         binding.state = State::Revoked;
         binding.configuration.enabled = false;
         binding.account_disposition = current.account_disposition;
+        let installation = rss_mdm_registration_service::device::installation_in(
+            rss_mdm_install_support::StorageProfile::Da,
+            c,
+        )
+        .await?;
+        binding.account_delivery =
+            super::account_delivery::select(c, &binding, installation).await?;
         super::storage::save_in(c, &binding, revision).await?;
+        super::account_delivery::accept(c, &binding, Some(actor), actor.binding().epoch().get())
+            .await?;
         emit_on(
             c,
             &binding,

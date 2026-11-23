@@ -132,7 +132,7 @@ impl Plan {
         let matched = tx
             .with_connection_context(&mut context, |(b, target), c| {
                 Box::pin(async move {
-                    Ok(crate::delivery::for_binding_on(c, b)
+                    Ok(access::account_delivery::agent(c, b)
                         .await
                         .map(|a| a.is_some_and(|a| a.device == target.device)))
                 })
@@ -199,62 +199,19 @@ impl Plan {
             .ok_or(Error::Forbidden)?;
         let run = runs::load_run(tx, issue.run).await?;
         let b = &self.binding;
-        let action = if b.state == rss_mdm_device_access::State::Revoked {
-            wire::AccessAction::Unbind {
-                disposition: b.account_disposition,
-                account: b.account.clone().ok_or(Error::Conflict)?,
-            }
-        } else {
-            match &b.intent {
-                rss_mdm_device_access::AccountIntent::Existing { account } => {
-                    wire::AccessAction::Apply {
-                        account: account.clone(),
-                        configuration: b.configuration.clone(),
-                    }
-                }
-                rss_mdm_device_access::AccountIntent::Create { platform: _, name } => {
-                    match &b.account {
-                        Some(account) => wire::AccessAction::Apply {
-                            account: account.clone(),
-                            configuration: b.configuration.clone(),
-                        },
-                        None => wire::AccessAction::Create {
-                            name: name.clone(),
-                            configuration: b.configuration.clone(),
-                        },
-                    }
-                }
-            }
+        let architecture = match architecture {
+            rss_mdm_policy::Architecture::X86_64 => wire::TaskArchitecture::X86_64,
+            rss_mdm_policy::Architecture::Aarch64 => wire::TaskArchitecture::Aarch64,
         };
-        let spec = wire::AccessTaskSpec {
-            wire_version: wire::WIRE_VERSION,
-            tenant_id: b.tenant,
-            device_id: target.device,
-
-            platform: b.intent.platform(),
-            architecture: match architecture {
-                rss_mdm_policy::Architecture::X86_64 => wire::TaskArchitecture::X86_64,
-                rss_mdm_policy::Architecture::Aarch64 => wire::TaskArchitecture::Aarch64,
-            },
-            task_id: issue.run,
-            attempt_id: issue.attempt,
-            permit: issue.permit,
-            expires_at: issue.expiry,
-            deadline: run.deadline,
-            binding_id: b.id,
-            instance_id: b.person.instance,
-            principal_id: b.person.principal,
-            binding_generation: b.generation,
-            factor_generation: b.factor_generation,
-            revision: b.revision,
-            definition_digest: b.definition_digest().map_err(Error::from)?,
-            action,
-            windows: provisioning::plan(service, tx, b).await?,
-            authorization: wire::TaskAuthorization::Policy {
-                policy_id: b.policy,
-                policy_version: b.policy_version,
-            },
-        };
+        let spec = task_spec(
+            b,
+            target.device,
+            architecture,
+            issue,
+            run.deadline,
+            provisioning::plan(service, tx, b).await?,
+        )
+        .map_err(Error::from)?;
         checked_input(spec.validate())?;
         Ok(wire::TaskPayload::DeviceAccess(Box::new(spec)))
     }
@@ -318,7 +275,7 @@ pub(crate) async fn prepare_target_reconciliation_in(
     let tenant = stored(Uuid::parse_str(&tx.tenant_id().to_string()))?;
     let name = target.device;
     let documents:Vec<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move{
-        sqlx::query_scalar("SELECT b.document FROM rss_da.bindings AS b INNER JOIN rss_da.agent_delivery AS d ON (d.tenant_id, d.da_device) = (b.tenant_id, b.device) WHERE b.tenant_id = $1 AND d.agent_device = $2 AND (CAST($3 AS uuid) IS NULL OR b.document ->> 'policy' = CAST($3 AS text)) AND d.enabled ORDER BY b.id LIMIT 128").bind(tenant).bind(name.into_uuid()).bind(policy).fetch_all(c).await
+        sqlx::query_scalar("SELECT b.document FROM rss_da.bindings AS b INNER JOIN rss_da.agent_delivery AS d ON (d.tenant_id, d.da_device) = (b.tenant_id, b.device) WHERE b.tenant_id = $1 AND d.agent_device = $2 AND (CAST($3 AS uuid) IS NULL OR b.document ->> 'policy' = CAST($3 AS text)) AND d.enabled AND b.document#>>'{accountDelivery,kind}' IS DISTINCT FROM 'da' ORDER BY b.id LIMIT 128").bind(tenant).bind(name.into_uuid()).bind(policy).fetch_all(c).await
     })).await?;
     let mut bindings = Vec::new();
     for document in documents {
@@ -461,7 +418,7 @@ pub(crate) async fn reconcile_in(
         }
         let target = tx
             .with_connection_context(&mut &binding, |b, c| {
-                Box::pin(async move { Ok(crate::delivery::for_binding_on(c, b).await) })
+                Box::pin(async move { Ok(access::account_delivery::agent(c, b).await) })
             })
             .await??;
         let Some(agent) = target else {
@@ -653,4 +610,67 @@ pub async fn received_in(tx: &mut PgTransaction<'_>, run: &runs::Run) -> Result<
     })
     .await??;
     Ok(())
+}
+
+pub(crate) fn task_spec(
+    b: &access::Binding,
+    device: rss_mdm_agent_wire::DeviceId,
+    architecture: wire::TaskArchitecture,
+    issue: TaskIssue,
+    deadline: i64,
+    windows: Option<wire::AccessWindowsPlan>,
+) -> std::result::Result<wire::AccessTaskSpec, AccessError> {
+    let action = if b.state == rss_mdm_device_access::State::Revoked {
+        wire::AccessAction::Unbind {
+            disposition: b.account_disposition,
+            account: b.account.clone().ok_or(AccessError::Conflict)?,
+        }
+    } else {
+        match &b.intent {
+            rss_mdm_device_access::AccountIntent::Existing { account } => {
+                wire::AccessAction::Apply {
+                    account: account.clone(),
+                    configuration: b.configuration.clone(),
+                }
+            }
+            rss_mdm_device_access::AccountIntent::Create { platform: _, name } => {
+                match &b.account {
+                    Some(account) => wire::AccessAction::Apply {
+                        account: account.clone(),
+                        configuration: b.configuration.clone(),
+                    },
+                    None => wire::AccessAction::Create {
+                        name: name.clone(),
+                        configuration: b.configuration.clone(),
+                    },
+                }
+            }
+        }
+    };
+    Ok(wire::AccessTaskSpec {
+        wire_version: wire::WIRE_VERSION,
+        tenant_id: b.tenant,
+        device_id: device,
+
+        platform: b.intent.platform(),
+        architecture: architecture,
+        task_id: issue.run,
+        attempt_id: issue.attempt,
+        permit: issue.permit,
+        expires_at: issue.expiry,
+        deadline,
+        binding_id: b.id,
+        instance_id: b.person.instance,
+        principal_id: b.person.principal,
+        binding_generation: b.generation,
+        factor_generation: b.factor_generation,
+        revision: b.revision,
+        definition_digest: b.definition_digest()?,
+        action,
+        windows,
+        authorization: wire::TaskAuthorization::Policy {
+            policy_id: b.policy,
+            policy_version: b.policy_version,
+        },
+    })
 }

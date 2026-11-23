@@ -227,19 +227,13 @@ impl Service {
         device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
     ) -> Result<Binding, Error> {
-        self.read_with_session(actor,(actor,device,id),|ctx,c|Box::pin(async move{
-        let(actor,device,id)=*ctx;
-        authorize(c,actor,device,Permission::AccountWrite).await?;
-        let result:Option<String>=sqlx::query_scalar("SELECT result FROM rss_da.operations WHERE tenant_id=$1::uuid AND actor=$2::uuid AND instance=$3::uuid AND operation_id=$4")
-            .bind(actor.tenant_id()).bind(actor.principal_id()).bind(actor.instance_id()).bind(id).fetch_optional(&mut *c).await.map_err(db)?;
-        let value:Binding=serde_json::from_str(&result.ok_or(Error::NotFound)?).map_err(|_|Error::NotFound)?;
-        value.validate()?;
-        if value.device!=*device || value.tenant.to_string()!=actor.tenant_id(){return Err(Error::NotFound);}
-        // A subject offboarding receipt represents all frozen targets, not only its initiating device.
-        let offboarding:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rss_da.lifecycles WHERE tenant_id=$1::uuid AND operation=$2)").bind(actor.tenant_id()).bind(id).fetch_one(&mut *c).await.map_err(db)?;
-        if offboarding {super::lifecycle::load_on(c,actor,device,id,false).await?;}
-        Ok(value)
-        })).await
+        self.read_with_session(actor, (actor, device, id), |ctx, c| {
+            Box::pin(async move {
+                let (actor, device, id) = *ctx;
+                operation_on(c, actor, device, id).await
+            })
+        })
+        .await
     }
 
     /// First association only. Both authenticated device and human proofs are mandatory.
@@ -364,8 +358,10 @@ impl Service {
             let selected=admission.policy(c,tenant_uuid(device.tenant())?,device.device(),policy).await?;
             if selected.version!=row.try_get::<Uuid,_>("policy_version").map_err(db)? || !selected.configuration.self_enrollment || !selected.configuration.enabled || !selected.configuration.admits(&local.account) { return Err(Error::Forbidden); }
             if !storage::first_in(c,tenant_uuid(device.tenant())?,device.device(),who,&local.account).await? {return Err(Error::Conflict);}
-            let binding=Binding{deployment_application:None,operation_id:input.operation_id,account_disposition:rss_mdm_agent_wire::runtime::AccessAccountDisposition::Keep,id:Uuid::new_v4(),tenant:tenant_uuid(device.tenant())?,device:*device.device(),person:who.clone(),origin:Origin::SelfEnrollment,generation:1,factor_generation:1,revision:1,state:State::Pending,intent:AccountIntent::Existing{account:local.account.clone()},account:Some(local.account),policy:selected.policy,policy_version:selected.version,configuration:selected.configuration,received_revision:None,applied_revision:None,effect:None,applied_windows:None,created_by_rss:false};
+            let mut binding=Binding{account_delivery:None,deployment_application:None,operation_id:input.operation_id,account_disposition:rss_mdm_agent_wire::runtime::AccessAccountDisposition::Keep,id:Uuid::new_v4(),tenant:tenant_uuid(device.tenant())?,device:*device.device(),person:who.clone(),origin:Origin::SelfEnrollment,generation:1,factor_generation:1,revision:1,state:State::Pending,intent:AccountIntent::Existing{account:local.account.clone()},account:Some(local.account),policy:selected.policy,policy_version:selected.version,configuration:selected.configuration,received_revision:None,applied_revision:None,effect:None,applied_windows:None,created_by_rss:false};
+            binding.account_delivery=super::account_delivery::select(c,&binding,authenticated.installation()).await?;
             storage::insert_in(c,&binding).await?;
+            super::account_delivery::accept(c,&binding,None,employee.binding().epoch().get()).await?;
             super::lifecycle::emit_on(c,&binding,None,input.operation_id,"accepted").await?;
             sqlx::query("UPDATE rss_da.ceremonies SET consumed=$3 WHERE tenant_id=$1 AND id=$2").bind(binding.tenant).bind(input.challenge).bind(binding.id).execute(&mut *c).await.map_err(db)?;
             crate::operations::save( c,&op,&serde_json::to_string(&binding).map_err(|_|Error::Corrupt)?,audit).await?;
@@ -519,6 +515,7 @@ impl Service {
                                 .checked_add(1)
                                 .ok_or(Error::Capacity)?;
                             Binding {
+                                account_delivery:None,
                                 deployment_application: None,
                                 operation_id: input.operation_id,
                                 account_disposition: rss_mdm_agent_wire::runtime::AccessAccountDisposition::Keep,
@@ -572,6 +569,15 @@ impl Service {
                         }
                     };
                     if old.is_some() && matches!(input.action, Action::Put { .. } | Action::Reinstate { .. }) { storage::require_retired_in(c, &value).await?; }
+                    if old.is_some() && !matches!(input.action, Action::Unbind { .. } | Action::Offboard { .. }) {
+                        // A new revision cannot start over an unresolved native mutation.
+                        let unresolved:bool=sqlx::query_scalar(
+                            "SELECT EXISTS(SELECT FROM rss_da.access_runs WHERE tenant_id=$1 AND binding_id=$2
+                             AND da_target IS NOT NULL AND state->>'execution' IN ('running','unknown')
+                             AND (access_binding->>'revision')::bigint=$3)"
+                        ).bind(tenant).bind(*id).bind(input.expected_revision).fetch_one(&mut *c).await.map_err(db)?;
+                        if unresolved {return Err(Error::Conflict);}
+                    }
                     value.operation_id = input.operation_id;
                     let subject = rss_identity_postgres::platform::PlatformBinding {
                         instance: rss_identity_core::InstanceId::parse(&value.person.instance.to_string()).map_err(|_| Error::Malformed)?,
@@ -598,11 +604,14 @@ impl Service {
                         value.factor_generation = value.factor_generation.checked_add(1).ok_or(Error::Capacity)?;
                         super::lifecycle::accept_offboarding_on(c,actor,&value,idp_fingerprints).await?;
                     }
+                    let installation=rss_mdm_registration_service::device::installation_in(rss_mdm_install_support::StorageProfile::Da,c).await?;
+                    value.account_delivery=super::account_delivery::select(c,&value,installation).await?;
                     if old.is_some() {
                         storage::save_in(c, &value, input.expected_revision).await?;
                     } else {
                         storage::insert_in(c, &value).await?;
                     }
+                    super::account_delivery::accept(c,&value,Some(actor),actor.binding().epoch().get()).await?;
                     super::lifecycle::emit_on(c, &value, old.as_ref().map(|b| b.person.principal), input.operation_id, "accepted").await?;
                     crate::operations::save(
                         c,
@@ -678,4 +687,34 @@ pub(crate) async fn admit_session(
             }
             _ => Error::Storage,
         })
+}
+
+pub(super) async fn operation_on(
+    c: &mut PgConnection,
+    actor: &AuthorizedPrincipal,
+    device: &rss_mdm_agent_wire::DeviceId,
+    id: Uuid,
+) -> Result<Binding, Error> {
+    authorize(c, actor, device, Permission::AccountWrite).await?;
+    let result:Option<String>=sqlx::query_scalar("SELECT result FROM rss_da.operations WHERE tenant_id=$1::uuid AND actor=$2::uuid AND instance=$3::uuid AND operation_id=$4")
+            .bind(actor.tenant_id()).bind(actor.principal_id()).bind(actor.instance_id()).bind(id).fetch_optional(&mut *c).await.map_err(db)?;
+    let value: Binding =
+        serde_json::from_str(&result.ok_or(Error::NotFound)?).map_err(|_| Error::NotFound)?;
+    value.validate()?;
+    if value.device != *device || value.tenant.to_string() != actor.tenant_id() {
+        return Err(Error::NotFound);
+    }
+    // A subject offboarding receipt represents all frozen targets, not only its initiating device.
+    let offboarding: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM rss_da.lifecycles WHERE tenant_id=$1::uuid AND operation=$2)",
+    )
+    .bind(actor.tenant_id())
+    .bind(id)
+    .fetch_one(&mut *c)
+    .await
+    .map_err(db)?;
+    if offboarding {
+        super::lifecycle::load_on(c, actor, device, id, false).await?;
+    }
+    Ok(value)
 }

@@ -5,7 +5,8 @@
       "table": "access_runs",
       "read_write": false,
       "read_only": true,
-      "updates": [],
+      "updates": ["state","result","da_journal"],
+      "update_policy": "da_targetisnotnull",
       "delete_policy": null
     },
     {

@@ -18,7 +18,10 @@ CREATE TABLE rss_da.access_runs (
   , deadline bigint NOT NULL CHECK (deadline > available_at)
   , state jsonb NOT NULL CHECK (octet_length(CAST(state AS text)) <= 4096)
   , gateway_accepted boolean NOT NULL DEFAULT FALSE
-  , dispatch_fingerprint bytea NOT NULL CHECK (octet_length(dispatch_fingerprint) = 32)
+  , da_target jsonb
+  , da_journal jsonb NOT NULL DEFAULT '{}' CHECK (octet_length(da_journal::text)<=131072)
+  , dispatch_fingerprint bytea CHECK (octet_length(dispatch_fingerprint) = 32)
+  , CHECK ((da_target IS NULL) = (dispatch_fingerprint IS NOT NULL))
   , result jsonb CHECK (result IS NULL
                      OR octet_length(CAST(result AS text)) <= 1114112)
   , PRIMARY KEY (tenant_id, id)
@@ -71,7 +74,15 @@ GRANT USAGE ON SCHEMA rss_da TO da_command_runtime,da_policy_runtime,da_access;
 GRANT SELECT,INSERT ON rss_da.access_runs,rss_da.access_policy_recovery TO da_command_runtime,da_policy_runtime;
 GRANT UPDATE(state,result) ON rss_da.access_runs TO da_command_runtime,da_policy_runtime;
 GRANT UPDATE(gateway_accepted) ON rss_da.access_runs TO da_command_runtime;
-GRANT SELECT ON rss_da.access_runs TO da_access;
+GRANT SELECT,UPDATE(state,result,da_journal) ON rss_da.access_runs TO da_access;
+GRANT SELECT,INSERT ON rss_da.access_runs TO da_identity_runtime;
+CREATE POLICY access_device_update ON rss_da.access_runs AS RESTRICTIVE FOR UPDATE TO da_access
+ USING(da_target IS NOT NULL) WITH CHECK(da_target IS NOT NULL);
+CREATE POLICY access_management_insert ON rss_da.access_runs AS RESTRICTIVE FOR INSERT TO da_identity_runtime
+ WITH CHECK(da_target IS NOT NULL);
+CREATE POLICY access_agent_path ON rss_da.access_runs AS RESTRICTIVE TO da_command_runtime,da_policy_runtime
+ USING(da_target IS NULL) WITH CHECK(da_target IS NULL);
+CREATE UNIQUE INDEX access_da_revision ON rss_da.access_runs (tenant_id,binding_id,((access_binding->>'revision')::bigint)) WHERE da_target IS NOT NULL;
 GRANT UPDATE(input_revision,input_consumed,input_window,recovery_after,runs_done) ON rss_da.access_policy_recovery TO da_command_runtime;
 GRANT UPDATE(input_revision) ON rss_da.access_policy_recovery TO da_policy_runtime;
 COMMIT;
@@ -83,7 +94,7 @@ CREATE FUNCTION rss_da.save_retired_access_run(p_device uuid,p_run uuid,p_previo
  WITH changed AS (
  UPDATE rss_da.access_runs a SET state=p_state
  WHERE a.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
- AND a.device=p_device AND a.id=p_run AND a.state=p_previous
+ AND a.da_target IS NULL AND a.device=p_device AND a.id=p_run AND a.state=p_previous
  AND a.state->>'execution' IN ('not_started','running','waiting_reboot','unknown')
  AND a.state->>'cancellation'='none'
  AND p_state=jsonb_set(p_previous,'{cancellation}',to_jsonb(CASE WHEN p_previous->>'execution'='not_started' THEN 'confirmed'::text ELSE 'requested'::text END))
@@ -99,17 +110,17 @@ CREATE POLICY work_discovery ON rss_da.access_runs FOR SELECT TO da_owner USING(
 CREATE POLICY work_discovery ON rss_da.access_policy_recovery FOR SELECT TO da_owner USING(true);
 CREATE FUNCTION rss_da.access_runs_work_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
- SELECT tenant_id FROM (SELECT tenant_id FROM rss_da.access_runs UNION SELECT tenant_id FROM rss_da.access_policy_recovery) work
+ SELECT tenant_id FROM (SELECT tenant_id FROM rss_da.access_runs WHERE da_target IS NULL UNION SELECT tenant_id FROM rss_da.access_policy_recovery) work
  WHERE after_tenant IS NULL OR tenant_id>after_tenant ORDER BY tenant_id LIMIT 32
 $$;
 CREATE FUNCTION rss_da.access_runs_work_epoch(t uuid, entity text) RETURNS bigint
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
- SELECT expected_epoch FROM rss_da.access_runs WHERE tenant_id=t AND 'run:'||id::text=entity
+ SELECT expected_epoch FROM rss_da.access_runs WHERE tenant_id=t AND da_target IS NULL AND 'run:'||id::text=entity
  UNION ALL SELECT expected_epoch FROM rss_da.access_policy_recovery WHERE tenant_id=t AND 'policy:'||policy::text=entity
 $$;
 CREATE FUNCTION rss_da.access_runs_work_relay_scopes(after_tenant uuid, after_epoch bigint) RETURNS TABLE(tenant_id uuid,expected_epoch bigint)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
- SELECT DISTINCT r.tenant_id,r.expected_epoch FROM rss_da.access_runs r WHERE (after_tenant IS NULL OR (r.tenant_id,r.expected_epoch)>(after_tenant,after_epoch)) AND EXISTS (SELECT FROM rss_transactional_messaging.outbox o WHERE o.tenant_id=r.tenant_id AND o.domain='mdm.registration.access.v1' AND o.message_id='access.'||r.id::text AND o.status NOT IN ('published','resolved')) ORDER BY tenant_id,expected_epoch LIMIT 32
+ SELECT DISTINCT r.tenant_id,r.expected_epoch FROM rss_da.access_runs r WHERE r.da_target IS NULL AND (after_tenant IS NULL OR (r.tenant_id,r.expected_epoch)>(after_tenant,after_epoch)) AND EXISTS (SELECT FROM rss_transactional_messaging.outbox o WHERE o.tenant_id=r.tenant_id AND o.domain='mdm.registration.access.v1' AND o.message_id='access.'||r.id::text AND o.status NOT IN ('published','resolved')) ORDER BY tenant_id,expected_epoch LIMIT 32
 $$;
 ALTER FUNCTION rss_da.access_runs_work_scopes(uuid) OWNER TO da_owner;
 ALTER FUNCTION rss_da.access_runs_work_epoch(uuid,text) OWNER TO da_owner;

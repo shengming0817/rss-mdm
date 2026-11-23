@@ -66,8 +66,16 @@ fn service(s: &Services) -> Result<&crate::Business, BusinessError> {
     s.business.as_deref().ok_or(BusinessError::Unavailable)
 }
 pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
-    rss_mdm_http_contract::route_module! {struct DeviceReports for [Da] {status, application, current, claim_credential, credential_event}}
+    rss_mdm_http_contract::route_module! {struct DeviceReports for [Da] {status, application, current, claim_credential, credential_event, claim_account, account_event}}
     DeviceReports {
+        claim_account: Route::new(
+            "/api/v1/da/account-operations/next",
+            post(claim_account, &crate::PROTOCOL, &[Operation::Action]),
+        ),
+        account_event: Route::new(
+            "/api/v1/da/account-operations/{id}/events",
+            post(account_event, &crate::PROTOCOL, &[Operation::Action]),
+        ),
         claim_credential: Route::new(
             "/api/v1/da/credential-operations/next",
             post(claim_credential, &crate::PROTOCOL, &[Operation::Action]),
@@ -382,6 +390,36 @@ async fn credential_event(
             .credential_event(
                 b.recovery.as_deref().ok_or(BusinessError::Unavailable)?,
                 &p,
+                id,
+                &event?.0,
+                &a,
+            )
+            .await?,
+    ))
+}
+
+async fn claim_account(
+    State(s): State<Arc<Services>>,
+    Extension(a): Extension<RequestAudit>,
+    tls: Option<Extension<ClientCertificateEvidence>>,
+) -> Result<Json<Option<rss_mdm_agent_wire::da::AccountOffer>>, BusinessError> {
+    let p = credential_peer(&s, tls, &a).await?;
+    Ok(Json(service(&s)?.service.claim_account(&p, &a).await?))
+}
+async fn account_event(
+    State(s): State<Arc<Services>>,
+    Extension(a): Extension<RequestAudit>,
+    tls: Option<Extension<ClientCertificateEvidence>>,
+    Path(id): Path<Uuid>,
+    event: Body<rss_mdm_agent_wire::da::AccountEvent>,
+) -> Result<Json<rss_mdm_agent_wire::da::AccountSettlement>, BusinessError> {
+    let p = credential_peer(&s, tls, &a).await?;
+    let b = service(&s)?;
+    Ok(Json(
+        b.service
+            .account_event(
+                &p,
+                b.recovery.as_deref().ok_or(BusinessError::Unavailable)?,
                 id,
                 &event?.0,
                 &a,
