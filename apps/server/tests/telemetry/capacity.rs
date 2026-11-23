@@ -176,30 +176,6 @@ pub(super) async fn verify(
             let sample = &row["sample"];
             assert_eq!(sample["reading"]["value"]["value"], expected);
             assert_eq!(sample["series"]["dimensions"], json!(dimensions()));
-            if mode == "latest" {
-                let mut aggregate = aggregate(device, KEY, epoch, "timeline", false);
-                aggregate["dimensions"] = json!(dimensions());
-                let maintenance = json!({"id":Uuid::new_v4(), "device":device, "field":KEY, "resource":"device",
-                    "startMicros":0, "endMicros":4000000, "action":{"action":"recompute","spec":spec}});
-                assert!(serde_json::to_vec(&maintenance)?.len() > 16384);
-                let progress = http
-                    .post("/telemetry/maintenance", maintenance.clone())
-                    .await?;
-                assert_eq!(progress["state"], "complete");
-                assert_eq!(
-                    http.post("/telemetry/maintenance", maintenance).await?,
-                    progress
-                );
-                let result = http.post("/telemetry/aggregate", aggregate.clone()).await?;
-                anyhow::ensure!(
-                    !result["buckets"]
-                        .as_array()
-                        .context("state buckets")?
-                        .is_empty()
-                );
-                aggregate["dimensions"]["d0000"] = json!("unknown");
-                assert_eq!(http.call("/telemetry/aggregate", aggregate).await?.0, 400);
-            }
             let definition = &sample["series"]["definition"];
             assert_eq!(definition["metric"]["members"], json!(states()));
             let rules = &definition["dimensions"];
@@ -210,5 +186,36 @@ pub(super) async fn verify(
             assert_eq!(rules["maxTotalBytes"], 32768);
         }
     }
+    verify_maintenance_and_aggregate(http, device, epoch, spec).await
+}
+
+async fn verify_maintenance_and_aggregate(
+    http: &http::Http,
+    device: &rss_mdm_agent_wire::DeviceId,
+    epoch: Uuid,
+    spec: &SummarySpec,
+) -> Result<()> {
+    let mut aggregate = aggregate(device, KEY, epoch, "timeline", false);
+    aggregate["dimensions"] = json!(dimensions());
+    let maintenance = json!({"id":Uuid::new_v4(), "device":device, "field":KEY, "resource":"device",
+                    "startMicros":0, "endMicros":4000000, "action":{"action":"recompute","spec":spec}});
+    assert!(serde_json::to_vec(&maintenance)?.len() > 16384);
+    let progress = http
+        .post("/telemetry/maintenance", maintenance.clone())
+        .await?;
+    assert_eq!(progress["state"], "complete");
+    assert_eq!(
+        http.post("/telemetry/maintenance", maintenance).await?,
+        progress
+    );
+    let result = http.post("/telemetry/aggregate", aggregate.clone()).await?;
+    anyhow::ensure!(
+        !result["buckets"]
+            .as_array()
+            .context("state buckets")?
+            .is_empty()
+    );
+    aggregate["dimensions"]["d0000"] = json!("unknown");
+    assert_eq!(http.call("/telemetry/aggregate", aggregate).await?.0, 400);
     Ok(())
 }

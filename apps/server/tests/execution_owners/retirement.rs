@@ -147,16 +147,16 @@ async fn certificate(h: &Harness) -> Result<()> {
 #[tokio::test]
 #[ignore = "T2: cleanup cancels both owners and waits for Running and Unknown evidence before unenrollment"]
 async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
-    let mut h = Harness::open().await?;
+    let mut h = Box::pin(Harness::open()).await?;
     certificate(&h).await?;
-    super::super::directory_queries_t2::history::seal(
+    Box::pin(super::super::directory_queries_t2::history::seal(
         &h.c,
         h.p.device(),
         rss_mdm_inventory::Source::AgentBuiltin,
         "retirement-serial",
         "0a1b2c3d-0000-4000-8000-000000000003",
         true,
-    )
+    ))
     .await?;
     let (_, v) = h.policy("retiring").await?;
     let script = h.run(v, "retiring", now() + 300).await?;
@@ -178,25 +178,25 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
         .await?;
     tx.commit().await?;
     let credential = credential_run(&h, &running).await?;
-    super::super::directory_queries_t2::history::seal(
+    Box::pin(super::super::directory_queries_t2::history::seal(
         &h.c,
         h.p.device(),
         rss_mdm_inventory::Source::AgentBuiltin,
         "retirement-second",
         "0a1b2c3d-0000-4000-8000-000000000004",
         true,
-    )
+    ))
     .await?;
-    let late = super::super::directory_queries_t2::history::prepare(
+    let late = Box::pin(super::super::directory_queries_t2::history::prepare(
         &h.c,
         h.p.device(),
         rss_mdm_inventory::Source::AgentBuiltin,
         "retirement-late",
         "0a1b2c3d-0000-4000-8000-000000000005",
-    )
+    ))
     .await?;
     let retirement = accept(&h, &h.object).await?;
-    step(&h, retirement).await?;
+    Box::pin(step(&h, retirement)).await?;
     assert_eq!(state(&h, retirement).await?.0, "cleanup");
     assert_eq!(h.state(script).await?["cancellation"], "requested");
     let cancelled:String=sqlx::query_scalar("SELECT agent_state->>'cancellation' FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(collection).fetch_one(&h.c.operator).await?;
@@ -212,7 +212,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    step(&h, retirement).await?;
+    Box::pin(step(&h, retirement)).await?;
     assert_eq!(
         state(&h, retirement).await?,
         ("cleanup".into(), "unknown".into(), Some(script))
@@ -226,7 +226,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    step(&h, retirement).await?;
+    Box::pin(step(&h, retirement)).await?;
     // Other owners are settled: this credential is the sole remaining cleanup barrier.
     assert_eq!(state(&h, retirement).await?.0, "cleanup");
     let mut tx = command::seed_transaction(&h.c).await?;
@@ -237,7 +237,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    step(&h, retirement).await?;
+    Box::pin(step(&h, retirement)).await?;
     assert_eq!(state(&h, retirement).await?.0, "unenroll");
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -270,7 +270,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     drop(h.delivery);
     drop(h.audit);
     Fixture::close(h.a).await?;
-    h.a = Fixture::open(&h.c).await?;
+    h.a = Box::pin(Fixture::open(&h.c)).await?;
     (h.audit, h.delivery) = delivery(&h.c, &h.a).await?;
     assert!(
         h.a.service
@@ -278,7 +278,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
             .await
             .is_err()
     );
-    step(&h, retirement).await?;
+    Box::pin(step(&h, retirement)).await?;
     assert_eq!(state(&h, retirement).await?.0, "unenroll");
     for (_, claim) in
         h.a.service
@@ -298,7 +298,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
         },
     )
     .await?;
-    step(&h, retirement).await?;
+    Box::pin(step(&h, retirement)).await?;
     assert_eq!(state(&h, retirement).await?.0, "complete");
     let revoked: (String, bool, bool, i64) = sqlx::query_as("SELECT r.state, NOT EXISTS (SELECT FROM mdm_access.credentials AS k WHERE k.tenant_id = r.tenant_id AND k.device = r.id AND k.state = 'active'), NOT EXISTS (SELECT FROM mdm_access.report_sources AS s WHERE s.tenant_id = r.tenant_id AND s.device = r.id AND s.enabled), (SELECT count(*) FROM mdm_pki.revocations AS v INNER JOIN mdm_pki.certificates AS k USING (tenant_id, purpose, issuer, serial) WHERE k.tenant_id = r.tenant_id AND k.device = r.id AND v.state = 'pending') FROM mdm_access.devices AS r WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2")
         .bind(h.c.tenant.to_string()).bind(h.p.device().into_uuid()).fetch_one(&h.c.operator).await?;

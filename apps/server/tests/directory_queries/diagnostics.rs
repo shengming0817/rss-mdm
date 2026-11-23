@@ -87,10 +87,10 @@ async fn deadline(c: &Context, authorized: &Http) -> Result<()> {
     blocker.rollback().await?;
     let (status, body) = response??;
     assert_eq!(
-        status, 503,
+        status, 504,
         "exhausted diagnostic request must not return partial success: {body}"
     );
-    assert_eq!(body["code"], "service_unavailable");
+    assert_eq!(body["code"], "request_deadline");
     assert!(body.get("components").is_none());
     assert_eq!(authorized.get("/runtime/diagnostics", &[]).await?.0, 200);
     Ok(())
