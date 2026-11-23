@@ -235,11 +235,12 @@ impl Service {
         let service = self.clone();
         let device = principal.clone();
         let input = input.clone();
-        self.intake(principal.binding(), request, move |c| {
+        // Keep the PostgreSQL transaction frame inside the intake owner.
+        Box::pin(self.intake(principal.binding(), request, move |c| {
             Box::pin(async move {
                 admission::receive_on(&service, c, &device, &input, wire_bytes).await
             })
-        })
+        }))
         .await
     }
     async fn intake<T: Send, F>(

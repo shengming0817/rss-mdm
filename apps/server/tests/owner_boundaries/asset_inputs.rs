@@ -2219,8 +2219,8 @@ async fn peer_advances_during_locked_checkpoint(
     lock: &'static str,
     receipt: &'static str,
 ) -> Result<()> {
-    let first = Context::open("shared", &[]).await?;
-    let second = Context::open("shared", &[]).await?;
+    let first = Context::open("planning_workers", &[]).await?;
+    let second = Context::open("planning_workers", &[]).await?;
     let (slow, peer) = if first.tenant.to_string() < second.tenant.to_string() {
         (&first, &second)
     } else {

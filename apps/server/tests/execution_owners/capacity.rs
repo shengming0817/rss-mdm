@@ -263,8 +263,8 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
         w::ReportBody::Snapshot(report.values().to_vec()),
     )?;
     assert_eq!(send(second.canonical()?, true).await?.0, 202);
-    let charge: i64 = sqlx::query_scalar("SELECT octet_length(attempts::text)::bigint+octet_length(batch)+octet_length(scope)+1024 FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2")
-        .bind(h.c.tenant.to_string()).bind(id).fetch_one(&h.c.operator).await?;
+    let (first_id,charge):(Uuid,i64)=sqlx::query_as("SELECT id,octet_length(attempts::text)::bigint+octet_length(batch)+octet_length(scope)+1024 FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND delivery_pending ORDER BY device,source,epoch,sequence,id LIMIT 1")
+        .bind(h.c.tenant.to_string()).fetch_one(&h.c.operator).await?;
     let delivery = collection::store::Delivery::new(h.c.database.inventory(), h.c.audit.clone());
     let prefix = delivery
         .pending_reports(
@@ -274,7 +274,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
         )
         .await?;
     assert_eq!(prefix.len(), 1);
-    assert_eq!(prefix[0].batch().id().as_str(), id.to_string());
+    assert_eq!(prefix[0].batch().id().as_str(), first_id.to_string());
     let total_charge: i64 = sqlx::query_scalar("SELECT sum(octet_length(attempts::text)::bigint+octet_length(batch)+octet_length(scope)+1024)::bigint FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND delivery_pending")
         .bind(h.c.tenant.to_string()).fetch_one(&h.c.operator).await?;
     assert_eq!(
