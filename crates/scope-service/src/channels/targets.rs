@@ -679,6 +679,29 @@ pub async fn lifecycle_objects_on(
         tenant,
         scope,
         LifecycleSelection::Page { after, limit },
+        false,
+    )
+    .await
+}
+
+/// Policy execution also resolves exact Device-owned intentions after their own revocation.
+pub async fn retirement_objects_on(
+    profile: rss_mdm_install_support::StorageProfile,
+    reader: Option<&dyn rss_mdm_inventory_service::objects::ObjectReader>,
+    c: &mut PgConnection,
+    tenant: TenantId,
+    scope: Uuid,
+    after: Option<rss_mdm_agent_wire::ObjectRef>,
+    limit: usize,
+) -> Result<Vec<DeviceAssignment>, SourceError> {
+    lifecycle_selection_on(
+        profile,
+        reader,
+        c,
+        tenant,
+        scope,
+        LifecycleSelection::Page { after, limit },
+        true,
     )
     .await
 }
@@ -699,6 +722,7 @@ pub async fn lifecycle_object_on(
         tenant,
         scope,
         LifecycleSelection::Exact(object),
+        true,
     )
     .await?
     .pop())
@@ -719,6 +743,7 @@ async fn lifecycle_selection_on(
     tenant: TenantId,
     scope: Uuid,
     selection: LifecycleSelection<'_>,
+    retirement: bool,
 ) -> Result<Vec<DeviceAssignment>, SourceError> {
     let (after, count, exact) = match selection {
         LifecycleSelection::Page { after, limit } => (after, limit + 1, None),
@@ -774,6 +799,13 @@ async fn lifecycle_selection_on(
         let input = rss_mdm_device_service::lifecycle::complete_target_in(c, tenant, &input)
             .await
             .map_err(|_| SourceError::Invariant)?;
+        let intention = if fresh && retirement {
+            rss_mdm_device_service::lifecycle::existing_retirement_on(c, tenant, &input)
+                .await
+                .map_err(|_| SourceError::Invariant)?
+        } else {
+            None
+        };
         let cursor = input.object;
         let mut known = BTreeSet::new();
         let mut uncertain = BTreeSet::new();
@@ -785,13 +817,19 @@ async fn lifecycle_selection_on(
             valid &= current(profile, reader, c, tenant, &input, member.channel)
                 .await?
                 .as_ref()
-                == Some(member);
+                == Some(member)
+                || intention
+                    .as_ref()
+                    .is_some_and(|prior| prior.confirms(&input, member));
             for source in rows_for(profile, c, tenant, run, member.channel, &member.device).await? {
                 if source.unknown
                     || !source.input.verified
-                    || current(profile, reader, c, tenant, &source.input, member.channel)
+                    || (current(profile, reader, c, tenant, &source.input, member.channel)
                         .await?
                         .is_none()
+                        && !intention
+                            .as_ref()
+                            .is_some_and(|prior| prior.confirms(&source.input, member)))
                 {
                     uncertain.insert(source.source);
                 } else {
@@ -854,6 +892,7 @@ async fn lifecycle_selection_on(
             cursor,
             object: input,
             admission,
+            existing_retirement: intention.map(|i| i.operation()),
             scope_result: run,
         });
     }

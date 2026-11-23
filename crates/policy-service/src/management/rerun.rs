@@ -1,5 +1,6 @@
 //! Explicit rerun is one durable trigger, consumed lazily by each eligible device.
 use super::*;
+pub(super) const MAX_LIFETIME_SECONDS: i64 = 7 * 24 * 60 * 60;
 #[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Rerun {
@@ -35,7 +36,7 @@ impl Policies {
             if matches!(&policy.definition.action,Action::Execution{parameters,..} if parameters.has_input()) {return Err(Error::Malformed.into());}
             let now=crate::action_admission::now(tx).await?;
             if !policy.state.is_enabled() || policy.revision as u64!=op.expected_revision {return Err(Error::Conflict.into());}
-            if !policy.definition.action.kind().supports_rerun() || op.operation_id.is_nil() || op.input.deadline<=now || op.input.deadline>now.saturating_add(604800) {return Err(Error::Malformed.into());}
+            if !policy.definition.action.kind().supports_rerun() || op.operation_id.is_nil() || op.input.deadline<=now || op.input.deadline>now.saturating_add(MAX_LIFETIME_SECONDS) {return Err(Error::Malformed.into());}
             checked(s.policy_store.trigger_in(tx,op.operation_id,policy.version,now,op.input.deadline).await?)?;
             if matches!(policy.definition.action, Action::UnmanageDevice { .. }) {
                 let occurrence = rss_mdm_policy_postgres::work::RetirementOccurrence::Explicit {

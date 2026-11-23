@@ -36,12 +36,10 @@ impl RetirementOccurrence {
 pub struct TriggerPage {
     /// Initiating Policy reconciliation job.
     pub publication: Uuid,
-    /// Last inspected (deadline, admission ordinal), exclusive.
+    /// Last inspected (monotone admission second, ordinal), exclusive.
     pub after: (i64, i64),
     /// Maximum committed admission ordinal under the original Policy lock.
-    pub through: i64,
-    /// Last deadline present when this publication started.
-    pub last_deadline: i64,
+    pub through: (i64, i64),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -58,8 +56,8 @@ pub enum Work {
         object: serde_json::Value,
         /// Original calendar or explicit-trigger occurrence.
         occurrence: String,
-        /// Published Scope evidence under which this object qualified.
-        scope_result: Uuid,
+        /// If present, the worker may link only this exact existing retirement.
+        reuse: Option<Uuid>,
         /// Last admissible acceptance time, in Unix seconds.
         deadline: i64,
     },
@@ -233,6 +231,26 @@ pub async fn read_in(
     })
     .transpose()
 }
+/// Whether any scan of this trigger produced an acceptance or device work, and its latest refresh.
+pub async fn trigger_evidence_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    trigger: Uuid,
+) -> Result<(bool, bool, Option<Uuid>), PgError> {
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query_as(crate::storage_profile::sql(profile).work_trigger_evidence)
+                .bind(tenant)
+                .bind(format!("explicit:{trigger}"))
+                .bind(trigger.to_string())
+                .fetch_one(c)
+                .await
+        })
+    })
+    .await
+}
+
 /// Device-specific evidence of one original trigger. An accepted intent remains authoritative
 /// after subsequent Scope evaluations. Within the other outcomes return the latest dispatch.
 pub async fn device_evidence_in(

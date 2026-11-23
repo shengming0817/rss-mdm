@@ -19,7 +19,7 @@ impl crate::application::Application {
             version,
             object,
             occurrence,
-            scope_result,
+            reuse,
             deadline,
         } = input
         else {
@@ -105,64 +105,27 @@ impl crate::application::Application {
                 .await
                 .map(rss_reconcile_postgres::ProtectedStep::Ready);
         }
-        let eligible = fresh
-            && assignment.as_ref().is_some_and(|item| {
-                matches!(item.admission, ScopeAdmission::Eligible { .. }) && item.object == object
-            });
-        if !eligible {
-            let old = object.clone();
-            let policy_id = *policy;
-            let version_id = *version;
-            let admitted_scope = *scope_result;
-            let (prior, same_scope) = tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        let published =
-                            rss_mdm_scope_service::results::published_on(profile, c, tenant, scope)
-                                .await?;
-                        Ok((
-                            lifecycle::linked_target_in(c, tenant, policy_id, version_id, &old)
-                                .await,
-                            published.is_some_and(|(run, _, _)| run == admitted_scope),
-                        ))
-                    })
-                })
-                .await?;
-            let pending = !fresh
-                || assignment
-                    .as_ref()
-                    .is_some_and(|item| item.admission == ScopeAdmission::Pending);
-            let prior = prior?;
-            if fresh
-                && same_scope
-                && pending
-                && let Some(operation) = prior
-            {
-                return self
-                    .finish_retirement_in(
-                        binding,
-                        tx,
-                        task,
-                        json!({"state":"reused","operation":operation}),
-                    )
-                    .await
-                    .map(rss_reconcile_postgres::ProtectedStep::Ready);
-            }
-            if pending {
-                let remaining = std::time::Duration::from_secs((*deadline - now) as u64);
-                return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(
-                    crate::worker_wake::RECOVERY.min(remaining),
-                ));
-            }
-            let mut result = json!({"state":"ineligible"});
-            if let Some(operation) = prior {
-                result["previousOperation"] = json!(operation);
-            }
+        let pending = !fresh
+            || assignment
+                .as_ref()
+                .is_some_and(|item| item.admission == ScopeAdmission::Pending);
+        if pending {
+            let remaining = std::time::Duration::from_secs((*deadline - now) as u64);
+            return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(
+                crate::worker_wake::RECOVERY.min(remaining),
+            ));
+        }
+        let Some(item) = assignment.filter(|item| {
+            matches!(item.admission, ScopeAdmission::Eligible { .. })
+                && item.object == object
+                && reuse.is_none_or(|id| item.existing_retirement == Some(id))
+        }) else {
             return self
-                .finish_retirement_in(binding, tx, task, result)
+                .finish_retirement_in(binding, tx, task, json!({"state":"ineligible"}))
                 .await
                 .map(rss_reconcile_postgres::ProtectedStep::Ready);
-        }
+        };
+        let existing = item.existing_retirement;
         let policy_id = *policy;
         let version = *version;
         let occurrence = occurrence.clone();
@@ -170,6 +133,12 @@ impl crate::application::Application {
         let accepted = tx
             .with_connection(move |c| {
                 Box::pin(async move {
+                    if let Some(operation) = existing {
+                        return Ok(lifecycle::reuse_in(
+                            c, tenant, operation, policy_id, version, &object,
+                        )
+                        .await);
+                    }
                     Ok(lifecycle::accept_in(
                         c,
                         tenant,
@@ -191,7 +160,9 @@ impl crate::application::Application {
             })
             .await?
             .map_err(Error::from)?;
-        self.changes.retirement_accepted_in(tx, accepted.0).await?;
+        if existing.is_none() {
+            self.changes.retirement_accepted_in(tx, accepted.0).await?;
+        }
         if !accepted.1 {
             let audit = RequestAudit::new(
                 rss_mdm_audit_integration::Origin::Background,
@@ -229,7 +200,7 @@ impl crate::application::Application {
             binding,
             tx,
             task,
-            json!({"state":if accepted.1 { "reused" } else { "accepted" },"operation":accepted.0}),
+            json!({"state":if existing.is_some() || accepted.1 { "reused" } else { "accepted" },"operation":accepted.0}),
         )
         .await
         .map(rss_reconcile_postgres::ProtectedStep::Ready)

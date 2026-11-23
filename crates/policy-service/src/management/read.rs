@@ -201,6 +201,23 @@ async fn original_summary(
     Ok(Some(summary))
 }
 
+fn work_state(row: &rss_mdm_policy_postgres::work::Record) -> &str {
+    let result = row.retirement_result.as_ref();
+    if row.failure.as_deref() == Some("superseded") && result.is_some() {
+        "superseded"
+    } else if row.failure.is_some() {
+        "failed"
+    } else if let Some(state) = result.and_then(|r| r["state"].as_str()) {
+        state
+    } else if row.completed {
+        "completed"
+    } else if row.started {
+        "running"
+    } else {
+        "pending"
+    }
+}
+
 fn project_work(
     p: &AuthorizedPrincipal,
     grant: &crate::authorization::Snapshot,
@@ -218,20 +235,8 @@ fn project_work(
         }
     }
     let result = row.retirement_result.as_ref();
-    let state = if row.failure.as_deref() == Some("superseded") && result.is_some() {
-        "superseded"
-    } else if row.failure.is_some() {
-        "failed"
-    } else if let Some(state) = result.and_then(|r| r["state"].as_str()) {
-        state
-    } else if row.completed {
-        "completed"
-    } else if row.started {
-        "running"
-    } else {
-        "pending"
-    };
-    summary.state = Some(state.to_owned());
+    summary.state = Some(work_state(row).into());
+
     if let Some(value) =
         result.and_then(|r| r.get("operation").or_else(|| r.get("previousOperation")))
     {
@@ -261,31 +266,68 @@ pub async fn work_receipt(
             summary.accepted = Some(true);
             summary.executions.push(id);
             project_work(p, &grant, &row, &mut summary)?;
-            if let (
-                Some(device),
-                crate::worker::Work::RetirementPage {
-                    occurrence:
-                        rss_mdm_policy_postgres::work::RetirementOccurrence::Explicit {
-                            trigger, ..
-                        },
-                    ..
-                },
-            ) = (device, &row.input)
+            if let crate::worker::Work::RetirementPage {
+                occurrence:
+                    rss_mdm_policy_postgres::work::RetirementOccurrence::Explicit { trigger, .. },
+                publication,
+                ..
+            } = &row.input
             {
-                grant.require(p, Permission::InventoryRead, Some(&device))?;
-                if let Some(child) = rss_mdm_policy_postgres::work::device_evidence_in(
-                    s.profile(),
-                    tx,
-                    *trigger,
-                    device,
-                )
-                .await?
-                {
-                    let evidence = rss_mdm_policy_postgres::work::read_in(s.profile(), tx, child)
-                        .await?
-                        .ok_or(Error::Conflict)?;
-                    summary.executions.push(child);
-                    project_work(p, &grant, &evidence, &mut summary)?;
+                summary
+                    .stages
+                    .push(rss_mdm_audit_integration::operation::ReceiptStage {
+                        phase: "assignment_scan".into(),
+                        revision: None,
+                        state: summary.state.clone(),
+                    });
+                if let Some(device) = device {
+                    grant.require(p, Permission::InventoryRead, Some(&device))?;
+                    if let Some(child) = rss_mdm_policy_postgres::work::device_evidence_in(
+                        s.profile(),
+                        tx,
+                        *trigger,
+                        device,
+                    )
+                    .await?
+                    {
+                        let child_row =
+                            rss_mdm_policy_postgres::work::read_in(s.profile(), tx, child)
+                                .await?
+                                .ok_or(Error::Conflict)?;
+                        summary.executions.push(child);
+                        project_work(p, &grant, &child_row, &mut summary)?;
+                    } else {
+                        summary.state = Some("no_device_evidence".into());
+                        summary.accepted = None;
+                        summary.executions.clear();
+                    }
+                } else if publication.is_none() {
+                    let (accepted, dispatched, latest) =
+                        rss_mdm_policy_postgres::work::trigger_evidence_in(
+                            s.profile(),
+                            tx,
+                            *trigger,
+                        )
+                        .await?;
+                    if let Some(refresh) = latest {
+                        let refresh_row =
+                            rss_mdm_policy_postgres::work::read_in(s.profile(), tx, refresh)
+                                .await?
+                                .ok_or(Error::Conflict)?;
+                        summary.executions.push(refresh);
+                        summary
+                            .stages
+                            .push(rss_mdm_audit_integration::operation::ReceiptStage {
+                                phase: "latest_scope_scan".into(),
+                                revision: None,
+                                state: Some(work_state(&refresh_row).into()),
+                            });
+                    }
+                    if accepted {
+                        summary.state = Some("has_accepted_devices".into());
+                    } else if dispatched {
+                        summary.state = Some("has_device_work".into());
+                    }
                 }
             }
             p.check_live()?;

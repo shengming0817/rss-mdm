@@ -43,11 +43,11 @@ async fn accept(
     tx.commit().await?;
     Ok(id)
 }
-async fn resources(h: &Harness, id: Uuid) -> Result<rss_reconcile::ResourceSet> {
+async fn resources(c: &Context, id: Uuid) -> Result<rss_reconcile::ResourceSet> {
     let devices: Vec<Uuid> = sqlx::query_scalar("SELECT device FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2 ORDER BY device")
-        .bind(h.c.tenant.to_string()).bind(id).fetch_all(&h.c.operator).await?;
+        .bind(c.tenant.to_string()).bind(id).fetch_all(&c.operator).await?;
     Ok(rss_mdm_registration_service::lifecycle::resources::devices(
-        h.c.tenant,
+        c.tenant,
         &devices
             .into_iter()
             .map(rss_mdm_agent_wire::DeviceId::try_from)
@@ -55,15 +55,23 @@ async fn resources(h: &Harness, id: Uuid) -> Result<rss_reconcile::ResourceSet> 
     )?)
 }
 fn step(h: &Harness, id: Uuid) -> futures::future::LocalBoxFuture<'_, Result<()>> {
+    device_step(&h.c, &h.a.service, id)
+}
+
+pub(in crate::assembly) fn device_step<'a>(
+    c: &'a Context,
+    service: &'a rss_mdm_device_service::control::Service,
+    id: Uuid,
+) -> futures::future::LocalBoxFuture<'a, Result<()>> {
     Box::pin(async move {
         let timer = rss_mdm_device_service::control::recovery::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cancel);
-        let scope = rss_mdm_device_service::control::recovery_scope(h.c.tenant);
+        let scope = rss_mdm_device_service::control::recovery_scope(c.tenant);
         let target = rss_reconcile::Target::new(scope.clone(), format!("retirement:{id}"))?;
-        let store = h.a.service.recovery_store();
+        let store = service.recovery_store();
         store
-            .wake(&target, &resources(h, id).await?, &control)
+            .wake(&target, &resources(c, id).await?, &control)
             .await?;
         loop {
             control.check()?;
@@ -84,15 +92,14 @@ fn step(h: &Harness, id: Uuid) -> futures::future::LocalBoxFuture<'_, Result<()>
                         .await?;
                     continue;
                 }
-                let ReconcileStep::Ready(diff) = h.a.service.observe(&claim, &control).await?
-                else {
+                let ReconcileStep::Ready(diff) = service.observe(&claim, &control).await? else {
                     store.release(&claim, &control).await?;
                     continue;
                 };
                 let completion = if diff.drift() == rss_reconcile::DriftKind::Converged {
                     rss_reconcile::Completion::Converged
                 } else {
-                    match h.a.service.apply(&claim, diff, &control).await? {
+                    match service.apply(&claim, diff, &control).await? {
                         ReconcileStep::Ready(()) => {
                             rss_reconcile::Completion::Reobserve(Duration::from_millis(50))
                         }
@@ -247,7 +254,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     let (old_claim, old_diff) = {
         let store = h.a.service.recovery_store();
         store
-            .wake(&target, &resources(&h, retirement).await?, &control)
+            .wake(&target, &resources(&h.c, retirement).await?, &control)
             .await?;
         let mut batch = store
             .claim_due(&scope, 64, 64, Duration::from_secs(30), &control)

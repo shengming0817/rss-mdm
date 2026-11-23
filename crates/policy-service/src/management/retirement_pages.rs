@@ -126,23 +126,20 @@ impl crate::application::Application {
                     .await?;
                 schedules::trigger_bound_in(profile, tx, policy.version, now)
                     .await?
-                    .map(|(through, last_deadline)| TriggerPage {
+                    .map(|through| TriggerPage {
                         publication: task,
-                        after: (now, i64::MAX),
-                        last_deadline,
+                        after: (now.saturating_sub(super::rerun::MAX_LIFETIME_SECONDS), 0),
                         through,
                     })
             }
         };
         if let Some(page) = page {
             let rows =
-                schedules::trigger_page_in(profile, tx, policy.version, now, page, TRIGGER_PAGE)
-                    .await?;
-            for &(trigger, created_at, deadline, admitted) in
+                schedules::trigger_page_in(profile, tx, policy.version, page, TRIGGER_PAGE).await?;
+            for &(trigger, created_at, deadline, _, _) in
                 rows.iter().take(usize::from(TRIGGER_PAGE))
             {
-                // Advance the physical cursor even over interleaved later admissions.
-                if admitted > page.through {
+                if deadline <= now {
                     continue;
                 }
                 enqueue_occurrence_in(
@@ -161,9 +158,9 @@ impl crate::application::Application {
                 .await?;
             }
             if rows.len() > usize::from(TRIGGER_PAGE) {
-                let (_, _, deadline, admitted) = rows[usize::from(TRIGGER_PAGE) - 1];
+                let (_, _, _, scan_second, admitted) = rows[usize::from(TRIGGER_PAGE) - 1];
                 let page = TriggerPage {
-                    after: (deadline, admitted),
+                    after: (scan_second, admitted),
                     ..page
                 };
                 let id = work_id(
@@ -244,7 +241,21 @@ impl crate::application::Application {
         let version = policy.version;
         let now = crate::action_admission::now(tx).await?;
         let slot = schedule.occurrence(coordinate, version.as_bytes())?;
+        let calendar_end = match (occurrence, slot, &schedule.misfire) {
+            (
+                RetirementOccurrence::Calendar { .. },
+                Some(slot),
+                rss_mdm_policy::schedule::Misfire::Skip {
+                    max_lateness_seconds,
+                },
+            ) => slot
+                .available_at
+                .saturating_add(i64::from(*max_lateness_seconds))
+                .saturating_add(1),
+            _ => i64::MAX,
+        };
         let end = expiry
+            .min(calendar_end)
             .min(schedule.ends_at())
             .min(slot.and_then(|s| s.window_end).unwrap_or(i64::MAX));
         let Some(slot) = slot.filter(|s| now < end && s.available_at < end) else {
@@ -270,7 +281,7 @@ impl crate::application::Application {
             .with_connection(move |c| {
                 Box::pin(async move {
                     Ok(
-                        rss_mdm_scope_service::channels::targets::lifecycle_objects_on(
+                        rss_mdm_scope_service::channels::targets::retirement_objects_on(
                             profile,
                             Some(reader.as_ref()),
                             c,
@@ -316,7 +327,7 @@ impl crate::application::Application {
                         version,
                         object,
                         occurrence: occurrence.clone(),
-                        scope_result: item.scope_result,
+                        reuse: item.existing_retirement,
                         deadline,
                     },
                 )

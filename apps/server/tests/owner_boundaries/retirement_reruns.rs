@@ -237,15 +237,18 @@ async fn every_receipt_reaches_its_device_even_as_new_triggers_arrive() -> Resul
     let worker = Worker::open(&c, &f).await?;
     let expires = now(&c).await? + 600;
     let mut accepted = vec![];
-    for _ in 0..65 {
-        accepted.push(rerun(&c, &f, &account, &v, expires).await?);
+    for i in 0..65 {
+        let end = if i == 64 { expires + 60 } else { expires };
+        accepted.push(rerun(&c, &f, &account, &v, end).await?);
     }
     worker.step(&c, jobs([publication, accepted[0].1])).await?;
     assert_eq!(
         refresh_members(&c, publication).await?,
         accepted[..64].iter().map(|r| r.0.operation_id).collect()
     );
-    accepted.push(rerun(&c, &f, &account, &v, expires).await?);
+    for _ in 0..65 {
+        accepted.push(rerun(&c, &f, &account, &v, expires + 1).await?);
+    }
     let resume:Uuid=sqlx::query_scalar("SELECT id FROM mdm_policy.work WHERE tenant_id=$1::uuid AND kind='retirement_refresh' AND input->'page'->>'publication'=$2")
         .bind(c.tenant.to_string()).bind(publication.to_string()).fetch_one(&c.operator).await?;
     worker
@@ -272,19 +275,48 @@ async fn every_receipt_reaches_its_device_even_as_new_triggers_arrive() -> Resul
         rss_mdm_scope::Reference::Device(d) => *d,
         _ => anyhow::bail!("expected device"),
     };
-    // Registration's real retirement transition removes the live credentials before
-    // later claims; the Device owner can still identify the original exact intent.
-    let mut retired = crate::command_runtime_t2_support::seed_transaction(&c).await?;
-    rss_mdm_registration_service::device::store::retire_state_in(
-        rss_mdm_install_support::StorageProfile::Mdm,
-        &mut retired,
-        &c.tenant.to_string(),
-        &device,
-        "revoked",
-        None,
+    let operation: Uuid =
+        serde_json::from_value(outcome(&c, device_work[0]).await?["operation"].clone())?;
+    // Both parents are admitted while registrations are live, but only run after the first Device operation revokes them.
+    let (late, late_parent) = rerun(&c, &f, &account, &v, expires).await?;
+    let overlapping = submit(&c, &f, &account, serde_json::to_value(&v.definition)?).await?;
+    publish(&c, &overlapping).await?;
+    let (overlap, overlap_parent) = rerun(&c, &f, &account, &overlapping, expires).await?;
+    let proof = c.authenticate(&account).await?;
+    let associations = rss_mdm_device_service::Associations::new(c.audit.clone(), &[7; 32])?;
+    Box::pin(associations.force_retirement(
+        &proof,
+        operation,
+        &rss_mdm_device_service::lifecycle_management::ForceRevoke {
+            operation_id: Uuid::new_v4(),
+            reason: "finish retirement before the queued reruns".into(),
+        },
+        &c.request(&proof)?,
+    ))
+    .await?;
+    crate::assembly::execution_owners_t2::retirement::device_step(
+        &c,
+        &f.resources.service,
+        operation,
     )
     .await?;
-    retired.commit().await?;
+    let revoked:bool=sqlx::query_scalar("SELECT d.state='revoked' AND ch.stage='complete' FROM mdm_access.devices d JOIN mdm_devices.retirement_channels ch ON (ch.tenant_id,ch.device)=(d.tenant_id,d.id) WHERE d.tenant_id=$1::uuid AND ch.operation=$2")
+        .bind(c.tenant.to_string()).bind(operation).fetch_one(&c.operator).await?;
+    assert!(revoked);
+    worker.step(&c, jobs([late_parent, overlap_parent])).await?;
+    for op in [late, overlap] {
+        let child = children(&c, op.operation_id).await?;
+        ensure!(
+            child.len() == 1,
+            "retained Scope evidence must recognize the completed Device intent"
+        );
+        worker.step(&c, jobs(child.iter().copied())).await?;
+        let result = outcome(&c, child[0]).await?;
+        assert_eq!(result, json!({"state":"reused","operation":operation}));
+    }
+    let linked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_devices.retirement_policies WHERE tenant_id=$1::uuid AND operation=$2 AND policy=$3 AND version=$4)")
+        .bind(c.tenant.to_string()).bind(operation).bind(overlapping.id).bind(overlapping.version_id).fetch_one(&c.operator).await?;
+    assert!(linked);
     worker
         .step(&c, jobs(device_work[1..].iter().copied()))
         .await?;
@@ -307,7 +339,7 @@ async fn every_receipt_reaches_its_device_even_as_new_triggers_arrive() -> Resul
         let receipt = f.policies.rerun(&p, v.id, op, &c.request(&p)?).await?;
         assert_eq!(
             (receipt.operation_id, receipt.version_id, receipt.deadline),
-            (op.operation_id, v.version_id, expires)
+            (op.operation_id, v.version_id, op.input.deadline)
         );
         let result = outcome(&c, child).await?;
         assert_eq!(result["operation"], first["operation"]);
@@ -330,27 +362,6 @@ async fn every_receipt_reaches_its_device_even_as_new_triggers_arrive() -> Resul
         assert_eq!(summary.state.as_deref(), result["state"].as_str());
         assert!(summary.executions.contains(&child) && summary.executions.contains(&operation));
     }
-    let expiry = now(&c).await? + 5;
-    let (_, unresolved) = rerun(&c, &f, &account, &v, expiry).await?;
-    worker.step(&c, jobs([unresolved])).await?;
-    let queued: bool = sqlx::query_scalar(
-        "SELECT NOT completed FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2",
-    )
-    .bind(c.tenant.to_string())
-    .bind(unresolved)
-    .fetch_one(&c.operator)
-    .await?;
-    assert!(queued, "unresolved evidence must retain an expiry wake");
-    tokio::time::timeout(Duration::from_secs(15),async {
-        loop {
-            let due:bool=sqlx::query_scalar("SELECT next_run<=clock_timestamp() FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.policy' AND entity=$2")
-                .bind(c.tenant.to_string()).bind(format!("job:{unresolved}")).fetch_one(&c.operator).await?;
-            if due && now(&c).await?>=expiry { return Ok::<_,anyhow::Error>(()); }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }).await??;
-    worker.step(&c, jobs([unresolved])).await?;
-    assert_eq!(outcome(&c, unresolved).await?["state"], "expired");
     let p = c.authenticate(&account).await?;
     let mut changed = accepted[0].0.clone();
     changed.input.deadline -= 1;
@@ -592,5 +603,94 @@ async fn future_window(
         .bind(c.tenant.to_string()).bind(future_page).fetch_one(&c.operator).await?;
     assert!(deferred);
     assert!(children(c, future.operation_id).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "T2: the original trigger summarizes a later Scope acceptance and never projects it onto another device"]
+async fn original_trigger_reports_later_scope_acceptance_after_its_own_scan_expires() -> Result<()>
+{
+    let c = Context::open("policy_reruns", &[]).await?;
+    let f = Fixture::open(&c).await?;
+    let account = manager(&c).await?;
+    let v = policy(&c, &f, &account, 1).await?;
+    let worker = Worker::open(&c, &f).await?;
+    let expires = now(&c).await? + 15;
+    let (op, parent) = rerun(&c, &f, &account, &v, expires).await?;
+    worker.step(&c, jobs([parent])).await?;
+    assert!(children(&c, op.operation_id).await?.is_empty());
+    let publication = publish(&c, &v).await?;
+    worker.step(&c, jobs([publication])).await?;
+    let refresh:Uuid=sqlx::query_scalar("SELECT id FROM mdm_policy.work WHERE tenant_id=$1::uuid AND input->>'publication'=$2 AND input#>>'{occurrence,trigger}'=$3")
+        .bind(c.tenant.to_string()).bind(publication.to_string()).bind(op.operation_id.to_string()).fetch_one(&c.operator).await?;
+    worker.step(&c, jobs([refresh])).await?;
+    let child = children(&c, op.operation_id).await?;
+    ensure!(child.len() == 1);
+    worker.step(&c, jobs(child.iter().copied())).await?;
+    let device_result = outcome(&c, child[0]).await?;
+    assert_eq!(device_result["state"], "accepted");
+    while now(&c).await? < expires {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    worker.step(&c, jobs([parent])).await?;
+    assert_eq!(outcome(&c, parent).await?["state"], "expired");
+    let other = planning::endpoint(&c).await?.members[0].device;
+    let proof = c.authenticate(&account).await?;
+    let summary =
+        rss_mdm_policy_service::management::read::work_receipt(&f.policies, &proof, parent, None)
+            .await?
+            .context("original trigger")?;
+    assert_eq!(summary.state.as_deref(), Some("has_accepted_devices"));
+    assert!(summary.executions.contains(&refresh));
+    assert!(
+        summary
+            .stages
+            .iter()
+            .any(|stage| stage.phase == "assignment_scan"
+                && stage.state.as_deref() == Some("expired"))
+    );
+    let absent = rss_mdm_policy_service::management::read::work_receipt(
+        &f.policies,
+        &proof,
+        parent,
+        Some(other),
+    )
+    .await?
+    .context("device lookup")?;
+    assert_eq!(absent.state.as_deref(), Some("no_device_evidence"));
+    assert!(absent.executions.is_empty() && absent.accepted.is_none());
+    worker.close().await;
+    f.close().await?;
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "T2: calendar work discovered on time cannot dispatch past the configured misfire tolerance"]
+async fn queued_calendar_page_expires_at_original_lateness_cutoff() -> Result<()> {
+    let c = Context::open("policy_reruns", &[]).await?;
+    let f = Fixture::open(&c).await?;
+    let account = manager(&c).await?;
+    let worker = Worker::open(&c, &f).await?;
+    let device = planning::endpoint(&c).await?.members[0].device;
+    let at = now(&c).await?;
+    let view=submit(&c,&f,&account,json!({"scope":{"targets":[{"kind":"device","id":device}],"exclusions":[],"limitations":null},
+        "action":{"kind":"unmanage_device","runLifetimeSeconds":300,"schedule":{"trigger":{"kind":"once","at":at},"notBefore":0,"jitterSeconds":0,
+        "misfire":{"kind":"skip","maxLatenessSeconds":5}}}})).await?;
+    worker.step(&c, ["schedules".to_owned()].into()).await?;
+    let page:Uuid=sqlx::query_scalar("SELECT id FROM mdm_policy.work WHERE tenant_id=$1::uuid AND kind='retirement_page' AND input->>'version'=$2")
+        .bind(c.tenant.to_string()).bind(view.version_id.to_string()).fetch_one(&c.operator).await?;
+    publish(&c, &view).await?;
+    while now(&c).await? <= at + 5 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    worker.step(&c, jobs([page])).await?;
+    assert_eq!(outcome(&c, page).await?["state"], "expired");
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_policy.work WHERE tenant_id=$1::uuid AND kind='policy_lifecycle' AND input->>'version'=$2")
+        .bind(c.tenant.to_string()).bind(view.version_id.to_string()).fetch_one(&c.operator).await?;
+    assert_eq!(count, 0);
+    worker.close().await;
+    f.close().await?;
+    c.close().await;
     Ok(())
 }

@@ -204,7 +204,8 @@ Scope 在发布固定结果前按目标通道完成集合运算，并持久化�
 需要逐条核对显式重跑时，用原 `operationId` 查询 `operation-diagnostics/operations/policy/{operationId}`。
 原回执的 `executions` 给出该触发的分配工单。读取 `operation-diagnostics/operations/policy_work/{工单ID}` 查看分配状态；
 附带 `?device={设备ID}` 可核对该设备的资格、到期或接受结果，已接受或复用的结果包含原退役操作 ID。
-设备证据要求对完整目标各成员具有当前 InventoryRead 权限。
+原触发工单的状态汇总所有 Scope 补扫；阶段字段分别记录原扫描和最近补扫。已有设备接受时，原扫描到期仍可查到该事实。
+指定设备没有持久证据时返回 `no_device_evidence`。设备证据要求对完整目标各成员具有当前 InventoryRead 权限。
 
 配置和软件使用原安装合同清理，仅处理产品管理效果。缺少移除能力、失败、离线或回执
 丢失保留待处理／未知结果，不假定卸载成功。Agent 必须支持 `device.unmanage.v1`，

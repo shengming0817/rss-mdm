@@ -49,6 +49,7 @@ pub(crate) struct Statements {
     pub candidates_configuration_candidates_on_1: &'static str,
     pub candidates_candidates_on_1: &'static str,
     pub work_enqueue_in_1: &'static str,
+    pub work_trigger_evidence: &'static str,
     pub work_device_evidence: &'static str,
     pub work_read_in_1: &'static str,
     pub work_cursor_in_1: &'static str,
@@ -99,8 +100,8 @@ ALTER TABLE "###, $policies, " ADD FOREIGN KEY(tenant_id,current_version) REFERE
 "###, $index_24, " ON ", $policies, r###"(tenant_id, (definition->>'customEvent'), id) WHERE state<>'archived' AND definition->>'customEvent' IS NOT NULL;
 "###, $index_25, " ON ", $policies, r###"(tenant_id,((definition->>'scope')::uuid),id);
 CREATE TABLE "###, $triggers, r###" (
- tenant_id uuid NOT NULL,id uuid NOT NULL,version uuid NOT NULL,created_at bigint NOT NULL,deadline bigint NOT NULL CHECK(deadline>created_at), admitted bigint NOT NULL CHECK(admitted>0),
- UNIQUE(tenant_id,version,admitted),
+ tenant_id uuid NOT NULL,id uuid NOT NULL,version uuid NOT NULL,created_at bigint NOT NULL,deadline bigint NOT NULL CHECK(deadline>created_at), scan_second bigint NOT NULL CHECK(scan_second>=created_at), admitted bigint NOT NULL CHECK(admitted>0),
+ UNIQUE(tenant_id,version,scan_second,admitted),
  PRIMARY KEY(tenant_id,id),FOREIGN KEY(tenant_id,version) REFERENCES "###, $versions, r###"(tenant_id,id)
 );
 "###, $index_26, " ON ", $triggers, r###"(tenant_id,version,deadline,admitted);
@@ -174,6 +175,8 @@ ALTER TABLE ONLY "###, $work, r###"
 
 "###, $index_28, " ON ", $work, r###" USING btree (tenant_id, id) WHERE (NOT started);
 
+CREATE INDEX ON "###, $work, r###"(tenant_id,(input->>'occurrence')) WHERE kind='policy_lifecycle' AND retirement_result ? 'operation';
+CREATE INDEX ON "###, $work, r###"(tenant_id,(input#>>'{occurrence,trigger}'),dispatched_at DESC,id) WHERE kind='retirement_page' AND input->>'publication' IS NOT NULL;
 CREATE INDEX ON "###, $work, r###"(tenant_id,(input->>'occurrence'),(input#>>'{object,members,0,device}'),(coalesce(retirement_result ? 'operation',false)) DESC,dispatched_at DESC,id) WHERE kind='policy_lifecycle';
 CREATE INDEX ON "###, $work, r###"(tenant_id,(input->>'occurrence'),(input#>>'{object,members,1,device}'),(coalesce(retirement_result ? 'operation',false)) DESC,dispatched_at DESC,id) WHERE kind='policy_lifecycle' AND input#>>'{object,members,1,device}' IS NOT NULL;
 ALTER TABLE "###, $work, r###" ENABLE ROW LEVEL SECURITY;
@@ -358,15 +361,16 @@ FROM "###, $policies, r###" WHERE tenant_id=$1::uuid
                 store_publish_in_2: concat!("INSERT INTO ", $versions, "(tenant_id,id,policy,number,resource,resource_version,frozen,fingerprint,action_kind) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)"),
                 store_replay_in_1: concat!("SELECT fingerprint,receipt FROM ", $requests, " WHERE tenant_id=$1::uuid AND id=$2"),
                 store_receipt_in_1: concat!("INSERT INTO ", $requests, " VALUES($1::uuid,$2,$3,$4)"),
-                store_trigger_in_1: concat!("INSERT INTO ", $triggers, "(tenant_id,id,version,created_at,deadline,admitted) VALUES($1::uuid,$2,$3,$4,$5,1+coalesce((SELECT admitted FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$3 ORDER BY admitted DESC LIMIT 1),0))"),
+                // The Policy lock serializes admission. scan_second cannot retreat if the database clock steps back.
+                store_trigger_in_1: concat!("INSERT INTO ", $triggers, "(tenant_id,id,version,created_at,deadline,scan_second,admitted) SELECT $1::uuid,$2,$3,$4,$5,greatest($4::bigint,previous.scan_second),coalesce(previous.admitted,0)+1 FROM (VALUES(1)) seed(n) LEFT JOIN LATERAL (SELECT scan_second,admitted FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$3 ORDER BY scan_second DESC,admitted DESC LIMIT 1) previous ON true"),
                 store_read_snapshot_on_1: concat!("SELECT revision,current_version,version_number,state,definition,execution_binding FROM ", $policies, " WHERE tenant_id=$1::uuid AND id=$2"),
                 store_version_snapshot_on_1: concat!("SELECT policy,number,action_kind,frozen FROM ", $versions, " WHERE tenant_id=$1::uuid AND id=$2"),
                 resource_reference_facts: concat!("SELECT v.policy::text AS id,v.id::text AS version,(p.current_version=v.id) AS current FROM ", $versions, " v JOIN ", $policies, " p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE v.tenant_id=$1::uuid AND v.resource=$2 AND v.resource_version=$3"),
                 store_resolve_in_1: concat!("SELECT id FROM ", $policies, " WHERE tenant_id=$1::uuid AND definition->>'alias'=$2 AND state<>'archived'"),
                 store_locked_in_1: concat!("SELECT ", $policy_schema, "lock_policy($1)"),
                 store_action_kinds_in_1: concat!("SELECT DISTINCT action_kind FROM ", $versions, " WHERE tenant_id=$1::uuid AND policy=$2 ORDER BY action_kind"),
-                trigger_scan_bound: concat!("SELECT (SELECT admitted FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$2 ORDER BY admitted DESC LIMIT 1),deadline FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$2 AND deadline>$3 ORDER BY deadline DESC LIMIT 1"),
-                trigger_page: concat!("SELECT id,created_at,deadline,admitted FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$2 AND (deadline,admitted)>($3,$4) AND deadline<=$5 ORDER BY deadline,admitted LIMIT $6"),
+                trigger_scan_bound: concat!("SELECT scan_second,admitted FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$2 AND EXISTS(SELECT FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$2 AND deadline>$3) ORDER BY scan_second DESC,admitted DESC LIMIT 1"),
+                trigger_page: concat!("SELECT id,created_at,deadline,scan_second,admitted FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$2 AND (scan_second,admitted)>($3,$4) AND (scan_second,admitted)<=($5,$6) ORDER BY scan_second,admitted LIMIT $7"),
                 schedules_retirement_in_1: concat!("SELECT p.id,v.id,v.frozen FROM ", $policies, " p JOIN ", $versions, " v ON(v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND v.action_kind='unmanage_device' AND ($2::uuid IS NULL OR p.id>$2) ORDER BY p.id LIMIT 64"),
                 schedules_scan_due_in_1: concat!("SELECT coalesce((SELECT next_scan_at FROM ", $schedule_scan, " WHERE tenant_id=$1::uuid),0)<=$2"),
                 schedules_scan_cursor_in_1: concat!("INSERT INTO ", $schedule_scan, "(tenant_id,expected_epoch) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING"),
@@ -379,6 +383,7 @@ FROM "###, $policies, r###" WHERE tenant_id=$1::uuid
                 candidates_configuration_candidates_on_1: concat!("WITH candidates AS MATERIALIZED (SELECT p.id,p.current_version,(p.definition->>'scope')::uuid AS scope,d.device FROM ", $policies, r###" p CROSS JOIN (SELECT DISTINCT unnest($2::uuid[]) AS device) d WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND p.definition->'action'->>'kind'='configuration' AND ($3::uuid IS NULL OR (p.id,d.device)>($3,$4)) ORDER BY p.id,d.device LIMIT 1001) SELECT *,"###, $scope, r###"channel_admission(scope,'mdm',device) AS admission FROM candidates ORDER BY id,device"###),
                 candidates_candidates_on_1: concat!("SELECT id,current_version,(definition->>'scope')::uuid AS scope FROM ", $policies, " WHERE tenant_id=$1::uuid AND (state='enabled') AND id>$2 AND definition->'action'->>'kind'=$3 ORDER BY id LIMIT 17"),
                 work_enqueue_in_1: concat!("INSERT INTO ", $work, "(tenant_id,id,kind,target,input,expected_epoch) VALUES($1::uuid,$2,$3,$4,$5,$6) ON CONFLICT(tenant_id,id) DO NOTHING"),
+                work_trigger_evidence: concat!("SELECT EXISTS(SELECT FROM ", $work, " WHERE tenant_id=$1::uuid AND kind='policy_lifecycle' AND input->>'occurrence'=$2 AND retirement_result ? 'operation'),EXISTS(SELECT FROM ", $work, " WHERE tenant_id=$1::uuid AND kind='policy_lifecycle' AND input->>'occurrence'=$2),(SELECT id FROM ", $work, " WHERE tenant_id=$1::uuid AND kind='retirement_page' AND input#>>'{occurrence,trigger}'=$3 AND input->>'publication' IS NOT NULL ORDER BY dispatched_at DESC,id LIMIT 1)"),
                 work_device_evidence: concat!("SELECT id FROM ((SELECT id,coalesce(retirement_result ? 'operation',false) AS accepted,dispatched_at FROM ", $work, " WHERE tenant_id=$1::uuid AND kind='policy_lifecycle' AND input->>'occurrence'=$2 AND input#>>'{object,members,0,device}'=$3 ORDER BY accepted DESC,dispatched_at DESC,id LIMIT 1) UNION ALL (SELECT id,coalesce(retirement_result ? 'operation',false) AS accepted,dispatched_at FROM ", $work, " WHERE tenant_id=$1::uuid AND kind='policy_lifecycle' AND input->>'occurrence'=$2 AND input#>>'{object,members,1,device}'=$3 ORDER BY accepted DESC,dispatched_at DESC,id LIMIT 1)) candidate ORDER BY accepted DESC,dispatched_at DESC,id LIMIT 1"),
                 work_read_in_1: concat!("SELECT input,completed,failure,cursor_kind,cursor_id,started,retirement_result FROM ", $work, " WHERE tenant_id=$1::uuid AND id=$2"),
                 work_cursor_in_1: concat!("UPDATE ", $work, " SET cursor_kind=$3,cursor_id=$4 WHERE tenant_id=$1::uuid AND id=$2"),
