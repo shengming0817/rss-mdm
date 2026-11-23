@@ -131,7 +131,7 @@ def inputs(root, example, deployment_directory, *, database_host="postgres", hos
     config["tenant_administration"]=dict(registry_database=database(runtime,"mdm_tenant_registry"),
         provisioning_database=database(runtime,"mdm_identity_provisioning"),
         fingerprint_key_file="/run/mdm/native-data.key")
-    for owner in ("inventory","scope","policy","resource","software","content","telemetry","scheduler"):
+    for owner in ("inventory","scope","policy","resource","software","content","telemetry","scheduler","wns"):
         config["business_databases"][owner]=database(runtime,"mdm_"+owner+"_runtime")
     config["scope_group_database"]=database(runtime,"mdm_scope_group_consumer")
     config["asset_input_database"]=database(runtime,"mdm_asset_ingress_consumer")
@@ -504,7 +504,7 @@ class Candidate:
             roles+='GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;'
             for owner in ROLE_NAMES:roles+=(self.directory/f'deployment/{owner}-roles.sql').read_text()
             roles+='GRANT rss_tmsg_relay TO da_owner;'
-            for role in ['mdm_command_runtime','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_resource_runtime','mdm_software_runtime','mdm_content_runtime','mdm_telemetry_runtime','mdm_scheduler_runtime','mdm_software_driver','mdm_identity_runtime','mdm_identity_maintenance','mdm_webhook_operator','mdm_scope_group_consumer','mdm_asset_ingress_consumer','mdm_tenant_registry','mdm_identity_provisioning']:roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
+            for role in ['mdm_command_runtime','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_resource_runtime','mdm_software_runtime','mdm_content_runtime','mdm_telemetry_runtime','mdm_scheduler_runtime','mdm_wns_runtime','mdm_software_driver','mdm_identity_runtime','mdm_identity_maintenance','mdm_webhook_operator','mdm_scope_group_consumer','mdm_asset_ingress_consumer','mdm_tenant_registry','mdm_identity_provisioning']:roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
             for role in ['da_owner', 'da_access', 'da_command_runtime', 'da_policy_runtime', 'da_inventory_runtime', 'da_scope_runtime', 'da_telemetry_runtime', 'da_identity_runtime', 'da_identity_maintenance', 'da_identity_provisioning', 'da_resource_runtime', 'da_software_runtime', 'da_content_runtime', 'da_software_driver', 'da_runtime', 'da_api']:roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
             self.sql(roles)
             self.sql("GRANT CREATE ON DATABASE mdm_test TO da_owner; GRANT CREATE ON SCHEMA public TO da_owner;")

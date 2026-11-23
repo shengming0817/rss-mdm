@@ -329,12 +329,16 @@ pub fn registration(
                     limits.push_quotas(key.0, key.3.clone(), (key.0, key.1, key.2.clone()))
                 },
                 |after: Option<Candidate>| {
-                    let store = &app.access;
+                    let app = &app;
                     async move {
-                        store.push_channel_page(after).await.map_err(|_| {
-                            eprintln!("apple_push_discovery_failed");
-                            Retry
-                        })
+                        let observed = app.clock.unix_seconds().ok_or(Retry)?;
+                        app.access
+                            .push_channel_page(after, observed)
+                            .await
+                            .map_err(|_| {
+                                eprintln!("apple_push_discovery_failed");
+                                Retry
+                            })
                     }
                 },
             ),

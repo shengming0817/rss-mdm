@@ -27,3 +27,11 @@ pub mod runtime_files;
 #[cfg(unix)]
 use rss_mdm_install_support::maintenance::snapshot_tree;
 pub use rss_mdm_install_support::maintenance::{Error, Result};
+
+#[cfg(unix)]
+fn capacity_error(issue: crate::ConfigIssue) -> Error {
+    match issue {
+        crate::ConfigIssue::ExternalCapacity(field) => Error::Capacity(field),
+        _ => Error::Input,
+    }
+}

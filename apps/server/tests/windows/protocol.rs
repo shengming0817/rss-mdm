@@ -104,6 +104,7 @@ async fn attest(
     next.run(request).await
 }
 struct Host {
+    receipts: crate::owner_storage::OwnerRuntime,
     state: Arc<rss_mdm_windows_channel::HttpState>,
     address: SocketAddr,
     stop: tokio::sync::oneshot::Sender<()>,
@@ -128,6 +129,7 @@ impl Host {
             tokio::net::TcpStream::connect(self.address).await.is_err(),
             "listener must close"
         );
+        self.receipts.runtime.close().await;
         Fixture::close(self.assembly).await
     }
 }
@@ -148,6 +150,17 @@ async fn host_with_provider(
     w: Arc<rss_mdm_windows_channel::Windows>,
     provider: Option<(u16, reqwest::Certificate)>,
 ) -> Result<Host> {
+    let receipts = crate::owner_storage::OwnerRuntime::open(
+        crate::owner_storage::Messaging::Producer(
+            &c.inputs.database(&c.profile, "mdm_wns_runtime"),
+        ),
+        c.execution(),
+        crate::background::WNS_RECEIPT_CONNECTIONS,
+        c.audit.clone(),
+        "wns-receipts-t2",
+        |_| {},
+    )
+    .await?;
     let a = Fixture::open(c).await?;
     let monotonic = Arc::new(crate::Monotonic(std::time::Instant::now));
     let audit = Arc::new(
@@ -294,6 +307,7 @@ async fn host_with_provider(
         .await
     });
     Ok(Host {
+        receipts,
         state,
         address,
         stop,

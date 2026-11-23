@@ -799,6 +799,7 @@ async fn apply_change(
             if tenant.is_some() {
                 return Err(Error::Input);
             }
+            settings.compile().map_err(super::capacity_error)?;
             runtime["background"]["external_calls"] = json!(settings);
         }
         Change::Telemetry { settings } => {

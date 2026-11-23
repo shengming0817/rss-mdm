@@ -37,6 +37,7 @@ pub(crate) struct Databases {
     pub content: crate::config::Database,
     pub telemetry: crate::config::Database,
     pub scheduler: crate::config::Database,
+    pub wns: crate::config::Database,
 }
 impl Databases {
     pub(crate) fn validate(&self, base: &crate::config::Database) -> Result<(), Error> {
@@ -49,6 +50,7 @@ impl Databases {
             (&self.content, "mdm_content_runtime"),
             (&self.telemetry, "mdm_telemetry_runtime"),
             (&self.scheduler, "mdm_scheduler_runtime"),
+            (&self.wns, "mdm_wns_runtime"),
         ] {
             if database.user != role
                 || database.host != base.host

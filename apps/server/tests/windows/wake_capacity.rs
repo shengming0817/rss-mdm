@@ -163,6 +163,7 @@ async fn configured_wns_capacity_measures_actual_sends_and_settlements() -> Resu
         push::registration(
             h.state.clone(),
             owner.clone(),
+            h.receipts.audit.clone(),
             rss_mdm_work_page::external::Limits::new(8.try_into()?, 7.try_into()?).unwrap(),
             Arc::new(tokio::sync::Notify::new()),
         )
@@ -200,6 +201,7 @@ async fn configured_wns_capacity_measures_actual_sends_and_settlements() -> Resu
             push::registration(
                 h.state.clone(),
                 owner.clone(),
+                h.receipts.audit.clone(),
                 rss_mdm_work_page::external::Limits::new(total.try_into()?, resource.try_into()?)
                     .unwrap(),
                 Arc::new(tokio::sync::Notify::new()),

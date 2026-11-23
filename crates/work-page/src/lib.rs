@@ -206,7 +206,9 @@ where
     let retry = Duration::from_secs(5);
     let mut active = BTreeSet::new();
     let mut groups = BTreeMap::<G, (usize, K)>::new();
-    let mut deferred = BTreeMap::<G, K>::new();
+    // A promoted waiter keeps its original turn when another quota blocks its admission.
+    let mut deferred = BTreeMap::<G, (bool, u128, K)>::new();
+    let mut sequence = 0u128;
     let mut pending_page = None;
     let mut first_scan_finished = false;
     let mut first_batches = BTreeSet::new();
@@ -234,14 +236,19 @@ where
                 let (key, result) = result.expect("owned worker batch panicked");
                 active.remove(&key);
                 first_batches.remove(&key);
+                let mut released = Vec::new();
                 for (group, _) in quotas(&key) {
                     let count = groups.get_mut(&group).expect("active group");
                     count.0 -= 1;
                     if count.0 == 0 { groups.remove(&group); }
-                    if let Some(waiting)=deferred.remove(&group) {
-                        queued.push_front(waiting);
+                    if let Some((_, turn, waiting))=deferred.remove(&group) {
+                        released.push((turn, waiting));
                         wake = Instant::now();
                     }
+                }
+                released.sort_unstable();
+                for (turn, waiting) in released.into_iter().rev() {
+                    queued.push_front((waiting, Some(turn)));
                 }
                 let delay = match result {
                     Ok(delay) => {
@@ -263,7 +270,7 @@ where
                 }
             }
             ()=std::future::ready(()), if free && !queued.is_empty() => {
-                let key=queued.pop_front().expect("queued candidate");
+                let (key, turn)=queued.pop_front().expect("queued candidate");
                 unseen.remove(&key);
                 if let Some(at) = due.get(&key).copied()
                     && at > Instant::now()
@@ -278,11 +285,24 @@ where
                     .into_iter()
                     .find(|(group, limit)| groups.get(group).map_or(0, |(count,_)| *count) >= *limit)
                 {
-                    // Keep one waiter per saturated group. Rotate past the last admitted key.
                     let last=&groups[&blocked].1;
-                    deferred.entry(blocked).and_modify(|waiting| {
-                        if (&key <= last,&key) < (&*waiting <= last,&*waiting) { *waiting=key.clone(); }
-                    }).or_insert(key);
+                    let promoted = turn.is_some();
+                    let turn = turn.unwrap_or_else(|| {sequence += 1; sequence});
+                    let entry = deferred.entry(blocked);
+                    match entry {
+                        std::collections::btree_map::Entry::Vacant(slot) => {slot.insert((promoted,turn,key));}
+                        std::collections::btree_map::Entry::Occupied(mut slot) => {
+                            let (other_promoted, other_turn, other) = slot.get();
+                            // Fresh discoveries rotate past the last admission. Handoffs take
+                            // precedence over rediscovery and keep FIFO order across quota changes.
+                            let replace = if promoted || *other_promoted {
+                                promoted && (!other_promoted || turn < *other_turn)
+                            } else {
+                                (&key <= last,&key) < (other <= last,other)
+                            };
+                            if replace { slot.insert((promoted,turn,key)); }
+                        }
+                    }
                     continue;
                 }
                 for (group, _) in quotas(&key) {
@@ -302,7 +322,7 @@ where
             match result.map(Into::into) {
                 Ok(Page { rows, .. }) if !rows.is_empty() => {
                     after = rows.last().cloned();
-                    queued.extend(rows);
+                    queued.extend(rows.into_iter().map(|key| (key, None)));
                     continue;
                 }
                 Ok(Page { next, .. }) => {
@@ -354,6 +374,7 @@ where
             }
         }
     }
+    drop(pending_page);
     admission.cancel();
     while let Some(result) = tasks.join_next().await {
         let (_, outcome) = result.expect("owned worker batch panicked during drain");
@@ -419,6 +440,95 @@ mod tests {
         };
         let (result, ()) =
             tokio::time::timeout(Duration::from_secs(3), async { tokio::join!(work, proof) })
+                .await
+                .unwrap();
+        let result: Result<(), std::convert::Infallible> = result;
+        result.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn waiting_turn_survives_a_change_of_saturated_quota() {
+        let stop = CancellationToken::new();
+        let notify = Notify::new();
+        let (tx, mut started) = tokio::sync::mpsc::unbounded_channel();
+        let work = run_limited(
+            NonZeroUsize::new(2).unwrap(),
+            Duration::from_secs(60),
+            &stop,
+            &notify,
+            (
+                |key: &u8| [(if *key == 1 { 1 } else { 2 }, 1), (3, 1)],
+                |after| {
+                    std::future::ready(Ok((1..=3)
+                        .filter(|key| after.is_none_or(|a| *key > a))
+                        .collect::<Vec<_>>()))
+                },
+            ),
+            |key, _| {
+                let tx = tx.clone();
+                async move {
+                    tx.send(key).unwrap();
+                    tokio::time::sleep(Duration::from_secs(6)).await;
+                    Ok(Duration::from_secs(5))
+                }
+            },
+            |_| {},
+        );
+        let proof = async {
+            for _ in 0..5 {
+                if started.recv().await == Some(3) {
+                    stop.cancel();
+                    return;
+                }
+            }
+            panic!("third publication starved behind retries");
+        };
+        let (result, ()) = tokio::join!(work, proof);
+        let result: Result<(), std::convert::Infallible> = result;
+        result.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancellation_releases_discovery_resources_before_draining() {
+        let stop = CancellationToken::new();
+        let notify = Notify::new();
+        let reading = CancellationToken::new();
+        let permit = Arc::new(tokio::sync::Semaphore::new(1));
+        let work = run_limited(
+            NonZeroUsize::new(2).unwrap(),
+            Duration::from_secs(60),
+            &stop,
+            &notify,
+            (
+                |_: &u8| [(1, 1)],
+                |after| {
+                    let (permit, reading) = (permit.clone(), reading.clone());
+                    async move {
+                        if after.is_some() {
+                            let _connection = permit.acquire().await.unwrap();
+                            reading.cancel();
+                            return std::future::pending().await;
+                        }
+                        Ok(vec![1])
+                    }
+                },
+            ),
+            |_, admission| {
+                let permit = permit.clone();
+                async move {
+                    admission.cancelled().await;
+                    let _connection = permit.acquire().await.unwrap();
+                    Ok(Duration::ZERO)
+                }
+            },
+            |_| {},
+        );
+        let proof = async {
+            reading.cancelled().await;
+            stop.cancel();
+        };
+        let (result, ()) =
+            tokio::time::timeout(Duration::from_secs(2), async { tokio::join!(work, proof) })
                 .await
                 .unwrap();
         let result: Result<(), std::convert::Infallible> = result;

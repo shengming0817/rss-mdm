@@ -340,6 +340,14 @@
       "user": "mdm_scheduler_runtime",
       "password_file": "/run/mdm/mdm-planning-password",
       "ca_file": "/run/mdm/database-ca.pem"
+    },
+    "wns": {
+      "host": "postgres.example.test",
+      "port": 5432,
+      "name": "mdm",
+      "user": "mdm_wns_runtime",
+      "password_file": "/run/mdm/mdm-wns-runtime-password",
+      "ca_file": "/run/mdm/database-ca.pem"
     }
   },
   "device_access": {

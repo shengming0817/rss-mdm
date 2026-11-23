@@ -11,6 +11,9 @@ use uuid::Uuid;
 struct FailFirstPage {
     owner: crate::assembly::windows_business::WindowsBusiness,
     first: AtomicBool,
+    blocked: std::sync::OnceLock<DeviceId>,
+    reached_claim: tokio_util::sync::CancellationToken,
+    resume_claim: tokio_util::sync::CancellationToken,
 }
 impl WakeDemand for FailFirstPage {
     fn candidates<'a>(
@@ -33,7 +36,13 @@ impl WakeDemand for FailFirstPage {
         tx: &'a mut sqlx::PgConnection,
         device: &'a DeviceId,
     ) -> Pending<'a, bool> {
-        self.owner.pending(binding, tx, device)
+        Box::pin(async move {
+            if self.blocked.get() == Some(device) {
+                self.reached_claim.cancel();
+                self.resume_claim.cancelled().await;
+            }
+            self.owner.pending(binding, tx, device).await
+        })
     }
 }
 async fn selected_configuration(
@@ -131,6 +140,23 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
         b"https://fixture.notify.windows.com/held",
     )
     .await?;
+    // Verify the capability under the actual database logins, including the shared command writer.
+    for (role, trusted) in [
+        ("mdm_access", false),
+        ("mdm_command_runtime", false),
+        ("mdm_wns_runtime", true),
+    ] {
+        let db = c.inputs.pool(&c.profile, role).await?;
+        let (execute,write,trigger):(bool,bool,bool)=sqlx::query_as("SELECT
+          has_function_privilege(current_user,p.oid,'EXECUTE'),
+          has_any_column_privilege(current_user,c.oid,'INSERT,UPDATE'),
+          EXISTS(SELECT FROM pg_trigger tr WHERE tr.tgrelid=(SELECT ch.oid FROM pg_class ch JOIN pg_namespace ns ON ns.oid=ch.relnamespace WHERE ns.nspname='mdm_windows' AND ch.relname='push_channels') AND NOT tr.tgisinternal AND tr.tgfoid IN(SELECT f.oid FROM pg_proc f WHERE f.pronamespace=n.oid))
+          FROM pg_namespace n JOIN pg_proc p ON p.pronamespace=n.oid AND p.proname='settle_throttle'
+          JOIN pg_class c ON c.relnamespace=n.oid AND c.relname='provider_throttles' WHERE n.nspname='mdm_wns'")
+            .fetch_one(&db).await?;
+        assert_eq!((execute, write, trigger), (trusted, false, false), "{role}");
+        db.close().await;
+    }
     let pool = c.database.archive_pool();
     let discovered = || {
         sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm_windows.push_work_page(NULL,NULL) WHERE tenant_id=$1::uuid)")
@@ -213,6 +239,9 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
             a.registration.native.clone(),
         ),
         first: AtomicBool::new(true),
+        blocked: Default::default(),
+        reached_claim: Default::default(),
+        resume_claim: Default::default(),
     });
     let held = Arc::new(tokio::sync::Notify::new());
     let release = tokio_util::sync::CancellationToken::new();
@@ -233,9 +262,11 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
         assert_eq!(headers["authorization"],"Bearer test-token");
         axum::http::StatusCode::GONE
     }));
+    let reached_claim = owner.reached_claim.clone();
     let router = router.route(
         "/throttled",
-        axum::routing::post(|| async {
+        axum::routing::post(move || async move {
+            reached_claim.cancelled().await;
             (
                 axum::http::StatusCode::NOT_ACCEPTABLE,
                 [("retry-after", "120")],
@@ -255,6 +286,7 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
             push::registration(
                 h.state.clone(),
                 owner.clone(),
+                h.receipts.audit.clone(),
                 rss_mdm_work_page::external::Limits::new(8.try_into()?, 7.try_into()?).unwrap(),
                 hint.clone(),
             )
@@ -288,6 +320,10 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
         assert_eq!(row,("unregistered".into(),410,lease,1));
         let pending:bool=sqlx::query_scalar("SELECT lease_id IS NULL AND settled_id IS NULL FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND device=$2").bind(&t).bind(limited.into_uuid()).fetch_one(&c.operator).await?;
         assert!(pending);
+        let blocked=crate::planning_t2_support::endpoint(&other).await?.members[0].device;
+        channel(&other,blocked,key,peer_config,b"https://fixture.notify.windows.com/live").await?;
+        identity_cases::seed_device_group(&other,blocked,key,&identity_cases::request(false,false)?,&[Uuid::new_v4()]).await?;
+        owner.blocked.set(blocked).unwrap();
         stack=Some(register()?);
         hint.notify_one();
         loop {
@@ -295,14 +331,11 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
             if throttled {break;}
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        let blocked=crate::planning_t2_support::endpoint(&other).await?.members[0].device;
-        channel(&other,blocked,key,peer_config,b"https://fixture.notify.windows.com/live").await?;
-        identity_cases::seed_device_group(&other,blocked,key,&identity_cases::request(false,false)?,&[Uuid::new_v4()]).await?;
         let allowed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_windows.push_work_page(NULL,NULL) WHERE tenant_id=$1::uuid AND device=$2)").bind(other.tenant.to_string()).bind(blocked.into_uuid()).fetch_one(&pool).await?;
         assert!(!allowed,"406 applies to the same OAuth identity across tenants");
         // Make the original provider deadline due. The same durable work becomes eligible again.
         sqlx::query("UPDATE mdm_wns.provider_throttles SET retry_at=clock_timestamp()+interval '1 second' WHERE tenant_id=$1::uuid").bind(&t).execute(&c.operator).await?;
-        hint.notify_one();
+        owner.resume_claim.cancel();
         loop {
             if sqlx::query_scalar::<_,bool>("SELECT settled_id IS NOT NULL AND status=410 FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND device=$2").bind(other.tenant.to_string()).bind(blocked.into_uuid()).fetch_one(&c.operator).await? {break;}
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -311,6 +344,7 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
         Ok::<_,anyhow::Error>(())
     }).await;
     release.cancel();
+    owner.resume_claim.cancel();
     if let Some(stack) = stack {
         assert!(stack.shutdown().join().await?.is_clean());
     }

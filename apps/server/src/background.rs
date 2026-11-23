@@ -3,6 +3,7 @@ use crate::{ConfigIssue, Error, config::Config};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+pub(crate) const WNS_RECEIPT_CONNECTIONS: u32 = 2;
 pub(crate) const ACCESS_CONNECTIONS: u32 = 4;
 pub(crate) const IDENTITY_CONNECTIONS: u32 = 10;
 pub(crate) const AUXILIARY_CONNECTIONS: u32 = 10;
@@ -51,18 +52,38 @@ pub(crate) struct ExternalLimits {
     pub publication: rss_mdm_work_page::external::Limits,
 }
 impl ExternalCalls {
-    fn compile(&self) -> Result<ExternalLimits, Error> {
-        let bad = || Error::Configuration(ConfigIssue::Budget);
-        let limits = rss_mdm_work_page::external::Limits::new;
-        if self.ade.get() > tokio::sync::Semaphore::MAX_PERMITS {
-            return Err(bad());
-        }
+    pub(crate) fn compile(&self) -> Result<ExternalLimits, ConfigIssue> {
+        let total = |value: std::num::NonZeroUsize, field| {
+            if value.get() > tokio::sync::Semaphore::MAX_PERMITS {
+                Err(ConfigIssue::ExternalCapacity(field))
+            } else {
+                Ok(value)
+            }
+        };
+        let limits = |value, resource, total_field, resource_field| {
+            rss_mdm_work_page::external::Limits::new(total(value, total_field)?, resource)
+                .ok_or(ConfigIssue::ExternalCapacity(resource_field))
+        };
         Ok(ExternalLimits {
-            ade: self.ade,
-            apns: limits(self.apns.total, self.apns.per_credential).ok_or_else(bad)?,
-            wns: limits(self.wns.total, self.wns.per_credential).ok_or_else(bad)?,
-            publication: limits(self.publication.total, self.publication.per_source)
-                .ok_or_else(bad)?,
+            ade: total(self.ade, "background.external_calls.ade")?,
+            apns: limits(
+                self.apns.total,
+                self.apns.per_credential,
+                "background.external_calls.apns.total",
+                "background.external_calls.apns.per_credential",
+            )?,
+            wns: limits(
+                self.wns.total,
+                self.wns.per_credential,
+                "background.external_calls.wns.total",
+                "background.external_calls.wns.per_credential",
+            )?,
+            publication: limits(
+                self.publication.total,
+                self.publication.per_source,
+                "background.external_calls.publication.total",
+                "background.external_calls.publication.per_source",
+            )?,
         })
     }
 }
@@ -221,6 +242,7 @@ impl BackgroundConfig {
             std::iter::once(maximum).chain(maintenance.then_some(maximum))
         });
         self.compile_pools(
+            config.native_protocols.windows.is_some(),
             config.content.is_some(),
             !config.publication.sources.is_empty(),
             config.tenant_administration.is_some(),
@@ -229,6 +251,7 @@ impl BackgroundConfig {
     }
     pub(crate) fn compile_pools(
         &self,
+        windows: bool,
         content: bool,
         publication: bool,
         administration: bool,
@@ -260,7 +283,10 @@ impl BackgroundConfig {
             std::num::NonZeroUsize::new(commands.concurrency()).ok_or_else(bad)?,
         );
         let compiled = Compiled {
-            external: self.external_calls.compile()?,
+            external: self
+                .external_calls
+                .compile()
+                .map_err(Error::Configuration)?,
             device_drain: Duration::from_millis(self.scheduling.device.drain_ms),
             commands_drain: Duration::from_millis(self.scheduling.commands.drain_ms),
             tasks_drain: Duration::from_millis(self.scheduling.tasks.drain_ms),
@@ -334,6 +360,9 @@ impl BackgroundConfig {
             // Direct startup/maintenance probes do not borrow a long-lived pool.
             ("direct-probes", 2),
         ];
+        if windows {
+            pools.push(("wns-receipts", WNS_RECEIPT_CONNECTIONS));
+        }
         if content {
             pools.extend([
                 ("content", CONTENT_CONNECTIONS),

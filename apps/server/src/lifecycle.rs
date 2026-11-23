@@ -77,7 +77,7 @@ pub async fn serve(
                         _,
                         _,
                         runtime,
-                        protocol_runtime, windows_business, _, (task_registrations, command_relay),
+                        protocol_runtime, windows_business, wns_receipts, _, (task_registrations, command_relay),
                         automation,
                         group_work,
                         scope_work,
@@ -203,6 +203,9 @@ pub async fn serve(
                         }
 let application_clock:Arc<dyn crate::clock::Clock>=Arc::new(crate::clock::SystemClock);
 let cursor_key=crate::cursor_keys::load(&source_runtime,probe).await.map_err(assembly_error)?;
+let wns_receipts = if compiled.config.native_protocols.windows.is_some() {
+    Some(crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.wns),probe,crate::background::WNS_RECEIPT_CONNECTIONS,audit_store.clone(),"wns-receipts-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?.audit)
+} else { None };
 let inventory_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.inventory),probe,compiled.background.inventory_connections,audit_store.clone(),"inventory-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let scope_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.scope),probe,compiled.background.scope_connections,audit_store.clone(),"scope-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let policy_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Runtime(&compiled.config.business_databases.policy),probe,compiled.background.policy_connections,audit_store.clone(),"policy-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
@@ -745,6 +748,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                             runtime,
                             protocol_runtime,
                             windows_business,
+                            wns_receipts,
                             protection,
                             task_registrations,
                             automation,
@@ -825,7 +829,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                             .registration(signals.handle(crate::worker_wake::Work::Inventory))
                             .critical(),
                     );
-                    if app.windows.is_some(){launch.stage_task_with_token(rss_mdm_windows_channel::push::registration(app.windows_control.clone(),windows_business.clone(),background.external.wns,signals.handle(crate::worker_wake::Work::WindowsPush)).critical());}
+                    if let (Some(_),Some(receipts))=(&app.windows,wns_receipts){launch.stage_task_with_token(rss_mdm_windows_channel::push::registration(app.windows_control.clone(),windows_business.clone(),receipts,background.external.wns,signals.handle(crate::worker_wake::Work::WindowsPush)).critical());}
                     if native_listeners {
                         launch.stage_task_with_token(
                             rss_mdm_windows_channel::retention::registration(

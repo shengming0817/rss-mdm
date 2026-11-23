@@ -47,24 +47,44 @@ ALTER TABLE mdm_wns.provider_throttles FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_wns.provider_throttles USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE POLICY cooldown_discovery ON mdm_wns.provider_throttles FOR SELECT TO mdm_owner USING(true);
 CREATE INDEX ON mdm_wns.provider_throttles(sid_digest,retry_at);
--- Only a new 406 receipt for the exact leased channel can extend the shared cooldown.
-CREATE FUNCTION mdm_wns.settled_provider_throttle() RETURNS trigger
+-- Only the provider worker may attribute a shared deadline to its original live lease.
+CREATE FUNCTION mdm_wns.settle_throttle(d uuid, channel_rev bigint, lease uuid, material_rev bigint, seconds bigint, date_seconds bigint)
+RETURNS TABLE(changed boolean, wait_seconds double precision)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+DECLARE t uuid := nullif(current_setting('rss.tenant_id',true),'')::uuid; sid bytea; deadline timestamptz;
 BEGIN
  PERFORM rss_transactional_messaging.check_execution();
- INSERT INTO mdm_wns.provider_throttles(tenant_id,sid_digest,retry_at)
- SELECT v.tenant_id,v.sid_digest,NEW.next_push FROM mdm_wns.versions v
- WHERE v.tenant_id=OLD.tenant_id AND v.revision=OLD.material_revision AND v.qualified_at IS NOT NULL
- ON CONFLICT(tenant_id,sid_digest) DO UPDATE SET retry_at=GREATEST(mdm_wns.provider_throttles.retry_at,EXCLUDED.retry_at);
- RETURN NULL;
+ SELECT v.sid_digest INTO STRICT sid FROM mdm_wns.versions v
+ WHERE v.tenant_id=t AND v.revision=material_rev AND v.qualified_at IS NOT NULL;
+ UPDATE mdm_windows.push_channels p SET lease_id=NULL,lease_until=NULL,settled_id=lease,
+   status=406,outcome='retryable',failures=least(5,p.failures)+1,
+   next_push=greatest(clock_timestamp()+make_interval(secs=>greatest(15*(1<<(least(5,p.failures)+1)),seconds)::float8),
+                      to_timestamp(date_seconds::float8))
+ WHERE p.tenant_id=t AND p.device=d AND p.revision=channel_rev AND p.material_revision=material_rev
+   AND p.lease_id=lease AND p.lease_until>clock_timestamp()
+ RETURNING p.next_push INTO deadline;
+ IF FOUND THEN
+   INSERT INTO mdm_wns.provider_throttles(tenant_id,sid_digest,retry_at) VALUES(t,sid,deadline)
+   ON CONFLICT(tenant_id,sid_digest) DO UPDATE SET retry_at=greatest(mdm_wns.provider_throttles.retry_at,EXCLUDED.retry_at);
+   RETURN QUERY SELECT true,greatest(0,extract(epoch FROM deadline-clock_timestamp()))::float8;
+ ELSE
+   RETURN QUERY SELECT false,greatest(0,extract(epoch FROM p.next_push-clock_timestamp()))::float8
+   FROM mdm_windows.push_channels p WHERE p.tenant_id=t AND p.device=d AND p.revision=channel_rev
+    AND p.material_revision=material_rev AND p.settled_id=lease AND p.status=406 AND p.outcome='retryable';
+ END IF;
 END $$;
-REVOKE ALL ON FUNCTION mdm_wns.settled_provider_throttle() FROM PUBLIC;
-CREATE TRIGGER provider_throttle AFTER UPDATE ON mdm_windows.push_channels
-FOR EACH ROW WHEN (NEW.status=406 AND NEW.outcome='retryable' AND OLD.lease_id=NEW.settled_id
- AND OLD.lease_until>statement_timestamp() AND NEW.lease_id IS NULL
- AND NEW.revision=OLD.revision AND NEW.material_revision=OLD.material_revision
- AND isfinite(NEW.next_push) AND NEW.next_push<'10000-01-01 UTC'::timestamptz)
-EXECUTE FUNCTION mdm_wns.settled_provider_throttle();
+REVOKE ALL ON FUNCTION mdm_wns.settle_throttle(uuid,bigint,uuid,bigint,bigint,bigint) FROM PUBLIC;
+GRANT USAGE ON SCHEMA mdm_wns TO mdm_wns_runtime;
+GRANT EXECUTE ON FUNCTION mdm_wns.settle_throttle(uuid,bigint,uuid,bigint,bigint,bigint) TO mdm_wns_runtime;
+CREATE FUNCTION mdm_wns.provider_wait(material_rev bigint) RETURNS double precision
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT extract(epoch FROM max(p.retry_at)-statement_timestamp())::float8
+ FROM mdm_wns.versions v JOIN mdm_wns.provider_throttles p USING(sid_digest)
+ WHERE v.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND v.revision=material_rev
+ AND v.qualified_at IS NOT NULL AND p.retry_at>statement_timestamp()
+$$;
+REVOKE ALL ON FUNCTION mdm_wns.provider_wait(bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_wns.provider_wait(bigint) TO mdm_access;
 CREATE FUNCTION mdm_wns.provider_available(digest bytea) RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  SELECT EXISTS(SELECT FROM mdm_wns.versions v JOIN mdm_wns.heads h

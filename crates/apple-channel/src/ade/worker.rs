@@ -80,6 +80,7 @@ pub fn registration(
                         ),
                         &app,
                         organization,
+                        &stop,
                     )
                     .await
                     .map_err(|_| {
@@ -102,6 +103,7 @@ async fn cycle(
     execution: rss_transactional_messaging::fence::ExecutionBinding,
     app: &HttpState,
     organization: Uuid,
+    stop: &tokio_util::sync::CancellationToken,
 ) -> Result<Duration, Error> {
     let tenant = execution.tenant().to_string();
     let time = now(app)?;
@@ -138,19 +140,19 @@ async fn cycle(
                 app,
                 &audit,
                 &tenant,
-                time,
+                stop,
                 execution.epoch() == app.expected_epoch,
             ),
             move |ctx, tx| {
                 Box::pin(async move {
-                    let (app, audit, tenant, time, fresh) = *ctx;
+                    let (app, audit, tenant, stop, fresh) = *ctx;
                     let (work, changes) = tx
                         .with_connection_context(
-                            &mut (tenant, time, fresh, organization, app),
+                            &mut (tenant, stop, fresh, organization, app),
                             |ctx, c| {
                                 Box::pin(async move {
-                                    let (tenant, time, fresh, organization, app) = *ctx;
-                                    claim_in(c, tenant, time, fresh, organization, app).await
+                                    let (tenant, stop, fresh, organization, app) = *ctx;
+                                    claim_in(c, tenant, stop, fresh, organization, app).await
                                 })
                             },
                         )
@@ -203,7 +205,7 @@ async fn cycle(
 async fn claim_in(
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    time: i64,
+    stop: &tokio_util::sync::CancellationToken,
     fresh: bool,
     organization: Uuid,
     app: &HttpState,
@@ -214,10 +216,18 @@ async fn claim_in(
     ),
     Error,
 > {
-    management::lock(c, tenant, organization).await?;
+    tokio::select! {
+        biased;
+        () = stop.cancelled() => return Ok((None, Vec::new())),
+        lock = management::lock(c, tenant, organization) => lock?,
+    }
+    let time = now(app)?;
     let mut changes = Vec::new();
     let mut scheduled_id = None;
     let scheduled=sqlx::query("SELECT organization,revision,token_revision,cursor FROM mdm_apple.ade_servers s WHERE $3 AND tenant_id=$1::uuid AND organization=$4 AND enabled AND verified AND NOT token_invalid AND token_expires>$2 AND next_sync<=$2 AND NOT EXISTS(SELECT 1 FROM mdm_apple.ade_operations o WHERE o.tenant_id=s.tenant_id AND o.organization=s.organization AND o.state IN('pending','running','unknown')) ORDER BY organization LIMIT 1 FOR UPDATE SKIP LOCKED").bind(tenant).bind(time).bind(fresh).bind(organization).fetch_optional(&mut *c).await.map_err(db)?;
+    if stop.is_cancelled() {
+        return Ok((None, changes));
+    }
     if let Some(r) = scheduled {
         let organization: Uuid = r.try_get("organization").map_err(db)?;
         let id = Uuid::new_v4();
@@ -264,6 +274,9 @@ async fn claim_in(
     let Some(r) = row else {
         return Ok((None, changes));
     };
+    if stop.is_cancelled() {
+        return Ok((None, changes));
+    }
     let kind: String = r.try_get("kind").map_err(db)?;
     let attempt: i32 = r
         .try_get::<i32, _>("attempts")
@@ -295,6 +308,32 @@ async fn claim_in(
         changes.push((id, "superseded", attempt));
         return Ok((None, changes));
     }
+    let time = now(app)?;
+    let token = match super::token_at(&s, app, tenant, organization, time) {
+        Ok(token) => token,
+        Err(Error::Malformed | Error::Conflict) => {
+            let expires: i64 = s.try_get("token_expires").map_err(db)?;
+            let reason = if expires <= time {
+                "token_expired"
+            } else {
+                "token_unavailable"
+            };
+            sqlx::query("UPDATE mdm_apple.ade_operations SET state='failed',result=$3,attempts=$4,lease=NULL,lease_until=NULL WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(tenant).bind(id).bind(json!({"reason":reason})).bind(attempt)
+                .execute(&mut *c).await.map_err(db)?;
+            sqlx::query(
+                "DELETE FROM mdm_apple.ade_sync_devices WHERE tenant_id=$1::uuid AND operation=$2",
+            )
+            .bind(tenant)
+            .bind(id)
+            .execute(&mut *c)
+            .await
+            .map_err(db)?;
+            changes.push((id, "token_failed", attempt));
+            return Ok((None, changes));
+        }
+        Err(error) => return Err(error),
+    };
     let lease = Uuid::new_v4();
     sqlx::query("UPDATE mdm_apple.ade_operations SET state='running',lease=$3,lease_until=$4,attempts=$5 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).bind(lease).bind(time+180).bind(attempt).execute(&mut *c).await.map_err(db)?;
 
@@ -313,7 +352,7 @@ async fn claim_in(
                 full: r.try_get("full_sync").map_err(db)?,
                 attempt,
             },
-            super::token_at(&s, app, tenant, organization, time)?,
+            token,
         )),
         changes,
     ))

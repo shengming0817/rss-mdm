@@ -54,6 +54,7 @@ fn independent_secrets(value: &mut serde_json::Value) -> PathBuf {
         "/business_databases/content",
         "/business_databases/telemetry",
         "/business_databases/scheduler",
+        "/business_databases/wns",
         "/publication/database",
         "/tenant_administration/registry_database",
         "/tenant_administration/provisioning_database",

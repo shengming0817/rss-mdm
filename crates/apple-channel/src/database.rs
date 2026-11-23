@@ -215,13 +215,15 @@ impl Store {
     pub(crate) async fn push_channel_page(
         &self,
         after: Option<crate::push::Candidate>,
+        observed: i64,
     ) -> Result<Vec<crate::push::Candidate>, Error> {
         sqlx::query_as::<_, crate::push::Candidate>(
-            "SELECT * FROM mdm_apple.push_channel_page($1,$2,$3)",
+            "SELECT * FROM mdm_apple.push_channel_page($1,$2,$3,$4)",
         )
         .bind(after.as_ref().map(|r| r.0))
         .bind(after.as_ref().map(|r| r.1))
         .bind(after.as_ref().map(|r| &r.2))
+        .bind(observed)
         .fetch_all(&self.pool)
         .await
         .map_err(db)

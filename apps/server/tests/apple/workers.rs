@@ -87,6 +87,13 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
             .bind(clock).bind(c.tenant.to_string()).fetch_one(&mut *skew).await?;
         assert_eq!(eligible, expected);
     }
+    sqlx::query("UPDATE mdm_apple_runtime.versions SET expires_at=101 WHERE tenant_id=$1::uuid AND purpose='apns'")
+        .bind(c.tenant.to_string()).execute(&mut *skew).await?;
+    for (clock, expected) in [(100_i64, true), (101, false)] {
+        let eligible:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_apple.push_channel_page(NULL,NULL,NULL,$1) WHERE tenant_id=$2::uuid AND device=$3)")
+            .bind(clock).bind(c.tenant.to_string()).bind(n.device.into_uuid()).fetch_one(&mut *skew).await?;
+        assert_eq!(eligible, expected);
+    }
     skew.rollback().await?;
     let token = Uuid::new_v4();
     let aad = rss_mdm_native_protection::ProtectionContext::new(
@@ -275,17 +282,49 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
     sqlx::query("UPDATE mdm_apple.channels SET next_push=clock_timestamp() WHERE tenant_id=$1::uuid AND device=$2").bind(c.tenant.to_string()).bind(n.device.into_uuid()).execute(&mut *retry).await?;
     sqlx::query("INSERT INTO mdm_apple.ade_operations(tenant_id,organization,expected_epoch,id,kind,digest,actor,instance,server_revision,token_revision,request,state,receipt,lease,lease_until,attempts,created_at) VALUES($1::uuid,$2,1,$3,'clear',repeat('1',64),'service','service',1,1,$4,'running','{}',$5,1,1,1)").bind(c.tenant.to_string()).bind(sibling_org).bind(unknown).bind(json!({"kind":"clear","devices":["first"]})).bind(Uuid::new_v4()).execute(&mut *retry).await?;
     retry.commit().await?;
+    // A queued operation outlives its credential. Its original row and staging must be settled locally.
+    let expired = Uuid::new_v4();
+    let mut staging = command::seed_transaction(&other).await?;
+    let organization:Uuid=sqlx::query_scalar("UPDATE mdm_apple.ade_servers SET token_expires=1 WHERE tenant_id=$1::uuid RETURNING organization")
+        .bind(other.tenant.to_string()).fetch_one(&mut *staging).await?;
+    sqlx::query("INSERT INTO mdm_apple.ade_operations(tenant_id,organization,expected_epoch,id,kind,digest,actor,instance,server_revision,token_revision,request,state,receipt,created_at) VALUES($1::uuid,$2,1,$3,'sync',repeat('2',64),'service','service',1,1,'{}','pending','{}',1)")
+        .bind(other.tenant.to_string()).bind(organization).bind(expired).execute(&mut *staging).await?;
+    sqlx::query("INSERT INTO mdm_apple.ade_sync_devices(tenant_id,operation,serial,operation_date,deleted) VALUES($1::uuid,$2,'staged',clock_timestamp(),false)")
+        .bind(other.tenant.to_string()).bind(expired).execute(&mut *staging).await?;
+    staging.commit().await?;
     let restart = register()?;
     let recovered=tokio::time::timeout(Duration::from_secs(10),async{
         loop {
             let done:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND device=$2 AND push_material_revision=2 AND push_outcome='accepted') AND EXISTS(SELECT FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND id=$3 AND state='succeeded') AND EXISTS(SELECT FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND id=$4 AND state='unknown' AND attempts=1 AND result->>'reason'='interrupted_external_effect')").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(op).bind(unknown).fetch_one(&c.operator).await?;
-            if done {break;}
+            let terminal:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_apple.ade_operations WHERE id=$1 AND state='failed' AND result->>'reason'='token_expired' AND attempts=1 AND lease IS NULL) AND NOT EXISTS(SELECT FROM mdm_apple.ade_sync_devices WHERE operation=$1)").bind(expired).fetch_one(&other.operator).await?;
+            if done && terminal {break;}
             tokio::time::sleep(Duration::from_millis(15)).await;
         }
         Ok::<_,anyhow::Error>(())
     }).await;
-    assert!(restart.shutdown().join().await?.is_clean());
     recovered??;
+    let waiting = Uuid::new_v4();
+    let mut lock = command::seed_transaction(&c).await?;
+    let holder: i32 = sqlx::query_scalar(
+        "SELECT pg_backend_pid() FROM pg_advisory_xact_lock(hashtextextended($1,2673))",
+    )
+    .bind(format!("apple-ade:{}:{org}", c.tenant))
+    .fetch_one(&mut *lock)
+    .await?;
+    let mut queued = command::seed_transaction(&c).await?;
+    sqlx::query("INSERT INTO mdm_apple.ade_operations(tenant_id,organization,expected_epoch,id,kind,digest,actor,instance,server_revision,token_revision,request,state,receipt,created_at) VALUES($1::uuid,$2,1,$3,'clear',repeat('3',64),'service','service',1,1,$4,'pending','{}',1)")
+        .bind(c.tenant.to_string()).bind(org).bind(waiting).bind(json!({"kind":"clear","devices":["first"]})).execute(&mut *queued).await?;
+    queued.commit().await?;
+    ade_hint.notify_one();
+    c.wait_blocked(holder).await?;
+    let drain = restart.shutdown();
+    lock.rollback().await?;
+    assert!(drain.join().await?.is_clean());
+    let pending:bool=sqlx::query_scalar("SELECT state='pending' AND attempts=0 AND lease IS NULL FROM mdm_apple.ade_operations WHERE id=$1").bind(waiting).fetch_one(&c.operator).await?;
+    assert!(
+        pending,
+        "shutdown while blocked on the organization must not claim the operation"
+    );
     assert_eq!(first_pages.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 2);
     server.abort();
