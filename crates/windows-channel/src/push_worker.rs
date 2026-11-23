@@ -33,7 +33,7 @@ struct Wake {
     device: rss_mdm_agent_wire::DeviceId,
     revision: i64,
     uri: zeroize::Zeroizing<String>,
-    credential: [u8;32],
+    credential: [u8; 32],
     material_revision: Option<i64>,
 }
 fn audit(
@@ -186,8 +186,8 @@ async fn attempt(
 
         revision,
         uri,
-        credential:push.credential(),
-        material_revision:push.material_revision,
+        credential: push.credential(),
+        material_revision: push.material_revision,
     };
     let receipt = push.send(&wake.uri).await.unwrap_or(crate::push::Receipt {
         status: 0,
@@ -295,14 +295,17 @@ pub fn registration(
             &stop,
             &notify,
             (
-                |key:&(Uuid,Uuid,Vec<u8>)| limits.quotas(key.0, key.2.clone(), (key.0,key.1)),
+                |key: &(Uuid, Uuid, Vec<u8>)| limits.quotas(key.0, key.2.clone(), (key.0, key.1)),
                 |after| {
                     let (app, eligibility) = (&app, &eligibility);
                     async move {
                         eligibility
-                            .candidates(&app.access.pool, after.map(|(t,d,_)| (t,d)))
+                            .candidates(&app.access.pool, after.map(|(t, d, _)| (t, d)))
                             .await
-                            .map_err(|_| {eprintln!("windows_push_discovery_failed");rss_mdm_work_page::Failure::Retry})
+                            .map_err(|_| {
+                                eprintln!("windows_push_discovery_failed");
+                                rss_mdm_work_page::Failure::Retry
+                            })
                     }
                 },
             ),
@@ -314,7 +317,11 @@ pub fn registration(
                             TenantId::parse(&tenant.to_string()).map_err(|_| Error::Malformed)?;
                         let execution = app.execution(tenant);
                         let windows = app.windows(execution).await?;
-                        if !windows.push.as_ref().is_some_and(|push| push.credential().as_slice()==credential.as_slice()) { return Ok(Duration::ZERO); }
+                        if !windows.push.as_ref().is_some_and(|push| {
+                            push.credential().as_slice() == credential.as_slice()
+                        }) {
+                            return Ok(Duration::ZERO);
+                        }
                         let device = rss_mdm_agent_wire::DeviceId::try_from(device)
                             .map_err(|_| Error::Malformed)?;
                         let scan = cycle(
@@ -341,13 +348,17 @@ pub fn registration(
                         eprintln!(
                             "{}",
                             serde_json::json!({"event":"windows_push_unavailable","tenant":tenant})
-                        );rss_mdm_work_page::Failure::Retry
+                        );
+                        rss_mdm_work_page::Failure::Retry
                     })
                 }
             },
             |_| {},
         )
         .await;
-        match result { Ok(())=>Ok(()), Err(never)=>match never {} }
+        match result {
+            Ok(()) => Ok(()),
+            Err(never) => match never {},
+        }
     })
 }

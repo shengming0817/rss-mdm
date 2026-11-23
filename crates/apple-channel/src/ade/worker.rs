@@ -27,56 +27,82 @@ pub fn registration(
     let (task, _) =
         rss_runtime::ManagedTask::prepare("apple-ade", std::time::Duration::from_secs(8));
     task.into_registration(move |stop| async move {
-        use rss_mdm_work_page::{external::{Group, fair_share},Failure::Retry};
+        use rss_mdm_work_page::{
+            Failure::Retry,
+            external::{Group, fair_share},
+        };
         let result: Result<(), std::convert::Infallible> = rss_mdm_work_page::run_limited(
             capacity,
             Duration::from_secs(5),
             &stop,
             &notify,
-            (|&(tenant,org,_): &(Uuid,Uuid,i64)| [(Group::<(),_>::Tenant(tenant),fair_share(capacity)),(Group::Object((tenant,org)),1)], |after| {
-                let app = &app;
-                async move {
-                    app.access
-                        .ade_work_scopes(
-                            after,
-                            app.expected_epoch,
-                            now(app).map_err(|_| {eprintln!("apple_ade_clock_failed");Retry})?,
-                        )
-                        .await
-                        .map_err(|_| {eprintln!("apple_ade_discovery_failed");Retry})
-                }
-            }),
-            |(tenant, organization,epoch),stop| {
+            (
+                |&(tenant, org, _): &(Uuid, Uuid, i64)| {
+                    [
+                        (Group::<(), _>::Tenant(tenant), fair_share(capacity)),
+                        (Group::Object((tenant, org)), 1),
+                    ]
+                },
+                |after| {
+                    let app = &app;
+                    async move {
+                        app.access
+                            .ade_work_scopes(
+                                after,
+                                app.expected_epoch,
+                                now(app).map_err(|_| {
+                                    eprintln!("apple_ade_clock_failed");
+                                    Retry
+                                })?,
+                            )
+                            .await
+                            .map_err(|_| {
+                                eprintln!("apple_ade_discovery_failed");
+                                Retry
+                            })
+                    }
+                },
+            ),
+            |(tenant, organization, epoch), stop| {
                 let app = app.clone();
                 async move {
                     let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
                         .map_err(|_| Retry)?;
                     let epoch =
                         rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| Retry)?;
-                    if stop.is_cancelled(){return Ok(Duration::from_secs(5));}
+                    if stop.is_cancelled() {
+                        return Ok(Duration::from_secs(5));
+                    }
                     cycle(
                         rss_transactional_messaging::fence::ExecutionBinding::new(
                             app.storage,
                             tenant,
                             epoch,
                         ),
-                        &app,organization,
+                        &app,
+                        organization,
                     )
                     .await
-                    .map_err(|_| {eprintln!("apple_ade_cycle_failed");Retry})
+                    .map_err(|_| {
+                        eprintln!("apple_ade_cycle_failed");
+                        Retry
+                    })
                 }
             },
             |_| {},
         )
         .await;
-        match result {Ok(())=>Ok(()),Err(never)=>match never {}}
+        match result {
+            Ok(()) => Ok(()),
+            Err(never) => match never {},
+        }
     })
 }
 /// One bounded page/effect per invocation. Used by the real worker and protocol T2.
 async fn cycle(
     execution: rss_transactional_messaging::fence::ExecutionBinding,
     app: &HttpState,
-    organization:Uuid,
+    organization: Uuid,
 ) -> Result<Duration, Error> {
     let tenant = execution.tenant().to_string();
     let time = now(app)?;
@@ -120,12 +146,15 @@ async fn cycle(
                 Box::pin(async move {
                     let (app, audit, tenant, time, fresh) = *ctx;
                     let (work, changes) = tx
-                        .with_connection_context(&mut (tenant, time, fresh,organization,app), |ctx, c| {
-                            Box::pin(async move {
-                                let (tenant, time, fresh,organization,app) = *ctx;
-                                claim_in(c, tenant, time, fresh,organization,app).await
-                            })
-                        })
+                        .with_connection_context(
+                            &mut (tenant, time, fresh, organization, app),
+                            |ctx, c| {
+                                Box::pin(async move {
+                                    let (tenant, time, fresh, organization, app) = *ctx;
+                                    claim_in(c, tenant, time, fresh, organization, app).await
+                                })
+                            },
+                        )
                         .await?;
                     let changed = !changes.is_empty();
                     for (id, phase, attempt) in changes {
@@ -182,10 +211,10 @@ async fn claim_in(
     tenant: &str,
     time: i64,
     fresh: bool,
-    organization:Uuid,
-    app:&HttpState,
+    organization: Uuid,
+    app: &HttpState,
 ) -> Result<(Option<Work>, Vec<(Uuid, &'static str, i32)>), Error> {
-    management::lock(c,tenant,organization).await?;
+    management::lock(c, tenant, organization).await?;
     let mut changes = Vec::new();
     let mut scheduled_id = None;
     let scheduled=sqlx::query("SELECT organization,revision,token_revision,cursor FROM mdm_apple.ade_servers s WHERE $3 AND tenant_id=$1::uuid AND organization=$4 AND enabled AND verified AND NOT token_invalid AND token_expires>$2 AND next_sync<=$2 AND NOT EXISTS(SELECT 1 FROM mdm_apple.ade_operations o WHERE o.tenant_id=s.tenant_id AND o.organization=s.organization AND o.state IN('pending','running','unknown')) ORDER BY organization LIMIT 1 FOR UPDATE SKIP LOCKED").bind(tenant).bind(time).bind(fresh).bind(organization).fetch_optional(&mut *c).await.map_err(db)?;
@@ -275,7 +304,7 @@ async fn claim_in(
             organization,
             revision,
             token_revision,
-            token:super::token(&s,app,tenant,organization).ok(),
+            token: super::token(&s, app, tenant, organization).ok(),
             lease,
             kind,
             request: r.try_get("request").map_err(db)?,

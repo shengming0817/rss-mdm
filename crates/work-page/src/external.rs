@@ -16,18 +16,26 @@ impl Limits {
         (total.get() <= tokio::sync::Semaphore::MAX_PERMITS && resource.get() <= fair_share(total))
             .then_some(Self { total, resource })
     }
-    pub fn quotas<R: Clone, O>(&self, tenant: Uuid, resource: R, object: O) -> [(Group<R,O>, usize); 4] {
+    pub fn quotas<R: Clone, O>(
+        &self,
+        tenant: Uuid,
+        resource: R,
+        object: O,
+    ) -> [(Group<R, O>, usize); 4] {
         [
             (Group::Tenant(tenant), fair_share(self.total)),
             (Group::Resource(resource.clone()), self.resource.get()),
-            (Group::TenantResource(tenant, resource), fair_share(self.resource)),
+            (
+                Group::TenantResource(tenant, resource),
+                fair_share(self.resource),
+            ),
             (Group::Object(object), 1),
         ]
     }
 }
 
 #[derive(Eq, PartialEq, Ord, PartialOrd)]
-pub enum Group<R,O> {
+pub enum Group<R, O> {
     Tenant(Uuid),
     Resource(R),
     TenantResource(Uuid, R),

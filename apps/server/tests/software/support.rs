@@ -38,18 +38,29 @@ pub async fn software_with_export(
     } else {
         json!([{"evidence":{"reference":"reviewed-signature","length":3,"sha256":vec![4;32]},"artifact":"package","mechanism":"authenticode","publisher":"Acme"}])
     };
-    let definition: r::SoftwareDefinition = serde_json::from_value(
-        json!({"material":{"format":"msi","installer":"package"},"source":source.snapshot()?,"package":"Acme.App","version":"1.2","artifacts":{"package":{"reference":"app-msi","length":3,"sha256":r::Digest::of(b"msi").bytes()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2"},"upgradeInvocation":invocation},"signatures":signatures,"provenance":{"kind":"private"},"export":export}),
-    )?;
+    let mut spec = json!({"material":{"format":"msi","installer":"package"},"source":source.snapshot()?,"package":"Acme.App","version":"1.2","artifacts":{"package":{"reference":"app-msi","length":3,"sha256":r::Digest::of(b"msi").bytes()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2"},"upgradeInvocation":invocation},"signatures":signatures,"provenance":{"kind":"private"},"export":export});
+    let brew = matches!(export, r::SoftwareExport::Brew { .. });
+    if brew {
+        spec["package"] = json!("capacity-app");
+        spec["material"]["format"] = json!("dmg");
+        spec["behavior"] = json!({"kind":"dmg","image":"package","volume":"App","scope":"system","invocation":invocation,"upgrade":"in_place","payload":{"kind":"app_copy","application":{"path":"App.app","bundleId":"com.acme.app","version":"1.2","targetName":"App.app"},"uninstall":true}});
+        spec["artifacts"]["package"] =
+            json!({"reference":"app-dmg","length":3,"sha256":r::Digest::of(b"dmg").bytes()});
+    }
+    let definition: r::SoftwareDefinition = serde_json::from_value(spec)?;
     let version = r::Version::new(
         c.tenant,
         r::Id::new(name)?,
         r::Id::new("1")?,
         r::Kind::Software,
         vec![r::Variant::new(
-            r::Platform::Windows,
+            if brew {
+                r::Platform::MacOS
+            } else {
+                r::Platform::Windows
+            },
             r::Architecture::X86_64,
-            r::Id::new("msi")?,
+            r::Id::new(if brew { "dmg" } else { "msi" })?,
             r::Declaration::Software { definition },
         )],
     )?;

@@ -121,7 +121,7 @@ pub async fn apple_with_providers(
     let p = crate::device::DeviceService::new(c.database.registration(), c.audit.clone())
         .management_principal(&credential)
         .await?;
-    seed_channels(c,n,&key,users).await?;
+    seed_channels(c, n, &key, users).await?;
     let push = rss_mdm_apple_channel::push::Push::from_bytes(
         loaded.apns_topic.clone(),
         &loaded.apns_certificate,
@@ -149,7 +149,12 @@ pub async fn apple_with_providers(
     ));
     Ok((apple, p))
 }
-pub(super) async fn seed_channels(c:&Context,n:&Native,key:&Protector,users:&[String])->Result<()> {
+pub(super) async fn seed_channels(
+    c: &Context,
+    n: &Native,
+    key: &Protector,
+    users: &[String],
+) -> Result<()> {
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     sqlx::query("INSERT INTO mdm_apple.devices (tenant_id, device, udid, state, access_rights) VALUES (CAST($1 AS uuid), $2, $3, 'active', 8191)").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(n.device.to_string()).execute(&mut *tx).await?;
     for user in std::iter::once("").chain(users.iter().map(String::as_str)) {

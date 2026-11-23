@@ -165,12 +165,24 @@ where
     F: Future<Output = Result<Duration, Failure<E>>> + Send + 'static,
     E: Send + 'static,
 {
-    run_limited(capacity, idle, stop, notify, (|key: &K| [(group(*key), 1)], page), batch, observed).await
+    run_limited(
+        capacity,
+        idle,
+        stop,
+        notify,
+        (|key: &K| [(group(*key), 1)], page),
+        batch,
+        observed,
+    )
+    .await
 }
 
 /// Check every quota before spawning the job. A saturated group advances the page cursor
 /// and is reconsidered when one of its active members completes.
-#[allow(clippy::disallowed_methods, reason = "process-owned monotonic worker deadlines")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "process-owned monotonic worker deadlines"
+)]
 pub async fn run_limited<K, G, L, R, P, F, E>(
     capacity: NonZeroUsize,
     idle: Duration,
@@ -222,11 +234,16 @@ where
                 if active.contains(&key) {
                     continue;
                 }
-                if let Some((blocked, _)) = quotas(&key).into_iter().find(|(group, limit)| groups.get(group).copied().unwrap_or(0) >= *limit) {
+                if let Some((blocked, _)) = quotas(&key)
+                    .into_iter()
+                    .find(|(group, limit)| groups.get(group).copied().unwrap_or(0) >= *limit)
+                {
                     deferred.insert(blocked);
                     continue;
                 }
-                for (group, _) in quotas(&key) { *groups.entry(group).or_default() += 1; }
+                for (group, _) in quotas(&key) {
+                    *groups.entry(group).or_default() += 1;
+                }
                 active.insert(key.clone());
                 if !first_scan_finished {
                     first_batches.insert(key.clone());

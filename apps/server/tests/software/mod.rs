@@ -1,5 +1,6 @@
 //! Software's surviving transaction risks: alias/channel exclusion, durable Unknown, rollout snapshot.
 mod fixture;
+mod publication;
 use crate::{
     authority_t2_support::Context, command_runtime_t2_support as command,
     device_material_support as material, planning_t2_support as planning,

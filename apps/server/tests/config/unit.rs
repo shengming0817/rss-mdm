@@ -262,6 +262,30 @@ fn standard_agent_lifetime_rejects_extra_fields() {
 }
 
 #[test]
+fn external_capacity_is_per_owner_and_requires_explicit_valid_limits() {
+    let mut source: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+    source["background"]["external_calls"]["apns"]["total"] = serde_json::json!(16);
+    let config: Config = serde_json::from_value(source.clone()).unwrap();
+    let limits = config.background.compile(&config).unwrap().external;
+    assert_eq!(limits.apns.total.get(), 16);
+    assert_eq!(limits.wns.total.get(), 8);
+    for invalid in [0, 16, 17] {
+        source["background"]["external_calls"]["apns"]["per_credential"] =
+            serde_json::json!(invalid);
+        assert!(
+            serde_json::from_value::<Config>(source.clone())
+                .map_or(true, |config| config.background.compile(&config).is_err())
+        );
+    }
+    source["background"]
+        .as_object_mut()
+        .unwrap()
+        .remove("external_calls");
+    assert!(serde_json::from_value::<Config>(source).is_err());
+}
+
+#[test]
 fn configured_worker_capacity_and_pool_arithmetic_are_checked_together() {
     let mut config: Config =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();

@@ -116,8 +116,8 @@ pub(crate) fn validate(pfn: &str, sid: &str, secret: &str) -> Result<(), Error> 
     Ok(())
 }
 impl Push {
-    pub(crate) fn credential(&self) -> [u8;32] {
-        use sha2::{Digest,Sha256};
+    pub(crate) fn credential(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
         Sha256::digest(self.sid.as_bytes()).into()
     }
     pub fn material_revision(&self) -> Option<i64> {
@@ -287,7 +287,10 @@ impl Push {
             406 | 429 | 500..=599 => PushOutcome::Retryable,
             401 => {
                 let mut cached = self.token.lock().await;
-                if cached.as_ref().is_some_and(|(current, _)| current.as_str() == token.as_str()) {
+                if cached
+                    .as_ref()
+                    .is_some_and(|(current, _)| current.as_str() == token.as_str())
+                {
                     *cached = None;
                 }
                 PushOutcome::Retryable

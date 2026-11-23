@@ -202,7 +202,7 @@ impl Store {
         sqlx::query_as("SELECT * FROM mdm_apple.ade_work_scopes($1,$2,$3,$4,$5)")
             .bind(after.map(|v| v.0))
             .bind(after.map(|v| v.1))
-            .bind(after.map(|v|v.2))
+            .bind(after.map(|v| v.2))
             .bind(fresh_epoch.get())
             .bind(observed_at)
             .fetch_all(&self.pool)
@@ -212,10 +212,19 @@ impl Store {
 }
 
 impl Store {
-    pub(crate) async fn push_channel_page(&self,after:Option<crate::push::Candidate>) -> Result<Vec<crate::push::Candidate>,Error>{
-        sqlx::query_as::<_,crate::push::Candidate>("SELECT * FROM mdm_apple.push_channel_page($1,$2,$3)")
-                   .bind(after.as_ref().map(|r|r.0)).bind(after.as_ref().map(|r|r.1)).bind(after.as_ref().map(|r|&r.2))
-                   .fetch_all(&self.pool).await.map_err(db)
+    pub(crate) async fn push_channel_page(
+        &self,
+        after: Option<crate::push::Candidate>,
+    ) -> Result<Vec<crate::push::Candidate>, Error> {
+        sqlx::query_as::<_, crate::push::Candidate>(
+            "SELECT * FROM mdm_apple.push_channel_page($1,$2,$3)",
+        )
+        .bind(after.as_ref().map(|r| r.0))
+        .bind(after.as_ref().map(|r| r.1))
+        .bind(after.as_ref().map(|r| &r.2))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)
     }
     pub async fn maintenance_work_scopes(
         &self,

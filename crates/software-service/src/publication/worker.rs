@@ -18,64 +18,79 @@ impl PublicationOperation<'_> {
     pub async fn reconciliation_work(
         &self,
         key: &str,
+        binding: [u8; 32],
+        slot: &str,
         cutoff: Deadline,
     ) -> Result<Option<PublicationWork>> {
         let key = key.to_owned();
+        let slot = slot.to_owned();
         settle(
             self.runtime
-                .local_tx_with_context(self.binding, budget(cutoff), (self, key), |(s, key), tx| {
-                    Box::pin(async move {
-                        let withdrawal = key.starts_with("w:");
-                        let table = if withdrawal {
-                            db::Table::Withdraw
-                        } else {
-                            db::Table::Publish
-                        };
-                        let call = db::call(tx, table, key).await?.ok_or_else(db::fault)?;
-                        if call.expected_epoch != s.binding.epoch().get() {
-                            return Ok(Err(Error::Conflict));
-                        }
-                        if s.sources.binding.identity != call.target.binding {
-                            return Ok(Ok(None));
-                        }
-                        let record = input!(
-                            rel::PublicationKey::new(s.tenant(), &call.target.record)
-                                .map_err(|_| Error::Identity)
-                        );
-                        let record = input!(
-                            s.releases
-                                .get_in(tx, &record)
-                                .await?
-                                .map_err(|_| Error::Content)
-                        )
-                        .ok_or_else(db::fault)?;
-                        let publication = match db::core_publication(&record, &call.target) {
-                            Ok(value) => value,
-                            Err(Error::Conflict) => return Ok(Ok(None)),
-                            Err(error) => return Ok(Err(error)),
-                        };
-                        if !withdrawal
-                            && (db::call(tx, db::Table::Withdraw, &call.target.withdrawal_key())
+                .local_tx_with_context(
+                    self.binding,
+                    budget(cutoff),
+                    (self, key, slot),
+                    move |(s, key, slot), tx| {
+                        Box::pin(async move {
+                            let withdrawal = key.starts_with("w:");
+                            let table = if withdrawal {
+                                db::Table::Withdraw
+                            } else {
+                                db::Table::Publish
+                            };
+                            let call = db::call(tx, table, key).await?.ok_or_else(db::fault)?;
+                            if call.expected_epoch != s.binding.epoch().get() {
+                                return Ok(Err(Error::Conflict));
+                            }
+                            if call.target.binding != binding || call.target.slot != *slot {
+                                return Ok(Err(Error::Conflict));
+                            }
+                            if s.sources.binding.identity != call.target.binding {
+                                return Ok(Ok(None));
+                            }
+                            let record = input!(
+                                rel::PublicationKey::new(s.tenant(), &call.target.record)
+                                    .map_err(|_| Error::Identity)
+                            );
+                            let record = input!(
+                                s.releases
+                                    .get_in(tx, &record)
+                                    .await?
+                                    .map_err(|_| Error::Content)
+                            )
+                            .ok_or_else(db::fault)?;
+                            let publication = match db::core_publication(&record, &call.target) {
+                                Ok(value) => value,
+                                Err(Error::Conflict) => return Ok(Ok(None)),
+                                Err(error) => return Ok(Err(error)),
+                            };
+                            if !withdrawal
+                                && (db::call(
+                                    tx,
+                                    db::Table::Withdraw,
+                                    &call.target.withdrawal_key(),
+                                )
                                 .await?
                                 .is_some()
-                                || record.snapshot().withdrawn
-                                || matches!(
-                                    publication.outcome,
-                                    rel::PublicationOutcome::Reported(
-                                        rel::PublicationResult::NotApplied(_)
-                                    )
-                                ))
-                        {
-                            return Ok(Ok(None));
-                        }
-                        Ok(Ok(Some(PublicationWork {
-                            cursor: key.clone(),
-                            publication: call.target.publication_id(),
-                            attempt: call.target.attempt,
-                            withdrawal,
-                        })))
-                    })
-                })
+                                    || record.snapshot().withdrawn
+                                    || matches!(
+                                        publication.outcome,
+                                        rel::PublicationOutcome::Reported(
+                                            rel::PublicationResult::NotApplied(_)
+                                        )
+                                    ))
+                            {
+                                return Ok(Ok(None));
+                            }
+                            Ok(Ok(Some(PublicationWork {
+                                cursor: key.clone(),
+                                publication: call.target.publication_id(),
+                                attempt: call.target.attempt,
+                                withdrawal,
+                            })))
+                        })
+                    },
+                )
                 .await,
         )
     }

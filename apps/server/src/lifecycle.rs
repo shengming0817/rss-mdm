@@ -788,7 +788,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                         );
                     }
                     if app.apple.is_some(){launch.stage_task_with_token(rss_mdm_apple_channel::push::registration(app.apple_control.clone(),background.external.apns,signals.handle(crate::worker_wake::Work::Apple)).critical());}
-                    launch.stage_deferred_task_with_token(publications.registration().critical());
+                    launch.stage_deferred_task_with_token(publications.registration(background.external.publication).critical());
                     launch.stage_deferred_task_with_token(
                         device_work.registration(background.device, background.device_drain, signals.handle(crate::worker_wake::Work::Devices)),
                     );

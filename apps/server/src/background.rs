@@ -54,12 +54,15 @@ impl ExternalCalls {
     fn compile(&self) -> Result<ExternalLimits, Error> {
         let bad = || Error::Configuration(ConfigIssue::Budget);
         let limits = rss_mdm_work_page::external::Limits::new;
-        if self.ade.get() > tokio::sync::Semaphore::MAX_PERMITS { return Err(bad()); }
+        if self.ade.get() > tokio::sync::Semaphore::MAX_PERMITS {
+            return Err(bad());
+        }
         Ok(ExternalLimits {
             ade: self.ade,
             apns: limits(self.apns.total, self.apns.per_credential).ok_or_else(bad)?,
             wns: limits(self.wns.total, self.wns.per_credential).ok_or_else(bad)?,
-            publication: limits(self.publication.total, self.publication.per_source).ok_or_else(bad)?,
+            publication: limits(self.publication.total, self.publication.per_source)
+                .ok_or_else(bad)?,
         })
     }
 }

@@ -39,6 +39,7 @@ impl WakeDemand for FailFirstPage {
 async fn selected_configuration(
     c: &Context,
     key: &rss_mdm_native_protection::Protector,
+    sid: &str,
 ) -> Result<[u8; 32]> {
     let t = c.tenant.to_string();
     let mut tx = command::seed_transaction(c).await?;
@@ -50,7 +51,7 @@ async fn selected_configuration(
         &rss_mdm_windows_channel::wns_materials::Request {
             expected_revision: 0,
             package_family_name: "Rss.Test_0123456789abc".into(),
-            sid: "ms-app://rss-test".to_owned().into(),
+            sid: sid.to_owned().into(),
             client_secret: "test-secret".to_owned().into(),
         },
         key,
@@ -69,7 +70,7 @@ async fn selected_configuration(
 }
 async fn channel(
     c: &Context,
-    n: &identity::Native,
+    device: DeviceId,
     key: &rss_mdm_native_protection::Protector,
     config: [u8; 32],
     uri: &[u8],
@@ -78,13 +79,13 @@ async fn channel(
     let mut tx = command::seed_transaction(c).await?;
     let aad = rss_mdm_native_protection::ProtectionContext::new(
         c.tenant,
-        &serde_json::to_string(&(n.device, config))?,
+        &serde_json::to_string(&(device, config))?,
         "windows.push.channel",
         1,
     )?
     .derive();
     sqlx::query("INSERT INTO mdm_windows.push_channels(tenant_id,device,revision,configuration,uri,digest,attempt_until) VALUES($1::uuid,$2,1,$3,$4,$5,clock_timestamp()+interval '1 hour')")
-        .bind(&t).bind(n.device.into_uuid()).bind(config.as_slice()).bind(key.seal_bytes(uri,&aad)?).bind(key.mac(uri,&aad)?.to_vec()).execute(&mut *tx).await?;
+        .bind(&t).bind(device.into_uuid()).bind(config.as_slice()).bind(key.seal_bytes(uri,&aad)?).bind(key.mac(uri,&aad)?.to_vec()).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -115,10 +116,10 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
     let a = &h.assembly;
     let key = &a.resources.protection;
     let t = c.tenant.to_string();
-    let config = selected_configuration(&c, key).await?;
+    let config = selected_configuration(&c, key, "ms-app://rss-test").await?;
     channel(
         &c,
-        &n,
+        n.device,
         key,
         config,
         b"https://fixture.notify.windows.com/held",
@@ -172,16 +173,16 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
     revoked.rollback().await?;
     channel(
         &c,
-        &sibling,
+        sibling.device,
         key,
         config,
         b"https://fixture.notify.windows.com/live",
     )
     .await?;
-    let peer_config = selected_configuration(&other, key).await?;
+    let peer_config = selected_configuration(&other, key, "ms-app://rss-test").await?;
     channel(
         &other,
-        &peer,
+        peer.device,
         key,
         peer_config,
         b"https://fixture.notify.windows.com/live",
@@ -226,6 +227,15 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
         assert_eq!(headers["authorization"],"Bearer test-token");
         axum::http::StatusCode::GONE
     }));
+    let router = router.route(
+        "/throttled",
+        axum::routing::post(|| async {
+            (
+                axum::http::StatusCode::NOT_ACCEPTABLE,
+                [("retry-after", "120")],
+            )
+        }),
+    );
     let server =
         tokio::spawn(axum::serve(listener, router.route("/held", held_route)).into_future());
     let mut stack = rss_runtime::ShutdownStack::try_new(
@@ -233,12 +243,13 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut launch = stack.startup()?.commit();
+    let hint = Arc::new(tokio::sync::Notify::new());
     launch.stage_deferred_task_with_token(
         push::registration(
             h.state.clone(),
             owner.clone(),
-            rss_mdm_work_page::external::Limits::new(8.try_into()?,7.try_into()?).unwrap(),
-            Arc::new(tokio::sync::Notify::new()),
+            rss_mdm_work_page::external::Limits::new(8.try_into()?, 7.try_into()?).unwrap(),
+            hint.clone(),
         )
         .critical(),
     );
@@ -259,6 +270,27 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
         let row:(String,i32,bool)=sqlx::query_as("SELECT outcome,status,settled_id IS NOT NULL FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND device=$2")
             .bind(&t).bind(n.device.into_uuid()).fetch_one(&c.operator).await?;
         assert_eq!(row,("unregistered".into(),410,true));
+        let limited=crate::planning_t2_support::endpoint(&c).await?.members[0].device;
+        channel(&c,limited,key,config,b"https://fixture.notify.windows.com/throttled").await?;
+        identity_cases::seed_device_group(&c,limited,key,&identity_cases::request(false,false)?,&[Uuid::new_v4()]).await?;
+        hint.notify_one();
+        loop {
+            let throttled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND device=$2 AND status=406 AND outcome='retryable' AND next_push>clock_timestamp()+interval '110 seconds')").bind(&t).bind(limited.into_uuid()).fetch_one(&c.operator).await?;
+            if throttled {break;}
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let blocked=crate::planning_t2_support::endpoint(&other).await?.members[0].device;
+        channel(&other,blocked,key,peer_config,b"https://fixture.notify.windows.com/live").await?;
+        identity_cases::seed_device_group(&other,blocked,key,&identity_cases::request(false,false)?,&[Uuid::new_v4()]).await?;
+        let allowed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_windows.push_work_page(NULL,NULL) WHERE tenant_id=$1::uuid AND device=$2)").bind(other.tenant.to_string()).bind(blocked.into_uuid()).fetch_one(&pool).await?;
+        assert!(!allowed,"406 applies to the same OAuth identity across tenants");
+        // Make the original provider deadline due. The same durable work becomes eligible again.
+        sqlx::query("UPDATE mdm_wns.provider_throttles SET retry_at=clock_timestamp() WHERE tenant_id=$1::uuid").bind(&t).execute(&c.operator).await?;
+        hint.notify_one();
+        loop {
+            if sqlx::query_scalar::<_,bool>("SELECT settled_id IS NOT NULL AND status=410 FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND device=$2").bind(other.tenant.to_string()).bind(blocked.into_uuid()).fetch_one(&c.operator).await? {break;}
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert!(!owner.first.load(Ordering::Acquire));
         Ok::<_,anyhow::Error>(())
     }).await;
@@ -271,3 +303,6 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
     other.close().await;
     result?
 }
+
+#[path = "wake_capacity.rs"]
+mod capacity;
