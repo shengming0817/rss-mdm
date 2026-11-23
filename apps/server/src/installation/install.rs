@@ -68,6 +68,8 @@ pub struct Input {
     pub database: DatabaseInput,
     #[serde(default)]
     pub audit_mode: AuditMode,
+    pub request_slots: usize,
+    pub buffered_body_bytes: usize,
     pub external_calls: crate::background::ExternalCalls,
     pub planning_concurrency: usize,
     pub device_concurrency: usize,
@@ -126,6 +128,9 @@ impl Input {
         )
     }
     fn validate(&self) -> Result<()> {
+        crate::config::http::Http::installation(self.request_slots, self.buffered_body_bytes)
+            .compile(&crate::identity::policy::RuntimePolicy::installation())
+            .map_err(invalid)?;
         self.external_calls
             .compile()
             .map_err(super::capacity_error)?;
@@ -574,7 +579,7 @@ fn runtime(
         }
     };
     Ok(serde_json::json!({
-        "http": crate::config::http::Http::installation(),
+        "http": crate::config::http::Http::installation(input.request_slots, input.buffered_body_bytes),
         "inventory_runtime":crate::config::InventoryRuntimeConfig::installation(),
         "background":input.background(connection_budget),
         "runtime_binding":{"host_id":saved.receipt.host_id,"operation_id":saved.receipt.operation_id,"revision":1,"material_digest":saved.fingerprint_digest()},

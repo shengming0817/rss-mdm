@@ -154,7 +154,9 @@ fn timeline_error(e: rss_mdm_timeline_service::Error) -> Error {
         E::NotFound => Error::NotFound,
         E::Conflict => Error::QueryCursorInvalidated,
         E::Integrity => Error::Unavailable(Failure::AuditIntegrity),
-        E::Storage | E::Deadline | E::BudgetExceeded => Error::Unavailable(Failure::Timeline),
+        E::Storage => Error::Unavailable(Failure::Timeline),
+        E::Deadline => Error::RequestDeadline,
+        E::BudgetExceeded => Error::CapacityExceeded,
     }
 }
 fn audit_read(a: &RequestAudit) {
@@ -260,7 +262,7 @@ impl rss_mdm_http_contract::query::QueryOwner for Discovery {
         ))
     }
     fn parameters() -> rss_mdm_http_contract::signature::Schema {
-        rss_mdm_http_contract::signature::Schema::request::<Self::Parsed>()
+        crate::timeline::history_parameters()
     }
     fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
         rss_mdm_timeline_service::Query::parse(raw, false)

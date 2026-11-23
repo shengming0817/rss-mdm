@@ -382,6 +382,8 @@
     "request_seconds": 8,
     "total_drain_seconds": 60,
     "admission_drain_seconds": 35,
+    "request_slots": 32,
+    "buffered_body_bytes": 134217728,
     "da_listener": {
       "connections": 16,
       "prepare_seconds": 5,

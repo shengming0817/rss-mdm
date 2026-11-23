@@ -53,6 +53,8 @@ def run():
         database=dict(name='mdm',administrator=dict(host='postgres',port=5432,name='postgres',user='postgres',
             password_file=str(inputs/'database-password'),ca_file=str(inputs/'postgres-ca.crt'))),
         audit_mode='plain',content_storage=os.environ.get('MDM_CONTENT_STORAGE','volume'),
+        request_slots=int(os.environ['MDM_HTTP_REQUEST_SLOTS']),
+        buffered_body_bytes=int(os.environ['MDM_HTTP_BUFFERED_BODY_BYTES']),
         external_calls=external_calls(),
         planning_concurrency=int(os.environ['MDM_PLANNING_CONCURRENCY']),
         device_concurrency=int(os.environ['MDM_DEVICE_CONCURRENCY']),

@@ -125,7 +125,7 @@ fn page(body: &Value) -> &Value {
     reason = "real App lifecycle and loopback HTTP fixture"
 )]
 async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<()> {
-    let c = Context::open("shared", &[]).await?;
+    let c = Context::open("directory_query", &[]).await?;
     let manager = c
         .account(&[
             P::ResourceRead,
@@ -139,6 +139,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
             P::InventorySensitiveRead,
             P::PolicyRead,
             P::OperationRead,
+            P::AuditRead,
             P::ComplianceRuleRead,
             P::CertificateArchiveRead,
             P::Credentials,
@@ -162,7 +163,10 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
     let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = reservation.local_addr()?;
     let mut config =
-        crate::host_t2_support::configuration(&c.inputs, "shared", address, Uuid::new_v4()).await?;
+        crate::host_t2_support::configuration(&c.inputs, &c.profile, address, Uuid::new_v4())
+            .await?;
+    config["http"]["request_slots"] = json!(1);
+    config["audit_query"]["max_rows"] = json!(20);
     config["agent_pki"] = pki["agent_pki"].clone();
     config["device_pki"] = pki["device_pki"].clone();
     config["recovery_credentials"] = recovery;
@@ -175,7 +179,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
     let target = format!("directory-{}", c.tenant);
     config["publication"]["sources"] = json!([{"name":target,"credentials":{},"target":{"Winget":{"base":format!("https://mdm.example.test/api/v1/tenants/{{tenant}}/software/native/sources/{target}/"),"artifacts_base":format!("https://mdm.example.test/api/v1/tenants/{{tenant}}/software/native/sources/{target}/artifacts/")}}}]);
     // A source enabled for another tenant must not hide this tenant's WinGet target.
-    let peer = Context::open("shared", &[]).await?;
+    let peer = Context::open("directory_query", &[]).await?;
     let brew = format!("brew-{}", c.tenant);
     let repository = content.join("brew.git");
     anyhow::ensure!(
@@ -255,6 +259,9 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
             Ok::<_, anyhow::Error>(())
         })
         .await.with_context(|| format!("directory App readiness: {readiness:?}"))??;
+        let (status,audit_page)=http.get("/audit-events",&[]).await?;
+        anyhow::ensure!(status==200 && audit_page["items"].as_array().is_some_and(|items|items.len()<=20),"default audit window: {status} {audit_page}");
+        assert_eq!(http.get("/audit-events",&[("limit","50")]).await?,(422,json!({"code":"capacity_exceeded"})));
         let (status, targets) = http.get("/software/publication-targets", &[]).await?;
         assert_eq!(status, 200, "{targets}");
         let found = targets["items"].as_array().context("targets")?.iter().find(|item| item["id"] == target).context("WinGet target remains discoverable")?;

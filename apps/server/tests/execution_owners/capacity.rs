@@ -167,15 +167,15 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     let state = Arc::new(agent::HttpState {
         content: None,
         telemetry: None,
-        enrollment,
+        enrollment: enrollment.clone(),
         audit_store: h.c.audit.clone(),
         access: Arc::new(h.c.database.agent_store()),
         inventory: inventory.clone(),
     });
     let envelope = agent::boundary::Envelope {
         profile: rss_mdm_install_support::StorageProfile::Mdm,
-        admission: Arc::new(tokio::sync::Semaphore::new(8)),
-        requests: Arc::new(tokio::sync::Semaphore::new(8)),
+
+        buffered_bytes: Arc::new(tokio::sync::Semaphore::new(128 * 1024 * 1024)),
         host: "mdm.example.test".into(),
         clock: Arc::new(crate::Monotonic(std::time::Instant::now)),
         audit_store: h.c.audit.clone(),
@@ -263,8 +263,8 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
         w::ReportBody::Snapshot(report.values().to_vec()),
     )?;
     assert_eq!(send(second.canonical()?, true).await?.0, 202);
-    let charge: i64 = sqlx::query_scalar("SELECT octet_length(attempts::text)::bigint+octet_length(batch)+octet_length(scope)+1024 FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2")
-        .bind(h.c.tenant.to_string()).bind(id).fetch_one(&h.c.operator).await?;
+    let (first_id,charge):(Uuid,i64)=sqlx::query_as("SELECT id,octet_length(attempts::text)::bigint+octet_length(batch)+octet_length(scope)+1024 FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND delivery_pending ORDER BY device,source,epoch,sequence,id LIMIT 1")
+        .bind(h.c.tenant.to_string()).fetch_one(&h.c.operator).await?;
     let delivery = collection::store::Delivery::new(h.c.database.inventory(), h.c.audit.clone());
     let prefix = delivery
         .pending_reports(
@@ -274,7 +274,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
         )
         .await?;
     assert_eq!(prefix.len(), 1);
-    assert_eq!(prefix[0].batch().id().as_str(), id.to_string());
+    assert_eq!(prefix[0].batch().id().as_str(), first_id.to_string());
     let total_charge: i64 = sqlx::query_scalar("SELECT sum(octet_length(attempts::text)::bigint+octet_length(batch)+octet_length(scope)+1024)::bigint FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND delivery_pending")
         .bind(h.c.tenant.to_string()).fetch_one(&h.c.operator).await?;
     assert_eq!(
@@ -397,6 +397,55 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     assert!(page.next.is_none());
     tx.rollback().await?;
     assert!(worker_lifecycle.shutdown().join().await?.is_clean());
+    // A still-valid certificate must not authenticate through either Agent entry after a tenant restore.
+    assert!(enrollment.authenticate(&evidence).await.is_ok());
+    let origin = gateway.request_origin("https://mdm.example.test".into());
+    let mut held = h.c.operator.begin().await?;
+    let locker:i32=sqlx::query_scalar("SELECT pg_backend_pid() FROM rss_transactional_messaging.tenant_epoch WHERE tenant_id=$1::uuid FOR UPDATE")
+        .bind(h.c.tenant.to_string()).fetch_one(&mut *held).await?;
+    let cutoff = rss_request_context::Deadline::from_timeout(
+        &crate::lifecycle::RuntimeTimer,
+        std::time::Duration::from_millis(400),
+    )?;
+    let (blocked, auth) = tokio::join!(
+        h.c.wait_blocked(locker),
+        enrollment.authenticate_at_origin(&evidence, &origin, cutoff)
+    );
+    held.rollback().await?;
+    blocked?;
+    anyhow::ensure!(
+        matches!(
+            auth,
+            Err(rss_mdm_registration_service::agent::Failure {
+                code: rss_mdm_agent_wire::enroll::ErrorCode::ServiceUnavailable,
+                ..
+            })
+        ),
+        "a blocked execution fence must not report an epoch conflict"
+    );
+
+    assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2 WHERE tenant_id=$1::uuid AND epoch=1")
+        .bind(h.c.tenant.to_string()).execute(&h.c.operator).await?.rows_affected(),1);
+    let deadline = rss_request_context::Deadline::from_timeout(
+        &crate::lifecycle::RuntimeTimer,
+        std::time::Duration::from_secs(5),
+    )?;
+    assert!(matches!(
+        enrollment
+            .authenticate_at_origin(&evidence, &origin, deadline)
+            .await,
+        Err(rss_mdm_registration_service::agent::Failure {
+            source: Some(rss_mdm_registration_service::Error::Conflict),
+            ..
+        })
+    ));
+    assert!(matches!(
+        enrollment.authenticate(&evidence).await,
+        Err(rss_mdm_registration_service::agent::Failure {
+            source: Some(rss_mdm_registration_service::Error::Conflict),
+            ..
+        })
+    ));
     assert!(lifecycle.shutdown().join().await?.is_clean());
     h.close().await
 }

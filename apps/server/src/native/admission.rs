@@ -85,7 +85,6 @@ struct State {
 pub(crate) struct Admission {
     clock: Arc<dyn rss_observation::Clock>,
     state: Mutex<State>,
-    requests: Arc<Semaphore>,
     name: &'static str,
     refused: [AtomicU64; 2],
 }
@@ -95,15 +94,10 @@ pub(crate) struct RequestGate {
     peer: IpAddr,
 }
 impl Admission {
-    pub(crate) fn new(
-        clock: Arc<dyn rss_observation::Clock>,
-        requests: Arc<Semaphore>,
-        name: &'static str,
-    ) -> Arc<Self> {
+    pub(crate) fn new(clock: Arc<dyn rss_observation::Clock>, name: &'static str) -> Arc<Self> {
         let now = clock.now();
         Arc::new(Self {
             clock,
-            requests,
             name,
             refused: [AtomicU64::new(0), AtomicU64::new(0)],
             state: Mutex::new(State {
@@ -154,21 +148,17 @@ impl Admission {
         }
         Some(slot)
     }
-    fn request(&self, address: IpAddr) -> Option<(OwnedSemaphorePermit, OwnedSemaphorePermit)> {
-        let peer = self.peer_request(address)?;
-        Some((peer, self.requests.clone().try_acquire_owned().ok()?))
-    }
 }
 pub(crate) async fn admit(
     Extension(gate): Extension<RequestGate>,
     mut request: Request,
     next: Next,
 ) -> Response {
-    let Some(slots) = gate.owner.request(gate.peer) else {
+    let Some(slot) = gate.owner.peer_request(gate.peer) else {
         gate.owner.refused(1);
         return limited(Duration::from_secs(1));
     };
-    let lease = Arc::new(vec![slots.0, slots.1]);
+    let lease = Arc::new(vec![slot]);
     request.extensions_mut().insert(lease.clone());
     let response = next.run(request).await;
     drop(lease);
@@ -191,6 +181,29 @@ pub(crate) fn limited(delay: Duration) -> Response {
     response
 }
 
+pub(crate) fn agent_limited(path: &str) -> Response {
+    use axum::http::{HeaderValue, StatusCode, header};
+    let body = if path.starts_with("/api/v1/agent/enroll/") {
+        serde_json::to_value(rss_mdm_agent_wire::enroll::ErrorBody {
+            code: rss_mdm_agent_wire::enroll::ErrorCode::ServiceUnavailable,
+            issuance_id: None,
+        })
+        .expect("closed error")
+    } else {
+        serde_json::to_value(rss_mdm_agent_wire::runtime::ErrorBody {
+            code: rss_mdm_agent_wire::runtime::ErrorCode::ServiceUnavailable,
+        })
+        .expect("closed error")
+    };
+    let mut response = crate::http_host::secure_response(
+        (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response(),
+        uuid::Uuid::new_v4(),
+    );
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    response
+}
 pub(crate) async fn admit_agent(
     Extension(gate): Extension<RequestGate>,
     mut request: Request,
@@ -198,27 +211,7 @@ pub(crate) async fn admit_agent(
 ) -> Response {
     let Some(peer_slot) = gate.owner.peer_request(gate.peer) else {
         gate.owner.refused(1);
-        use axum::http::{HeaderValue, StatusCode, header};
-        let body = if request.uri().path().starts_with("/api/v1/agent/enroll/") {
-            serde_json::to_value(rss_mdm_agent_wire::enroll::ErrorBody {
-                code: rss_mdm_agent_wire::enroll::ErrorCode::ServiceUnavailable,
-                issuance_id: None,
-            })
-            .expect("closed error")
-        } else {
-            serde_json::to_value(rss_mdm_agent_wire::runtime::ErrorBody {
-                code: rss_mdm_agent_wire::runtime::ErrorCode::ServiceUnavailable,
-            })
-            .expect("closed error")
-        };
-        let mut response = crate::http_host::secure_response(
-            (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response(),
-            uuid::Uuid::new_v4(),
-        );
-        response
-            .headers_mut()
-            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
-        return response;
+        return agent_limited(request.uri().path());
     };
     let lease = Arc::new(vec![peer_slot]);
     request.extensions_mut().insert(lease.clone());

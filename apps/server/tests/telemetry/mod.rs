@@ -2,6 +2,7 @@
 mod capacity;
 mod fixture;
 mod http;
+mod stream;
 use crate::{authority_t2_support::Context, device_material_support as materials};
 use anyhow::{Context as _, Result};
 use fixture::{Fixture, SeedAuthority, deadline};
@@ -14,6 +15,62 @@ use std::{
     sync::Arc,
 };
 use uuid::Uuid;
+
+// Delay a specific durable ID at COMMIT, after all intake SQL has completed.
+async fn uncertain_intake<T>(
+    c: &Context,
+    table: &str,
+    id: Uuid,
+    run: impl FnOnce(rss_mdm_telemetry_service::IntakeRequest) -> T,
+) -> Result<()>
+where
+    T: std::future::Future<Output = std::result::Result<(), rss_mdm_telemetry_service::Error>>,
+{
+    anyhow::ensure!(matches!(table, "batches" | "gap_reports"));
+    let name = format!("commit_{}", id.simple());
+    let key = id.as_u128() as i64;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE FUNCTION mdm_telemetry.{name}() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN PERFORM pg_advisory_xact_lock({key}::bigint); RETURN NULL; END$$;
+        CREATE CONSTRAINT TRIGGER {name} AFTER INSERT ON mdm_telemetry.{table} DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+        WHEN (NEW.id='{id}'::uuid) EXECUTE FUNCTION mdm_telemetry.{name}()"))).execute(&c.operator).await?;
+    let result = async {
+        let mut hold = c.operator.begin().await?;
+        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid() FROM pg_advisory_xact_lock($1)")
+            .bind(key)
+            .fetch_one(&mut *hold)
+            .await?;
+        let mut request = crate::authority_t2_support::telemetry_intake(c.execution());
+        request.deadline = rss_request_context::Deadline::from_timeout(
+            &crate::lifecycle::RuntimeTimer,
+            std::time::Duration::from_millis(900),
+        )?;
+        let audit = request.audit.clone();
+        let observe = async {
+            c.wait_blocked(pid).await?;
+            let facts = audit.snapshot();
+            anyhow::ensure!(
+                facts.operation_id == Some(id)
+                    && facts.write_outcome == rss_mdm_audit_integration::WriteOutcome::Unknown,
+                "COMMIT did not expose the original ID and uncertain outcome"
+            );
+            anyhow::Ok(())
+        };
+        let (observed, settled) = tokio::join!(observe, run(request));
+        hold.rollback().await?;
+        observed?;
+        anyhow::ensure!(
+            matches!(settled, Err(rss_mdm_telemetry_service::Error::Unknown)),
+            "blocked COMMIT returned {settled:?}"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "DROP TRIGGER {name} ON mdm_telemetry.{table}; DROP FUNCTION mdm_telemetry.{name}()"
+    )))
+    .execute(&c.operator)
+    .await?;
+    result
+}
 
 #[expect(
     clippy::cognitive_complexity,
@@ -282,8 +339,10 @@ async fn exercise(c: &Context, f: &Fixture, default: &Fixture) -> Result<()> {
             .await
             .with_context(|| format!("seed {key}"))?;
     }
-    capacity::seed(c, f, &device, epoch).await?;
-    let account = c.account(&[Permission::InventoryRead]).await?;
+    let capacity_spec = capacity::seed(c, f, &device, epoch).await?;
+    let account = c
+        .account(&[Permission::InventoryRead, Permission::TelemetryMaintain])
+        .await?;
     let binding = f.config.configuration_binding()?;
     fixture::persist_selection(c, &f.config).await?;
     let mut absent = f.config.clone();
@@ -357,7 +416,14 @@ async fn exercise(c: &Context, f: &Fixture, default: &Fixture) -> Result<()> {
     };
     upload.validate()?;
     assert!(matches!(
-        service.receive(&principal, &upload, 0).await,
+        service
+            .receive(
+                &principal,
+                &upload,
+                0,
+                crate::authority_t2_support::telemetry_intake(principal.binding())
+            )
+            .await,
         Err(rss_mdm_telemetry_service::Error::Capacity)
     ));
     let persisted: bool = sqlx::query_scalar(
@@ -383,25 +449,90 @@ async fn exercise(c: &Context, f: &Fixture, default: &Fixture) -> Result<()> {
         "createdAt": now,
         "gaps": [{"reason": "capacity", "count": 1, "first": now, "last": now}]
     }))?;
-    let accepted = service.receive_gap(&principal, &gap, 0).await?;
+    uncertain_intake(c, "gap_reports", gap.report_id, |request| async {
+        service
+            .receive_gap(&principal, &gap, 0, request)
+            .await
+            .map(|_| ())
+    })
+    .await?;
+    let accepted = service
+        .receive_gap(
+            &principal,
+            &gap,
+            0,
+            crate::authority_t2_support::telemetry_intake(principal.binding()),
+        )
+        .await?;
     let recovered = service.gap_status(&principal, gap.report_id).await?;
     anyhow::ensure!(
         accepted.report_id == gap.report_id
-            && !accepted.replayed
             && recovered.report_id == gap.report_id
             && recovered.replayed
             && recovered.received_at == accepted.received_at,
         "telemetry role admits the live primary credential and recovers its receipt"
     );
-    let http = http::Http::open(
+    let http = http::Http::open(c, service.clone(), &account).await?;
+    let short = http::Http::with_timeout(
         c,
         service.clone(),
-        Arc::new(c.authenticate(&account).await?),
+        &account,
+        std::time::Duration::from_millis(750),
     )
     .await?;
+    short.stalled_body().await?;
+    let mut observer = f.provider_observer(c).await?;
+    use sqlx::Connection as _;
+    let mut hold = observer.begin().await?;
+    sqlx::query("LOCK TABLE rss_timeseries.samples IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *hold)
+        .await?;
+    let locker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *hold)
+        .await?;
+    let mut witness = f.provider_observer(c).await?;
+    let observe = async {
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let waiting: Option<i32>=sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) LIMIT 1")
+                    .bind(locker).fetch_optional(&mut witness).await?;
+                if let Some(pid)=waiting {break anyhow::Ok(pid);}
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }).await?
+    };
+    let (pid, response) = tokio::join!(
+        observe,
+        short.call("/telemetry/history", query(&device, "custom.minimum"))
+    );
+    let waiter = pid?;
+    let (status, error) = response?;
+    anyhow::ensure!(
+        status == 504 && error["code"] == "request_deadline",
+        "provider deadline: {status} {error}"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while sqlx::query_scalar::<_, bool>("SELECT $1=ANY(pg_blocking_pids($2))")
+            .bind(locker)
+            .bind(waiter)
+            .fetch_one(&mut witness)
+            .await?
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        anyhow::Ok(())
+    })
+    .await??;
+    hold.rollback().await?;
+    let mut too_many = query(&device, "custom.minimum");
+    too_many["maxPoints"] = json!(129);
+    assert_eq!(
+        http.call("/telemetry/history", too_many).await?,
+        (422, json!({"code":"capacity_exceeded"}))
+    );
     let h = validator("/telemetry/history");
     let a = validator("/telemetry/aggregate");
-    capacity::verify(&http, &device, &h).await?;
+    capacity::verify(&http, &device, &h, epoch, &capacity_spec).await?;
     for (field, n) in [("custom.minimum", i64::MIN), ("custom.maximum", i64::MAX)] {
         let mut input = query(&device, field);
         input["maxPoints"] = json!(1);
@@ -494,12 +625,7 @@ async fn exercise(c: &Context, f: &Fixture, default: &Fixture) -> Result<()> {
         "old number input rejected"
     );
     let no_read = c.account(&[Permission::GroupRead]).await?;
-    let denied = http::Http::open(
-        c,
-        service.clone(),
-        Arc::new(c.authenticate(&no_read).await?),
-    )
-    .await?;
+    let denied = http::Http::open(c, service.clone(), &no_read).await?;
     anyhow::ensure!(
         denied
             .call("/telemetry/history", query(&device, "custom.minimum"))
@@ -571,7 +697,7 @@ async fn default_queries(
         tx.commit().await?;
         seed(&c,default,&device,epoch,"custom.default",[Number::I64(23);2],false).await?;
         let account=c.account(&[Permission::InventoryRead]).await?;
-        let http=http::Http::open(&c,service.clone(),Arc::new(c.authenticate(&account).await?)).await?;
+        let http=http::Http::open(&c,service.clone(),&account).await?;
         for mode in ["history","latest"] {
             let mut request=query(&device,"custom.default"); request["mode"]=json!(mode); request["maxPoints"]=json!(1);
             let result=http.post("/telemetry/history",request).await?;
@@ -636,5 +762,20 @@ async fn maintenance_commits_while_a_peer_gap_receipt_is_locked() -> Result<()> 
     let result = fixture::with_cleanup(result, f.close(a).await);
     first.close().await;
     second.close().await;
+    result
+}
+
+#[tokio::test]
+#[ignore = "T2: all admitted fields of one incarnation fence real PostgreSQL stream maintenance"]
+async fn complete_stream_qualification() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let result = async {
+        let mut f = Fixture::open(&c).await?;
+        f.config.limits.replay_micros = NonZeroU64::new(1000).unwrap();
+        let result = Box::pin(stream::exercise(&c, &f)).await;
+        fixture::with_cleanup(result, f.close(&c).await)
+    }
+    .await;
+    c.close().await;
     result
 }

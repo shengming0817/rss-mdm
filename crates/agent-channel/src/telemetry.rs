@@ -11,6 +11,7 @@ fn failure(error: rss_mdm_telemetry_service::Error) -> AgentError {
         T::Conflict => Error::Conflict,
         T::Denied => Error::Forbidden,
         T::Unknown => Error::CommitUnknown,
+        T::Deadline => Error::Unavailable(Failure::RequestDeadline),
         T::Capacity | T::Storage => Error::Unavailable(Failure::Database),
     }
     .into()
@@ -94,7 +95,9 @@ pub(super) fn routes()
     }
 }
 async fn upload(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -108,6 +111,7 @@ async fn upload(
         &app.enrollment,
         &headers,
         peer.as_ref().map(|p| &p.0),
+        &control,
     )
     .await?;
     audit.set_action(
@@ -119,17 +123,21 @@ async fn upload(
     let bytes = body.map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
     let decoded = bytes.decode(&headers, service.request_bytes())?;
     let input = decoded.value;
-    let result = bounded(async {
-        service
-            .receive(&principal, &input, decoded.bytes)
-            .await
-            .map_err(failure)
-    })
-    .await?;
+    let request = rss_mdm_telemetry_service::IntakeRequest {
+        deadline: control.deadline(),
+        cancellation: Arc::new(control),
+        audit,
+    };
+    let result = service
+        .receive(&principal, &input, decoded.bytes, request)
+        .await
+        .map_err(failure)?;
     Ok(WithStatus(Json(result)))
 }
 async fn gap_upload(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -146,6 +154,7 @@ async fn gap_upload(
         &app.enrollment,
         &headers,
         peer.as_ref().map(|p| &p.0),
+        &control,
     )
     .await?;
     audit.set_action(
@@ -160,17 +169,21 @@ async fn gap_upload(
         service.request_bytes().min(wire::TELEMETRY_GAP_MAX_BYTES),
     )?;
     let input = decoded.value;
-    let result = bounded(async {
-        service
-            .receive_gap(&principal, &input, decoded.bytes)
-            .await
-            .map_err(failure)
-    })
-    .await?;
+    let request = rss_mdm_telemetry_service::IntakeRequest {
+        deadline: control.deadline(),
+        cancellation: Arc::new(control),
+        audit,
+    };
+    let result = service
+        .receive_gap(&principal, &input, decoded.bytes, request)
+        .await
+        .map_err(failure)?;
     Ok(WithStatus(Json(result)))
 }
 async fn gap_receipt(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -182,6 +195,7 @@ async fn gap_receipt(
         &app.enrollment,
         &headers,
         peer.as_ref().map(|p| &p.0),
+        &control,
     )
     .await?;
     audit.set_action(
@@ -190,7 +204,7 @@ async fn gap_receipt(
     );
     audit.identify_device(principal.device());
     audit.target_device(principal.device());
-    bounded(async {
+    bounded(&control, async {
         service(&app)?
             .gap_status(&principal, id)
             .await
@@ -201,7 +215,9 @@ async fn gap_receipt(
 }
 
 async fn receipt(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -213,6 +229,7 @@ async fn receipt(
         &app.enrollment,
         &headers,
         peer.as_ref().map(|p| &p.0),
+        &control,
     )
     .await?;
     audit.set_action(
@@ -221,7 +238,7 @@ async fn receipt(
     );
     audit.identify_device(principal.device());
     audit.target_device(principal.device());
-    bounded(async {
+    bounded(&control, async {
         service(&app)?
             .status(&principal, id)
             .await
@@ -232,7 +249,9 @@ async fn receipt(
 }
 
 async fn configuration(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -244,6 +263,7 @@ async fn configuration(
         &app.enrollment,
         &headers,
         peer.as_ref().map(|p| &p.0),
+        &control,
     )
     .await?;
     audit.set_action(
@@ -252,7 +272,7 @@ async fn configuration(
     );
     audit.identify_device(principal.device());
     audit.target_device(principal.device());
-    bounded(async {
+    bounded(&control, async {
         service(&app)?
             .configuration(&principal, policy, version)
             .await
@@ -263,8 +283,9 @@ async fn configuration(
 }
 
 async fn current(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    Extension(control): Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -276,6 +297,7 @@ async fn current(
         &app.enrollment,
         &headers,
         peer.as_ref().map(|p| &p.0),
+        &control,
     )
     .await?;
     audit.set_action(
@@ -284,7 +306,7 @@ async fn current(
     );
     audit.identify_device(principal.device());
     audit.target_device(principal.device());
-    bounded(async {
+    bounded(&control, async {
         use rss_mdm_telemetry_service::CurrentObservation as C;
         let state = match service(&app)?
             .current_observation(&principal, id, observation)
@@ -349,7 +371,9 @@ fn decode(headers: &HeaderMap, bytes: &Bytes, limit: usize) -> Result<Vec<u8>, A
 }
 
 async fn material(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -361,6 +385,7 @@ async fn material(
         &app.enrollment,
         &headers,
         peer.as_ref().map(|p| &p.0),
+        &control,
     )
     .await?;
     audit.set_action(
@@ -369,7 +394,7 @@ async fn material(
     );
     audit.identify_device(principal.device());
     audit.target_device(principal.device());
-    bounded(async {
+    bounded(&control, async {
         let store = app.content.as_ref().ok_or(Error::Unsupported)?.clone();
         let verified = service(&app)?
             .content(&principal, policy, version, store)
@@ -383,7 +408,9 @@ async fn material(
 }
 
 async fn directory(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -394,6 +421,7 @@ async fn directory(
         &app.enrollment,
         &headers,
         peer.as_ref().map(|p| &p.0),
+        &control,
     )
     .await?;
     audit.set_action(
@@ -402,7 +430,7 @@ async fn directory(
     );
     audit.identify_device(principal.device());
     audit.target_device(principal.device());
-    bounded(async {
+    bounded(&control, async {
         service(&app)?
             .directory(&principal)
             .await

@@ -36,10 +36,16 @@ pub async fn complete(
     audit: &RequestAudit,
     status: u16,
     failure: Option<ResponseFailure>,
+    deadline: rss_request_context::Deadline,
 ) -> Option<Replacement> {
     let snapshot = audit.snapshot();
+    let effect = if snapshot.intent_only {
+        WriteOutcome::CommitNotStarted
+    } else {
+        snapshot.write_outcome
+    };
     let mut replacement = if failure == Some(ResponseFailure::Deadline) {
-        protected_result(failure, snapshot.write_outcome)
+        protected_result(failure, effect)
     } else {
         None
     };
@@ -57,14 +63,16 @@ pub async fn complete(
             )
             || snapshot.write_outcome == WriteOutcome::Unknown && status >= 500;
         let result = request_result(status, failure, &snapshot, unknown);
-        let budget = crate::budget::AuditBudget::new(std::time::Duration::from_secs(2));
+        let budget = crate::budget::AuditBudget::until(deadline.capped(
+            &crate::budget::RuntimeTimer,
+            std::time::Duration::from_secs(2),
+        ));
         if let Err(error) = store
             .settle_request(audit, status, result, &budget.source_control())
             .await
         {
             reason = Some(failure_reason(&error));
-            replacement = protected_result(failure, snapshot.write_outcome)
-                .or(Some(Replacement::Audit(error)));
+            replacement = protected_result(failure, effect).or(Some(Replacement::Audit(error)));
         }
     }
     if snapshot.intent == crate::AuditIntent::Routine && status >= 400 {

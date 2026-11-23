@@ -27,7 +27,7 @@ pub(super) async fn prepare(
         database.password_file = password;
         let configuration:crate::telemetry::Config=serde_json::from_value(serde_json::json!({
             "resource_id":Uuid::new_v4(),"backend":{"kind":"postgres","database":database},"cursor_key_file":cursor,"connections":CONNECTIONS,
-            "maintenance":{"rows":4096,"buckets":64,"step_seconds":6},
+            "maintenance":{"authorization_bytes":65536,"rows":4096,"buckets":64,"step_seconds":6},
             "ingress":{"requestBytes":1048576,"pendingBatches":64,"batchesPerMinute":6000,"bytesPerMinute":67108864},
             "limits":{"max_points":4096,"max_series":4096,"max_bytes":1048576,"replay_micros":86400000000u64,"cursor_micros":900000000u64}
         })).map_err(|_|Error::Input)?;

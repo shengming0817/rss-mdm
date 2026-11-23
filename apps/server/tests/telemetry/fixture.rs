@@ -47,7 +47,7 @@ impl Fixture {
         runtime.password_file = directory.path().join("password");
         let config: crate::telemetry::Config = serde_json::from_value(serde_json::json!({
             "resource_id":Uuid::new_v4(),"backend":{"kind":"postgres","database":runtime},"connections":2,"cursor_key_file":directory.path().join("cursor"),
-            "maintenance":{"rows":4096,"buckets":64,"step_seconds":6},
+            "maintenance":{"authorization_bytes":65536,"rows":points.min(128),"buckets":series.min(16),"step_seconds":6},
             "ingress":{"requestBytes":1048576,"pendingBatches":64,"batchesPerMinute":120,"bytesPerMinute":8388608},
             "limits":{"max_points":points,"max_series":series,"max_bytes":1048576,"replay_micros":86400000000u64,"cursor_micros":60000000}
         }))?;
@@ -69,6 +69,10 @@ impl Fixture {
             .execute(&c.operator)
             .await
             .with_context(|| format!("create telemetry database {}", fixture.database))?;
+            let today = time::OffsetDateTime::now_utc()
+                .unix_timestamp()
+                .div_euclid(86400)
+                * 86_400_000_000;
             crate::installation::providers::telemetry::prepare(
                 crate::installation::providers::telemetry::Request {
                     operation_id: Uuid::new_v4(),
@@ -76,10 +80,16 @@ impl Fixture {
                     configuration: fixture.config.clone(),
                     administrator,
                     owner: fixture.roles[0].clone(),
-                    partitions: vec![crate::installation::providers::telemetry::Partition {
-                        start_micros: 0,
-                        end_micros: 10_000_000,
-                    }],
+                    partitions: vec![
+                        crate::installation::providers::telemetry::Partition {
+                            start_micros: 0,
+                            end_micros: 10_000_000,
+                        },
+                        crate::installation::providers::telemetry::Partition {
+                            start_micros: today - 86_400_000_000,
+                            end_micros: today + 172_800_000_000,
+                        },
+                    ],
                     clickhouse: None,
                 },
             )
@@ -92,6 +102,12 @@ impl Fixture {
             return with_cleanup(Err(error), fixture.close(c).await);
         }
         Ok(fixture)
+    }
+    pub async fn provider_observer(&self, c: &Context) -> Result<sqlx::PgConnection> {
+        use sqlx::Connection;
+        let mut db = c.inputs.database("shared", "postgres");
+        db.name = self.database.clone();
+        Ok(sqlx::PgConnection::connect_with(&db.options()?).await?)
     }
     pub async fn store(&self) -> Result<Arc<rss_timeseries_postgres::PgStore<SystemClock>>> {
         match self.config.open_backend().await? {

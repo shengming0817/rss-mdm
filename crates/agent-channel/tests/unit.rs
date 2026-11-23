@@ -1,19 +1,5 @@
 use super::*;
 
-#[tokio::test]
-async fn bounded_timeout_preserves_the_agent_deadline_error() {
-    let error = bounded_for(
-        Duration::ZERO,
-        std::future::pending::<Result<(), AgentError>>(),
-    )
-    .await
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        AgentError::Service(Error::Unavailable(Failure::RequestDeadline))
-    ));
-}
-
 #[test]
 fn wire_discriminators_distinguish_absent_from_unsupported() {
     let error =

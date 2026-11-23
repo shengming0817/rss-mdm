@@ -46,6 +46,21 @@ pub async fn historical_on(
         .fetch_optional(c)
         .await
 }
+/// Project only the immutable source, projection and field-version references.
+pub async fn qualification_on(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    tenant: TenantId,
+    policy: Uuid,
+    version: Uuid,
+) -> Result<Option<(String, String, Value)>, sqlx::Error> {
+    sqlx::query_as(crate::storage_profile::sql(profile).telemetry_qualification)
+        .bind(tenant.to_string())
+        .bind(policy)
+        .bind(version)
+        .fetch_optional(c)
+        .await
+}
 /// Bounded current candidates; the caller performs device-specific admission.
 pub async fn candidates_on(
     profile: rss_mdm_install_support::StorageProfile,

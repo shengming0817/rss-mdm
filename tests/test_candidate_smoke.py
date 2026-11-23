@@ -182,7 +182,10 @@ class RuntimeOwnership(unittest.TestCase):
             factory.return_value.__enter__.side_effect=RuntimeError('fixture failure')
             with self.assertRaisesRegex(RuntimeError,'fixture failure'):
                 smoke.smoke(Path(temp))
-            factory.assert_called_once_with(Path(temp),diagnostic_filename='smoke-failure.json')
+            factory.assert_called_once_with(Path(temp),prepare=mock.ANY,diagnostic_filename='smoke-failure.json')
+            host = mock.Mock(config={'http': {}})
+            factory.call_args.kwargs['prepare'](host)
+            self.assertEqual(host.config['http']['request_slots'], 5)
 
 
 class ExternalReviewRegressions(unittest.TestCase):
@@ -205,7 +208,7 @@ class ExternalReviewRegressions(unittest.TestCase):
     def test_host_fixture_keeps_private_directory_and_tls_key(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)
-            candidate.inputs(root,Path(__file__).resolve().parents[1]/'fixtures/mdm-config.example.json',Path(__file__).resolve().parents[1]/'deployment')
+            candidate.inputs(root,Path(__file__).resolve().parents[1]/'fixtures/mdm-config.example.json',Path(__file__).resolve().parents[1]/'deployment',body_limits=Path(__file__).resolve().parents[1]/'crates/management-http/src/body_limits.json')
             self.assertEqual(root.stat().st_mode & 0o077,0)
             self.assertEqual((root/'server.key').stat().st_mode & 0o077,0)
             verified=candidate.subprocess.run([

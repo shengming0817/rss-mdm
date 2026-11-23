@@ -15,16 +15,9 @@ struct Lease {
     owner: Arc<Admission>,
     peer: IpAddr,
     phase: Mutex<Phase>,
-    _request: OwnedSemaphorePermit,
 }
 impl Lease {
     fn begin(gate: &RequestGate) -> Result<Self, Duration> {
-        let request = gate
-            .owner
-            .requests
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| RETRY)?;
         let now = gate.owner.clock.now();
         let mut state = gate.owner.state.lock().map_err(|_| RETRY)?;
         let global_wait = state.requests.wait(now);
@@ -50,7 +43,6 @@ impl Lease {
                 device: None,
                 result: None,
             }),
-            _request: request,
         })
     }
     fn transition(&self, key: (uuid::Uuid, rss_mdm_agent_wire::DeviceId)) -> Result<(), Duration> {
@@ -142,7 +134,6 @@ mod tests {
             Arc::new(Fixed(rss_request_context::Clock::now(
                 &crate::lifecycle::RuntimeTimer,
             ))),
-            Arc::new(Semaphore::new(8)),
             "windows",
         )
     }
@@ -212,7 +203,6 @@ mod tests {
         outer.transition(key).unwrap();
         let work = outer.clone();
         drop(outer);
-        assert_eq!(owner.requests.available_permits(), 7);
         assert_eq!(
             owner.state.lock().unwrap().devices[&key]
                 .requests
@@ -220,7 +210,6 @@ mod tests {
             1
         );
         drop(work);
-        assert_eq!(owner.requests.available_permits(), 8);
         assert_eq!(
             owner.state.lock().unwrap().devices[&key]
                 .requests

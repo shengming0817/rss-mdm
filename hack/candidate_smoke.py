@@ -16,6 +16,7 @@ import sys
 import tempfile
 import socket
 import time
+import threading
 import uuid
 from release import sha
 from candidate_fixture import INSTANCE, ADMIN, TENANTS, installation
@@ -26,11 +27,18 @@ PASSWORD = "Candidate-only-correct-horse-battery-2026!"
 from candidate_runtime import Candidate, Stage, docker, failure_evidence, require, wait
 
 class Browser:
+    # Browser sessions share the loopback peer's 10 requests/second gateway quota.
+    last_request = 0.0
+
     def __init__(self, port, ca, *, host="mdm.example.test"):
         self.host=host
         self.port, self.context = port, ssl.create_default_context(cafile=ca)
         self.cookie, self.csrf = "", ""
-    def call(self, method, path, data=None, operation=None):
+    def call(self, method, path, data=None, operation=None, *, chunked=False, during_upload=None):
+        remaining = Browser.last_request + 0.125 - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
+        Browser.last_request = time.monotonic()
         headers = {"Host":self.host, "Origin":"https://"+self.host, "X-Identity-Request":"1"}
         if self.cookie: headers["Cookie"] = self.cookie
         if self.csrf: headers["X-CSRF-Token"] = self.csrf
@@ -39,9 +47,19 @@ class Browser:
         connection = http.client.HTTPSConnection("127.0.0.1", self.port, context=self.context, timeout=15)
         try:
             connection.sock=self.context.wrap_socket(socket.create_connection(("127.0.0.1",self.port),timeout=15),server_hostname=self.host)
-            connection.request(method, path, body=json.dumps(data) if data is not None else None, headers=headers)
+            body = json.dumps(data).encode() if data is not None else None
+            if chunked and body is not None:
+                def chunks():
+                    for offset in range(0, len(body), 65536):
+                        yield body[offset:offset+65536]
+                        if offset == 8*1024**2 and during_upload is not None:
+                            during_upload()
+                connection.request(method, path, body=chunks(), headers=headers, encode_chunked=True)
+            else:
+                connection.request(method, path, body=body, headers=headers)
             response = connection.getresponse()
             body = response.read()
+            self.retry_after = response.getheader("Retry-After")
             request_id = response.getheader("x-request-id")
             self.request_id = str(uuid.UUID(request_id)) if request_id is not None else None
             for key, value in response.getheaders():
@@ -54,6 +72,125 @@ class Browser:
             return response.status, value
         finally:
             connection.close()
+
+def verify_request_slots(browser):
+    path = f'/api/v1/tenants/{TENANT}/authorization'
+    held = []
+    try:
+        for _ in range(5):
+            connection = http.client.HTTPSConnection('127.0.0.1',browser.port,context=browser.context,timeout=6)
+            connection.sock = browser.context.wrap_socket(socket.create_connection(('127.0.0.1',browser.port),timeout=6),
+                                                           server_hostname=browser.host)
+            held.append(connection)
+            connection.putrequest('GET',path,skip_host=True)
+            for key, value in {'Host':browser.host,'Cookie':browser.cookie,'Origin':'https://'+browser.host,
+                               'Content-Type':'application/json','Content-Length':'2'}.items():
+                connection.putheader(key,value)
+            connection.endheaders(b'{')
+        wait(lambda: browser.call('GET', path)[0] == 429 and browser.retry_after == '1',
+             'five actual requests occupy the configured host slots', seconds=3)
+        # Disconnect before finishing the body; the other four requests keep their own slots.
+        held.pop().close()
+        wait(lambda: browser.call('GET', path)[0] == 200, 'client cancellation returned a host permit',seconds=3)
+        for connection in held:
+            connection.send(b'}')
+            response=connection.getresponse()
+            require(response.status==200, 'each retained request passed scope lookup and authorization')
+            response.read()
+    finally:
+        for connection in held:
+            connection.close()
+
+def ingress_capacity(browser, principal, deployed):
+    profile = f'/api/v1/identity/tenants/{TENANT}/accounts/{principal}/profile'
+    status, original = browser.call('GET', profile)
+    require(status == 200, 'local profile read')
+    operation = str(uuid.uuid4())
+    value = dict(displayName='Candidate', username=None, email=None, maxAgeSeconds=60,
+                 extensions={f'field{n:04}': 'value' * 24 for n in range(256)})
+    change = dict(operationId=operation, expectedRevision=original['revision'], value=value)
+    csrf = browser.csrf
+    browser.csrf = ''
+    require(browser.call('PUT', profile, change)[0] == 403, 'profile CSRF')
+    browser.csrf = csrf
+    status, receipt = browser.call('PUT', profile, change, chunked=True)
+    require(status == 200 and receipt['operationId'] == operation, 'large profile write')
+    require(browser.call('GET', profile) == (200, dict(revision=receipt['revision'], value=value)), 'large profile readback')
+    require(browser.call('PUT', profile, change) == (200, receipt), 'large profile replay')
+    require(browser.call('GET', profile + '/operations/' + operation) == (200, receipt), 'large profile receipt')
+    require(browser.call('PUT', profile, dict(change, padding='x' * 98304))[0] == 413, 'profile wire ceiling')
+
+    for method, target in [('GET', profile), ('PUT', profile + '/adjacent')]:
+        require(browser.call(method, target, change)[0] == 413, 'ordinary route budget on adjacent method/path')
+
+    base = f'/api/v1/tenants/{TENANT}'
+    source = base + '/software/source-snapshots/candidate-source'
+    records = [{'name':f'item-{n}', 'version':'1'} for n in range(4096)]
+    document = {'records':records, 'padding':'x'*(63*1024**2)}
+    change = dict(operationId=str(uuid.uuid4()), expectedRevision=0,
+                  input=dict(document=document, extraction={'records':'/records','name':'/name','version':'/version'}))
+    def check_reservation():
+        status, rejection = browser.call('POST', source, {})
+        require(status == 429 and rejection == {'code':'request_limited'} and browser.retry_after == '1',
+                'second snapshot exceeded buffered bytes')
+        require(browser.call('GET', profile)[0] == 200, 'small request kept its reserved capacity')
+        anonymous=Browser(browser.port,deployed.root/'ca.crt')
+        require(anonymous.call('POST',source,{})[0]==401, 'anonymous snapshot rejected before reserving bytes')
+    samples = []
+    stopped = threading.Event()
+    def sample():
+        script = ('if test -r /sys/fs/cgroup/memory.current; then echo cgroup-v2 $(cat /sys/fs/cgroup/memory.current); '
+                  'elif test -r /sys/fs/cgroup/memory/memory.usage_in_bytes; then echo cgroup-v1 $(cat /sys/fs/cgroup/memory/memory.usage_in_bytes); '
+                  'elif test -r /proc/1/status; then awk \'/^VmRSS:/{printf "process-rss %.0f\\n",$2*1024}\' /proc/1/status; fi')
+        while not stopped.is_set():
+            try:
+                source_name, raw=deployed.command('exec',deployed.server,'sh','-c',script,stage=Stage.SQL).split()
+                samples.append((source_name,int(raw)))
+            except (RuntimeError,ValueError,OSError):
+                return
+            stopped.wait(.08)
+    sampler=threading.Thread(target=sample)
+    sampler.start()
+    try:
+        wire_bytes=len(json.dumps(change).encode())
+        status, receipt=browser.call('POST',source,change,chunked=True,during_upload=check_reservation)
+        require(status==200 and receipt['entryCount']==len(records),'near-limit snapshot extract and import')
+    finally:
+        stopped.set()
+        sampler.join()
+    memory=dict(snapshotWireBytes=wire_bytes,bufferedAdmissionBytes=deployed.config['http']['buffered_body_bytes'],
+                sampleCount=len(samples), source=samples[0][0] if samples else 'unavailable',
+                requestStartBytes=samples[0][1] if samples else None,
+                requestSampledPeakBytes=max((value for _,value in samples),default=None))
+    # A declared over-limit Content-Length is enough for the official gateway to reject before upload.
+    connection=http.client.HTTPSConnection('127.0.0.1',browser.port,context=browser.context,timeout=15)
+    try:
+        connection.sock=browser.context.wrap_socket(socket.create_connection(('127.0.0.1',browser.port),timeout=15),server_hostname=browser.host)
+        connection.request('POST',source,headers={'Host':browser.host,'Content-Length':str(64*1024**2+1)})
+        require(connection.getresponse().status==413, 'snapshot wire ceiling')
+    finally:
+        connection.close()
+    for path in ('policies/missing/previews', 'policies/missing/scope/previews',
+                 'policies/missing/stages/missing/scope/previews'):
+        status, _ = browser.call('POST', base + '/' + path, dict(unrecognized='x'*20000))
+        require(status in (400, 404, 422) and browser.request_id is not None, 'preview reached its application validator')
+        require(browser.call('PUT', base + '/' + path, dict(unrecognized='x'*20000))[0] == 413,
+                'preview allowance restricted to POST')
+
+    key = 'custom.capacity_enum'
+    path = f'/api/v1/tenants/{TENANT}/asset-fields/' + key
+    members = [f'state{n:04}' + 's' * 128 for n in range(1024)]
+    definition = dict(key=key, version=1, valueType=dict(kind='enum', values=members),
+                      nullable=False, manual=False, sources={'agent.builtin': 0}, platforms=['windows'],
+                      sensitivity='standard', unit=None, searchable=False, itemKey=None, timeSeries=None)
+    change = dict(operationId=str(uuid.uuid4()), expectedRevision=0, input=dict(action='put', definition=definition))
+    status, _ = browser.call('PUT', path, change)
+    require(status in (200, 202), 'large field publication')
+    def published():
+        status, result = browser.call('GET', path)
+        return status == 200 and result['asset']['field']['valueType']['values'] == members
+    wait(published, 'complete field vocabulary readback')
+    return memory
 
 def native_pki_journey(deployed,browser):
     root=deployed.root;fixture=root/'pki/agent'
@@ -134,7 +271,9 @@ def native_pki_journey(deployed,browser):
             'activation_replay','joint_ca_mdm_audit_restore','same_registration_after_restore','retained_tls_revocation','signed_crl_serial_publication','new_tls_revocation']
 
 def run_smoke(directory):
-    with Candidate(directory, diagnostic_filename="smoke-failure.json") as deployed:
+    def capacity_config(candidate):
+        candidate.config['http']['request_slots'] = 5
+    with Candidate(directory, prepare=capacity_config, diagnostic_filename="smoke-failure.json") as deployed:
         manifest=deployed.manifest
         digest=manifest["archive"]["manifest_digest"];archive=directory/manifest["archive"]["file"]
         pg,gateway,server=deployed.pg,deployed.gateway,deployed.server
@@ -159,6 +298,8 @@ def run_smoke(directory):
         administrator=browser
         status,account=administrator.call('POST',tenant+'/accounts',dict(login='scoped',password=PASSWORD))
         require(status==201 and isinstance(account.get('principalId'),str),'candidate scoped account creation')
+        verify_request_slots(administrator)
+        memory = ingress_capacity(administrator, account["principalId"], deployed)
         browser=Browser(deployed.port,deployed.root/'ca.crt')
         require(browser.call('POST',tenant+'/login',dict(login='scoped',password=PASSWORD))[0]==200,
                 'candidate scoped account login')
@@ -194,8 +335,8 @@ def run_smoke(directory):
         logs=docker("logs",server,stage=Stage.LOGS)
         require("mdm_request" in logs, "candidate request diagnostics missing")
         require(elapsed<45 and docker("inspect","--format","{{.State.ExitCode}}",server,stage=Stage.EXIT)=="0" and "mdm_shutdown_failure" not in logs,"candidate bounded shutdown failed")
-        result=dict(source=manifest["source"],candidate_sha256=sha(directory/"candidate.json"),manifest_digest=digest,archive_sha256=sha(archive),platform=manifest["platform"],
-                    checks=pki_checks+["management_bootstrap","management_login","management_grants","management_business_isolation","migrate","migration_replay","initialize","authorization_initialize","authorization_replay","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
+        result=dict(ingressMemory=memory,source=manifest["source"],candidate_sha256=sha(directory/"candidate.json"),manifest_digest=digest,archive_sha256=sha(archive),platform=manifest["platform"],
+                    checks=pki_checks+["concurrent_snapshot_byte_reservation","five_shared_request_slots","cancel_releases_request_slot","large_profile_write_read_replay","large_field_publication","management_bootstrap","management_login","management_grants","management_business_isolation","migrate","migration_replay","initialize","authorization_initialize","authorization_replay","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
                     shutdown_seconds=round(elapsed,3),limits=["disposable MDM PostgreSQL and TLS namespace","no real Windows or macOS device T3"])
         if deployed.web is not None:
             result["ui"] = deployed.web

@@ -77,7 +77,7 @@ def build(out, header, web_image=None, target_platform=None, product="mdm"):
 
 RUNTIME_TOOLS = ("ingress_network.py", "gateway_fixture.py", "release.py", "candidate_runtime.py", "candidate_fixture.py",  "candidate_installation.py", "candidate_installation_driver.py")
 ROLE_NAMES = ("business", "software-publication", "identity", "commands", "audit", "webhook", "device-access")
-DEPLOYMENT_FILES = ('deployment/production.compose.yaml', 'deployment/sit.compose.yaml', 'deployment/initialize.py', 'deployment/compose.yaml', 'deployment/providers.lock.json', 'fixtures/pki-tools.lock.json', 'deployment/agent-leaf.tpl', 'deployment/windows-leaf.tpl', "mdm-config.example.json", "deployment/render_gateway.py", *(
+DEPLOYMENT_FILES = ('deployment/production.compose.yaml', 'deployment/sit.compose.yaml', 'deployment/initialize.py', 'deployment/compose.yaml', 'deployment/providers.lock.json', 'fixtures/pki-tools.lock.json', 'deployment/agent-leaf.tpl', 'deployment/windows-leaf.tpl', "mdm-config.example.json", "deployment/render_gateway.py", "deployment/body_limits.json", *(
     f"deployment/{name}-roles.sql" for name in ROLE_NAMES))
 
 DA_DEPLOYMENT_FILES=("deployment/da.compose.yaml","deployment/initialize_da.py","deployment/providers.lock.json","deployment/device-access-roles.sql","deployment/da-config.example.json")
@@ -87,6 +87,8 @@ def deployment_files(product):
     raise ValueError("unknown product")
 
 def deployment_source(name):
+    if name == "deployment/body_limits.json":
+        return Path("crates/management-http/src/body_limits.json")
     if name == "deployment/device-access-roles.sql":
         return Path("crates/device-access-runtime/schema/roles.sql")
     if name == "mdm-config.example.json":

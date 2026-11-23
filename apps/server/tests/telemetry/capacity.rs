@@ -19,7 +19,7 @@ pub(super) async fn seed(
     f: &Fixture,
     device: &rss_mdm_agent_wire::DeviceId,
     epoch: Uuid,
-) -> Result<()> {
+) -> Result<SummarySpec> {
     let field = inv::FieldDefinition {
         key: inv::FieldKey::parse(KEY)?,
         version: 1,
@@ -106,6 +106,13 @@ pub(super) async fn seed(
         Id::new(format!("{device}:agent.native"))?,
         Id::new(epoch.to_string())?,
     );
+    let spec = SummarySpec::new(
+        stream.clone(),
+        series.clone(),
+        NonZeroU64::new(4_000_000).unwrap(),
+        CoveragePolicy::ObservedOnly,
+        None,
+    )?;
     let store = f.store().await?;
     let authority = SeedAuthority(c.tenant);
     let register = Authorized::<DefinitionMutation>::verify(
@@ -143,12 +150,14 @@ pub(super) async fn seed(
         Outcome::Accepted(_)
     ));
     store.close(deadline()).await?;
-    Ok(())
+    Ok(spec)
 }
 pub(super) async fn verify(
     http: &http::Http,
     device: &rss_mdm_agent_wire::DeviceId,
     schema: &jsonschema::Validator,
+    epoch: Uuid,
+    spec: &SummarySpec,
 ) -> Result<()> {
     for (mode, expected) in [
         ("history", vec!["s0000", "s1023"]),
@@ -177,5 +186,36 @@ pub(super) async fn verify(
             assert_eq!(rules["maxTotalBytes"], 32768);
         }
     }
+    verify_maintenance_and_aggregate(http, device, epoch, spec).await
+}
+
+async fn verify_maintenance_and_aggregate(
+    http: &http::Http,
+    device: &rss_mdm_agent_wire::DeviceId,
+    epoch: Uuid,
+    spec: &SummarySpec,
+) -> Result<()> {
+    let mut aggregate = aggregate(device, KEY, epoch, "timeline", false);
+    aggregate["dimensions"] = json!(dimensions());
+    let maintenance = json!({"id":Uuid::new_v4(), "device":device, "field":KEY, "resource":"device",
+                    "startMicros":0, "endMicros":4000000, "action":{"action":"recompute","spec":spec}});
+    assert!(serde_json::to_vec(&maintenance)?.len() > 16384);
+    let progress = http
+        .post("/telemetry/maintenance", maintenance.clone())
+        .await?;
+    assert_eq!(progress["state"], "complete");
+    assert_eq!(
+        http.post("/telemetry/maintenance", maintenance).await?,
+        progress
+    );
+    let result = http.post("/telemetry/aggregate", aggregate.clone()).await?;
+    anyhow::ensure!(
+        !result["buckets"]
+            .as_array()
+            .context("state buckets")?
+            .is_empty()
+    );
+    aggregate["dimensions"]["d0000"] = json!("unknown");
+    assert_eq!(http.call("/telemetry/aggregate", aggregate).await?.0, 400);
     Ok(())
 }

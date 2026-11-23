@@ -6,6 +6,8 @@ from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 import uuid
 
@@ -21,6 +23,11 @@ def profiles(modules):
 
 @contextmanager
 def prepared(root, modules, binary, command, resources):
+    if 'telemetry.query' in modules:
+        binary_path = shutil.which('nginx')
+        require(binary_path is not None, 'telemetry.query requires nginx on the host PATH')
+        version = subprocess.run([binary_path, '-v'], capture_output=True, text=True, check=True)
+        resources.append(dict(kind='nginx', identity=version.stderr.strip(), action='host-loopback'))
     environment = Environment(root, group='foundation-t2')
     environment.root.mkdir(parents=True, exist_ok=True, mode=0o700)
     held = lock_file(environment.root / '.prepare.lock')
@@ -61,7 +68,7 @@ def prepared(root, modules, binary, command, resources):
                 path.write_bytes(bytes([value]) * 32)
                 path.chmod(0o600)
 
-        if set(profiles(modules)) & {'shared', 'agent_foundation', 'da_foundation', 'da_embedded', 'shared_telemetry'}:
+        if set(profiles(modules)) & {'shared', 'directory_query', 'agent_foundation', 'da_foundation', 'da_embedded', 'shared_telemetry'}:
             from task_trust_materials import prepare
             material = directory / 'task-trust-ca'
             existed = material.exists()

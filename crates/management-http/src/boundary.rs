@@ -15,13 +15,12 @@ use rss_mdm_http_contract::Router;
 use std::sync::Arc;
 #[derive(Clone)]
 pub struct Envelope {
-    pub request_budget: rss_axum::RequestBudget,
+    pub request_timeout: std::time::Duration,
     pub profile: rss_mdm_install_support::StorageProfile,
-    pub admission: Arc<tokio::sync::Semaphore>,
     pub host: String,
     pub clock: Arc<dyn rss_observation::Clock>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub requests: Arc<tokio::sync::Semaphore>,
+    pub buffered_bytes: Arc<tokio::sync::Semaphore>,
 }
 pub fn wrap<M: rss_mdm_http_contract::module::Declaration>(
     router: Router<(), M>,
@@ -53,7 +52,7 @@ fn wrap_with<M: rss_mdm_http_contract::module::Declaration>(
     let endpoints = Arc::new(router.endpoints().to_vec());
     router
         .layer(middleware::from_fn_with_state(
-            envelope.requests.clone(),
+            envelope.buffered_bytes.clone(),
             controlled_body,
         ))
         .layer(middleware::from_fn_with_state(
@@ -67,9 +66,21 @@ async fn controlled_body(
     request: Request,
     next: Next,
 ) -> Response {
-    let mut response = body(request, next, requests).await;
+    let mut response = if request.extensions().get::<AuthenticatedBody>().is_some() {
+        next.run(request).await
+    } else {
+        body(request, next, requests).await
+    };
     response.extensions_mut().insert(DownstreamResponse);
     response
+}
+#[derive(Clone)]
+struct AuthenticatedBody(Arc<tokio::sync::Semaphore>);
+pub(crate) async fn after_authentication(mut request: Request, next: Next) -> Response {
+    match request.extensions_mut().remove::<AuthenticatedBody>() {
+        Some(budget) => body(request, next, budget.0).await,
+        None => next.run(request).await,
+    }
 }
 fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
     match error {
@@ -77,7 +88,7 @@ fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
         Some(Error::RollbackFailed) => Some(ResponseFailure::RollbackFailed),
         Some(Error::Unauthorized) => Some(ResponseFailure::Denied),
         Some(Error::Forbidden) => Some(ResponseFailure::Forbidden),
-        Some(Error::Unavailable(Failure::RequestDeadline))
+        Some(Error::RequestDeadline | Error::Unavailable(Failure::RequestDeadline))
         | Some(Error::RecoveryCredentials(rss_mdm_recovery_credentials::Error::Deadline)) => {
             Some(ResponseFailure::Deadline)
         }
@@ -90,6 +101,17 @@ fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
         _ => None,
     }
 }
+fn cutoff(request: &Request, envelope: &Envelope) -> rss_request_context::Deadline {
+    let installed = rss_request_context::Deadline::from_timeout(
+        &rss_mdm_audit_integration::budget::RuntimeTimer,
+        envelope.request_timeout,
+    )
+    .expect("compiled host request timeout");
+    request
+        .extensions()
+        .get::<rss_request_context::Deadline>()
+        .map_or(installed, |parent| installed.shortened_to(parent.instant()))
+}
 async fn admit(
     State((envelope, endpoints, admission)): State<(
         Envelope,
@@ -100,6 +122,7 @@ async fn admit(
     next: Next,
 ) -> Response {
     let started = envelope.clock.now();
+    let total = cutoff(&request, &envelope);
     let binding = request
         .extensions()
         .get::<rss_transactional_messaging::fence::ExecutionBinding>()
@@ -117,13 +140,14 @@ async fn admit(
     } else {
         8192
     };
-    let intent = endpoints
+    let endpoint = endpoints
         .iter()
-        .find(|endpoint| endpoint.path == route && endpoint.method == request.method().as_str())
-        .map_or(
-            rss_mdm_audit_integration::AuditIntent::Routine,
-            request_intent,
-        );
+        .find(|endpoint| endpoint.path == route && endpoint.method == request.method().as_str());
+    let protected = endpoint.is_some_and(|endpoint| endpoint.authentication.is_some());
+    let intent = endpoint.map_or(
+        rss_mdm_audit_integration::AuditIntent::Routine,
+        request_intent,
+    );
     let audit = match admission {
         Admission::Bound => RequestAudit::new(
             rss_mdm_audit_integration::Origin::Request,
@@ -139,14 +163,12 @@ async fn admit(
             rss_mdm_audit_integration::AuditIntent::Routine,
         ),
     };
+    if protected {
+        request
+            .extensions_mut()
+            .insert(AuthenticatedBody(envelope.buffered_bytes.clone()));
+    }
     let id = audit.request_id();
-    let _permit = match envelope.admission.clone().try_acquire_owned() {
-        Ok(p) => p,
-        Err(_) => {
-            audit.finalize(None);
-            return limited(id);
-        }
-    };
     request.extensions_mut().insert(audit.clone());
     request.extensions_mut().insert(envelope.clock.clone());
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
@@ -159,8 +181,17 @@ async fn admit(
     {
         project(Error::Malformed)
     } else {
-        let mut response =
-            rss_axum::request_control(State(envelope.request_budget), request, next).await;
+        let remaining = total.remaining(envelope.clock.now()).unwrap_or_default();
+        let operation =
+            if audit.snapshot().intent == rss_mdm_audit_integration::AuditIntent::Routine {
+                remaining
+            } else {
+                remaining - (remaining / 4).min(std::time::Duration::from_secs(2))
+            };
+        let mut response = match rss_axum::RequestBudget::new(operation) {
+            Ok(budget) => rss_axum::request_control(State(budget), request, next).await,
+            Err(_) => project(Error::RequestDeadline),
+        };
         if response
             .extensions_mut()
             .remove::<DownstreamResponse>()
@@ -180,6 +211,7 @@ async fn admit(
         &audit,
         response.status().as_u16(),
         failure,
+        total,
     )
     .await
     {
@@ -211,6 +243,8 @@ pub async fn authentication(
     next: Next,
 ) -> Response {
     let started = envelope.clock.now();
+    let total = cutoff(&request, &envelope);
+    request.extensions_mut().insert(total);
     let audit = request
         .extensions()
         .get::<rss_transactional_messaging::fence::ExecutionBinding>()
@@ -240,7 +274,7 @@ pub async fn authentication(
     {
         project(Error::Malformed)
     } else {
-        body(request, next, envelope.requests).await
+        body(request, next, envelope.buffered_bytes).await
     };
     if let Some(audit) = &audit
         && response
@@ -253,6 +287,7 @@ pub async fn authentication(
             audit,
             response.status().as_u16(),
             classify(response.extensions().get::<Error>()),
+            total,
         )
         .await
         {
@@ -320,7 +355,7 @@ pub(crate) fn rejections(_: &str, _: &str) -> Vec<rss_mdm_http_contract::signatu
         Error::Malformed,
         Error::Forbidden,
         Error::RequestTooLarge,
-        Error::Unavailable(Failure::RequestDeadline),
+        Error::RequestDeadline,
         Error::CommitUnknown,
         Error::RollbackFailed,
         Error::Unavailable(Failure::AuditIntegrity),
@@ -355,18 +390,45 @@ fn limited(id: uuid::Uuid) -> Response {
         .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
     secure(response, id)
 }
-async fn body(request: Request, next: Next, requests: Arc<tokio::sync::Semaphore>) -> Response {
-    let _requests = requests;
+async fn body(request: Request, next: Next, bytes: Arc<tokio::sync::Semaphore>) -> Response {
+    use crate::body_policy::BodyPolicy;
     let route = request
         .extensions()
         .get::<axum::extract::MatchedPath>()
-        .map(|p| p.as_str())
+        .map(|path| path.as_str())
         .unwrap_or("");
-    let crate::body_policy::BodyPolicy::Buffered(limit) =
-        crate::body_policy::for_route(route, request.method())
-    else {
-        return next.run(request).await;
+    let policy = crate::body_policy::for_route(route, request.method());
+    let limit = match policy {
+        BodyPolicy::Streaming => return next.run(request).await,
+        BodyPolicy::Buffered(limit) | BodyPolicy::Sdk(limit) => limit,
     };
+    let normal = crate::body_limits().default_bytes();
+    // Keep one default-size request available while a larger wire body is resident.
+    // Two full-size requests compete for admission before either reads its first frame.
+    let admission = if limit > normal {
+        crate::BodyLimits::reservation(limit)
+    } else {
+        limit
+    };
+    let Ok(mut reservation) =
+        bytes.try_acquire_many_owned(u32::try_from(admission).expect("compiled route admission"))
+    else {
+        let id = request
+            .extensions()
+            .get::<RequestAudit>()
+            .map_or_else(uuid::Uuid::new_v4, RequestAudit::request_id);
+        return limited(id);
+    };
+    if admission > limit {
+        drop(
+            reservation
+                .split(normal)
+                .expect("reserved small-request headroom"),
+        );
+    }
+    if matches!(policy, BodyPolicy::Sdk(_)) {
+        return next.run(request).await;
+    }
     match crate::body_policy::buffer(request, limit).await {
         Ok(request) => next.run(request).await,
         Err(error) => project(error),
@@ -695,8 +757,8 @@ mod tests {
             ),
             (
                 R::Deadline,
-                503,
-                "service_unavailable",
+                504,
+                "request_deadline",
                 Some(ResponseFailure::Deadline),
             ),
             (
@@ -784,7 +846,6 @@ mod tests {
         use crate::{Error, Failure};
         use axum::response::IntoResponse;
         for reason in [
-            Failure::RequestDeadline,
             Failure::IdentityStorage,
             Failure::AssetsStorage,
             Failure::InventoryQuery,

@@ -65,35 +65,56 @@ async fn principal(
     headers: &HeaderMap,
     peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,
     audit: &RequestAudit,
+    control: &rss_axum::RequestControl,
 ) -> Result<rss_mdm_registration_service::DevicePrincipal, AgentError> {
-    let p = crate::authenticate(origin, &s.enrollment, headers, peer).await?;
+    let p = crate::authenticate(origin, &s.enrollment, headers, peer, control).await?;
     audit.identify_device(p.device());
     audit.target_device(p.device());
     Ok(p)
 }
 async fn configuration(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     RuntimeHeaders(headers): RuntimeHeaders,
 ) -> Result<Json<w::Configuration>, AgentError> {
-    crate::bounded(async {
-        let p = principal(&origin, &s, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+    crate::bounded(&control, async {
+        let p = principal(
+            &origin,
+            &s,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+            &control,
+        )
+        .await?;
         s.recovery.configuration(&p).await.map(Json).map_err(error)
     })
     .await
 }
 async fn upload(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     RuntimeHeaders(headers): RuntimeHeaders,
     input: Result<Json<w::Upload>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<w::Receipt>, AgentError> {
-    crate::bounded(async {
-        let p = principal(&origin, &s, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+    crate::bounded(&control, async {
+        let p = principal(
+            &origin,
+            &s,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+            &control,
+        )
+        .await?;
         let Json(input) = input.map_err(|_| Error::Malformed)?;
         s.recovery
             .receive(&p, &input, &audit)
@@ -104,15 +125,25 @@ async fn upload(
     .await
 }
 async fn receipt(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     RuntimeHeaders(headers): RuntimeHeaders,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Option<w::Receipt>>, AgentError> {
-    crate::bounded(async {
-        let p = principal(&origin, &s, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+    crate::bounded(&control, async {
+        let p = principal(
+            &origin,
+            &s,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            &audit,
+            &control,
+        )
+        .await?;
         s.recovery.receipt(&p, id).await.map(Json).map_err(error)
     })
     .await

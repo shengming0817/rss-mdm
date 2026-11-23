@@ -19,6 +19,10 @@ pub enum Error {
     Malformed,
     #[error("resource cursor invalidated; restart pagination")]
     ResourceCursorInvalidated,
+    #[error("request capacity exceeded")]
+    CapacityExceeded,
+    #[error("request deadline elapsed")]
+    RequestDeadline,
     #[error("request body too large")]
     RequestTooLarge,
     #[error(transparent)]
