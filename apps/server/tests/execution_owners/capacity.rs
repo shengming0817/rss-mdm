@@ -167,7 +167,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     let state = Arc::new(agent::HttpState {
         content: None,
         telemetry: None,
-        enrollment,
+        enrollment: enrollment.clone(),
         audit_store: h.c.audit.clone(),
         access: Arc::new(h.c.database.agent_store()),
         inventory: inventory.clone(),
@@ -397,6 +397,31 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     assert!(page.next.is_none());
     tx.rollback().await?;
     assert!(worker_lifecycle.shutdown().join().await?.is_clean());
+    // A still-valid certificate must not authenticate through either Agent entry after a tenant restore.
+    assert!(enrollment.authenticate(&evidence).await.is_ok());
+    assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2 WHERE tenant_id=$1::uuid AND epoch=1")
+        .bind(h.c.tenant.to_string()).execute(&h.c.operator).await?.rows_affected(),1);
+    let origin = gateway.request_origin("https://mdm.example.test".into());
+    let deadline = rss_request_context::Deadline::from_timeout(
+        &crate::lifecycle::RuntimeTimer,
+        std::time::Duration::from_secs(5),
+    )?;
+    assert!(matches!(
+        enrollment
+            .authenticate_at_origin(&evidence, &origin, deadline)
+            .await,
+        Err(rss_mdm_registration_service::agent::Failure {
+            source: Some(rss_mdm_registration_service::Error::Conflict),
+            ..
+        })
+    ));
+    assert!(matches!(
+        enrollment.authenticate(&evidence).await,
+        Err(rss_mdm_registration_service::agent::Failure {
+            source: Some(rss_mdm_registration_service::Error::Conflict),
+            ..
+        })
+    ));
     assert!(lifecycle.shutdown().join().await?.is_clean());
     h.close().await
 }

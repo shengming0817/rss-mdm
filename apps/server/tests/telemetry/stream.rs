@@ -135,6 +135,41 @@ async fn upload(
     Ok(input.batch_id)
 }
 
+// A read policy in the isolated PostgreSQL fixture pauses precisely the seventeenth
+// publication. The normal verifier must finish its first page to reach this row.
+async fn late_page_deadline(c: &Context, short: &http::Http, operation: &Value) -> Result<()> {
+    let policy = format!("late_page_{}", Uuid::new_v4().simple());
+    let key = Uuid::new_v4().as_u128() as i64;
+    let last = Uuid::from_u128(17);
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE POLICY {policy} ON mdm_policy.versions AS RESTRICTIVE FOR SELECT
+        USING (CASE WHEN tenant_id='{}'::uuid AND policy='{last}'::uuid THEN (SELECT true FROM pg_advisory_xact_lock({key}::bigint)) ELSE true END)",c.tenant))).execute(&c.operator).await?;
+    let result = async {
+        let mut tx = c.operator.begin().await?;
+        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid() FROM pg_advisory_xact_lock($1)")
+            .bind(key)
+            .fetch_one(&mut *tx)
+            .await?;
+        let (blocked, response) = tokio::join!(
+            c.wait_blocked(pid),
+            short.call("/telemetry/maintenance", operation.clone())
+        );
+        tx.rollback().await?;
+        blocked?;
+        anyhow::ensure!(
+            response? == (504, json!({"code":"request_deadline"})),
+            "late-page qualification lost its deadline"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "DROP POLICY {policy} ON mdm_policy.versions"
+    )))
+    .execute(&c.operator)
+    .await?;
+    result
+}
+
 async fn verify_pool(
     c: &Context,
     f: &Fixture,
@@ -240,6 +275,10 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         let foreign=http::Http::open(&other,service.clone(),&account_other).await?;
         assert_eq!(foreign.call("/telemetry/maintenance",expire.clone()).await?.0,403);
         drop(foreign); other.close().await;
+        late_page_deadline(c,&short,&expire).await?;
+        let provider_expired:bool=sqlx::query_scalar("SELECT expired FROM rss_timeseries.batches WHERE tenant_id=$1::uuid AND generation=$2")
+            .bind(c.tenant.to_string()).bind(&generation).fetch_one(&mut observer).await?;
+        anyhow::ensure!(!provider_expired);
         let bad_page = "custom.history_1024";
         let mut lock = crate::command_runtime_t2_support::seed_transaction(c).await?;
         rss_mdm_registration_service::device::store::lock_channel(

@@ -325,6 +325,19 @@ fn digest(value: &impl Serialize) -> Result<String, Error> {
         .map(|v| hex(Sha256::digest(v)))
         .map_err(|_| Error::Malformed)
 }
+/// Bind the discovered tenant and hold the standard RSS execution fence in this transaction.
+async fn fence_on(
+    c: &mut sqlx::PgConnection,
+    execution: rss_transactional_messaging::fence::ExecutionBinding,
+) -> Result<(), Error> {
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('rss.storage_target',$2,true),set_config('rss.storage_lineage',$3,true),set_config('rss.execution_epoch',$4,true)")
+        .bind(execution.tenant().to_string()).bind(hex(execution.storage().target())).bind(hex(execution.storage().lineage())).bind(execution.epoch().get().to_string()).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("SELECT rss_transactional_messaging.check_execution()")
+        .execute(c)
+        .await
+        .map_err(|_| Error::Conflict)?;
+    Ok(())
+}
 fn hex(value: impl AsRef<[u8]>) -> String {
     value.as_ref().iter().map(|b| format!("{b:02x}")).collect()
 }

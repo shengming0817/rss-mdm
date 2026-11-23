@@ -386,11 +386,7 @@ impl Service {
             .ok_or(Error::Unauthorized)?;
         let binding = self.execution(tenant);
         let tenant = tenant.to_string();
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-            .bind(&tenant)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
+        super::fence_on(&mut tx, binding).await?;
         let trust = self.issuer.trust_on(&mut tx, binding).await?;
         let profile = self.profile();
         let fingerprint = hex(Sha256::digest(&peer.chain()[0]));
