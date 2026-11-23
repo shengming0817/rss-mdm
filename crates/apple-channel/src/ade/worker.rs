@@ -230,12 +230,28 @@ async fn claim_in(
     let time = now(app)?;
     let mut changes = Vec::new();
     let mut scheduled_id = None;
-    let scheduled=sqlx::query("SELECT organization,revision,token_revision,cursor FROM mdm_apple.ade_servers s WHERE $3 AND tenant_id=$1::uuid AND organization=$4 AND enabled AND verified AND NOT token_invalid AND token_expires>$2 AND next_sync<=$2 AND NOT EXISTS(SELECT 1 FROM mdm_apple.ade_operations o WHERE o.tenant_id=s.tenant_id AND o.organization=s.organization AND o.state IN('pending','running','unknown')) ORDER BY organization LIMIT 1 FOR UPDATE SKIP LOCKED").bind(tenant).bind(time).bind(fresh).bind(organization).fetch_optional(&mut *c).await.map_err(db)?;
+    let server = sqlx::query(
+        "SELECT s.*, ($3 AND enabled AND verified AND NOT token_invalid AND token_expires>$2
+            AND next_sync<=$2 AND NOT EXISTS(SELECT FROM mdm_apple.ade_operations o
+                WHERE o.tenant_id=s.tenant_id AND o.organization=s.organization
+                AND o.state IN('pending','running','unknown'))) IS TRUE AS schedule_sync
+         FROM mdm_apple.ade_servers s WHERE tenant_id=$1::uuid AND organization=$4
+         FOR UPDATE OF s SKIP LOCKED",
+    )
+    .bind(tenant)
+    .bind(time)
+    .bind(fresh)
+    .bind(organization)
+    .fetch_optional(&mut *c)
+    .await
+    .map_err(db)?;
+    let Some(s) = server else {
+        return Ok((None, changes));
+    };
     if stop.is_cancelled() {
         return Ok((None, changes));
     }
-    if let Some(r) = scheduled {
-        let organization: Uuid = r.try_get("organization").map_err(db)?;
+    if s.try_get::<bool, _>("schedule_sync").map_err(db)? {
         let id = Uuid::new_v4();
         scheduled_id = Some(id);
         management::save(
@@ -247,12 +263,12 @@ async fn claim_in(
             &rss_mdm_registration_service::enrollment::digest(&(id, organization)),
             "service:apple-ade",
             "service",
-            r.try_get("revision").map_err(db)?,
-            r.try_get("token_revision").map_err(db)?,
+            s.try_get("revision").map_err(db)?,
+            s.try_get("token_revision").map_err(db)?,
             &json!({"kind":"sync","full":false}),
             "pending",
             None,
-            r.try_get::<Option<String>, _>("cursor")
+            s.try_get::<Option<String>, _>("cursor")
                 .map_err(db)?
                 .is_none(),
             time,
@@ -263,19 +279,16 @@ async fn claim_in(
         )
         .bind(tenant)
         .bind(id)
-        .bind(r.try_get::<Option<String>, _>("cursor").map_err(db)?)
+        .bind(s.try_get::<Option<String>, _>("cursor").map_err(db)?)
         .execute(&mut *c)
         .await
         .map_err(db)?;
         sqlx::query("UPDATE mdm_apple.ade_servers SET next_sync=$3 WHERE tenant_id=$1::uuid AND organization=$2").bind(tenant).bind(organization).bind(time+1800).execute(&mut *c).await.map_err(db)?;
     }
-    let candidate=sqlx::query("SELECT id,organization FROM mdm_apple.ade_operations WHERE expected_epoch=current_setting('rss.execution_epoch')::bigint AND tenant_id=$1::uuid AND organization=$4 AND ($3::uuid IS NULL OR id=$3) AND ((state='pending' AND next_attempt<=$2) OR (state='running' AND lease_until<=$2)) ORDER BY created_at,id LIMIT 1").bind(tenant).bind(time).bind(scheduled_id).bind(organization).fetch_optional(&mut *c).await.map_err(db)?;
-    let Some(candidate) = candidate else {
+    let candidate=sqlx::query_scalar::<_,Uuid>("SELECT id FROM mdm_apple.ade_operations WHERE expected_epoch=current_setting('rss.execution_epoch')::bigint AND tenant_id=$1::uuid AND organization=$4 AND ($3::uuid IS NULL OR id=$3) AND ((state='pending' AND next_attempt<=$2) OR (state='running' AND lease_until<=$2)) ORDER BY created_at,id LIMIT 1").bind(tenant).bind(time).bind(scheduled_id).bind(organization).fetch_optional(&mut *c).await.map_err(db)?;
+    let Some(id) = candidate else {
         return Ok((None, changes));
     };
-    let id: Uuid = candidate.try_get("id").map_err(db)?;
-    let organization: Uuid = candidate.try_get("organization").map_err(db)?;
-    let s = server(c, tenant, organization).await?;
     let row=sqlx::query("SELECT * FROM mdm_apple.ade_operations WHERE expected_epoch=current_setting('rss.execution_epoch')::bigint AND tenant_id=$1::uuid AND id=$2 AND ((state='pending' AND next_attempt<=$3) OR (state='running' AND lease_until<=$3)) FOR UPDATE SKIP LOCKED").bind(tenant).bind(id).bind(time).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(r) = row else {
         return Ok((None, changes));

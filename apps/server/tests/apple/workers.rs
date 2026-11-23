@@ -349,20 +349,26 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
     recovered??;
     assert!(restart.shutdown().join().await?.is_clean());
     let waiting = Uuid::new_v4();
-    let mut lock = command::seed_transaction(&c).await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2673))")
-        .bind(format!("apple-ade:{}:{org}", c.tenant))
-        .fetch_one(&mut *lock)
-        .await?;
     let mut queued = command::seed_transaction(&c).await?;
     sqlx::query("INSERT INTO mdm_apple.ade_operations(tenant_id,organization,expected_epoch,id,kind,digest,actor,instance,server_revision,token_revision,request,state,receipt,created_at) VALUES($1::uuid,$2,1,$3,'clear',repeat('3',64),'service','service',1,1,$4,'pending','{}',1)")
         .bind(c.tenant.to_string()).bind(org).bind(waiting).bind(json!({"kind":"clear","devices":["first"]})).execute(&mut *queued).await?;
     queued.commit().await?;
-    // With one slot and sorted tenants the locked organization must yield for the peer to commit.
-    sqlx::query("UPDATE mdm_apple.ade_servers SET cursor=NULL,token_expires=4070908800,next_sync=1 WHERE tenant_id=$1::uuid AND organization=$2")
+    for lock_sql in [
+        "SELECT pg_advisory_xact_lock(hashtextextended('apple-ade:'||$1::text||':'||$2::uuid::text,2673))",
+        "SELECT organization FROM mdm_apple.ade_servers WHERE tenant_id=$1::uuid AND organization=$2 FOR SHARE",
+        "SELECT id FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND organization=$2 AND state='pending' FOR SHARE",
+    ] {
+        let mut lock = command::seed_transaction(&c).await?;
+        sqlx::query(sqlx::AssertSqlSafe(lock_sql))
+            .bind(c.tenant.to_string())
+            .bind(org)
+            .fetch_one(&mut *lock)
+            .await?;
+        // With one slot and sorted tenants the locked organization must yield for the peer to commit.
+        sqlx::query("UPDATE mdm_apple.ade_servers SET cursor=NULL,token_expires=4070908800,next_sync=1 WHERE tenant_id=$1::uuid AND organization=$2")
         .bind(other.tenant.to_string()).bind(organization).execute(&other.operator).await?;
-    let serial = register(1)?;
-    tokio::time::timeout(Duration::from_secs(8),async {
+        let serial = register(1)?;
+        tokio::time::timeout(Duration::from_secs(8),async {
         loop {
             let committed:bool=sqlx::query_scalar("SELECT cursor IS NOT DISTINCT FROM 'complete' FROM mdm_apple.ade_servers WHERE organization=$1")
                 .bind(organization).fetch_one(&other.operator).await?;
@@ -370,13 +376,14 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
             tokio::time::sleep(Duration::from_millis(15)).await;
         }
     }).await??;
-    assert!(serial.shutdown().join().await?.is_clean());
-    lock.rollback().await?;
-    let pending:bool=sqlx::query_scalar("SELECT state='pending' AND attempts=0 AND lease IS NULL FROM mdm_apple.ade_operations WHERE id=$1").bind(waiting).fetch_one(&c.operator).await?;
-    assert!(
-        pending,
-        "shutdown while blocked on the organization must not claim the operation"
-    );
+        assert!(serial.shutdown().join().await?.is_clean());
+        let pending:bool=sqlx::query_scalar("SELECT state='pending' AND attempts=0 AND lease IS NULL FROM mdm_apple.ade_operations WHERE id=$1").bind(waiting).fetch_one(&c.operator).await?;
+        assert!(
+            pending,
+            "shutdown while blocked on the organization must not claim the operation"
+        );
+        lock.rollback().await?;
+    }
     assert_eq!(first_pages.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 2);
     server.abort();
