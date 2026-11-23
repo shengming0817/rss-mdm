@@ -150,8 +150,8 @@
     {
       "schema": "mdm_wns",
       "table": "provider_throttles",
-      "read_write": true,
-      "updates": ["retry_at"],
+      "read_write": false,
+      "updates": [],
       "delete_policy": null
     },
     {
@@ -242,6 +242,7 @@
     }
   ],
   "functions": [
+    {"name":"mdm_wns.record_provider_throttle","search_path":"search_path=pg_catalog"},
     {"name":"mdm_wns.provider_available","search_path":"search_path=pg_catalog"},
     {
       "name": "mdm_windows.entra_flow_scopes",

@@ -28,7 +28,7 @@ impl catalog::ContentPort for Gate {
                     self.entered.cancelled().await;
                 }
             }
-            self.store.verify(execution, version).await
+            catalog::ContentPort::verify(self.store.as_ref(), execution, version).await
         })
     }
 }

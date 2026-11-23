@@ -47,10 +47,23 @@ ALTER TABLE mdm_wns.provider_throttles FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_wns.provider_throttles USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE POLICY cooldown_discovery ON mdm_wns.provider_throttles FOR SELECT TO mdm_owner USING(true);
 CREATE INDEX ON mdm_wns.provider_throttles(sid_digest,retry_at);
-GRANT SELECT,INSERT,UPDATE(retry_at) ON mdm_wns.provider_throttles TO mdm_access;
+-- The caller supplies the leased revision. Only a qualified version belonging to the
+-- fenced tenant can contribute a deadline for a shared SID.
+CREATE FUNCTION mdm_wns.record_provider_throttle(r bigint, until_at timestamptz) RETURNS void
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ INSERT INTO mdm_wns.provider_throttles(tenant_id,sid_digest,retry_at)
+ SELECT tenant_id,sid_digest,until_at FROM mdm_wns.versions
+ WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND revision=r AND qualified_at IS NOT NULL
+ ON CONFLICT(tenant_id,sid_digest) DO UPDATE SET retry_at=GREATEST(mdm_wns.provider_throttles.retry_at,EXCLUDED.retry_at)
+$$;
+REVOKE ALL ON FUNCTION mdm_wns.record_provider_throttle(bigint,timestamptz) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_wns.record_provider_throttle(bigint,timestamptz) TO mdm_access;
 CREATE FUNCTION mdm_wns.provider_available(digest bytea) RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
- SELECT NOT EXISTS(SELECT FROM mdm_wns.provider_throttles WHERE sid_digest=digest AND retry_at>statement_timestamp())
+ SELECT EXISTS(SELECT FROM mdm_wns.versions v JOIN mdm_wns.heads h
+   ON (v.tenant_id,v.revision)=(h.tenant_id,h.desired_revision)
+   WHERE h.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND v.sid_digest=digest AND v.qualified_at IS NOT NULL AND NOT v.revoked)
+ AND NOT EXISTS(SELECT FROM mdm_wns.provider_throttles WHERE sid_digest=digest AND retry_at>statement_timestamp())
 $$;
 REVOKE ALL ON FUNCTION mdm_wns.provider_available(bytea) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_wns.provider_available(bytea) TO mdm_access;

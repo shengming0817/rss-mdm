@@ -323,7 +323,7 @@ pub fn registration(
             &notify,
             (
                 |key: &Candidate| {
-                    limits.quotas(key.0, key.3.clone(), (key.0, key.1, key.2.clone()))
+                    limits.push_quotas(key.0, key.3.clone(), (key.0, key.1, key.2.clone()))
                 },
                 |after: Option<Candidate>| {
                     let store = &app.access;

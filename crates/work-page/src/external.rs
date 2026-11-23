@@ -16,20 +16,34 @@ impl Limits {
         (total.get() <= tokio::sync::Semaphore::MAX_PERMITS && resource.get() <= fair_share(total))
             .then_some(Self { total, resource })
     }
-    pub fn quotas<R: Clone, O>(
+    pub fn source_quotas<R, O>(
+        &self,
+        tenant: Uuid,
+        resource: R,
+        object: O,
+    ) -> [(Group<R, O>, usize); 3] {
+        [
+            (Group::Tenant(tenant), fair_share(self.total)),
+            (Group::Resource(resource), self.resource.get()),
+            (Group::Object(object), 1),
+        ]
+    }
+    pub fn push_quotas<R: Clone, O>(
         &self,
         tenant: Uuid,
         resource: R,
         object: O,
     ) -> [(Group<R, O>, usize); 4] {
+        let [global_tenant, provider, channel] =
+            self.source_quotas(tenant, resource.clone(), object);
         [
-            (Group::Tenant(tenant), fair_share(self.total)),
-            (Group::Resource(resource.clone()), self.resource.get()),
+            global_tenant,
+            provider,
             (
                 Group::TenantResource(tenant, resource),
                 fair_share(self.resource),
             ),
-            (Group::Object(object), 1),
+            channel,
         ]
     }
 }

@@ -33,7 +33,6 @@ struct Wake {
     device: rss_mdm_agent_wire::DeviceId,
     revision: i64,
     uri: zeroize::Zeroizing<String>,
-    credential: [u8; 32],
     material_revision: Option<i64>,
 }
 fn audit(
@@ -148,7 +147,7 @@ async fn attempt(
                 let (store,audit,eligibility,tenant,device,revision,id,configuration,material_revision)=*inputs;
                 let sealed=tx.with_connection_context(&mut (audit.binding()?,eligibility,tenant,device,revision,id,configuration,material_revision),|(execution,eligibility,tenant,device,revision,id,configuration,material_revision),c|Box::pin(async move {
                     if !eligibility.pending(*execution, c, device).await? { return Ok::<_,Error>(None) }
-                    sqlx::query_scalar::<_,Vec<u8>>("UPDATE mdm_windows.push_channels SET lease_id = $5, material_revision=$6, lease_until = clock_timestamp() + CAST('30 seconds' AS interval), settled_id = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND revision = $3 AND configuration = $4 AND attempt_until > clock_timestamp() AND next_push <= clock_timestamp() AND (lease_until IS NULL OR lease_until <= clock_timestamp()) AND (outcome IS NULL OR outcome IN ('accepted', 'retryable', 'unknown') OR (outcome='rejected' AND material_revision IS DISTINCT FROM $6)) AND EXISTS (SELECT FROM mdm_wns.versions w JOIN mdm_wns.heads h ON (h.tenant_id,h.desired_revision)=(w.tenant_id,w.revision) WHERE w.tenant_id=$1::uuid AND w.revision=$6 AND w.selected AND NOT w.revoked AND w.qualified_at IS NOT NULL AND mdm_wns.provider_available(w.sid_digest) FOR SHARE OF h,w) RETURNING uri")
+                    sqlx::query_scalar::<_,Vec<u8>>("UPDATE mdm_windows.push_channels SET lease_id = $5, outcome=CASE WHEN outcome='rejected' AND material_revision IS DISTINCT FROM $6 THEN NULL ELSE outcome END, material_revision=$6, lease_until = clock_timestamp() + CAST('30 seconds' AS interval), settled_id = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND revision = $3 AND configuration = $4 AND attempt_until > clock_timestamp() AND next_push <= clock_timestamp() AND (lease_until IS NULL OR lease_until <= clock_timestamp()) AND (outcome IS NULL OR outcome IN ('accepted', 'retryable', 'unknown') OR (outcome='rejected' AND material_revision IS DISTINCT FROM $6)) AND EXISTS (SELECT FROM mdm_wns.versions w JOIN mdm_wns.heads h ON (h.tenant_id,h.desired_revision)=(w.tenant_id,w.revision) WHERE w.tenant_id=$1::uuid AND w.revision=$6 AND w.selected AND NOT w.revoked AND w.qualified_at IS NOT NULL AND mdm_wns.provider_available(w.sid_digest) FOR SHARE OF h,w) RETURNING uri")
                         .bind(*tenant).bind(device.into_uuid()).bind(*revision).bind(configuration.as_slice()).bind(*id).bind(*material_revision).fetch_optional(c).await.map_err(db)
                 })).await?;
                 if sealed.is_some() {
@@ -186,7 +185,6 @@ async fn attempt(
 
         revision,
         uri,
-        credential: push.credential(),
         material_revision: push.material_revision,
     };
     let receipt = push.send(&wake.uri).await.unwrap_or(crate::push::Receipt {
@@ -222,8 +220,8 @@ async fn settle(
                     Some(RetryAfter::Date(at)) => (0,Some(at)),
                     None => (30,None),
                 };
-                sqlx::query("INSERT INTO mdm_wns.provider_throttles(tenant_id,sid_digest,retry_at) VALUES($1::uuid,$2,GREATEST(clock_timestamp()+make_interval(secs=>$3),to_timestamp($4))) ON CONFLICT(tenant_id,sid_digest) DO UPDATE SET retry_at=GREATEST(mdm_wns.provider_throttles.retry_at,EXCLUDED.retry_at)")
-                    .bind(*tenant).bind(wake.credential.as_slice()).bind(seconds as f64).bind(date.map(|v|v as f64)).execute(&mut *c).await.map_err(db)?;
+                sqlx::query("SELECT mdm_wns.record_provider_throttle($1,GREATEST(clock_timestamp()+make_interval(secs=>$2),to_timestamp($3)))")
+                    .bind(wake.material_revision).bind(seconds as f64).bind(date.map(|v|v as f64)).execute(&mut *c).await.map_err(db)?;
             }
             let row=sqlx::query("SELECT revision, configuration, digest, lease_id, settled_id, failures, status, outcome FROM mdm_windows.push_channels WHERE tenant_id = CAST($1 AS uuid) AND device = $2 FOR UPDATE")
                 .bind(*tenant).bind(wake.device.into_uuid()).fetch_optional(&mut *c).await.map_err(db)?;
@@ -295,7 +293,9 @@ pub fn registration(
             &stop,
             &notify,
             (
-                |key: &(Uuid, Uuid, Vec<u8>)| limits.quotas(key.0, key.2.clone(), (key.0, key.1)),
+                |key: &(Uuid, Uuid, Vec<u8>)| {
+                    limits.push_quotas(key.0, key.2.clone(), (key.0, key.1))
+                },
                 |after| {
                     let (app, eligibility) = (&app, &eligibility);
                     async move {
