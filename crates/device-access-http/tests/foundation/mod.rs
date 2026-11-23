@@ -3,6 +3,7 @@ mod admission;
 mod business;
 mod configuration;
 mod context;
+mod credentials;
 mod exports;
 mod host;
 mod installation;
@@ -30,11 +31,22 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         task_trust::{Acknowledgement, KeyState},
     };
     use rss_mdm_task_trust::{Use, service::Change};
-    let c = Context::open().await?;
+    let browser = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let protocol = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let browser_origin = format!("https://localhost:{}", browser.local_addr()?.port());
+    let device_origin = format!("https://localhost:{}", protocol.local_addr()?.port());
+    let c = Context::open(browser_origin).await?;
     admission::verify_and_reject_drift(&c).await?;
     let material = material::Material::new(&c).await?;
-    let registration = material.assemble(&c).await?;
-    let installed_host = Box::pin(host::verify(&c, &material, &registration)).await?;
+    let registration = material.assemble(&c, &device_origin).await?;
+    let (installed_host, stop, running) = Box::pin(host::verify(
+        &c,
+        &material,
+        &registration,
+        browser,
+        protocol,
+    ))
+    .await?;
     let token = material::administrator(&c).await?;
     let proof = c
         .sessions
@@ -87,13 +99,11 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         .unwrap()
         .id
         .clone();
-    let loaded = material::signing(&material)?;
-    let state = material::state(&c, registration.clone(), loaded.clone(), &material)?;
-    let server = material.listen(state).await?;
-    transport::bounded_connections(&material, &server, c.tenant).await?;
+    let device_base = format!("{device_origin}/api/v1/da");
+    let base = device_base.as_str();
+    transport::bounded_connections(&material, base, c.tenant).await?;
     let client = material.client(None)?;
-    let base = &server.origin;
-    let management = material::management_base(base, c.tenant);
+    let management = c.management_base();
     let address = base
         .trim_start_matches("https://")
         .split('/')
@@ -258,19 +268,45 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             serde_json::json!({"mac":null,"windows":{"kind":"whfb"},"selfEnrollment":false,"enabled":true,"role":null}),
         )?,
     };
-    business::assemble(&c, &material)?
-        .service
-        .publish_configuration(
-            &proof,
-            &rss_mdm_device_access_postgres::configuration::Change {
-                operation_id: Uuid::new_v4(),
-                expected_revision: 0,
-                publication: publication.clone(),
-            },
-            None,
-            &audit(),
-        )
-        .await?;
+    let change = rss_mdm_device_access_postgres::configuration::Change {
+        operation_id: Uuid::new_v4(),
+        expected_revision: 0,
+        publication: publication.clone(),
+    };
+    let (cookie, csrf) =
+        credentials::login(&c, &client, Uuid::parse_str(proof.principal_id())?).await?;
+    let published: rss_mdm_policy_postgres::device_access::Publication = material::success(
+        client
+            .post(format!(
+                "{}/api/v1/tenants/{}/device-access/configurations",
+                c.browser_origin, c.tenant
+            ))
+            .header("origin", &c.browser_origin)
+            .header("x-identity-request", "1")
+            .header("x-csrf-token", &csrf)
+            .header("cookie", &cookie)
+            .json(&change)
+            .send()
+            .await?,
+    )
+    .await?;
+    let receipt_url = format!(
+        "{management}/admin/configuration-operations/{}",
+        change.operation_id
+    );
+    let recovered: rss_mdm_policy_postgres::device_access::Publication = material::success(
+        client
+            .get(receipt_url)
+            .header("cookie", cookie)
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(
+        serde_json::to_value(&recovered)?,
+        serde_json::to_value(&published)?
+    );
+    assert_eq!(published.version, publication.version);
     let export = da::Export {
         operation_id: Uuid::new_v4(),
         policy: publication.id,
@@ -278,7 +314,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         delivery: da::DeliveryPermission::Da,
         lifetime_seconds: 600,
     };
-    configuration::concurrent_export(&c, &client, base, &token, &proof, &export).await?;
+    configuration::concurrent_export(&c, &client, &token, &proof, &export).await?;
     let signed: da::SignedConfiguration = material::success(
         client
             .post(format!("{management}/configurations"))
@@ -317,6 +353,8 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     assert_eq!(
         client
             .post(format!("{management}/configurations"))
+            .header("origin", &c.browser_origin)
+            .header("x-identity-request", "1")
             .json(&export)
             .send()
             .await?
@@ -495,17 +533,10 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     let retained:i64=sqlx::query_scalar("SELECT max_verify_until FROM rss_da.signing_keys WHERE tenant_id=$1::uuid AND usage='da_configuration' AND key_id=$2").bind(c.tenant.to_string()).bind(old_key).fetch_one(&c.operator).await?;
     assert!(retained >= signed.decode()?.expires_at);
     // Verify configuration trust before the business proof changes current policy selection.
-    Box::pin(business::verify(
-        &c,
-        &material,
-        &receipt,
-        &client,
-        &server.origin,
-        &installed_host.runtime_file,
-    ))
-    .await
-    .context("DA business owner proof")?;
-    unknown_recovery(
+    Box::pin(business::verify(&c, &material, &receipt, &client, base))
+        .await
+        .context("DA business owner proof")?;
+    let (survivor, survivor_peer) = unknown_recovery(
         &c,
         &material,
         &client,
@@ -516,44 +547,34 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     )
     .await?;
 
-    let renewal = da::GrantRequest {
-        operation_id: Uuid::new_v4(),
-        csr: material.csr(2)?,
-        ..grant_request
-    };
-    let renewed_grant: da::Grant = material::success(
-        peer.post(format!("{base}/renewal-grants"))
-            .json(&renewal)
-            .send()
-            .await?,
+    let pending = Box::pin(credentials::verify(
+        &c,
+        &material,
+        &client,
+        &survivor_peer,
+        base,
+        &survivor,
+    ))
+    .await
+    .context("targeted RSS Login recovery")?;
+    let (renewed_receipt, renewed_peer) = activate_grant(
+        &material,
+        &client,
+        peer.post(format!("{base}/renewal-grants")),
+        base,
+        2,
     )
     .await?;
-    let renewed: enroll::Candidate = material::success(
-        client
-            .post(format!("{base}/certificates"))
-            .json(&da::CertificateRequest {
-                operation_id: Uuid::new_v4(),
-                grant_id: renewed_grant.grant_id,
-                secret: renewal.secret,
-                csr: renewal.csr,
-            })
-            .send()
-            .await?,
+    let (current_survivor, current_peer) = activate_grant(
+        &material,
+        &client,
+        survivor_peer.post(format!("{base}/renewal-grants")),
+        base,
+        3,
     )
     .await?;
-    let renewed_peer = material.client(Some((&renewed, 2)))?;
-    let renewed_receipt: da::Registration = material::success(
-        renewed_peer
-            .post(format!("{base}/activate"))
-            .json(&enroll::ActivationRequest {
-                wire_version: 1,
-                operation_id: Uuid::new_v4(),
-                issuance_id: renewed.issuance_id,
-            })
-            .send()
-            .await?,
-    )
-    .await?;
+    assert_eq!(current_survivor.device, survivor.device);
+    assert_ne!(current_survivor.credential, survivor.credential);
     assert_eq!(renewed_receipt.device, receipt.device);
     assert_ne!(renewed_receipt.credential, receipt.credential);
     assert_eq!(
@@ -574,6 +595,14 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     ))
     .await
     .context("DA platform owner proof")?;
+    c.authority
+        .inspect_session(
+            c.execution(),
+            rss_identity_core::session::SessionSecret::parse(platform_session.expose().into())?,
+            platform::deadline(),
+        )
+        .await
+        .context("platform session is active before registration revocation")?;
     material::empty(
         client
             .post(format!(
@@ -611,12 +640,28 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         "revoked DA registration cannot access the PSSO channel"
     );
 
-    server.shutdown().await?;
+    stop.send(())
+        .map_err(|_| anyhow::anyhow!("DA host stopped early"))?;
+    tokio::time::timeout(Duration::from_secs(50), running).await???;
     c.close().await;
 
-    Box::pin(recovery::verify(&c.inputs, &material, installed_host))
-        .await
-        .context("DA cold recovery proof")?;
+    Box::pin(recovery::verify(
+        &c.inputs,
+        &material,
+        installed_host,
+        recovery::Expected {
+            active: current_survivor,
+            active_peer: current_peer,
+            superseded_peer: survivor_peer,
+            revoked: renewed_receipt,
+            revoked_peer: renewed_peer,
+            pending,
+            device_base: base.to_string(),
+            management_origin: c.browser_origin.clone(),
+        },
+    ))
+    .await
+    .context("DA cold recovery proof")?;
     drop(material);
     Ok(())
 }
@@ -629,8 +674,8 @@ async fn unknown_recovery(
     token: &str,
     old_export: Uuid,
     old_device: &rss_mdm_agent_wire::DeviceId,
-) -> Result<()> {
-    let management = material::management_base(base, c.tenant);
+) -> Result<(rss_mdm_agent_wire::da::Registration, reqwest::Client)> {
+    let management = c.management_base();
     use base64::{Engine, engine::general_purpose::STANDARD};
     use rss_mdm_agent_wire::{da, enroll};
     let grant_request = da::GrantRequest {
@@ -802,5 +847,50 @@ async fn unknown_recovery(
         0
     );
     tx.rollback().await?;
-    Ok(())
+    Ok((registration, peer))
+}
+
+use rss_mdm_agent_wire::{da, enroll};
+async fn activate_grant(
+    material: &material::Material,
+    client: &reqwest::Client,
+    request: reqwest::RequestBuilder,
+    base: &str,
+    key: u8,
+) -> Result<(da::Registration, reqwest::Client)> {
+    let input = da::GrantRequest {
+        operation_id: Uuid::new_v4(),
+        csr: material.csr(key)?,
+        expires_in_seconds: 600,
+        secret: rss_mdm_agent_wire::runtime::Secret::parse(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA",
+        )?,
+    };
+    let grant: da::Grant = material::success(request.json(&input).send().await?).await?;
+    let candidate: enroll::Candidate = material::success(
+        client
+            .post(format!("{base}/certificates"))
+            .json(&da::CertificateRequest {
+                operation_id: Uuid::new_v4(),
+                grant_id: grant.grant_id,
+                secret: input.secret,
+                csr: input.csr,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    let peer = material.client(Some((&candidate, key)))?;
+    let registration: da::Registration = material::success(
+        peer.post(format!("{base}/activate"))
+            .json(&enroll::ActivationRequest {
+                wire_version: 1,
+                operation_id: Uuid::new_v4(),
+                issuance_id: candidate.issuance_id,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    Ok((registration, peer))
 }

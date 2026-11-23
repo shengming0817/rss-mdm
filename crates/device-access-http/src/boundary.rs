@@ -1,8 +1,8 @@
 //! Bounded independent ingress with the shared Identity and request-audit owners.
 use crate::{Error, Services};
 use axum::{
-    extract::{FromRequestParts, Request, State},
-    http::{HeaderValue, header, request::Parts},
+    extract::{Request, State},
+    http::{HeaderValue, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -10,69 +10,7 @@ use rss_mdm_audit_integration::{
     AuditIntent, RequestAudit,
     completion::{Replacement, complete},
 };
-use rss_mdm_authorization_service::{context::AuthorizedPrincipal, credential::RequestCredential};
 use std::{sync::Arc, time::Duration};
-pub struct Administrator(pub AuthorizedPrincipal);
-impl FromRequestParts<Arc<Services>> for Administrator {
-    type Rejection = Error;
-    async fn from_request_parts(parts: &mut Parts, s: &Arc<Services>) -> Result<Self, Error> {
-        if parts.headers.contains_key(header::COOKIE)
-            || parts.headers.get_all(header::AUTHORIZATION).iter().count() != 1
-        {
-            return Err(Error::Unauthorized);
-        }
-        let raw = parts
-            .headers
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .ok_or(Error::Unauthorized)?;
-        let secret = rss_identity_core::session::BearerSecret::parse(raw.to_owned())
-            .map_err(|_| Error::Unauthorized)?;
-        let control = parts
-            .extensions
-            .get::<rss_axum::RequestControl>()
-            .ok_or(Error::Unavailable)?;
-        let cutoff = control.deadline();
-        let axum::extract::Path(path) = axum::extract::Path::<
-            std::collections::HashMap<String, String>,
-        >::from_request_parts(parts, s)
-        .await
-        .map_err(|_| Error::Malformed)?;
-        let tenant =
-            rss_request_context::TenantId::parse(path.get("tenant").ok_or(Error::Malformed)?)
-                .map_err(|_| Error::Malformed)?;
-        let execution = s.registrations.execution(tenant);
-        let p = s
-            .sessions
-            .authenticate(
-                execution,
-                &s.authorization,
-                RequestCredential::Bearer(secret),
-                rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-                    cutoff,
-                    &rss_mdm_audit_integration::budget::RuntimeTimer,
-                ),
-            )
-            .await?;
-        let audit = parts
-            .extensions
-            .get::<RequestAudit>()
-            .ok_or(Error::Unavailable)?;
-        p.bind_audit(audit)?;
-        Ok(Self(p))
-    }
-}
-impl rss_mdm_http_contract::signature::Input for Administrator {
-    fn request() -> rss_mdm_http_contract::signature::Request {
-        use rss_mdm_http_contract::signature::{Request, Schema};
-        Request {
-            headers: [("authorization".into(), Schema::request::<String>())].into(),
-            required_headers: vec!["authorization"],
-            ..Request::default()
-        }
-    }
-}
 pub async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: Next) -> Response {
     let a = RequestAudit::unresolved(
         rss_mdm_audit_integration::Origin::Request,
@@ -97,6 +35,10 @@ pub async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: N
         || request.headers().contains_key("x-client-certificate")
         || request.headers().contains_key("x-ssl-client-cert")
         || request.headers().contains_key(header::COOKIE);
+    let credential = request
+        .uri()
+        .path()
+        .starts_with("/api/v1/da/credential-operations/");
     request.extensions_mut().insert(a.clone());
     // Completion retains the admission lease even if the HTTP client disconnects.
     tokio::spawn(async move {
@@ -124,12 +66,21 @@ pub async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: N
             });
         if let Some(replacement) = complete(&s.audit, &a, response.status().as_u16(), failure).await
         {
-            response = match replacement {
-                Replacement::CommitUnknown => Error::Unknown,
-                Replacement::RollbackFailed => Error::Rollback,
-                Replacement::Audit(_) => Error::Unavailable,
-            }
-            .into_response();
+            response = if credential {
+                match replacement {
+                    Replacement::CommitUnknown => crate::business_error::Error::CommitUnknown,
+                    Replacement::RollbackFailed => crate::business_error::Error::RollbackFailed,
+                    Replacement::Audit(_) => crate::business_error::Error::Unavailable,
+                }
+                .into_response()
+            } else {
+                match replacement {
+                    Replacement::CommitUnknown => Error::Unknown,
+                    Replacement::RollbackFailed => Error::Rollback,
+                    Replacement::Audit(_) => Error::Unavailable,
+                }
+                .into_response()
+            };
         }
         response
             .headers_mut()
@@ -145,5 +96,11 @@ pub async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: N
         response
     })
     .await
-    .unwrap_or_else(|_| Error::Unknown.into_response())
+    .unwrap_or_else(|_| {
+        if credential {
+            crate::business_error::Error::CommitUnknown.into_response()
+        } else {
+            Error::Unknown.into_response()
+        }
+    })
 }

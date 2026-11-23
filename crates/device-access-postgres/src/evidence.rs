@@ -113,7 +113,7 @@ impl Authorities {
             // The configured authority proves transport; the original issued artifact proves
             // field authority. Neither a claimed delivery nor a Policy ID is sufficient.
             let artifact = signing.read_on(execution, c, proof.artifact).await?;
-            let config = artifact.decode().map_err(|_| Error::Corrupt)?;
+            let config = signing.verify_on(c, tenant, &artifact, now).await?;
             let identity = da::ReportIdentity {
                 service_id: installation,
                 tenant: o.tenant,
@@ -201,7 +201,8 @@ impl Authorities {
                 return Err(Error::Forbidden);
             }
             if selected.as_ref().is_some_and(|old: &Observation| {
-                old.configuration != o.configuration
+                old.configuration.as_ref().map(|v| v.source())
+                    != o.configuration.as_ref().map(|v| v.source())
                     || old.local_session != o.local_session
                     || old.policy != o.policy
                     || old.policy_version != o.policy_version

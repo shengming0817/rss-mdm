@@ -91,11 +91,21 @@ post_complete: rss_mdm_http_contract::module::Route::new("/api/v1/apple/platform
             ("referrer-policy", "no-referrer"),
         ])
 }
-pub fn management_routes()
--> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+type Management = (Arc<HttpState>, Arc<rss_mdm_device_access_postgres::Service>);
+pub fn management_routes(
+    runtime: Option<Management>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
-        rss_mdm_http_contract::route_module! { struct ManagementRoutesModule1 for [Browser] { get_configuration } }
+        rss_mdm_http_contract::route_module! { struct ManagementRoutesModule1 for [Browser] { get_configuration, platform_status } }
         ManagementRoutesModule1 {
+            platform_status: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/tenants/{tenant}/apple/platform-sso/status",
+                get(
+                    platform_status,
+                    &contracts::PROTOCOL_APPLE_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
             get_configuration: rss_mdm_http_contract::module::Route::new(
                 "/api/v1/tenants/{tenant}/apple/platform-sso/configuration",
                 get(
@@ -106,6 +116,7 @@ pub fn management_routes()
             ),
         }
         .assemble()
+        .bind_with(runtime.as_ref(), Clone::clone)
     }
 }
 fn tenant(
@@ -466,7 +477,7 @@ struct ConfigurationQuery {
 }
 async fn configuration(
     axum::extract::Path(_tenant): axum::extract::Path<uuid::Uuid>,
-    State(app): State<Arc<HttpState>>,
+    State((app, _)): State<Management>,
     Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
     axum::extract::Query(query): axum::extract::Query<ConfigurationQuery>,
 ) -> Result<Json<ConfigurationView>, Error> {
@@ -762,4 +773,25 @@ impl Authentication {
             Self::Da(s) => s.authenticate(peer).await,
         }
     }
+}
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PlatformQuery {
+    device_id: rss_mdm_agent_wire::DeviceId,
+    binding_id: Option<Uuid>,
+}
+async fn platform_status(
+    State((app, business)): State<Management>,
+    Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
+    Path(_tenant): Path<Uuid>,
+    axum::extract::Query(q): axum::extract::Query<PlatformQuery>,
+) -> Result<
+    Json<rss_mdm_device_access_postgres::platform_sso::status::ManagementStatus>,
+    crate::business_error::Error,
+> {
+    Ok(Json(
+        business
+            .platform_status(&app.context, &auth.proof, q.device_id, q.binding_id)
+            .await?,
+    ))
 }

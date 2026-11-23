@@ -12,6 +12,7 @@
     "rss_da.recovery_recipient_selection"
   ],
   "functions": [
+    "rss_da.release_targeted_credential",
     "rss_da.credential_save_retired_run",
     "rss_da.credential_runs_work_scopes",
     "rss_da.credential_runs_work_epoch",

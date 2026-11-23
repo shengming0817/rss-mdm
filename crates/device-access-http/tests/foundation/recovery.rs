@@ -6,10 +6,22 @@ use rss_mdm_install_support::maintenance::journal::Journal;
 use sqlx::Connection;
 use std::os::unix::fs::PermissionsExt;
 
+pub struct Expected {
+    pub active: rss_mdm_agent_wire::da::Registration,
+    pub active_peer: reqwest::Client,
+    pub revoked: rss_mdm_agent_wire::da::Registration,
+    pub revoked_peer: reqwest::Client,
+    pub superseded_peer: reqwest::Client,
+    pub pending: credentials::Pending,
+    pub device_base: String,
+    pub management_origin: String,
+}
+
 pub async fn verify(
     inputs: &Inputs,
     material: &material::Material,
     installed: host::InstalledHost,
+    expected: Expected,
 ) -> Result<()> {
     let administrator: config::Database =
         serde_json::from_value(serde_json::to_value(inputs.database("postgres"))?)?;
@@ -57,11 +69,17 @@ pub async fn verify(
         }],
     })?;
     let mut connection = sqlx::PgConnection::connect_with(&administrator.options()?).await?;
-    let revoked: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM rss_da.devices WHERE state = 'revoked'")
-            .fetch_one(&mut connection)
-            .await?;
-    assert!(revoked > 0);
+    let history = credential_history(&mut connection, &expected).await?;
+    assert!(history.iter().any(
+        |(d, k, state, _, _)| *d == expected.active.device.into_uuid()
+            && *k == expected.active.credential
+            && state == "active"
+    ));
+    assert!(history.iter().any(
+        |(d, k, state, _, _)| *d == expected.revoked.device.into_uuid()
+            && *k == expected.revoked.credential
+            && state != "active"
+    ));
     let old_vault_epoch = Uuid::new_v4();
     sqlx::query("INSERT INTO rss_da.vault_epochs(tenant_id,incarnation) VALUES($1,$2) ON CONFLICT(tenant_id) DO UPDATE SET incarnation=excluded.incarnation").bind(runtime.installation.tenant).bind(old_vault_epoch).execute(&mut connection).await?;
     connection.close().await?;
@@ -170,18 +188,76 @@ pub async fn verify(
         old_vault_epoch, new_epoch,
         "cold restore must not resurrect the backup's sync authority"
     );
-    let preserved: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM rss_da.devices WHERE state = 'revoked'")
-            .fetch_one(&mut connection)
-            .await?;
     assert_eq!(
-        preserved, revoked,
-        "recovery must not reactivate revoked registrations"
+        credential_history(&mut connection, &expected).await?,
+        history
     );
     connection.close().await?;
     Box::pin(rss_da_app::maintenance::diagnose(config::load(
         &installed.runtime_file,
     )?))
     .await?;
+    let config = config::load(&installed.runtime_file)?;
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let running = tokio::spawn(rss_da_app::host::serve(config, async move {
+        stopped.await.map_err(std::io::Error::other)
+    }));
+    let result = restored_http(material, &expected).await;
+    let _ = stop.send(());
+    tokio::time::timeout(Duration::from_secs(50), running).await???;
+    result
+}
+async fn credential_history(
+    c: &mut sqlx::PgConnection,
+    expected: &Expected,
+) -> Result<Vec<(Uuid, Uuid, String, Uuid, String)>> {
+    Ok(sqlx::query_as("SELECT c.device,c.id,c.state,d.epoch,d.state FROM rss_da.credentials c JOIN rss_da.devices d ON (d.tenant_id,d.id)=(c.tenant_id,c.device) WHERE c.tenant_id=$1 AND c.device=ANY($2) ORDER BY c.device,c.id")
+        .bind(expected.active.tenant).bind(vec![expected.active.device.into_uuid(),expected.revoked.device.into_uuid()]).fetch_all(c).await?)
+}
+async fn restored_http(m: &material::Material, e: &Expected) -> Result<()> {
+    let client = m.client(None)?;
+    let tenant = e.active.tenant;
+    let url = format!(
+        "{}/api/v1/identity/tenants/{tenant}/login",
+        e.management_origin
+    );
+    let response=tokio::time::timeout(Duration::from_secs(30),async {
+        loop {
+            match client.post(&url).header("origin",&e.management_origin).header("x-identity-request","1")
+                .json(&serde_json::json!({"login":format!("da-{}",e.pending.principal),"password":"foundation-only-valid-password"})).send().await {
+                Ok(response)=>break response.error_for_status(),
+                Err(error) if error.is_connect()=>tokio::time::sleep(Duration::from_millis(100)).await,
+                Err(error)=>break Err(error),
+            }
+        }
+    }).await??;
+    let cookie = response.headers()["set-cookie"]
+        .to_str()?
+        .split(';')
+        .next()
+        .unwrap();
+    let status: rss_mdm_recovery_credentials::tasks::device::Status = material::success(
+        client
+            .get(format!(
+                "{}/api/v1/tenants/{tenant}/devices/{}/device-access/credential-operations/{}",
+                e.management_origin, e.active.device, e.pending.request.operation_id
+            ))
+            .header("cookie", cookie)
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(
+        status.state,
+        rss_mdm_recovery_credentials::tasks::device::State::PendingApplication
+    );
+    assert_eq!(status.request, e.pending.request);
+    assert_eq!(status.receipt.as_ref(), Some(&e.pending.receipt));
+    let path = format!("{}/credential-operations/next", e.device_base);
+    assert_eq!(e.revoked_peer.post(&path).send().await?.status(), 401);
+    assert_eq!(e.superseded_peer.post(&path).send().await?.status(), 401);
+    let current: rss_mdm_agent_wire::runtime::CredentialTaskSpec =
+        material::success(e.active_peer.post(&path).send().await?).await?;
+    assert_eq!(current.task_id, e.pending.request.operation_id);
     Ok(())
 }

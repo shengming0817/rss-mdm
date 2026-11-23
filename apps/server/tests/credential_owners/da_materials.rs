@@ -184,7 +184,7 @@ pub(super) async fn verify(
     let protection = protection(c, "old")?;
     let eligibility = Arc::new(pg::recovery::eligibility::AccessEligibility { admission: None });
     let materials = pg::recovery::AccessMaterials::new(protection.clone(), eligibility.clone());
-    let pool = c.inputs.pool("shared", "mdm_command_runtime").await?;
+    let pool = c.inputs.pool(&c.profile, "mdm_command_runtime").await?;
     let mut tx = transaction(&pool, tenant).await?;
     let plan = materials.plan(&mut tx, &binding, now()).await?;
     tx.rollback().await?;
@@ -381,7 +381,7 @@ async fn verify_access_recovery(
     use access::execution;
     use rss_mdm_task_state::{Cancellation, Execution, RunState};
     let (pg, execution_binding) = crate::identity::runtime_inputs(
-        &c.inputs.database("shared", "mdm_command_runtime"),
+        &c.inputs.database(&c.profile, "mdm_command_runtime"),
         &c.inputs.installation.target,
         &c.inputs.installation.lineage,
     )
@@ -478,7 +478,7 @@ async fn verify_access_recovery(
         target: None,
         device: Some(*agent.device()),
     };
-    let read_pool = c.inputs.pool("shared", "da_access").await?;
+    let read_pool = c.inputs.pool(&c.profile, "da_access").await?;
     let mut read = read_pool.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(c.tenant.to_string())
@@ -947,7 +947,7 @@ async fn verify_credential_retirement(
     let mut cancelled: rss_mdm_task_state::RunState = serde_json::from_value(original.clone())?;
     cancelled.cancel();
     let cancelled = serde_json::to_value(cancelled)?;
-    let pool = c.inputs.pool("shared", "mdm_command_runtime").await?;
+    let pool = c.inputs.pool(&c.profile, "mdm_command_runtime").await?;
     for (enabled, material, target) in [
         (true, Some(anchor.clone()), agent.device()),
         (false, None, agent.device()),

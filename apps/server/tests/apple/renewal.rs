@@ -283,18 +283,19 @@ async fn exercise(c: &Context, a: &Fixture) -> Result<()> {
         .await?,
         "original epoch challenge consumed"
     );
+    let observed_at = time::OffsetDateTime::now_utc().unix_timestamp();
     let trust = rss_mdm_device_trust::apple::AppleDeviceTrust::from_trust(
         rss_mdm_device_trust::DeviceTrust::new(
             n.trust.clone(),
             rss_mdm_agent_wire::pki::Purpose::Apple,
-            now,
+            observed_at,
         )?,
     )?;
     let leaf = trust.verify(
         &[tokio_rustls::rustls::pki_types::CertificateDer::from(
             identity::der("x509", &path.join("client.pem")).await?,
         )],
-        now,
+        observed_at,
     )?;
     for _ in 0..2 {
         ensure!(

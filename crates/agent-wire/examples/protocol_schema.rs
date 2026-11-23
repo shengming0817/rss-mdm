@@ -12,6 +12,8 @@ fn main() {
         "da": {
             "Configuration": schemars::schema_for!(rss_mdm_agent_wire::da::Configuration),
             "StatusReport": schemars::schema_for!(rss_mdm_agent_wire::da::StatusReport),
+            "CredentialEvent": schemars::schema_for!(rss_mdm_agent_wire::da::CredentialEvent),
+            "CredentialSettlement": schemars::schema_for!(rss_mdm_agent_wire::da::CredentialSettlement),
             "ApplicationReport": schemars::schema_for!(rss_mdm_agent_wire::da::ApplicationReport),
             "GrantRequest": schemars::schema_for!(rss_mdm_agent_wire::da::GrantRequest),
             "Grant": schemars::schema_for!(rss_mdm_agent_wire::da::Grant),

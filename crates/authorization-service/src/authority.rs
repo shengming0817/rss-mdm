@@ -111,6 +111,16 @@ impl OperationAuthority {
             basis,
         })
     }
+    /// Fence the frozen source before acquiring a product registration or operation lock.
+    pub async fn lock_source(&self, conn: &mut PgConnection) -> Result<(), Error> {
+        super::store::lock_shared(
+            self.source,
+            conn,
+            self.actor.tenant_id(),
+            self.actor.instance_id(),
+        )
+        .await
+    }
     /// Match the consuming business product, then recheck the frozen authority source.
     pub async fn valid(
         &self,
@@ -122,13 +132,7 @@ impl OperationAuthority {
         if self.profile != profile || self.permission != permission {
             return Ok(false);
         }
-        super::store::lock_shared(
-            self.source,
-            conn,
-            self.actor.tenant_id(),
-            self.actor.instance_id(),
-        )
-        .await?;
+        self.lock_source(conn).await?;
         // Typed deserialization still rejects damaged persisted documents. The SQL
         // owner is the single current-authority predicate, also used by bounded queries.
         match (&self.actor, &self.basis) {

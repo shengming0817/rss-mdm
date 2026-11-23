@@ -4,7 +4,7 @@ use rss_mdm_agent_wire::runtime as w;
 #[tokio::test]
 #[ignore = "T2: explicit DA delivery authorization and RSS material custody across distinct real endpoints"]
 async fn access_binding_requires_current_device_authority() -> Result<()> {
-    let c = Context::open("shared", &[]).await?;
+    let c = Context::open("da_embedded", &[]).await?;
     let (device, grant) = material::seed_registration(&c).await?;
     let p = material::authenticated_agent(
         &c,
@@ -109,7 +109,7 @@ async fn delivery_lifecycle(
         .bind(serde_json::to_value(meta)?).bind(fingerprint)
         .bind(serde_json::json!({"kind":"da_device","receipt":receipt})).bind(credential).execute(&mut *tx).await?;
     tx.commit().await?;
-    let da_pool = c.inputs.pool("shared", "da_access").await?;
+    let da_pool = c.inputs.pool(&c.profile, "da_access").await?;
     let mut tx = da_pool.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(tenant.to_string())
@@ -133,6 +133,9 @@ async fn delivery_lifecycle(
     assert!(delivery::resolve_on(&mut tx, agent).await.is_err());
     tx.rollback().await?;
     let anchor = DaRegistration { device: *device };
+    Box::pin(embedded_status(c, &anchor, *agent.device()))
+        .await
+        .context("embedded DA management HTTP")?;
     let person = Box::pin(super::da_authorization::authorize(c, agent, &anchor))
         .await
         .context("authorize Agent delivery using the real Identity proof")?;
@@ -176,4 +179,385 @@ async fn delivery_lifecycle(
     tx.rollback().await?;
     da_pool.close().await;
     Ok(())
+}
+
+async fn embedded_status(
+    c: &Context,
+    da: &rss_mdm_registration_service::device::endpoints::DaRegistration,
+    agent: rss_mdm_agent_wire::DeviceId,
+) -> Result<()> {
+    use rss_mdm_authorization_service::{Permission, credential::RequestCredential};
+    let allowed = c.account(&[Permission::OperationRead]).await?;
+    let denied = c.account(&[Permission::AccountWrite]).await?;
+    let cookie = |account: &crate::authority_t2_support::Account| -> Result<String> {
+        let RequestCredential::Cookie(secret) = account.credential()? else {
+            anyhow::bail!("expected account session");
+        };
+        Ok(format!("__Host-identity-session={}", secret.expose()))
+    };
+    let allowed = cookie(&allowed)?;
+    let denied = cookie(&denied)?;
+    let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+    let mut config =
+        crate::host_t2_support::configuration(&c.inputs, &c.profile, address, Uuid::new_v4())
+            .await?;
+    let provider = provider::Provider::new(&c.inputs.directory).await?;
+    let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+    let origin = format!("https://localhost:{}", address.port());
+    let trust = provider
+        .publish(
+            &c.operator,
+            &c.tenant.to_string(),
+            &c.inputs.installation.instance_id,
+            &origin,
+        )
+        .await?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(
+        provider.directory.join("provider.pk8"),
+        std::fs::Permissions::from_mode(0o600),
+    )?;
+    config["device_access"]["registration"] = serde_json::json!({
+        "listen":address,"origin":origin,"certificate_file":provider.directory.join("server.pem"),"private_key_file":provider.directory.join("server.key"),
+        "certificate_days":365,"configuration_lifetime":3600,
+        "providers":[{"purpose":"da_device","issuer":trust.issuers[0].digest,"origin":format!("https://localhost:{}",provider.port),"tls_root_file":provider.directory.join("task-trust-ca/ca.pem"),"provisioner":"rss-da-device","kid":"da-test","provisioner_key_file":provider.directory.join("provider.pk8")}]
+    });
+    config["recovery_credentials"] = serde_json::json!({"active_key":"native","key_files":{"native":c.inputs.directory.join("native.key")},
+        "recipients":[{"certificate_file":c.inputs.directory.join("task-trust-ca/ca.pem"),"private_key_file":c.inputs.directory.join("task-trust-ca/ca.key")}]});
+    let admin = c
+        .account(&[
+            Permission::Enrollment,
+            Permission::Credentials,
+            Permission::PolicyWrite,
+            Permission::AccountWrite,
+        ])
+        .await?;
+    crate::host_t2_support::run(config, |client, base| async move {
+        let url = format!(
+            "{base}/api/v1/tenants/{}/apple/platform-sso/status",
+            c.tenant
+        );
+        let get = |cookie: &str| {
+            client
+                .get(&url)
+                .query(&[("deviceId", da.device.to_string())])
+                .header("cookie", cookie)
+                .send()
+        };
+        assert_eq!(get(&denied).await?.status(), 403);
+        let status = get(&allowed)
+            .await?
+            .error_for_status()?
+            .json::<serde_json::Value>()
+            .await?;
+        assert_eq!(status["device"], serde_json::json!(da.device));
+        assert_eq!(status["login"], "unknown");
+        assert_eq!(status["deployment"], "unobserved");
+        Box::pin(lifecycle_http(
+            c, &client, &base, &origin, &provider, &admin, agent,
+        ))
+        .await
+    })
+    .await
+}
+
+#[path = "../../../../hack/test-support/da_provider.rs"]
+mod provider;
+
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "the two listener lifecycle proof exercises original and renewed peers before and after revocation"
+)]
+async fn lifecycle_http(
+    c: &Context,
+    browser: &reqwest::Client,
+    base: &str,
+    origin: &str,
+    fixture: &provider::Provider,
+    admin: &crate::authority_t2_support::Account,
+    agent: rss_mdm_agent_wire::DeviceId,
+) -> Result<()> {
+    use serde_json::{Value, json};
+    let management = format!("{base}/api/v1/tenants/{}/da", c.tenant);
+    let protocol = format!("{origin}/api/v1/da");
+    let login=browser.post(format!("{base}/api/v1/identity/tenants/{}/login",c.tenant))
+        .header("origin","https://mdm.example.test").header("x-identity-request","1")
+        .json(&json!({"login":format!("foundation-{}",admin.user.principal_id),"password":"foundation-only-valid-password"})).send().await?.error_for_status()?;
+    let cookie = login
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok()?.split(';').next())
+        .find(|v| v.starts_with("__Host-identity-session="))
+        .context("embedded Identity cookie")?
+        .to_owned();
+    let csrf = login.json::<Value>().await?["csrfToken"]
+        .as_str()
+        .context("embedded CSRF")?
+        .to_owned();
+    let post = |path: String| {
+        browser
+            .post(path)
+            .header("origin", "https://mdm.example.test")
+            .header("x-identity-request", "1")
+            .header("x-csrf-token", &csrf)
+            .header("cookie", &cookie)
+    };
+    let (first_peer, initial) =
+        activate_from_grant(fixture, &protocol, post(format!("{management}/grants")), 1).await?;
+    let (renewed_peer, renewed) = activate_from_grant(
+        fixture,
+        &protocol,
+        first_peer.post(format!("{protocol}/renewal-grants")),
+        2,
+    )
+    .await?;
+    assert_eq!(initial.device, renewed.device);
+    assert_ne!(initial.credential, renewed.credential);
+    let trust = format!("{protocol}/configuration-trust");
+    assert_eq!(first_peer.get(&trust).send().await?.status(), 401);
+    let device = renewed.device;
+    let credentials = format!(
+        "{base}/api/v1/tenants/{}/devices/{device}/device-access",
+        c.tenant
+    );
+    let id = Box::pin(embedded_credential(
+        c,
+        admin,
+        &renewed,
+        &credentials,
+        &post,
+        agent,
+    ))
+    .await?;
+    let claim = ordered(
+        c,
+        device,
+        agent,
+        renewed_peer.post(format!("{protocol}/credential-operations/next")),
+    )
+    .await?;
+    claim.error_for_status()?;
+    let revoke = format!("{management}/devices/{device}/registration/revoke");
+    post(revoke.clone())
+        .json(&json!({"operationId":Uuid::new_v4()}))
+        .send()
+        .await?
+        .error_for_status()?;
+    assert_eq!(renewed_peer.get(&trust).send().await?.status(), 401);
+    let historical = browser
+        .get(format!("{credentials}/credential-operations/{id}"))
+        .header("cookie", &cookie)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Value>()
+        .await?;
+    assert_eq!(historical["request"]["operationId"], json!(id));
+    assert_eq!(
+        renewed_peer
+            .post(format!("{protocol}/credential-operations/next"))
+            .send()
+            .await?
+            .status(),
+        401
+    );
+    let mut tx = seed(c).await?;
+    sqlx::query("DELETE FROM rss_da.agent_delivery WHERE tenant_id=$1::uuid AND da_device=$2")
+        .bind(c.tenant.to_string())
+        .bind(device.into_uuid())
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    sqlx::query("DELETE FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(c.tenant.to_string())
+        .bind(admin.rule)
+        .execute(&c.operator)
+        .await?;
+    assert_eq!(
+        post(revoke)
+            .json(&json!({"operationId":Uuid::new_v4()}))
+            .send()
+            .await?
+            .status(),
+        403
+    );
+    Ok(())
+}
+async fn activate_from_grant(
+    fixture: &provider::Provider,
+    protocol: &str,
+    submit: reqwest::RequestBuilder,
+    index: u8,
+) -> Result<(reqwest::Client, rss_mdm_agent_wire::da::Registration)> {
+    use rss_mdm_agent_wire::{da, enroll};
+    let request = da::GrantRequest {
+        operation_id: Uuid::new_v4(),
+        secret: rss_mdm_agent_wire::runtime::Secret::parse(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA",
+        )?,
+        csr: fixture.csr(index)?,
+        expires_in_seconds: 600,
+    };
+    let grant: da::Grant = read_response(submit.json(&request).send().await?).await?;
+    let candidate: enroll::Candidate = read_response(
+        fixture
+            .client(None)?
+            .post(format!("{protocol}/certificates"))
+            .json(&da::CertificateRequest {
+                operation_id: Uuid::new_v4(),
+                grant_id: grant.grant_id,
+                secret: request.secret,
+                csr: request.csr,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    let peer = fixture.client(Some((&candidate, index)))?;
+    let registration = read_response(
+        peer.post(format!("{protocol}/activate"))
+            .json(&enroll::ActivationRequest {
+                wire_version: 1,
+                operation_id: Uuid::new_v4(),
+                issuance_id: candidate.issuance_id,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    Ok((peer, registration))
+}
+async fn read_response<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T> {
+    let path = response.url().path().to_owned();
+    let status = response.status();
+    let body = response.text().await?;
+    anyhow::ensure!(
+        status.is_success(),
+        "embedded {path} returned {status}: {body}"
+    );
+    Ok(serde_json::from_str(&body)?)
+}
+
+#[path = "../../../../hack/test-support/da_recovery.rs"]
+mod da_recovery;
+async fn embedded_credential(
+    c: &Context,
+    admin: &crate::authority_t2_support::Account,
+    registration: &rss_mdm_agent_wire::da::Registration,
+    base: &str,
+    post: &impl Fn(String) -> reqwest::RequestBuilder,
+    agent: rss_mdm_agent_wire::DeviceId,
+) -> Result<Uuid> {
+    use serde_json::{Value, json};
+    let native = std::fs::read(c.inputs.directory.join("native.key"))?;
+    let recipient = super::recipient(c)?;
+    let id = recipient.id().to_string();
+    let protection = recovery::Protection::new(
+        recovery::KeyRing::new(
+            "native".into(),
+            vec![("native".into(), zeroize::Zeroizing::new(native))],
+        )?,
+        vec![recipient],
+    )?;
+    let mut tx = seed(c).await?;
+    let (binding, _, _) = da_recovery::seed(
+        &mut tx,
+        registration,
+        Uuid::parse_str(&admin.user.principal_id)?,
+        &protection,
+        &id,
+    )
+    .await?;
+    tx.commit().await?;
+    let version = Uuid::new_v4();
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let policy = json!({"id":Uuid::new_v4(),"version":version,"revision":1,"device":registration.device,"enabled":true,
+        "notBefore":now-1,"expiresAt":now+3600,"runLifetimeSeconds":600,
+        "operation":{"kind":"verify_rss_login","binding":binding.id,"bindingGeneration":binding.generation,"sid":da_recovery::SID}});
+    let _: Value = read_response(
+        post(format!("{base}/credential-policies"))
+            .json(&policy)
+            .send()
+            .await?,
+    )
+    .await?;
+    let mut tx = seed(c).await?;
+    sqlx::query("INSERT INTO rss_da.agent_delivery(tenant_id,da_device,agent_installation,agent_device,enabled,revision) VALUES($1::uuid,$2,$3,$4,true,1)")
+        .bind(c.tenant.to_string()).bind(registration.device.into_uuid()).bind(Uuid::parse_str(&c.inputs.installation.instance_id)?).bind(agent.into_uuid()).execute(&mut *tx).await?;
+    tx.commit().await?;
+    let mut previous = None;
+    for _ in 0..2 {
+        let op = Uuid::new_v4();
+        let input = json!({"operationId":op,"bindingId":binding.id,"bindingGeneration":binding.generation,"action":"verify","replaces":previous,"policyVersion":version});
+        let status: Value = read_response(
+            ordered(
+                c,
+                registration.device,
+                agent,
+                post(format!("{base}/credential-operations")).json(&input),
+            )
+            .await?,
+        )
+        .await?;
+        assert_eq!(status["state"], "accepted");
+        previous = Some(op);
+    }
+    previous.context("settled replacement identity")
+}
+
+/// Hold the Agent registration fence while the live HTTP handler starts, then observe that the DA fence is still available.
+async fn ordered(
+    c: &Context,
+    device: rss_mdm_agent_wire::DeviceId,
+    agent: rss_mdm_agent_wire::DeviceId,
+    request: reqwest::RequestBuilder,
+) -> Result<reqwest::Response> {
+    use rss_mdm_registration_service::device::endpoints;
+    let tenant = c.tenant.to_string();
+    let mut tx = c.operator.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(&tenant)
+        .execute(&mut *tx)
+        .await?;
+    endpoints::lock_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        &tenant,
+        &agent,
+        rss_mdm_inventory::Channel::Agent,
+    )
+    .await?;
+    let check = async {
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let waiting: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT FROM pg_stat_activity a WHERE pg_backend_pid()=ANY(pg_blocking_pids(a.pid)))",
+                )
+                .fetch_one(&mut *tx)
+                .await?;
+                if waiting {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            endpoints::lock_da_in(&mut tx, &tenant, &device).await?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await;
+        tx.rollback().await?;
+        result
+            .context("observe the HTTP handler waiting on Agent while the DA fence is available")?
+    };
+    let (response, verified) = tokio::join!(request.send(), check);
+    let response = response?;
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "credential request returned {} at {}",
+            response.status(),
+            response.url().path()
+        );
+    }
+    verified?;
+    Ok(response)
 }

@@ -12,7 +12,7 @@ def run(*args):
     return subprocess.run(['openssl', *map(str, args)], check=True, capture_output=True, timeout=30).stdout
 
 
-def prepare(directory):
+def prepare(directory, *, ca_days=365):
     root = directory / 'task-trust-ca'
     if root.exists():
         run('x509', '-in', root / 'ca.pem', '-checkend', '86400', '-noout')
@@ -48,7 +48,7 @@ private_key={root}/ca.key
 default_md=sha256
 default_crl_days=30
 ''')
-    run('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '365', '-config', root/'ca.conf', '-keyout', root/'ca.key', '-out', root/'ca.pem')
+    run('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', str(ca_days), '-config', root/'ca.conf', '-keyout', root/'ca.key', '-out', root/'ca.pem')
     (root/'ca.key').chmod(0o600)
     run('ca', '-name', 'issuer', '-config', root/'ca.conf', '-gencrl', '-out', root/'ca.crl')
     return root

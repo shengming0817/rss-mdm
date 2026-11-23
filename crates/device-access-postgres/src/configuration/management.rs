@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
 use uuid::Uuid;
-pub(super) fn fault(e: policy::Error) -> Error {
+pub(crate) fn fault(e: policy::Error) -> Error {
     match e {
         policy::Error::Malformed => Error::Malformed,
         policy::Error::Conflict => Error::Conflict,

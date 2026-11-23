@@ -16,6 +16,48 @@ pub struct Diagnostics {
     pub managed_state: da::SourceState,
     pub evidence: Option<da::EvidenceLevel>,
     pub resolution: Resolution,
+    pub locked_fields: Vec<da::ConfigurationField>,
+    pub artifact: Option<uuid::Uuid>,
+    pub reported: Option<da::ApplicationState>,
+    pub application: Application,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema, Debug, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Application {
+    Unknown,
+    AwaitingExport,
+    Pending,
+    OfflinePending,
+    Received,
+    Rejected,
+    VerifiedApplied,
+}
+
+fn current_readback(observation: (i64, i64), artifact: (i64, i64), now: i64) -> bool {
+    [observation, artifact]
+        .into_iter()
+        .all(|(issued, expires)| issued <= now && now < expires)
+}
+fn application_state(
+    reported: Option<da::ApplicationState>,
+    offline: bool,
+    verified: bool,
+) -> Application {
+    if verified {
+        return Application::VerifiedApplied;
+    }
+    match reported {
+        Some(da::ApplicationState::Rejected) => Application::Rejected,
+        _ if offline => Application::OfflinePending,
+        Some(
+            da::ApplicationState::Received
+            | da::ApplicationState::Validated
+            | da::ApplicationState::Applied,
+        ) => Application::Received,
+        Some(da::ApplicationState::Unknown) => Application::Unknown,
+        None => Application::Pending,
+    }
 }
 
 /// Current issuer authority may release fields through the protected publication operation.
@@ -79,6 +121,7 @@ impl Service {
             }
 
             let mut state = da::SourceState::Missing;
+            let mut readbacks = Vec::new();
             let mut managed = Vec::new();
             let mut evidence = None;
             let observations = authorities.configurations_on(c, p.binding().tenant(), service.service_id()?, &anchor).await;
@@ -92,6 +135,14 @@ impl Service {
                         || !config.permits(&identity, device) {
                         state = da::SourceState::Invalid; break;
                     }
+                    if !o.revoked && proof.state == da::SourceState::Present
+                        && current_readback((o.issued_at,o.expires_at),(config.issued_at,config.expires_at),now)
+                        && let Some(readback) = proof.applied
+                        && policy::get_on(c, tenant, o.policy).await.map_err(fault)?.is_some_and(|source| source.enabled && source.version == o.policy_version)
+                    {
+                        signing.verify_on(c, p.binding().tenant(), &artifact, now).await?;
+                        readbacks.push(readback);
+                    }
                     if config.delivery != da::DeliveryPermission::ManagedMandatory { continue; }
                     config.managed_fields = fields(c, &config).await?;
                     // A protected release explicitly removes the source's authority.
@@ -101,6 +152,7 @@ impl Service {
                     if o.issued_at > now || config.issued_at > now { state = da::SourceState::Invalid; break; }
                     if o.expires_at <= now || config.expires_at <= now { state = da::SourceState::Expired; break; }
                     if proof.state != da::SourceState::Present { state = proof.state; break; }
+                    signing.verify_on(c, p.binding().tenant(), &artifact, now).await?;
                     state = da::SourceState::Present;
                     evidence = Some(da::EvidenceLevel::Verified);
                     managed.push(config);
@@ -115,7 +167,89 @@ impl Service {
             let backend = publication.as_ref().filter(|v| v.enabled).map(|v| &v.configuration);
             let candidates: Vec<_> = managed.iter().collect();
             let resolution = resolve(backend, &candidates, state, &locked)?;
-            Ok(Diagnostics { publication, managed_state: state, evidence, resolution })
+            let mut artifact_id = None;
+            let mut reported = None;
+            let mut application = Application::Unknown;
+            if let Some(selected) = publication.as_ref().filter(|v| v.enabled)
+                && resolution.blocked.is_none()
+            {
+                application = Application::AwaitingExport;
+                if let Some(signed) = signing.current_on(p.binding(), c, selected.id, selected.revision).await? {
+                    let config = signing.verify_on(c, p.binding().tenant(), &signed, now).await?;
+                    if !config.permits(&identity, device) || config.version != selected.version || config.id != selected.id
+                        || config.delivery != da::DeliveryPermission::Da {
+                        return Err(Error::Corrupt);
+                    }
+                    artifact_id = Some(config.operation_id);
+                    let head: Option<serde_json::Value> = sqlx::query_scalar(
+                        "SELECT document FROM rss_da.report_heads WHERE tenant_id=$1 AND device=$2 AND kind='application'")
+                        .bind(tenant).bind(device.into_uuid()).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
+                    if let Some(head) = head {
+                        let value: da::ApplicationReport = serde_json::from_value(head).map_err(|_| Error::Corrupt)?;
+                        if value.artifact == config.operation_id && value.digest == signed.digest { reported = Some(value.state); }
+                    }
+                    let seen: Option<i64> = sqlx::query_scalar(
+                        "SELECT max((receipt->>'receivedAt')::bigint) FROM rss_da.report_heads WHERE tenant_id=$1 AND device=$2")
+                        .bind(tenant).bind(device.into_uuid()).fetch_one(&mut *c).await.map_err(crate::database::db)?;
+                    let current: Vec<_> = readbacks.iter().filter(|r| r.backend_artifact == config.operation_id).collect();
+                    let verified = !current.is_empty() && current.iter().all(|r| {
+                        resolution.configuration.as_ref() == Some(&r.effective)
+                            && r.managed_sources.len() == resolution.fields.iter().filter(|f| f.locked).count()
+                            && resolution.fields.iter().filter(|f| f.locked).all(|f| {
+                                r.managed_sources.get(&f.field).is_some_and(|id| managed.iter().any(|m|
+                                    m.operation_id == *id && m.managed_fields.contains(&f.field)))
+                            })
+                    });
+                    let offline = seen.is_some_and(|last| now.saturating_sub(last) >= i64::from(service.report_limits.stale_seconds));
+                    application = application_state(reported, offline, verified);
+                }
+            }
+            Ok(Diagnostics { publication, managed_state: state, evidence, resolution, locked_fields: locked, artifact: artifact_id, reported, application })
         })).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn readback_requires_both_lifetimes() {
+        assert!(current_readback((20, 90), (10, 50), 49));
+        assert!(!current_readback((20, 90), (10, 50), 50));
+        assert!(!current_readback((20, 90), (30, 100), 29));
+    }
+    #[test]
+    fn application_requires_an_independent_readback_and_offline_requires_a_watermark() {
+        for report in [
+            da::ApplicationState::Received,
+            da::ApplicationState::Validated,
+            da::ApplicationState::Applied,
+        ] {
+            assert_eq!(
+                application_state(Some(report), true, false),
+                Application::OfflinePending
+            );
+            assert_eq!(
+                application_state(Some(report), false, false),
+                Application::Received
+            );
+        }
+        assert_eq!(application_state(None, false, false), Application::Pending);
+        assert_eq!(
+            application_state(None, true, false),
+            Application::OfflinePending
+        );
+        assert_eq!(
+            application_state(Some(da::ApplicationState::Unknown), false, false),
+            Application::Unknown
+        );
+        assert_eq!(
+            application_state(Some(da::ApplicationState::Rejected), false, false),
+            Application::Rejected
+        );
+        assert_eq!(
+            application_state(None, false, true),
+            Application::VerifiedApplied
+        );
     }
 }

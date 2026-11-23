@@ -1,13 +1,14 @@
 //! Read-only native wrapping of the original authorized signing receipt.
-use crate::{Error, Services, boundary::Administrator};
+use crate::{Error, management::Services};
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, Query, State},
 };
 use rss_mdm_apple_mdm::{
     applicability::{Channel, Context, Enrollment, Version},
     native::{Target, ddm::DeclarationInput, profiles::ProfileInput},
 };
+use rss_mdm_authorization_service::context::RequestAuth;
 use std::sync::Arc;
 #[derive(Default, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -38,16 +39,13 @@ pub struct Mac {
 }
 pub(crate) async fn templates(
     State(s): State<Arc<Services>>,
-    Administrator(p): Administrator,
+    Extension(auth): Extension<RequestAuth>,
     Path((_tenant, id)): Path<(uuid::Uuid, uuid::Uuid)>,
     Query(options): Query<Options>,
 ) -> Result<Json<Templates>, Error> {
     let artifact = s
         .business
-        .as_ref()
-        .ok_or(Error::Unavailable)?
-        .service
-        .configuration_operation(&s.configurations, &p, id)
+        .configuration_operation(&s.configurations, &auth.proof, id)
         .await?;
     Ok(Json(render(id, artifact, &options)?))
 }

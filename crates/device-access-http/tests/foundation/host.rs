@@ -17,19 +17,23 @@ pub async fn verify(
     c: &Context,
     m: &material::Material,
     registration: &registration::agent::da::RegistrationService,
-) -> Result<InstalledHost> {
+    browser: tokio::net::TcpListener,
+    protocol: tokio::net::TcpListener,
+) -> Result<(
+    InstalledHost,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<rss_da_app::Result<()>>,
+)> {
     let management: Uuid =
         sqlx::query_scalar("SELECT management_tenant_id FROM rss_da.authorization_installation")
             .fetch_one(&c.operator)
             .await?;
-    let browser = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let protocol = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    sqlx::query("INSERT INTO rss_da.api_network_policy(tenant_id,instance,revision,networks) VALUES($1,$2::uuid,1,$3) ON CONFLICT DO NOTHING")
+        .bind(management).bind(&c.inputs.installation.instance_id).bind(serde_json::json!(["127.0.0.1/32","::1/128"])).execute(&c.operator).await?;
     let browser_address = browser.local_addr()?;
     let protocol_address = protocol.local_addr()?;
     let origin = format!("https://localhost:{}", browser_address.port());
-    c.browser_origin
-        .set(origin.clone())
-        .expect("one host origin");
+    assert_eq!(origin, c.browser_origin);
     let trust = registration.trust(c.execution()).await?.trust.public()?;
     let trust_file = m.directory.join("host-trust.json");
     private(&trust_file, &serde_json::to_vec(&trust)?)?;
@@ -49,9 +53,20 @@ pub async fn verify(
     let example: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../deployment/da-config.example.json"
     ))?;
+    let mut http = example["http"].clone();
+    http["max_connections"] = 4.into();
+    let authorities = [business::authority_id(), business::second_authority()].map(|id| {
+        rss_mdm_device_access_runtime::platform::DeploymentAuthority {
+            id,
+            public_key: ring::signature::KeyPair::public_key(&business::signing_key(id))
+                .as_ref()
+                .try_into()
+                .unwrap(),
+        }
+    });
     let value = serde_json::json!({
         "identity_policy":example["identity_policy"],
-        "http":example["http"],
+        "http":http,
         "installation":{"instance":c.inputs.installation.instance_id,"tenant":c.tenant.to_string(),
           "management_tenant":management,"target":c.inputs.installation.target,"lineage":c.inputs.installation.lineage,"epoch":1},
         "database":c.inputs.database("da_access"),"identity_database":c.inputs.database("da_identity_runtime"),
@@ -63,7 +78,7 @@ pub async fn verify(
           "certificate_days":365,"configuration_revision":null,"configuration_lifetime":3600},
         "protection":{"active_file":c.inputs.directory.join("native.key"),"historical_files":[],
           "fingerprint_file":c.inputs.directory.join("fingerprint.key")},"cursor_key_file":cursor,
-        "deployment_authorities":[],"platform_sso":null,"enterprise":null,"oidc":null,"recovery":null
+        "reports":{"historySeconds":2592000,"historyCount":2,"staleSeconds":900,"bodyBytes":65536,"reportsPerMinute":10,"bytesPerMinute":67108864},"deployment_authorities":authorities,"platform_sso":platform::configuration(&m.directory)?,"enterprise":null,"oidc":null,"recovery":{"active_key":"fixture","key_files":{"fixture":c.inputs.directory.join("native.key")},"recipients":[{"certificate_file":m.directory.join("recovery.pem"),"private_key_file":m.directory.join("recovery.key")}] }
     });
     private(&runtime_file, &serde_json::to_vec(&value)?)?;
     let password_file = m.directory.join("host-password");
@@ -182,31 +197,23 @@ pub async fn verify(
         Ok::<(), anyhow::Error>(())
     }
     .await;
-    let _ = stop.send(());
-    tokio::time::timeout(Duration::from_secs(50), running).await???;
     result?;
-    assert!(
-        tokio::net::TcpStream::connect(browser_address)
-            .await
-            .is_err()
-    );
-    assert!(
-        tokio::net::TcpStream::connect(protocol_address)
-            .await
-            .is_err()
-    );
-    Ok(InstalledHost {
-        runtime_file,
-        accounts: tenants
-            .into_iter()
-            .map(|tenant| rss_da_app::maintenance::OriginalAccount {
-                tenant,
-                principal,
-                login: login.clone(),
-                password_file: password_file.clone(),
-            })
-            .collect(),
-    })
+    Ok((
+        InstalledHost {
+            runtime_file,
+            accounts: tenants
+                .into_iter()
+                .map(|tenant| rss_da_app::maintenance::OriginalAccount {
+                    tenant,
+                    principal,
+                    login: login.clone(),
+                    password_file: password_file.clone(),
+                })
+                .collect(),
+        },
+        stop,
+        running,
+    ))
 }
 
 async fn vault_user_http(c: &Context, client: &reqwest::Client, origin: &str) -> Result<()> {

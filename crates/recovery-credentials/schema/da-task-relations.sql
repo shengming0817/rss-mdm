@@ -1,4 +1,16 @@
 BEGIN;
+ALTER TABLE rss_da.credential_runs ADD COLUMN da_execution jsonb, ADD COLUMN da_permit_until bigint NOT NULL DEFAULT 0, ADD COLUMN da_escrow_digest bytea CHECK(octet_length(da_escrow_digest)=32);
+CREATE UNIQUE INDEX credential_da_unfinished ON rss_da.credential_runs(tenant_id,device)
+ WHERE da_execution IS NOT NULL AND state IN ('"accepted"'::jsonb,'"pending_application"'::jsonb);
+CREATE POLICY credential_agent_path ON rss_da.credential_runs AS RESTRICTIVE
+ TO da_command_runtime,da_policy_runtime USING(da_execution IS NULL) WITH CHECK(da_execution IS NULL);
+CREATE POLICY targeted_update ON rss_da.credential_runs AS RESTRICTIVE FOR UPDATE TO da_access
+ USING(da_execution IS NOT NULL) WITH CHECK(da_execution IS NOT NULL);
+GRANT UPDATE(state,result,da_permit_until,da_escrow_digest) ON rss_da.credential_runs TO da_access;
+GRANT SELECT,INSERT,UPDATE(state) ON rss_da.credential_runs TO da_identity_runtime;
+CREATE POLICY credential_da_management ON rss_da.credential_runs AS RESTRICTIVE TO da_identity_runtime
+ USING(da_execution IS NOT NULL) WITH CHECK(da_execution IS NOT NULL);
+
 GRANT SELECT,INSERT ON rss_da.credential_runs,rss_da.credential_policy_recovery TO da_command_runtime,da_policy_runtime;
 GRANT UPDATE(state,result,source_objects) ON rss_da.credential_runs TO da_command_runtime,da_policy_runtime;
 GRANT UPDATE(gateway_accepted) ON rss_da.credential_runs TO da_command_runtime;
@@ -32,4 +44,17 @@ CREATE FUNCTION rss_da.credential_save_retired_run(p_device uuid,p_run uuid,p_pr
 $$;
 REVOKE ALL ON FUNCTION rss_da.credential_save_retired_run(uuid,uuid,jsonb,jsonb) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rss_da.credential_save_retired_run(uuid,uuid,jsonb,jsonb) TO da_access,da_command_runtime;
+CREATE FUNCTION rss_da.release_targeted_credential(p_task uuid,p_attempt uuid) RETURNS boolean
+ LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog' AS $$
+ WITH released AS (
+ DELETE FROM rss_da.recovery_agent_guards g USING rss_da.credential_runs r
+ WHERE g.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+ AND (g.tenant_id,g.device,g.task)=(r.tenant_id,r.device,r.id)
+ AND g.task=p_task AND g.attempt=p_attempt AND r.da_execution->'spec'->>'attemptId'=p_attempt::text
+ AND r.state IN ('"applied"'::jsonb,'"unchanged"'::jsonb,'"retired"'::jsonb)
+ RETURNING g.task
+ ) SELECT EXISTS(SELECT FROM released)
+$$;
+REVOKE ALL ON FUNCTION rss_da.release_targeted_credential(uuid,uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rss_da.release_targeted_credential(uuid,uuid) TO da_access;
 COMMIT;

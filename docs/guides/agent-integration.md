@@ -371,3 +371,17 @@ Agent 使用设备证书读取 `GET /api/v1/agent/runtime/management-activities`
 原登记恢复提交结果通过 `GET /api/v1/tenants/{tenant}/devices/{id}/registration/recovery-operations/{operation}?actor=...&instance=...` 读取。原签发恢复操作从 `GET /api/v1/tenants/{tenant}/agent-issuances/{id}/recovery-operations` 分页发现，并沿已有 `GET /api/v1/tenants/{tenant}/agent-issuances/{id}/recovery-operations/{operation}?actor=...&instance=...` 查询。所有精确回执查询必须明确原 actor、instance；不提供当前登录人缺省。查询引用中的主体不是授权凭证，服务端仍按当前调用者的设备 Credentials 权限核验。
 
 授权管理员可以读回他人原操作，但写入继续使用当前认证主体。null 仅表示没有找到指定原回执；链已关联、该次管理操作已提交、设备已持证激活是不同事实。刷新、重新登录、超时或未知结果都不授权自动重放写入。查询不返回 secret、原始 CSR、签发配置，也不会重新签发或延长期限。
+
+指定设备的恢复操作通过租户浏览器入口 `POST /api/v1/tenants/{tenant}/devices/{device}/device-access/credential-operations` 创建，
+用 `GET /api/v1/tenants/{tenant}/devices/{device}/device-access/credential-operations/{id}` 查询原操作。请求携带唯一的 `operationId`、`policyVersion`、绑定 ID、当前绑定代际和 `verify` 或 `rotate`。该版本必须明确授权该设备、本地账户和动作。独立 DA 设备以当前 mTLS 身份从
+`POST /api/v1/da/credential-operations/next` 领取，按执行规范加密托管材料，将托管及原生应用读回分别提交给
+`POST /api/v1/da/credential-operations/{id}/events`。操作记录依次显示 `accepted`、`pending_application` 和 `applied`。
+现任管理员可在新请求中填入原操作的 `replaces`。尚未托管的操作进入 `superseded`。已有托管回执的轮换须用 `verify` 接替。设备先停止原尝试，再读取实际生效的凭据并加密回报。原操作的候选版本确认后显示 `applied`，前一版本确认后显示 `unchanged`。已退役代际的设备确认保留为 `retired`。各状态均保留原回执。当前注册设备可用相同操作、尝试与事件内容重取已经提交的回执，即使原执行期限已经过去。领取及首次结算仍须通过当前凭据策略和期限校验。
+恢复材料的专用披露响应带有 `Cache-Control: no-store`。断线重试需要原操作、原管理会话和仍在有效期内的原用途证明。
+
+管理员可用 `GET /api/v1/tenants/{tenant}/apple/platform-sso/status?deviceId=...&bindingId=...` 读取登录资格。
+`bindingId` 为可选项。证据包含预置部署签名方的 ID 和公钥指纹、序号、策略版本、应用与配置描述文件及有效期。
+首个应用为当前租户 RSS MDM 的同源 `/login`。它通过 `/api/v1/apple/platform-sso/{tenant}/browser/begin` 取得一次性 challenge 和 HttpOnly cookie，
+在 `/api/v1/apple/platform-sso/{tenant}/browser/complete` 提交与该 audience 绑定的原生证明，由 Identity 签发普通浏览器会话。
+
+DA 设备以 mTLS 直接领取有界执行许可；响应 `null` 表示当前没有工作。设备事件和脱敏结算回执分别使用 DA wire schema 的 `CredentialEvent` 与 `CredentialSettlement`。每次领取、托管和确认均复核当前策略版本、时间窗口及设备资格。

@@ -37,12 +37,10 @@ async fn now(c: &mut PgConnection) -> Result<i64, Error> {
         .await
         .map_err(db)
 }
-pub(super) async fn authorize(
+pub(crate) async fn grants(
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
-    device: &rss_mdm_agent_wire::DeviceId,
-    permission: Permission,
-) -> Result<(), Error> {
+) -> Result<rss_mdm_authorization_service::Snapshot, Error> {
     p.check_live()?;
     rss_mdm_authorization_service::lock_on(
         p.authority_profile(),
@@ -51,15 +49,25 @@ pub(super) async fn authorize(
         p.instance_id(),
     )
     .await?;
-    rss_mdm_authorization_service::snapshot_on(
+    Ok(rss_mdm_authorization_service::snapshot_on(
         p.authority_profile(),
         c,
         p.tenant_id(),
         p.instance_id(),
     )
-    .await?
-    .require(p, permission, Some(device))
-    .map_err(|_| Error::Forbidden)?;
+    .await?)
+}
+
+pub(crate) async fn authorize(
+    c: &mut PgConnection,
+    p: &AuthorizedPrincipal,
+    device: &rss_mdm_agent_wire::DeviceId,
+    permission: Permission,
+) -> Result<(), Error> {
+    grants(c, p)
+        .await?
+        .require(p, permission, Some(device))
+        .map_err(|_| Error::Forbidden)?;
     Ok(())
 }
 

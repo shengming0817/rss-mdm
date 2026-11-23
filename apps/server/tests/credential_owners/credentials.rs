@@ -297,7 +297,7 @@ async fn sensitive_disclosure_requires_confirmed_audit_commit() -> Result<()> {
         rss_mdm_install_support::StorageProfile::Mdm,
         c.database.archive_pool(),
         c.audit.clone(),
-        p.keys.clone(),
+        p.clone(),
         None,
         None,
     );

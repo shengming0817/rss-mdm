@@ -57,9 +57,10 @@
     {
       "schema": "rss_da",
       "table": "credential_runs",
+      "update_policy": "da_executionisnotnull",
       "read_write": false,
       "read_only": true,
-      "updates": [],
+      "updates": ["state", "result", "da_permit_until", "da_escrow_digest"],
       "delete_policy": null
     },
     {
@@ -88,6 +89,7 @@
     }
   ],
   "functions": [
+    {"name":"rss_da.release_targeted_credential","search_path":"search_path=pg_catalog"},
     {
       "name": "rss_da.credential_save_retired_run",
       "search_path": "search_path=pg_catalog"
