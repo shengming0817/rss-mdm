@@ -26,6 +26,19 @@ fn work_id(domain: &[u8], key: &impl Serialize) -> Result<Uuid> {
     Ok(Uuid::from_bytes(bytes))
 }
 
+pub(super) fn occurrence_job(
+    tenant: rss_request_context::TenantId,
+    policy: Uuid,
+    version: Uuid,
+    occurrence: &str,
+    publication: Option<Uuid>,
+) -> Result<Uuid> {
+    work_id(
+        b"retirement-occurrence/v1",
+        &(tenant.octets(), policy, version, occurrence, publication),
+    )
+}
+
 pub(super) async fn enqueue_occurrence_in(
     profile: StorageProfile,
     reconcile: &PgMessagingStore,
@@ -35,15 +48,12 @@ pub(super) async fn enqueue_occurrence_in(
     occurrence: RetirementOccurrence,
     publication: Option<Uuid>,
 ) -> Result<()> {
-    let id = work_id(
-        b"retirement-occurrence/v1",
-        &(
-            tx.tenant_id().octets(),
-            policy,
-            version,
-            occurrence,
-            publication,
-        ),
+    let id = occurrence_job(
+        tx.tenant_id(),
+        policy,
+        version,
+        &occurrence.identity(),
+        publication,
     )?;
     jobs::enqueue_job_in(
         profile,
@@ -54,6 +64,7 @@ pub(super) async fn enqueue_occurrence_in(
             policy,
             version,
             occurrence,
+            publication,
         },
     )
     .await?;
@@ -81,8 +92,17 @@ impl crate::application::Application {
         task: Uuid,
         result: Value,
     ) -> Result<()> {
+        let failure = (result["state"] == "superseded").then_some("superseded");
         work::retirement_result_in(self.profile(), tx, task, result).await?;
-        jobs::finish_job_in(binding, self.profile(), tx, &self.audit_store, task, None).await
+        jobs::finish_job_in(
+            binding,
+            self.profile(),
+            tx,
+            &self.audit_store,
+            task,
+            failure,
+        )
+        .await
     }
 
     /// One fixed Scope publication enumerates active triggers through its original upper bound.
@@ -106,9 +126,10 @@ impl crate::application::Application {
                     .await?;
                 schedules::trigger_bound_in(profile, tx, policy.version, now)
                     .await?
-                    .map(|through| TriggerPage {
+                    .map(|(through, last_deadline)| TriggerPage {
                         publication: task,
-                        after: Uuid::nil(),
+                        after: (now, i64::MAX),
+                        last_deadline,
                         through,
                     })
             }
@@ -117,7 +138,13 @@ impl crate::application::Application {
             let rows =
                 schedules::trigger_page_in(profile, tx, policy.version, now, page, TRIGGER_PAGE)
                     .await?;
-            for &(trigger, created_at, deadline) in rows.iter().take(usize::from(TRIGGER_PAGE)) {
+            for &(trigger, created_at, deadline, admitted) in
+                rows.iter().take(usize::from(TRIGGER_PAGE))
+            {
+                // Advance the physical cursor even over interleaved later admissions.
+                if admitted > page.through {
+                    continue;
+                }
                 enqueue_occurrence_in(
                     profile,
                     &self.reconcile_messaging,
@@ -134,8 +161,9 @@ impl crate::application::Application {
                 .await?;
             }
             if rows.len() > usize::from(TRIGGER_PAGE) {
+                let (_, _, deadline, admitted) = rows[usize::from(TRIGGER_PAGE) - 1];
                 let page = TriggerPage {
-                    after: rows[usize::from(TRIGGER_PAGE) - 1].0,
+                    after: (deadline, admitted),
                     ..page
                 };
                 let id = work_id(
@@ -260,6 +288,7 @@ impl crate::application::Application {
         let more = objects.len() > DEVICE_PAGE;
         objects.truncate(DEVICE_PAGE);
         let next = objects.last().map(|o| o.cursor);
+        let explicit = matches!(occurrence, RetirementOccurrence::Explicit { .. });
         let occurrence = occurrence.identity();
         let deadline = end.min(now.saturating_add(i64::from(*run_lifetime_seconds)));
         let mut eligible = 0_i64;
@@ -287,15 +316,23 @@ impl crate::application::Application {
                         version,
                         object,
                         occurrence: occurrence.clone(),
+                        scope_result: item.scope_result,
                         deadline,
                     },
                 )
                 .await?;
             }
         }
-        work::record_retirement_page_in(profile, tx, task, eligible, pending, more).await?;
+        let unresolved =
+            work::record_retirement_page_in(profile, tx, task, eligible, pending, more).await?;
         if more {
             work::cursor_in(profile, tx, task, next).await?;
+        } else if explicit && unresolved {
+            // A new Scope publication starts its own pass. This original claim
+            // remains recoverable through its deadline even without another publication.
+            return Ok(ProtectedStep::Deferred(Duration::from_secs(
+                (end - now) as u64,
+            )));
         } else {
             jobs::finish_job_in(binding, profile, tx, &self.audit_store, task, None).await?;
         }

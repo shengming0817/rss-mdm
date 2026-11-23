@@ -690,7 +690,7 @@ pub async fn lifecycle_object_on(
     c: &mut PgConnection,
     tenant: TenantId,
     scope: Uuid,
-    object: ObjectRef,
+    object: &DeviceObject,
 ) -> Result<Option<DeviceAssignment>, SourceError> {
     Ok(lifecycle_selection_on(
         profile,
@@ -704,12 +704,12 @@ pub async fn lifecycle_object_on(
     .pop())
 }
 
-enum LifecycleSelection {
+enum LifecycleSelection<'a> {
     Page {
         after: Option<ObjectRef>,
         limit: usize,
     },
-    Exact(ObjectRef),
+    Exact(&'a DeviceObject),
 }
 
 async fn lifecycle_selection_on(
@@ -718,17 +718,18 @@ async fn lifecycle_selection_on(
     c: &mut PgConnection,
     tenant: TenantId,
     scope: Uuid,
-    selection: LifecycleSelection,
+    selection: LifecycleSelection<'_>,
 ) -> Result<Vec<DeviceAssignment>, SourceError> {
     let (after, count, exact) = match selection {
-        LifecycleSelection::Page { after, limit } => (after, limit + 1, false),
-        LifecycleSelection::Exact(object) => (Some(object), 1, true),
+        LifecycleSelection::Page { after, limit } => (after, limit + 1, None),
+        LifecycleSelection::Exact(object) => (Some(object.object), 1, Some(object)),
     };
     if profile != rss_mdm_install_support::StorageProfile::Mdm || reader.is_none() {
         return Err(SourceError::Unsupported);
     }
     // Device lifecycle requires MDM's complete endpoint/association owner.
     const SOURCE_MEMBER_FACTS: &str = "SELECT tenant_id,input,unknown FROM mdm_scope.scope_source_members WHERE tenant_id=$1::uuid AND run=$2 AND source=ANY($3)";
+    const EXACT_SOURCE_FACTS: &str = "SELECT tenant_id,input,unknown FROM mdm_scope.scope_source_members WHERE tenant_id=$1::uuid AND run=$2 AND source=ANY($3) AND ((object_kind=$4 AND object_id=$5) OR (object_kind=0 AND object_id=ANY($8::uuid[])))";
     let Some((run, revision, frozen, fresh)) =
         crate::results::read_resolution_on(profile, c, tenant, scope).await?
     else {
@@ -741,18 +742,30 @@ async fn lifecycle_selection_on(
         .filter(|(_, s)| frozen.definition.targets.contains(&s.reference))
         .map(|(i, _)| i as i32)
         .collect();
-    let rows = sqlx::query(sqlx::AssertSqlSafe(
-        rss_mdm_device_service::planning::complete_source_objects_sql(SOURCE_MEMBER_FACTS).as_str(),
-    ))
-    .bind(tenant.to_string())
-    .bind(run)
-    .bind(targets)
-    .bind(after.map(|o| o.kind()))
-    .bind(after.map(|o| o.uuid()))
-    .bind(count as i64)
-    .bind(exact)
-    .fetch_all(&mut *c)
-    .await?;
+    let source = if exact.is_some() {
+        EXACT_SOURCE_FACTS
+    } else {
+        SOURCE_MEMBER_FACTS
+    };
+    let statement = rss_mdm_device_service::planning::complete_source_objects_sql(source);
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
+        .bind(tenant.to_string())
+        .bind(run)
+        .bind(targets)
+        .bind(after.map(|o| o.kind()))
+        .bind(after.map(|o| o.uuid()))
+        .bind(count as i64)
+        .bind(exact.is_some());
+    if let Some(object) = exact {
+        query = query.bind(
+            object
+                .members
+                .iter()
+                .map(|m| m.device.into_uuid())
+                .collect::<Vec<_>>(),
+        );
+    }
+    let rows = query.fetch_all(&mut *c).await?;
     let at = Timepoint::try_from(frozen.as_of).map_err(|_| SourceError::Invariant)?;
     let mut out = Vec::new();
     for row in rows {

@@ -8,11 +8,11 @@ pub async fn trigger_bound_in(
     tx: &mut PgTransaction<'_>,
     version: Uuid,
     now: i64,
-) -> Result<Option<Uuid>, PgError> {
+) -> Result<Option<(i64, i64)>, PgError> {
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            sqlx::query_scalar(crate::storage_profile::sql(profile).trigger_scan_bound)
+            sqlx::query_as(crate::storage_profile::sql(profile).trigger_scan_bound)
                 .bind(tenant)
                 .bind(version)
                 .bind(now)
@@ -31,16 +31,20 @@ pub async fn trigger_page_in(
     now: i64,
     page: crate::work::TriggerPage,
     limit: u16,
-) -> Result<Vec<(Uuid, i64, i64)>, PgError> {
+) -> Result<Vec<(Uuid, i64, i64, i64)>, PgError> {
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
             sqlx::query_as(crate::storage_profile::sql(profile).trigger_page)
                 .bind(tenant)
                 .bind(version)
-                .bind(now)
-                .bind(page.after)
-                .bind(page.through)
+                .bind(page.after.0.max(now))
+                .bind(if now >= page.after.0 {
+                    i64::MAX
+                } else {
+                    page.after.1
+                })
+                .bind(page.last_deadline)
                 .bind(i64::from(limit) + 1)
                 .fetch_all(c)
                 .await

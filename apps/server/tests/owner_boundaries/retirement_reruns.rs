@@ -219,8 +219,12 @@ async fn children(c: &Context, id: Uuid) -> Result<Vec<Uuid>> {
     Ok(sqlx::query_scalar("SELECT id FROM mdm_policy.work WHERE tenant_id=$1::uuid AND kind='policy_lifecycle' AND input->>'occurrence'=$2 ORDER BY id")
         .bind(c.tenant.to_string()).bind(format!("explicit:{id}")).fetch_all(&c.operator).await?)
 }
+async fn refresh_members(c: &Context, publication: Uuid) -> Result<BTreeSet<Uuid>> {
+    Ok(sqlx::query_scalar("SELECT (input->'occurrence'->>'trigger')::uuid FROM mdm_policy.work WHERE tenant_id=$1::uuid AND kind='retirement_page' AND input->>'publication'=$2")
+        .bind(c.tenant.to_string()).bind(publication.to_string()).fetch_all(&c.operator).await?.into_iter().collect())
+}
 async fn outcome(c: &Context, task: Uuid) -> Result<Value> {
-    Ok(sqlx::query_scalar("SELECT retirement_result FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2 AND completed AND failure IS NULL")
+    Ok(sqlx::query_scalar("SELECT retirement_result FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2 AND completed AND (failure IS NULL OR failure='superseded')")
         .bind(c.tenant.to_string()).bind(task).fetch_one(&c.operator).await?)
 }
 
@@ -239,12 +243,20 @@ async fn every_receipt_reaches_its_device_even_as_new_triggers_arrive() -> Resul
         accepted.push(rerun(&c, &f, &p, &v, expires).await?);
     }
     worker.step(&c, jobs([publication, accepted[0].1])).await?;
+    assert_eq!(
+        refresh_members(&c, publication).await?,
+        accepted[..64].iter().map(|r| r.0.operation_id).collect()
+    );
     accepted.push(rerun(&c, &f, &p, &v, expires).await?);
     let resume:Uuid=sqlx::query_scalar("SELECT id FROM mdm_policy.work WHERE tenant_id=$1::uuid AND kind='retirement_refresh' AND input->'page'->>'publication'=$2")
         .bind(c.tenant.to_string()).bind(publication.to_string()).fetch_one(&c.operator).await?;
     worker
         .step(&c, jobs(accepted[1..].iter().map(|r| r.1).chain([resume])))
         .await?;
+    assert_eq!(
+        refresh_members(&c, publication).await?,
+        accepted[..65].iter().map(|r| r.0.operation_id).collect()
+    );
     // Each original request reached a device before any other request could retire it.
     let mut device_work = vec![];
     for (op, parent) in &accepted {
@@ -258,19 +270,88 @@ async fn every_receipt_reaches_its_device_even_as_new_triggers_arrive() -> Resul
         device_work.push(child[0]);
     }
     worker.step(&c, jobs([device_work[0]])).await?;
+    let device = match v.definition.scope.targets.first().context("target")? {
+        rss_mdm_scope::Reference::Device(d) => *d,
+        _ => anyhow::bail!("expected device"),
+    };
+    // Registration's real retirement transition removes the live credentials before
+    // later claims; the Device owner can still identify the original exact intent.
+    let mut retired = crate::command_runtime_t2_support::seed_transaction(&c).await?;
+    rss_mdm_registration_service::device::store::retire_state_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut retired,
+        &c.tenant.to_string(),
+        &device,
+        "revoked",
+        None,
+    )
+    .await?;
+    retired.commit().await?;
     worker
         .step(&c, jobs(device_work[1..].iter().copied()))
         .await?;
     let first = outcome(&c, device_work[0]).await?;
     assert_eq!(first["state"], "accepted");
+    let operation = Uuid::parse_str(
+        first["operation"]
+            .as_str()
+            .context("Device operation UUID")?,
+    )?;
+    let exact:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_devices.retirements r JOIN mdm_devices.retirement_channels ch ON (ch.tenant_id,ch.operation)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.policy=$3 AND r.version=$4 AND r.occurrence=$5 AND r.object_id=$6 AND ch.device=$6 AND ch.channel='mdm')")
+        .bind(c.tenant.to_string()).bind(operation).bind(v.id).bind(v.version_id)
+        .bind(format!("explicit:{}",accepted[0].0.operation_id)).bind(device.into_uuid()).fetch_one(&c.operator).await?;
+    assert!(
+        exact,
+        "receipts must reconcile to the Device owner's original retirement"
+    );
     for ((op, _), child) in accepted.iter().zip(device_work) {
         let receipt = f.policies.rerun(&p, v.id, op, &c.request(&p)?).await?;
         assert_eq!(
             (receipt.operation_id, receipt.version_id, receipt.deadline),
             (op.operation_id, v.version_id, expires)
         );
-        assert_eq!(outcome(&c, child).await?, first);
+        let result = outcome(&c, child).await?;
+        assert_eq!(result["operation"], first["operation"]);
+        let receipt = rss_mdm_policy_service::management::read::operation_receipt(
+            &f.policies,
+            &p,
+            op.operation_id,
+        )
+        .await?
+        .context("original trigger diagnostic")?;
+        assert_eq!(receipt.executions.len(), 1);
+        let summary = rss_mdm_policy_service::management::read::work_receipt(
+            &f.policies,
+            &p,
+            receipt.executions[0],
+            Some(device),
+        )
+        .await?
+        .context("authorized per-device result")?;
+        assert_eq!(summary.state.as_deref(), result["state"].as_str());
+        assert!(summary.executions.contains(&child) && summary.executions.contains(&operation));
     }
+    let expiry = now(&c).await? + 5;
+    let (_, unresolved) = rerun(&c, &f, &p, &v, expiry).await?;
+    worker.step(&c, jobs([unresolved])).await?;
+    let queued: bool = sqlx::query_scalar(
+        "SELECT NOT completed FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(unresolved)
+    .fetch_one(&c.operator)
+    .await?;
+    assert!(queued, "unresolved evidence must retain an expiry wake");
+    tokio::time::timeout(Duration::from_secs(15),async {
+        loop {
+            let due:bool=sqlx::query_scalar("SELECT next_run<=clock_timestamp() FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.policy' AND entity=$2")
+                .bind(c.tenant.to_string()).bind(format!("job:{unresolved}")).fetch_one(&c.operator).await?;
+            if due && now(&c).await?>=expiry { return Ok::<_,anyhow::Error>(()); }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }).await??;
+    worker.step(&c, jobs([unresolved])).await?;
+    assert_eq!(outcome(&c, unresolved).await?["state"], "expired");
     let mut changed = accepted[0].0.clone();
     changed.input.deadline -= 1;
     ensure!(matches!(
@@ -293,7 +374,8 @@ async fn one_occurrence_resumes_after_a_committed_device_page() -> Result<()> {
     publish(&c, &v).await?;
     let (op, parent) = rerun(&c, &f, &p, &v, now(&c).await? + 600).await?;
     let worker = Worker::open(&c, &f).await?;
-    worker.step(&c, jobs([parent])).await?;
+    let (_, interrupted) = rerun(&c, &f, &p, &v, now(&c).await? + 600).await?;
+    worker.step(&c, jobs([parent, interrupted])).await?;
     let initial = children(&c, op.operation_id).await?;
     assert_eq!(initial.len(), 64);
     let checkpoint:Uuid=sqlx::query_scalar("SELECT cursor_id FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2 AND NOT completed")
@@ -312,6 +394,23 @@ async fn one_occurrence_resumes_after_a_committed_device_page() -> Result<()> {
     let matched:i64=sqlx::query_scalar("SELECT count(DISTINCT r.id) FROM mdm_policy.work w JOIN mdm_devices.retirements r ON r.tenant_id=w.tenant_id AND r.id=(w.retirement_result->>'operation')::uuid WHERE w.tenant_id=$1::uuid AND w.input->>'occurrence'=$2 AND w.completed AND r.target=w.input->'object' AND r.occurrence=$2 AND r.version=$3")
         .bind(c.tenant.to_string()).bind(format!("explicit:{}",op.operation_id)).bind(v.version_id).fetch_one(&c.operator).await?;
     assert_eq!(matched, 65);
+    fresh
+        .policies
+        .change(
+            &p,
+            v.id,
+            &Operation {
+                operation_id: Uuid::new_v4(),
+                expected_revision: v.revision as u64,
+                input: Change::Disable,
+            },
+            &c.request(&p)?,
+        )
+        .await?;
+    worker.step(&c, jobs([interrupted])).await?;
+    let partial = outcome(&c, interrupted).await?;
+    assert_eq!(partial["state"], "superseded");
+    assert_eq!(partial["eligible"], 64);
     worker.close().await;
     fresh.close().await?;
     c.close().await;
@@ -452,6 +551,14 @@ async fn calendar_window_and_queued_reruns_recheck_current_authority() -> Result
     let (_, expires) = rerun(&c, &f, &p, &delayed, now(&c).await? + 45).await?;
     worker.step(&c, jobs([future_page, expires])).await?;
     assert_eq!(outcome(&c, expires).await?["state"], "expired");
+    assert_eq!(
+        rss_mdm_policy_service::management::read::work_receipt(&f.policies, &p, expires, None)
+            .await?
+            .context("expired work receipt")?
+            .state
+            .as_deref(),
+        Some("expired")
+    );
     let deferred:bool=sqlx::query_scalar("SELECT NOT w.completed AND t.next_run>clock_timestamp() FROM mdm_policy.work w JOIN rss_reconcile.targets t ON t.tenant_id=w.tenant_id AND t.reconciler='mdm.policy' AND t.entity='job:'||w.id::text WHERE w.tenant_id=$1::uuid AND w.id=$2")
         .bind(c.tenant.to_string()).bind(future_page).fetch_one(&c.operator).await?;
     assert!(deferred);

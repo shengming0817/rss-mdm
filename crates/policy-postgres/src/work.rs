@@ -36,10 +36,12 @@ impl RetirementOccurrence {
 pub struct TriggerPage {
     /// Initiating Policy reconciliation job.
     pub publication: Uuid,
-    /// Last committed trigger (exclusive).
-    pub after: Uuid,
-    /// Captured greatest trigger ID (inclusive).
-    pub through: Uuid,
+    /// Last inspected (deadline, admission ordinal), exclusive.
+    pub after: (i64, i64),
+    /// Maximum committed admission ordinal under the original Policy lock.
+    pub through: i64,
+    /// Last deadline present when this publication started.
+    pub last_deadline: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -56,6 +58,8 @@ pub enum Work {
         object: serde_json::Value,
         /// Original calendar or explicit-trigger occurrence.
         occurrence: String,
+        /// Published Scope evidence under which this object qualified.
+        scope_result: Uuid,
         /// Last admissible acceptance time, in Unix seconds.
         deadline: i64,
     },
@@ -67,6 +71,8 @@ pub enum Work {
         version: Uuid,
         /// Original retirement trigger.
         occurrence: RetirementOccurrence,
+        /// The Scope refresh that requested a new scan, absent on the original request.
+        publication: Option<Uuid>,
     },
     /// Resume one publication's bounded scan of active explicit triggers.
     RetirementRefresh {
@@ -175,6 +181,8 @@ pub async fn enqueue_in(
 pub struct Record {
     /// Original typed work.
     pub input: Work,
+    /// Committed retirement outcome or cumulative device-page progress.
+    pub retirement_result: Option<serde_json::Value>,
     /// Committed terminal state.
     pub completed: bool,
     /// Closed product failure code, when terminal.
@@ -206,6 +214,7 @@ pub async fn read_in(
         Ok(Record {
             input: serde_json::from_value(r.try_get("input")?)
                 .map_err(|_| crate::storage(profile).fault("work.decode"))?,
+            retirement_result: r.try_get("retirement_result")?,
             completed: r.try_get("completed")?,
             failure: r.try_get("failure")?,
             cursor: match (
@@ -223,6 +232,28 @@ pub async fn read_in(
         })
     })
     .transpose()
+}
+/// Device-specific evidence of one original trigger. An accepted intent remains authoritative
+/// after subsequent Scope evaluations. Within the other outcomes return the latest dispatch.
+pub async fn device_evidence_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    trigger: Uuid,
+    device: rss_mdm_agent_wire::DeviceId,
+) -> Result<Option<Uuid>, PgError> {
+    let tenant = tx.tenant_id().to_string();
+    let occurrence = format!("explicit:{trigger}");
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query_scalar(crate::storage_profile::sql(profile).work_device_evidence)
+                .bind(tenant)
+                .bind(occurrence)
+                .bind(device.to_string())
+                .fetch_optional(c)
+                .await
+        })
+    })
+    .await
 }
 /// Advance a page only in the transaction that published its effects.
 pub async fn cursor_in(
@@ -255,19 +286,18 @@ pub async fn record_retirement_page_in(
     eligible: i64,
     pending: i64,
     more: bool,
-) -> Result<(), PgError> {
+) -> Result<bool, PgError> {
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            sqlx::query(crate::storage_profile::sql(profile).work_retirement_counts)
+            sqlx::query_scalar(crate::storage_profile::sql(profile).work_retirement_counts)
                 .bind(tenant)
                 .bind(id)
                 .bind(eligible)
                 .bind(pending)
                 .bind(more)
-                .execute(c)
-                .await?;
-            Ok(())
+                .fetch_one(c)
+                .await
         })
     })
     .await

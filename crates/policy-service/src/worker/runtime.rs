@@ -380,7 +380,7 @@ impl PolicyWork {
                                                             )
                                                             .await
                                                     }
-                                                    Work::RetirementPage { policy, version, occurrence } => {
+                                                    Work::RetirementPage { policy, version, occurrence, .. } => {
                                                         match ctx.0.retirement_policy_in(tx, policy, version).await? {
                                                             Some(p) => ctx.0.advance_retirement_page_in(binding, tx, id, &p, occurrence, cursor).await,
                                                             None => ctx.0.finish_retirement_in(binding, tx, id, serde_json::json!({"state":"superseded"})).await.map(ProtectedStep::Ready),

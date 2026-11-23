@@ -166,6 +166,24 @@ pub async fn accept_in(
     Ok((id, false))
 }
 
+/// Find an already linked retirement of this exact frozen target, including after credential
+/// revocation. This read cannot accept work, attach a new Policy, or wake a device.
+pub async fn linked_target_in(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    policy: Uuid,
+    version: Uuid,
+    target: &DeviceObject,
+) -> Result<Option<Uuid>> {
+    let Some(member) = target.members.first() else {
+        return Err(Error::Malformed);
+    };
+    let frozen = serde_json::to_value(target).map_err(|_| Error::Malformed)?;
+    Ok(sqlx::query_scalar("SELECT r.id FROM mdm_access.devices d JOIN mdm_devices.retirements r ON (r.tenant_id,r.id)=(d.tenant_id,d.retirement) JOIN mdm_devices.retirement_policies p ON (p.tenant_id,p.operation)=(r.tenant_id,r.id) WHERE d.tenant_id=$1::uuid AND d.id=$2 AND p.policy=$3 AND p.version=$4 AND r.target=$5")
+        .bind(tenant.to_string()).bind(member.device.into_uuid()).bind(policy).bind(version).bind(frozen)
+        .fetch_optional(c).await?)
+}
+
 async fn link_policy_in(
     c: &mut PgConnection,
     tenant: &str,

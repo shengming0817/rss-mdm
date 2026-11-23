@@ -19,6 +19,7 @@ impl crate::application::Application {
             version,
             object,
             occurrence,
+            scope_result,
             deadline,
         } = input
         else {
@@ -31,8 +32,12 @@ impl crate::application::Application {
                 .await
                 .map(rss_reconcile_postgres::ProtectedStep::Ready);
         };
-        let fresh =
-            super::reconcile::lock_assignment_scope(profile, tx, current.definition.scope).await?;
+        if crate::action_admission::now(tx).await? >= *deadline {
+            return self
+                .finish_retirement_in(binding, tx, task, json!({"state":"expired"}))
+                .await
+                .map(rss_reconcile_postgres::ProtectedStep::Ready);
+        }
         let published = checked(
             rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone())
                 .version_in(tx, *version)
@@ -47,8 +52,34 @@ impl crate::application::Application {
         let object: rss_mdm_inventory_service::objects::DeviceObject =
             stored(serde_json::from_value(object.clone()))?;
         let key = object.object;
+        // Association writers use these same member locks. Keep them through the
+        // complete-object Scope check and the Device owner's acceptance.
+        let members: Vec<_> = object.members.iter().map(|m| m.device).collect();
+        let locked = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(
+                        rss_mdm_registration_service::lifecycle::try_lock_devices_in(
+                            profile,
+                            c,
+                            &tenant.to_string(),
+                            &members,
+                        )
+                        .await,
+                    )
+                })
+            })
+            .await??;
+        if !locked {
+            return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(
+                std::time::Duration::from_millis(50),
+            ));
+        }
+        let fresh =
+            super::reconcile::lock_assignment_scope(profile, tx, current.definition.scope).await?;
         let scope = current.definition.scope;
         let reader = self.objects.clone();
+        let frozen_object = object.clone();
         let assignment = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -59,7 +90,7 @@ impl crate::application::Application {
                             c,
                             tenant,
                             scope,
-                            key,
+                            &frozen_object,
                         )
                         .await,
                     )
@@ -74,21 +105,61 @@ impl crate::application::Application {
                 .await
                 .map(rss_reconcile_postgres::ProtectedStep::Ready);
         }
-        if !fresh
-            || assignment
-                .as_ref()
-                .is_some_and(|item| item.admission == ScopeAdmission::Pending)
-        {
-            let remaining = std::time::Duration::from_secs((*deadline - now) as u64);
-            return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(
-                crate::worker_wake::RECOVERY.min(remaining),
-            ));
-        }
-        if !assignment.is_some_and(|item| {
-            matches!(item.admission, ScopeAdmission::Eligible { .. }) && item.object == object
-        }) {
+        let eligible = fresh
+            && assignment.as_ref().is_some_and(|item| {
+                matches!(item.admission, ScopeAdmission::Eligible { .. }) && item.object == object
+            });
+        if !eligible {
+            let old = object.clone();
+            let policy_id = *policy;
+            let version_id = *version;
+            let admitted_scope = *scope_result;
+            let (prior, same_scope) = tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        let published =
+                            rss_mdm_scope_service::results::published_on(profile, c, tenant, scope)
+                                .await?;
+                        Ok((
+                            lifecycle::linked_target_in(c, tenant, policy_id, version_id, &old)
+                                .await,
+                            published.is_some_and(|(run, _, _)| run == admitted_scope),
+                        ))
+                    })
+                })
+                .await?;
+            let pending = !fresh
+                || assignment
+                    .as_ref()
+                    .is_some_and(|item| item.admission == ScopeAdmission::Pending);
+            let prior = prior?;
+            if fresh
+                && same_scope
+                && pending
+                && let Some(operation) = prior
+            {
+                return self
+                    .finish_retirement_in(
+                        binding,
+                        tx,
+                        task,
+                        json!({"state":"reused","operation":operation}),
+                    )
+                    .await
+                    .map(rss_reconcile_postgres::ProtectedStep::Ready);
+            }
+            if pending {
+                let remaining = std::time::Duration::from_secs((*deadline - now) as u64);
+                return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(
+                    crate::worker_wake::RECOVERY.min(remaining),
+                ));
+            }
+            let mut result = json!({"state":"ineligible"});
+            if let Some(operation) = prior {
+                result["previousOperation"] = json!(operation);
+            }
             return self
-                .finish_retirement_in(binding, tx, task, json!({"state":"ineligible"}))
+                .finish_retirement_in(binding, tx, task, result)
                 .await
                 .map(rss_reconcile_postgres::ProtectedStep::Ready);
         }
@@ -158,7 +229,7 @@ impl crate::application::Application {
             binding,
             tx,
             task,
-            json!({"state":"accepted","operation":accepted.0}),
+            json!({"state":if accepted.1 { "reused" } else { "accepted" },"operation":accepted.0}),
         )
         .await
         .map(rss_reconcile_postgres::ProtectedStep::Ready)
