@@ -40,11 +40,13 @@ struct Dispatch {
     browser: Router,
     routes: Arc<Vec<(ChannelKind, ChannelRouter)>>,
     product_origin: String,
+    request_slots: Arc<tokio::sync::Semaphore>,
 }
 pub(crate) fn router(
     browser: Router,
     routes: Vec<(ChannelKind, ChannelRouter)>,
     product_origin: String,
+    request_slots: Arc<tokio::sync::Semaphore>,
 ) -> Router {
     let routes = routes
         .into_iter()
@@ -61,6 +63,7 @@ pub(crate) fn router(
         browser,
         routes: Arc::new(routes),
         product_origin,
+        request_slots,
     })
 }
 fn single<'a>(request: &'a Request, name: &str) -> Result<Option<&'a str>, ()> {
@@ -177,6 +180,15 @@ async fn dispatch(State(state): State<Dispatch>, mut request: Request) -> Respon
             .await
             .unwrap_or_else(|never| match never {});
     }
+    let Ok(permit) = state.request_slots.clone().try_acquire_owned() else {
+        let delay = std::time::Duration::from_secs(1);
+        if kind(request.uri().path()) == Some(ChannelKind::Agent) {
+            return super::admission::agent_limited(request.uri().path());
+        }
+        return super::admission::limited(delay);
+    };
+    let lease = Arc::new(permit);
+    request.extensions_mut().insert(lease.clone());
     // Anonymous package delivery has one public contract, also usable from the console origin.
     let package_path = request
         .uri()

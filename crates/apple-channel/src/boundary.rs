@@ -16,11 +16,10 @@ use std::{sync::Arc, time::Duration};
 #[derive(Clone)]
 pub struct Envelope {
     pub request_budget: rss_axum::RequestBudget,
-    pub admission: Arc<tokio::sync::Semaphore>,
     pub host: String,
     pub clock: Arc<dyn rss_observation::Clock>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub requests: Arc<tokio::sync::Semaphore>,
+    pub buffered_bytes: Arc<tokio::sync::Semaphore>,
 }
 pub fn wrap<M: rss_mdm_http_contract::module::Declaration>(
     router: Router<(), M>,
@@ -64,14 +63,8 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
     let id = audit.request_id();
-    let _permit = match envelope.admission.clone().try_acquire_owned() {
-        Ok(p) => p,
-        Err(_) => {
-            audit.finalize(None);
-            return limited(id);
-        }
-    };
     request.extensions_mut().insert(audit.clone());
+    let host_lease = request.extensions().get::<Arc<tokio::sync::OwnedSemaphorePermit>>().cloned();
     let lifecycle = request
         .extensions()
         .get::<rss_runtime::AdmissionGate>()
@@ -90,7 +83,7 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
     {
         Err(project(Error::Malformed))
     } else {
-        body(request, envelope.requests.clone()).await
+        body(request, envelope.buffered_bytes.clone()).await
     };
     let Some(permit) = lifecycle.and_then(|gate| gate.try_admit().ok()) else {
         audit.finalize(None);
@@ -98,10 +91,10 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
     };
     let work = async move {
         let _lifecycle_permit = permit;
-        let _permit = _permit;
+        let _host_lease = host_lease;
         let _ingress_lease = ingress_lease;
         let mut response = match input {
-            Ok(request) => next.run(request).await,
+            Ok((request, _bytes)) => next.run(request).await,
             Err(response) => response,
         };
         let failure = classify(response.extensions().get::<Error>());
@@ -167,12 +160,12 @@ fn limited(id: uuid::Uuid) -> Response {
 async fn body(
     request: Request,
     requests: Arc<tokio::sync::Semaphore>,
-) -> Result<Request, Response> {
-    let _requests = requests;
+) -> Result<(Request, tokio::sync::OwnedSemaphorePermit), Response> {
     let limit = 2 * 1024 * 1024;
+    let permit = requests.try_acquire_many_owned(limit as u32).map_err(|_| limited(uuid::Uuid::new_v4()))?;
     let (parts, body) = request.into_parts();
     match tokio::time::timeout(Duration::from_secs(8), axum::body::to_bytes(body, limit)).await {
-        Ok(Ok(bytes)) => Ok(Request::from_parts(parts, axum::body::Body::from(bytes))),
+        Ok(Ok(bytes)) => Ok((Request::from_parts(parts, axum::body::Body::from(bytes)), permit)),
         Ok(Err(_)) => Err(StatusCode::PAYLOAD_TOO_LARGE.into_response()),
         Err(_) => Err(project(Error::Unavailable(Failure::RequestDeadline))),
     }

@@ -160,7 +160,7 @@ async fn host_with_provider(
             )
             .await?,
     );
-    let requests = Arc::new(tokio::sync::Semaphore::new(16));
+    let requests = Arc::new(tokio::sync::Semaphore::new(128 * 1024 * 1024));
     let providers = w.providers.clone();
     let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
         rss_mdm_install_support::StorageProfile::Mdm,
@@ -243,19 +243,19 @@ async fn host_with_provider(
         identity: Arc::new(
             rss_mdm_authorization_service::session::SessionAuthority::new(c.authority.clone()),
         ),
-        requests: requests.clone(),
+        buffered_bytes: requests.clone(),
         windows: Some(windows),
     });
     let boundary = || rss_mdm_windows_channel::boundary::Envelope {
         request_budget: rss_axum::RequestBudget::new(std::time::Duration::from_secs(8)).unwrap(),
-        admission: Arc::new(tokio::sync::Semaphore::new(16)),
+
         host: "localhost".into(),
         clock: monotonic.clone(),
         audit_store: c.audit.clone(),
-        requests: requests.clone(),
+        buffered_bytes: requests.clone(),
     };
     let (_, router) = rss_mdm_windows_channel::routers(state.clone(), boundary(), boundary());
-    let admission = crate::native::admission::Admission::new(monotonic, requests, "windows-t2");
+    let admission = crate::native::admission::Admission::new(monotonic, "windows-t2");
     let mut lifecycle = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
         Arc::new(crate::lifecycle::RuntimeTimer),

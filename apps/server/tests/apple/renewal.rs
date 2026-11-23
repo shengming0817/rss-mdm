@@ -71,7 +71,7 @@ pub(super) async fn state(
             c.audit.clone(),
         )),
         identity: a.resources.sessions.clone(),
-        requests: Arc::new(tokio::sync::Semaphore::new(8)),
+        buffered_bytes: Arc::new(tokio::sync::Semaphore::new(128 * 1024 * 1024)),
     })
 }
 #[tokio::test]
@@ -390,11 +390,11 @@ async fn profile_url(c: &Context, app: HttpState) -> Result<()> {
     let monotonic = Arc::new(crate::Monotonic(std::time::Instant::now));
     let envelope = rss_mdm_apple_channel::boundary::Envelope {
         request_budget: rss_axum::RequestBudget::new(Duration::from_secs(8))?,
-        admission: Arc::new(tokio::sync::Semaphore::new(8)),
+
         host: "localhost".into(),
         clock: monotonic,
         audit_store: c.audit.clone(),
-        requests: app.requests.clone(),
+        buffered_bytes: app.buffered_bytes.clone(),
     };
     let mut lifecycle = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,

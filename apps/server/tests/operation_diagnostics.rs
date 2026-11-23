@@ -448,7 +448,6 @@ async fn original_result_survives_lost_response_new_config_and_index_failure() -
                 )?,
             }),
             access: c.access(),
-            requests: Arc::new(tokio::sync::Semaphore::new(8)),
         },
     );
     rss_mdm_http_contract::route_module! {struct DiagnosticsProof for [Browser]{diagnostics at "/api/v1/tenants/{tenant}"}}
@@ -467,11 +466,11 @@ async fn original_result_survives_lost_response_new_config_and_index_failure() -
             request_budget: rss_axum::RequestBudget::new(std::time::Duration::from_secs(8))
                 .unwrap(),
             profile: rss_mdm_install_support::StorageProfile::Mdm,
-            admission: Arc::new(tokio::sync::Semaphore::new(8)),
+
             host: "localhost".into(),
             clock: Arc::new(crate::Monotonic(std::time::Instant::now)),
             audit_store: c.audit.clone(),
-            requests: Arc::new(tokio::sync::Semaphore::new(8)),
+            buffered_bytes: Arc::new(tokio::sync::Semaphore::new(128 * 1024 * 1024)),
         },
     )
     .into_axum()

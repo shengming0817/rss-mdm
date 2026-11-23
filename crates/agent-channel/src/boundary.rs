@@ -16,11 +16,10 @@ use std::{sync::Arc, time::Duration};
 pub struct Envelope {
     pub request_budget: rss_axum::RequestBudget,
     pub profile: rss_mdm_install_support::StorageProfile,
-    pub admission: Arc<tokio::sync::Semaphore>,
     pub host: String,
     pub clock: Arc<dyn rss_observation::Clock>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub requests: Arc<tokio::sync::Semaphore>,
+    pub buffered_bytes: Arc<tokio::sync::Semaphore>,
 }
 pub fn wrap<M: rss_mdm_http_contract::module::Declaration>(
     router: Router<(), M>,
@@ -133,14 +132,8 @@ pub async fn admit(
         serde_json::json!({"event":"mdm_request_received","request_id":id,"gateway_request_id":gateway_id,
         "method":request.method().as_str(),"path":request.uri().path()})
     );
-    let _permit = match envelope.admission.clone().try_acquire_owned() {
-        Ok(p) => p,
-        Err(_) => {
-            audit.finalize(None);
-            return family(limited(id), enrollment);
-        }
-    };
     request.extensions_mut().insert(audit.clone());
+    let host_lease = request.extensions().get::<Arc<tokio::sync::OwnedSemaphorePermit>>().cloned();
     let lifecycle = request
         .extensions()
         .get::<rss_runtime::AdmissionGate>()
@@ -159,7 +152,7 @@ pub async fn admit(
     {
         Err(project(Error::Malformed))
     } else {
-        body(request, envelope.requests.clone()).await
+        body(request, envelope.buffered_bytes.clone()).await
     };
     let Some(permit) = lifecycle.and_then(|gate| gate.try_admit().ok()) else {
         audit.finalize(None);
@@ -173,7 +166,7 @@ pub async fn admit(
         let _requests_permit = requests_permit;
         let _lifecycle_permit = permit;
         let _ingress_lease = ingress_lease;
-        let _permit = _permit;
+        let _host_lease = host_lease;
         let mut response = match input {
             Ok(request) => next.run(request).await,
             Err(response) => response,
@@ -239,14 +232,6 @@ async fn body(
     request: Request,
     requests: Arc<tokio::sync::Semaphore>,
 ) -> Result<(Request, tokio::sync::OwnedSemaphorePermit), Response> {
-    let _permit = match requests.try_acquire_owned() {
-        Ok(p) => p,
-        Err(_) => {
-            return Err(crate::ingress_error(
-                rss_mdm_agent_wire::runtime::ErrorCode::ServiceUnavailable,
-            ));
-        }
-    };
     let route = request
         .extensions()
         .get::<axum::extract::MatchedPath>()
@@ -265,11 +250,12 @@ async fn body(
     } else {
         rss_mdm_agent_wire::runtime::MAX_REQUEST_BYTES
     };
+    let permit = requests.try_acquire_many_owned(limit as u32).map_err(|_| limited(uuid::Uuid::new_v4()))?;
     let (parts, body) = request.into_parts();
     match tokio::time::timeout(Duration::from_secs(8), axum::body::to_bytes(body, limit)).await {
         Ok(Ok(bytes)) => Ok((
             Request::from_parts(parts, axum::body::Body::from(bytes)),
-            _permit,
+            permit,
         )),
         Ok(Err(_)) => Err(crate::ingress_error(
             rss_mdm_agent_wire::runtime::ErrorCode::MalformedRequest,

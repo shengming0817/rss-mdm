@@ -3,7 +3,6 @@ use super::*;
 async fn gateway_source_budgets_are_isolated_and_release_on_drop() {
     let owner = Admission::new(
         Arc::new(crate::Monotonic(monotonic)),
-        Arc::new(Semaphore::new(8)),
         "device-http",
     );
     let first: IpAddr = "192.0.2.1".parse().unwrap();

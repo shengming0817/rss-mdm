@@ -317,7 +317,6 @@ pub(crate) fn browser(
                     .expect("enabled DA assembly")
                     .authorization
                     .clone(),
-                requests: s.requests.clone(),
             },
         )
     });

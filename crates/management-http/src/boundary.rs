@@ -17,11 +17,10 @@ use std::sync::Arc;
 pub struct Envelope {
     pub request_budget: rss_axum::RequestBudget,
     pub profile: rss_mdm_install_support::StorageProfile,
-    pub admission: Arc<tokio::sync::Semaphore>,
     pub host: String,
     pub clock: Arc<dyn rss_observation::Clock>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub requests: Arc<tokio::sync::Semaphore>,
+    pub buffered_bytes: Arc<tokio::sync::Semaphore>,
 }
 pub fn wrap<M: rss_mdm_http_contract::module::Declaration>(
     router: Router<(), M>,
@@ -53,7 +52,7 @@ fn wrap_with<M: rss_mdm_http_contract::module::Declaration>(
     let endpoints = Arc::new(router.endpoints().to_vec());
     router
         .layer(middleware::from_fn_with_state(
-            envelope.requests.clone(),
+            envelope.buffered_bytes.clone(),
             controlled_body,
         ))
         .layer(middleware::from_fn_with_state(
@@ -140,13 +139,6 @@ async fn admit(
         ),
     };
     let id = audit.request_id();
-    let _permit = match envelope.admission.clone().try_acquire_owned() {
-        Ok(p) => p,
-        Err(_) => {
-            audit.finalize(None);
-            return limited(id);
-        }
-    };
     request.extensions_mut().insert(audit.clone());
     request.extensions_mut().insert(envelope.clock.clone());
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
@@ -240,7 +232,7 @@ pub async fn authentication(
     {
         project(Error::Malformed)
     } else {
-        body(request, next, envelope.requests).await
+        body(request, next, envelope.buffered_bytes).await
     };
     if let Some(audit) = &audit
         && response
@@ -355,18 +347,24 @@ fn limited(id: uuid::Uuid) -> Response {
         .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
     secure(response, id)
 }
-async fn body(request: Request, next: Next, requests: Arc<tokio::sync::Semaphore>) -> Response {
-    let _requests = requests;
-    let route = request
-        .extensions()
-        .get::<axum::extract::MatchedPath>()
-        .map(|p| p.as_str())
-        .unwrap_or("");
-    let crate::body_policy::BodyPolicy::Buffered(limit) =
-        crate::body_policy::for_route(route, request.method())
-    else {
-        return next.run(request).await;
+async fn body(request: Request, next: Next, bytes: Arc<tokio::sync::Semaphore>) -> Response {
+    use crate::body_policy::BodyPolicy;
+    let route = request.extensions().get::<axum::extract::MatchedPath>()
+        .map(|path| path.as_str()).unwrap_or("");
+    let policy = crate::body_policy::for_route(route, request.method());
+    let limit = match policy {
+        BodyPolicy::Streaming => return next.run(request).await,
+        BodyPolicy::Buffered(limit) | BodyPolicy::Sdk(limit) => limit,
     };
+    let Ok(_reservation) = bytes.try_acquire_many_owned(
+        u32::try_from(limit).expect("compiled buffered route fits a byte reservation")
+    ) else {
+        let id = request.extensions().get::<RequestAudit>().map_or_else(uuid::Uuid::new_v4, RequestAudit::request_id);
+        return limited(id);
+    };
+    if matches!(policy, BodyPolicy::Sdk(_)) {
+        return next.run(request).await;
+    }
     match crate::body_policy::buffer(request, limit).await {
         Ok(request) => next.run(request).await,
         Err(error) => project(error),

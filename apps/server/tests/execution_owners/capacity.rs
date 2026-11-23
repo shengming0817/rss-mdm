@@ -174,8 +174,8 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     });
     let envelope = agent::boundary::Envelope {
         profile: rss_mdm_install_support::StorageProfile::Mdm,
-        admission: Arc::new(tokio::sync::Semaphore::new(8)),
-        requests: Arc::new(tokio::sync::Semaphore::new(8)),
+
+        buffered_bytes: Arc::new(tokio::sync::Semaphore::new(128 * 1024 * 1024)),
         host: "mdm.example.test".into(),
         clock: Arc::new(crate::Monotonic(std::time::Instant::now)),
         audit_store: h.c.audit.clone(),

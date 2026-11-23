@@ -43,11 +43,11 @@ async fn sensitive_http_body_is_withheld_when_audit_cannot_commit() -> Result<()
             request_budget: rss_axum::RequestBudget::new(std::time::Duration::from_secs(8))
                 .unwrap(),
             profile: rss_mdm_install_support::StorageProfile::Mdm,
-            admission: Arc::new(tokio::sync::Semaphore::new(2)),
+
             host: "mdm.example.test".into(),
             clock: Arc::new(crate::Monotonic(std::time::Instant::now)),
             audit_store: context.audit.clone(),
-            requests: Arc::new(tokio::sync::Semaphore::new(2)),
+            buffered_bytes: Arc::new(tokio::sync::Semaphore::new(128 * 1024 * 1024)),
         },
     )
     .into_axum()
@@ -441,11 +441,11 @@ async fn request_timeout_is_projected_after_audit_settlement() -> Result<()> {
         rss_mdm_management_http::boundary::Envelope {
             request_budget: rss_axum::RequestBudget::new(Duration::from_millis(30))?,
             profile: rss_mdm_install_support::StorageProfile::Mdm,
-            admission: Arc::new(tokio::sync::Semaphore::new(2)),
+
             host: "mdm.example.test".into(),
             clock: crate::clock::monotonic(),
             audit_store: c.audit.clone(),
-            requests: Arc::new(tokio::sync::Semaphore::new(2)),
+            buffered_bytes: Arc::new(tokio::sync::Semaphore::new(128 * 1024 * 1024)),
         },
     )
     .into_axum()

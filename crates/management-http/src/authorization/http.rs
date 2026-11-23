@@ -445,12 +445,6 @@ async fn authenticate_inner(
         } else {
             rss_identity_http_axum::SessionActivity::Active
         };
-    let _global = match app.requests.clone().try_acquire_owned() {
-        Ok(permit) => permit,
-        Err(_) => {
-            return Error::Unavailable(Failure::Capacity).into_response();
-        }
-    };
     let Some(clock) = parts.extensions.get::<Arc<dyn rss_observation::Clock>>() else {
         return Error::Unavailable(Failure::Runtime).into_response();
     };
@@ -543,7 +537,6 @@ async fn authenticate_inner(
 pub struct AuthenticationState {
     pub identity: Arc<crate::identity::Identity>,
     pub access: Arc<rss_mdm_authorization_service::Store>,
-    pub requests: Arc<tokio::sync::Semaphore>,
 }
 
 use rss_mdm_audit_integration::RequestAudit;

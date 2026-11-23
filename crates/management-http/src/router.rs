@@ -35,7 +35,6 @@ pub struct Services {
     pub authorization: Arc<rss_mdm_authorization_service::Store>,
     pub identity_management:
         Arc<rss_mdm_authorization_service::identity_management::IdentityManagementPolicy>,
-    pub requests: Arc<tokio::sync::Semaphore>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub events: Arc<rss_mdm_policy_service::events::Events>,
     pub scopes: Arc<rss_mdm_scope_service::Scopes>,
@@ -327,7 +326,6 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
         Arc::new(crate::authorization::http::AuthenticationState {
             identity: s.identity.clone(),
             access: s.authorization.clone(),
-            requests: s.requests.clone(),
         })
     });
     let host_context =

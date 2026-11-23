@@ -596,11 +596,7 @@ async fn enrollment(
             return Err(Error::Unauthorized);
         }
         let credential = app.credentials.get(auth.credential_ref)?;
-        let _global = app
-            .requests
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Error::Unavailable(Failure::Capacity))?;
+
         let proof = app
             .identity
             .authenticate(
@@ -761,7 +757,7 @@ pub struct HttpState {
     pub credentials: std::sync::Arc<crate::enrollment::credentials::Credentials>,
     pub devices: std::sync::Arc<crate::device::DeviceService>,
     pub identity: std::sync::Arc<rss_mdm_authorization_service::session::SessionAuthority>,
-    pub requests: std::sync::Arc<tokio::sync::Semaphore>,
+    pub buffered_bytes: std::sync::Arc<tokio::sync::Semaphore>,
     pub windows: Option<Arc<runtime_materials::Runtime>>,
 }
 impl HttpState {

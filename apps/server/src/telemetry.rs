@@ -109,7 +109,7 @@ impl Config {
         self.ingress.validate().map_err(|_| invalid())?;
         self.maintenance.validate().map_err(|_| invalid())?;
         self.profile()?;
-        if self.connections.get() > 64
+        if self.connections.get() as usize > tokio::sync::Semaphore::MAX_PERMITS
             || self.limits.max_points.get() > 4096
             || self.limits.max_series.get() > 4096
             || self.limits.max_bytes.get() > 4 * 1024 * 1024

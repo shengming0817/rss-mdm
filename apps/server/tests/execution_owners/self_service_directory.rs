@@ -93,8 +93,8 @@ async fn authenticated_self_service_filters_typed_fields_and_business_search() -
     let envelope = agent::boundary::Envelope {
         request_budget: rss_axum::RequestBudget::new(std::time::Duration::from_secs(8)).unwrap(),
         profile: rss_mdm_install_support::StorageProfile::Mdm,
-        admission: Arc::new(tokio::sync::Semaphore::new(8)),
-        requests: Arc::new(tokio::sync::Semaphore::new(8)),
+
+        buffered_bytes: Arc::new(tokio::sync::Semaphore::new(128 * 1024 * 1024)),
         host: "mdm.example.test".into(),
         clock: Arc::new(crate::Monotonic(std::time::Instant::now)),
         audit_store: h.audit.clone(),

@@ -102,7 +102,7 @@ pub(crate) struct Assembly {
         Option<rss_mdm_device_access::deployment::PlatformConfiguration>,
     pub(crate) windows: Option<Arc<crate::windows::Windows>>,
     pub(crate) access: Arc<Database>,
-    pub(crate) requests: Arc<tokio::sync::Semaphore>,
+    pub(crate) buffered_bytes: Arc<tokio::sync::Semaphore>,
 }
 
 pub(crate) struct AssemblyDependencies {
@@ -521,7 +521,7 @@ pub(crate) async fn from_compiled(
         identity_management,
         inventory: runtime.clone(),
         devices,
-        requests: Arc::new(tokio::sync::Semaphore::new(4)),
+        buffered_bytes: Arc::new(tokio::sync::Semaphore::new(http.buffered_body_bytes)),
     });
     let routers = http::from_state(state, host, monotonic, baseline_wake);
     Ok(routers)

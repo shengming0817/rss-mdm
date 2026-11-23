@@ -70,7 +70,7 @@ pub(crate) fn from_state(
                 state.identity.authority.clone(),
             ),
         ),
-        requests: state.requests.clone(),
+        buffered_bytes: state.buffered_bytes.clone(),
     });
     if let Some(da) = &state.da {
         da.runtime
@@ -129,7 +129,7 @@ pub(crate) fn from_state(
                 state.identity.authority.clone(),
             ),
         ),
-        requests: state.requests.clone(),
+        buffered_bytes: state.buffered_bytes.clone(),
         windows: state.windows.as_ref().map(|w| w.channel.clone()),
     });
     let channels = Arc::new(crate::registration_channels::Channels {
@@ -140,40 +140,35 @@ pub(crate) fn from_state(
 
         clock: state.clock.clone(),
     });
-    let admission = Arc::new(tokio::sync::Semaphore::new(32));
     let management_boundary = rss_mdm_management_http::boundary::Envelope {
         request_budget: state.request_budget,
         profile: rss_mdm_install_support::StorageProfile::Mdm,
-        admission: admission.clone(),
         host: host.clone(),
         clock: monotonic.clone(),
         audit_store: state.audit_store.clone(),
-        requests: state.requests.clone(),
+        buffered_bytes: state.buffered_bytes.clone(),
     };
     let apple_boundary = rss_mdm_apple_channel::boundary::Envelope {
         request_budget: state.identity.request_budget,
-        admission: admission.clone(),
         host: host.clone(),
         clock: monotonic.clone(),
         audit_store: state.audit_store.clone(),
-        requests: state.requests.clone(),
+        buffered_bytes: state.buffered_bytes.clone(),
     };
     let windows_browser_boundary = rss_mdm_windows_channel::boundary::Envelope {
         request_budget: state.identity.request_budget,
-        admission: admission.clone(),
         host: host.clone(),
         clock: monotonic.clone(),
         audit_store: state.audit_store.clone(),
-        requests: state.requests.clone(),
+        buffered_bytes: state.buffered_bytes.clone(),
     };
     let agent_boundary = rss_mdm_agent_channel::boundary::Envelope {
         request_budget: state.request_budget,
         profile: rss_mdm_install_support::StorageProfile::Mdm,
-        admission,
         host: host.clone(),
         clock: monotonic.clone(),
         audit_store: state.audit_store.clone(),
-        requests: state.requests.clone(),
+        buffered_bytes: state.buffered_bytes.clone(),
     };
     let authentication = state.identity.http_routes(
         Arc::new(rss_mdm_management_http::api_access::BearerAdmission {
@@ -285,7 +280,6 @@ pub(crate) fn from_state(
             rss_mdm_management_http::authorization::http::AuthenticationState {
                 identity: state.identity.browser(),
                 access: state.access.authorization_store(),
-                requests: state.requests.clone(),
             },
         ),
         crate::administration::tenants::http::routes(
@@ -324,7 +318,6 @@ pub(crate) fn from_state(
         rss_mdm_management_http::authorization::http::AuthenticationState {
             identity: state.identity.browser(),
             access: state.access.authorization_store(),
-            requests: state.requests.clone(),
         },
     );
     let apple_management = rss_mdm_management_http::boundary::wrap(
@@ -427,7 +420,6 @@ pub(crate) fn from_state(
             identity: state.identity.browser(),
             authorization: state.access.authorization_store(),
             identity_management: state.identity_management.clone(),
-            requests: state.requests.clone(),
             audit_store: state.audit_store.clone(),
             events: state.events.clone(),
             scopes: state.scopes.clone(),
@@ -554,7 +546,6 @@ pub(crate) fn from_state(
                 router: router.into_checked_axum(rss_mdm_http_contract::module::Listener::Agent),
                 admission: crate::native::admission::Admission::new(
                     monotonic.clone(),
-                    state.requests.clone(),
                     "agent-tls",
                 ),
             },
@@ -604,7 +595,6 @@ pub(crate) fn from_state(
             rss_mdm_management_http::software_native::StateData {
                 directory: state.publications.clone(),
                 content: state.content_writer.clone(),
-                requests: state.requests.clone(),
             },
         )),
     }
@@ -946,11 +936,10 @@ fn da_agent_routes(
             rss_mdm_agent_channel::boundary::Envelope {
                 request_budget: state.request_budget,
                 profile: rss_mdm_install_support::StorageProfile::Da,
-                admission: Arc::new(tokio::sync::Semaphore::new(64)),
                 host: String::new(),
                 clock,
                 audit_store: da.audit.clone(),
-                requests: state.requests.clone(),
+                buffered_bytes: state.buffered_bytes.clone(),
             },
         )
     } else {
