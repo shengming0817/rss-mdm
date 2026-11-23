@@ -23,7 +23,7 @@ class EnvironmentTests(unittest.TestCase):
             root=Path(temporary)
             def host(identity, console, origins):
                 directory=root/identity;directory.mkdir(exist_ok=True)
-                (directory/'deployment.json').write_text(json.dumps(dict(hostId=identity,backend='127.0.0.1:8081',
+                (directory/'deployment.json').write_text(json.dumps(dict(bodyLimits={'defaultBytes':16384,'routes':[]},hostId=identity,backend='127.0.0.1:8081',
                     consoleOrigin=console,origins=[dict(origin=value,clientCertificate=True) for value in origins],scep=[],
                     certificate=f'/run/gateway/{identity}/tls.crt',privateKey=f'/run/gateway/{identity}/tls.key')))
             def mappings():
@@ -53,7 +53,7 @@ class EnvironmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);identity='33333333333343338333333333333333'
             directory=root/identity;directory.mkdir()
-            facts=dict(hostId=identity,backend='127.0.0.1:8081',consoleOrigin='https://mdm.example.test',
+            facts=dict(bodyLimits={'defaultBytes':16384,'routes':[]},hostId=identity,backend='127.0.0.1:8081',consoleOrigin='https://mdm.example.test',
                 origins=[dict(origin='https://mdm.example.test',clientCertificate=False),
                          dict(origin='https://device.example.test',clientCertificate=True)],scep=[],
                 certificate=f'/run/gateway/{identity}/tls.crt',privateKey=f'/run/gateway/{identity}/tls.key')

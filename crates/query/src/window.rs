@@ -27,7 +27,9 @@ pub struct Schema {
 pub struct Query {
     #[serde(skip)]
     schema: &'static Schema,
-    limit: usize,
+    limit: u16,
+    #[serde(skip)]
+    explicit_limit: bool,
     cursor: Option<String>,
 }
 impl Schema {
@@ -53,8 +55,7 @@ impl Schema {
         {
             return Err(Error::Invalid);
         }
-        let limit = limit.unwrap_or(self.default_limit);
-        if !(1..=self.max_limit).contains(&limit) {
+        if limit.is_some_and(|limit| !(1..=self.max_limit).contains(&limit)) {
             return Err(Error::Invalid);
         }
         if let Some(token) = &cursor {
@@ -62,7 +63,8 @@ impl Schema {
         }
         Ok(Query {
             schema: self,
-            limit: usize::from(limit),
+            limit: limit.unwrap_or(self.default_limit),
+            explicit_limit: limit.is_some(),
             cursor,
         })
     }
@@ -77,7 +79,10 @@ impl Query {
         }
     }
     pub fn limit(&self) -> usize {
-        self.limit
+        usize::from(self.limit)
+    }
+    pub fn explicit_limit(&self) -> Option<u16> {
+        self.explicit_limit.then_some(self.limit)
     }
     pub fn cursor(&self) -> &Option<String> {
         &self.cursor

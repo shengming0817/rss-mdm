@@ -20,11 +20,7 @@ pub(crate) async fn enrollment(
         .clock
         .unix_seconds()
         .ok_or(Error::Unavailable(crate::Failure::Clock))?;
-    let _permit = app
-        .requests
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| Error::Unavailable(crate::Failure::Capacity))?;
+
     let execution = locate(app, &token).await?;
     let windows = app.windows(execution).await?;
     let entra = windows.entra.as_ref().ok_or(Error::Unsupported)?;

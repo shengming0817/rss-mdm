@@ -376,11 +376,7 @@ pub(crate) async fn issue(
         let soap::CertificateRequest::RenewalPkcs7(cms) = &input.request else {
             return Err(Error::Forbidden);
         };
-        let _permit = app
-            .requests
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Error::Unavailable(Failure::Capacity))?;
+
         let provisioning = renewal::issue(
             &app,
             &peer.ok_or(Error::Unauthorized)?.0,

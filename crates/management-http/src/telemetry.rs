@@ -114,7 +114,9 @@ pub fn error(e: rss_mdm_telemetry_service::Error) -> Error {
         T::Denied => Error::Forbidden,
         T::Conflict => Error::Conflict,
         T::Unknown => Error::CommitUnknown,
-        T::Storage | T::Capacity => Error::Unavailable(Failure::Database),
+        T::Deadline => Error::RequestDeadline,
+        T::Capacity => Error::CapacityExceeded,
+        T::Storage => Error::Unavailable(Failure::Database),
     }
 }
 async fn history(
@@ -134,7 +136,7 @@ async fn history(
     audit.target_device(&input.device);
     let service = app.as_ref().as_ref().ok_or(Error::Unsupported)?;
     service
-        .history(&auth.proof, &input, &audit)
+        .history(&auth, &input, &audit)
         .await
         .map(wire::History::from)
         .map(Json)
@@ -158,7 +160,7 @@ async fn aggregate(
     audit.target_device(&input.query.device);
     let service = app.as_ref().as_ref().ok_or(Error::Unsupported)?;
     service
-        .aggregate(&auth.proof, &input, &audit)
+        .aggregate(&auth, &input, &audit)
         .await
         .map(wire::Aggregate::from)
         .map(Json)
@@ -185,12 +187,7 @@ async fn maintenance(
     audit.target_device(&input.device);
     let service = app.as_ref().as_ref().ok_or(Error::Unsupported)?;
     service
-        .maintenance(
-            &auth.proof,
-            &input,
-            &audit,
-            rss_request_context::Deadline::at(auth.deadline),
-        )
+        .maintenance(&auth, &input, &audit)
         .await
         .map(Json)
         .map_err(error)
@@ -212,7 +209,7 @@ async fn health(
     audit.target_device(&input.device);
     let service = app.as_ref().as_ref().ok_or(Error::Unsupported)?;
     service
-        .health(&auth.proof, &input, &audit)
+        .health(&auth, &input, &audit)
         .await
         .map(Json)
         .map_err(error)
@@ -235,7 +232,7 @@ async fn resources(
     app.as_ref()
         .as_ref()
         .ok_or(Error::Unsupported)?
-        .resources(&auth.proof, &input, &audit)
+        .resources(&auth, &input, &audit)
         .await
         .map(Json)
         .map_err(error)

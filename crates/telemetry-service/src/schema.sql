@@ -1,6 +1,14 @@
 -- Product admission metadata only. Pending content belongs to RSS Outbox.
 CREATE SCHEMA mdm_telemetry;
 REVOKE ALL ON SCHEMA mdm_telemetry FROM PUBLIC;
+-- Decode field order once at intake. JSON array framing preserves field boundaries and duplicates.
+CREATE FUNCTION mdm_telemetry.field_set_digest(input text[]) RETURNS bytea
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE SET search_path=pg_catalog AS $$
+    SELECT sha256(convert_to(jsonb_agg(field ORDER BY field COLLATE "C")::text,'UTF8'))
+    FROM unnest(input) AS field
+$$;
+REVOKE ALL ON FUNCTION mdm_telemetry.field_set_digest(text[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_telemetry.field_set_digest(text[]) TO mdm_telemetry_runtime;
 CREATE TABLE mdm_telemetry.batches (
     expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
     tenant_id uuid NOT NULL
@@ -14,6 +22,7 @@ CREATE TABLE mdm_telemetry.batches (
   , input_digest bytea NOT NULL CHECK (octet_length(input_digest) = 32)
   , context_digest bytea NOT NULL CHECK (octet_length(context_digest) = 32)
   , fields text[] NOT NULL CHECK (cardinality(fields) BETWEEN 1 AND 64)
+  , field_set_digest bytea GENERATED ALWAYS AS (mdm_telemetry.field_set_digest(fields)) STORED NOT NULL
   , received_at bigint NOT NULL CHECK (received_at >= 0)
   , delivery text NOT NULL CHECK (delivery IN ('pending', 'published', 'unknown', 'blocked'))
   , first_observed bigint NOT NULL
@@ -23,6 +32,7 @@ CREATE TABLE mdm_telemetry.batches (
   , current_assets boolean NOT NULL
   , PRIMARY KEY (tenant_id, id)
 );
+CREATE INDEX batches_stream_history ON mdm_telemetry.batches(tenant_id,device,source,epoch,policy,policy_version,field_set_digest);
 CREATE INDEX pending_registration
   ON mdm_telemetry.batches (tenant_id
                           , device)

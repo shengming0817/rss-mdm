@@ -22,7 +22,6 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 pub struct StateData {
     pub directory: Arc<PublicationDirectory>,
     pub content: Option<Arc<rss_mdm_content_service::Store>>,
-    pub requests: Arc<tokio::sync::Semaphore>,
 }
 struct Timer;
 impl rss_request_context::Clock for Timer {
@@ -314,11 +313,6 @@ async fn search(
     headers: HeaderMap,
     Json(input): Json<Search>,
 ) -> Result<Json<Value>, StatusCode> {
-    let _permit = state
-        .requests
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let s = service(&state, &source, binding)?;
     if !s.native_winget() {
         return Err(StatusCode::NOT_FOUND);
@@ -419,11 +413,6 @@ async fn manifest(
     headers: HeaderMap,
     Query(query): Query<VersionQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    let _permit = state
-        .requests
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let s = service(&state, &source, binding)?;
     if !s.native_winget() {
         return Err(StatusCode::NOT_FOUND);
@@ -586,11 +575,6 @@ async fn git(
         GitRead::Advertise(service) => (true, &[][..], Some(service)),
         GitRead::Upload(bytes) => (false, bytes, None),
     };
-    let _permit = state
-        .requests
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE.into_response())?;
     let s = service(state, source, binding).map_err(IntoResponse::into_response)?;
     if s.native_winget() {
         return Err(StatusCode::NOT_FOUND.into_response());

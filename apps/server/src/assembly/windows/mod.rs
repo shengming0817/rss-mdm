@@ -77,15 +77,15 @@ pub(crate) fn routers(
     app: Arc<rss_mdm_windows_channel::HttpState>,
     clock: Arc<dyn rss_observation::Clock>,
     request_budget: rss_axum::RequestBudget,
+    buffered_bytes: Arc<tokio::sync::Semaphore>,
 ) -> Option<(ChannelRouter, Vec<ChannelRouter>)> {
     let windows = windows?;
     let boundary = |origin: &str| Envelope {
         request_budget,
-        admission: Arc::new(tokio::sync::Semaphore::new(32)),
         host: origin.trim_start_matches("https://").into(),
         clock: clock.clone(),
         audit_store: app.audit_store.clone(),
-        requests: app.requests.clone(),
+        buffered_bytes: buffered_bytes.clone(),
     };
     let (enrollment, management) = rss_mdm_windows_channel::routers(
         app.clone(),
@@ -94,8 +94,7 @@ pub(crate) fn routers(
     );
     let enrollment = enrollment.layer(middleware::from_fn(admission::admit));
     let management = management.layer(middleware::from_fn(admission::admit_windows));
-    let management_admission =
-        admission::Admission::new(clock.clone(), app.requests.clone(), "mdm-management-tls");
+    let management_admission = admission::Admission::new(clock.clone(), "mdm-management-tls");
     let mut management_routers = vec![ChannelRouter {
         admission: management_admission.clone(),
         origins: vec![windows.config.management.origin.clone()],
@@ -118,7 +117,7 @@ pub(crate) fn routers(
     }
     Some((
         ChannelRouter {
-            admission: admission::Admission::new(clock, app.requests.clone(), "mdm-enrollment-tls"),
+            admission: admission::Admission::new(clock, "mdm-enrollment-tls"),
             origins: vec![windows.config.enrollment.origin.clone()],
             router: enrollment
                 .into_checked_axum(rss_mdm_http_contract::module::Listener::WindowsEnrollment),

@@ -139,7 +139,7 @@ impl Query {
             };
             value.insert(key, v);
         }
-        value.insert("limit".into(), serde_json::json!(page.limit()));
+        value.insert("limit".into(), serde_json::json!(page.explicit_limit()));
         value.insert("cursor".into(), serde_json::json!(page.cursor()));
         let q: Self = serde_json::from_value(serde_json::Value::Object(value))
             .map_err(|_| Error::Malformed)?;
@@ -148,7 +148,7 @@ impl Query {
     }
 
     pub fn validate(&self) -> Result<(), Error> {
-        if !(1..=1024).contains(&self.limit.unwrap_or(50))
+        if self.limit.is_some_and(|limit| !(1..=1024).contains(&limit))
             || self.operation_id.is_some_and(|v| v.is_nil())
             || self.request_id.is_some_and(|v| v.is_nil())
             || self.from.is_some_and(|v| v < 0)

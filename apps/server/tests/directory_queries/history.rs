@@ -272,7 +272,7 @@ pub(super) async fn exercise(
         .await?["registeredAt"]
             .is_null()
     );
-    let access = c.inputs.pool("shared", "mdm_access").await?;
+    let access = c.inputs.pool(&c.profile, "mdm_access").await?;
     let mut tx = access.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(Uuid::new_v4().to_string())

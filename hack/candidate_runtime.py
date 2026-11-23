@@ -91,7 +91,7 @@ def wait(check, stage, seconds=45):
         time.sleep(.2)
     raise RuntimeError("candidate deadline: " + stage)
 
-def inputs(root, example, deployment_directory, *, database_host="postgres", hostname="mdm.example.test"):
+def inputs(root, example, deployment_directory, *, database_host="postgres", hostname="mdm.example.test", body_limits=None):
     """Runtime and operator get separate mounts; the server never receives maintenance credentials."""
     runtime, operator = root/"container/runtime", root/"container/operator"
     runtime.mkdir(parents=True); operator.mkdir(parents=True)
@@ -142,7 +142,7 @@ def inputs(root, example, deployment_directory, *, database_host="postgres", hos
     write(operator,"initialize.json",dict(runtime=config["identity"]["runtime"],audit={"mode":"plain"},database=database(operator,"mdm_identity_maintenance"),installation=installation(),tenant_id=TENANT,expected_epoch=1,principal_id=ADMIN,
                                           login="admin",password_file=write(operator,"account-password",PASSWORD)))
     from gateway_fixture import render
-    gateway=render(deployment_directory, origin="https://"+hostname, backend="server:8081")
+    gateway=render(deployment_directory, body_limits=body_limits, origin="https://"+hostname, backend="server:8081")
     (root/"nginx.conf").write_text(gateway.configuration)
     gateway.publish(root/"gateway-ports.compose.yaml",isolated=True)
     root.chmod(0o700)
@@ -351,7 +351,7 @@ class Candidate:
         database=dict(host=self.pg_host,port=5432,name=name,user='postgres',
             password_file='/run/mdm/telemetry-administrator',ca_file='/run/mdm/ca.crt')
         runtime=dict(database,user='r_'+uuid.uuid4().hex,password_file='/run/mdm/telemetry-password')
-        config=dict(resource_id=str(uuid.uuid4()),backend=dict(kind='postgres',database=runtime),connections=2,maintenance=dict(rows=4096,buckets=64,step_seconds=6),
+        config=dict(resource_id=str(uuid.uuid4()),backend=dict(kind='postgres',database=runtime),connections=2,maintenance=dict(authorization_bytes=65536,rows=4096,buckets=64,step_seconds=6),
             cursor_key_file='/run/mdm/telemetry-cursor',ingress=dict(requestBytes=1048576,pendingBatches=64,
             batchesPerMinute=120,bytesPerMinute=8388608),limits=dict(max_points=4096,max_series=4096,
             max_bytes=1048576,replay_micros=86400000000,cursor_micros=60000000))

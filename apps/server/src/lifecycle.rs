@@ -725,6 +725,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                             app.browser,
                             std::mem::take(&mut app.listeners),
                             product_origin,
+                            Arc::new(tokio::sync::Semaphore::new(http.request_slots)),
                         );
                         let listener =
                             tokio::net::TcpListener::bind(listen).await.map_err(|e| {

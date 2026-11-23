@@ -33,6 +33,21 @@ impl Store {
     pub async fn begin(&self, tenant: &str) -> Result<Transaction<'_, Postgres>, Error> {
         self.begin_mode(tenant, false).await
     }
+    /// A certificate lookup and all subsequent authenticated statements share this cutoff.
+    pub(crate) async fn begin_until(
+        &self,
+        deadline: rss_request_context::Deadline,
+    ) -> Result<Transaction<'_, Postgres>, Error> {
+        use rss_request_context::Clock;
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let remaining = deadline
+            .remaining(rss_mdm_audit_integration::budget::RuntimeTimer.now())
+            .ok_or(Error::Deadline)?;
+        let millis = remaining.as_millis().clamp(1, i32::MAX as u128).to_string();
+        sqlx::query("SELECT set_config('transaction_timeout',$1,true),set_config('statement_timeout',$1,true),set_config('lock_timeout',$1,true),set_config('rss.tenant_id','',true)")
+            .bind(millis).execute(&mut *tx).await.map_err(db)?;
+        Ok(tx)
+    }
     pub async fn snapshot(&self, tenant: &str) -> Result<Transaction<'_, Postgres>, Error> {
         self.begin_mode(tenant, true).await
     }
@@ -163,6 +178,15 @@ impl Store {
         &self,
         fingerprint: [u8; 32],
     ) -> Result<Option<rss_request_context::TenantId>, Error> {
+        let mut connection = self.pool.acquire().await.map_err(db)?;
+        self.certificate_tenant_on(&mut connection, fingerprint)
+            .await
+    }
+    pub(crate) async fn certificate_tenant_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        fingerprint: [u8; 32],
+    ) -> Result<Option<rss_request_context::TenantId>, Error> {
         let fingerprint = fingerprint
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -178,7 +202,7 @@ impl Store {
         unique_tenant(
             sqlx::query_scalar(query)
                 .bind(fingerprint)
-                .fetch_all(&self.pool)
+                .fetch_all(c)
                 .await
                 .map_err(db)?,
         )

@@ -271,7 +271,6 @@ async fn embedded_da_http_binds_authority_before_purpose() -> Result<()> {
                 http: rss_identity_http_axum::HttpConfig::new(origin, Duration::from_secs(8))?,
             }),
             access: Arc::new(c.access().for_product(StorageProfile::Da)),
-            requests: Arc::new(tokio::sync::Semaphore::new(4)),
         });
         let protected = Router::new()
             .route(

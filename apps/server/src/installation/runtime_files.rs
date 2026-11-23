@@ -373,6 +373,7 @@ pub async fn prepare(directory: &Path, config: &Config, runtime: &Value) -> Resu
     gateway.replace("tls.key", &key)?;
     let routes = public_routes(decoded)?;
     gateway.save("deployment.json", &json!({
+        "bodyLimits":rss_mdm_management_http::body_limits(),
         "hostId":host_id,"backend":decoded.listen.to_string(),"consoleOrigin":decoded.product_origin,
         "origins":routes,"scep":scep_routes(decoded,&gateway)?,
         "certificate":format!("/run/gateway/{host_id}/tls.crt"),

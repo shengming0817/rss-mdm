@@ -7,6 +7,8 @@ use std::time::Duration;
 #[serde(deny_unknown_fields)]
 pub struct Http {
     pub da_listener: DaListener,
+    pub request_slots: usize,
+    pub buffered_body_bytes: usize,
     pub connections: usize,
     pub prepare_seconds: u64,
     pub first_request_seconds: u64,
@@ -22,14 +24,18 @@ pub struct Http {
 pub(crate) struct Compiled {
     pub da_listener: rss_axum::Http1ServePolicy,
     pub da_requests: usize,
+    pub request_slots: usize,
+    pub buffered_body_bytes: usize,
     pub listener: rss_axum::Http1ServePolicy,
     pub request: rss_axum::RequestBudget,
     pub total_drain: Duration,
     pub admission_drain: Duration,
 }
 impl Http {
-    pub(crate) fn installation() -> Self {
+    pub(crate) fn installation(request_slots: usize, buffered_body_bytes: usize) -> Self {
         Self {
+            request_slots,
+            buffered_body_bytes,
             da_listener: DaListener {
                 connections: 16,
                 prepare_seconds: 5,
@@ -58,7 +64,11 @@ impl Http {
         let bad = || Error::Configuration(ConfigIssue::Budget);
         let seconds = crate::identity::policy::seconds;
         let total_drain = seconds(self.total_drain_seconds)?;
-        if self.request_seconds.max(identity.request_seconds) > self.admission_drain_seconds
+        if self.request_slots == 0
+            || self.request_slots > tokio::sync::Semaphore::MAX_PERMITS
+            || self.buffered_body_bytes < rss_mdm_management_http::body_limits().largest_buffer()
+            || self.buffered_body_bytes > tokio::sync::Semaphore::MAX_PERMITS
+            || self.request_seconds.max(identity.request_seconds) > self.admission_drain_seconds
             || self.admission_drain_seconds > self.total_drain_seconds
             || self.connection_drain_seconds > self.total_drain_seconds
             || identity.kdf_drain_seconds > self.total_drain_seconds
@@ -83,6 +93,8 @@ impl Http {
             return Err(bad());
         }
         Ok(Compiled {
+            request_slots: self.request_slots,
+            buffered_body_bytes: self.buffered_body_bytes,
             da_listener,
             da_requests: self.da_listener.connections,
             listener,

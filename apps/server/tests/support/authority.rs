@@ -83,6 +83,24 @@ pub struct Context {
     kdf: Arc<PasswordKdf>,
     pub audit: Arc<AuditStore>,
 }
+pub fn telemetry_intake(
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
+) -> rss_mdm_telemetry_service::IntakeRequest {
+    let budget = std::sync::Arc::new(rss_mdm_audit_integration::budget::AuditBudget::new(
+        std::time::Duration::from_secs(12),
+    ));
+    rss_mdm_telemetry_service::IntakeRequest {
+        deadline: budget.deadline(),
+        cancellation: budget,
+        audit: rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Request,
+            rss_mdm_audit_integration::StorageProfile::Mdm,
+            binding,
+            "telemetry",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        ),
+    }
+}
 impl Context {
     pub fn execution(&self) -> rss_transactional_messaging::fence::ExecutionBinding {
         use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};

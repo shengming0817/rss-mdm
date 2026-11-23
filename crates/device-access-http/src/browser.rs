@@ -306,8 +306,18 @@ async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: Next)
                     .get::<rss_mdm_audit_integration::completion::ResponseFailure>()
                     .copied()
             });
-        if let Some(replacement) =
-            complete(&s.audit, &audit, response.status().as_u16(), failure).await
+        if let Some(replacement) = complete(
+            &s.audit,
+            &audit,
+            response.status().as_u16(),
+            failure,
+            rss_request_context::Deadline::from_timeout(
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
+                Duration::from_secs(2),
+            )
+            .expect("bounded DA settlement"),
+        )
+        .await
         {
             response = match replacement {
                 Replacement::CommitUnknown => Error::CommitUnknown,

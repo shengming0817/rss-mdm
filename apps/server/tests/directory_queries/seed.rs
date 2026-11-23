@@ -109,7 +109,7 @@ async fn foreign_resource(c: &Context) -> Result<()> {
     let foreign = rss_request_context::TenantId::parse(&Uuid::new_v4().to_string())?;
     crate::authority_t2_support::seed_tenant(&c.operator, foreign).await?;
     let foreign_runtime = crate::identity::open_runtime(
-        &c.inputs.database("shared", "mdm_resource_runtime"),
+        &c.inputs.database(&c.profile, "mdm_resource_runtime"),
         &c.inputs.installation.target,
         &c.inputs.installation.lineage,
         4,

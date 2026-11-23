@@ -4,6 +4,7 @@ pub mod api_access;
 pub mod assets;
 pub mod authorization;
 mod body_policy;
+pub use body_policy::{BodyLimits, body_limits};
 pub mod compliance;
 pub mod content;
 mod decimal;

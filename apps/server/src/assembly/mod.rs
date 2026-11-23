@@ -37,6 +37,7 @@ pub(crate) struct Assembly {
     pub(crate) providers: Arc<rss_mdm_pki_service::providers::Providers>,
     pub(crate) credential_receipts:
         Option<Arc<rss_mdm_recovery_credentials::native_receipts::NativeReceipts>>,
+    pub(crate) request_timeout: std::time::Duration,
     pub(crate) request_budget: rss_axum::RequestBudget,
     pub(crate) da: Option<Arc<device_access::Assembly>>,
     pub(crate) script_work: Arc<rss_mdm_script_service::worker::Worker>,
@@ -102,7 +103,7 @@ pub(crate) struct Assembly {
         Option<rss_mdm_device_access::deployment::PlatformConfiguration>,
     pub(crate) windows: Option<Arc<crate::windows::Windows>>,
     pub(crate) access: Arc<Database>,
-    pub(crate) requests: Arc<tokio::sync::Semaphore>,
+    pub(crate) buffered_bytes: Arc<tokio::sync::Semaphore>,
 }
 
 pub(crate) struct AssemblyDependencies {
@@ -449,6 +450,7 @@ pub(crate) async fn from_compiled(
         execution: execution.clone(),
     });
     let state = Arc::new(Assembly {
+        request_timeout: std::time::Duration::from_secs(config.http.request_seconds),
         request_budget: http.request,
         da,
         script_work,
@@ -521,7 +523,7 @@ pub(crate) async fn from_compiled(
         identity_management,
         inventory: runtime.clone(),
         devices,
-        requests: Arc::new(tokio::sync::Semaphore::new(4)),
+        buffered_bytes: Arc::new(tokio::sync::Semaphore::new(http.buffered_body_bytes)),
     });
     let routers = http::from_state(state, host, monotonic, baseline_wake);
     Ok(routers)

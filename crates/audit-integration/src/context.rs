@@ -48,6 +48,8 @@ pub struct Snapshot {
     pub operation_owner: Option<crate::operation::OperationOwner>,
     pub receipt_actor: Option<String>,
     pub write_outcome: WriteOutcome,
+    /// An accepted durable intent whose external step has not been dispatched.
+    pub intent_only: bool,
     pub final_request: bool,
     pub intent: crate::AuditIntent,
     pub software: Option<SoftwareFact>,
@@ -163,6 +165,7 @@ impl RequestAudit {
                     receipt_actor: None,
 
                     write_outcome: WriteOutcome::CommitNotStarted,
+                    intent_only: false,
                     final_request: false,
                     intent,
                     software: None,
@@ -431,6 +434,19 @@ impl RequestAudit {
         let mut state = self.0.state.lock().expect("audit lock");
         assert_eq!(state.snapshot.write_outcome, WriteOutcome::Unknown);
         state.snapshot.write_outcome = WriteOutcome::Committed;
+    }
+    /// The accepted intent has a receipt. Its backend step still has no effects.
+    pub fn mark_intent_committed(&self) {
+        let mut state = self.0.state.lock().expect("audit lock");
+        assert_eq!(state.snapshot.write_outcome, WriteOutcome::Unknown);
+        state.snapshot.write_outcome = WriteOutcome::Committed;
+        state.snapshot.intent_only = true;
+    }
+    /// Record the dispatch boundary while retaining the independent intent receipt.
+    pub fn record_intent_dispatch(&self, dispatched: bool) {
+        let mut state = self.0.state.lock().expect("audit lock");
+        assert_eq!(state.snapshot.write_outcome, WriteOutcome::Committed);
+        state.snapshot.intent_only = !dispatched;
     }
     /// Project an acknowledged owner rollback; callers must not use this for cancellation or failed cleanup.
     pub fn mark_rolled_back(&self) {

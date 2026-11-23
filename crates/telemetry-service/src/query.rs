@@ -60,7 +60,7 @@ impl Service {
     /// Enumerate only this authorized device/field; every continuation repeats authorization.
     pub async fn resources(
         self: &Arc<Self>,
-        proof: &Arc<AuthorizedPrincipal>,
+        auth: &rss_mdm_authorization_service::context::RequestAuth,
         input: &ResourceRequest,
         audit: &RequestAudit,
     ) -> Result<Resources, Error> {
@@ -77,25 +77,25 @@ impl Service {
             mode: QueryMode::History,
             after: input.after.clone(),
         };
-        self.execute(proof, &query, ReadKind::Resources, audit)
+        self.execute(auth, &query, ReadKind::Resources, audit)
             .await
             .and_then(Reply::resources)
     }
     /// Every page checks current account/device grants; backend cursors grant no authority.
     pub async fn history(
         self: &Arc<Self>,
-        proof: &Arc<AuthorizedPrincipal>,
+        auth: &rss_mdm_authorization_service::context::RequestAuth,
         input: &HistoryRequest,
         audit: &RequestAudit,
     ) -> Result<History, Error> {
-        self.execute(proof, input, ReadKind::History, audit)
+        self.execute(auth, input, ReadKind::History, audit)
             .await
             .and_then(Reply::history)
     }
     /// Aggregate one exact immutable definition and source incarnation with explicit gap semantics.
     pub async fn aggregate(
         self: &Arc<Self>,
-        proof: &Arc<AuthorizedPrincipal>,
+        auth: &rss_mdm_authorization_service::context::RequestAuth,
         input: &AggregateRequest,
         audit: &RequestAudit,
     ) -> Result<Aggregate, Error> {
@@ -103,7 +103,7 @@ impl Service {
             return Err(Error::Invalid);
         }
         self.execute(
-            proof,
+            auth,
             &input.query,
             ReadKind::Aggregate(Box::new(input.clone())),
             audit,
@@ -114,7 +114,7 @@ impl Service {
     /// Health applies the same device and sensitive-field checks as sample reads.
     pub async fn health(
         self: &Arc<Self>,
-        proof: &Arc<AuthorizedPrincipal>,
+        auth: &rss_mdm_authorization_service::context::RequestAuth,
         input: &HealthRequest,
         audit: &RequestAudit,
     ) -> Result<Health, Error> {
@@ -132,17 +132,18 @@ impl Service {
             mode: QueryMode::History,
             after: None,
         };
-        self.execute(proof, &query, ReadKind::Health, audit)
+        self.execute(auth, &query, ReadKind::Health, audit)
             .await
             .and_then(Reply::health)
     }
     async fn execute(
         self: &Arc<Self>,
-        proof: &Arc<AuthorizedPrincipal>,
+        auth: &rss_mdm_authorization_service::context::RequestAuth,
         input: &HistoryRequest,
         kind: ReadKind,
         audit: &RequestAudit,
     ) -> Result<Reply, Error> {
+        let proof = &auth.proof;
         proof.check_live().map_err(|_| Error::Denied)?;
         let service = self.clone();
         let proof = proof.clone();
@@ -150,9 +151,14 @@ impl Service {
         let audit = audit.clone();
         let failure = Arc::new(Mutex::new(None));
         let rejected = failure.clone();
-        let settled = self
-            .runtime
-            .local_tx(proof.binding(), crate::deadline(), move |tx| {
+        let cutoff = Deadline::at(auth.deadline);
+        let read = self.runtime.local_tx(
+            proof.binding(),
+            rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                cutoff,
+                &crate::backend::SystemClock,
+            ),
+            move |tx| {
                 Box::pin(async move {
                     service
                         .audit_store
@@ -164,20 +170,39 @@ impl Service {
                     let result = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
-                                read_on(&read_service, c, &proof, &input, &kind, &read_audit)
-                                    .await
-                                    .map_err(|e| {
-                                        *rejected.lock().expect("query rejection") = Some(e);
-                                        sqlx::Error::Protocol("telemetry query rejected".into())
-                                    })
+                                read_on(
+                                    &read_service,
+                                    c,
+                                    &proof,
+                                    &input,
+                                    &kind,
+                                    &read_audit,
+                                    cutoff,
+                                )
+                                .await
+                                .map_err(|e| {
+                                    *rejected.lock().expect("query rejection") = Some(e);
+                                    sqlx::Error::Protocol("telemetry query rejected".into())
+                                })
                             })
                         })
                         .await?;
 
                     Ok(result)
                 })
-            })
-            .await;
+            },
+        );
+        let settled = tokio::select! {
+            biased;
+            () = auth.cancellation.cancelled() => return Err(Error::Deadline),
+            result = read => result,
+            () = tokio::time::sleep_until(cutoff.instant().into()) => return Err(Error::Deadline),
+        };
+        if cutoff.is_expired(rss_request_context::Clock::now(
+            &crate::backend::SystemClock,
+        )) {
+            return Err(Error::Deadline);
+        }
         settled.fold(
             Ok,
             |_| Err(Error::Storage),
@@ -187,8 +212,8 @@ impl Service {
                     .expect("query rejection")
                     .unwrap_or(Error::Storage))
             },
-            |_| Err(Error::Unknown),
-            |_| Err(Error::Unknown),
+            |_| Err(Error::Storage),
+            |_| Err(Error::Storage),
             |_| Err(Error::Storage),
         )
     }
@@ -200,19 +225,16 @@ async fn read_on(
     input: &HistoryRequest,
     kind: &ReadKind,
     _audit: &RequestAudit,
+    cutoff: Deadline,
 ) -> Result<Reply, Error> {
-    let backend = service.backend_on(c, proof.binding().tenant()).await?;
-    if input.max_points.get() > backend.budget.points.get() {
-        return Err(Error::Denied);
-    }
-    rss_mdm_authorization_service::lock_on(
+    rss_mdm_authorization_service::lock_shared_on(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
         proof.tenant_id(),
         proof.instance_id(),
     )
     .await
-    .map_err(|_| Error::Denied)?;
+    .map_err(crate::authorization_error)?;
     let authorization = rss_mdm_authorization_service::snapshot_on(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
@@ -220,7 +242,7 @@ async fn read_on(
         proof.instance_id(),
     )
     .await
-    .map_err(|_| Error::Denied)?;
+    .map_err(crate::authorization_error)?;
     authorization
         .require(proof, Permission::InventoryRead, Some(&input.device))
         .map_err(|_| Error::Denied)?;
@@ -236,8 +258,14 @@ async fn read_on(
     if field.time_series.is_none() && !matches!(kind, ReadKind::Health) {
         return Err(Error::Invalid);
     }
+    let backend = service
+        .backend_until(c, proof.binding().tenant(), cutoff, false)
+        .await?;
+    if input.max_points.get() > backend.budget.points.get() {
+        return Err(Error::Capacity);
+    }
     if let ReadKind::Aggregate(aggregate) = kind {
-        let result = aggregate_on(proof.binding(), service, c, input, aggregate).await?;
+        let result = aggregate_on(proof.binding(), &backend, c, input, aggregate, cutoff).await?;
         proof.check_live().map_err(|_| Error::Denied)?;
         return Ok(Reply::Aggregate(result));
     }
@@ -348,11 +376,6 @@ async fn read_on(
     .await
     .map_err(|_| Error::Storage)?;
     let authorized = Authorized::<Query>::verify(&ReadAuthority(&query), query.clone())?;
-    let cutoff = Deadline::from_timeout(
-        &crate::backend::SystemClock,
-        std::time::Duration::from_secs(6),
-    )
-    .map_err(|_| Error::Invalid)?;
     let mut page = backend.query(&authorized, cursor.as_ref(), cutoff).await?;
     let mut candidates = std::mem::take(&mut page.rows);
     if input.mode == QueryMode::Latest {
@@ -453,12 +476,12 @@ impl Authority for AggregateAuthority<'_> {
 }
 async fn aggregate_on(
     execution: rss_transactional_messaging::fence::ExecutionBinding,
-    service: &Service,
+    backend: &crate::backend::Selected,
     c: &mut sqlx::PgConnection,
     input: &HistoryRequest,
     request: &AggregateRequest,
+    cutoff: Deadline,
 ) -> Result<Aggregate, Error> {
-    let backend = service.backend_on(c, execution.tenant()).await?;
     if request.definition_version.get() > i64::MAX as u64 || request.dimensions.len() > 1024 {
         return Err(Error::Invalid);
     }
@@ -488,6 +511,14 @@ async fn aggregate_on(
         || !field.sources.contains_key(&request.source)
     {
         return Err(Error::Denied);
+    }
+    let rules = &field.time_series.as_ref().ok_or(Error::Invalid)?.dimensions;
+    if request.dimensions.iter().any(|(key, value)| {
+        rules
+            .get(key)
+            .is_none_or(|rule| !rule.values.contains(value))
+    }) {
+        return Err(Error::Invalid);
     }
     let scope = Scope::new(execution.tenant(), Id::new("mdm.telemetry")?);
     let stream = Stream::new(
@@ -535,13 +566,8 @@ async fn aggregate_on(
         .map_err(|_| Error::Invalid)?;
     let authorized =
         Authorized::<AggregateQuery>::verify(&AggregateAuthority(&query), query.clone())?;
-    let deadline = Deadline::from_timeout(
-        &crate::backend::SystemClock,
-        std::time::Duration::from_secs(6),
-    )
-    .map_err(|_| Error::Invalid)?;
     let page = backend
-        .aggregate(&authorized, cursor.as_ref(), deadline)
+        .aggregate(&authorized, cursor.as_ref(), cutoff)
         .await?;
     let unavailable = page
         .availability

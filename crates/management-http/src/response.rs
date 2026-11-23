@@ -36,6 +36,8 @@ impl Error {
             Error::WindowsDeclaredEnrollmentNotReady => Code::WindowsDeclaredEnrollmentNotReady,
             Error::CommitUnknown => Code::OperationUnknown,
             Error::RollbackFailed => Code::OperationRollbackUnconfirmed,
+            Error::CapacityExceeded => Code::CapacityExceeded,
+            Error::RequestDeadline => Code::RequestDeadline,
             Error::RequestTooLarge => Code::RequestTooLarge,
             Error::Malformed => Code::MalformedRequest,
             Error::CertificateRequest => Code::InvalidCertificateRequest,
@@ -85,6 +87,7 @@ impl Error {
                     Code::SoftwarePublicationNotFound
                 }
             },
+            Error::Unavailable(Failure::RequestDeadline) => Code::RequestDeadline,
             Error::Configuration(_) | Error::Unavailable(_) => Code::ServiceUnavailable,
         }
     }
@@ -169,6 +172,8 @@ enum Code {
     RecoveryCredentialNotFound,
     RegistrationLimit,
     RequestLimited,
+    CapacityExceeded,
+    RequestDeadline,
     RequestTooLarge,
     ResourceCursorInvalidated,
     ResourceNotFound,
@@ -219,6 +224,8 @@ impl Code {
             Self::RecoveryCredentialNotFound => StatusCode::NOT_FOUND,
             Self::RegistrationLimit => StatusCode::TOO_MANY_REQUESTS,
             Self::RequestLimited => StatusCode::TOO_MANY_REQUESTS,
+            Self::CapacityExceeded => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::RequestDeadline => StatusCode::GATEWAY_TIMEOUT,
             Self::RequestTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::ResourceCursorInvalidated => StatusCode::CONFLICT,
             Self::ResourceNotFound => StatusCode::NOT_FOUND,

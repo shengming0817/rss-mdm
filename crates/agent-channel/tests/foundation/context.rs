@@ -1,29 +1,11 @@
 use super::*;
 use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
 use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa, PgRuntime};
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::{collections::BTreeMap, path::PathBuf};
-#[derive(serde::Deserialize)]
-pub struct Database {
-    host: String,
-    port: u16,
-    name: String,
-    user: String,
-    ca_file: PathBuf,
-    password_file: PathBuf,
-}
-impl Database {
-    pub fn options(&self) -> Result<PgConnectOptions> {
-        Ok(PgConnectOptions::new()
-            .host(&self.host)
-            .port(self.port)
-            .database(&self.name)
-            .username(&self.user)
-            .password(std::fs::read_to_string(&self.password_file)?.trim())
-            .ssl_mode(PgSslMode::VerifyFull)
-            .ssl_root_cert(&self.ca_file))
-    }
-}
+#[path = "../support/database.rs"]
+mod database;
+pub use database::Database;
 #[derive(serde::Deserialize)]
 pub struct Identity {
     pub instance_id: String,

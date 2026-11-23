@@ -320,12 +320,7 @@ impl Service {
             rss_transactional_messaging::fence::ExecutionBinding::new(self.storage, tenant, epoch);
         let tenant = tenant.to_string();
         let mut tx = self.store.begin(&tenant).await?;
-        sqlx::query("SELECT set_config('rss.storage_target',$1,true),set_config('rss.storage_lineage',$2,true),set_config('rss.execution_epoch',$3,true)")
-            .bind(execution.storage().target().iter().map(|b|format!("{b:02x}")).collect::<String>()).bind(execution.storage().lineage().iter().map(|b|format!("{b:02x}")).collect::<String>()).bind(execution.epoch().get().to_string()).execute(&mut *tx).await.map_err(db)?;
-        sqlx::query("SELECT rss_transactional_messaging.check_execution()")
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| Error::Conflict)?;
+        super::fence_on(&mut tx, execution).await?;
         let row = grant_row(profile, &mut tx, &tenant, input.grant_id).await?;
         check_secret(&tenant, &row, &input.secret)?;
         audit.bind_scope(execution).map_err(Error::from)?;
@@ -359,12 +354,7 @@ impl Service {
             rss_transactional_messaging::fence::ExecutionBinding::new(self.storage, tenant, epoch);
         let tenant = tenant.to_string();
         let mut tx = self.store.begin(&tenant).await?;
-        sqlx::query("SELECT set_config('rss.storage_target',$1,true),set_config('rss.storage_lineage',$2,true),set_config('rss.execution_epoch',$3,true)")
-            .bind(execution.storage().target().iter().map(|b|format!("{b:02x}")).collect::<String>()).bind(execution.storage().lineage().iter().map(|b|format!("{b:02x}")).collect::<String>()).bind(execution.epoch().get().to_string()).execute(&mut *tx).await.map_err(db)?;
-        sqlx::query("SELECT rss_transactional_messaging.check_execution()")
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| Error::Conflict)?;
+        super::fence_on(&mut tx, execution).await?;
         let row =
             sqlx::query(crate::storage_profile::sql(profile).certificate_grants_renewal_status_1)
                 .bind(&tenant)

@@ -448,7 +448,6 @@ pub struct HttpState {
         std::sync::Arc<rss_mdm_registration_service::enrollment::credentials::Credentials>,
     pub devices: std::sync::Arc<crate::device::DeviceService>,
     pub identity: std::sync::Arc<rss_mdm_authorization_service::session::SessionAuthority>,
-    pub requests: std::sync::Arc<tokio::sync::Semaphore>,
 }
 impl HttpState {
     pub async fn apple(

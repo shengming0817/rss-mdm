@@ -23,7 +23,7 @@ class Gateway:
 
 
 def render(directory, *, origin='https://mdm.example.test', backend='127.0.0.1:8081', targets=None,
-           bind_ip="127.0.0.1", certificates='/certs', web=True, bootstrap_origins=()):
+           bind_ip="127.0.0.1", certificates='/certs', web=True, bootstrap_origins=(), body_limits=None):
     source = Path(directory) / 'render_gateway.py'
     spec = importlib.util.spec_from_file_location('rss_gateway_renderer', source)
     renderer = importlib.util.module_from_spec(spec)
@@ -37,6 +37,7 @@ def render(directory, *, origin='https://mdm.example.test', backend='127.0.0.1:8
         host = root / host_id
         host.mkdir()
         (host / 'deployment.json').write_text(json.dumps(dict(hostId=host_id,
+            bodyLimits=json.loads((body_limits or source.with_name('body_limits.json')).read_text()),
             backend='127.0.0.1:8081', consoleOrigin=origin, origins=[dict(origin=value,clientCertificate=value not in bootstrap_origins) for value in origins], scep=[],
             certificate=f'/run/gateway/{host_id}/tls.crt', privateKey=f'/run/gateway/{host_id}/tls.key')))
         ports = renderer.render(root, bind_ip)
@@ -50,3 +51,27 @@ def render(directory, *, origin='https://mdm.example.test', backend='127.0.0.1:8
         end = config.index('\n        }', start) + len('\n        }')
         config = config[:start] + '        location / { return 404; }' + config[end:]
     return Gateway(config, ports, renderer)
+
+def serve_loopback(root, certificates, backend, port):
+    """Run the production renderer with test-only loopback and private filesystem coordinates."""
+    import os
+    origin = f'https://localhost:{port}'
+    repo = Path(__file__).resolve().parents[1]
+    config = render(repo/'deployment', origin=origin, backend=backend, certificates=str(certificates),
+                    web=False, bootstrap_origins=(origin,), body_limits=repo/'crates/management-http/src/body_limits.json').configuration
+    config = config.replace(f'listen {port} ssl', f'listen 127.0.0.1:{port} ssl')
+    config = config.replace('/tmp/mdm-', str(root/'mdm-')).replace('include /etc/nginx/mime.types;', 'types { }')
+    target = root/'nginx.conf'
+    target.write_text(config)
+    os.execvp('nginx', ['nginx', '-p', str(root), '-c', str(target), '-g', 'daemon off; master_process off;'])
+
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('root', type=Path)
+    parser.add_argument('certificates', type=Path)
+    parser.add_argument('backend')
+    parser.add_argument('port', type=int)
+    args = parser.parse_args()
+    serve_loopback(args.root, args.certificates, args.backend, args.port)

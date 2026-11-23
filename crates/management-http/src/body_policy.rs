@@ -7,6 +7,7 @@ use axum::http::Method;
 pub(crate) enum BodyPolicy {
     Buffered(usize),
     Streaming,
+    Sdk(usize),
 }
 
 /// Completion and package publication verify stored streams under the content lifecycle budget.
@@ -22,62 +23,70 @@ pub(crate) fn content_owned(route: &str, method: &Method) -> bool {
             ))
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BodyLimits {
+    default_bytes: usize,
+    routes: Vec<RouteLimit>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RouteLimit {
+    method: String,
+    path: String,
+    bytes: usize,
+    mode: Mode,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Mode {
+    Buffered,
+    Streaming,
+    Sdk,
+}
+
+/// Product request limits exported unchanged with each host's gateway facts.
+pub fn body_limits() -> &'static BodyLimits {
+    static LIMITS: std::sync::LazyLock<BodyLimits> = std::sync::LazyLock::new(|| {
+        serde_json::from_str(include_str!("body_limits.json"))
+            .expect("compiled management body limits")
+    });
+    &LIMITS
+}
+impl BodyLimits {
+    pub(crate) fn default_bytes(&self) -> usize {
+        self.default_bytes
+    }
+    /// A large body starts only when there is also room for a same-sized decode.
+    pub(crate) fn reservation(wire_bytes: usize) -> usize {
+        wire_bytes
+            .checked_mul(2)
+            .expect("compiled management body capacity")
+    }
+    pub fn largest_buffer(&self) -> usize {
+        self.routes
+            .iter()
+            .filter(|r| !matches!(r.mode, Mode::Streaming))
+            .map(|r| Self::reservation(r.bytes))
+            .max()
+            .unwrap_or(self.default_bytes)
+    }
+}
 pub(crate) fn for_route(route: &str, method: &Method) -> BodyPolicy {
-    use BodyPolicy::{Buffered, Streaming};
-    match (method.as_str(), route) {
-        (
-            "POST",
-            "/api/v1/tenants/{tenant}/devices/{id}/inventory-scopes"
-            | "/api/v1/tenants/{tenant}/devices/{id}/inventory-lists/{field}",
-        ) => Buffered(rss_mdm_inventory_service::assets::windows::MAX_PAGE_BODY_BYTES),
-        ("POST", "/api/v1/tenants/{tenant}/software/source-snapshots/{source}") => {
-            Buffered(rss_mdm_software_service::source_snapshots::MAX_REQUEST_BYTES)
-        }
-        ("POST", "/api/v1/tenants/{tenant}/resources/{id}/content")
-        | ("PATCH", "/api/v1/tenants/{tenant}/resources/{id}/uploads/{upload}") => Streaming,
-        (
-            "POST",
-            "/api/v1/tenants/{tenant}/policies/{policy}"
-            | "/api/v1/tenants/{tenant}/policies/{policy}/previews"
-            | "/api/v1/tenants/{tenant}/policies/{policy}/scope/previews"
-            | "/api/v1/tenants/{tenant}/policies/{policy}/stages/{stage}/scope/previews"
-            | "/api/v1/tenants/{tenant}/resources/{id}",
-        ) => Buffered(8 * 1024 * 1024),
-        ("POST", "/api/v1/tenants/{tenant}/devices/{device}/operations") => {
-            Buffered(16 * 1024 * 1024)
-        }
-        (
-            "POST",
-            "/api/v1/tenants/{tenant}/pki/rotations" | "/api/v1/tenants/{tenant}/pki/crls",
-        ) => Buffered(64 * 1024 * 1024),
-        (
-            "POST",
-            "/api/v1/tenants/{tenant}/pki/signing/recover"
-            | "/api/v1/tenants/{tenant}/agent-issuances/{id}/recover",
-        ) => Buffered(256 * 1024),
-        ("PUT", "/api/v1/tenants/{tenant}/windows/entra-policy") => Buffered(128 * 1024),
-        ("POST", "/api/v1/tenants/{tenant}/certificate-archive/import")
-        | (
-            "PUT",
-            "/api/v1/tenants/{tenant}/authorization/rules/{id}"
-            | "/api/v1/tenants/{tenant}/authorization/user-groups/{id}"
-            | "/api/v1/tenant-administration/authorization/rules/{id}",
-        ) => Buffered(2 * 1024 * 1024),
-        (
-            "POST",
-            "/api/v1/tenants/{tenant}/agent-packages"
-            | "/api/v1/tenants/{tenant}/agent-packages/{id}/withdraw"
-            | "/api/v1/tenants/{tenant}/software/imports"
-            | "/api/v1/tenants/{tenant}/software/sources/{id}/revisions/{revision}"
-            | "/api/v1/tenants/{tenant}/software/resources/{id}/versions/{version}",
-        ) => Buffered(1024 * 1024),
-        (_, path) if path.starts_with("/api/v1/tenants/{tenant}/apple/materials/") => {
-            Buffered(256 * 1024)
-        }
-        (_, path) if path.starts_with("/api/v1/tenants/{tenant}/apple/organizations") => {
-            Buffered(256 * 1024)
-        }
-        _ => Buffered(16 * 1024),
+    let limits = body_limits();
+    let Some(rule) = limits
+        .routes
+        .iter()
+        .find(|r| r.method == method.as_str() && r.path == route)
+    else {
+        return BodyPolicy::Buffered(limits.default_bytes);
+    };
+    match rule.mode {
+        Mode::Buffered => BodyPolicy::Buffered(rule.bytes),
+        Mode::Streaming => BodyPolicy::Streaming,
+        Mode::Sdk => BodyPolicy::Sdk(rule.bytes),
     }
 }
 
@@ -99,13 +108,43 @@ pub(crate) async fn buffer(
     limit: usize,
 ) -> Result<axum::extract::Request, Error> {
     let (parts, body) = request.into_parts();
-    let bytes = tokio::time::timeout(
-        std::time::Duration::from_secs(8),
-        axum::body::to_bytes(body, limit),
-    )
-    .await
-    .map_err(|_| Error::Unavailable(crate::Failure::RequestDeadline))?
-    .map_err(|error| read_error(&error))?;
+    use axum::body::{Bytes, HttpBody};
+    use futures::StreamExt;
+    let exact = body
+        .size_hint()
+        .exact()
+        .and_then(|n| usize::try_from(n).ok());
+    if exact.is_some_and(|n| n > limit) {
+        return Err(Error::RequestTooLarge);
+    }
+    let capacity = exact.unwrap_or(limit);
+    let read = async move {
+        let mut stream = body.into_data_stream();
+        let mut bytes = Vec::with_capacity(capacity);
+        while let Some(frame) = stream.next().await {
+            let chunk = frame.map_err(|e| read_error(&e))?;
+            if chunk.len() > capacity - bytes.len() {
+                return Err(Error::RequestTooLarge);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok::<_, Error>(Bytes::from(bytes))
+    };
+    let bytes = if let Some(control) = parts.extensions.get::<rss_axum::RequestControl>() {
+        use rss_request_context::CancellationObserver;
+        tokio::select! {
+            biased;
+            () = control.cancelled() => return Err(Error::RequestDeadline),
+            result = tokio::time::timeout_at(control.deadline().instant().into(), read) =>
+                result.map_err(|_| Error::RequestDeadline)?,
+        }
+    } else if let Some(deadline) = parts.extensions.get::<rss_request_context::Deadline>() {
+        tokio::time::timeout_at(deadline.instant().into(), read)
+            .await
+            .map_err(|_| Error::RequestDeadline)?
+    } else {
+        read.await
+    }?;
     let mut request = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
     axum::extract::DefaultBodyLimit::max(limit).apply(&mut request);
     Ok(request)
@@ -120,6 +159,25 @@ mod tests {
         extract::{FromRequest, Request},
         response::IntoResponse,
     };
+
+    #[test]
+    fn gateway_uses_domain_envelope_sizes() {
+        for (path, expected) in [
+            (
+                "/api/v1/tenants/{tenant}/software/source-snapshots/{source}",
+                rss_mdm_software_service::source_snapshots::MAX_REQUEST_BYTES,
+            ),
+            (
+                "/api/v1/tenants/{tenant}/devices/{id}/inventory-scopes",
+                rss_mdm_inventory_service::assets::windows::MAX_PAGE_BODY_BYTES,
+            ),
+        ] {
+            assert_eq!(
+                for_route(path, &Method::POST),
+                BodyPolicy::Buffered(expected)
+            );
+        }
+    }
 
     #[tokio::test]
     async fn buffering_and_json_share_the_actual_stream_limit() {

@@ -445,12 +445,6 @@ async fn authenticate_inner(
         } else {
             rss_identity_http_axum::SessionActivity::Active
         };
-    let _global = match app.requests.clone().try_acquire_owned() {
-        Ok(permit) => permit,
-        Err(_) => {
-            return Error::Unavailable(Failure::Capacity).into_response();
-        }
-    };
     let Some(clock) = parts.extensions.get::<Arc<dyn rss_observation::Clock>>() else {
         return Error::Unavailable(Failure::Runtime).into_response();
     };
@@ -514,6 +508,22 @@ async fn authenticate_inner(
                 Ok(Err(error)) => return error.into_response(),
                 Err(_) => return Error::Unavailable(Failure::RequestDeadline).into_response(),
             };
+            if parts.method == axum::http::Method::POST {
+                use rss_mdm_authorization_service::Permission;
+                let allowed = match path.as_str() {
+                    "/api/v1/tenants/{tenant}/software/source-snapshots/{source}" => {
+                        proof.require(Permission::SoftwareWrite, None)
+                    }
+                    "/api/v1/tenants/{tenant}/pki/rotations"
+                    | "/api/v1/tenants/{tenant}/pki/crls" => {
+                        proof.require_all_devices(Permission::Credentials)
+                    }
+                    _ => Ok(()),
+                };
+                if let Err(error) = allowed {
+                    return Error::from(error).into_response();
+                }
+            }
             parts
                 .extensions
                 .insert(crate::http_operation::RequestContinuation::new(credential));
@@ -526,11 +536,12 @@ async fn authenticate_inner(
                 cancellation: Arc::new(control),
             });
             let request = Request::from_parts(parts, body);
+            let dispatch = crate::boundary::after_authentication(request, next);
             if content_owned {
                 // These exact routes hand off to the content owner's bounded operation.
-                next.run(request).await
+                dispatch.await
             } else {
-                tokio::time::timeout_at(deadline.into(), next.run(request))
+                tokio::time::timeout_at(deadline.into(), dispatch)
                     .await
                     .unwrap_or_else(|_| {
                         Error::Unavailable(Failure::RequestDeadline).into_response()
@@ -543,7 +554,6 @@ async fn authenticate_inner(
 pub struct AuthenticationState {
     pub identity: Arc<crate::identity::Identity>,
     pub access: Arc<rss_mdm_authorization_service::Store>,
-    pub requests: Arc<tokio::sync::Semaphore>,
 }
 
 use rss_mdm_audit_integration::RequestAudit;
