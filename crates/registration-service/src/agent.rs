@@ -335,7 +335,17 @@ async fn fence_on(
     sqlx::query("SELECT rss_transactional_messaging.check_execution()")
         .execute(c)
         .await
-        .map_err(|_| Error::Conflict)?;
+        .map_err(|error| {
+            match error
+                .as_database_error()
+                .and_then(|database| database.code())
+                .as_deref()
+            {
+                Some("PZ001") => Error::Conflict,
+                Some("25P04" | "57014" | "55P03") => Error::Deadline,
+                _ => db(error),
+            }
+        })?;
     Ok(())
 }
 fn hex(value: impl AsRef<[u8]>) -> String {

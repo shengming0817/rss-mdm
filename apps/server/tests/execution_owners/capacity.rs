@@ -399,9 +399,33 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     assert!(worker_lifecycle.shutdown().join().await?.is_clean());
     // A still-valid certificate must not authenticate through either Agent entry after a tenant restore.
     assert!(enrollment.authenticate(&evidence).await.is_ok());
+    let origin = gateway.request_origin("https://mdm.example.test".into());
+    let mut held = h.c.operator.begin().await?;
+    let locker:i32=sqlx::query_scalar("SELECT pg_backend_pid() FROM rss_transactional_messaging.tenant_epoch WHERE tenant_id=$1::uuid FOR UPDATE")
+        .bind(h.c.tenant.to_string()).fetch_one(&mut *held).await?;
+    let cutoff = rss_request_context::Deadline::from_timeout(
+        &crate::lifecycle::RuntimeTimer,
+        std::time::Duration::from_millis(400),
+    )?;
+    let (blocked, auth) = tokio::join!(
+        h.c.wait_blocked(locker),
+        enrollment.authenticate_at_origin(&evidence, &origin, cutoff)
+    );
+    held.rollback().await?;
+    blocked?;
+    anyhow::ensure!(
+        matches!(
+            auth,
+            Err(rss_mdm_registration_service::agent::Failure {
+                code: rss_mdm_agent_wire::enroll::ErrorCode::ServiceUnavailable,
+                ..
+            })
+        ),
+        "a blocked execution fence must not report an epoch conflict"
+    );
+
     assert_eq!(sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=2 WHERE tenant_id=$1::uuid AND epoch=1")
         .bind(h.c.tenant.to_string()).execute(&h.c.operator).await?.rows_affected(),1);
-    let origin = gateway.request_origin("https://mdm.example.test".into());
     let deadline = rss_request_context::Deadline::from_timeout(
         &crate::lifecycle::RuntimeTimer,
         std::time::Duration::from_secs(5),
