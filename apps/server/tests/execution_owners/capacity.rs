@@ -140,6 +140,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     // cover its SQL work, including settlement, while still bounding lock contention.
     let mut runtime_policy = resources.config.inventory_runtime.clone();
     runtime_policy.pass_seconds = 20;
+    runtime_policy.drain_seconds = 21;
     let clock = rt::Clock::new(crate::clock::monotonic(), runtime_policy.compile()?);
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_projection::Control::new(&clock, clock.startup_cutoff(), &cancel);
@@ -156,6 +157,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
         observation.store.clone(),
         projection.store.clone(),
         h.c.database.inventory(),
+        h.c.database.long_operations.clone(),
         h.c.audit.clone(),
         h.c.execution().storage(),
         h.c.execution().epoch(),
@@ -181,7 +183,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
         request_budget: rss_axum::RequestBudget::new(std::time::Duration::from_secs(30))?,
     };
     let mut lifecycle = rss_runtime::ShutdownStack::try_new(
-        rss_runtime::TotalDrainBudget::new(std::time::Duration::from_secs(20))?,
+        rss_runtime::TotalDrainBudget::new(std::time::Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let launch = lifecycle.startup()?.commit();
@@ -306,7 +308,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     sqlx::query("SELECT revision FROM rss_observation.objects WHERE tenant_id=$1::uuid AND object_id=$2 FOR UPDATE")
         .bind(h.c.tenant.to_string()).bind(stored.scope.object().as_str()).fetch_one(&mut *locked).await?;
     let mut worker_lifecycle = rss_runtime::ShutdownStack::try_new(
-        rss_runtime::TotalDrainBudget::new(std::time::Duration::from_secs(20))?,
+        rss_runtime::TotalDrainBudget::new(std::time::Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut launch = worker_lifecycle.startup()?.commit();

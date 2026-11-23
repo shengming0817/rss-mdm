@@ -336,3 +336,203 @@ async fn agent_claim_persists_collection_with_execution_epoch_atomically() -> an
     h.close().await?;
     result
 }
+
+async fn tenant_report(h: &Harness, initial: bool) -> anyhow::Result<(Uuid, String, String)> {
+    use rss_mdm_inventory_service::collection::store;
+    let tenant = h.c.tenant;
+    let device = *h.p.device();
+    let at = now();
+    let field = FieldDefinition {
+        key: FieldKey::parse("custom.script.healthy")?,
+        version: 1,
+        value_type: ValueType::Boolean,
+        nullable: false,
+        manual: false,
+        sources: [(Source::AgentScript, 0)].into(),
+        platforms: [Platform::Windows].into(),
+        sensitivity: Sensitivity::Standard,
+        unit: None,
+        searchable: true,
+        item_key: None,
+        time_series: None,
+    };
+    let mut tx = command::seed_transaction(&h.c).await?;
+    if initial {
+        anyhow::ensure!(
+            rss_mdm_inventory_postgres::publish_field_in(&mut tx, tenant, 0, &field).await?
+        );
+        sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,device,source,epoch,enabled) VALUES($1::uuid,$2,'agent.script',$3,true)").bind(tenant.to_string()).bind(device.into_uuid()).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+    }
+    let key = field.key;
+    let definition = CollectionDefinition::new(
+        "script-health",
+        1,
+        Source::AgentScript,
+        vec![CollectionField {
+            definition: field,
+            scope: CollectionScope::Device,
+        }],
+    )?;
+    let (task, attempt) = (Uuid::new_v4(), Uuid::new_v4());
+    enterprise::start_in(
+        &mut tx,
+        tenant,
+        device,
+        task,
+        attempt,
+        definition.clone(),
+        at,
+    )
+    .await?;
+    let progress = CollectionProgress::native(
+        definition,
+        [(
+            key,
+            NativeValue::Value(CollectedValue::Value(Scalar::Boolean(initial))),
+        )]
+        .into(),
+        at,
+    )?;
+    enterprise::accept_in(
+        &mut tx,
+        tenant,
+        enterprise::Report {
+            device,
+            task,
+            attempt,
+            progress,
+            now: at,
+            observed_at: at,
+            project: true,
+            trusted: true,
+        },
+    )
+    .await?;
+    let run = store::read_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        &tenant.to_string(),
+        attempt,
+    )
+    .await?;
+    let batch = run.batch().unwrap().id().as_str().to_owned();
+    tx.commit().await?;
+    Ok((attempt, run.scope.object().as_str().to_owned(), batch))
+}
+
+async fn report_committed(h: &Harness, run: Uuid, batch: &str) -> anyhow::Result<()> {
+    tokio::time::timeout(std::time::Duration::from_secs(30),async {
+        while !sqlx::query_scalar::<_,bool>("SELECT NOT delivery_pending AND EXISTS(SELECT FROM mdm.inventory WHERE tenant_id=$1::uuid AND batch_id=$3) FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(run).bind(batch).fetch_one(&h.c.operator).await? {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        Ok(())
+    }).await?
+}
+
+#[tokio::test]
+#[ignore = "T2: report ACK and projection commit across a blocked tenant, and a reconstructed worker resumes the same checkpoint"]
+async fn report_and_projection_progress_while_a_peer_is_blocked() -> anyhow::Result<()> {
+    use crate::authority_t2_support::{blocked_attempt, wait_for_blocked_attempt};
+    use rss_mdm_inventory_service::inventory_runtime as rt;
+    let a = Harness::open().await?;
+    let b = Harness::open().await?;
+    let mut original = Some(tenant_report(&a, true).await?);
+    for initial in [true, false] {
+        let (slow, object, batch) = original.take().expect("persisted report");
+        if initial {
+            sqlx::query("INSERT INTO rss_observation.objects(tenant_id,object_id,revision) VALUES($1::uuid,$2,0) ON CONFLICT DO NOTHING").bind(a.c.tenant.to_string()).bind(&object).execute(&a.c.operator).await?;
+        }
+        let mut held = a.c.operator.begin().await?;
+        let lock = if initial {
+            "SELECT pg_backend_pid() FROM rss_observation.objects WHERE tenant_id=$1::uuid AND object_id=$2 FOR UPDATE"
+        } else {
+            "SELECT pg_backend_pid() FROM mdm.inventory WHERE tenant_id=$1::uuid AND field=$2 FOR UPDATE"
+        };
+        let pid = sqlx::query_scalar(lock)
+            .bind(a.c.tenant.to_string())
+            .bind(if initial {
+                object.as_str()
+            } else {
+                "custom.script.healthy"
+            })
+            .fetch_one(&mut *held)
+            .await?;
+        let mut policy = a.a.resources.config.inventory_runtime.clone();
+        policy.pass_seconds = 10;
+        policy.drain_seconds = 17;
+        let clock = rt::Clock::new(crate::clock::monotonic(), policy.compile()?);
+        let stop = tokio_util::sync::CancellationToken::new();
+        let control = rss_projection::Control::new(&clock, clock.startup_cutoff(), &stop);
+        let observation = rt::ObservationResource::open(
+            a.c.inputs.options("shared", "mdm_runtime")?,
+            clock.clone(),
+        )
+        .await?;
+        let projection = rt::ProjectionResource::open(
+            a.c.inputs.options("shared", "mdm_runtime")?,
+            clock.clone(),
+            &control,
+        )
+        .await?;
+        let inventory = Arc::new(rt::InventoryRuntime::new(
+            observation.store.clone(),
+            projection.store.clone(),
+            a.c.database.inventory(),
+            a.c.database.long_operations.clone(),
+            a.c.audit.clone(),
+            a.c.execution().storage(),
+            a.c.execution().epoch(),
+            clock,
+            Arc::default(),
+        ));
+        let mut stack = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(std::time::Duration::from_secs(30))?,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )?;
+        let mut launch = stack.startup()?.commit();
+        launch.stage_resource(rss_runtime::DynManagedResource::new_box(observation));
+        launch.stage_resource(rss_runtime::DynManagedResource::new_box(projection));
+        let notify = Arc::new(tokio::sync::Notify::new());
+        launch.stage_task_with_token(inventory.registration(notify.clone()));
+        launch.finish();
+        let check=async {
+            let attempt=wait_for_blocked_attempt(&a.c.operator,pid,"").await?;
+            let pending:bool=sqlx::query_scalar("SELECT delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(a.c.tenant.to_string()).bind(slow).fetch_one(&a.c.operator).await?;
+            anyhow::ensure!(pending==initial,"blocked before the expected report or projection effect");
+            let (peer,_,receipt)=tenant_report(&b,initial).await?;
+            notify.notify_one();
+            report_committed(&b,peer,&receipt).await?;
+            anyhow::ensure!(blocked_attempt(&a.c.operator,pid,"").await?==Some(attempt));
+            Ok::<_,anyhow::Error>(())
+        }.await;
+        held.rollback().await?;
+        notify.notify_one();
+        check?;
+        report_committed(&a, slow, &batch).await?;
+        if initial {
+            let mut gate = a.c.operator.begin().await?;
+            let pid = sqlx::query_scalar("SELECT pg_backend_pid() FROM rss_observation.objects WHERE tenant_id=$1::uuid AND object_id=$2 FOR UPDATE")
+                .bind(a.c.tenant.to_string()).bind(&object).fetch_one(&mut *gate).await?;
+            let accepted = tenant_report(&a, false).await?;
+            notify.notify_one();
+            wait_for_blocked_attempt(&a.c.operator, pid, "").await?;
+            anyhow::ensure!(stack.shutdown().join().await?.is_clean());
+            anyhow::ensure!(sqlx::query_scalar::<_, bool>("SELECT delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(a.c.tenant.to_string()).bind(accepted.0).fetch_one(&a.c.operator).await?, "original report must survive shutdown unacknowledged");
+            gate.rollback().await?;
+            original = Some(accepted);
+        } else {
+            anyhow::ensure!(stack.shutdown().join().await?.is_clean());
+            let effects: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM mdm.inventory WHERE tenant_id=$1::uuid AND batch_id=$2",
+            )
+            .bind(a.c.tenant.to_string())
+            .bind(&batch)
+            .fetch_one(&a.c.operator)
+            .await?;
+            anyhow::ensure!(effects == 1, "one projection of the original report");
+        }
+    }
+    b.close().await?;
+    a.close().await
+}

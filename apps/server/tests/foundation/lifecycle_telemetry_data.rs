@@ -271,6 +271,23 @@ impl Upload {
         ensure!(!receipt.replayed && matches!(receipt.delivery, wire::TelemetryDelivery::Pending));
         Ok(upload.batch_id)
     }
+    pub(super) async fn wait_for_worker_exit(&self, service: &Arc<Service>) -> Result<()> {
+        let cutoff = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
+            + Duration::from_secs(10);
+        tokio::time::timeout_at(cutoff.into(), async {
+            while service
+                .diagnostics(self.principal.binding(), cutoff)
+                .await?
+                .running
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("telemetry worker must finish while the HTTP admission permit remains held")??;
+        Ok(())
+    }
     pub(super) async fn published(&self, service: &Arc<Service>, id: Uuid) -> Result<()> {
         tokio::time::timeout(Duration::from_secs(70), async {
             loop {

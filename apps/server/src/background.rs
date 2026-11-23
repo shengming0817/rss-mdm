@@ -3,17 +3,20 @@ use crate::{ConfigIssue, Error, config::Config};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+pub(crate) const ACCESS_CONNECTIONS: u32 = 4;
 pub(crate) const IDENTITY_CONNECTIONS: u32 = 10;
 pub(crate) const AUXILIARY_CONNECTIONS: u32 = 10;
+pub(crate) const COMMAND_READ_CONNECTIONS: u32 = 2;
 pub(crate) const SCHEDULER_CONNECTIONS: u32 = 2;
 pub(crate) const PROVISIONING_SLOTS: u32 = 2;
 pub(crate) const PROVISIONING_CONNECTIONS: u32 = 1;
 pub(crate) const CONTENT_CONNECTIONS: u32 = 4;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BackgroundConfig {
     pub device_concurrency: usize,
+    pub planning_concurrency: usize,
     pub scheduling: SchedulingConfig,
     pub command_recovery_batch_size: u16,
     pub command_supersede_batch_size: u16,
@@ -147,37 +150,59 @@ pub(crate) struct Compiled {
     pub policy_events: rss_reconcile::Policy,
 }
 impl BackgroundConfig {
+    pub(crate) fn installation(
+        planning_concurrency: usize,
+        device_concurrency: usize,
+        database_connection_budget: u32,
+    ) -> Self {
+        Self {
+            planning_concurrency,
+            device_concurrency,
+            database_connection_budget,
+            scheduling: SchedulingConfig::installation(),
+            command_recovery_batch_size: 64,
+            command_supersede_batch_size: 64,
+        }
+    }
     pub(crate) fn compile(&self, config: &Config) -> Result<Compiled, Error> {
+        let telemetry = config.telemetry.iter().flat_map(|resource| {
+            let maximum = resource.connections.get();
+            let maintenance = matches!(
+                resource.backend,
+                crate::telemetry::Storage::TimescaleDedicated { .. }
+            );
+            std::iter::once(maximum).chain(maintenance.then_some(maximum))
+        });
+        self.compile_pools(
+            config.content.is_some(),
+            !config.publication.sources.is_empty(),
+            config.tenant_administration.is_some(),
+            telemetry,
+        )
+    }
+    pub(crate) fn compile_pools(
+        &self,
+        content: bool,
+        publication: bool,
+        administration: bool,
+        telemetry: impl IntoIterator<Item = u32>,
+    ) -> Result<Compiled, Error> {
         let bad = || Error::Configuration(ConfigIssue::Budget);
-        if self.device_concurrency == 0
-            || self.device_concurrency > tokio::sync::Semaphore::MAX_PERMITS
+        if [self.device_concurrency, self.planning_concurrency]
+            .into_iter()
+            .any(|value| value == 0 || value > tokio::sync::Semaphore::MAX_PERMITS)
         {
             return Err(bad());
         }
         let device = self.scheduling.device.compile(self.device_concurrency)?;
         let commands = self.scheduling.commands.compile(self.device_concurrency)?;
         let tasks = self.scheduling.tasks.compile(self.device_concurrency)?;
-        let inventory = self
+        let planning = self
             .scheduling
             .planning
-            .compile(rss_mdm_inventory_service::assets::runtime::CONCURRENCY)?;
-        let group = self
-            .scheduling
-            .planning
-            .compile(rss_mdm_group_service::runtime::CONCURRENCY)?;
-        let scope = self
-            .scheduling
-            .planning
-            .compile(rss_mdm_scope_service::runtime::CONCURRENCY)?;
-        let compliance = self
-            .scheduling
-            .planning
-            .compile(rss_mdm_compliance_service::runtime::CONCURRENCY)?;
+            .compile(self.planning_concurrency)?;
         let policy = self.scheduling.policy.compile(self.device_concurrency)?;
-        let policy_events = self
-            .scheduling
-            .policy
-            .compile(rss_mdm_policy_service::worker::EVENT_CONCURRENCY)?;
+        let policy_events = self.scheduling.policy.compile(self.planning_concurrency)?;
         let sum = |values: &[usize], extra: u32| -> Result<u32, Error> {
             values
                 .iter()
@@ -208,13 +233,13 @@ impl BackgroundConfig {
             )?,
             inventory_connections: sum(
                 &[
-                    group.concurrency(),
-                    inventory.concurrency(),
-                    compliance.concurrency(),
+                    planning.concurrency(),
+                    planning.concurrency(),
+                    planning.concurrency(),
                 ],
                 2,
             )?,
-            scope_connections: sum(&[scope.concurrency()], 2)?,
+            scope_connections: sum(&[planning.concurrency()], 2)?,
             policy_connections: sum(
                 &[
                     policy.concurrency(),
@@ -229,16 +254,16 @@ impl BackgroundConfig {
             device,
             commands,
             tasks,
-            inventory,
-            group,
-            scope,
-            compliance,
+            inventory: planning,
+            group: planning,
+            scope: planning,
+            compliance: planning,
             policy,
             policy_events,
         };
         // One entry per physical pool. Audit and domain adapters borrow these pools.
         let mut pools = vec![
-            ("access", 4),
+            ("access", ACCESS_CONNECTIONS),
             ("da-access", 4),
             ("da-transactions", 4),
             ("observation", 4),
@@ -251,6 +276,7 @@ impl BackgroundConfig {
             ("resource-owner", 2),
             ("software-owner", 2),
             ("command", compiled.command_connections),
+            ("command-reads", COMMAND_READ_CONNECTIONS),
             ("execution-scheduler", SCHEDULER_CONNECTIONS),
             ("business-scheduler", SCHEDULER_CONNECTIONS),
             ("notifications", 1),
@@ -260,7 +286,7 @@ impl BackgroundConfig {
             // Direct startup/maintenance probes do not borrow a long-lived pool.
             ("direct-probes", 2),
         ];
-        if config.content.is_some() {
+        if content {
             pools.extend([
                 ("content", CONTENT_CONNECTIONS),
                 ("content-owner", 2),
@@ -270,10 +296,10 @@ impl BackgroundConfig {
                 ),
             ]);
         }
-        if !config.publication.sources.is_empty() {
+        if publication {
             pools.push(("publication", AUXILIARY_CONNECTIONS));
         }
-        if config.tenant_administration.is_some() {
+        if administration {
             pools.extend([
                 ("tenant-registry", 8),
                 ("tenant-registry-source", IDENTITY_CONNECTIONS),
@@ -285,18 +311,11 @@ impl BackgroundConfig {
                 ),
             ]);
         }
-        if !config.telemetry.is_empty() {
+        let mut telemetry = telemetry.into_iter().peekable();
+        if telemetry.peek().is_some() {
             pools.push(("telemetry-control", compiled.telemetry_control_connections));
         }
-        for telemetry in &config.telemetry {
-            pools.push(("telemetry", telemetry.connections.get()));
-            if matches!(
-                telemetry.backend,
-                crate::telemetry::Storage::TimescaleDedicated { .. }
-            ) {
-                pools.push(("telemetry-maintenance", telemetry.connections.get()));
-            }
-        }
+        pools.extend(telemetry.map(|maximum| ("telemetry", maximum)));
         let total = pools
             .iter()
             .try_fold(0u32, |total, (_, max)| total.checked_add(*max))

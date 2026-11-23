@@ -125,6 +125,11 @@ async fn published_owner_proofs_are_not_interchangeable_or_cached_authority() ->
     assert_eq!(probe(&h, software_version).await?, (true, false));
     assert!(probe(&h, Uuid::new_v4()).await.is_err());
     let agent = &h.object.members[0];
+    let mut assignment = command::seed_transaction(&h.c).await?;
+    sqlx::query("INSERT INTO mdm_policy.assignments(tenant_id,policy,version,object_kind,object_id,channel,input,availability,target,scope_result,entry_revision,expected_epoch) VALUES($1::uuid,$2,$3,$4,$5,'agent',$6,'ready',$6,(SELECT resolution FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$7),1,1)")
+        .bind(h.c.tenant.to_string()).bind(software_policy).bind(software_version).bind(h.object.object.kind()).bind(h.object.object.uuid())
+        .bind(serde_json::to_value(agent)?).bind(h.scope).execute(&mut *assignment).await?;
+    assignment.commit().await?;
     assert!(wake(&h, software_version, agent, true).await.is_err());
     assert!(scheduled(&h).await?.is_empty());
     wake(&h, software_version, &native_object.members[0], false).await?;

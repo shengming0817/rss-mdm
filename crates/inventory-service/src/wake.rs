@@ -5,15 +5,6 @@ pub(crate) async fn notify(c: &mut PgConnection) -> Result<(), sqlx::Error> {
         .await?;
     Ok(())
 }
-pub(crate) async fn wait(
-    notify: &tokio::sync::Notify,
-    stop: &tokio_util::sync::CancellationToken,
-    nearest: Option<std::time::Duration>,
-) {
-    let recovery = std::time::Duration::from_secs(5);
-    tokio::select! {biased;()=stop.cancelled()=>{},()=notify.notified()=>{},()=tokio::time::sleep(nearest.unwrap_or(recovery).min(recovery))=>{}}
-}
-
 pub(crate) async fn task(
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     payload: &'static str,

@@ -56,7 +56,7 @@ pub(super) fn protection(c: &Context, active: &str) -> Result<Arc<recovery::Prot
 }
 struct Owners {
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    maintenance: recovery::maintenance::Maintenance,
+    maintenance: Arc<recovery::maintenance::Maintenance>,
 }
 impl Owners {
     async fn open(
@@ -102,12 +102,12 @@ impl Owners {
             audit.clone(),
             credentials,
             Some(Arc::new(copies)),
-            Arc::new(tokio::sync::Semaphore::new(2)),
+            rss_mdm_work_page::capacity::Capacity::new(std::num::NonZeroUsize::new(2).unwrap()),
             None,
         );
         Ok(Self {
             runtime,
-            maintenance,
+            maintenance: Arc::new(maintenance),
         })
     }
     async fn close(self) {

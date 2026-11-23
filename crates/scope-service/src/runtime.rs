@@ -1,23 +1,22 @@
 //! Scope-only RSS reconciler. App owns the shared scheduler pool and shutdown.
-/// Maximum concurrent transactions scheduled by this owner worker.
-pub const CONCURRENCY: usize = 2;
 use crate::*;
+use rss_mdm_work_page::scheduler::Scheduler;
 use rss_reconcile::{
     ActualState, ClaimBatch, Completion, Control, DesiredState, DurableStore,
     Error as ReconcileError, ErrorKind, ReconcileDiff, ReconcileStep, Reconciler, ResourceSet,
     Scope, Target, Timer,
 };
-use rss_reconcile_postgres::{PgClaim, PgStore, ProtectedStep};
+use rss_reconcile_postgres::{PgClaim, ProtectedStep};
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
 pub struct ScopeWork {
     pub scopes: Arc<Scopes>,
-    schedule: PgStore,
+    schedule: Scheduler,
 }
 impl ScopeWork {
-    pub fn new(scopes: Arc<Scopes>, schedule: PgStore) -> Self {
+    pub fn new(scopes: Arc<Scopes>, schedule: Scheduler) -> Self {
         Self { scopes, schedule }
     }
     async fn capture<T: Timer>(
@@ -388,22 +387,6 @@ impl DurableStore for ScopeWork {
     }
 }
 
-struct ScopeTimer(tokio::time::Instant);
-impl Timer for ScopeTimer {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "monotonic execution clock boundary"
-    )]
-    fn now(&self) -> Duration {
-        self.0.elapsed()
-    }
-    async fn sleep_until(&self, at: Duration) {
-        match self.0.checked_add(at) {
-            Some(deadline) => tokio::time::sleep_until(deadline).await,
-            None => std::future::pending().await,
-        }
-    }
-}
 impl ScopeWork {
     pub fn registration(
         self: Arc<Self>,
@@ -414,110 +397,64 @@ impl ScopeWork {
         let (task, status) = rss_runtime::ManagedTask::prepare("mdm-scope-calculation", drain);
         let _ = self.scopes.task.set(status);
         task.into_registration(move |cancel| async move {
-            #[allow(
-                clippy::disallowed_methods,
-                reason = "monotonic execution clock boundary"
-            )]
-            let timer = ScopeTimer(tokio::time::Instant::now());
-            let force = tokio_util::sync::CancellationToken::new();
-            let control = Control::new(&timer, Duration::MAX, &force);
-            let mut after: Option<Uuid> = None;
-            let mut worked = false;
-            loop {
-                if cancel.is_cancelled() {
-                    return Ok(());
-                }
-                let discovered = tokio::select! { biased;
-                    () = cancel.cancelled() => return Ok(()),
-                    result = tokio::time::timeout(Duration::from_secs(5), sqlx::query_scalar(match self.scopes.profile() {
-                    rss_mdm_install_support::StorageProfile::Mdm => {
-                        "SELECT tenant_id FROM mdm_scope.scope_work_scopes($1)"
-                    }
-                    rss_mdm_install_support::StorageProfile::Da => {
-                        "SELECT tenant_id FROM rss_da.scope_work_scopes($1)"
-                    }
-                })
-                .bind(after)
-                .fetch_all(&self.scopes.read_pool)) =>
-                        result.map_err(|_| rss_reconcile::ErrorKind::Deadline)
-                            .and_then(|page| page.map_err(|error| crate::discovery::classify(&error))),
-                };
-                if cancel.is_cancelled() { return Ok(()) }
-                self.scopes.record_discovery(discovered.as_ref().map(|_| ()).map_err(|kind| *kind));
-                let tenants: Vec<Uuid> = match discovered {
-                    Ok(page) => page,
-                    Err(rss_reconcile::ErrorKind::Transient | rss_reconcile::ErrorKind::Deadline) => {
-                        // A failed page is not empty. Keep its cursor and rate-limit retries even under wake storms.
-                        tokio::select! { biased;
-                            () = cancel.cancelled() => return Ok(()),
-                            () = tokio::time::sleep(Duration::from_secs(5)) => {},
-                        }
-                        continue;
-                    }
-                    Err(kind) => return Err(rss_runtime::ShutdownError::new(rss_reconcile::Error::new(kind))),
-                };
-                if tenants.is_empty() {
-                    after = None;
-                    if std::mem::take(&mut worked) {
-                        continue;
-                    }
-
-                    tokio::select! { biased;
-                        () = cancel.cancelled() => return Ok(()),
-                        () = notify.notified() => {},
-                        () = tokio::time::sleep(Duration::from_secs(5)) => {},
-                    }
-                    continue;
-                }
-                for tenant in tenants {
-                    after = Some(tenant);
-                    let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
-                        .map_err(rss_runtime::ShutdownError::new)?;
-                    let scope = Scope::new(tenant, crate::tasks::domain(self.scopes.profile()))
-                        .expect("constant scope");
-
-                    let report = match rss_reconcile::run_batch(
-                        self.as_ref(),
-                        self.as_ref(),
-                        &scope,
-                        policy,
-                        &control,
-                        &cancel,
-                        |event| {
-                            self.scopes.record_runner_failure(event);
-                        },
+            let service = self.as_ref();
+            let owner = self.clone();
+            let budget = rss_mdm_work_page::capacity::Capacity::new(
+                std::num::NonZeroUsize::new(policy.concurrency()).expect("validated policy"),
+            );
+            rss_mdm_work_page::reconcile::run(
+                &budget,
+                policy,
+                &cancel,
+                &notify,
+                |after| async move {
+                    let discovered = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        sqlx::query_scalar(match service.scopes.profile() {
+                            rss_mdm_install_support::StorageProfile::Mdm => {
+                                "SELECT tenant_id FROM mdm_scope.scope_work_scopes($1)"
+                            }
+                            rss_mdm_install_support::StorageProfile::Da => {
+                                "SELECT tenant_id FROM rss_da.scope_work_scopes($1)"
+                            }
+                        })
+                        .bind(after)
+                        .fetch_all(&service.scopes.read_pool),
                     )
                     .await
-                    {
-                        Ok(report) => report,
-                        Err(error)
-                            if control.check().is_ok()
-                                && matches!(
-                                    error.kind(),
-                                    rss_reconcile::ErrorKind::Transient
-                                        | rss_reconcile::ErrorKind::Deadline
-                                        | rss_reconcile::ErrorKind::CommitUnknown
-                                ) =>
-                        {
-                            // The observer retained this scope's failure. Advance the tenant cursor;
-                            // an unconfirmed claim is not an empty or successfully drained batch.
-                            continue;
-                        }
-                        Err(error) => return Err(rss_runtime::ShutdownError::new(error)),
-                    };
-                    worked |= [
-                        report.converged,
-                        report.reobserve,
-                        report.deferred,
-                        report.retried,
-                        report.suspended,
-                        report.fenced,
-                        report.execution_failed,
-                    ]
-                    .into_iter()
-                    .any(|count| count > 0);
-                }
-            }
+                    .map_err(|_| rss_reconcile::ErrorKind::Deadline)
+                    .and_then(|page| page.map_err(|error| crate::discovery::classify(&error)));
+                    service
+                        .scopes
+                        .record_discovery(discovered.as_ref().map(|_| ()).map_err(|kind| *kind));
+                    discovered
+                },
+                move |tenant, slots, stop| {
+                    let owner = owner.clone();
+                    async move {
+                        let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
+                            .map_err(|_| {
+                                rss_reconcile::Error::new(rss_reconcile::ErrorKind::InvalidInput)
+                            })?;
+                        let scope =
+                            Scope::new(tenant, crate::tasks::domain(owner.scopes.profile()))
+                                .expect("constant scope");
+                        rss_mdm_work_page::reconcile::batch(
+                            (owner.as_ref(), owner.as_ref()),
+                            slots,
+                            &scope,
+                            policy,
+                            &stop,
+                            |event| {
+                                owner.scopes.record_runner_failure(event);
+                            },
+                        )
+                        .await
+                    }
+                },
+            )
+            .await
+            .map_err(rss_runtime::ShutdownError::new)
         })
     }
 }

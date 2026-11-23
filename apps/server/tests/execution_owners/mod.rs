@@ -83,7 +83,10 @@ async fn delivery(
 }
 impl Harness {
     async fn open() -> Result<Self> {
-        let c = Context::open("shared", &[]).await?;
+        Self::open_in("shared").await
+    }
+    async fn open_in(profile: &str) -> Result<Self> {
+        let c = Context::open(profile, &[]).await?;
         let protection = material::protection(&c)?;
         let trust = material::seed_trust(
             &c,

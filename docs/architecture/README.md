@@ -30,7 +30,7 @@
 
 跨能力写入借用调用方的 PostgreSQL connection / transaction。发起业务的 owner 负责提交、回执与审计，参与方只修改自己持有的状态；注册及通道绑定、退休及采集终止仍在同一事务中完成。命令提交归 Device、Software、Policy 配置、Registration 与 Inventory 等实际业务 owner，Windows / Apple 协议状态由通道参与写入。后台继续消费既有 RSS 持久恢复机制。
 
-Policy 普通持久工作使用 `mdm.policy`，事件使用 `mdm.policy-events`；Device 与 Software 的来源扫描各自消费 `mdm.assets/changes`。App 持有独立的 2 连接业务 scheduler pool，将同一 PgStore 借给各业务 worker 并负责关闭。Policy 管理 worker 使用 device_concurrency，事件并发为 2；来源扫描归各业务 owner 的既有恢复 worker。各自通知、启动补扫和周期恢复独立。Command 的查询与调度共用既有 Command 读池，单独计入预算。
+Policy 普通持久工作使用 `mdm.policy`，事件使用 `mdm.policy-events`；Device 与 Software 的来源扫描各自消费 `mdm.assets/changes`。App 持有独立的 2 连接业务 scheduler pool，将同一 PgStore 借给各业务 worker 并负责关闭。Policy 管理 worker 使用 device_concurrency，事件并发使用 planning_concurrency；来源扫描归各业务 owner 的既有恢复 worker。各自通知、启动补扫和周期恢复独立。Command 的查询和调度分别使用两个独立的连接池，每池两条连接，均计入预算。
 
 安装单元由各能力导出，App 决定顺序并校验稳定安装身份。产品 schema 是当前完整定义，只支持全新安装和当前安装重放。可变租户登记由产品 App 持有；首次与后续租户共用事务登记入口，当前 epoch 仍由 RSS fencing 持有。测试载体不构成生产 facade。
 
@@ -49,4 +49,4 @@ Policy Events 通过 App 的静态参与组合，在 Policy 发起的事务中�
 
 Group 图编辑与最终发布使用同一图屏障复核 graph revision，普通属性和成员计算不取得图锁。Scope 的缺失聚合也受身份锁保护。非等待竞争使整笔事务回滚并重试原任务，不能当成业务版本过期终止任务。
 
-连接按实际物理池累计并乘宿主数：Inventory 8、Scope 4、Policy 按设备并发数加 4 计入（并发数达到 4 时加 5）、Telemetry 5、Resource/Software/Content 管理各 2。后台并发常量与预算复用；禁用 Content/Telemetry 不创建对应池。Command 查询与调度共用其既有读池，独立业务 scheduler 只有调度权限。默认 Compose 容量 160，为标准单宿主预算 128 保留维护余量；多宿主部署必须按总预算配置数据库容量。
+连接预算按实际启用的物理池求和，再乘以宿主数。Inventory 连接数为 3 × 计算并发 + 2，Scope 为计算并发 + 2，Policy 同时计入设备恢复、事件计算和投递。标准单宿主启用卷存储、租户管理和 PostgreSQL 遥测时，计算 8、设备恢复 8 合计需要 190 条连接。PostgreSQL 配置 200，按默认保留设置可用 196 条。各可选能力及多宿主的计算以 [安装与容量配置](../deployment/installation.md) 和 [连接预算](../../apps/server/src/background.rs) 为准。

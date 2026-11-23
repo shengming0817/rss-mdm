@@ -617,7 +617,7 @@ async fn owner_claim_wrappers_recover_only_the_failed_scope() -> Result<()> {
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(30), &cancel);
-    let store = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
+    let store = rss_mdm_work_page::scheduler::Scheduler::new(pool.clone(), &control).await?;
     let owners = crate::assembly::owner_boundaries_t2::Owners::open(&c).await?;
     let scopes = crate::scope_t2::open(&c).await?;
     let assets = crate::assembly::software_assets_t2::fixture::Fixture::open(&c).await?;

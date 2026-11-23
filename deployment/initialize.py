@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 from render_gateway import origin
 
 
@@ -43,6 +44,8 @@ def run():
         database=dict(name='mdm',administrator=dict(host='postgres',port=5432,name='postgres',user='postgres',
             password_file=str(inputs/'database-password'),ca_file=str(inputs/'postgres-ca.crt'))),
         audit_mode='plain',content_storage=os.environ.get('MDM_CONTENT_STORAGE','volume'),
+        planning_concurrency=int(os.environ['MDM_PLANNING_CONCURRENCY']),
+        device_concurrency=int(os.environ['MDM_DEVICE_CONCURRENCY']),
         organization_name=os.environ.get('MDM_ORGANIZATION','My organization'),
         platform_login='platform',administrator_login='administrator',
         platform_password_file=str(inputs/'platform-password'),administrator_password_file=str(inputs/'administrator-password'),
@@ -76,14 +79,19 @@ def run():
     path = root/'installation-input.json'
     if path.exists() and json.loads(path.read_text()) != config:
         raise ValueError('initialization input changed')
-    path.write_text(json.dumps(config))
-    path.chmod(0o600)
-    os.chown(path,10001,10001)
     os.setgroups([])
     os.setgid(10001)
     os.setuid(10001)
     binary = '/usr/local/bin/rss-mdm-installer'
-    receipt = subprocess.check_output([binary, 'install', '--config', str(path)])
+    # The Rust journal seals accepted inputs. Publish the replay file atomically after admission.
+    with tempfile.NamedTemporaryFile(mode='w', dir=root, delete=False) as pending:
+        json.dump(config, pending)
+    staged = Path(pending.name)
+    try:
+        receipt = subprocess.check_output([binary, 'install', '--config', str(staged)])
+        staged.replace(path)
+    finally:
+        staged.unlink(missing_ok=True)
     if ca_request:
         subprocess.run([binary, 'initialize-ca', '--config', str(ca_request)], check=True, stdout=subprocess.DEVNULL)
     from render_gateway import render

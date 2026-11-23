@@ -628,3 +628,62 @@ async fn filevault_binding(
         .bind(tenant).bind(binding.device.into_uuid()).bind(custody).execute(&mut *c).await?;
     Ok(binding)
 }
+
+#[tokio::test]
+#[ignore = "T2: registered credential maintenance rewraps B while A still waits on the original version"]
+async fn maintenance_commits_while_peer_version_is_locked() -> Result<()> {
+    use crate::authority_t2_support::{blocked_attempt, wait_for_blocked_attempt};
+    use std::time::Duration;
+    let a = Context::open("recovery_maintenance", &[]).await?;
+    let b = Context::open("recovery_maintenance", &[]).await?;
+    let (one, _) = candidate(&a, &keys("old")?).await?;
+    let (two, _) = candidate(&b, &keys("old")?).await?;
+    let owner = Owners::open(&a, "recovery_maintenance", protection(&a, "new")?).await?;
+    let mut held = a.operator.begin().await?;
+    let mut peer = b.operator.begin().await?;
+    let lock = "SELECT pg_backend_pid() FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2 FOR UPDATE";
+    let pid = sqlx::query_scalar(lock)
+        .bind(one.tenant)
+        .bind(one.material)
+        .fetch_one(&mut *held)
+        .await?;
+    sqlx::query(lock)
+        .bind(two.tenant)
+        .bind(two.material)
+        .execute(&mut *peer)
+        .await?;
+    let mut stack = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut start = stack.startup()?.commit();
+    start.stage_task_with_token(owner.maintenance.clone().registration());
+    start.finish();
+    let attempt = wait_for_blocked_attempt(&a.operator, pid, "mdm_recovery.versions").await?;
+    peer.rollback().await?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if sqlx::query_scalar::<_, bool>(
+                "SELECT key_id='new' FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2",
+            )
+            .bind(two.tenant)
+            .bind(two.material)
+            .fetch_one(&b.operator)
+            .await?
+            {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    anyhow::ensure!(
+        blocked_attempt(&a.operator, pid, "mdm_recovery.versions").await? == Some(attempt)
+    );
+    held.rollback().await?;
+    anyhow::ensure!(stack.shutdown().join().await?.is_clean());
+    owner.close().await;
+    b.close().await;
+    a.close().await;
+    Ok(())
+}

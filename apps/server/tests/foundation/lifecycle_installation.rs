@@ -206,7 +206,7 @@ async fn fresh(root: &Path, administrator: &crate::config::Database) -> Result<I
             "certificate_file":pg_root.join("server.crt"),"private_key_file":pg_root.join("server.key"),
             "trust_file":administrator.ca_file,"content_volume":root.join("content")},
         "database":{"name":"mdm_installation_proof","administrator":administrator},
-        "organization_name":"First organization","platform_login":"platform","administrator_login":"administrator",
+        "device_concurrency":8,"planning_concurrency":8,"organization_name":"First organization","platform_login":"platform","administrator_login":"administrator",
         "platform_password_file":root.join("platform-password"),"administrator_password_file":root.join("administrator-password"),
         "origin":"https://mdm.example.test","listen":address,"trusted_gateway":"127.0.0.1"
     });
@@ -215,7 +215,17 @@ async fn fresh(root: &Path, administrator: &crate::config::Database) -> Result<I
         serde_json::to_vec(&installation_input)?,
     )?;
     let input: Input = crate::config::load(&root.join("install.json"))?;
-    let first = install(input)
+    let mut rejected = installation_input.clone();
+    rejected["planning_concurrency"] = json!(1_000_000);
+    ensure!(matches!(
+        install(serde_json::from_value(rejected)?).await,
+        Err(crate::installation::Error::Input)
+    ));
+    ensure!(
+        !root.join("installation/installation.json").exists(),
+        "an invalid pool budget cannot bind the installation"
+    );
+    let first = Box::pin(install(input))
         .await
         .context("initialize fresh installation")?;
     let public: Value = serde_json::from_slice(&std::fs::read(
@@ -259,7 +269,7 @@ async fn installed_service_creates_another_tenant_without_reassembly() -> Result
     let mut db = administrator.clone();
     db.name = "mdm_installation_proof".into();
     let operator = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(2)
+        .max_connections(3)
         .connect_with(db.options()?)
         .await?;
     let resource_count = || {
@@ -307,6 +317,7 @@ async fn installed_service_creates_another_tenant_without_reassembly() -> Result
         ensure!(matches!(business.call(Method::GET, &format!("/api/v1/tenants/{tenant}/resources"), None, None).await?.0, 401 | 403), "first session crossed tenants");
         let (status, replay) = platform.call(Method::POST, "/api/v1/tenant-administration/provisionings", Some(request), Some(operation)).await?;
         ensure!(status == 200 && replay == receipt, "original operation replay changed: {status}: {replay}");
+        baseline_isolation(&operator, (first.tenant_id, first.operation_id), (Uuid::parse_str(tenant)?, operation)).await?;
         let after = peer.ready(tenant).await?;
         ensure!(before["observation"] == after["observation"], "new tenant changed running process");
         ensure!(count_before == resource_count().await? && runtime_before == std::fs::read(&runtime_path)?, "new tenant changed installation resources");
@@ -351,7 +362,7 @@ pub(in crate::foundation_t2) async fn shared_telemetry() -> Result<()> {
     let admin = inputs.database("shared_telemetry", "postgres");
     let temp = tempfile::tempdir()?;
     let root = temp.path().canonicalize()?;
-    let installed = fresh(&root, &admin).await?;
+    let installed = Box::pin(fresh(&root, &admin)).await?;
     let original = maintenance::desired(&root, installed.first.host_id)?;
     let running = maintenance::Running::open(&original).await?;
     crate::installation::runtime_files::observe_installation(serde_json::from_value(
@@ -368,4 +379,56 @@ pub(in crate::foundation_t2) async fn shared_telemetry() -> Result<()> {
         &inputs.directory,
     ))
     .await
+}
+
+/// Resume two existing durable intents and observe their original operation IDs.
+async fn baseline_isolation(pool: &sqlx::PgPool, a: (Uuid, Uuid), b: (Uuid, Uuid)) -> Result<()> {
+    use crate::authority_t2_support::{blocked_attempt, wait_for_blocked_attempt};
+    let reopen = |(tenant, operation)| async move {
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT set_config('rss.storage_target',encode(s.target,'hex'),true),set_config('rss.storage_lineage',encode(s.lineage,'hex'),true),set_config('rss.tenant_id',e.tenant_id::text,true),set_config('rss.execution_epoch',e.epoch::text,true) FROM rss_transactional_messaging.storage_lineage s CROSS JOIN rss_transactional_messaging.tenant_epoch e WHERE s.singleton AND e.tenant_id=$1")
+            .bind(tenant).execute(&mut *tx).await?;
+        ensure!(sqlx::query("UPDATE mdm_initialization.baselines SET phase='pending' WHERE tenant_id=$1 AND phase='configured'")
+            .bind(tenant).execute(&mut *tx).await?.rows_affected()==1);
+        ensure!(sqlx::query("UPDATE public.mdm_tenant_operations SET receipt=jsonb_set(receipt,'{result,phase}',to_jsonb('pending'::text)) WHERE operation_id=$1 AND tenant_id=$2 AND action='provision'")
+            .bind(operation).bind(tenant).execute(&mut *tx).await?.rows_affected()==1);
+        sqlx::query("SELECT pg_notify('mdm_work','baseline')")
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok::<_, anyhow::Error>(())
+    };
+    // Hold the normal tenant lock until the business-row lock is established.
+    let mut gate = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2863))")
+        .bind(a.0.to_string())
+        .execute(&mut *gate)
+        .await?;
+    reopen(a).await?;
+    let mut held = pool.begin().await?;
+    let pid = sqlx::query_scalar(
+        "SELECT pg_backend_pid() FROM mdm_initialization.baselines WHERE tenant_id=$1 FOR UPDATE",
+    )
+    .bind(a.0)
+    .fetch_one(&mut *held)
+    .await?;
+    gate.rollback().await?;
+    sqlx::query("SELECT pg_notify('mdm_work','baseline')")
+        .execute(pool)
+        .await?;
+    let update = "UPDATE mdm_initialization.baselines SET phase";
+    let attempt = wait_for_blocked_attempt(pool, pid, update).await?;
+    reopen(b).await?;
+    tokio::time::timeout(Duration::from_secs(8),async {
+        loop {
+            let done:bool=sqlx::query_scalar("SELECT b.phase='configured' AND o.receipt->'result'->>'phase'='configured' FROM mdm_initialization.baselines b JOIN public.mdm_tenant_operations o USING(tenant_id) WHERE b.tenant_id=$1 AND o.operation_id=$2")
+                .bind(b.0).bind(b.1).fetch_one(pool).await?;
+            if done { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Ok::<_,anyhow::Error>(())
+    }).await??;
+    ensure!(blocked_attempt(pool, pid, update).await? == Some(attempt));
+    held.rollback().await?;
+    Ok(())
 }

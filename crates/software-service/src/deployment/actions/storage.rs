@@ -101,7 +101,15 @@ pub async fn save_run(
         .as_ref()
         .map(|v| stored(serde_json::to_value(v)))
         .transpose()?;
-    let previous=tx.with_connection({let tenant=tenant.clone();let id=id.clone();move|c|Box::pin(async move {sqlx::query_scalar::<_,Value>("SELECT state FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).fetch_one(c).await})}).await?;
+    let epoch = tx.expected_epoch();
+    let previous = tx.with_connection({
+        let tenant = tenant.clone();
+        let id = id.clone();
+        move |c| Box::pin(async move {
+            sqlx::query_scalar::<_, Value>("SELECT state FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid AND expected_epoch=$3 FOR UPDATE")
+                .bind(tenant).bind(id).bind(epoch.get()).fetch_optional(c).await
+        })
+    }).await?.ok_or(Error::Conflict)?;
     let changed = tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_software_deployment.action_runs SET state=$3,result=$4 WHERE tenant_id=$1::uuid AND id=$2::uuid AND (state IS DISTINCT FROM $3 OR result IS DISTINCT FROM $4)").bind(tenant).bind(id).bind(state).bind(result).execute(c).await})).await?;
     if changed.rows_affected() > 0 {
         if let Source::Policy { version } = run.source
@@ -113,6 +121,7 @@ pub async fn save_run(
                 tx,
                 &verified,
                 &super::scheduled::Work {
+                    epoch,
                     version,
                     device: run.target.device,
                 },

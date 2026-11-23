@@ -460,11 +460,8 @@ async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Res
         },
     )
     .await?;
-    let timer = owner::recovery::Timer::new();
-    let force = tokio_util::sync::CancellationToken::new();
     let stop = tokio_util::sync::CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &force);
-    let notify = tokio::sync::Notify::new();
+    let signals = owner::worker_wake::Signals::default();
     let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
         claim_batch_size: 64,
         scan_budget: 64,
@@ -477,11 +474,9 @@ async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Res
         max_backoff: Duration::from_secs(1),
         max_attempts: 100,
     })?;
-    let scope = owner::recovery_scope(c.tenant);
+
     let (report, observed) = tokio::join!(
-        a.software
-            .service
-            .run_recovery(&scope, policy, &control, &stop, &notify),
+        a.software.service.run_worker(policy, &stop, &signals),
         async {
             let result=tokio::time::timeout(Duration::from_secs(15),async{loop{let ready:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$3 AND current_version=$2) AND NOT EXISTS(SELECT FROM mdm_policy.policies p CROSS JOIN LATERAL generate_series(0,jsonb_array_length(p.definition#>'{action,rollout,stages}')-1) stage(index) LEFT JOIN mdm_software_deployment.software_stage_stats s ON(s.tenant_id,s.version,s.stage)=(p.tenant_id,p.current_version,stage.index) WHERE p.tenant_id=$1::uuid AND p.id=$3 AND (s.version IS NULL OR NOT s.ready OR NOT s.membership_complete OR (s.input->>'results')::bigint<>(SELECT stats_revision FROM mdm_software_deployment.policy_recovery r WHERE r.tenant_id=$1::uuid AND r.policy=$3)))").bind(c.tenant.to_string()).bind(version).bind(policy_id).fetch_one(&c.operator).await?;if ready{break;}tokio::time::sleep(Duration::from_millis(20)).await;}Ok::<_,anyhow::Error>(())}).await;
             stop.cancel();
@@ -489,7 +484,7 @@ async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Res
         }
     );
     observed??;
-    assert_eq!(report?.execution_failed, 0);
+    report?;
     Ok(())
 }
 
@@ -659,3 +654,5 @@ async fn unbatched_self_service_waits_for_main_scope() -> Result<()> {
 }
 
 mod download;
+
+mod mixed_epoch;

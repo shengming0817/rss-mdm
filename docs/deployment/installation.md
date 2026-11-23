@@ -72,7 +72,7 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 `init` 等待数据库健康后运行并退出；`server` 仅在 init 成功后启动。init 的短暂容器内 root 只将部署 secrets 复制为卷内 0600 文件，然后降为 UID10001 执行 Rust 初始化；没有宿主 root 操作或基础设施管理权限。运行后端、网关均为 UID10001，分别只读挂载自己的运行子目录；PostgreSQL 由官方镜像管理数据属主。
 
-正式 Compose 通过 `MDM_PG_MAX_CONNECTIONS` 配置 PostgreSQL 的 `max_connections`。安装器读取实际容量，扣除数据库保留连接与部署维护连接；应用启动按实际物理池与并发配置核对预算。连接池由进程共享，新增租户不增加池、数据库、监听器或运行配置。
+8 核部署的 Compose 默认值为 `MDM_PLANNING_CONCURRENCY=8`、`MDM_DEVICE_CONCURRENCY=8`、`MDM_PG_MAX_CONNECTIONS=200`。PostgreSQL 按最后一个变量设置 `max_connections`。默认卷存储、租户管理和 PostgreSQL 遥测组合的各连接池上限合计 190。保留 3 个超级用户连接和 1 个维护连接时，应用可用 196 个连接。首装在保存操作身份前读实际容量；并发或容量校验失败时，可修正这三个变量后重新运行。已受理的安装重放沿用原并发输入。安装器扣除数据库保留连接与部署维护连接；应用启动按实际物理池与并发配置核对预算。同一预算的上限为 C 时，C≥2 允许单租户同时执行至多 C−1 项，C=2 时为一项，C=1 时各租户串行。连接池由进程共享，新增租户不增加池、数据库、监听器或运行配置。
 
 `installation.json` 的 `stage=initialized` 表示安装身份、账户与基础授权已持久化；业务初始化由 baseline 的原步骤回执推进。检查 HTTPS `/readyz`、实际登录与授权，并通过平台会话读取首租户的开通操作，直到 `phase=configured`。`pending` 表示仍在推进，`blocked` 携带实际阻塞原因；缺少尚未选择的 APNs、OIDC 等外部能力不阻塞普通开通。
 
@@ -335,7 +335,7 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 运行配置必须显式包含 `identity.runtime`、`background.scheduling`、`http`、`inventory_runtime` 与 `audit_query`，完整形状见 [MDM 配置示例](../../fixtures/mdm-config.example.json)。安装生成器写入当前保守值；恢复时保留原安装 target、lineage、tenant epoch 和 `rp_generation`，新安装 RP generation 为 1。Identity 公共数据库 schema 使用 owner 的版本 18，自有 HTTP、Agent 和安装格式仍为 V1。
 
-`background.scheduling` 分别配置 device、commands、tasks、planning、policy 的领取量、扫描量、lease、执行、重试及排空预算。设备并发默认 4，领取／扫描默认 64；领取支持至 1024，扫描独立配置。`command_recovery_batch_size` 和 `command_supersede_batch_size` 分别控制恢复遍历与替代命令的处理批次，默认 64。并发对应的物理池预算在启动前统一 checked 校验。
+`background.scheduling` 分别配置 device、commands、tasks、planning、policy 的领取量、扫描量、lease、执行、重试及排空预算。标准部署的 `MDM_DEVICE_CONCURRENCY` 和 `MDM_PLANNING_CONCURRENCY` 各取 8，由安装器写入 background 配置。设备恢复共用执行容量，每类计算的租户共享该类总额度。领取／扫描默认 64；领取支持至 1024，扫描独立配置。`command_recovery_batch_size` 和 `command_supersede_batch_size` 分别控制恢复遍历与替代命令的处理批次，默认 64。并发对应的物理池预算在启动前统一 checked 校验。
 
 Identity 默认 KDF 并发 4、预留内存 128 MiB，请求 10 秒、认证 claim 60 秒、KDF 排空 5 秒。claim 必须覆盖当前配置允许的请求与维护密码操作总时长；密码计算在请求取消后仍由原 KDF 排空。OIDC 请求／连接默认 5／3 秒；JWKS TTL 60 秒、128 租户、刷新间隔 1 秒，租户容量可配置至 1024。独立 DA 使用 [DA 配置示例](../../deployment/da-config.example.json) 中必填的 `identity_policy` 和 `http`：启动总预算默认 60 秒，请求／连接排空 15 秒，宿主总排空 45 秒，维护总排空 30 秒。请求与 KDF 排空必须放入对应父预算；增大请求时需同步请求和连接排空。
 
@@ -345,7 +345,7 @@ Identity 默认 KDF 并发 4、预留内存 128 MiB，请求 10 秒、认证 cla
 
 MDM 和 Identity 使用各自原业务连接直接追加 Audit，不配置审计 worker、投影数据库或审计恢复密钥。Plain 为新安装默认；Ledger 由安装输入显式选择，业务角色不能直接修改审计表。旧候选须保留原制品和数据，本版本不提供旧库或旧配置转换。
 
-原生请求在 SIGTERM 后由 Runtime 先关闭准入并排空，再释放依赖。进程总停机预算为 60 秒，Compose server 的 `stop_grace_period` 为 75 秒（另留 15 秒进程退出余量）；正常退出立即结束，不等待宽限期用满。
+收到 SIGTERM 时，Runtime 同时关闭原生请求准入并让遥测停止领取新工作。已接纳的 HTTP 请求与已领取的遥测批次并行排空。启用遥测时，进程总停机预算须大于 HTTP 准入排空与遥测结算两者中的较大值。默认 HTTP 准入排空为 35 秒，遥测结算上界为 51 秒，进程总停机预算为 60 秒。Compose server 的 `stop_grace_period` 为 75 秒，另留 15 秒供进程退出。
 
 所有运行模式（含 Apple-only 与 Agent-only）必须配置顶层 `native_protection`，包含 `active_file`、`historical_files` 与 `fingerprint_file`。每个文件恰好包含 32 字节原始随机密钥，权限 0600；不是 hex/Base64/PEM 文本。全新安装分别生成加密钥与比较钥。`active_file` 只用于新密文，最多保留 15 个历史解密钥，按密文中确切 key ID 读取。`fingerprint_file` 维持原有请求、材料与设备比较身份，不能随密文重加密替换。Ledger、Windows 协议保护材料和恢复凭据专用钥集合仍分别保管。旧 `native_protection_key_file` 配置不再接受，也不提供转换入口。
 

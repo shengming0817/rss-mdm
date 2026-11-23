@@ -109,8 +109,8 @@ pub struct Service {
     pub(crate) storage: rss_transactional_messaging::fence::StorageIdentity,
     pub(crate) transactions: Transactions,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
-    pub(crate) reconcile: rss_reconcile_postgres::PgStore,
-    pub(crate) worker_budget: Arc<tokio::sync::Semaphore>,
+    pub(crate) reconcile: rss_mdm_work_page::scheduler::Scheduler,
+    pub(crate) worker_budget: Arc<rss_mdm_work_page::capacity::Capacity>,
     pub(crate) recovery_batch: rss_device_command::BatchLimit,
     pub(crate) readiness: rss_mdm_recovery_observation::Readiness,
 }
@@ -120,8 +120,8 @@ impl Service {
         storage: rss_transactional_messaging::fence::StorageIdentity,
         transactions: Transactions,
         outbox: Arc<PgOutboxStore<()>>,
-        reconcile: rss_reconcile_postgres::PgStore,
-        worker_budget: Arc<tokio::sync::Semaphore>,
+        reconcile: rss_mdm_work_page::scheduler::Scheduler,
+        worker_budget: Arc<rss_mdm_work_page::capacity::Capacity>,
         recovery_batch: rss_device_command::BatchLimit,
     ) -> Self {
         let readiness = rss_mdm_recovery_observation::Readiness::new(DOMAIN, true, false);

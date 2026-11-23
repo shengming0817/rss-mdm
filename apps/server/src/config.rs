@@ -230,16 +230,19 @@ impl Config {
         let audit_query = self.audit_query.compile()?;
         let inventory_runtime = self.inventory_runtime.compile()?;
         let http = self.http.compile(&self.identity.runtime)?;
-        if [
-            std::time::Duration::from_secs(self.inventory_runtime.drain_seconds),
-            background.device_drain,
-            background.commands_drain,
-            background.tasks_drain,
-            background.planning_drain,
-            background.policy_drain,
-        ]
-        .into_iter()
-        .any(|v| v > http.total_drain)
+        if (!self.telemetry.is_empty()
+            && rss_mdm_telemetry_service::WORKER_DRAIN.max(http.admission_drain)
+                >= http.total_drain)
+            || [
+                std::time::Duration::from_secs(self.inventory_runtime.drain_seconds),
+                background.device_drain,
+                background.commands_drain,
+                background.tasks_drain,
+                background.planning_drain,
+                background.policy_drain,
+            ]
+            .into_iter()
+            .any(|v| v > http.total_drain)
         {
             return Err(Error::Configuration(ConfigIssue::Budget));
         }

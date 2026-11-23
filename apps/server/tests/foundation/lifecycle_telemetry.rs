@@ -134,6 +134,16 @@ async fn provision(platform: &mut Browser) -> Result<(Uuid, Browser)> {
         .await?;
     Ok((tenant, browser))
 }
+fn check_shutdown_budget(runtime: &Value) -> Result<()> {
+    let mut tight: crate::config::Config = serde_json::from_value(runtime.clone())?;
+    tight.http.admission_drain_seconds = tight.http.total_drain_seconds;
+    ensure!(matches!(
+        tight.compile(),
+        Err(crate::Error::Configuration(crate::ConfigIssue::Budget))
+    ));
+    Ok(())
+}
+
 #[allow(
     clippy::cognitive_complexity,
     reason = "one installed host proves tenant isolation, interrupted rotation, and cold recovery across the same receipts"
@@ -172,7 +182,8 @@ pub(super) async fn exercise(
     }
     recovery::unrelated_rotation(root, source, first, &resources[0]).await?;
     runtime = maintenance::desired(root, first.host_id)?;
-    let running = maintenance::Running::open(&runtime).await?;
+    check_shutdown_budget(&runtime)?;
+    let running = Box::pin(maintenance::Running::open(&runtime)).await?;
     runtime_files::observe_installation(serde_json::from_value(source.clone())?).await?;
     let address = source["listen"]
         .as_str()
@@ -213,7 +224,7 @@ pub(super) async fn exercise(
         .unwrap()
         .remove("worker_password_file");
     available(&mut first_browser, a, true).await?;
-    let a_data = data::Upload::publish(
+    let a_data = Box::pin(data::Upload::publish(
         &running,
         &mut first_browser,
         a,
@@ -221,7 +232,7 @@ pub(super) async fn exercise(
         &runtime,
         inputs,
         11,
-    )
+    ))
     .await
     .context("A product intake")?;
     let (_, before) = platform.call(Method::GET, "/readyz", None, None).await?;
@@ -251,9 +262,11 @@ pub(super) async fn exercise(
         .unwrap()
         .remove("worker_password_file");
     available(&mut peer, b, true).await?;
-    let b_data = data::Upload::publish(&running, &mut peer, b, &primary, &runtime, inputs, 22)
-        .await
-        .context("B product intake")?;
+    let b_data = Box::pin(data::Upload::publish(
+        &running, &mut peer, b, &primary, &runtime, inputs, 22,
+    ))
+    .await
+    .context("B product intake")?;
     recovery::reader_isolation(root, &resources[0], a, b).await?;
     a_data
         .reject_foreign_cursor(&mut first_browser, &b_data)
@@ -278,7 +291,7 @@ pub(super) async fn exercise(
     let request = json!({"product":source,"installation":resources[0],"operationId":Uuid::new_v4(),"tenant":b,"expectedRevision":1,"action":rotation});
     // Interrupt after the provider changed the password and before PostgreSQL accepts the probe.
     let admin = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
+        .max_connections(2)
         .connect_with(primary.options()?)
         .await?;
     let service = running.telemetry.get().context("installed ingress")?;
@@ -293,7 +306,10 @@ pub(super) async fn exercise(
         "same password cannot rotate"
     );
     sqlx::raw_sql("CREATE FUNCTION public.pause_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'hold published receipt'; END $$; CREATE TRIGGER pause_receipt BEFORE UPDATE OF delivery ON mdm_telemetry.batches FOR EACH ROW WHEN (NEW.delivery='published') EXECUTE FUNCTION public.pause_receipt()").execute(&admin).await?;
-    let expired = b_data.more(service, 2).await?;
+    let expired = b_data
+        .more(service, 2)
+        .await
+        .context("intake before retry expiry")?;
     let mut tx = admin.begin().await?;
     sqlx::query("SELECT set_config('rss.storage_target',encode(s.target,'hex'),true),set_config('rss.storage_lineage',encode(s.lineage,'hex'),true),set_config('rss.tenant_id',e.tenant_id::text,true),set_config('rss.execution_epoch',e.epoch::text,true) FROM rss_transactional_messaging.storage_lineage s CROSS JOIN rss_transactional_messaging.tenant_epoch e WHERE s.singleton AND e.tenant_id=$1")
         .bind(b).fetch_one(&mut *tx).await?;
@@ -311,7 +327,10 @@ pub(super) async fn exercise(
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }).await.context("relay placed expired original in dead letter")??;
-    let awaiting = b_data.more(service, 4).await?;
+    let awaiting = b_data
+        .more(service, 4)
+        .await
+        .context("intake before reader rotation")?;
     sqlx::raw_sql("CREATE FUNCTION public.interrupt_reader_probe() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'interrupted reader'; END $$; CREATE TRIGGER interrupt_reader_probe BEFORE UPDATE ON mdm_telemetry.storage_binding FOR EACH ROW WHEN (NEW.probe_ready AND NOT OLD.probe_ready) EXECUTE FUNCTION public.interrupt_reader_probe()").execute(&admin).await?;
     ensure!(
         matches!(
@@ -325,7 +344,10 @@ pub(super) async fn exercise(
     )
     .execute(&admin)
     .await?;
-    b_data.published(service, awaiting).await?;
+    b_data
+        .published(service, awaiting)
+        .await
+        .context("publish previously accepted batch during rotation")?;
     recovery::login(root, &resources[0], b, "b-password", false).await?;
     let mut different = request.clone();
     different["action"] = json!({"kind":"retire"});
@@ -347,7 +369,6 @@ pub(super) async fn exercise(
         Err(crate::installation::Error::Storage)
     ));
     sqlx::raw_sql("DROP TRIGGER interrupt_reader_probe ON mdm_telemetry.storage_binding; DROP FUNCTION public.interrupt_reader_probe()").execute(&admin).await?;
-    admin.close().await;
     let mut competing = request.clone();
     competing["operationId"] = json!(Uuid::new_v4());
     ensure!(
@@ -365,13 +386,23 @@ pub(super) async fn exercise(
         .context("resume original reader rotation")?;
     available(&mut first_browser, a, true).await?;
     available(&mut peer, b, true).await?;
+    relay_isolation(&admin, service, a, &a_data, &b_data)
+        .await
+        .context("relay peer after reader rotation")?;
     let (t, mut shared) = provision(&mut platform).await?;
     attach(source, &resources[1], t, 0, json!({"kind":"select"})).await?;
     available(&mut shared, t, true).await?;
-    let shared_data =
-        data::Upload::publish(&running, &mut shared, t, &primary, &runtime, inputs, 33)
-            .await
-            .context("SharedRls product intake")?;
+    let shared_data = Box::pin(data::Upload::publish(
+        &running,
+        &mut shared,
+        t,
+        &primary,
+        &runtime,
+        inputs,
+        33,
+    ))
+    .await
+    .context("SharedRls product intake")?;
     a_data
         .replay(running.telemetry.get().unwrap(), &mut first_browser)
         .await?;
@@ -380,7 +411,61 @@ pub(super) async fn exercise(
         "reader rotation must retain the shared control session"
     );
     observer.close().await;
-    running.close().await?;
+    // Keep the original outbox head durable across process shutdown and the cold restore.
+    let ddl = sqlx::AssertSqlSafe(format!(
+        "CREATE FUNCTION public.pause_cold_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'hold accepted batch'; END $$; CREATE TRIGGER pause_cold_receipt BEFORE UPDATE OF delivery ON mdm_telemetry.batches FOR EACH ROW WHEN (NEW.tenant_id='{t}'::uuid AND NEW.delivery='published') EXECUTE FUNCTION public.pause_cold_receipt()"
+    ));
+    sqlx::raw_sql(ddl).execute(&admin).await?;
+    let pending = shared_data
+        .more(running.telemetry.get().unwrap(), 2)
+        .await?;
+    let (gate, blocker) = hold_receipt(&admin, a).await?;
+    let draining = a_data.more(running.telemetry.get().unwrap(), 4).await?;
+    crate::authority_t2_support::wait_for_blocked_attempt(&admin, blocker, "mdm_telemetry.batches")
+        .await?;
+    let admission = running.admission.get().unwrap().clone();
+    let permit = admission.try_admit()?;
+    let service = running.telemetry.get().unwrap().clone();
+    let shutdown = tokio::spawn(running.close());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while admission.try_admit().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    // A request admitted before shutdown can still persist intake. Its new batch
+    // must wait for restart while the already claimed delivery finishes.
+    gate.rollback().await?;
+    Box::pin(a_data.published(&service, draining)).await?;
+    Box::pin(a_data.wait_for_worker_exit(&service)).await?;
+    ensure!(sqlx::query_scalar::<_, bool>(
+        "SELECT status='published' FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND domain='mdm-telemetry' AND message_id=$2"
+    ).bind(a).bind(draining.to_string()).fetch_one(&admin).await?);
+    let next = Box::pin(a_data.more(&service, 6)).await?;
+    ensure!(!shutdown.is_finished());
+    drop(permit);
+    shutdown.await??;
+    ensure!(
+        sqlx::query_scalar::<_, bool>(
+            "SELECT delivery='pending' FROM mdm_telemetry.batches WHERE tenant_id=$1 AND id=$2"
+        )
+        .bind(a)
+        .bind(next)
+        .fetch_one(&admin)
+        .await?
+    );
+    sqlx::raw_sql("DROP TRIGGER wait_one_receipt ON mdm_telemetry.batches; DROP FUNCTION public.wait_one_receipt()").execute(&admin).await?;
+    ensure!(
+        sqlx::query_scalar::<_, bool>(
+            "SELECT delivery <> 'published' FROM mdm_telemetry.batches WHERE tenant_id=$1 AND id=$2"
+        )
+        .bind(t)
+        .bind(pending)
+        .fetch_one(&admin)
+        .await?
+    );
+    sqlx::raw_sql("DROP TRIGGER pause_cold_receipt ON mdm_telemetry.batches; DROP FUNCTION public.pause_cold_receipt()").execute(&admin).await?;
+    admin.close().await;
     Box::pin(recovery::cold(
         root,
         source,
@@ -392,7 +477,11 @@ pub(super) async fn exercise(
     ))
     .await
     .context("shared storage cold recovery")?;
-    let restarted = maintenance::Running::open(&runtime).await?;
+    let restarted = Box::pin(maintenance::Running::open(&runtime)).await?;
+    Box::pin(a_data.published(restarted.telemetry.get().unwrap(), next)).await?;
+    shared_data
+        .published(restarted.telemetry.get().unwrap(), pending)
+        .await?;
     peer.login(
         &b.to_string(),
         "administrator",
@@ -437,4 +526,52 @@ pub(super) async fn exercise(
     recovery::retained(&primary, a, b, expired).await?;
     restarted.close().await?;
     Ok(())
+}
+
+async fn relay_isolation(
+    pool: &sqlx::PgPool,
+    service: &Arc<rss_mdm_telemetry_service::Service>,
+    tenant: Uuid,
+    a: &data::Upload,
+    b: &data::Upload,
+) -> Result<()> {
+    use crate::authority_t2_support::{blocked_attempt, wait_for_blocked_attempt};
+    let (held, pid) = hold_receipt(pool, tenant).await?;
+    let accepted = a.more(service, 2).await.context("blocked tenant intake")?;
+    let update = "mdm_telemetry.batches";
+    let check = async {
+        let attempt = wait_for_blocked_attempt(pool, pid, update).await?;
+        let peer = b
+            .more(service, 6)
+            .await
+            .context("peer intake during blocked receipt")?;
+        b.published(service, peer).await?;
+        ensure!(blocked_attempt(pool, pid, update).await? == Some(attempt));
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    held.rollback().await?;
+    sqlx::raw_sql("DROP TRIGGER wait_one_receipt ON mdm_telemetry.batches; DROP FUNCTION public.wait_one_receipt()").execute(pool).await?;
+    check?;
+    a.published(service, accepted).await
+}
+
+async fn hold_receipt(
+    pool: &sqlx::PgPool,
+    tenant: Uuid,
+) -> Result<(sqlx::Transaction<'static, sqlx::Postgres>, i32)> {
+    // Only the first tenant's published receipt waits. Uploads and the other tenant use the ordinary service.
+    let ddl = sqlx::AssertSqlSafe(format!(
+        "CREATE FUNCTION public.wait_one_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(hashtextextended(NEW.tenant_id::text,3210)); RETURN NEW; END $$; CREATE TRIGGER wait_one_receipt BEFORE UPDATE OF delivery ON mdm_telemetry.batches FOR EACH ROW WHEN (NEW.delivery='published' AND NEW.tenant_id='{tenant}'::uuid) EXECUTE FUNCTION public.wait_one_receipt()"
+    ));
+    sqlx::raw_sql(ddl).execute(pool).await?;
+    let mut held = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,3210))")
+        .bind(tenant.to_string())
+        .execute(&mut *held)
+        .await?;
+    let pid = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *held)
+        .await?;
+    Ok((held, pid))
 }

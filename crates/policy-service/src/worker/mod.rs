@@ -9,7 +9,6 @@ use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 pub mod jobs;
 mod runtime;
-use crate::clock::Timer;
 pub(crate) use rss_mdm_policy_postgres::work::Work;
 pub use runtime::{Automation, PolicyWork};
 pub(crate) mod health;
@@ -19,5 +18,3 @@ pub use health::{
 };
 
 use rss_mdm_audit_integration::RequestAudit;
-
-pub use runtime::EVENT_CONCURRENCY;

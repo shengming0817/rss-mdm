@@ -23,8 +23,8 @@ pub(crate) async fn assemble(
     authority: Arc<rss_mdm_software_service::deployment::managed_registration::AuthorityReader>,
     endpoints: Option<BTreeMap<String, String>>,
     sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
-    reconcile: rss_reconcile_postgres::PgStore,
-    budget: Arc<tokio::sync::Semaphore>,
+    reconcile: rss_mdm_work_page::scheduler::Scheduler,
+    budget: Arc<rss_mdm_work_page::capacity::Capacity>,
 ) -> Result<Assembly, crate::Error> {
     config.enrollment_entries.validate()?;
     let apple = Arc::new(super::registration_apple_facts::AppleFacts(

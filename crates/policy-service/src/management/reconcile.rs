@@ -1,4 +1,25 @@
 use super::*;
+
+/// Preserve the NOWAIT SQLSTATE so the worker can defer the original job after a confirmed rollback.
+pub(super) async fn lock_assignment_scope(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    scope: Uuid,
+) -> Result<()> {
+    let tenant = tx.tenant_id();
+    tx.with_connection(move |connection| {
+        Box::pin(async move {
+            Ok(
+                rss_mdm_scope_postgres::admission_on(profile, connection, tenant, scope)
+                    .await
+                    .map(|_| ()),
+            )
+        })
+    })
+    .await??;
+    Ok(())
+}
+
 pub(crate) enum PreparedAssignment {
     Empty,
     Lifecycle(Box<super::lifecycle::PreparedLifecycle>),
@@ -46,10 +67,10 @@ impl crate::application::Application {
         );
         let scope = p.definition.scope;
         let tenant = tx.tenant_id();
+        lock_assignment_scope(profile, tx, scope).await?;
         let mut assignments = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    rss_mdm_scope_postgres::admission_on(profile, c, tenant, scope).await?;
                     Ok(source
                         .assignment_objects_on(c, tenant, scope, channel, after, 64)
                         .await)

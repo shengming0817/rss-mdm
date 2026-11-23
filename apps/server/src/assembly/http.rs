@@ -269,6 +269,7 @@ pub(crate) fn from_state(
         instance: state.identity.instance.to_string(),
     });
     let baseline = Arc::new(crate::administration::baseline::Service {
+        long_operations: state.access.long_operations.clone(),
         instance: state.identity.instance,
         pool: state.access.archive_pool(),
         authorization: state.access.authorization_store(),

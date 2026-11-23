@@ -67,6 +67,8 @@ pub struct Input {
     pub database: DatabaseInput,
     #[serde(default)]
     pub audit_mode: AuditMode,
+    pub planning_concurrency: usize,
+    pub device_concurrency: usize,
     pub organization_name: String,
     pub platform_login: String,
     pub administrator_login: String,
@@ -113,6 +115,13 @@ fn invalid<T>(_: T) -> Error {
     Error::Input
 }
 impl Input {
+    fn background(&self, budget: u32) -> crate::background::BackgroundConfig {
+        crate::background::BackgroundConfig::installation(
+            self.planning_concurrency,
+            self.device_concurrency,
+            budget,
+        )
+    }
     fn validate(&self) -> Result<()> {
         let u = url::Url::parse(&self.origin).map_err(invalid)?;
         if u.scheme() != "https"
@@ -124,6 +133,9 @@ impl Input {
             || self.trusted_gateway.is_unspecified()
             || self.listen.port() == 0
             || self.database.name.is_empty()
+            || [self.planning_concurrency, self.device_concurrency]
+                .into_iter()
+                .any(|v| v == 0 || v > tokio::sync::Semaphore::MAX_PERMITS)
             || self.organization_name.trim().is_empty()
             || self.organization_name.chars().count() > 128
             || self.organization_name.contains('\0')
@@ -257,6 +269,26 @@ pub async fn install(input: Input) -> Result<Receipt> {
     }
     let previous = journal.load::<Saved>("installation.json")?;
     let first = previous.is_none();
+    if first {
+        let budget = super::postgres::available_connections(&input).await?;
+        input
+            .background(budget)
+            .compile_pools(
+                matches!(input.content_storage, ContentStorage::Volume),
+                false,
+                true,
+                [super::default_telemetry::CONNECTIONS],
+            )
+            .map_err(|_| {
+                tracing::error!(
+                    planning_concurrency = input.planning_concurrency,
+                    device_concurrency = input.device_concurrency,
+                    available_connections = budget,
+                    "installation worker capacity exceeds the database budget"
+                );
+                Error::Input
+            })?;
+    }
     let fingerprint_key = protected(&journal, "operation.key", 32, first)?;
     let platform = password(
         &journal,
@@ -537,7 +569,7 @@ fn runtime(
     Ok(serde_json::json!({
         "http": crate::config::http::Http::installation(),
         "inventory_runtime":crate::config::InventoryRuntimeConfig::installation(),
-        "background":{"device_concurrency":4,"command_recovery_batch_size":64,"command_supersede_batch_size":64,"scheduling":crate::background::SchedulingConfig::installation(),"database_connection_budget":connection_budget},
+        "background":input.background(connection_budget),
         "runtime_binding":{"host_id":saved.receipt.host_id,"operation_id":saved.receipt.operation_id,"revision":1,"material_digest":saved.fingerprint_digest()},
         "device_access":{"database":input.database("da_access")?,"deployment_authorities":[],"platform_sso":null,"registration":null},
         "agent_pki":{"mode":"disabled"},"device_pki":[],"native_protocols":{},"native_protection":{"active_file":journal.path("native.key")?,"historical_files":[],"fingerprint_file":journal.path("native-fingerprint.key")?},

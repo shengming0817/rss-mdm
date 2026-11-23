@@ -22,8 +22,8 @@ pub(crate) async fn assemble(
     protection: Arc<rss_mdm_native_protection::Protector>,
     credentials: Arc<rss_mdm_recovery_credentials::Protection>,
     source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
-    reconcile: rss_reconcile_postgres::PgStore,
-    budget: Arc<tokio::sync::Semaphore>,
+    reconcile: rss_mdm_work_page::scheduler::Scheduler,
+    budget: Arc<rss_mdm_work_page::capacity::Capacity>,
 ) -> Result<Assembly, crate::Error> {
     let apple = Arc::new(super::credential_apple_facts::AppleFacts(
         rss_mdm_apple_channel::flow_store::Store {
