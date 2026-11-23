@@ -1,5 +1,6 @@
 {
   "background": {
+    "external_calls": {"apns": {"total": 8, "per_credential": 7}, "wns": {"total": 8, "per_credential": 7}, "ade": 8, "publication": {"total": 8, "per_source": 7}},
     "device_concurrency": 8,
     "planning_concurrency": 8,
     "database_connection_budget": 196,

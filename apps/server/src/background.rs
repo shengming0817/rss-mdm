@@ -15,12 +15,53 @@ pub(crate) const CONTENT_CONNECTIONS: u32 = 4;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BackgroundConfig {
+    pub external_calls: ExternalCalls,
     pub device_concurrency: usize,
     pub planning_concurrency: usize,
     pub scheduling: SchedulingConfig,
     pub command_recovery_batch_size: u16,
     pub command_supersede_batch_size: u16,
     pub database_connection_budget: u32,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalCalls {
+    pub apns: PushCapacity,
+    pub wns: PushCapacity,
+    pub ade: std::num::NonZeroUsize,
+    pub publication: PublicationCapacity,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PushCapacity {
+    pub total: std::num::NonZeroUsize,
+    pub per_credential: std::num::NonZeroUsize,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicationCapacity {
+    pub total: std::num::NonZeroUsize,
+    pub per_source: std::num::NonZeroUsize,
+}
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ExternalLimits {
+    pub apns: rss_mdm_work_page::external::Limits,
+    pub wns: rss_mdm_work_page::external::Limits,
+    pub ade: std::num::NonZeroUsize,
+    pub publication: rss_mdm_work_page::external::Limits,
+}
+impl ExternalCalls {
+    fn compile(&self) -> Result<ExternalLimits, Error> {
+        let bad = || Error::Configuration(ConfigIssue::Budget);
+        let limits = rss_mdm_work_page::external::Limits::new;
+        if self.ade.get() > tokio::sync::Semaphore::MAX_PERMITS { return Err(bad()); }
+        Ok(ExternalLimits {
+            ade: self.ade,
+            apns: limits(self.apns.total, self.apns.per_credential).ok_or_else(bad)?,
+            wns: limits(self.wns.total, self.wns.per_credential).ok_or_else(bad)?,
+            publication: limits(self.publication.total, self.publication.per_source).ok_or_else(bad)?,
+        })
+    }
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -126,6 +167,7 @@ impl SchedulingConfig {
 }
 #[derive(Clone, Copy)]
 pub(crate) struct Compiled {
+    pub external: ExternalLimits,
     pub device_drain: Duration,
     pub commands_drain: Duration,
     pub tasks_drain: Duration,
@@ -151,11 +193,13 @@ pub(crate) struct Compiled {
 }
 impl BackgroundConfig {
     pub(crate) fn installation(
+        external_calls: ExternalCalls,
         planning_concurrency: usize,
         device_concurrency: usize,
         database_connection_budget: u32,
     ) -> Self {
         Self {
+            external_calls,
             planning_concurrency,
             device_concurrency,
             database_connection_budget,
@@ -213,6 +257,7 @@ impl BackgroundConfig {
             std::num::NonZeroUsize::new(commands.concurrency()).ok_or_else(bad)?,
         );
         let compiled = Compiled {
+            external: self.external_calls.compile()?,
             device_drain: Duration::from_millis(self.scheduling.device.drain_ms),
             commands_drain: Duration::from_millis(self.scheduling.commands.drain_ms),
             tasks_drain: Duration::from_millis(self.scheduling.tasks.drain_ms),

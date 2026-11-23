@@ -12,6 +12,15 @@ import tempfile
 from render_gateway import origin
 
 
+def external_calls():
+    def capacity(owner, resource):
+        total = int(os.environ[f'MDM_{owner}_CONCURRENCY'])
+        requested = os.environ.get(f'MDM_{owner}_{resource.upper()}')
+        return {'total': total, resource: int(requested) if requested else max(1, total - 1)}
+    return dict(apns=capacity('APNS', 'per_credential'), wns=capacity('WNS', 'per_credential'),
+                ade=int(os.environ['MDM_ADE_CONCURRENCY']), publication=capacity('PUBLICATION', 'per_source'))
+
+
 def run():
     """Stage one installation's declared host inputs and invoke the product initializer."""
     root = Path('/var/lib/rss-mdm')
@@ -44,6 +53,7 @@ def run():
         database=dict(name='mdm',administrator=dict(host='postgres',port=5432,name='postgres',user='postgres',
             password_file=str(inputs/'database-password'),ca_file=str(inputs/'postgres-ca.crt'))),
         audit_mode='plain',content_storage=os.environ.get('MDM_CONTENT_STORAGE','volume'),
+        external_calls=external_calls(),
         planning_concurrency=int(os.environ['MDM_PLANNING_CONCURRENCY']),
         device_concurrency=int(os.environ['MDM_DEVICE_CONCURRENCY']),
         organization_name=os.environ.get('MDM_ORGANIZATION','My organization'),

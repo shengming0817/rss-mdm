@@ -67,6 +67,7 @@ pub struct Input {
     pub database: DatabaseInput,
     #[serde(default)]
     pub audit_mode: AuditMode,
+    pub external_calls: crate::background::ExternalCalls,
     pub planning_concurrency: usize,
     pub device_concurrency: usize,
     pub organization_name: String,
@@ -117,6 +118,7 @@ fn invalid<T>(_: T) -> Error {
 impl Input {
     fn background(&self, budget: u32) -> crate::background::BackgroundConfig {
         crate::background::BackgroundConfig::installation(
+            self.external_calls,
             self.planning_concurrency,
             self.device_concurrency,
             budget,

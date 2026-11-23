@@ -1,5 +1,6 @@
 //! Bounded traversal of the product workers' ordered discovery pages.
 pub mod capacity;
+pub mod external;
 pub mod reconcile;
 pub mod scheduler;
 
@@ -164,11 +165,35 @@ where
     F: Future<Output = Result<Duration, Failure<E>>> + Send + 'static,
     E: Send + 'static,
 {
+    run_limited(capacity, idle, stop, notify, (|key: &K| [(group(*key), 1)], page), batch, observed).await
+}
+
+/// Check every quota before spawning the job. A saturated group advances the page cursor
+/// and is reconsidered when one of its active members completes.
+#[allow(clippy::disallowed_methods, reason = "process-owned monotonic worker deadlines")]
+pub async fn run_limited<K, G, L, R, P, F, E>(
+    capacity: NonZeroUsize,
+    idle: Duration,
+    stop: &CancellationToken,
+    notify: &Notify,
+    (quotas, page): (impl Fn(&K) -> L, impl Fn(Option<K>) -> P),
+    batch: impl Fn(K, CancellationToken) -> F,
+    observed: impl Fn(bool),
+) -> Result<(), E>
+where
+    K: Clone + Ord + Send + 'static,
+    G: Ord,
+    L: IntoIterator<Item = (G, usize)>,
+    R: Into<Page<K>>,
+    P: Future<Output = Result<R, Failure<E>>>,
+    F: Future<Output = Result<Duration, Failure<E>>> + Send + 'static,
+    E: Send + 'static,
+{
     let admission = stop.child_token();
     let mut fatal = None;
     let retry = Duration::from_secs(5);
     let mut active = BTreeSet::new();
-    let mut groups = BTreeSet::new();
+    let mut groups = BTreeMap::<G, usize>::new();
     let mut deferred = BTreeSet::new();
     let mut first_scan_finished = false;
     let mut first_batches = BTreeSet::new();
@@ -194,29 +219,29 @@ where
                     wake = wake.min(at);
                     continue;
                 }
-                let owner = group(key);
                 if active.contains(&key) {
                     continue;
                 }
-                if !groups.insert(owner) {
-                    deferred.insert(owner);
+                if let Some((blocked, _)) = quotas(&key).into_iter().find(|(group, limit)| groups.get(group).copied().unwrap_or(0) >= *limit) {
+                    deferred.insert(blocked);
                     continue;
                 }
-                active.insert(key);
+                for (group, _) in quotas(&key) { *groups.entry(group).or_default() += 1; }
+                active.insert(key.clone());
                 if !first_scan_finished {
-                    first_batches.insert(key);
+                    first_batches.insert(key.clone());
                 }
-                let attempt = batch(key, admission.clone());
+                let attempt = batch(key.clone(), admission.clone());
                 tasks.spawn(async move { (key, attempt.await) });
                 continue;
             }
             let result = tokio::select! { biased;
                 () = stop.cancelled() => break,
-                result = page(after) => result,
+                result = page(after.clone()) => result,
             };
             match result.map(Into::into) {
                 Ok(Page { rows, .. }) if !rows.is_empty() => {
-                    after = rows.last().copied();
+                    after = rows.last().cloned();
                     queued = rows.into();
                     continue;
                 }
@@ -252,10 +277,11 @@ where
                 let (key, result) = result.expect("owned worker batch panicked");
                 active.remove(&key);
                 first_batches.remove(&key);
-                let owner = group(key);
-                groups.remove(&owner);
-                if deferred.remove(&owner) {
-                    wake = Instant::now();
+                for (group, _) in quotas(&key) {
+                    let count = groups.get_mut(&group).expect("active group");
+                    *count -= 1;
+                    if *count == 0 { groups.remove(&group); }
+                    if deferred.remove(&group) { wake = Instant::now(); }
                 }
                 let delay = match result {
                     Ok(delay) => {
@@ -264,7 +290,7 @@ where
                     }
                     Err(Failure::Fatal(error)) => {fatal = Some(error); break;}
                     Err(Failure::Retry) => {
-                        failures.insert(key);
+                        failures.insert(key.clone());
                         retry
                     }
                 };
@@ -292,7 +318,7 @@ where
                     due.retain(|key, _| failures.contains(key));
                 }
                 if discovery_retry.take().is_none() {
-                    unseen = due.keys().copied().collect();
+                    unseen = due.keys().cloned().collect();
                     after = None;
                 }
                 scanning = true;
