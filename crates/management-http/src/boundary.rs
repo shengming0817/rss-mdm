@@ -725,8 +725,8 @@ mod tests {
             ),
             (
                 R::Deadline,
-                503,
-                "service_unavailable",
+                504,
+                "request_deadline",
                 Some(ResponseFailure::Deadline),
             ),
             (

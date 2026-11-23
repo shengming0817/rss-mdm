@@ -146,8 +146,7 @@ impl Timeline {
                             ctx.2,
                             ctx.3,
                             ctx.4.as_ref(),
-                            indexed.0,
-                            indexed.1,
+                            indexed,
                             ctx.5,
                         )
                     })
@@ -430,10 +429,10 @@ impl Timeline {
         family: &str,
         query: &Query,
         token: Option<&cursor::Cursor>,
-        complete: bool,
-        mut rows: Vec<sqlx::postgres::PgRow>,
+        indexed: (bool, Vec<sqlx::postgres::PgRow>),
         limit: usize,
     ) -> Result<DiagnosticPage, Error> {
+        let (complete,mut rows)=indexed;
         let tenant = proof.binding().tenant().to_string();
         self.validate_cursor(proof, family, query, token)?;
         if rows
