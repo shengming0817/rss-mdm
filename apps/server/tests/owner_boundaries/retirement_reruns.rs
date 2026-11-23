@@ -229,7 +229,7 @@ async fn outcome(c: &Context, task: Uuid) -> Result<Value> {
 #[tokio::test]
 #[ignore = "T2: every admitted retirement rerun survives the former latest-64 boundary and reconciles to the exact device operation"]
 async fn every_receipt_reaches_its_device_even_as_new_triggers_arrive() -> Result<()> {
-    let c = Context::open("shared", &[]).await?;
+    let c = Context::open("policy_reruns", &[]).await?;
     let f = Fixture::open(&c).await?;
     let account = manager(&c).await?;
     let v = policy(&c, &f, &account, 1).await?;
@@ -367,7 +367,7 @@ async fn every_receipt_reaches_its_device_even_as_new_triggers_arrive() -> Resul
 #[tokio::test]
 #[ignore = "T2: retirement resumes after 64 eligible devices and keeps each exact object and operation"]
 async fn one_occurrence_resumes_after_a_committed_device_page() -> Result<()> {
-    let c = Context::open("shared", &[]).await?;
+    let c = Context::open("policy_reruns", &[]).await?;
     let f = Fixture::open(&c).await?;
     let account = manager(&c).await?;
     let v = policy(&c, &f, &account, 65).await?;
@@ -421,7 +421,7 @@ async fn one_occurrence_resumes_after_a_committed_device_page() -> Result<()> {
 #[tokio::test]
 #[ignore = "T2: calendar and explicit retirement obey the frozen window, expiry, later Scope removal and version"]
 async fn calendar_window_and_queued_reruns_recheck_current_authority() -> Result<()> {
-    let c = Context::open("shared", &[]).await?;
+    let c = Context::open("policy_reruns", &[]).await?;
     let f = Fixture::open(&c).await?;
     let account = manager(&c).await?;
     let worker = Worker::open(&c, &f).await?;
@@ -435,6 +435,34 @@ async fn calendar_window_and_queued_reruns_recheck_current_authority() -> Result
     Ok(())
 }
 
+async fn revise(
+    c: &Context,
+    f: &Fixture,
+    account: &Account,
+    current: &View,
+    definition: rss_mdm_policy::Definition<rss_mdm_scope::ScopeDefinition>,
+) -> Result<View> {
+    let proof = c.authenticate(account).await?;
+    let op = Operation {
+        operation_id: Uuid::new_v4(),
+        expected_revision: current.revision as u64,
+        input: Change::Put {
+            definition: Box::new(definition),
+            enabled: true,
+        },
+    };
+    Ok(Box::pin(
+        f.policies
+            .change(&proof, current.id, &op, &c.request(&proof)?),
+    )
+    .await?)
+}
+
+// All three transitions refer to the same queued device work and published Scope.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "assert the causal order of an exact device's withdrawal, readmission and version replacement"
+)]
 async fn calendar_authority(
     c: &Context,
     f: &Fixture,
@@ -457,40 +485,12 @@ async fn calendar_authority(
     Box::pin(queued_expiry(c, f, account, worker, &calendar)).await?;
     let mut definition = calendar.definition.clone();
     definition.scope.limitations = Some(Default::default());
-    let p = c.authenticate(account).await?;
-    let revised = Box::pin(f.policies.change(
-        &p,
-        calendar.id,
-        &Operation {
-            operation_id: Uuid::new_v4(),
-            expected_revision: calendar.revision as u64,
-            input: Change::Put {
-                definition: Box::new(definition),
-                enabled: true,
-            },
-        },
-        &c.request(&p)?,
-    ))
-    .await?;
+    let revised = revise(c, f, account, &calendar, definition).await?;
     assert_eq!(revised.version_id, calendar.version_id);
     publish(c, &revised).await?;
     worker.step(c, jobs([revoked])).await?;
     assert_eq!(outcome(c, revoked).await?["state"], "ineligible");
-    let p = c.authenticate(account).await?;
-    let restored = Box::pin(f.policies.change(
-        &p,
-        calendar.id,
-        &Operation {
-            operation_id: Uuid::new_v4(),
-            expected_revision: revised.revision as u64,
-            input: Change::Put {
-                definition: Box::new(calendar.definition.clone()),
-                enabled: true,
-            },
-        },
-        &c.request(&p)?,
-    ))
-    .await?;
+    let restored = revise(c, f, account, &revised, calendar.definition.clone()).await?;
     let generation = publish(c, &restored).await?;
     worker.step(c, jobs([generation])).await?;
     let retry:Uuid=sqlx::query_scalar("SELECT id FROM mdm_policy.work WHERE tenant_id=$1::uuid AND kind='retirement_page' AND input->'occurrence'->>'trigger'=$2 AND id<>$3")
@@ -511,21 +511,7 @@ async fn calendar_authority(
     {
         *run_lifetime_seconds += 60;
     }
-    let p = c.authenticate(account).await?;
-    let next = Box::pin(f.policies.change(
-        &p,
-        calendar.id,
-        &Operation {
-            operation_id: Uuid::new_v4(),
-            expected_revision: restored.revision as u64,
-            input: Change::Put {
-                definition: Box::new(new_version),
-                enabled: true,
-            },
-        },
-        &c.request(&p)?,
-    ))
-    .await?;
+    let next = revise(c, f, account, &restored, new_version).await?;
     assert_ne!(next.version_id, calendar.version_id);
     worker.step(c, jobs([stale])).await?;
     assert_eq!(outcome(c, stale).await?["state"], "superseded");
@@ -556,7 +542,7 @@ async fn queued_expiry(
     calendar: &View,
 ) -> Result<()> {
     let expiry = now(c).await? + 5;
-    let (short, short_page) = rerun(c, f, account, &calendar, expiry).await?;
+    let (short, short_page) = rerun(c, f, account, calendar, expiry).await?;
     worker.step(c, jobs([short_page])).await?;
     let short_children = children(c, short.operation_id).await?;
     assert_eq!(short_children.len(), 1);
@@ -575,6 +561,10 @@ async fn queued_expiry(
     );
     Ok(())
 }
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "check pending and exhausted admissions from the same wall-clock window"
+)]
 async fn future_window(
     c: &Context,
     f: &Fixture,
