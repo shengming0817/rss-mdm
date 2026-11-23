@@ -423,7 +423,7 @@ class Environment:
             for name in ('server.crt','server.key'):private(gateway/name,(self.root/'gateway-cert'/mode/name).read_text())
         from gateway_fixture import render
         prefix='/certs' if mode=='container' else str(gateway)
-        nginx=render(ROOT/'deployment', origin=origin,
+        nginx=render(ROOT/'deployment', body_limits=ROOT/'crates/management-http/src/body_limits.json', origin=origin,
                      backend=config['listen'], bind_ip=tls['bind_ip'] if mode=='container' else '127.0.0.1',
                      certificates=prefix, web=mode=='container')
         rendered=nginx

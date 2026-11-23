@@ -62,29 +62,48 @@ def location(match, backend, *, budget=None, streaming=False, headers='', window
         body += '            proxy_request_buffering off;\n            proxy_buffering off;\n'
     return body + headers + f'            proxy_pass http://{backend};\n        }}\n'
 
-def management(backend):
-    # These exact ceilings mirror management-http/body_policy.rs; Rust checks methods too.
-    routes = [
-        ('~ ^/api/v1/identity/tenants/[^/]+/(login|session/reauthenticate)$', None),
-        ('~ ^/api/v1/tenants/[^/]+/(resources/[^/]+|policies/[^/]+)$', '8m'),
-        ('~ ^/api/v1/tenants/[^/]+/devices/[^/]+/operations$', '16m'),
-        ('~ ^/api/v1/tenants/[^/]+/devices/[^/]+/(inventory-scopes|inventory-lists/[^/]+)$', '384k'),
-        ('~ ^/api/v1/tenants/[^/]+/pki/(rotations|crls)$', '64m'),
-        ('~ ^/api/v1/tenants/[^/]+/pki/signing/recover$', '256k'),
-        ('~ ^/api/v1/tenants/[^/]+/agent-issuances/[^/]+/recover$', '256k'),
-        ('~ ^/api/v1/tenants/[^/]+/apple/(materials/|organizations)', '256k'),
-        ('~ ^/api/v1/tenants/[^/]+/windows/entra-policy$', '128k'),
-        ('~ ^/api/v1/tenants/[^/]+/(certificate-archive/import|authorization/(rules|user-groups)/[^/]+)$', '2m'),
-        ('~ ^/api/v1/tenant-administration/authorization/rules/[^/]+$', '2m'),
-        ('~ ^/api/v1/tenants/[^/]+/(agent-packages(/[^/]+/withdraw)?|software/(imports|sources/[^/]+/revisions/[^/]+|resources/[^/]+/versions/[^/]+))$', '1m'),
-    ]
-    result = ''
-    for match, budget in routes:
-        entry = location(match, backend, budget=budget)
-        if '/identity/tenants/' in match:
-            entry = entry.replace('zone=mdm_api burst=20', 'zone=mdm_login burst=10')
-        result += entry
-    return result + location('/api/', backend)
+def management(backend, limits, host_id):
+    """Server rewrite runs before nginx selects a location and checks Content-Length."""
+    default = limits['defaultBytes']
+    if type(default) is not int or default <= 0:
+        raise ValueError('invalid default body limit')
+    variable = '$mdm_body_' + host_id
+    patterns = []
+    locations = {}
+    seen = set()
+    for rule in limits['routes']:
+        method, path, size, mode = (rule[k] for k in ('method', 'path', 'bytes', 'mode'))
+        if (method not in ('POST', 'PUT', 'PATCH') or not path.startswith('/api/v1/')
+                or mode not in ('buffered', 'streaming', 'sdk')
+                or type(size) is not int or not 0 < size <= 8 * 1024**3
+                or (method, path) in seen):
+            raise ValueError('invalid management body rule')
+        seen.add((method, path))
+        segments = []
+        for segment in path[1:].split('/'):
+            if re.fullmatch(r'\{[a-z][a-z_]*\}', segment):
+                segments.append('[^/]+')
+            elif re.fullmatch(r'[a-z0-9-]+', segment):
+                segments.append(segment)
+            else:
+                raise ValueError('invalid management route template')
+        target = '/_mdm_body/' + str(size) + '/' + mode
+        patterns.append('        ~^' + method + ':/' + '/'.join(segments) + '$ ' + target + ';')
+        if target not in locations:
+            locations[target] = f"""        location = {target} {{
+            internal;
+            client_max_body_size {size};
+            limit_req zone=mdm_api burst=20 nodelay;
+            proxy_request_buffering off;
+            resolver 127.0.0.11 valid=5s ipv6=off;
+            proxy_pass http://{backend}$request_uri;
+        }}
+"""
+    mapping = f'    map "$request_method:$uri" {variable} {{\n        default "";\n' + '\n'.join(patterns) + '\n    }\n'
+    block = f'        if ({variable}) {{ rewrite ^ {variable} last; }}\n'
+    login = location('~ ^/api/v1/identity/tenants/[^/]+/(login|session/reauthenticate)$',
+                     backend, budget=default).replace('zone=mdm_api burst=20', 'zone=mdm_login burst=10')
+    return mapping, block + ''.join(locations.values()) + login + location('/api/', backend, budget=default)
 
 def scep_locations(host):
     result = ''
@@ -118,12 +137,13 @@ def render(root, bind_ip='0.0.0.0'):
     if root.is_symlink():
         raise ValueError('gateway root must not be a symlink')
     ipaddress.ip_address(bind_ip)
+    maps = []
     hosts = []
     for path in sorted(root.glob('*/deployment.json')):
         if path.parent.is_symlink() or path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
             raise ValueError('bounded regular deployment facts required')
         host = json.loads(path.read_text())
-        if set(host) != {'hostId', 'backend', 'consoleOrigin', 'origins', 'scep', 'certificate', 'privateKey'}:
+        if set(host) != {'hostId', 'backend', 'consoleOrigin', 'origins', 'scep', 'certificate', 'privateKey', 'bodyLimits'}:
             raise ValueError('unknown gateway deployment facts')
         if not re.fullmatch('[0-9a-f]{32}', host['hostId']) or path.parent.name != host['hostId']:
             raise ValueError('wrong gateway host identity')
@@ -211,8 +231,9 @@ def render(root, bind_ip='0.0.0.0'):
                 block += f'''        location = /api/v1/identity-host/config.json {{ alias /run/gateway/{host['hostId']}/ui.json; }}
         location = /api/v1/mdm-host/config.json {{ alias /run/gateway/{host['hostId']}/mdm.json; }}
 '''
-                block += location('~ ^/api/v1/tenants/[^/]+/resources/[^/]+/(content|uploads/[^/]+)$', backend, budget='8g', streaming=True)
-                block += management(backend) + scep_locations(host)
+                mapping, routes = management(backend, host['bodyLimits'], host['hostId'])
+                maps.append(mapping)
+                block += routes + scep_locations(host)
                 block += location('= /.well-known/apple-app-site-association', backend)
                 block += '''        location = /api { return 404; }
         location ^~ /api/v1/public-agent/ { return 404; }
@@ -255,7 +276,7 @@ http {
     fastcgi_temp_path /tmp/mdm-fastcgi;
     uwsgi_temp_path /tmp/mdm-uwsgi;
     scgi_temp_path /tmp/mdm-scgi;
-''' + ''.join(blocks) + '}\n'
+''' + ''.join(maps) + ''.join(blocks) + '}\n'
     write(root / 'nginx.conf', configuration)
     mappings = [dict(target=port, published=str(port), host_ip=bind_ip, protocol='tcp') for port in ports]
     write(root / 'gateway-ports.compose.yaml', ports_document(mappings))
