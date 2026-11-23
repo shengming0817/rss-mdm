@@ -38,7 +38,7 @@ impl Credentials {
             eligibility,
         }
     }
-    pub fn protection(&self) -> &Protection {
+    pub fn protection(&self) -> &Arc<Protection> {
         &self.protection
     }
     pub fn keys(&self) -> &Arc<KeyRing> {

@@ -35,6 +35,7 @@ pub use rss_mdm_agent_wire::da::CredentialState as State;
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Status {
+    pub received_at: Option<i64>,
     pub device: DeviceId,
     pub request: Request,
     pub state: State,
@@ -43,6 +44,9 @@ pub struct Status {
 
 #[derive(Serialize, Deserialize)]
 struct Frozen {
+    registration_epoch: Uuid,
+    installation: Uuid,
+    factor_generation: i64,
     request: Request,
     authority: OperationAuthority,
     instance: String,
@@ -69,11 +73,13 @@ pub struct Run {
     receipt: Option<wire::CredentialReceipt>,
     applied_event: Option<[u8; 32]>,
     escrow_digest: Option<[u8; 32]>,
+    received_at: Option<i64>,
     permit_until: i64,
 }
 impl Run {
     pub fn status(&self) -> Status {
         Status {
+            received_at: self.received_at,
             device: self.anchor.device,
             request: self.frozen.request.clone(),
             state: self.state,
@@ -83,6 +89,17 @@ impl Run {
     /// Match the typed event against the digest committed with its original receipt.
     pub fn recorded(&self, event: &Event) -> Result<bool, Error> {
         let existing = match event {
+            Event::Received {
+                attempt_id,
+                definition_digest,
+            } => {
+                if *attempt_id != self.spec().attempt_id
+                    || *definition_digest != self.spec().definition_digest
+                {
+                    return Err(Error::Conflict);
+                }
+                return Ok(self.received_at.is_some());
+            }
             Event::Escrow { .. } => self.escrow_digest,
             Event::Applied { .. } => self.applied_event,
         };
@@ -91,6 +108,12 @@ impl Run {
             Some(digest) if digest == event_digest(event)? => Ok(true),
             Some(_) => Err(Error::Conflict),
         }
+    }
+    pub fn matches_registration(&self, installation: Uuid, epoch: Uuid) -> bool {
+        self.frozen.installation == installation && self.frozen.registration_epoch == epoch
+    }
+    pub fn factor_generation(&self) -> i64 {
+        self.frozen.factor_generation
     }
     pub fn owned(&self, p: &rss_mdm_authorization_service::context::AuthorizedPrincipal) -> bool {
         self.frozen.actor == p.principal_id() && self.frozen.instance == p.instance_id()
@@ -141,7 +164,7 @@ pub async fn load(
     id: Option<Uuid>,
     lock: bool,
 ) -> Result<Option<Run>, Error> {
-    macro_rules! select_run { () => {"SELECT da_execution,material_binding,state,result,da_permit_until,da_escrow_digest FROM rss_da.credential_runs WHERE tenant_id=$1 AND device=$2 AND da_execution IS NOT NULL AND (id=$3 OR ($3 IS NULL AND state IN ('\"accepted\"'::jsonb,'\"pending_application\"'::jsonb)))"}; }
+    macro_rules! select_run { () => {"SELECT da_execution,material_binding,state,result,da_permit_until,da_escrow_digest,da_received_at FROM rss_da.credential_runs WHERE tenant_id=$1 AND device=$2 AND da_execution IS NOT NULL AND (id=$3 OR ($3 IS NULL AND state IN ('\"accepted\"'::jsonb,'\"pending_application\"'::jsonb)))"}; }
     let query = if lock {
         concat!(select_run!(), " FOR UPDATE")
     } else {
@@ -160,6 +183,7 @@ pub async fn load(
                 .transpose()?;
             Ok(Run {
                 applied_event: recorded.as_ref().and_then(|result| result.applied_event),
+                received_at: row.try_get("da_received_at")?,
                 permit_until: row.try_get("da_permit_until")?,
                 escrow_digest: row
                     .try_get::<Option<Vec<u8>>, _>("da_escrow_digest")?
@@ -250,6 +274,9 @@ pub async fn accept(
     operation: CredentialOperation,
     policy: &rss_mdm_policy_postgres::device_access::CredentialPublication,
     authority: OperationAuthority,
+    installation: Uuid,
+    registration_epoch: Uuid,
+    factor_generation: i64,
     now: i64,
 ) -> Result<Status, Error> {
     if credentials.profile() != DA || request.operation_id.is_nil() {
@@ -318,6 +345,9 @@ pub async fn accept(
     };
     spec.validate().map_err(|_| Error::Malformed)?;
     let frozen = Frozen {
+        installation,
+        registration_epoch,
+        factor_generation,
         request: request.clone(),
         authority,
         instance: p.instance_id().into(),
@@ -333,6 +363,7 @@ pub async fn accept(
         receipt: None,
         applied_event: None,
         escrow_digest: None,
+        received_at: None,
         permit_until: 0,
     };
     let written=sqlx::query("INSERT INTO rss_da.credential_runs(expected_epoch,tenant_id,id,policy_version,origin,source_objects,material_binding,device,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint,da_execution) VALUES($1,$2,$3,$4,'\"human\"','[]',$5,$6,$7,$8,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING")
@@ -363,6 +394,14 @@ impl Run {
             .bind(spec.tenant_id).bind(spec.task_id).bind(spec.expires_at).execute(c).await?;
         Ok(spec)
     }
+    async fn mark_received(&mut self, c: &mut PgConnection, now: i64) -> Result<(), Error> {
+        if self.received_at.is_none() {
+            sqlx::query("UPDATE rss_da.credential_runs SET da_received_at=$3 WHERE tenant_id=$1 AND id=$2 AND da_execution IS NOT NULL")
+                .bind(self.spec().tenant_id).bind(self.spec().task_id).bind(now).execute(c).await?;
+            self.received_at = Some(now);
+        }
+        Ok(())
+    }
     pub async fn settle(
         &mut self,
         c: &mut PgConnection,
@@ -373,8 +412,26 @@ impl Run {
         if credentials.profile() != DA {
             return Err(Error::Forbidden);
         }
+        if matches!(event, Event::Escrow { .. }) {
+            self.mark_received(c, now).await?;
+        }
         let spec = self.spec();
+        if let Event::Received {
+            attempt_id,
+            definition_digest,
+        } = event
+        {
+            if *attempt_id != spec.attempt_id
+                || *definition_digest != spec.definition_digest
+                || now >= self.permit_until
+            {
+                return Err(Error::Forbidden);
+            }
+            self.mark_received(c, now).await?;
+            return Ok(());
+        }
         let receipt = match event {
+            Event::Received { .. } => unreachable!("received handled above"),
             Event::Escrow { attempt_id, value } => {
                 if spec.attempt_id != *attempt_id
                     || value.materials.len() != 1
@@ -539,4 +596,30 @@ impl Run {
         }
         Ok(())
     }
+}
+
+/// The authenticated device confirmed removal of this binding and stopped its older factor journals.
+pub async fn retire_unbound(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    device: DeviceId,
+    binding: Uuid,
+    generation: i64,
+) -> Result<(), Error> {
+    let ids:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM rss_da.credential_runs WHERE tenant_id=$1 AND device=$2 AND da_execution->'request'->>'bindingId'=$3 AND (da_execution->'request'->>'bindingGeneration')::bigint<$4 AND state IN ('\"accepted\"','\"pending_application\"','\"reconciling\"') ORDER BY id FOR UPDATE")
+        .bind(tenant).bind(device.into_uuid()).bind(binding.to_string()).bind(generation).fetch_all(&mut *c).await?;
+    for id in ids {
+        let run = load(c, tenant, device, Some(id), true)
+            .await?
+            .ok_or(Error::Integrity)?;
+        run.transition(c, State::Retired).await?;
+        if run.frozen.request.action == Action::Rotate
+            && let Some(receipt) = run.receipt
+        {
+            sqlx::query("UPDATE rss_da.recovery_versions SET pending=false,validity='revoked',invalidated_at=COALESCE(invalidated_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1 AND entry=$2 AND version=$3 AND operation=$4 AND pending")
+                .bind(tenant).bind(receipt.material).bind(receipt.version).bind(id).execute(&mut *c).await?;
+            release_guard(c, id, run.frozen.spec.attempt_id).await?;
+        }
+    }
+    Ok(())
 }

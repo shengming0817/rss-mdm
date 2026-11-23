@@ -11,6 +11,9 @@ fn main() {
         },
         "da": {
             "Configuration": schemars::schema_for!(rss_mdm_agent_wire::da::Configuration),
+            "AccountOffer": schemars::schema_for!(rss_mdm_agent_wire::da::AccountOffer),
+            "AccountEvent": schemars::schema_for!(rss_mdm_agent_wire::da::AccountEvent),
+            "AccountSettlement": schemars::schema_for!(rss_mdm_agent_wire::da::AccountSettlement),
             "StatusReport": schemars::schema_for!(rss_mdm_agent_wire::da::StatusReport),
             "CredentialEvent": schemars::schema_for!(rss_mdm_agent_wire::da::CredentialEvent),
             "CredentialSettlement": schemars::schema_for!(rss_mdm_agent_wire::da::CredentialSettlement),

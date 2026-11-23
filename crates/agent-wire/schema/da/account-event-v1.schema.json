@@ -1,0 +1,958 @@
+{
+  "$defs": {
+    "AccessAccount": {
+      "description": "Stable local account identity, never a display name or a transient Unix UID.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Windows account, with provenance reported by the authenticated native session.",
+          "properties": {
+            "authority": {
+              "$ref": "#/$defs/AccessWindowsAuthority",
+              "description": "Local machine, AD domain or Entra tenant authority; never inferred from a name."
+            },
+            "platform": {
+              "const": "windows",
+              "type": "string"
+            },
+            "sid": {
+              "description": "SID returned by the native account operation.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "platform",
+            "sid",
+            "authority"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "macOS local directory account.",
+          "properties": {
+            "generatedUid": {
+              "description": "Persistent directory identity, distinct from numeric UID.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "platform": {
+              "const": "macos",
+              "type": "string"
+            }
+          },
+          "required": [
+            "platform",
+            "generatedUid"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccessAccountDisposition": {
+      "description": "Explicit OS account handling when removing RSS integration. Data is always retained.",
+      "oneOf": [
+        {
+          "const": "keep",
+          "description": "Preserve the account's enabled state and privilege.",
+          "type": "string"
+        },
+        {
+          "const": "disable",
+          "description": "Disable interactive login without deleting the account.",
+          "type": "string"
+        },
+        {
+          "const": "standard",
+          "description": "Remove administrator privilege while preserving login.",
+          "type": "string"
+        }
+      ]
+    },
+    "AccessEffect": {
+      "description": "Effect receipt. Received/start ACKs are carried by the existing task protocol separately.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Native retirement observation; completion also requires credential removal.",
+          "properties": {
+            "account": {
+              "$ref": "#/$defs/AccessAccount",
+              "description": "Exact Entra account."
+            },
+            "disposition": {
+              "$ref": "#/$defs/AccessAccountDisposition",
+              "description": "Independently observed OS disposition."
+            },
+            "facts": {
+              "$ref": "#/$defs/AccessWhfbFacts",
+              "description": "Local observations, not directory revocation or a successful login."
+            },
+            "state": {
+              "const": "whfb_retired",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "account",
+            "disposition",
+            "facts"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The exact requested configuration has been durably installed and read back.",
+          "properties": {
+            "account": {
+              "$ref": "#/$defs/AccessAccount",
+              "description": "Identity actually changed or confirmed."
+            },
+            "mac": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AccessMacFacts"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "macOS-specific facts; required on macOS and absent on Windows."
+            },
+            "role": {
+              "$ref": "#/$defs/AccessRole",
+              "description": "Actual native privilege after the operation."
+            },
+            "state": {
+              "const": "applied",
+              "type": "string"
+            },
+            "windows": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AccessWindowsFacts"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Installed Windows factors and exact durable escrow coordinates."
+            }
+          },
+          "required": [
+            "state",
+            "account",
+            "role"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Integration removal and the requested OS disposition were independently read back.",
+          "properties": {
+            "disposition": {
+              "$ref": "#/$defs/AccessAccountDisposition",
+              "description": "Verified account handling; account data is retained."
+            },
+            "state": {
+              "const": "unbound",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "disposition"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The device cannot yet establish the effect of the original attempt.",
+          "properties": {
+            "state": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A known failure without claiming the requested state was installed.",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/AccessFailure",
+              "description": "Bounded public failure reason."
+            },
+            "state": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccessFailure": {
+      "description": "Closed native failure classes; never include command output or user credentials.",
+      "oneOf": [
+        {
+          "const": "unsupported",
+          "description": "The native integration is not installed or supported.",
+          "type": "string"
+        },
+        {
+          "const": "account_changed",
+          "description": "The exact local identity or current login changed.",
+          "type": "string"
+        },
+        {
+          "const": "name_conflict",
+          "description": "A requested name already belongs to a different account.",
+          "type": "string"
+        },
+        {
+          "const": "recovery_account_protected",
+          "description": "An operation would remove the last administrator or recovery-capable account.",
+          "type": "string"
+        },
+        {
+          "const": "needs_user",
+          "description": "User input is needed locally; no password is returned to the server.",
+          "type": "string"
+        },
+        {
+          "const": "native_failure",
+          "description": "Native persistence or read-back failed.",
+          "type": "string"
+        }
+      ]
+    },
+    "AccessMacFacts": {
+      "additionalProperties": false,
+      "description": "Apple account facts are separate from PSSO registration and Secure Enclave keys.",
+      "properties": {
+        "filevaultUnlock": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "Actual FileVault unlock eligibility, not merely the disk encryption setting."
+        },
+        "platformSso": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccessMacPlatformSsoFacts"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "System configuration and registration readback. None means not yet observed.\nPassword and login-keychain synchronization are owned by macOS, not inferred here."
+        },
+        "secureToken": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "The account's Secure Token status, not Bootstrap Token custody."
+        },
+        "volumeOwner": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "Apple silicon volume ownership."
+        }
+      },
+      "required": [
+        "secureToken",
+        "volumeOwner",
+        "filevaultUnlock"
+      ],
+      "type": "object"
+    },
+    "AccessMacPlatformSsoFacts": {
+      "additionalProperties": false,
+      "description": "Native PSSO readback for one exact user source; the server verifies its current parent.",
+      "properties": {
+        "configuration": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "Both system login configurations match the requested configuration."
+        },
+        "deviceRegistered": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "System LoginManager device registration, independent from the server receipt."
+        },
+        "userRegistered": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "System LoginManager user registration, independent from token issuance."
+        },
+        "userSourceId": {
+          "description": "Exact server-admitted user registration observed by the extension.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "userSourceVersion": {
+          "description": "Source generation, not the account binding revision.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "configuration",
+        "deviceRegistered",
+        "userRegistered",
+        "userSourceId",
+        "userSourceVersion"
+      ],
+      "type": "object"
+    },
+    "AccessObservation": {
+      "description": "One independent native capability observation, never inferred from transport success.",
+      "oneOf": [
+        {
+          "const": "present",
+          "description": "The capability has been verified for this exact local account.",
+          "type": "string"
+        },
+        {
+          "const": "absent",
+          "description": "Native inspection verified the capability is absent.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Inspection could not establish the capability.",
+          "type": "string"
+        },
+        {
+          "const": "needs_administrator",
+          "description": "A qualified local administrator must authorize the operation.",
+          "type": "string"
+        }
+      ]
+    },
+    "AccessPrepared": {
+      "additionalProperties": false,
+      "description": "Actual native account identity observed by a started task; not a successful application.",
+      "properties": {
+        "account": {
+          "$ref": "#/$defs/AccessAccount",
+          "description": "Actual stable OS identity; never an account name."
+        },
+        "bindingGeneration": {
+          "description": "Exact binding generation.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "bindingId": {
+          "description": "Exact binding being prepared.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "definitionDigest": {
+          "description": "Original signed definition.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "revision": {
+          "description": "Exact configuration revision.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bindingId",
+        "bindingGeneration",
+        "revision",
+        "definitionDigest",
+        "account"
+      ],
+      "type": "object"
+    },
+    "AccessResult": {
+      "additionalProperties": false,
+      "description": "Exactly correlated application report; cannot select a different tenant or device.",
+      "properties": {
+        "bindingGeneration": {
+          "description": "Fences replacement/revocation of the personnel association.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "bindingId": {
+          "description": "Stable business binding identity.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "definitionDigest": {
+          "description": "Digest frozen into the signed task.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "effect": {
+          "$ref": "#/$defs/AccessEffect",
+          "description": "Actual native effect."
+        },
+        "revision": {
+          "description": "Exact desired configuration revision.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bindingId",
+        "bindingGeneration",
+        "revision",
+        "definitionDigest",
+        "effect"
+      ],
+      "type": "object"
+    },
+    "AccessRole": {
+      "description": "Requested account privilege. Absence preserves an existing account's privilege.",
+      "oneOf": [
+        {
+          "const": "standard",
+          "description": "Ordinary local user.",
+          "type": "string"
+        },
+        {
+          "const": "administrator",
+          "description": "Local administrator, requiring explicit RSS device-account authorization.",
+          "type": "string"
+        }
+      ]
+    },
+    "AccessWhfbFacts": {
+      "additionalProperties": false,
+      "description": "Native account-scoped observations, never a claim that LogonUI authenticated a user.",
+      "properties": {
+        "factorGeneration": {
+          "description": "Exact requested credential generation.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "hardwareKey": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "TPM-backed native credential, independent of policy configuration."
+        },
+        "keyId": {
+          "description": "Current native key identity; no private or secret material.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "objectId": {
+          "description": "Current Entra account.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "observedAt": {
+          "description": "UTC seconds at native observation.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "policy": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "Effective policy after conflict checks and native readback."
+        },
+        "registration": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "Current user's native registration observation."
+        },
+        "tenantId": {
+          "description": "Entra authority observed on this device.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "factorGeneration",
+        "tenantId",
+        "objectId",
+        "policy",
+        "registration",
+        "hardwareKey",
+        "observedAt"
+      ],
+      "type": "object"
+    },
+    "AccessWindowsAuthority": {
+      "description": "Stable Windows identity authority. Display names and email addresses are excluded.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The current registered computer's SAM database.",
+          "properties": {
+            "kind": {
+              "const": "local",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Native directory domain SID, distinct from the user's account SID.",
+          "properties": {
+            "domainSid": {
+              "description": "SID of the native AD domain, excluding the user's RID.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "active_directory",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "domainSid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Stable directory identifiers from the native Entra account.",
+          "properties": {
+            "kind": {
+              "const": "entra",
+              "type": "string"
+            },
+            "objectId": {
+              "description": "Immutable user object identifier within that tenant.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "tenantId": {
+              "description": "Tenant that owns the native directory account.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "tenantId",
+            "objectId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccessWindowsFacts": {
+      "description": "Mechanism-specific observations; an RSS escrow receipt cannot prove Hello registration.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "RSS factor and durable recovery custody.",
+          "properties": {
+            "factorGeneration": {
+              "description": "Exact installed factor generation.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "kind": {
+              "const": "rss_factor",
+              "type": "string"
+            },
+            "recovery": {
+              "$ref": "#/$defs/CredentialReceipt",
+              "description": "Exact recovery material retained on this endpoint."
+            }
+          },
+          "required": [
+            "kind",
+            "factorGeneration",
+            "recovery"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Windows-owned registration and configuration.",
+          "properties": {
+            "factorGeneration": {
+              "description": "Exact requested credential generation.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "hardwareKey": {
+              "$ref": "#/$defs/AccessObservation",
+              "description": "TPM-backed native credential, independent of policy configuration."
+            },
+            "keyId": {
+              "description": "Current native key identity; no private or secret material.",
+              "format": "uuid",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "whfb",
+              "type": "string"
+            },
+            "objectId": {
+              "description": "Current Entra account.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "observedAt": {
+              "description": "UTC seconds at native observation.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "policy": {
+              "$ref": "#/$defs/AccessObservation",
+              "description": "Effective policy after conflict checks and native readback."
+            },
+            "registration": {
+              "$ref": "#/$defs/AccessObservation",
+              "description": "Current user's native registration observation."
+            },
+            "tenantId": {
+              "description": "Entra authority observed on this device.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "factorGeneration",
+            "tenantId",
+            "objectId",
+            "policy",
+            "registration",
+            "hardwareKey",
+            "observedAt"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccountObservation": {
+      "description": "Closed set of Windows account observations accepted by DA.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The device journaled the offer and requests execution permission.",
+          "properties": {
+            "kind": {
+              "const": "received",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The durable device journal proves that native execution never began before the permit expired.",
+          "properties": {
+            "kind": {
+              "const": "not_started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Stable local account established by the device.",
+          "properties": {
+            "kind": {
+              "const": "prepared",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/AccessPrepared"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Encrypted RSS factor recovery material.",
+          "properties": {
+            "kind": {
+              "const": "escrow",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/CredentialEscrow"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Actual local observation, including unknown and cleanup.",
+          "properties": {
+            "kind": {
+              "const": "result",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/AccessResult"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CredentialEnvelope": {
+      "additionalProperties": false,
+      "description": "Ciphertext only; this structure is safe to persist in the ordinary communication journal.",
+      "properties": {
+        "ciphertext": {
+          "description": "Base64 ciphertext with the 16-byte GCM tag appended.",
+          "type": "string"
+        },
+        "expectedRevision": {
+          "description": "Frozen revision before this operation.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "nonce": {
+          "description": "AES-GCM nonce.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 12,
+          "minItems": 12,
+          "type": "array"
+        },
+        "subject": {
+          "$ref": "#/$defs/CredentialSubject",
+          "description": "Exact material identity."
+        },
+        "wrappedKey": {
+          "description": "RSA-OAEP-SHA256 wrapped 32-byte AES key, base64 encoded.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject",
+        "expectedRevision",
+        "wrappedKey",
+        "nonce",
+        "ciphertext"
+      ],
+      "type": "object"
+    },
+    "CredentialEscrow": {
+      "additionalProperties": false,
+      "description": "One bounded escrow batch, acknowledged only after durable storage.",
+      "properties": {
+        "definitionDigest": {
+          "description": "Frozen task digest.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "materials": {
+          "description": "Secret-bearing envelopes, never plaintext or diagnostic output.",
+          "items": {
+            "$ref": "#/$defs/CredentialEnvelope"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "definitionDigest",
+        "materials"
+      ],
+      "type": "object"
+    },
+    "CredentialReceipt": {
+      "additionalProperties": false,
+      "description": "Durable escrow coordinates returned only for the exact accepted task event.",
+      "properties": {
+        "material": {
+          "description": "Server-assigned entry identity.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "subject": {
+          "$ref": "#/$defs/CredentialSubject",
+          "description": "Exact material subject."
+        },
+        "version": {
+          "description": "Immutable material version.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "subject",
+        "material",
+        "version"
+      ],
+      "type": "object"
+    },
+    "CredentialSubject": {
+      "description": "An exact Windows object, never an account display name or drive letter.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "RSS additional-factor recovery material, separate from local-account passwords.",
+          "properties": {
+            "binding": {
+              "description": "Stable Device Access association.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "bindingGeneration": {
+              "description": "Exact association generation.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "kind": {
+              "const": "rss_login",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Stable local account SID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "binding",
+            "bindingGeneration",
+            "sid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Numerical recovery protector on a stable volume.",
+          "properties": {
+            "kind": {
+              "const": "bitlocker",
+              "type": "string"
+            },
+            "protector": {
+              "description": "Recovery protector identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "volume": {
+              "description": "Stable WMI volume DeviceID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "volume",
+            "protector"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Explicit RSS-managed local account.",
+          "properties": {
+            "kind": {
+              "const": "local_administrator",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Stable Windows account SID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sid"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Evidence about one journaled attempt.",
+  "properties": {
+    "attemptId": {
+      "description": "Attempt from the offer.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "definitionDigest": {
+      "description": "Fingerprint from the offer.",
+      "items": {
+        "format": "uint8",
+        "maximum": 255,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "maxItems": 32,
+      "minItems": 32,
+      "type": "array"
+    },
+    "event": {
+      "$ref": "#/$defs/AccountObservation",
+      "description": "Device observation."
+    },
+    "eventId": {
+      "description": "Unique event key reused for exact retries.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "eventId",
+    "attemptId",
+    "definitionDigest",
+    "event"
+  ],
+  "title": "AccountEvent",
+  "type": "object",
+  "$id": "https://rss.example/da/v1/AccountEvent"
+}
