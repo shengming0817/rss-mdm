@@ -397,6 +397,13 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .status(),
         403
     );
+    // No signing key has been acknowledged yet. Every current candidate is
+    // withheld, independently of the ordering of exports issued in the same second.
+    let held: da::CurrentConfiguration =
+        material::success(peer.get(format!("{base}/configuration")).send().await?).await?;
+    assert_eq!(held.state, da::SourceState::Invalid);
+    assert!(held.artifact.is_none());
+    assert!(held.authorities.iter().any(|a| a.policy == publication.id));
     let ack = Acknowledgement {
         version: 1,
         operation: Uuid::new_v4(),
@@ -475,11 +482,6 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .status(),
         403
     );
-    let held: da::CurrentConfiguration =
-        material::success(peer.get(format!("{base}/configuration")).send().await?).await?;
-    assert_eq!(held.state, da::SourceState::Invalid);
-    assert!(held.artifact.is_none());
-    assert!(held.authorities.iter().any(|a| a.policy == second.policy));
     // Current trust and recovery remain available through rotation.
     let current: da::ConfigurationTrust = material::success(
         peer.get(format!("{base}/configuration-trust"))
