@@ -164,6 +164,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
     let mut config =
         crate::host_t2_support::configuration(&c.inputs, &c.profile, address, Uuid::new_v4())
             .await?;
+    config["http"]["request_slots"] = json!(1);
     config["agent_pki"] = pki["agent_pki"].clone();
     config["device_pki"] = pki["device_pki"].clone();
     config["recovery_credentials"] = recovery;

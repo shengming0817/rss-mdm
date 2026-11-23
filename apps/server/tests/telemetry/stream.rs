@@ -26,6 +26,9 @@ async fn upload(
         let mut field = wire["fields"][0].clone();
         field["key"] = json!(key);
         field["platforms"] = json!(["windows"]);
+        if page == 2 && n == 0 {
+            field["sensitivity"] = json!("sensitive");
+        }
         if page == 0 && n != 0 {
             field["timeSeries"] = Value::Null;
         }
@@ -267,6 +270,16 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         // Raw retention has its own proof. Establish its exact terminal prerequisite for reclaim.
         anyhow::ensure!(sqlx::query("DELETE FROM rss_timeseries.samples WHERE tenant_id=$1::uuid AND generation=$2")
             .bind(c.tenant.to_string()).bind(&generation).execute(&mut observer).await?.rows_affected()==1);
+        // RSS has committed Reclaim by the time product progress needs this row.
+        let mut hold=crate::command_runtime_t2_support::seed_transaction(c).await?;
+        let blocker:i32=sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_telemetry.retention_targets WHERE tenant_id=$1::uuid AND device=$2 AND field=$3 FOR UPDATE")
+            .bind(c.tenant.to_string()).bind(principal.device().into_uuid()).bind(bad_page).fetch_one(&mut *hold).await?;
+        let uncertain=short.call("/telemetry/maintenance",reclaim.clone());
+        let (observed,response)=tokio::join!(c.wait_blocked(blocker),uncertain);
+        observed?;
+        let (code,body)=response?;
+        anyhow::ensure!(code==503 && body["code"]=="operation_unknown","post-provider settlement: {code} {body}");
+        hold.rollback().await?;
         let completed=http.post("/telemetry/maintenance",reclaim.clone()).await?;
         assert_eq!(completed["state"],"complete");
         anyhow::ensure!(completed["processed"].as_u64().is_some_and(|v|v>0));

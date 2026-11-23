@@ -47,6 +47,7 @@ class Browser:
                 connection.request(method, path, body=body, headers=headers)
             response = connection.getresponse()
             body = response.read()
+            self.retry_after = response.getheader("Retry-After")
             request_id = response.getheader("x-request-id")
             self.request_id = str(uuid.UUID(request_id)) if request_id is not None else None
             for key, value in response.getheaders():
@@ -58,6 +59,34 @@ class Browser:
             if isinstance(value,dict) and "csrfToken" in value: self.csrf = value["csrfToken"]
             return response.status, value
         finally:
+            connection.close()
+
+def verify_request_slots(browser):
+    path = f'/api/v1/tenants/{TENANT}/authorization'
+    held = []
+    try:
+        for _ in range(5):
+            connection = http.client.HTTPSConnection('127.0.0.1',browser.port,context=browser.context,timeout=6)
+            connection.sock = browser.context.wrap_socket(socket.create_connection(('127.0.0.1',browser.port),timeout=6),
+                                                           server_hostname=browser.host)
+            held.append(connection)
+            connection.putrequest('GET',path,skip_host=True)
+            for key, value in {'Host':browser.host,'Cookie':browser.cookie,'Origin':'https://'+browser.host,
+                               'Content-Type':'application/json','Content-Length':'2'}.items():
+                connection.putheader(key,value)
+            connection.endheaders(b'{')
+        wait(lambda: browser.call('GET', path)[0] == 429 and browser.retry_after == '1',
+             'five actual requests occupy the configured host slots', seconds=3)
+        # Disconnect before finishing the body; the other four requests keep their own slots.
+        held.pop().close()
+        wait(lambda: browser.call('GET', path)[0] == 200, 'client cancellation returned a host permit',seconds=3)
+        for connection in held:
+            connection.send(b'}')
+            response=connection.getresponse()
+            require(response.status==200, 'each retained request passed scope lookup and authorization')
+            response.read()
+    finally:
+        for connection in held:
             connection.close()
 
 def ingress_capacity(browser, principal, deployed):
@@ -194,7 +223,9 @@ def native_pki_journey(deployed,browser):
             'activation_replay','joint_ca_mdm_audit_restore','same_registration_after_restore','retained_tls_revocation','signed_crl_serial_publication','new_tls_revocation']
 
 def run_smoke(directory):
-    with Candidate(directory, diagnostic_filename="smoke-failure.json") as deployed:
+    def capacity_config(candidate):
+        candidate.config['http']['request_slots'] = 5
+    with Candidate(directory, prepare=capacity_config, diagnostic_filename="smoke-failure.json") as deployed:
         manifest=deployed.manifest
         digest=manifest["archive"]["manifest_digest"];archive=directory/manifest["archive"]["file"]
         pg,gateway,server=deployed.pg,deployed.gateway,deployed.server
@@ -219,6 +250,7 @@ def run_smoke(directory):
         administrator=browser
         status,account=administrator.call('POST',tenant+'/accounts',dict(login='scoped',password=PASSWORD))
         require(status==201 and isinstance(account.get('principalId'),str),'candidate scoped account creation')
+        verify_request_slots(administrator)
         memory = ingress_capacity(administrator, account["principalId"], deployed)
         browser=Browser(deployed.port,deployed.root/'ca.crt')
         require(browser.call('POST',tenant+'/login',dict(login='scoped',password=PASSWORD))[0]==200,
@@ -256,7 +288,7 @@ def run_smoke(directory):
         require("mdm_request" in logs, "candidate request diagnostics missing")
         require(elapsed<45 and docker("inspect","--format","{{.State.ExitCode}}",server,stage=Stage.EXIT)=="0" and "mdm_shutdown_failure" not in logs,"candidate bounded shutdown failed")
         result=dict(ingressMemory=memory,source=manifest["source"],candidate_sha256=sha(directory/"candidate.json"),manifest_digest=digest,archive_sha256=sha(archive),platform=manifest["platform"],
-                    checks=pki_checks+["large_profile_write_read_replay","large_field_publication","management_bootstrap","management_login","management_grants","management_business_isolation","migrate","migration_replay","initialize","authorization_initialize","authorization_replay","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
+                    checks=pki_checks+["five_shared_request_slots","cancel_releases_request_slot","large_profile_write_read_replay","large_field_publication","management_bootstrap","management_login","management_grants","management_business_isolation","migrate","migration_replay","initialize","authorization_initialize","authorization_replay","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
                     shutdown_seconds=round(elapsed,3),limits=["disposable MDM PostgreSQL and TLS namespace","no real Windows or macOS device T3"])
         if deployed.web is not None:
             result["ui"] = deployed.web
