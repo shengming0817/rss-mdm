@@ -279,14 +279,14 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         observed?;
         let (code,body)=response?;
         anyhow::ensure!(code==503 && body["code"]=="operation_unknown","post-provider settlement: {code} {body}");
-        hold.rollback().await?;
-        let completed=http.post("/telemetry/maintenance",reclaim.clone()).await?;
-        assert_eq!(completed["state"],"complete");
-        anyhow::ensure!(completed["processed"].as_u64().is_some_and(|v|v>0));
-        assert_eq!(http.post("/telemetry/maintenance",reclaim).await?,completed);
+        // Observe the committed provider effect while local progress is still fenced.
         let left:i64=sqlx::query_scalar("SELECT count(*) FROM rss_timeseries.batches WHERE tenant_id=$1::uuid AND generation=$2")
             .bind(c.tenant.to_string()).bind(&generation).fetch_one(&mut observer).await?;
         anyhow::ensure!(left==0);
+        hold.rollback().await?;
+        let completed=http.post("/telemetry/maintenance",reclaim.clone()).await?;
+        assert_eq!(completed,json!({"state":"complete","processed":0,"fence":reclaim["id"]}));
+        assert_eq!(http.post("/telemetry/maintenance",reclaim).await?,completed);
         anyhow::Ok(())
     }.await;
     fixture::with_cleanup(result, prepared.close().await)

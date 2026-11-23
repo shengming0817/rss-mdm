@@ -26,11 +26,18 @@ PASSWORD = "Candidate-only-correct-horse-battery-2026!"
 from candidate_runtime import Candidate, Stage, docker, failure_evidence, require, wait
 
 class Browser:
+    # Browser sessions share the loopback peer's 10 requests/second gateway quota.
+    last_request = 0.0
+
     def __init__(self, port, ca, *, host="mdm.example.test"):
         self.host=host
         self.port, self.context = port, ssl.create_default_context(cafile=ca)
         self.cookie, self.csrf = "", ""
     def call(self, method, path, data=None, operation=None, *, chunked=False):
+        remaining = Browser.last_request + 0.125 - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
+        Browser.last_request = time.monotonic()
         headers = {"Host":self.host, "Origin":"https://"+self.host, "X-Identity-Request":"1"}
         if self.cookie: headers["Cookie"] = self.cookie
         if self.csrf: headers["X-CSRF-Token"] = self.csrf

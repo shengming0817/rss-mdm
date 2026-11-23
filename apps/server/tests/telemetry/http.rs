@@ -190,8 +190,16 @@ impl Http {
             .send()
             .await?;
         let status = response.status().as_u16();
-        let raw = response.text().await?;
-        Ok((status, serde_json::from_str(&raw)?))
+        let operation = response.headers().get("idempotency-key").cloned();
+        let value: serde_json::Value = response.json().await?;
+        if value["code"] == "operation_unknown" {
+            anyhow::ensure!(
+                operation.as_ref().and_then(|v| v.to_str().ok()) == input["id"].as_str()
+                    && input["id"].is_string(),
+                "unknown outcome lost the original operation ID"
+            );
+        }
+        Ok((status, value))
     }
     pub async fn post(&self, path: &str, input: serde_json::Value) -> Result<serde_json::Value> {
         let (status, value) = self.call(path, input).await?;
