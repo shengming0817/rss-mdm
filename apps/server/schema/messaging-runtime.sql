@@ -4,7 +4,7 @@ GRANT USAGE ON SCHEMA rss_transactional_messaging TO rss_tmsg_relay;
 
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_resource_runtime;
 
-GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_software_release_runtime;
+GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_software_release_runtime,mdm_wns_runtime;
 
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_group_runtime;
 
@@ -24,7 +24,7 @@ GRANT ALL ON FUNCTION rss_transactional_messaging.append_outbox(p_message bytea,
 
 GRANT ALL ON FUNCTION rss_transactional_messaging.append_outbox(p_message bytea, p_transport jsonb) TO mdm_resource_runtime;
 
-GRANT ALL ON FUNCTION rss_transactional_messaging.append_outbox(p_message bytea, p_transport jsonb) TO mdm_software_release_runtime;
+GRANT ALL ON FUNCTION rss_transactional_messaging.append_outbox(p_message bytea, p_transport jsonb) TO mdm_software_release_runtime,mdm_wns_runtime;
 
 GRANT ALL ON FUNCTION rss_transactional_messaging.append_outbox(p_message bytea, p_transport jsonb) TO mdm_identity_runtime;
 
@@ -52,7 +52,7 @@ REVOKE ALL ON FUNCTION rss_transactional_messaging.check_execution() FROM PUBLIC
 
 GRANT ALL ON FUNCTION rss_transactional_messaging.check_execution() TO mdm_resource_runtime;
 
-GRANT ALL ON FUNCTION rss_transactional_messaging.check_execution() TO mdm_software_release_runtime;
+GRANT ALL ON FUNCTION rss_transactional_messaging.check_execution() TO mdm_software_release_runtime,mdm_wns_runtime;
 
 GRANT ALL ON FUNCTION rss_transactional_messaging.check_execution() TO mdm_group_runtime;
 
@@ -90,7 +90,7 @@ GRANT ALL ON FUNCTION rss_transactional_messaging.prepare_outbox_partitions(p_pa
 
 GRANT ALL ON FUNCTION rss_transactional_messaging.prepare_outbox_partitions(p_partitions jsonb) TO mdm_resource_runtime;
 
-GRANT ALL ON FUNCTION rss_transactional_messaging.prepare_outbox_partitions(p_partitions jsonb) TO mdm_software_release_runtime;
+GRANT ALL ON FUNCTION rss_transactional_messaging.prepare_outbox_partitions(p_partitions jsonb) TO mdm_software_release_runtime,mdm_wns_runtime;
 
 GRANT ALL ON FUNCTION rss_transactional_messaging.prepare_outbox_partitions(p_partitions jsonb) TO mdm_identity_runtime;
 
@@ -118,7 +118,7 @@ GRANT SELECT,INSERT,UPDATE ON TABLE rss_transactional_messaging.outbox TO rss_tm
 
 GRANT SELECT ON TABLE rss_transactional_messaging.outbox TO mdm_resource_runtime;
 
-GRANT SELECT ON TABLE rss_transactional_messaging.outbox TO mdm_software_release_runtime;
+GRANT SELECT ON TABLE rss_transactional_messaging.outbox TO mdm_software_release_runtime,mdm_wns_runtime;
 
 GRANT SELECT ON TABLE rss_transactional_messaging.outbox TO mdm_group_runtime;
 
@@ -136,7 +136,7 @@ GRANT USAGE ON SEQUENCE rss_transactional_messaging.outbox_seq_seq TO rss_tmsg_r
 
 GRANT SELECT ON TABLE rss_transactional_messaging.policy TO mdm_resource_runtime;
 
-GRANT SELECT ON TABLE rss_transactional_messaging.policy TO mdm_software_release_runtime;
+GRANT SELECT ON TABLE rss_transactional_messaging.policy TO mdm_software_release_runtime,mdm_wns_runtime;
 
 GRANT SELECT ON TABLE rss_transactional_messaging.policy TO mdm_group_runtime;
 

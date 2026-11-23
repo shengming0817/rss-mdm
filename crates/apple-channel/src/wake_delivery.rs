@@ -7,41 +7,9 @@ impl Delivery {
     pub async fn wake(
         &self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,
-        configuration: &[u8; 32],
+        channel: crate::push::Channel,
     ) -> Result<Option<Wake>, Error> {
-        let configuration = *configuration;
-        let facts = self.facts.clone();
-        let tenant = execution.tenant().to_string();
-        let discovered = self
-            .runtime
-            .local_tx(
-                execution,
-                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                    std::time::Duration::from_secs(6),
-                ),
-                |tx| {
-                    Box::pin(async move {
-                        tx.with_connection(move |c| {
-                            Box::pin(
-                                async move { Ok(facts.push_due(c, tenant, configuration).await) },
-                            )
-                        })
-                        .await
-                    })
-                },
-            )
-            .await
-            .fold(
-                Ok,
-                |_| Err(Error::Unavailable(Failure::Database)),
-                |_| Err(Error::Unavailable(Failure::Database)),
-                |_| Err(Error::RollbackFailed),
-                |_| Err(Error::CommitUnknown),
-                |_| Err(Error::Unavailable(Failure::Database)),
-            )??;
-        if !discovered {
-            return Ok(None);
-        }
+        let material_revision = channel.material_revision;
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
@@ -51,99 +19,93 @@ impl Delivery {
         );
         audit.identify_service("apple-push");
         let result = self
-            .run(&audit, (self, &audit), |ctx, tx| {
+            .run(&audit, (self, &audit, channel), |ctx, tx| {
                 Box::pin(async move {
-                    let (s, audit) = *ctx;
+                    let (s, audit, channel) = ctx;
+                    let channel = channel.clone();
+                    let (s, audit) = (*s, *audit);
                     let tenant = tx.tenant_id().to_string();
                     let facts = s.facts.clone();
-                    let rows = tx
+                    let Some(row) = tx
                         .with_connection(move |c| {
-                            Box::pin(async move {
-                                Ok(facts.push_candidates(c, tenant, configuration).await)
-                            })
+                            Box::pin(
+                                async move { Ok(facts.push_candidate(c, tenant, channel).await) },
+                            )
                         })
                         .await
-                        .map_err(storage)??;
-                    s.business
-                        .prepare_wake(tx, rows.iter().map(|r| r.device).collect(), audit)
-                        .await?;
-                    let mut prepared = Vec::new();
-                    for row in rows {
-                        let needed = matches!(&row.disposition, PushDisposition::Ready { .. })
-                            && s.wake_pending(tx, row.device, &row.user_key).await?;
-                        prepared.push((row, needed));
-                    }
-                    for (row, needed) in prepared {
-                        let device = row.device;
-                        let user_key = row.user_key.clone();
-                        let tenant = tx.tenant_id().to_string();
-                        let facts = s.facts.clone();
-                        let (token, magic) = match row.disposition {
-                            PushDisposition::Invalid { scope } => {
-                                let revision = row.revision;
-                                tx.with_connection(move |c| {
-                                    Box::pin(async move {
-                                        Ok(facts
-                                            .reject_push(
-                                                c, tenant, device, user_key, revision, scope,
-                                            )
-                                            .await)
-                                    })
-                                })
-                                .await
-                                .map_err(storage)??;
-                                continue;
-                            }
-                            PushDisposition::Ready { token, magic } => (token, magic),
-                            PushDisposition::Inactive => (Vec::new(), String::new()),
-                        };
-                        if !needed {
+                        .map_err(storage)??
+                    else {
+                        return Ok(None);
+                    };
+                    s.business.prepare_wake(tx, vec![row.device], audit).await?;
+                    let needed = matches!(&row.disposition, PushDisposition::Ready { .. })
+                        && s.wake_pending(tx, row.device, &row.user_key).await?;
+                    let device = row.device;
+                    let user_key = row.user_key.clone();
+                    let tenant = tx.tenant_id().to_string();
+                    let facts = s.facts.clone();
+                    let (token, magic) = match row.disposition {
+                        PushDisposition::Invalid { scope } => {
+                            let revision = row.revision;
                             tx.with_connection(move |c| {
                                 Box::pin(async move {
-                                    Ok(facts.defer_push(c, tenant, device, user_key).await)
+                                    Ok(facts
+                                        .reject_push(c, tenant, device, user_key, revision, scope)
+                                        .await)
                                 })
                             })
                             .await
                             .map_err(storage)??;
-                            continue;
+                            return Ok(None);
                         }
-                        let id = Uuid::new_v4();
-                        let value = device;
+                        PushDisposition::Ready { token, magic } => (token, magic),
+                        PushDisposition::Inactive => (Vec::new(), String::new()),
+                    };
+                    if !needed {
                         tx.with_connection(move |c| {
                             Box::pin(async move {
-                                Ok(facts
-                                    .lease_push(c, tenant, id, value, user_key, configuration)
-                                    .await)
+                                Ok(facts.defer_push(c, tenant, device, user_key).await)
                             })
                         })
                         .await
                         .map_err(storage)??;
-                        audit.target_device(&device);
-                        audit.operation(id, "apple_push", AuditIntent::Management);
-                        audit.target(&device.to_string());
-                        s.audit
-                            .append_in(
-                                tx,
-                                &Fact::observation(
-                                    audit,
-                                    &format!("apple-push:{id}:lease"),
-                                    200,
-                                    "success",
-                                    None,
-                                )?,
-                            )
-                            .await?;
-                        return Ok(Some(Wake {
-                            execution,
-                            id,
-                            device: device.to_owned(),
-                            revision: row.revision,
-                            user_key: row.user_key,
-                            token,
-                            magic,
-                        }));
+                        return Ok(None);
                     }
-                    Ok(None)
+                    let id = Uuid::new_v4();
+                    let value = device;
+                    tx.with_connection(move |c| {
+                        Box::pin(async move {
+                            Ok(facts
+                                .lease_push(c, tenant, id, value, user_key, material_revision)
+                                .await)
+                        })
+                    })
+                    .await
+                    .map_err(storage)??;
+                    audit.target_device(&device);
+                    audit.operation(id, "apple_push", AuditIntent::Management);
+                    audit.target(&device.to_string());
+                    s.audit
+                        .append_in(
+                            tx,
+                            &Fact::observation(
+                                audit,
+                                &format!("apple-push:{id}:lease"),
+                                200,
+                                "success",
+                                None,
+                            )?,
+                        )
+                        .await?;
+                    Ok(Some(Wake {
+                        execution,
+                        id,
+                        device: device.to_owned(),
+                        revision: row.revision,
+                        user_key: row.user_key,
+                        token,
+                        magic,
+                    }))
                 })
             })
             .await;

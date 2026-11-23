@@ -65,96 +65,82 @@ impl channels::ApplePush for Store {
             sqlx::query_scalar("SELECT count(*)<>2 FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase IN('resolve_device','resolve_security') AND state='acknowledged' AND accepted").bind(tenant).bind(operation).fetch_one(c).await.map_err(storage)
         })
     }
-    fn push_due<'a>(
+    fn push_candidate<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        configuration: [u8; 32],
-    ) -> Pending<'a, bool> {
+        channel: crate::push::Channel,
+    ) -> Pending<'a, Option<channels::PushCandidate>> {
         Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND state='active' AND (push_outcome IS DISTINCT FROM 'rejected' OR push_configuration IS DISTINCT FROM $2) AND next_push<=clock_timestamp() AND (push_lease_until IS NULL OR push_lease_until<clock_timestamp()))").bind(tenant).bind(configuration.as_slice()).fetch_one(c).await.map_err(storage)
-        })
-    }
-    fn push_candidates<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        configuration: [u8; 32],
-    ) -> Pending<'a, Vec<channels::PushCandidate>> {
-        Box::pin(async move {
-            let rows=sqlx::query("SELECT device, user_key, material, token_revision FROM mdm_apple.channels WHERE tenant_id = CAST($1 AS uuid) AND state = 'active' AND (push_outcome IS DISTINCT FROM 'rejected' OR push_configuration IS DISTINCT FROM $2) AND next_push <= clock_timestamp() AND (push_lease_until IS NULL OR push_lease_until < clock_timestamp()) ORDER BY next_push, device, user_key LIMIT 32 FOR UPDATE SKIP LOCKED").bind(&tenant).bind(configuration.as_slice()).fetch_all(&mut *c).await.map_err(storage)?;
-            let mut result = Vec::new();
-            for row in rows {
-                let device = row
-                    .try_get::<uuid::Uuid, _>("device")
-                    .and_then(|id| {
-                        rss_mdm_agent_wire::DeviceId::try_from(id)
-                            .map_err(|e| sqlx::Error::Decode(Box::new(e)))
-                    })
-                    .map_err(storage)?;
-                let active = rss_mdm_registration_service::device::store::active_source_in(
-                    rss_mdm_install_support::StorageProfile::Mdm,
-                    c,
-                    &tenant,
-                    &device,
-                    rss_mdm_inventory::ReportSource::MdmApple,
-                )
+            // Material selection and channel ownership are checked on the claim connection.
+            let current: bool = sqlx::query_scalar("SELECT mdm_apple.claim_push_material($1,$2)")
+                .bind(channel.material_revision)
+                .bind(&channel.topic)
+                .fetch_one(&mut *c)
                 .await
-                .map_err(Error::from)?;
-                let user_key: String = row.try_get("user_key").map_err(storage)?;
-                let revision: i64 = row.try_get("token_revision").map_err(storage)?;
-                let sealed: Vec<u8> = row.try_get("material").map_err(storage)?;
-                let aad = crate::material::aad(
-                    &tenant,
-                    &device,
-                    &user_key,
-                    revision,
-                    "apple.push.material",
-                )?;
-                // The composition root binds this immutable key at startup. Authentication
-                // or decoding failure here belongs to this row; DB/AAD failures propagate.
-                let material = self
-                    .protection
-                    .open_bytes(&sealed, &aad)
-                    .ok()
-                    .and_then(|plain| {
-                        serde_json::from_slice::<crate::material::Push>(plain.expose()).ok()
-                    })
-                    .filter(|value| {
-                        !value.token.is_empty()
-                            && value.token.len() <= 512
-                            && !value.magic.is_empty()
-                            && value.magic.len() <= 1024
-                    });
-                let disposition = if !active {
-                    channels::PushDisposition::Inactive
-                } else if let Some(material) = material {
-                    channels::PushDisposition::Ready {
-                        token: material.token,
-                        magic: material.magic,
-                    }
-                } else {
-                    let scope = self
-                        .protection
-                        .mac(user_key.as_bytes(), &aad)
-                        .map_err(|_| Error::Unavailable(crate::Failure::AppleStorage))?;
-                    let scope: String = scope.iter().map(|byte| format!("{byte:02x}")).collect();
-                    channels::PushDisposition::Invalid { scope }
-                };
-                result.push(channels::PushCandidate {
-                    revision,
-                    user_key,
-                    device: row
-                        .try_get::<uuid::Uuid, _>("device")
-                        .and_then(|id| {
-                            rss_mdm_agent_wire::DeviceId::try_from(id)
-                                .map_err(|e| sqlx::Error::Decode(Box::new(e)))
-                        })
-                        .map_err(storage)?,
-                    disposition,
-                });
+                .map_err(storage)?;
+            if !current {
+                return Ok(None);
             }
-            Ok(result)
+            let Some(row)=sqlx::query("SELECT device,user_key,material,token_revision FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND state='active' AND (push_outcome IS DISTINCT FROM 'rejected' OR push_material_revision IS DISTINCT FROM $4) AND next_push<=clock_timestamp() AND (push_lease_until IS NULL OR push_lease_until<=clock_timestamp()) FOR UPDATE SKIP LOCKED")
+                .bind(&tenant).bind(channel.device).bind(&channel.user_key).bind(channel.material_revision).fetch_optional(&mut *c).await.map_err(storage)? else {return Ok(None)};
+            let device = row
+                .try_get::<uuid::Uuid, _>("device")
+                .and_then(|id| {
+                    rss_mdm_agent_wire::DeviceId::try_from(id)
+                        .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+                })
+                .map_err(storage)?;
+            let active = rss_mdm_registration_service::device::store::active_source_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                &tenant,
+                &device,
+                rss_mdm_inventory::ReportSource::MdmApple,
+            )
+            .await
+            .map_err(Error::from)?;
+            let user_key: String = row.try_get("user_key").map_err(storage)?;
+            let revision: i64 = row.try_get("token_revision").map_err(storage)?;
+            let sealed: Vec<u8> = row.try_get("material").map_err(storage)?;
+            let aad =
+                crate::material::aad(&tenant, &device, &user_key, revision, "apple.push.material")?;
+            // The composition root binds this immutable key at startup. Authentication
+            // or decoding failure here belongs to this row; DB/AAD failures propagate.
+            let material = self
+                .protection
+                .open_bytes(&sealed, &aad)
+                .ok()
+                .and_then(|plain| {
+                    serde_json::from_slice::<crate::material::Push>(plain.expose()).ok()
+                })
+                .filter(|value| {
+                    !value.token.is_empty()
+                        && value.token.len() <= 512
+                        && !value.magic.is_empty()
+                        && value.magic.len() <= 1024
+                });
+            let disposition = if !active {
+                channels::PushDisposition::Inactive
+            } else if let Some(material) = material {
+                channels::PushDisposition::Ready {
+                    token: material.token,
+                    magic: material.magic,
+                }
+            } else {
+                let scope = self
+                    .protection
+                    .mac(user_key.as_bytes(), &aad)
+                    .map_err(|_| Error::Unavailable(crate::Failure::AppleStorage))?;
+                let scope: String = scope.iter().map(|byte| format!("{byte:02x}")).collect();
+                channels::PushDisposition::Invalid { scope }
+            };
+            Ok(Some(channels::PushCandidate {
+                revision,
+                user_key,
+                device,
+                disposition,
+            }))
         })
     }
     fn reject_push<'a>(
@@ -200,10 +186,10 @@ impl channels::ApplePush for Store {
         wake: Uuid,
         device: rss_mdm_agent_wire::DeviceId,
         user_key: String,
-        configuration: [u8; 32],
+        material_revision: i64,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            sqlx::query("UPDATE mdm_apple.channels SET push_failures = CASE WHEN push_configuration IS DISTINCT FROM $4 THEN 0 ELSE push_failures END, push_configuration = $4, push_id = CAST($3 AS uuid), push_lease_until = clock_timestamp() + CAST('15 seconds' AS interval), next_push = clock_timestamp() + CAST('30 seconds' AS interval) WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $5").bind(tenant).bind(device.into_uuid()).bind(wake).bind(configuration.as_slice()).bind(user_key).execute(c).await.map_err(storage)?;
+            sqlx::query("UPDATE mdm_apple.channels SET push_failures = CASE WHEN push_material_revision IS DISTINCT FROM $4 THEN 0 ELSE push_failures END, push_material_revision = $4, push_id = CAST($3 AS uuid), push_lease_until = clock_timestamp() + CAST('15 seconds' AS interval), next_push = clock_timestamp() + CAST('30 seconds' AS interval) WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $5").bind(tenant).bind(device.into_uuid()).bind(wake).bind(material_revision).bind(user_key).execute(c).await.map_err(storage)?;
             Ok(())
         })
     }

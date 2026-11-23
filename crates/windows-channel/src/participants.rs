@@ -168,7 +168,7 @@ pub trait WakeDemand: Send + Sync {
         &'a self,
         pool: &'a sqlx::PgPool,
         after: Option<(uuid::Uuid, uuid::Uuid)>,
-    ) -> Pending<'a, Vec<(uuid::Uuid, uuid::Uuid)>>;
+    ) -> Pending<'a, Vec<(uuid::Uuid, uuid::Uuid, Vec<u8>)>>;
     fn pending<'a>(
         &'a self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,

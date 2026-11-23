@@ -62,4 +62,40 @@ GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA mdm_apple_runtime TO mdm_access;
 GRANT UPDATE(revision,desired_revision) ON mdm_apple_runtime.heads TO mdm_access;
 GRANT UPDATE(revoked,private_key,selected) ON mdm_apple_runtime.versions TO mdm_access;
 GRANT UPDATE(revision) ON mdm_apple_runtime.account_bindings TO mdm_access;
+-- The command runtime can fence a claim against its tenant's current certificate without reading keys.
+CREATE FUNCTION mdm_apple.claim_push_material(r bigint, expected_topic text) RETURNS boolean
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT EXISTS(SELECT FROM mdm_apple_runtime.heads h JOIN mdm_apple_runtime.versions v
+ ON (v.tenant_id,v.purpose,v.revision)=(h.tenant_id,h.purpose,h.desired_revision)
+ WHERE h.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND h.purpose='apns'
+ AND v.revision=r AND v.topic=expected_topic AND v.selected AND NOT v.revoked AND v.expires_at>extract(epoch FROM clock_timestamp())
+ FOR SHARE OF h,v)
+$$;
+REVOKE ALL ON FUNCTION mdm_apple.claim_push_material(bigint,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_apple.claim_push_material(bigint,text) TO mdm_command_runtime;
+-- Resolve only the selected provider identity under the candidate tenant's material RLS.
+CREATE FUNCTION mdm_apple.selected_push_topic(t uuid, rejected_revision bigint, observed bigint) RETURNS text
+LANGUAGE plpgsql STABLE SET search_path=pg_catalog AS $$
+DECLARE prior text := current_setting('rss.tenant_id',true); selected_topic text;
+BEGIN
+ PERFORM set_config('rss.tenant_id',t::text,true);
+ SELECT v.topic INTO selected_topic FROM mdm_apple_runtime.heads h JOIN mdm_apple_runtime.versions v
+ ON (v.tenant_id,v.purpose,v.revision)=(h.tenant_id,h.purpose,h.desired_revision)
+ WHERE h.tenant_id=t AND h.purpose='apns' AND v.expires_at>observed AND v.revision IS DISTINCT FROM rejected_revision AND v.selected AND NOT v.revoked;
+ PERFORM set_config('rss.tenant_id',coalesce(prior,''),true);
+ RETURN selected_topic;
+END $$;
+REVOKE ALL ON FUNCTION mdm_apple.selected_push_topic(uuid,bigint,bigint) FROM PUBLIC;
+CREATE FUNCTION mdm_apple.push_channel_page(t uuid,d uuid,u text,observed bigint)
+RETURNS TABLE(tenant_id uuid,device uuid,user_key text,topic text)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT c.tenant_id,c.device,c.user_key,selected.topic
+ FROM mdm_apple.channels c CROSS JOIN LATERAL (SELECT mdm_apple.selected_push_topic(c.tenant_id,CASE WHEN c.push_outcome='rejected' THEN c.push_material_revision END,observed) AS topic OFFSET 0) selected
+ WHERE c.state='active' AND c.next_push<=statement_timestamp()
+ AND (c.push_lease_until IS NULL OR c.push_lease_until<=statement_timestamp())
+ AND selected.topic IS NOT NULL AND (t IS NULL OR (c.tenant_id,c.device,c.user_key)>(t,d,u))
+ ORDER BY c.tenant_id,c.device,c.user_key LIMIT 32
+$$;
+REVOKE ALL ON FUNCTION mdm_apple.push_channel_page(uuid,uuid,text,bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_apple.push_channel_page(uuid,uuid,text,bigint) TO mdm_access;
 COMMIT;

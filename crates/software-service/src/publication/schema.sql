@@ -86,18 +86,19 @@ CREATE POLICY work_discovery ON mdm_software_composition.withdrawals FOR SELECT 
 CREATE POLICY work_discovery ON mdm_software_composition.subjects FOR SELECT TO mdm_owner USING(true);
 CREATE POLICY work_discovery ON mdm_software_composition.projections FOR SELECT TO mdm_owner USING(true);
 CREATE FUNCTION mdm_software_composition.work_scopes(after_tenant uuid, after_epoch bigint, after_id text)
-RETURNS TABLE(tenant_id uuid, expected_epoch bigint, id text, source text)
+RETURNS TABLE(tenant_id uuid, expected_epoch bigint, id text, source text, binding jsonb, slot text)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
  WITH work AS (
-  (SELECT t.tenant_id,t.expected_epoch,t.id,t.record FROM mdm_software_composition.targets t
+  (SELECT t.tenant_id,t.expected_epoch,t.id,t.record,t.document FROM mdm_software_composition.targets t
    WHERE left(t.id,2)='p:' AND (after_tenant IS NULL OR (t.tenant_id,t.expected_epoch,t.id COLLATE "C")>(after_tenant,after_epoch,after_id COLLATE "C"))
     AND NOT EXISTS(SELECT 1 FROM mdm_software_composition.projections p WHERE p.tenant_id=t.tenant_id AND encode(p.publication,'hex')=substring(t.id,3,64))
    ORDER BY t.tenant_id,t.expected_epoch,t.id COLLATE "C" LIMIT 32)
   UNION ALL
-  (SELECT w.tenant_id,w.expected_epoch,w.id,w.record FROM mdm_software_composition.withdrawals w WHERE NOT w.complete
+  (SELECT w.tenant_id,w.expected_epoch,w.id,w.record,w.document FROM mdm_software_composition.withdrawals w WHERE NOT w.complete
    AND (after_tenant IS NULL OR (w.tenant_id,w.expected_epoch,w.id COLLATE "C")>(after_tenant,after_epoch,after_id COLLATE "C"))
    ORDER BY w.tenant_id,w.expected_epoch,w.id COLLATE "C" LIMIT 32)
- ) SELECT w.tenant_id,w.expected_epoch,w.id,convert_from(s.document,'UTF8')::jsonb->>'target'
+ ) SELECT w.tenant_id,w.expected_epoch,w.id,convert_from(s.document,'UTF8')::jsonb->>'target',
+  convert_from(w.document,'UTF8')::jsonb->'binding',convert_from(w.document,'UTF8')::jsonb->>'slot'
  FROM work w JOIN mdm_software_composition.subjects s ON(s.tenant_id,s.record)=(w.tenant_id,w.record)
  ORDER BY w.tenant_id,w.expected_epoch,w.id COLLATE "C" LIMIT 32
 $$;

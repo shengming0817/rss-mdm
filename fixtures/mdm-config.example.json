@@ -1,5 +1,6 @@
 {
   "background": {
+    "external_calls": {"apns": {"total": 8, "per_credential": 7}, "wns": {"total": 8, "per_credential": 7}, "ade": 8, "publication": {"total": 8, "per_source": 7}},
     "device_concurrency": 8,
     "planning_concurrency": 8,
     "database_connection_budget": 196,
@@ -338,6 +339,14 @@
       "name": "mdm",
       "user": "mdm_scheduler_runtime",
       "password_file": "/run/mdm/mdm-planning-password",
+      "ca_file": "/run/mdm/database-ca.pem"
+    },
+    "wns": {
+      "host": "postgres.example.test",
+      "port": 5432,
+      "name": "mdm",
+      "user": "mdm_wns_runtime",
+      "password_file": "/run/mdm/mdm-wns-runtime-password",
       "ca_file": "/run/mdm/database-ca.pem"
     }
   },

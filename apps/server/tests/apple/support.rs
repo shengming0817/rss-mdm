@@ -121,27 +121,7 @@ pub async fn apple_with_providers(
     let p = crate::device::DeviceService::new(c.database.registration(), c.audit.clone())
         .management_principal(&credential)
         .await?;
-    let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    sqlx::query("INSERT INTO mdm_apple.devices (tenant_id, device, udid, state, access_rights) VALUES (CAST($1 AS uuid), $2, $3, 'active', 8191)").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(n.device.to_string()).execute(&mut *tx).await?;
-    for user in std::iter::once("").chain(users.iter().map(String::as_str)) {
-        let aad = ProtectionContext::new(
-            c.tenant,
-            &serde_json::to_string(&(n.device, user, 1i64))?,
-            "apple.push.material",
-            1,
-        )?
-        .derive();
-        let compare = ProtectionContext::new(
-            c.tenant,
-            &serde_json::to_string(&(n.device, user, 0i64))?,
-            "apple.push.compare",
-            1,
-        )?
-        .derive();
-        let bytes = serde_json::to_vec(&json!({"token":[1,2,3],"magic":"native-t2"}))?;
-        sqlx::query("INSERT INTO mdm_apple.channels (tenant_id, device, user_key, state, material, material_digest, token_revision) VALUES (CAST($1 AS uuid), $2, $3, 'active', $4, $5, 1)").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(user).bind(key.seal_bytes(&bytes,&aad)?).bind(key.mac(&bytes,&compare)?.to_vec()).execute(&mut *tx).await?;
-    }
-    tx.commit().await?;
+    seed_channels(c, n, &key, users).await?;
     let push = rss_mdm_apple_channel::push::Push::from_bytes(
         loaded.apns_topic.clone(),
         &loaded.apns_certificate,
@@ -168,6 +148,35 @@ pub async fn apple_with_providers(
         providers,
     ));
     Ok((apple, p))
+}
+pub(super) async fn seed_channels(
+    c: &Context,
+    n: &Native,
+    key: &Protector,
+    users: &[String],
+) -> Result<()> {
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
+    sqlx::query("INSERT INTO mdm_apple.devices (tenant_id, device, udid, state, access_rights) VALUES (CAST($1 AS uuid), $2, $3, 'active', 8191)").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(n.device.to_string()).execute(&mut *tx).await?;
+    for user in std::iter::once("").chain(users.iter().map(String::as_str)) {
+        let aad = ProtectionContext::new(
+            c.tenant,
+            &serde_json::to_string(&(n.device, user, 1i64))?,
+            "apple.push.material",
+            1,
+        )?
+        .derive();
+        let compare = ProtectionContext::new(
+            c.tenant,
+            &serde_json::to_string(&(n.device, user, 0i64))?,
+            "apple.push.compare",
+            1,
+        )?
+        .derive();
+        let bytes = serde_json::to_vec(&json!({"token":[1,2,3],"magic":"native-t2"}))?;
+        sqlx::query("INSERT INTO mdm_apple.channels (tenant_id, device, user_key, state, material, material_digest, token_revision) VALUES (CAST($1 AS uuid), $2, $3, 'active', $4, $5, 1)").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(user).bind(key.seal_bytes(&bytes,&aad)?).bind(key.mac(&bytes,&compare)?.to_vec()).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }
 /// Seed a genuinely published command with its immutable protected input and exact authority.
 pub async fn operation(

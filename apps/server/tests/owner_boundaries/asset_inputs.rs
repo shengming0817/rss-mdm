@@ -2219,6 +2219,7 @@ async fn peer_advances_during_locked_checkpoint(
     lock: &'static str,
     receipt: &'static str,
 ) -> Result<()> {
+    // These real workers discover every tenant in their database. Isolate the two peers from unrelated suites.
     let first = Context::open("planning_workers", &[]).await?;
     let second = Context::open("planning_workers", &[]).await?;
     let (slow, peer) = if first.tenant.to_string() < second.tenant.to_string() {

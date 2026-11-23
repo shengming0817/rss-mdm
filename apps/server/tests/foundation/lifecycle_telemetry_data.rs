@@ -46,7 +46,14 @@ async fn device_context(
         directory: dir.to_owned(),
     };
     let operator = inputs.pool("installed", "postgres").await?;
-    AuthorityContext::connect("installed", inputs, operator, tenant, &config.audit).await
+    Box::pin(AuthorityContext::connect(
+        "installed",
+        inputs,
+        operator,
+        tenant,
+        &config.audit,
+    ))
+    .await
 }
 
 async fn issued(
@@ -212,7 +219,7 @@ impl Upload {
         let service = running.telemetry.get().context("live telemetry ingress")?;
         let config: crate::config::Config = serde_json::from_value(runtime.clone())?;
         let tenant = TenantId::parse(&tenant.to_string())?;
-        let c = device_context(&config, primary, dir, tenant).await?;
+        let c = Box::pin(device_context(&config, primary, dir, tenant)).await?;
         let (registration, grant) = device::seed_registration(&c).await?;
         let principal = device::authenticated_agent(
             &c,

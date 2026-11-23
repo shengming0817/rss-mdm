@@ -45,6 +45,7 @@ pub(crate) async fn configuration(
         ("content", "mdm_content_runtime"),
         ("telemetry", "mdm_telemetry_runtime"),
         ("scheduler", "mdm_scheduler_runtime"),
+        ("wns", "mdm_wns_runtime"),
     ] {
         configuration["business_databases"][owner] =
             serde_json::to_value(inputs.database(profile, role))?;

@@ -44,10 +44,19 @@ pub(super) async fn seed_group(
     native: &Configuration,
     ids: &[Uuid],
 ) -> Result<()> {
+    seed_device_group(c, n.device, key, native, ids).await
+}
+pub(super) async fn seed_device_group(
+    c: &Context,
+    device: rss_mdm_agent_wire::DeviceId,
+    key: &Protector,
+    native: &Configuration,
+    ids: &[Uuid],
+) -> Result<()> {
     native.validate()?;
     let policy = Uuid::new_v4();
     let version = Uuid::new_v4();
-    let unit = native.unit_key(key, c.tenant, &n.device)?;
+    let unit = native.unit_key(key, c.tenant, &device)?;
     let frozen = serde_json::to_value(Frozen::Configuration {
         native: Protected::seal(key, c.tenant, Owner::Policy { policy, version }, native)?,
         platform: rss_mdm_policy::Platform::Windows,
@@ -65,7 +74,7 @@ pub(super) async fn seed_group(
     let mut tx = command::seed_transaction(c).await?;
     sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'enabled',$4,$5,$6)").bind(c.tenant.to_string()).bind(policy).bind(version).bind(serde_json::to_value(definition)?).bind(serde_json::to_value(actor)?).bind(now).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,resource,resource_version,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'configuration','native-identity','v1',$4,$5)").bind(c.tenant.to_string()).bind(version).bind(policy).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).execute(&mut *tx).await?;
-    let command_device:Uuid=sqlx::query_scalar("INSERT INTO mdm_access.command_authorities(tenant_id,device,command_device,generation,epoch) VALUES($1::uuid,$2,$3,1,1) ON CONFLICT(tenant_id,device) DO UPDATE SET device=excluded.device RETURNING command_device").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(Uuid::new_v4()).fetch_one(&mut *tx).await?;
+    let command_device:Uuid=sqlx::query_scalar("INSERT INTO mdm_access.command_authorities(tenant_id,device,command_device,generation,epoch) VALUES($1::uuid,$2,$3,1,1) ON CONFLICT(tenant_id,device) DO UPDATE SET device=excluded.device RETURNING command_device").bind(c.tenant.to_string()).bind(device.into_uuid()).bind(Uuid::new_v4()).fetch_one(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_device_command.authorities(tenant_id,device_id,generation,authority_epoch) VALUES($1::uuid,$2,1,1) ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).bind(command_device).execute(&mut *tx).await?;
     for &id in ids {
         let input = native.request(id, version.to_string(), now + 1800, false)?;
@@ -81,25 +90,25 @@ pub(super) async fn seed_group(
             c.tenant,
             &serde_json::to_string(&Identity {
                 operation: id,
-                device: &n.device,
+                device: &device,
             })?,
             &serde_json::to_string(&("native.operation.input/v1", &metadata))?,
             1,
         )?
         .derive();
         let sealed = key.seal_bytes(&serde_json::to_vec(&input)?, &aad)?;
-        let digest = input.digest(key, c.tenant, &n.device)?.as_bytes().to_vec();
-        let authority = json!({"kind":"policy","origin":"policy","source_objects":[{"object":{"kind":"endpoint","id":n.device},"associationVersion":null,"verified":true,"members":[{"device":n.device,"channel":"mdm"}]}],"unit":unit,"required":input.task.permissions()?,"tenant":c.tenant.to_string(),"policy":policy,"version":version,"device":n.device,"remove":false});
+        let digest = input.digest(key, c.tenant, &device)?.as_bytes().to_vec();
+        let authority = json!({"kind":"policy","origin":"policy","source_objects":[{"object":{"kind":"endpoint","id":device},"associationVersion":null,"verified":true,"members":[{"device":device,"channel":"mdm"}]}],"unit":unit,"required":input.task.permissions()?,"tenant":c.tenant.to_string(),"policy":policy,"version":version,"device":device,"remove":false});
         sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,version) VALUES($1::uuid,$2,$3,1,1,$4,$5,$6,'mdm.commands.v1',$2,$4,'published',$6,2)").bind(c.tenant.to_string()).bind(id.to_string()).bind(command_device).bind(&digest).bind(input.deadline*1_000_000).bind(now*1_000_000).execute(&mut *tx).await?;
         sqlx::query(
             "INSERT INTO mdm_windows.native_commands(tenant_id,id,device) VALUES($1::uuid,$2,$3)",
         )
         .bind(c.tenant.to_string())
         .bind(id)
-        .bind(n.device.into_uuid())
+        .bind(device.into_uuid())
         .execute(&mut *tx)
         .await?;
-        sqlx::query("INSERT INTO mdm_planning.configuration_operations(expected_epoch,tenant_id,id,device,request,input_context,fingerprint,generation,epoch,authority,dispatch_fingerprint,gateway_accepted,policy_version) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,$4,$5,$6,1,1,$7,$6,true,$8)").bind(c.tenant.to_string()).bind(id).bind(n.device.into_uuid()).bind(sealed).bind(serde_json::to_value(metadata)?).bind(digest).bind(authority).bind(version).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_planning.configuration_operations(expected_epoch,tenant_id,id,device,request,input_context,fingerprint,generation,epoch,authority,dispatch_fingerprint,gateway_accepted,policy_version) VALUES(current_setting('rss.execution_epoch')::bigint,$1::uuid,$2,$3,$4,$5,$6,1,1,$7,$6,true,$8)").bind(c.tenant.to_string()).bind(id).bind(device.into_uuid()).bind(sealed).bind(serde_json::to_value(metadata)?).bind(digest).bind(authority).bind(version).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     Ok(())
