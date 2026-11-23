@@ -653,7 +653,7 @@ pub(crate) fn task_spec(
         device_id: device,
 
         platform: b.intent.platform(),
-        architecture: architecture,
+        architecture,
         task_id: issue.run,
         attempt_id: issue.attempt,
         permit: issue.permit,

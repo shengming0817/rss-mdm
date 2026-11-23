@@ -346,10 +346,7 @@ impl Service {
                                 && matches!(
                                     run.state.execution,
                                     Execution::Running | Execution::Unknown
-                                ) =>
-                        {
-                            ()
-                        }
+                                ) => {}
                         Err(Error::Conflict | Error::Forbidden) => continue,
                         Err(error) => return Err(error),
                     }

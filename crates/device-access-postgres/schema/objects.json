@@ -2,6 +2,7 @@
   "tables": [
     "rss_da.access_policy_recovery",
     "rss_da.access_runs",
+    "rss_da.account_events",
     "rss_da.agent_delivery",
     "rss_da.bindings",
     "rss_da.brokers",
