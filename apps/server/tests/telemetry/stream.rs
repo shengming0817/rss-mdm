@@ -56,7 +56,7 @@ async fn upload(
     wire["policy"] = json!(policy);
     wire["policyVersion"] = json!(version);
     wire["fields"] = json!(fields);
-    wire["tenantId"] = json!(c.tenant);
+    wire["tenantId"] = json!(c.tenant.to_string());
     wire["deviceId"] = json!(principal.device());
     wire["sourceEpoch"] = json!(epoch);
     wire["issuedAt"] = json!(now - 10);
@@ -151,7 +151,7 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         worker.await??;
         delivery??;
         let account=c.account(&[Permission::InventoryRead,Permission::TelemetryMaintain]).await?;
-        let http=http::Http::open(c,service,Arc::new(c.authenticate(&account).await?)).await?;
+        let http=http::Http::open(c,service,&account).await?;
         let target=json!({"source":"agent.script","epoch":epoch});
         let request=|action:Value| json!({"id":Uuid::new_v4(),"device":principal.device(),
             "field":"custom.history_0000","resource":"device","startMicros":0,"endMicros":1,"action":action});

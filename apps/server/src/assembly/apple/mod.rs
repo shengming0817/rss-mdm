@@ -37,7 +37,7 @@ pub(crate) fn router(
         app.clone(),
         Envelope {
             request_budget,
-                host: apple
+            host: apple
                 .config
                 .management
                 .origin

@@ -396,12 +396,7 @@ async fn exercise(c: &Context, f: &Fixture, default: &Fixture) -> Result<()> {
             && recovered.received_at == accepted.received_at,
         "telemetry role admits the live primary credential and recovers its receipt"
     );
-    let http = http::Http::open(
-        c,
-        service.clone(),
-        Arc::new(c.authenticate(&account).await?),
-    )
-    .await?;
+    let http = http::Http::open(c, service.clone(), &account).await?;
     let h = validator("/telemetry/history");
     let a = validator("/telemetry/aggregate");
     capacity::verify(&http, &device, &h, epoch, &capacity_spec).await?;
@@ -497,12 +492,7 @@ async fn exercise(c: &Context, f: &Fixture, default: &Fixture) -> Result<()> {
         "old number input rejected"
     );
     let no_read = c.account(&[Permission::GroupRead]).await?;
-    let denied = http::Http::open(
-        c,
-        service.clone(),
-        Arc::new(c.authenticate(&no_read).await?),
-    )
-    .await?;
+    let denied = http::Http::open(c, service.clone(), &no_read).await?;
     anyhow::ensure!(
         denied
             .call("/telemetry/history", query(&device, "custom.minimum"))
@@ -574,7 +564,7 @@ async fn default_queries(
         tx.commit().await?;
         seed(&c,default,&device,epoch,"custom.default",[Number::I64(23);2],false).await?;
         let account=c.account(&[Permission::InventoryRead]).await?;
-        let http=http::Http::open(&c,service.clone(),Arc::new(c.authenticate(&account).await?)).await?;
+        let http=http::Http::open(&c,service.clone(),&account).await?;
         for mode in ["history","latest"] {
             let mut request=query(&device,"custom.default"); request["mode"]=json!(mode); request["maxPoints"]=json!(1);
             let result=http.post("/telemetry/history",request).await?;

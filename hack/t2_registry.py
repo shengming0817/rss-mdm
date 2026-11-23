@@ -11,7 +11,7 @@ MODULES = {
                 'apps/server/tests/webhook_relay.rs','apps/server/src/adapters/webhooks.rs',
                 'apps/server/src/config/webhooks.rs','apps/server/tests/support/command_runtime.rs','hack/native_protocol_materials.py')),
     'telemetry.query': dict(prefix='assembly::telemetry_queries_t2::', profiles=('shared',),
-        inputs=('crates/work-page/*', 'crates/agent-wire/src/identity.rs', 'crates/management-http/src/telemetry*', 'crates/management-http/src/decimal.rs',
+        inputs=('crates/work-page/*', 'crates/agent-wire/src/identity.rs', 'crates/management-http/src/telemetry*', 'crates/management-http/src/decimal.rs', 'crates/management-http/src/body_limits.json', 'deployment/render_gateway.py', 'hack/gateway_fixture.py',
                 'crates/telemetry-service/*', 'apps/server/src/telemetry.rs', 'apps/server/tests/telemetry/*',
                 'crates/http-contract/*', 'crates/inventory/src/telemetry.rs', 'crates/inventory/src/time_series.rs', 'crates/inventory/src/catalog.rs')),
     'directory.query': dict(prefix='assembly::directory_queries_t2::', profiles=('shared',),

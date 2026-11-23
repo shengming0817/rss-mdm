@@ -126,7 +126,8 @@ impl Input {
     }
     fn validate(&self) -> Result<()> {
         crate::config::http::Http::installation(self.request_slots, self.buffered_body_bytes)
-            .compile(&crate::identity::policy::RuntimePolicy::installation()).map_err(invalid)?;
+            .compile(&crate::identity::policy::RuntimePolicy::installation())
+            .map_err(invalid)?;
         let u = url::Url::parse(&self.origin).map_err(invalid)?;
         if u.scheme() != "https"
             || u.host_str().is_none()

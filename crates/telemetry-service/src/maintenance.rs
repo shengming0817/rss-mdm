@@ -513,9 +513,10 @@ impl Service {
         self.runtime.local_tx(execution,rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff, &crate::backend::SystemClock),move|tx|Box::pin(async move {
             service.audit_store.prepare_in(tx, &audit, &[]).await.map_err(crate::storage_error)?;
             let tenant=execution.tenant();
+            let authority = service.clone();
             let replayed = tx.with_connection(move|c|Box::pin(async move {
                 let result=async {
-                    qualify(&service,c,&actor,&intent,cutoff).await?;
+                    qualify(&authority,c,&actor,&intent,cutoff).await?;
                     crate::selection::lock_read(c,tenant).await?;
                     if crate::selection::pending(c,tenant).await?.is_some() && !sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2)").bind(tenant.to_string()).bind(intent.id).fetch_one(&mut *c).await? {return Err(Error::Conflict);}
                     let inserted=sqlx::query("INSERT INTO mdm_telemetry.maintenance(tenant_id,id,binding,request) VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING")

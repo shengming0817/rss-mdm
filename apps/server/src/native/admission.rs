@@ -94,10 +94,7 @@ pub(crate) struct RequestGate {
     peer: IpAddr,
 }
 impl Admission {
-    pub(crate) fn new(
-        clock: Arc<dyn rss_observation::Clock>,
-        name: &'static str,
-    ) -> Arc<Self> {
+    pub(crate) fn new(clock: Arc<dyn rss_observation::Clock>, name: &'static str) -> Arc<Self> {
         let now = clock.now();
         Arc::new(Self {
             clock,
@@ -151,7 +148,6 @@ impl Admission {
         }
         Some(slot)
     }
-
 }
 pub(crate) async fn admit(
     Extension(gate): Extension<RequestGate>,
@@ -186,26 +182,26 @@ pub(crate) fn limited(delay: Duration) -> Response {
 }
 
 pub(crate) fn agent_limited(path: &str) -> Response {
-        use axum::http::{HeaderValue, StatusCode, header};
-        let body = if path.starts_with("/api/v1/agent/enroll/") {
-            serde_json::to_value(rss_mdm_agent_wire::enroll::ErrorBody {
-                code: rss_mdm_agent_wire::enroll::ErrorCode::ServiceUnavailable,
-                issuance_id: None,
-            })
-            .expect("closed error")
-        } else {
-            serde_json::to_value(rss_mdm_agent_wire::runtime::ErrorBody {
-                code: rss_mdm_agent_wire::runtime::ErrorCode::ServiceUnavailable,
-            })
-            .expect("closed error")
-        };
-        let mut response = crate::http_host::secure_response(
-            (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response(),
-            uuid::Uuid::new_v4(),
-        );
-        response
-            .headers_mut()
-            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    use axum::http::{HeaderValue, StatusCode, header};
+    let body = if path.starts_with("/api/v1/agent/enroll/") {
+        serde_json::to_value(rss_mdm_agent_wire::enroll::ErrorBody {
+            code: rss_mdm_agent_wire::enroll::ErrorCode::ServiceUnavailable,
+            issuance_id: None,
+        })
+        .expect("closed error")
+    } else {
+        serde_json::to_value(rss_mdm_agent_wire::runtime::ErrorBody {
+            code: rss_mdm_agent_wire::runtime::ErrorCode::ServiceUnavailable,
+        })
+        .expect("closed error")
+    };
+    let mut response = crate::http_host::secure_response(
+        (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response(),
+        uuid::Uuid::new_v4(),
+    );
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
     response
 }
 pub(crate) async fn admit_agent(

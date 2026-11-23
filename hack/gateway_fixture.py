@@ -51,3 +51,27 @@ def render(directory, *, origin='https://mdm.example.test', backend='127.0.0.1:8
         end = config.index('\n        }', start) + len('\n        }')
         config = config[:start] + '        location / { return 404; }' + config[end:]
     return Gateway(config, ports, renderer)
+
+def serve_loopback(root, certificates, backend, port):
+    """Run the production renderer with test-only loopback and private filesystem coordinates."""
+    import os
+    origin = f'https://localhost:{port}'
+    repo = Path(__file__).resolve().parents[1]
+    config = render(repo/'deployment', origin=origin, backend=backend, certificates=str(certificates),
+                    web=False, bootstrap_origins=(origin,), body_limits=repo/'crates/management-http/src/body_limits.json').configuration
+    config = config.replace(f'listen {port} ssl;', f'listen 127.0.0.1:{port} ssl;')
+    config = config.replace('/tmp/mdm-', str(root/'mdm-')).replace('include /etc/nginx/mime.types;', 'types { }')
+    target = root/'nginx.conf'
+    target.write_text(config)
+    os.execvp('nginx', ['nginx', '-p', str(root), '-c', str(target), '-g', 'daemon off; master_process off;'])
+
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('root', type=Path)
+    parser.add_argument('certificates', type=Path)
+    parser.add_argument('backend')
+    parser.add_argument('port', type=int)
+    args = parser.parse_args()
+    serve_loopback(args.root, args.certificates, args.backend, args.port)

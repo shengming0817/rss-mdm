@@ -64,7 +64,8 @@ impl Http {
         let bad = || Error::Configuration(ConfigIssue::Budget);
         let seconds = crate::identity::policy::seconds;
         let total_drain = seconds(self.total_drain_seconds)?;
-        if self.request_slots == 0 || self.request_slots > tokio::sync::Semaphore::MAX_PERMITS
+        if self.request_slots == 0
+            || self.request_slots > tokio::sync::Semaphore::MAX_PERMITS
             || self.buffered_body_bytes < rss_mdm_management_http::body_limits().largest_buffer()
             || self.buffered_body_bytes > tokio::sync::Semaphore::MAX_PERMITS
             || self.request_seconds.max(identity.request_seconds) > self.admission_drain_seconds

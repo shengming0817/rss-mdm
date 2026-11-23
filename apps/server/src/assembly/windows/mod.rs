@@ -93,8 +93,7 @@ pub(crate) fn routers(
     );
     let enrollment = enrollment.layer(middleware::from_fn(admission::admit));
     let management = management.layer(middleware::from_fn(admission::admit_windows));
-    let management_admission =
-        admission::Admission::new(clock.clone(), "mdm-management-tls");
+    let management_admission = admission::Admission::new(clock.clone(), "mdm-management-tls");
     let mut management_routers = vec![ChannelRouter {
         admission: management_admission.clone(),
         origins: vec![windows.config.management.origin.clone()],

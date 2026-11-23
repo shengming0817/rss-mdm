@@ -91,7 +91,7 @@ def wait(check, stage, seconds=45):
         time.sleep(.2)
     raise RuntimeError("candidate deadline: " + stage)
 
-def inputs(root, example, deployment_directory, *, database_host="postgres", hostname="mdm.example.test"):
+def inputs(root, example, deployment_directory, *, database_host="postgres", hostname="mdm.example.test", body_limits=None):
     """Runtime and operator get separate mounts; the server never receives maintenance credentials."""
     runtime, operator = root/"container/runtime", root/"container/operator"
     runtime.mkdir(parents=True); operator.mkdir(parents=True)
@@ -142,7 +142,7 @@ def inputs(root, example, deployment_directory, *, database_host="postgres", hos
     write(operator,"initialize.json",dict(runtime=config["identity"]["runtime"],audit={"mode":"plain"},database=database(operator,"mdm_identity_maintenance"),installation=installation(),tenant_id=TENANT,expected_epoch=1,principal_id=ADMIN,
                                           login="admin",password_file=write(operator,"account-password",PASSWORD)))
     from gateway_fixture import render
-    gateway=render(deployment_directory, origin="https://"+hostname, backend="server:8081")
+    gateway=render(deployment_directory, body_limits=body_limits, origin="https://"+hostname, backend="server:8081")
     (root/"nginx.conf").write_text(gateway.configuration)
     gateway.publish(root/"gateway-ports.compose.yaml",isolated=True)
     root.chmod(0o700)
