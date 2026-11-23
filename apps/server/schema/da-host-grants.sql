@@ -9,6 +9,11 @@ GRANT EXECUTE ON FUNCTION rss_da.access_policy(uuid,uuid,bigint) TO mdm_identity
 GRANT EXECUTE ON FUNCTION rss_da.access_policy(uuid,uuid,bigint) TO mdm_command_runtime;
 GRANT EXECUTE ON FUNCTION rss_da.active_access_binding(uuid,bigint,bigint) TO mdm_command_runtime;
 GRANT USAGE ON SCHEMA rss_da TO mdm_command_runtime;
+GRANT SELECT,INSERT ON rss_da.access_runs TO mdm_identity_runtime;
+CREATE POLICY access_host_management_insert ON rss_da.access_runs AS RESTRICTIVE FOR INSERT TO mdm_identity_runtime
+ WITH CHECK(da_target IS NOT NULL);
+CREATE POLICY access_host_agent_path ON rss_da.access_runs AS RESTRICTIVE TO mdm_command_runtime,mdm_policy_runtime
+ USING(da_target IS NULL) WITH CHECK(da_target IS NULL);
 GRANT SELECT,INSERT ON rss_da.access_runs,rss_da.access_policy_recovery TO mdm_command_runtime;
 GRANT UPDATE(state,result) ON rss_da.access_runs TO mdm_command_runtime;
 GRANT UPDATE(gateway_accepted) ON rss_da.access_runs TO mdm_command_runtime;

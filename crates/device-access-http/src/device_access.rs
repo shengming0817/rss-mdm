@@ -51,7 +51,7 @@ pub fn mount(
 }
 fn register() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
-        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { publish_credential_policy, credential_policy, request_credential, credential_status, get_materials, post_material_step_up, post_material_disclose, get_list, get_binding, put_change, post_step_up, get_operation, get_offboarding, post_offboarding_identity, get_enterprise_list, post_enterprise_change, get_enterprise_detail, post_enterprise_step_up, post_offboarding_idp } }
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { publish_credential_policy, credential_policy, request_credential, credential_status, get_materials, post_material_step_up, post_material_disclose, get_list, get_binding, put_change, post_step_up, get_operation, get_execution, get_offboarding, post_offboarding_identity, get_enterprise_list, post_enterprise_change, get_enterprise_detail, post_enterprise_step_up, post_offboarding_idp } }
         RegisterModule1 {
             publish_credential_policy: rss_mdm_http_contract::module::Route::new(
                 "/devices/{device}/device-access/credential-policies",
@@ -140,6 +140,10 @@ fn register() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Decla
                     &contracts::DEVICE_ACCESS,
                     &[RouteOperation::Action],
                 ),
+            ),
+            get_execution: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/device-access/operations/{id}/execution",
+                get(execution, &contracts::DEVICE_ACCESS, &[RouteOperation::Get]),
             ),
             get_operation: rss_mdm_http_contract::module::Route::new(
                 "/devices/{device}/device-access/operations/{id}",
@@ -341,6 +345,17 @@ async fn change(
             )
             .await?,
     )))
+}
+async fn execution(
+    State(s): State<Arc<Services>>,
+    Extension(auth): Extension<RequestAuth>,
+    Path((_tenant, device, id)): Path<(uuid::Uuid, rss_mdm_agent_wire::DeviceId, Uuid)>,
+) -> Result<Json<access::account_delivery::Progress>, Error> {
+    Ok(Json(
+        s.registration
+            .account_progress(&auth.proof, &device, id)
+            .await?,
+    ))
 }
 async fn operation(
     State(s): State<Arc<Services>>,

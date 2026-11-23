@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Coordinates to journal before acknowledging an offered account operation.",
+  "properties": {
+    "attemptId": {
+      "description": "Stable across interruption.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "bindingId": {
+      "description": "Exact desired binding.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "definitionDigest": {
+      "description": "Frozen desired state fingerprint.",
+      "items": {
+        "format": "uint8",
+        "maximum": 255,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "maxItems": 32,
+      "minItems": 32,
+      "type": "array"
+    },
+    "operationId": {
+      "description": "Original binding management operation.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "taskId": {
+      "description": "Server-assigned delivery and attempt.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operationId",
+    "taskId",
+    "attemptId",
+    "bindingId",
+    "definitionDigest"
+  ],
+  "title": "AccountOffer",
+  "type": "object",
+  "$id": "https://rss.example/da/v1/AccountOffer"
+}

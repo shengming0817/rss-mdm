@@ -1,0 +1,1086 @@
+{
+  "$defs": {
+    "AccessAccount": {
+      "description": "Stable local account identity, never a display name or a transient Unix UID.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Windows account, with provenance reported by the authenticated native session.",
+          "properties": {
+            "authority": {
+              "$ref": "#/$defs/AccessWindowsAuthority",
+              "description": "Local machine, AD domain or Entra tenant authority; never inferred from a name."
+            },
+            "platform": {
+              "const": "windows",
+              "type": "string"
+            },
+            "sid": {
+              "description": "SID returned by the native account operation.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "platform",
+            "sid",
+            "authority"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "macOS local directory account.",
+          "properties": {
+            "generatedUid": {
+              "description": "Persistent directory identity, distinct from numeric UID.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "platform": {
+              "const": "macos",
+              "type": "string"
+            }
+          },
+          "required": [
+            "platform",
+            "generatedUid"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccessAccountDisposition": {
+      "description": "Explicit OS account handling when removing RSS integration. Data is always retained.",
+      "oneOf": [
+        {
+          "const": "keep",
+          "description": "Preserve the account's enabled state and privilege.",
+          "type": "string"
+        },
+        {
+          "const": "disable",
+          "description": "Disable interactive login without deleting the account.",
+          "type": "string"
+        },
+        {
+          "const": "standard",
+          "description": "Remove administrator privilege while preserving login.",
+          "type": "string"
+        }
+      ]
+    },
+    "AccessAction": {
+      "description": "Bounded native account action; system passwords are supplied only through local UI.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Associate or configure one exact existing local account.",
+          "properties": {
+            "account": {
+              "$ref": "#/$defs/AccessAccount",
+              "description": "Stable local identity."
+            },
+            "configuration": {
+              "$ref": "#/$defs/AccessConfiguration",
+              "description": "Desired integration and privilege."
+            },
+            "kind": {
+              "const": "apply",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "account",
+            "configuration"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Create an account through the authenticated native broker; never adopt an existing name.",
+          "properties": {
+            "configuration": {
+              "$ref": "#/$defs/AccessConfiguration",
+              "description": "New accounts default to standard privilege when role is absent."
+            },
+            "kind": {
+              "const": "create",
+              "type": "string"
+            },
+            "name": {
+              "description": "Requested local account name; collisions must fail.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name",
+            "configuration"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Remove RSS integration and apply the explicitly authorized account disposition.",
+          "properties": {
+            "account": {
+              "$ref": "#/$defs/AccessAccount",
+              "description": "Exact account whose integration must be removed."
+            },
+            "disposition": {
+              "$ref": "#/$defs/AccessAccountDisposition",
+              "description": "Account handling; never deletes the account or its data."
+            },
+            "kind": {
+              "const": "unbind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "account",
+            "disposition"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccessConfiguration": {
+      "additionalProperties": false,
+      "description": "Common product configuration; Apple protocol payloads remain with the Apple owner.",
+      "properties": {
+        "enabled": {
+          "description": "Enable the platform's RSS login integration.",
+          "type": "boolean"
+        },
+        "mac": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoginConfiguration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Device-wide Mac profile settings; absence excludes Mac integration from this policy."
+        },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccessRole"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicit role convergence; null preserves existing role, new accounts default standard."
+        },
+        "selfEnrollment": {
+          "description": "Permit the first association to the currently authenticated interactive local account.",
+          "type": "boolean"
+        },
+        "windows": {
+          "$ref": "#/$defs/AccessWindowsConfiguration",
+          "description": "Explicit admitted Windows account authorities."
+        }
+      },
+      "required": [
+        "windows",
+        "selfEnrollment",
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "AccessRole": {
+      "description": "Requested account privilege. Absence preserves an existing account's privilege.",
+      "oneOf": [
+        {
+          "const": "standard",
+          "description": "Ordinary local user.",
+          "type": "string"
+        },
+        {
+          "const": "administrator",
+          "description": "Local administrator, requiring explicit RSS device-account authorization.",
+          "type": "string"
+        }
+      ]
+    },
+    "AccessRssFacts": {
+      "additionalProperties": false,
+      "description": "Installed factor identity is independent of the account association and configuration revision.",
+      "properties": {
+        "factorGeneration": {
+          "description": "Exact installed factor generation.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "recovery": {
+          "$ref": "#/$defs/CredentialReceipt",
+          "description": "Exact recovery material retained on this endpoint."
+        }
+      },
+      "required": [
+        "factorGeneration",
+        "recovery"
+      ],
+      "type": "object"
+    },
+    "AccessTaskSpec": {
+      "additionalProperties": false,
+      "description": "Signed task carried by the existing offer/received/start/result protocol.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/AccessAction",
+          "description": "Closed native action."
+        },
+        "architecture": {
+          "$ref": "#/$defs/TaskArchitecture",
+          "description": "Required architecture."
+        },
+        "attemptId": {
+          "description": "Exact attempt.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "authorization": {
+          "$ref": "#/$defs/TaskAuthorization",
+          "description": "Current product authorization."
+        },
+        "bindingGeneration": {
+          "description": "Monotonic association generation.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "bindingId": {
+          "description": "Stable business binding.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "deadline": {
+          "description": "Original operation deadline.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "definitionDigest": {
+          "description": "Frozen owner definition digest.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "deviceId": {
+          "$ref": "#/$defs/DeviceId",
+          "description": "Exact endpoint."
+        },
+        "expiresAt": {
+          "description": "Signed permission deadline.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "factorGeneration": {
+          "description": "Independent factor replacement generation. Configuration changes preserve it.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "instanceId": {
+          "description": "Identity authority instance selected by the server.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "permit": {
+          "$ref": "#/$defs/TaskPermit",
+          "description": "Offer or freshly authorized Start."
+        },
+        "platform": {
+          "$ref": "#/$defs/TaskPlatform",
+          "description": "Required operating system."
+        },
+        "principalId": {
+          "description": "RSS person selected by the authenticated ceremony or authorized administrator.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "revision": {
+          "description": "Exact desired state revision.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "taskId": {
+          "description": "Existing durable task.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "tenantId": {
+          "description": "Authenticated tenant.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "windows": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccessWindowsPlan"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Windows factor provisioning; absent for macOS and unlink."
+        },
+        "wireVersion": {
+          "description": "Exact wire major.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wireVersion",
+        "tenantId",
+        "deviceId",
+        "platform",
+        "architecture",
+        "taskId",
+        "attemptId",
+        "permit",
+        "expiresAt",
+        "deadline",
+        "bindingId",
+        "instanceId",
+        "principalId",
+        "bindingGeneration",
+        "factorGeneration",
+        "revision",
+        "definitionDigest",
+        "action",
+        "authorization"
+      ],
+      "type": "object"
+    },
+    "AccessWindowsAuthority": {
+      "description": "Stable Windows identity authority. Display names and email addresses are excluded.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The current registered computer's SAM database.",
+          "properties": {
+            "kind": {
+              "const": "local",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Native directory domain SID, distinct from the user's account SID.",
+          "properties": {
+            "domainSid": {
+              "description": "SID of the native AD domain, excluding the user's RID.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "active_directory",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "domainSid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Stable directory identifiers from the native Entra account.",
+          "properties": {
+            "kind": {
+              "const": "entra",
+              "type": "string"
+            },
+            "objectId": {
+              "description": "Immutable user object identifier within that tenant.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "tenantId": {
+              "description": "Tenant that owns the native directory account.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "tenantId",
+            "objectId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccessWindowsConfiguration": {
+      "description": "Current Windows policy, with no implicit fallback between authentication mechanisms.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "This policy does not target Windows.",
+          "properties": {
+            "kind": {
+              "const": "disabled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Password plus the RSS offline factor.",
+          "properties": {
+            "accounts": {
+              "description": "Explicit admitted account authorities.",
+              "items": {
+                "$ref": "#/$defs/AccessWindowsKind"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "rss_factor",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "accounts"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Pure Entra join, TPM 2.0 and PIN; Windows owns enrollment and authentication.",
+          "properties": {
+            "kind": {
+              "const": "whfb",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccessWindowsKind": {
+      "description": "Windows account classes admitted by the selected policy.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "Local SAM account.",
+          "type": "string"
+        },
+        {
+          "const": "active_directory",
+          "description": "AD domain account.",
+          "type": "string"
+        },
+        {
+          "const": "entra",
+          "description": "Entra directory account.",
+          "type": "string"
+        }
+      ]
+    },
+    "AccessWindowsPlan": {
+      "description": "Windows initialization is part of the access task, not a second policy or scheduler.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Native Hello policy; no RSS credential material is provisioned.",
+          "properties": {
+            "kind": {
+              "const": "whfb",
+              "type": "string"
+            },
+            "previousKey": {
+              "description": "Last observed key, fenced by the signed task, for replacement detection.",
+              "format": "uuid",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "retire": {
+              "description": "Retire the binding: stop provisioning and observe removal independently.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "retire"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Install a new factor generation after durable escrow acknowledgement.",
+          "properties": {
+            "expectedRevision": {
+              "description": "Exact recovery revision before this mutation.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "kind": {
+              "const": "initialize",
+              "type": "string"
+            },
+            "recipient": {
+              "$ref": "#/$defs/CredentialRecipient",
+              "description": "Public encryption recipient; never used for offline verification."
+            }
+          },
+          "required": [
+            "kind",
+            "recipient",
+            "expectedRevision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Apply configuration while preserving existing factors.",
+          "properties": {
+            "facts": {
+              "$ref": "#/$defs/AccessRssFacts",
+              "description": "Last applied factor facts; the endpoint must independently read them back."
+            },
+            "kind": {
+              "const": "preserve",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "facts"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AuthenticationMode": {
+      "description": "Device-wide login mode; every user on one Mac consumes the same system profile.",
+      "oneOf": [
+        {
+          "const": "secure_enclave",
+          "description": "Existing Secure Enclave user-key protocol.",
+          "type": "string"
+        },
+        {
+          "const": "password",
+          "description": "Device-signed Apple Password request, verified by the selected password authority.",
+          "type": "string"
+        }
+      ]
+    },
+    "CredentialReceipt": {
+      "additionalProperties": false,
+      "description": "Durable escrow coordinates returned only for the exact accepted task event.",
+      "properties": {
+        "material": {
+          "description": "Server-assigned entry identity.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "subject": {
+          "$ref": "#/$defs/CredentialSubject",
+          "description": "Exact material subject."
+        },
+        "version": {
+          "description": "Immutable material version.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "subject",
+        "material",
+        "version"
+      ],
+      "type": "object"
+    },
+    "CredentialRecipient": {
+      "additionalProperties": false,
+      "description": "Public RSA-OAEP-SHA256 recipient. AES-256-GCM protects each material with task-bound AAD.",
+      "properties": {
+        "keyId": {
+          "description": "Exact configured recipient certificate SHA-256 identity.",
+          "type": "string"
+        },
+        "publicKey": {
+          "description": "Base64 DER SubjectPublicKeyInfo; no private key is transmitted.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "keyId",
+        "publicKey"
+      ],
+      "type": "object"
+    },
+    "CredentialSubject": {
+      "description": "An exact Windows object, never an account display name or drive letter.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "RSS additional-factor recovery material, separate from local-account passwords.",
+          "properties": {
+            "binding": {
+              "description": "Stable Device Access association.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "bindingGeneration": {
+              "description": "Exact association generation.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "kind": {
+              "const": "rss_login",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Stable local account SID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "binding",
+            "bindingGeneration",
+            "sid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Numerical recovery protector on a stable volume.",
+          "properties": {
+            "kind": {
+              "const": "bitlocker",
+              "type": "string"
+            },
+            "protector": {
+              "description": "Recovery protector identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "volume": {
+              "description": "Stable WMI volume DeviceID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "volume",
+            "protector"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Explicit RSS-managed local account.",
+          "properties": {
+            "kind": {
+              "const": "local_administrator",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Stable Windows account SID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sid"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "DeviceId": {
+      "format": "uuid",
+      "maxLength": 36,
+      "minLength": 36,
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "LoginConfiguration": {
+      "additionalProperties": false,
+      "description": "Business configuration compiled into one device-wide System profile. No deployment secrets.",
+      "properties": {
+        "authentication": {
+          "$ref": "#/$defs/AuthenticationMode",
+          "description": "Chosen native authentication method."
+        },
+        "filevault": {
+          "$ref": "#/$defs/LoginPolicy",
+          "description": "Policy for Apple silicon FileVault unlock."
+        },
+        "login": {
+          "$ref": "#/$defs/LoginPolicy",
+          "description": "Policy for the login window."
+        },
+        "maintenanceAccounts": {
+          "description": "Exact local maintenance account short names excluded from platform login policy.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "offlineGraceSeconds": {
+          "description": "Explicit offline allowance, in seconds; never synthesized by the server.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "passwordProvider": {
+          "description": "Configured password provider identity; required only in Password mode.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "registrationGraceSeconds": {
+          "description": "Explicit allowance for unregistered accounts, in seconds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "unlock": {
+          "$ref": "#/$defs/LoginPolicy",
+          "description": "Policy for screen unlock."
+        }
+      },
+      "required": [
+        "authentication",
+        "login",
+        "unlock",
+        "filevault",
+        "maintenanceAccounts"
+      ],
+      "type": "object"
+    },
+    "LoginPolicy": {
+      "description": "An explicit platform login policy, independent for login, unlock and FileVault.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "Preserve native local login; do not emit an enforcing platform policy.",
+          "type": "string"
+        },
+        {
+          "const": "attempt",
+          "description": "Try the configured password authority with Apple's offline behavior.",
+          "type": "string"
+        },
+        {
+          "const": "require",
+          "description": "Require the configured authority; grace periods must be explicitly selected.",
+          "type": "string"
+        }
+      ]
+    },
+    "SelfServiceCaller": {
+      "description": "Origin attested by the authenticated system service, never taken from model arguments.",
+      "oneOf": [
+        {
+          "const": "human",
+          "description": "Interactive employee action.",
+          "type": "string"
+        },
+        {
+          "const": "ai",
+          "description": "AI tool action forwarded by the system service.",
+          "type": "string"
+        }
+      ]
+    },
+    "SelfServiceSubject": {
+      "description": "Subject selected by the server's explicit Policy access basis.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Device credential plus effective device scope; no enterprise session.",
+          "properties": {
+            "kind": {
+              "const": "device",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A live enterprise session matched by product authorization.",
+          "properties": {
+            "kind": {
+              "const": "user",
+              "type": "string"
+            },
+            "user": {
+              "$ref": "#/$defs/SelfServiceUser",
+              "description": "Authenticated enterprise coordinates, without a credential."
+            }
+          },
+          "required": [
+            "kind",
+            "user"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SelfServiceUser": {
+      "additionalProperties": false,
+      "description": "Authenticated product user; contains no session credential.",
+      "properties": {
+        "instanceId": {
+          "description": "Identity instance.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "principalId": {
+          "description": "Authenticated principal.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "tenantId": {
+          "description": "Product tenant.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenantId",
+        "instanceId",
+        "principalId"
+      ],
+      "type": "object"
+    },
+    "TaskArchitecture": {
+      "description": "Exact processor architecture of the selected artifact.",
+      "oneOf": [
+        {
+          "const": "x86_64",
+          "description": "x86-64.",
+          "type": "string"
+        },
+        {
+          "const": "aarch64",
+          "description": "ARM64.",
+          "type": "string"
+        }
+      ]
+    },
+    "TaskAuthorization": {
+      "description": "Server decision covered by the same signature as all script execution inputs.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Ordinary scheduled Policy execution.",
+          "properties": {
+            "kind": {
+              "const": "policy",
+              "type": "string"
+            },
+            "policyId": {
+              "description": "Policy identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "policyVersion": {
+              "description": "Immutable execution version.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "policyId",
+            "policyVersion"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Targeted Policy self-service invocation.",
+          "properties": {
+            "allowAi": {
+              "description": "Effective AI switch.",
+              "type": "boolean"
+            },
+            "confirmed": {
+              "description": "Confirmation attested for this exact request by the service.",
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "self_service",
+              "type": "string"
+            },
+            "policyId": {
+              "description": "Policy identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "policyRevision": {
+              "description": "Configuration revision observed at acceptance, retained as provenance only.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "policyVersion": {
+              "description": "Immutable execution version.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "requestId": {
+              "description": "Idempotency identity of the call.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "riskLevel": {
+              "description": "Closed risk level, one or two.",
+              "enum": [
+                1,
+                2
+              ],
+              "type": "integer"
+            },
+            "source": {
+              "$ref": "#/$defs/SelfServiceCaller",
+              "description": "Trusted service's caller classification."
+            },
+            "subject": {
+              "$ref": "#/$defs/SelfServiceSubject",
+              "description": "Real employee identity."
+            }
+          },
+          "required": [
+            "kind",
+            "requestId",
+            "subject",
+            "source",
+            "policyId",
+            "policyRevision",
+            "policyVersion",
+            "allowAi",
+            "riskLevel",
+            "confirmed"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TaskPermit": {
+      "description": "Signed message purpose prevents reusing a received offer as execution permission.",
+      "oneOf": [
+        {
+          "const": "offer",
+          "description": "Content download and acknowledgement only.",
+          "type": "string"
+        },
+        {
+          "const": "start",
+          "description": "Start exactly this attempt before the signed expiry.",
+          "type": "string"
+        }
+      ]
+    },
+    "TaskPlatform": {
+      "description": "Exact operating system of the selected immutable artifact.",
+      "oneOf": [
+        {
+          "const": "windows",
+          "description": "Windows.",
+          "type": "string"
+        },
+        {
+          "const": "macos",
+          "description": "macOS.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Receipt of the exact device event.",
+  "properties": {
+    "eventId": {
+      "description": "The settled event.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "issuedExpiresAt": {
+      "description": "Read-only expiry originally issued for this event, including after expiry or withdrawal.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "permit": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AccessTaskSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Bounded Start permission, returned only for a current received event."
+    },
+    "receipt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CredentialReceipt"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Exact custody acknowledgement for encrypted material."
+    }
+  },
+  "required": [
+    "eventId"
+  ],
+  "title": "AccountSettlement",
+  "type": "object",
+  "$id": "https://rss.example/da/v1/AccountSettlement"
+}

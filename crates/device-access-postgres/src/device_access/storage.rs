@@ -516,13 +516,28 @@ pub async fn mac_configuration_in(
 
 /// Registration-locked admission: a new binding cannot race an old native key cleanup.
 pub async fn require_retired_in(c: &mut PgConnection, b: &Binding) -> Result<(), Error> {
+    if let super::AccountIntent::Create {
+        platform: rss_mdm_agent_wire::runtime::TaskPlatform::Windows,
+        name,
+    } = &b.intent
+    {
+        let pending:bool=sqlx::query_scalar(
+          "SELECT EXISTS(SELECT FROM rss_da.bindings old JOIN rss_da.access_runs u
+              ON (u.tenant_id,u.binding_id)=(old.tenant_id,old.id)
+            WHERE old.tenant_id=$1 AND old.device=$2 AND old.state='revoked' AND old.account IS NULL
+              AND (old.id=$3 OR lower(old.document#>>'{intent,name}')=lower($4))
+              AND (u.access_binding->>'revision')::bigint=old.revision
+              AND u.da_journal->>'awaiting_create' IS NOT NULL AND u.state->>'cancellation'<>'confirmed')"
+        ).bind(b.tenant).bind(b.device.into_uuid()).bind(b.id).bind(name).fetch_one(&mut *c).await.map_err(db)?;
+        if pending {
+            return Err(Error::Conflict);
+        }
+    }
     let Some(account @ AccessAccount::Windows { .. }) = &b.account else {
         return Ok(());
     };
-    let configuration =
-        serde_json::to_value(&b.configuration.windows).map_err(|_| Error::Malformed)?;
-    let pending: bool = sqlx::query_scalar("SELECT EXISTS (SELECT FROM rss_da.bindings WHERE tenant_id = $1 AND device = $2 AND account = $3 AND state = 'revoked' AND document -> 'appliedRevision' IS DISTINCT FROM document -> 'revision' AND (document #>> '{configuration,windows,kind}' = 'whfb' OR document #>> '{configuration,windows,kind}' IS DISTINCT FROM $4))")
-        .bind(b.tenant).bind(b.device.into_uuid()).bind(serde_json::to_value(account).map_err(|_| Error::Malformed)?).bind(configuration["kind"].as_str().ok_or(Error::Malformed)?)
+    let pending: bool = sqlx::query_scalar("SELECT EXISTS (SELECT FROM rss_da.bindings WHERE tenant_id=$1 AND device=$2 AND account=$3 AND state='revoked' AND document->'appliedRevision' IS DISTINCT FROM document->'revision')")
+        .bind(b.tenant).bind(b.device.into_uuid()).bind(serde_json::to_value(account).map_err(|_| Error::Malformed)?)
         .fetch_one(c).await.map_err(db)?;
     if pending {
         Err(Error::Conflict)

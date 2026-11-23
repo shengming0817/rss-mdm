@@ -532,8 +532,14 @@ pub async fn assemble(
         configuration_lifetime: r.configuration_lifetime,
     };
 
+    let custody = config
+        .recovery
+        .as_ref()
+        .map(|r| r.open().map_err(|_| Error::Configuration))
+        .transpose()?;
     let runtime = da::Runtime::assemble(
         da::Resources {
+            recovery: custody.clone(),
             report_limits: config.reports.clone(),
             probe: binding,
             installation: config.installation.instance,
@@ -556,25 +562,20 @@ pub async fn assemble(
         .bind(&platform, &enterprise)
         .map_err(|_| Error::AdmissionAt("Identity provider binding"))?;
 
-    let recovery = config
-        .recovery
-        .as_ref()
-        .map(|r| r.open().map_err(|_| Error::Configuration))
-        .transpose()?
-        .map(|p| {
-            Arc::new(rss_mdm_recovery_credentials::Credentials::new(
-                DA,
-                pool,
-                audit.clone(),
-                p.clone(),
-                Some(proof_audit.clone()),
-                Some(Arc::new(
-                    rss_mdm_device_access_postgres::recovery::eligibility::AccessEligibility {
-                        admission: Some(runtime.admission.clone()),
-                    },
-                )),
-            ))
-        });
+    let recovery = custody.map(|p| {
+        Arc::new(rss_mdm_recovery_credentials::Credentials::new(
+            DA,
+            pool,
+            audit.clone(),
+            p.clone(),
+            Some(proof_audit.clone()),
+            Some(Arc::new(
+                rss_mdm_device_access_postgres::recovery::eligibility::AccessEligibility {
+                    admission: Some(runtime.admission.clone()),
+                },
+            )),
+        ))
+    });
 
     let platform_http = Arc::new(http::platform_sso::HttpState {
         context: runtime.platform.clone(),

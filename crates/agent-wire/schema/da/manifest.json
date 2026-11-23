@@ -52,6 +52,18 @@
     {
       "type": "CredentialSettlement",
       "file": "credential-settlement-v1.schema.json"
+    },
+    {
+      "type": "AccountOffer",
+      "file": "account-offer-v1.schema.json"
+    },
+    {
+      "type": "AccountEvent",
+      "file": "account-event-v1.schema.json"
+    },
+    {
+      "type": "AccountSettlement",
+      "file": "account-settlement-v1.schema.json"
     }
   ]
 }
