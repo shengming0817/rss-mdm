@@ -71,8 +71,9 @@ fn error(e: rss_mdm_timeline_service::Error) -> AgentError {
     })
 }
 async fn history(
-    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
-    Extension(control): Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -82,8 +83,9 @@ async fn history(
     page(&origin, control, s, audit, peer, headers, raw, false).await
 }
 async fn changes(
-    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
-    Extension(control): Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -145,8 +147,9 @@ async fn page(
     reason = "HTTP extractors preserve credential, origin and request controls"
 )]
 async fn detail(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    Extension(control): Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,

@@ -189,8 +189,9 @@ fn task_error(error: impl Into<Error>) -> crate::AgentError {
     }
 }
 async fn claim(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -223,8 +224,9 @@ async fn claim(
     .await
 }
 async fn event(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -264,8 +266,9 @@ struct Download {
     artifact: Option<String>,
 }
 async fn download(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -399,8 +402,9 @@ pub(crate) async fn employee(
     Ok(Some(proof))
 }
 async fn resolve(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    Extension(control): Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -435,8 +439,9 @@ async fn directory<
         + Sync
         + 'static,
 >(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    Extension(control): Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -468,8 +473,9 @@ async fn directory<
     .await
 }
 async fn invoke(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    Extension(control): Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -498,8 +504,9 @@ async fn invoke(
     .await
 }
 async fn invocation_status(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    Extension(control): Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -527,8 +534,9 @@ async fn invocation_status(
 }
 
 async fn native_enrollment(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -563,8 +571,9 @@ async fn native_enrollment(
 }
 
 async fn task_trust(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -590,8 +599,9 @@ async fn task_trust(
     .await
 }
 async fn acknowledge_task_trust(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -620,8 +630,9 @@ async fn acknowledge_task_trust(
 }
 
 async fn observe_task_trust(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -650,8 +661,9 @@ async fn observe_task_trust(
 }
 
 async fn current_user(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -677,8 +689,9 @@ async fn current_user(
     .await
 }
 async fn login_user(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    Extension(control): Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -715,8 +728,9 @@ async fn login_user(
     result.map(Json).map_err(|e| Error::from(e).into())
 }
 async fn logout_user(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,

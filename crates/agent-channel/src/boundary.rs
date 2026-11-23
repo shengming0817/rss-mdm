@@ -12,6 +12,12 @@ use rss_mdm_audit_integration::{
 };
 use rss_mdm_http_contract::Router;
 use std::sync::Arc;
+/// Gateway attestation and request lifetime as observed by a scoped Agent handler.
+#[derive(Clone)]
+pub(crate) struct GatewayRequest {
+    pub(crate) origin: rss_mdm_certificate::GatewayOrigin,
+    pub(crate) control: rss_axum::RequestControl,
+}
 #[derive(Clone)]
 pub struct Envelope {
     pub request_budget: rss_axum::RequestBudget,
@@ -139,6 +145,16 @@ pub async fn admit(
     else {
         return project(Error::Unavailable(Failure::RequestDeadline));
     };
+    if let Some(origin) = request
+        .extensions()
+        .get::<rss_mdm_certificate::GatewayOrigin>()
+        .cloned()
+    {
+        request.extensions_mut().insert(GatewayRequest {
+            origin,
+            control: control.clone(),
+        });
+    }
     let deadline = control.deadline();
     let started = envelope.clock.now();
     let route = request

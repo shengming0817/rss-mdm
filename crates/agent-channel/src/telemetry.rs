@@ -95,8 +95,9 @@ pub(super) fn routes()
     }
 }
 async fn upload(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -131,8 +132,9 @@ async fn upload(
     Ok(WithStatus(Json(result)))
 }
 async fn gap_upload(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -173,8 +175,9 @@ async fn gap_upload(
     Ok(WithStatus(Json(result)))
 }
 async fn gap_receipt(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -205,8 +208,9 @@ async fn gap_receipt(
 }
 
 async fn receipt(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -237,8 +241,9 @@ async fn receipt(
 }
 
 async fn configuration(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -269,8 +274,9 @@ async fn configuration(
 }
 
 async fn current(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    Extension(control): Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -355,8 +361,9 @@ fn decode(headers: &HeaderMap, bytes: &Bytes, limit: usize) -> Result<Vec<u8>, A
 }
 
 async fn material(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -390,8 +397,9 @@ async fn material(
 }
 
 async fn directory(
-    axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
-    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
+    axum::Extension(crate::boundary::GatewayRequest { origin, control }): axum::Extension<
+        crate::boundary::GatewayRequest,
+    >,
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
