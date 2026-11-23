@@ -205,8 +205,9 @@ where
     let mut fatal = None;
     let retry = Duration::from_secs(5);
     let mut active = BTreeSet::new();
-    let mut groups = BTreeMap::<G, usize>::new();
-    let mut deferred = BTreeSet::new();
+    let mut groups = BTreeMap::<G, (usize, K)>::new();
+    let mut deferred = BTreeMap::<G, K>::new();
+    let mut pending_page = None;
     let mut first_scan_finished = false;
     let mut first_batches = BTreeSet::new();
     let mut tasks = JoinSet::new();
@@ -222,8 +223,47 @@ where
         if stop.is_cancelled() {
             break;
         }
-        if scanning && active.len() < capacity.get() {
-            if let Some(key) = queued.pop_front() {
+        let free = active.len() < capacity.get();
+        if scanning && free && queued.is_empty() && pending_page.is_none() {
+            pending_page = Some(Box::pin(page(after.clone())));
+        }
+        tokio::select! {
+            biased;
+            () = stop.cancelled() => break,
+            Some(result) = tasks.join_next(), if !active.is_empty() => {
+                let (key, result) = result.expect("owned worker batch panicked");
+                active.remove(&key);
+                first_batches.remove(&key);
+                for (group, _) in quotas(&key) {
+                    let count = groups.get_mut(&group).expect("active group");
+                    count.0 -= 1;
+                    if count.0 == 0 { groups.remove(&group); }
+                    if let Some(waiting)=deferred.remove(&group) {
+                        queued.push_front(waiting);
+                        wake = Instant::now();
+                    }
+                }
+                let delay = match result {
+                    Ok(delay) => {
+                        failures.remove(&key);
+                        delay.min(idle)
+                    }
+                    Err(Failure::Fatal(error)) => {fatal = Some(error); break;}
+                    Err(Failure::Retry) => {
+                        failures.insert(key.clone());
+                        retry
+                    }
+                };
+                let at = Instant::now() + delay;
+                due.insert(key, at);
+                wake = wake.min(at);
+                let failed = discovery_retry.is_some() || !failures.is_empty();
+                if failed || (first_scan_finished && first_batches.is_empty()) {
+                    observed(failed);
+                }
+            }
+            ()=std::future::ready(()), if free && !queued.is_empty() => {
+                let key=queued.pop_front().expect("queued candidate");
                 unseen.remove(&key);
                 if let Some(at) = due.get(&key).copied()
                     && at > Instant::now()
@@ -236,13 +276,18 @@ where
                 }
                 if let Some((blocked, _)) = quotas(&key)
                     .into_iter()
-                    .find(|(group, limit)| groups.get(group).copied().unwrap_or(0) >= *limit)
+                    .find(|(group, limit)| groups.get(group).map_or(0, |(count,_)| *count) >= *limit)
                 {
-                    deferred.insert(blocked);
+                    // Keep one waiter per saturated group. Rotate past the last admitted key.
+                    let last=&groups[&blocked].1;
+                    deferred.entry(blocked).and_modify(|waiting| {
+                        if (&key <= last,&key) < (&*waiting <= last,&*waiting) { *waiting=key.clone(); }
+                    }).or_insert(key);
                     continue;
                 }
                 for (group, _) in quotas(&key) {
-                    *groups.entry(group).or_default() += 1;
+                    let entry = groups.entry(group).or_insert_with(||(0,key.clone()));
+                    entry.0 += 1; entry.1=key.clone();
                 }
                 active.insert(key.clone());
                 if !first_scan_finished {
@@ -250,16 +295,14 @@ where
                 }
                 let attempt = batch(key.clone(), admission.clone());
                 tasks.spawn(async move { (key, attempt.await) });
-                continue;
+
             }
-            let result = tokio::select! { biased;
-                () = stop.cancelled() => break,
-                result = page(after.clone()) => result,
-            };
+            result=async {pending_page.as_mut().expect("active discovery").await}, if pending_page.is_some() => {
+                pending_page=None;
             match result.map(Into::into) {
                 Ok(Page { rows, .. }) if !rows.is_empty() => {
                     after = rows.last().cloned();
-                    queued = rows.into();
+                    queued.extend(rows);
                     continue;
                 }
                 Ok(Page { next, .. }) => {
@@ -286,38 +329,6 @@ where
                 observed(failed);
             }
             scanning = false;
-        }
-        tokio::select! {
-            biased;
-            () = stop.cancelled() => break,
-            Some(result) = tasks.join_next(), if !active.is_empty() => {
-                let (key, result) = result.expect("owned worker batch panicked");
-                active.remove(&key);
-                first_batches.remove(&key);
-                for (group, _) in quotas(&key) {
-                    let count = groups.get_mut(&group).expect("active group");
-                    *count -= 1;
-                    if *count == 0 { groups.remove(&group); }
-                    if deferred.remove(&group) { wake = Instant::now(); }
-                }
-                let delay = match result {
-                    Ok(delay) => {
-                        failures.remove(&key);
-                        delay.min(idle)
-                    }
-                    Err(Failure::Fatal(error)) => {fatal = Some(error); break;}
-                    Err(Failure::Retry) => {
-                        failures.insert(key.clone());
-                        retry
-                    }
-                };
-                let at = Instant::now() + delay;
-                due.insert(key, at);
-                wake = wake.min(at);
-                let failed = discovery_retry.is_some() || !failures.is_empty();
-                if failed || (first_scan_finished && first_batches.is_empty()) {
-                    observed(failed);
-                }
             }
             hint = async {
                 if let Some(at) = discovery_retry {
@@ -360,6 +371,59 @@ mod tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+
+    #[tokio::test]
+    async fn a_saturated_group_hands_its_slot_to_a_waiter_during_page_io() {
+        let stop = CancellationToken::new();
+        let release = CancellationToken::new();
+        let reading = CancellationToken::new();
+        let (tx, mut started) = tokio::sync::mpsc::unbounded_channel();
+        let notify = Notify::new();
+        let work = run_limited(
+            NonZeroUsize::new(3).unwrap(),
+            Duration::from_secs(60),
+            &stop,
+            &notify,
+            (
+                |_: &u32| [(0, 1)],
+                |after| {
+                    let reading = reading.clone();
+                    async move {
+                        if after.is_some() {
+                            reading.cancel();
+                            return std::future::pending().await;
+                        }
+                        Ok(vec![1, 2])
+                    }
+                },
+            ),
+            |key, _| {
+                let release = release.clone();
+                let tx = tx.clone();
+                async move {
+                    tx.send(key).unwrap();
+                    if key == 1 {
+                        release.cancelled().await;
+                    }
+                    Ok(Duration::ZERO)
+                }
+            },
+            |_| {},
+        );
+        let proof = async {
+            reading.cancelled().await;
+            assert_eq!(started.recv().await, Some(1));
+            release.cancel();
+            assert_eq!(started.recv().await, Some(2));
+            stop.cancel();
+        };
+        let (result, ()) =
+            tokio::time::timeout(Duration::from_secs(3), async { tokio::join!(work, proof) })
+                .await
+                .unwrap();
+        let result: Result<(), std::convert::Infallible> = result;
+        result.unwrap();
+    }
 
     // The causal assertions do not depend on a particular throughput or latency.
     #[tokio::test]

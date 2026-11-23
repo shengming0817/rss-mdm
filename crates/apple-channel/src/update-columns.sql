@@ -26,7 +26,7 @@
 ('mdm_apple.channels','next_push'),
 ('mdm_apple.channels','push_status'),
 ('mdm_apple.channels','push_outcome'),
-('mdm_apple.channels','push_configuration'),
+('mdm_apple.channels','push_material_revision'),
 ('mdm_apple.channels','push_failures'),
 ('mdm_apple.devices','bootstrap'),
 ('mdm_apple.scep_attempts','state'),

@@ -75,7 +75,7 @@ ALTER TABLE mdm_apple.channels ADD CONSTRAINT channels_registration_fkey FOREIGN
 GRANT SELECT,INSERT ON mdm_apple.channels TO mdm_access;
 GRANT UPDATE(state,material,material_digest,token_revision,push_id,push_lease_until,next_push,push_failures,push_status,push_outcome) ON mdm_apple.channels TO mdm_access;
 GRANT SELECT ON mdm_apple.channels TO mdm_command_runtime;
-GRANT UPDATE(state,material,material_digest,push_id,push_lease_until,next_push,push_configuration,push_failures,push_status,push_outcome) ON mdm_apple.channels TO mdm_command_runtime;
+GRANT UPDATE(state,material,material_digest,push_id,push_lease_until,next_push,push_material_revision,push_failures,push_status,push_outcome) ON mdm_apple.channels TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_apple.scep_attempts TO mdm_access;
 

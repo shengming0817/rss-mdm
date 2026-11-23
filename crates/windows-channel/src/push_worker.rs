@@ -90,6 +90,12 @@ async fn cycle(
             scan.due(push.now() + Duration::from_secs_f64(seconds.min(RECONCILE.as_secs_f64())));
             continue;
         }
+        // OAuth may wait for another channel's refresh. Acquire the durable lease only afterwards.
+        let bearer =
+            tokio::select! {biased; ()=stop.cancelled()=>break, token=push.bearer()=>token.ok()};
+        if stop.is_cancelled() {
+            break;
+        }
         scan.transactions += 1;
         match attempt(
             execution,
@@ -98,7 +104,7 @@ async fn cycle(
             &app.protection,
             &app.audit_store,
             tenant,
-            row,
+            (row, bearer),
         )
         .await
         {
@@ -128,7 +134,7 @@ async fn attempt(
     key: &Protector,
     store: &AuditStore,
     tenant: &str,
-    row: sqlx::postgres::PgRow,
+    (row, bearer): (sqlx::postgres::PgRow, Option<zeroize::Zeroizing<String>>),
 ) -> Result<Option<Duration>, Error> {
     let Some(push) = &w.push else { return Ok(None) };
     let revision: i64 = row.try_get("revision").map_err(db)?;
@@ -187,11 +193,21 @@ async fn attempt(
         uri,
         material_revision: push.material_revision,
     };
-    let receipt = push.send(&wake.uri).await.unwrap_or(crate::push::Receipt {
-        status: 0,
-        outcome: PushOutcome::Unknown,
-        retry_after: None,
-    });
+    let receipt = match bearer {
+        Some(token) => push
+            .send(&wake.uri, token.as_str())
+            .await
+            .unwrap_or(crate::push::Receipt {
+                status: 0,
+                outcome: PushOutcome::Unknown,
+                retry_after: None,
+            }),
+        None => crate::push::Receipt {
+            status: 0,
+            outcome: PushOutcome::Retryable,
+            retry_after: None,
+        },
+    };
     settle(execution, store, key, tenant, &wake, receipt)
         .await
         .map(Some)
@@ -214,15 +230,6 @@ async fn settle(
             &budget.source_control(),(store,&audit,key,tenant,wake,status,outcome,retry_after),|inputs,tx|Box::pin(async move {
         let (store,audit,key,tenant,wake,status,outcome,retry_after)=*inputs;
         let changed=tx.with_connection_context(&mut (key,tenant,wake,status,outcome,retry_after),|(key,tenant,wake,status,outcome,retry_after),c|Box::pin(async move {
-            if *status == 406 {
-                let (seconds,date) = match *retry_after {
-                    Some(RetryAfter::Seconds(seconds)) => (i64::from(seconds),None),
-                    Some(RetryAfter::Date(at)) => (0,Some(at)),
-                    None => (30,None),
-                };
-                sqlx::query("SELECT mdm_wns.record_provider_throttle($1,GREATEST(clock_timestamp()+make_interval(secs=>$2),to_timestamp($3)))")
-                    .bind(wake.material_revision).bind(seconds as f64).bind(date.map(|v|v as f64)).execute(&mut *c).await.map_err(db)?;
-            }
             let row=sqlx::query("SELECT revision, configuration, digest, lease_id, settled_id, failures, status, outcome FROM mdm_windows.push_channels WHERE tenant_id = CAST($1 AS uuid) AND device = $2 FOR UPDATE")
                 .bind(*tenant).bind(wake.device.into_uuid()).fetch_optional(&mut *c).await.map_err(db)?;
             let Some(row)=row else {return Ok::<_,Error>(None)};
@@ -285,7 +292,7 @@ pub fn registration(
     limits: rss_mdm_work_page::external::Limits,
     notify: Arc<tokio::sync::Notify>,
 ) -> rss_runtime::ManagedTaskRegistration {
-    let (task, _) = rss_runtime::ManagedTask::prepare("windows-wns", Duration::from_secs(8));
+    let (task, _) = rss_runtime::ManagedTask::prepare("windows-wns", Duration::from_secs(12));
     task.into_registration(move |stop| async move {
         let result: Result<(), std::convert::Infallible> = rss_mdm_work_page::run_limited(
             limits.total,
@@ -299,13 +306,25 @@ pub fn registration(
                 |after| {
                     let (app, eligibility) = (&app, &eligibility);
                     async move {
-                        eligibility
+                        let rows = eligibility
                             .candidates(&app.access.pool, after.map(|(t, d, _)| (t, d)))
                             .await
                             .map_err(|_| {
                                 eprintln!("windows_push_discovery_failed");
                                 rss_mdm_work_page::Failure::Retry
-                            })
+                            })?;
+                        let next = if rows.is_empty() {
+                            sqlx::query_scalar::<_, Option<f64>>(
+                                "SELECT mdm_wns.next_provider_wakeup()",
+                            )
+                            .fetch_one(&app.access.pool)
+                            .await
+                            .map_err(|_| rss_mdm_work_page::Failure::Retry)?
+                            .map(|s| Duration::from_secs_f64(s.clamp(0., RECONCILE.as_secs_f64())))
+                        } else {
+                            None
+                        };
+                        Ok(rss_mdm_work_page::Page { rows, next })
                     }
                 },
             ),

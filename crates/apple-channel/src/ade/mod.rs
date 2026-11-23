@@ -122,6 +122,15 @@ fn token(
     tenant: &str,
     id: Uuid,
 ) -> Result<client::Token, Error> {
+    token_at(row, app, tenant, id, now(app)?)
+}
+fn token_at(
+    row: &sqlx::postgres::PgRow,
+    app: &HttpState,
+    tenant: &str,
+    id: Uuid,
+    time: i64,
+) -> Result<client::Token, Error> {
     if !row.try_get::<bool, _>("enabled").map_err(db)?
         || !row.try_get::<bool, _>("verified").map_err(db)?
         || row.try_get::<bool, _>("token_invalid").map_err(db)?
@@ -137,7 +146,7 @@ fn token(
             &aad(tenant, id, &version.to_string(), "apple.ade.token")?,
         )
         .map_err(|_| Error::Conflict)?;
-    client::Token::parse(plain.expose(), now(app)?)
+    client::Token::parse(plain.expose(), time)
 }
 pub(crate) fn now(app: &HttpState) -> Result<i64, Error> {
     app.clock

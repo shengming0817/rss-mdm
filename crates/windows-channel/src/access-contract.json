@@ -242,7 +242,7 @@
     }
   ],
   "functions": [
-    {"name":"mdm_wns.record_provider_throttle","search_path":"search_path=pg_catalog"},
+    {"name":"mdm_wns.next_provider_wakeup","search_path":"search_path=pg_catalog"},
     {"name":"mdm_wns.provider_available","search_path":"search_path=pg_catalog"},
     {
       "name": "mdm_windows.entra_flow_scopes",

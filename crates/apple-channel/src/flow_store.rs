@@ -70,7 +70,6 @@ impl channels::ApplePush for Store {
         c: &'a mut PgConnection,
         tenant: String,
         channel: crate::push::Channel,
-        configuration: [u8; 32],
     ) -> Pending<'a, Option<channels::PushCandidate>> {
         Box::pin(async move {
             // Material selection and channel ownership are checked on the claim connection.
@@ -83,8 +82,8 @@ impl channels::ApplePush for Store {
             if !current {
                 return Ok(None);
             }
-            let Some(row)=sqlx::query("SELECT device,user_key,material,token_revision FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND state='active' AND (push_outcome IS DISTINCT FROM 'rejected' OR push_configuration IS DISTINCT FROM $4) AND next_push<=clock_timestamp() AND (push_lease_until IS NULL OR push_lease_until<=clock_timestamp()) FOR UPDATE SKIP LOCKED")
-                .bind(&tenant).bind(channel.device).bind(&channel.user_key).bind(configuration.as_slice()).fetch_optional(&mut *c).await.map_err(storage)? else {return Ok(None)};
+            let Some(row)=sqlx::query("SELECT device,user_key,material,token_revision FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND state='active' AND (push_outcome IS DISTINCT FROM 'rejected' OR push_material_revision IS DISTINCT FROM $4) AND next_push<=clock_timestamp() AND (push_lease_until IS NULL OR push_lease_until<=clock_timestamp()) FOR UPDATE SKIP LOCKED")
+                .bind(&tenant).bind(channel.device).bind(&channel.user_key).bind(channel.material_revision).fetch_optional(&mut *c).await.map_err(storage)? else {return Ok(None)};
             let device = row
                 .try_get::<uuid::Uuid, _>("device")
                 .and_then(|id| {
@@ -187,10 +186,10 @@ impl channels::ApplePush for Store {
         wake: Uuid,
         device: rss_mdm_agent_wire::DeviceId,
         user_key: String,
-        configuration: [u8; 32],
+        material_revision: i64,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            sqlx::query("UPDATE mdm_apple.channels SET push_failures = CASE WHEN push_configuration IS DISTINCT FROM $4 THEN 0 ELSE push_failures END, push_configuration = $4, push_id = CAST($3 AS uuid), push_lease_until = clock_timestamp() + CAST('15 seconds' AS interval), next_push = clock_timestamp() + CAST('30 seconds' AS interval) WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $5").bind(tenant).bind(device.into_uuid()).bind(wake).bind(configuration.as_slice()).bind(user_key).execute(c).await.map_err(storage)?;
+            sqlx::query("UPDATE mdm_apple.channels SET push_failures = CASE WHEN push_material_revision IS DISTINCT FROM $4 THEN 0 ELSE push_failures END, push_material_revision = $4, push_id = CAST($3 AS uuid), push_lease_until = clock_timestamp() + CAST('15 seconds' AS interval), next_push = clock_timestamp() + CAST('30 seconds' AS interval) WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $5").bind(tenant).bind(device.into_uuid()).bind(wake).bind(material_revision).bind(user_key).execute(c).await.map_err(storage)?;
             Ok(())
         })
     }

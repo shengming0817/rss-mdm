@@ -7,6 +7,9 @@ use tokio::time::Instant;
 struct Traffic {
     active: AtomicUsize,
     peak: AtomicUsize,
+    goal: AtomicUsize,
+    by_credential: [AtomicUsize; 2],
+    credential_peaks: [AtomicUsize; 2],
 }
 
 #[tokio::test]
@@ -14,6 +17,9 @@ struct Traffic {
 async fn configured_wns_capacity_measures_actual_sends_and_settlements() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let peer = Context::open("shared", &[]).await?;
+    let third = Context::open("shared", &[]).await?;
+    let shared = identity::seed(&third, "windows").await?;
+    let _shared_host = windows(&third, &shared).await?;
     let first = identity::seed(&c, "windows").await?;
     let second = identity::seed(&peer, "windows").await?;
     let windows_host = windows(&c, &first).await?;
@@ -41,18 +47,27 @@ async fn configured_wns_capacity_measures_actual_sends_and_settlements() -> Resu
     let tenants = vec![
         Uuid::parse_str(&c.tenant.to_string())?,
         Uuid::parse_str(&peer.tenant.to_string())?,
+        Uuid::parse_str(&third.tenant.to_string())?,
     ];
     const JOBS: i64 = 36;
-    for (ctx, sid) in [(&c, "ms-app://capacity-a"), (&peer, "ms-app://capacity-b")] {
+    for (ctx, sid) in [
+        (&c, "ms-app://capacity-a"),
+        (&peer, "ms-app://capacity-b"),
+        (&third, "ms-app://capacity-a"),
+    ] {
         let config = selected_configuration(ctx, key, sid).await?;
-        for _ in 0..JOBS / 2 {
+        for _ in 0..JOBS / 3 {
             let device = crate::planning_t2_support::endpoint(ctx).await?.members[0].device;
             channel(
                 ctx,
                 device,
                 key,
                 config,
-                b"https://fixture.notify.windows.com/capacity",
+                if sid.ends_with('a') {
+                    b"https://fixture.notify.windows.com/capacity/0"
+                } else {
+                    b"https://fixture.notify.windows.com/capacity/1"
+                },
             )
             .await?;
             identity_cases::seed_device_group(
@@ -68,23 +83,45 @@ async fn configured_wns_capacity_measures_actual_sends_and_settlements() -> Resu
     let traffic = Arc::new(Traffic::default());
     let route = {
         let traffic = traffic.clone();
-        axum::routing::post(move || {
-            let traffic = traffic.clone();
-            async move {
-                let active = traffic.active.fetch_add(1, Ordering::AcqRel) + 1;
-                traffic.peak.fetch_max(active, Ordering::AcqRel);
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                traffic.active.fetch_sub(1, Ordering::AcqRel);
-                axum::http::StatusCode::OK
-            }
-        })
+        axum::routing::post(
+            move |axum::extract::Path(index): axum::extract::Path<usize>,
+                  headers: axum::http::HeaderMap| {
+                let traffic = traffic.clone();
+                async move {
+                    assert_eq!(
+                        headers["authorization"].to_str().unwrap(),
+                        format!("Bearer capacity-{index}")
+                    );
+                    let credential =
+                        traffic.by_credential[index].fetch_add(1, Ordering::AcqRel) + 1;
+                    traffic.credential_peaks[index].fetch_max(credential, Ordering::AcqRel);
+                    let active = traffic.active.fetch_add(1, Ordering::AcqRel) + 1;
+                    traffic.peak.fetch_max(active, Ordering::AcqRel);
+                    // Hold the first wave until the requested number of actual HTTPS calls is visible.
+                    while traffic.peak.load(Ordering::Acquire)
+                        < traffic.goal.load(Ordering::Acquire)
+                    {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    tokio::time::sleep(Duration::from_millis(120)).await;
+                    traffic.by_credential[index].fetch_sub(1, Ordering::AcqRel);
+                    traffic.active.fetch_sub(1, Ordering::AcqRel);
+                    axum::http::StatusCode::OK
+                }
+            },
+        )
     };
-    let router=axum::Router::new().route("/accesstoken.srf",axum::routing::post(||async {axum::Json(serde_json::json!({"token_type":"bearer","access_token":"capacity-token","expires_in":600}))})).route("/capacity",route);
+    let router=axum::Router::new().route("/accesstoken.srf",axum::routing::post(|body:String|async move {let index=usize::from(body.contains("capacity-b"));axum::Json(serde_json::json!({"token_type":"bearer","access_token":format!("capacity-{index}"),"expires_in":600}))})).route("/capacity/{index}",route);
     let server = tokio::spawn(axum::serve(listener, router).into_future());
     let mut measurements = Vec::new();
     for (total, resource) in [(1usize, 1usize), (4, 3), (8, 7), (16, 15), (8, 1)] {
         sqlx::query("UPDATE mdm_windows.push_channels SET status=NULL,outcome=NULL,settled_id=NULL,next_push=clock_timestamp() WHERE tenant_id=ANY($1)").bind(&tenants).execute(&c.operator).await?;
+        let ceiling = total.min(2 * resource);
+        traffic.goal.store(ceiling, Ordering::Release);
         traffic.peak.store(0, Ordering::Release);
+        for v in &traffic.credential_peaks {
+            v.store(0, Ordering::Release);
+        }
         let mut stack = rss_runtime::ShutdownStack::try_new(
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
             Arc::new(crate::lifecycle::RuntimeTimer),
@@ -95,7 +132,7 @@ async fn configured_wns_capacity_measures_actual_sends_and_settlements() -> Resu
                 .fetch_one(&c.operator)
                 .await?;
         let start = Instant::now();
-        launch.stage_deferred_task_with_token(
+        launch.stage_task_with_token(
             push::registration(
                 h.state.clone(),
                 owner.clone(),
@@ -122,16 +159,20 @@ async fn configured_wns_capacity_measures_actual_sends_and_settlements() -> Resu
         anyhow::ensure!(stack.shutdown().join().await?.is_clean());
         let (settlement_ms, seconds) = measured??;
         let peak = traffic.peak.load(Ordering::Acquire);
-        let ceiling = total.min(2 * resource.saturating_sub(1).max(1));
         anyhow::ensure!(
-            peak > 0 && peak <= ceiling,
-            "peak {peak}, ceiling {ceiling}"
+            peak == ceiling,
+            "expected {ceiling} concurrent provider calls, measured {peak}"
         );
-        if total > 1 {
-            anyhow::ensure!(peak >= 2);
-        }
+        let per_sid = traffic
+            .credential_peaks
+            .each_ref()
+            .map(|v| v.load(Ordering::Acquire));
+        anyhow::ensure!(
+            per_sid.iter().all(|&n| n > 0 && n <= resource),
+            "SID peaks {per_sid:?}, limit {resource}"
+        );
         waits.sort_by(f64::total_cmp);
-        measurements.push(serde_json::json!({"total":total,"perCredential":resource,"jobs":JOBS,"peakHttps":peak,"completedPerSecond":JOBS as f64/seconds,"readyToSettlementP95Ms":settlement_ms,"accessPoolProbeP95Ms":waits[(waits.len()*95).div_ceil(100)-1]}));
+        measurements.push(serde_json::json!({"total":total,"perCredential":resource,"jobs":JOBS,"peakHttps":peak,"credentialPeaks":per_sid,"completedPerSecond":JOBS as f64/seconds,"readyToSettlementP95Ms":settlement_ms,"accessPoolProbeP95Ms":waits[(waits.len()*95).div_ceil(100)-1]}));
     }
     server.abort();
     let _ = server.await;
@@ -140,6 +181,7 @@ async fn configured_wns_capacity_measures_actual_sends_and_settlements() -> Resu
     std::fs::create_dir_all(path.parent().unwrap())?;
     std::fs::write(path, serde_json::to_vec_pretty(&measurements)?)?;
     h.close().await?;
+    third.close().await;
     peer.close().await;
     c.close().await;
     Ok(())

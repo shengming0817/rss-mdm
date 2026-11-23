@@ -113,11 +113,15 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
     let apns_waiting = Arc::new(Notify::new());
     let ade_waiting = Arc::new(Notify::new());
     let blocked_push_id = Arc::new(std::sync::OnceLock::new());
+    use axum::response::IntoResponse;
+    let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let apns = {
+        let sent = sent.clone();
         let gate = gate.clone();
         let waiting = apns_waiting.clone();
         let blocked = blocked_push_id.clone();
         move |axum::extract::Path(target): axum::extract::Path<String>, headers: HeaderMap| {
+            let sent = sent.clone();
             let gate = gate.clone();
             let waiting = waiting.clone();
             let blocked = blocked.clone();
@@ -127,11 +131,19 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
                     .unwrap()
                     .parse::<Uuid>()
                     .unwrap();
+                if target == token.simple().to_string() {
+                    sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
                 if target == token.simple().to_string() && blocked.set(id).is_ok() {
                     waiting.notify_one();
                     gate.notified().await;
+                    return (
+                        axum::http::StatusCode::FORBIDDEN,
+                        Json(json!({"reason":"BadCertificate"})),
+                    )
+                        .into_response();
                 }
-                axum::http::StatusCode::OK
+                axum::http::StatusCode::OK.into_response()
             }
         }
     };
@@ -183,26 +195,34 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
         .with_loopback_provider(port, reqwest::Certificate::from_pem(&root)?),
     ));
     let state = Arc::new(state);
-    let mut stack = rss_runtime::ShutdownStack::try_new(
-        rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
-        Arc::new(crate::lifecycle::RuntimeTimer),
-    )?;
-    let mut launch = stack.startup()?.commit();
     let push_hint = Arc::new(Notify::new());
     let ade_hint = Arc::new(Notify::new());
-    launch.stage_deferred_task_with_token(
-        rss_mdm_apple_channel::push::registration(
-            state.clone(),
-            rss_mdm_work_page::external::Limits::new(8.try_into()?, 7.try_into()?).unwrap(),
-            push_hint.clone(),
-        )
-        .critical(),
-    );
-    launch.stage_deferred_task_with_token(
-        rss_mdm_apple_channel::ade::registration(state.clone(), 8.try_into()?, ade_hint.clone())
+    let register = || -> Result<rss_runtime::ShutdownStack> {
+        let mut stack = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )?;
+        let mut launch = stack.startup()?.commit();
+        launch.stage_task_with_token(
+            rss_mdm_apple_channel::push::registration(
+                state.clone(),
+                rss_mdm_work_page::external::Limits::new(8.try_into()?, 7.try_into()?).unwrap(),
+                push_hint.clone(),
+            )
             .critical(),
-    );
-    launch.finish();
+        );
+        launch.stage_task_with_token(
+            rss_mdm_apple_channel::ade::registration(
+                state.clone(),
+                8.try_into()?,
+                ade_hint.clone(),
+            )
+            .critical(),
+        );
+        launch.finish();
+        Ok(stack)
+    };
+    let stack = register()?;
     let result=tokio::time::timeout(Duration::from_secs(15),async {
         tokio::join!(apns_waiting.notified(),ade_waiting.notified());
         let sibling_org=pending(&c,&sibling,&key).await?;
@@ -222,14 +242,51 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
             if pushed && synced && blocked && siblings {break;}
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst),1);
+        Ok::<_,anyhow::Error>(sibling_org)
+    }).await;
+    let drain = stack.shutdown();
+    // Rotate the selected APNs authority while its old HTTP response and ADE page are held.
+    let key_id = Uuid::new_v4();
+    let aad = rss_mdm_native_protection::ProtectionContext::new(
+        c.tenant,
+        &format!("apns:2:{key_id}"),
+        "apple.runtime.private-key",
+        1,
+    )?
+    .derive();
+    let sealed = key.seal_bytes(&std::fs::read(n.directory.join("runtime.pk8"))?, &aad)?;
+    let mut rotation = command::seed_transaction(&c).await?;
+    sqlx::query("INSERT INTO mdm_apple_runtime.versions(tenant_id,purpose,revision,key_id,public_digest,private_key,csr,certificate,certificate_digest,topic,expires_at,selected) SELECT tenant_id,purpose,2,$2,public_digest,$3,csr,certificate,certificate_digest,topic,expires_at,true FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND purpose='apns' AND revision=1").bind(c.tenant.to_string()).bind(key_id).bind(sealed).execute(&mut *rotation).await?;
+    sqlx::query("UPDATE mdm_apple_runtime.heads SET revision=2,desired_revision=2 WHERE tenant_id=$1::uuid AND purpose='apns'").bind(c.tenant.to_string()).execute(&mut *rotation).await?;
+    rotation.commit().await?;
+    gate.notify_waiters();
+    assert!(drain.join().await?.is_clean());
+    let sibling_org = result??;
+    let old:(i32,i64)=sqlx::query_as("SELECT push_status,push_material_revision FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND device=$2 AND push_id=$3").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(*blocked_push_id.get().unwrap()).fetch_one(&c.operator).await?;
+    assert_eq!(old, (403, 1));
+    let op:Uuid=sqlx::query_scalar("SELECT id FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND organization=$2 AND kind='sync' AND state='pending' AND cursor='continued'").bind(c.tenant.to_string()).bind(org).fetch_one(&c.operator).await?;
+    let unknown = Uuid::new_v4();
+    let mut retry = command::seed_transaction(&c).await?;
+    sqlx::query("UPDATE mdm_apple.channels SET next_push=clock_timestamp() WHERE tenant_id=$1::uuid AND device=$2").bind(c.tenant.to_string()).bind(n.device.into_uuid()).execute(&mut *retry).await?;
+    sqlx::query("INSERT INTO mdm_apple.ade_operations(tenant_id,organization,expected_epoch,id,kind,digest,actor,instance,server_revision,token_revision,request,state,receipt,lease,lease_until,attempts,created_at) VALUES($1::uuid,$2,1,$3,'clear',repeat('1',64),'service','service',1,1,$4,'running','{}',$5,1,1,1)").bind(c.tenant.to_string()).bind(sibling_org).bind(unknown).bind(json!({"kind":"clear","devices":["first"]})).bind(Uuid::new_v4()).execute(&mut *retry).await?;
+    retry.commit().await?;
+    let restart = register()?;
+    let recovered=tokio::time::timeout(Duration::from_secs(10),async{
+        loop {
+            let done:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND device=$2 AND push_material_revision=2 AND push_outcome='accepted') AND EXISTS(SELECT FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND id=$3 AND state='succeeded') AND EXISTS(SELECT FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND id=$4 AND state='unknown' AND attempts=1 AND result->>'reason'='interrupted_external_effect')").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(op).bind(unknown).fetch_one(&c.operator).await?;
+            if done {break;}
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
         Ok::<_,anyhow::Error>(())
     }).await;
-    gate.notify_waiters();
-    assert!(stack.shutdown().join().await?.is_clean());
+    assert!(restart.shutdown().join().await?.is_clean());
+    recovered??;
+    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 2);
     server.abort();
     let _stopped = server.await;
     a.close().await?;
     other.close().await;
     c.close().await;
-    result?
+    Ok(())
 }

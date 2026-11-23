@@ -97,7 +97,7 @@ CREATE TABLE mdm_apple.channels (
   , push_id uuid
   , push_lease_until timestamptz
   , next_push timestamptz NOT NULL DEFAULT clock_timestamp()
-  , push_configuration bytea CHECK (octet_length(push_configuration) = 32)
+  , push_material_revision bigint CHECK (push_material_revision>0)
   , push_failures integer NOT NULL DEFAULT 0 CHECK (push_failures BETWEEN 0 AND 6)
   , push_status integer
   , push_outcome text CHECK (push_outcome IN ('accepted', 'retryable', 'unregistered', 'rejected'))

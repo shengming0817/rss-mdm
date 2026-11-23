@@ -43,16 +43,22 @@ async fn selected_configuration(
 ) -> Result<[u8; 32]> {
     let t = c.tenant.to_string();
     let mut tx = command::seed_transaction(c).await?;
+    let expected_revision: i64 = sqlx::query_scalar(
+        "SELECT coalesce((SELECT revision FROM mdm_wns.heads WHERE tenant_id=$1::uuid),0)",
+    )
+    .bind(&t)
+    .fetch_one(&mut *tx)
+    .await?;
     let material = rss_mdm_windows_channel::wns_materials::prepare(
         &mut tx,
         &t,
         Uuid::new_v4(),
         "wake-worker",
         &rss_mdm_windows_channel::wns_materials::Request {
-            expected_revision: 0,
+            expected_revision,
             package_family_name: "Rss.Test_0123456789abc".into(),
             sid: sid.to_owned().into(),
-            client_secret: "test-secret".to_owned().into(),
+            client_secret: format!("test-secret-{expected_revision}").into(),
         },
         key,
     )
@@ -238,22 +244,26 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
     );
     let server =
         tokio::spawn(axum::serve(listener, router.route("/held", held_route)).into_future());
-    let mut stack = rss_runtime::ShutdownStack::try_new(
-        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
-        Arc::new(crate::lifecycle::RuntimeTimer),
-    )?;
-    let mut launch = stack.startup()?.commit();
     let hint = Arc::new(tokio::sync::Notify::new());
-    launch.stage_deferred_task_with_token(
-        push::registration(
-            h.state.clone(),
-            owner.clone(),
-            rss_mdm_work_page::external::Limits::new(8.try_into()?, 7.try_into()?).unwrap(),
-            hint.clone(),
-        )
-        .critical(),
-    );
-    launch.finish();
+    let register = || -> Result<rss_runtime::ShutdownStack> {
+        let mut stack = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )?;
+        let mut launch = stack.startup()?.commit();
+        launch.stage_task_with_token(
+            push::registration(
+                h.state.clone(),
+                owner.clone(),
+                rss_mdm_work_page::external::Limits::new(8.try_into()?, 7.try_into()?).unwrap(),
+                hint.clone(),
+            )
+            .critical(),
+        );
+        launch.finish();
+        Ok(stack)
+    };
+    let mut stack = Some(register()?);
     let result=tokio::time::timeout(Duration::from_secs(20),async {
         held.notified().await;
         loop {
@@ -265,14 +275,20 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
         let states:(i64,i64)=sqlx::query_as("SELECT count(*) FILTER (WHERE lease_id IS NOT NULL),count(settled_id) FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid")
             .bind(&t).fetch_one(&c.operator).await?;
         assert_eq!(states,(1,1), "A2 and B settle while A1 still owns its lease");
-        release.cancel();
-        while discovered().await? {tokio::time::sleep(Duration::from_millis(20)).await;}
-        let row:(String,i32,bool)=sqlx::query_as("SELECT outcome,status,settled_id IS NOT NULL FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND device=$2")
-            .bind(&t).bind(n.device.into_uuid()).fetch_one(&c.operator).await?;
-        assert_eq!(row,("unregistered".into(),410,true));
+        let lease:Uuid=sqlx::query_scalar("SELECT lease_id FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND device=$2").bind(&t).bind(n.device.into_uuid()).fetch_one(&c.operator).await?;
+        let drain=stack.take().unwrap().shutdown();
+        assert_eq!(selected_configuration(&c,key,"ms-app://rss-test").await?,config);
         let limited=crate::planning_t2_support::endpoint(&c).await?.members[0].device;
         channel(&c,limited,key,config,b"https://fixture.notify.windows.com/throttled").await?;
         identity_cases::seed_device_group(&c,limited,key,&identity_cases::request(false,false)?,&[Uuid::new_v4()]).await?;
+        hint.notify_one();
+        release.cancel();
+        assert!(drain.join().await?.is_clean());
+        let row:(String,i32,Uuid,i64)=sqlx::query_as("SELECT outcome,status,settled_id,material_revision FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND device=$2").bind(&t).bind(n.device.into_uuid()).fetch_one(&c.operator).await?;
+        assert_eq!(row,("unregistered".into(),410,lease,1));
+        let pending:bool=sqlx::query_scalar("SELECT lease_id IS NULL AND settled_id IS NULL FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND device=$2").bind(&t).bind(limited.into_uuid()).fetch_one(&c.operator).await?;
+        assert!(pending);
+        stack=Some(register()?);
         hint.notify_one();
         loop {
             let throttled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND device=$2 AND status=406 AND outcome='retryable' AND next_push>clock_timestamp()+interval '110 seconds')").bind(&t).bind(limited.into_uuid()).fetch_one(&c.operator).await?;
@@ -285,7 +301,7 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
         let allowed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_windows.push_work_page(NULL,NULL) WHERE tenant_id=$1::uuid AND device=$2)").bind(other.tenant.to_string()).bind(blocked.into_uuid()).fetch_one(&pool).await?;
         assert!(!allowed,"406 applies to the same OAuth identity across tenants");
         // Make the original provider deadline due. The same durable work becomes eligible again.
-        sqlx::query("UPDATE mdm_wns.provider_throttles SET retry_at=clock_timestamp() WHERE tenant_id=$1::uuid").bind(&t).execute(&c.operator).await?;
+        sqlx::query("UPDATE mdm_wns.provider_throttles SET retry_at=clock_timestamp()+interval '1 second' WHERE tenant_id=$1::uuid").bind(&t).execute(&c.operator).await?;
         hint.notify_one();
         loop {
             if sqlx::query_scalar::<_,bool>("SELECT settled_id IS NOT NULL AND status=410 FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND device=$2").bind(other.tenant.to_string()).bind(blocked.into_uuid()).fetch_one(&c.operator).await? {break;}
@@ -295,7 +311,9 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
         Ok::<_,anyhow::Error>(())
     }).await;
     release.cancel();
-    assert!(stack.shutdown().join().await?.is_clean());
+    if let Some(stack) = stack {
+        assert!(stack.shutdown().join().await?.is_clean());
+    }
     server.abort();
     let _stopped = server.await;
     h.close().await?;

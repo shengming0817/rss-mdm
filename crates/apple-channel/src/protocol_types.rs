@@ -94,7 +94,6 @@ pub trait ApplePush: Send + Sync {
         c: &'a mut PgConnection,
         tenant: String,
         channel: crate::push::Channel,
-        configuration: [u8; 32],
     ) -> Pending<'a, Option<PushCandidate>>;
     fn reject_push<'a>(
         &'a self,
@@ -119,7 +118,7 @@ pub trait ApplePush: Send + Sync {
         wake: Uuid,
         device: rss_mdm_agent_wire::DeviceId,
         user_key: String,
-        configuration: [u8; 32],
+        material_revision: i64,
     ) -> Pending<'a, ()>;
     fn settle_push<'a>(
         &'a self,

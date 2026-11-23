@@ -4,15 +4,11 @@ use crate::{ConfigIssue, Error, Failure};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use uuid::Uuid;
-use x509_cert::{
-    Certificate,
-    der::{DecodePem, Encode},
-};
+use x509_cert::{Certificate, der::DecodePem};
 
 pub struct Push {
     clock: std::sync::Arc<dyn rss_mdm_inventory_service::clock::Clock>,
     client: reqwest::Client,
-    pub configuration: [u8; 32],
     origin: String,
     topic: String,
     pub expires: u64,
@@ -66,12 +62,6 @@ impl Push {
         let configured_topic = topic;
         let leaf = Certificate::from_pem(&pem)
             .map_err(|_| Error::Configuration(ConfigIssue::AppleApns))?;
-        use sha2::{Digest, Sha256};
-        let configuration = Sha256::digest(
-            leaf.to_der()
-                .map_err(|_| Error::Configuration(ConfigIssue::AppleApns))?,
-        )
-        .into();
         let topic = leaf
             .tbs_certificate
             .subject
@@ -116,7 +106,6 @@ impl Push {
         let origin = "https://api.push.apple.com".to_owned();
         Ok(Self {
             client,
-            configuration,
             origin,
             topic: configured_topic,
             clock,
@@ -266,6 +255,13 @@ pub struct Channel {
 }
 pub(crate) type Candidate = (Uuid, Uuid, String, String);
 
+fn failure(tenant: impl std::fmt::Display, stage: &'static str) {
+    eprintln!(
+        "{}",
+        serde_json::json!({"event":"apple_push_failure","tenant":tenant.to_string(),"stage":stage})
+    );
+}
+
 pub fn registration(
     app: std::sync::Arc<crate::HttpState>,
     limits: rss_mdm_work_page::external::Limits,
@@ -293,25 +289,32 @@ pub fn registration(
                 let app = app.clone();
                 async move {
                     let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
-                        .map_err(|_| ())?;
+                        .map_err(|_| failure(tenant, "authority"))?;
                     let execution = app.execution(tenant);
-                    let apple = app.apple(execution).await.map_err(|_| ())?;
-                    let time = apple.push.clock.unix_seconds().ok_or(())?;
+                    let apple = app
+                        .apple(execution)
+                        .await
+                        .map_err(|_| failure(tenant, "load_materials"))?;
+                    let time = apple
+                        .push
+                        .clock
+                        .unix_seconds()
+                        .ok_or_else(|| failure(tenant, "clock"))?;
                     apple
                         .check_materials(&app.access, &tenant.to_string(), time)
                         .await
-                        .map_err(|_| ())?;
+                        .map_err(|_| failure(tenant, "check_materials"))?;
                     let progress =
                         super::renewal::maintain(execution, &apple, &app.audit_store, time)
                             .await
-                            .map_err(|_| ())?;
+                            .map_err(|_| failure(tenant, "renewal"))?;
                     if progress > 0 {
                         return Ok(Duration::ZERO);
                     }
                     super::renewal::next_maintenance(&app.access, &tenant.to_string())
                         .await
                         .map(|v| v.unwrap_or(idle))
-                        .map_err(|_| ())
+                        .map_err(|_| failure(tenant, "next_maintenance"))
                 }
             },
             |_| {},
@@ -341,16 +344,28 @@ pub fn registration(
                     let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
                         .map_err(|_| Retry)?;
                     let execution = app.execution(tenant);
-                    let apple = app.apple(execution).await.map_err(|_| Retry)?;
+                    let apple = app.apple(execution).await.map_err(|_| {
+                        failure(tenant, "load_materials");
+                        Retry
+                    })?;
                     if stop.is_cancelled() || apple.push.topic != topic {
                         return Ok(idle);
                     }
-                    let now = apple.push.clock.unix_seconds().ok_or(Retry)?;
+                    let now = apple.push.clock.unix_seconds().ok_or_else(|| {
+                        failure(tenant, "clock");
+                        Retry
+                    })?;
                     apple
                         .check_materials(&app.access, &tenant.to_string(), now)
                         .await
-                        .map_err(|_| Retry)?;
-                    let material_revision = apple.material_selection().apns.ok_or(Retry)?;
+                        .map_err(|_| {
+                            failure(tenant, "check_materials");
+                            Retry
+                        })?;
+                    let material_revision = apple.material_selection().apns.ok_or_else(|| {
+                        failure(tenant, "apns_revision");
+                        Retry
+                    })?;
                     if stop.is_cancelled() {
                         return Ok(idle);
                     }
@@ -369,7 +384,7 @@ pub fn registration(
                     .await
                     .map(|_| idle)
                     .map_err(|_| {
-                        eprintln!("apple_push_failure tenant={tenant}");
+                        failure(tenant, "wake");
                         Retry
                     })
                 }
@@ -391,10 +406,7 @@ async fn wake(
     channel: Channel,
     now: i64,
 ) -> Result<WakeHealth, Error> {
-    let Some(wake) = delivery
-        .wake(execution, &push.configuration, channel)
-        .await?
-    else {
+    let Some(wake) = delivery.wake(execution, channel).await? else {
         return Ok(WakeHealth::Idle);
     };
     let (status, outcome, reason, timestamp, failure) =

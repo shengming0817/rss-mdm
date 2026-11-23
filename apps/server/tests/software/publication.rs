@@ -284,13 +284,30 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
         }
         anyhow::ensure!(matches!(fast_op.record(&records[1].0,cutoff()).await?.unwrap().snapshot().attempt.outcome,rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))));
         anyhow::ensure!(!matches!(slow_op.record(&records[0].0,cutoff()).await?.unwrap().snapshot().attempt.outcome,rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))));
+        // The management withdrawal races the in-flight worker at the same publication slot.
+        let held_record=slow_op.record(&records[0].0,cutoff()).await?.unwrap();
+        let cancel=p::ServiceRequest{actor:rel::ActorId::new(c.tenant,proof.principal_id())?,id:rel::RequestId::new(c.tenant,Uuid::new_v4().to_string())?,expected_revision:held_record.snapshot().revision,as_of:rss_contract::Timepoint::try_from(now())?};
+        let withdraw=p::ManagementAccess{proof:&proof,permission:Permission::ReleaseWithdraw};
+        Box::pin(slow_op.withdraw(&records[0].0,&cancel,&withdraw,cutoff())).await?;
         let git=tokio::process::Command::new("/usr/bin/git").arg("--git-dir").arg(&repo).args(["rev-parse","--verify",&format!("refs/heads/tenants/{}",c.tenant)]).output().await?;
         anyhow::ensure!(git.status.success());
         Ok::<_,anyhow::Error>(())
     }).await;
+    let drain = stack.shutdown();
     gate.release.cancel();
-    anyhow::ensure!(stack.shutdown().join().await?.is_clean());
+    anyhow::ensure!(drain.join().await?.is_clean());
+
     probe??;
+    anyhow::ensure!(matches!(
+        slow_op
+            .record(&records[0].0, cutoff())
+            .await?
+            .unwrap()
+            .snapshot()
+            .attempt
+            .outcome,
+        rel::PublicationOutcome::Reported(rel::PublicationResult::NotApplied(_))
+    ));
     let snapshot = fast_op.record(&records[1].0, cutoff()).await?.unwrap();
     let request = p::ServiceRequest {
         actor: rel::ActorId::new(c.tenant, proof.principal_id())?,
@@ -302,14 +319,62 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
         proof: &proof,
         permission: Permission::ReleaseWithdraw,
     };
+    let commit:String=sqlx::query_scalar("SELECT convert_from(document,'UTF8')::jsonb->>'snapshot' FROM mdm_software_composition.targets WHERE tenant_id=$1::uuid AND record=$2 AND left(id,2)='p:'")
+        .bind(c.tenant.to_string()).bind(records[1].0.value()).fetch_one(&c.operator).await?;
+    let reference = format!("refs/namespaces/{}-{commit}/refs/heads/main", c.tenant);
+    let lock = repo.join(format!("{reference}.lock"));
+    std::fs::File::create_new(&lock)?;
     let withdrawn = Box::pin(fast_op.withdraw(&records[1].0, &request, &access, cutoff())).await?;
-    anyhow::ensure!(withdrawn.outcome == p::Withdrawal::Complete);
+    anyhow::ensure!(
+        withdrawn.outcome == p::Withdrawal::AwaitingConfirmation,
+        "{:?}",
+        withdrawn.outcome
+    );
+    std::fs::remove_file(lock)?;
+    // Complete the retained immutable Git mutation without a database acknowledgement.
+    let deleted = tokio::process::Command::new("/usr/bin/git")
+        .arg("--git-dir")
+        .arg(&repo)
+        .args(["update-ref", "--no-deref", "-d", &reference, &commit])
+        .output()
+        .await?;
+    anyhow::ensure!(deleted.status.success());
+    let complete = || {
+        sqlx::query_scalar::<_,bool>("SELECT complete FROM mdm_software_composition.withdrawals WHERE tenant_id=$1::uuid AND record=$2").bind(c.tenant.to_string()).bind(records[1].0.value()).fetch_one(&c.operator)
+    };
+    anyhow::ensure!(!complete().await?);
+    let mut restart = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(16))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut launch = restart.startup()?.commit();
+    launch.stage_deferred_task_with_token(
+        directory
+            .clone()
+            .registration(
+                rss_mdm_work_page::external::Limits::new(8.try_into()?, 7.try_into()?).unwrap(),
+            )
+            .critical(),
+    );
+    launch.finish();
+    let observed = tokio::time::timeout(Duration::from_secs(10), async {
+        while !complete().await? {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await;
+    anyhow::ensure!(restart.shutdown().join().await?.is_clean());
+    observed??;
     anyhow::ensure!(
         fast_op
             .reconcile_withdrawal(records[1].1.id(), records[1].1.attempt, cutoff())
             .await?
             == p::Withdrawal::Complete
     );
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_software_composition.withdrawals WHERE tenant_id=$1::uuid AND record=$2")
+        .bind(c.tenant.to_string()).bind(records[1].0.value()).fetch_one(&c.operator).await?;
+    anyhow::ensure!(count == 1);
     store.close().await;
     owner.runtime.close().await;
     c.close().await;

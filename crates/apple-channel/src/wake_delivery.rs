@@ -7,10 +7,9 @@ impl Delivery {
     pub async fn wake(
         &self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,
-        configuration: &[u8; 32],
         channel: crate::push::Channel,
     ) -> Result<Option<Wake>, Error> {
-        let configuration = *configuration;
+        let material_revision = channel.material_revision;
         let audit = RequestAudit::new(
             rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
@@ -29,11 +28,9 @@ impl Delivery {
                     let facts = s.facts.clone();
                     let Some(row) = tx
                         .with_connection(move |c| {
-                            Box::pin(async move {
-                                Ok(facts
-                                    .push_candidate(c, tenant, channel, configuration)
-                                    .await)
-                            })
+                            Box::pin(
+                                async move { Ok(facts.push_candidate(c, tenant, channel).await) },
+                            )
                         })
                         .await
                         .map_err(storage)??
@@ -79,7 +76,7 @@ impl Delivery {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
                             Ok(facts
-                                .lease_push(c, tenant, id, value, user_key, configuration)
+                                .lease_push(c, tenant, id, value, user_key, material_revision)
                                 .await)
                         })
                     })

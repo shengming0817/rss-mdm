@@ -11,7 +11,6 @@ struct Work {
     revision: i64,
     token_revision: i64,
     lease: Uuid,
-    token: Option<client::Token>,
     kind: String,
     request: Value,
     previous_result: Option<Value>,
@@ -189,20 +188,15 @@ async fn cycle(
             .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
     );
     let (work, changed) = settled?;
-    let Some(mut work) = work else {
+    let Some((work, token)) = work else {
         return Ok(if changed {
             Duration::ZERO
         } else {
             Duration::from_millis(100)
         });
     };
-    let response = match work.token.take() {
-        Some(token) => {
-            let mut client = management::remote_client(app, token)?;
-            perform(app, &tenant, &work, &mut client).await
-        }
-        None => Err(client::RemoteError::Unauthorized),
-    };
+    let mut client = management::remote_client(app, token)?;
+    let response = perform(app, &tenant, &work, &mut client).await;
     finish(execution, app, &tenant, &work, response).await?;
     Ok(Duration::ZERO)
 }
@@ -213,7 +207,13 @@ async fn claim_in(
     fresh: bool,
     organization: Uuid,
     app: &HttpState,
-) -> Result<(Option<Work>, Vec<(Uuid, &'static str, i32)>), Error> {
+) -> Result<
+    (
+        Option<(Work, client::Token)>,
+        Vec<(Uuid, &'static str, i32)>,
+    ),
+    Error,
+> {
     management::lock(c, tenant, organization).await?;
     let mut changes = Vec::new();
     let mut scheduled_id = None;
@@ -299,20 +299,22 @@ async fn claim_in(
     sqlx::query("UPDATE mdm_apple.ade_operations SET state='running',lease=$3,lease_until=$4,attempts=$5 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).bind(lease).bind(time+180).bind(attempt).execute(&mut *c).await.map_err(db)?;
 
     Ok((
-        Some(Work {
-            id,
-            organization,
-            revision,
-            token_revision,
-            token: super::token(&s, app, tenant, organization).ok(),
-            lease,
-            kind,
-            request: r.try_get("request").map_err(db)?,
-            previous_result: r.try_get("result").map_err(db)?,
-            cursor: r.try_get("cursor").map_err(db)?,
-            full: r.try_get("full_sync").map_err(db)?,
-            attempt,
-        }),
+        Some((
+            Work {
+                id,
+                organization,
+                revision,
+                token_revision,
+                lease,
+                kind,
+                request: r.try_get("request").map_err(db)?,
+                previous_result: r.try_get("result").map_err(db)?,
+                cursor: r.try_get("cursor").map_err(db)?,
+                full: r.try_get("full_sync").map_err(db)?,
+                attempt,
+            },
+            super::token_at(&s, app, tenant, organization, time)?,
+        )),
         changes,
     ))
 }
