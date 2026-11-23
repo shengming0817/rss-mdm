@@ -9,8 +9,8 @@ use rss_mdm_policy_service::{
 use std::sync::Arc;
 use uuid::Uuid;
 pub struct Fixture {
-    resources: fixture::Fixture,
-    owner: crate::owner_storage::OwnerRuntime,
+    pub(crate) resources: fixture::Fixture,
+    pub(crate) owner: crate::owner_storage::OwnerRuntime,
     pub policies: Arc<Policies>,
 }
 impl Fixture {
