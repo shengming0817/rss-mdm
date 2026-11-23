@@ -25,31 +25,65 @@ pub fn wrap<M: rss_mdm_http_contract::module::Declaration>(
     router: Router<(), M>,
     envelope: Envelope,
 ) -> Router<(), M> {
-    router
-        .layer(axum::extract::DefaultBodyLimit::disable())
-        .layer(middleware::from_fn_with_state(
-            (envelope.clone(), false),
-            admit,
-        ))
-        .layer(middleware::from_fn_with_state(
-            envelope.request_budget,
-            rss_axum::request_control,
-        ))
+    wrap_family(router, envelope, false)
 }
 pub fn wrap_enroll<M: rss_mdm_http_contract::module::Declaration>(
     router: Router<(), M>,
     envelope: Envelope,
 ) -> Router<(), M> {
+    wrap_family(router, envelope, true)
+}
+fn wrap_family<M: rss_mdm_http_contract::module::Declaration>(
+    router: Router<(), M>,
+    envelope: Envelope,
+    enrollment: bool,
+) -> Router<(), M> {
+    let budget = envelope.request_budget;
     router
         .layer(axum::extract::DefaultBodyLimit::disable())
         .layer(middleware::from_fn_with_state(
-            (envelope.clone(), true),
+            (envelope, enrollment),
             admit,
         ))
         .layer(middleware::from_fn_with_state(
-            envelope.request_budget,
-            rss_axum::request_control,
+            (budget, enrollment),
+            controlled,
         ))
+}
+#[derive(Clone, Copy)]
+struct Completed;
+async fn controlled(
+    State((budget, enrollment)): State<(rss_axum::RequestBudget, bool)>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    // The worker retains audit ownership when the transport stops waiting.
+    let observed = Arc::new(std::sync::OnceLock::<RequestAudit>::new());
+    request.extensions_mut().insert(observed.clone());
+    let mut response = rss_axum::request_control(State(budget), request, next).await;
+    if response.extensions_mut().remove::<Completed>().is_some() {
+        return response;
+    }
+    use rss_mdm_audit_integration::WriteOutcome;
+    let snapshot = observed.get().map(RequestAudit::snapshot);
+    let error = match snapshot.as_ref().map(|s| s.write_outcome) {
+        Some(WriteOutcome::Unknown | WriteOutcome::Committed) => Error::CommitUnknown,
+        Some(WriteOutcome::RollbackFailed) => Error::RollbackFailed,
+        _ => Error::Unavailable(Failure::RequestDeadline),
+    };
+    let mut response = family(project(error), enrollment);
+    if let Some(id) = snapshot.as_ref().and_then(|s| s.operation_id) {
+        response.headers_mut().insert(
+            "idempotency-key",
+            HeaderValue::from_str(&id.to_string()).expect("UUID"),
+        );
+    }
+    secure(
+        response,
+        observed
+            .get()
+            .map_or_else(uuid::Uuid::new_v4, RequestAudit::request_id),
+    )
 }
 fn family(response: Response, enrollment: bool) -> Response {
     if !enrollment {
@@ -128,6 +162,12 @@ pub async fn admit(
         action,
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
+    if let Some(observed) = request
+        .extensions()
+        .get::<Arc<std::sync::OnceLock<RequestAudit>>>()
+    {
+        let _ = observed.set(audit.clone());
+    }
     let id = audit.request_id();
     let gateway_id = request
         .headers()
@@ -153,27 +193,34 @@ pub async fn admit(
         .extensions()
         .get::<Arc<Vec<tokio::sync::OwnedSemaphorePermit>>>()
         .cloned();
-    let input = if request.headers().get_all(header::HOST).iter().count() != 1
-        || request.uri().to_string().len() > 8192
-        || request
-            .headers()
-            .get(header::HOST)
-            .and_then(|v| v.to_str().ok())
-            .is_none_or(|host| !envelope.host.is_empty() && host != envelope.host)
-    {
-        Err(project(Error::Malformed))
-    } else {
-        body(request, envelope.buffered_bytes.clone(), deadline).await
-    };
     let Some(permit) = lifecycle.and_then(|gate| gate.try_admit().ok()) else {
         audit.finalize(None);
-        return limited(id);
-    };
-    let (input, requests_permit) = match input {
-        Ok((request, permit)) => (Ok(request), Some(permit)),
-        Err(response) => (Err(response), None),
+        let mut response = family(limited(id), enrollment);
+        response.extensions_mut().insert(Completed);
+        return response;
     };
     let work = async move {
+        let input = if request.headers().get_all(header::HOST).iter().count() != 1
+            || request.uri().to_string().len() > 8192
+            || request
+                .headers()
+                .get(header::HOST)
+                .and_then(|v| v.to_str().ok())
+                .is_none_or(|host| !envelope.host.is_empty() && host != envelope.host)
+        {
+            Err(project(Error::Malformed))
+        } else {
+            use rss_request_context::CancellationObserver;
+            tokio::select! {
+                biased;
+                () = control.cancelled() => Err(project(Error::Unavailable(Failure::RequestDeadline))),
+                result = body(request,envelope.buffered_bytes.clone(),deadline) => result,
+            }
+        };
+        let (input, requests_permit) = match input {
+            Ok((request, permit)) => (Ok(request), Some(permit)),
+            Err(response) => (Err(response), None),
+        };
         let _requests_permit = requests_permit;
         let _lifecycle_permit = permit;
         let _ingress_lease = ingress_lease;
@@ -212,7 +259,9 @@ pub async fn admit(
         );
         secure(family(response, enrollment), id)
     };
-    tokio::spawn(work).await.unwrap_or_else(|_| limited(id))
+    let mut response = tokio::spawn(work).await.unwrap_or_else(|_| limited(id));
+    response.extensions_mut().insert(Completed);
+    response
 }
 fn secure(mut response: Response, id: uuid::Uuid) -> Response {
     response.headers_mut().insert(
@@ -264,7 +313,7 @@ async fn body(
         rss_mdm_agent_wire::runtime::MAX_REQUEST_BYTES
     };
     let permit = requests
-        .try_acquire_many_owned(limit as u32)
+        .try_acquire_many_owned(2 * limit as u32)
         .map_err(|_| limited(uuid::Uuid::new_v4()))?;
     let (parts, body) = request.into_parts();
     match tokio::time::timeout_at(deadline.instant().into(), axum::body::to_bytes(body, limit))

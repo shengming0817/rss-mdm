@@ -15,8 +15,8 @@ use std::{
 #[serde(deny_unknown_fields)]
 pub struct Policy {
     pub rows: NonZeroU32,
-    /// Maximum admitted batches examined in one stream authorization.
-    pub authorization_batches: NonZeroU32,
+    /// Maximum key and version bytes per immutable publication checked by stream authorization.
+    pub authorization_bytes: NonZeroU32,
     pub buckets: NonZeroU32,
     pub step_seconds: u64,
 }
@@ -300,7 +300,16 @@ async fn authorize(
     let (field, _) = rss_mdm_inventory_postgres::historical_field_in(c, tenant, key)
         .await
         .map_err(|_| Error::Storage)?
-        .ok_or(Error::Invalid)?;
+        .ok_or(
+            if matches!(
+                input.action,
+                Action::CloseStream { .. } | Action::Reclaim { .. } | Action::ExpireReceipts { .. }
+            ) {
+                Error::Denied
+            } else {
+                Error::Invalid
+            },
+        )?;
     if field.sensitivity == rss_mdm_inventory::Sensitivity::Secret {
         return Err(Error::Denied);
     }
@@ -531,12 +540,15 @@ impl Service {
             (if replayed { Ok(()) } else { service.audit_store.append_in(tx, &fact).await }).map_err(crate::storage_error)?;
             audit.mark_commit_started();
             Ok(())
-        })).await.fold(|v|{settlement_audit.mark_committed();Ok(v)},|e|Err(tx_error(e)),|e|{settlement_audit.mark_rolled_back();Err(rejection.lock().expect("maintenance intent").unwrap_or_else(||tx_error(e)))},|_|{settlement_audit.mark_rollback_failed();Err(Error::Unknown)},|_|Err(Error::Unknown),|_|Err(Error::Storage))?;
+        })).await.fold(|v|{settlement_audit.mark_intent_committed();Ok(v)},|e|Err(tx_error(e)),|e|{settlement_audit.mark_rolled_back();Err(rejection.lock().expect("maintenance intent").unwrap_or_else(||tx_error(e)))},|_|{settlement_audit.mark_rollback_failed();Err(Error::Unknown)},|e|{
+            if settlement_audit.snapshot().write_outcome == rss_mdm_audit_integration::WriteOutcome::CommitNotStarted {
+                Err(tx_error(e))
+            } else { Err(Error::Unknown) }
+        },|_|Err(Error::Storage))?;
         let service = self.clone();
         let actor = auth.clone();
         let input = input.clone();
-        let dispatched = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let dispatch = dispatched.clone();
+        let effect = settlement_audit.clone();
         let rejection = Arc::new(Mutex::new(None));
         let rejected = rejection.clone();
         self.runtime
@@ -550,7 +562,7 @@ impl Service {
                     Box::pin(async move {
                         tx.with_connection(move |c| {
                             Box::pin(async move {
-                                step_on(&service, c, &actor, &input, cutoff, &dispatch)
+                                step_on(&service, c, &actor, &input, cutoff, &effect)
                                     .await
                                     .map_err(|e| {
                                         *rejected.lock().expect("maintenance step") = Some(e);
@@ -567,7 +579,7 @@ impl Service {
                 Ok,
                 |e| Err(tx_error(e)),
                 |e| {
-                    Err(if dispatched.load(std::sync::atomic::Ordering::Acquire) {
+                    Err(if !settlement_audit.snapshot().intent_only {
                         Error::Unknown
                     } else {
                         rejection
@@ -578,7 +590,7 @@ impl Service {
                 },
                 |_| Err(Error::Unknown),
                 |e| {
-                    Err(if dispatched.load(std::sync::atomic::Ordering::Acquire) {
+                    Err(if !settlement_audit.snapshot().intent_only {
                         Error::Unknown
                     } else {
                         tx_error(e)
@@ -594,7 +606,7 @@ async fn step_on(
     auth: &rss_mdm_authorization_service::context::RequestAuth,
     input: &Request,
     deadline: Deadline,
-    dispatched: &std::sync::atomic::AtomicBool,
+    effect: &RequestAudit,
 ) -> Result<Progress, Error> {
     let proof = &auth.proof;
     qualify(service, c, auth, input, deadline).await?;
@@ -628,13 +640,13 @@ async fn step_on(
     {
         return Err(Error::Deadline);
     }
-    dispatched.store(true, std::sync::atomic::Ordering::Release);
+    effect.record_intent_dispatch(true);
     let outcome = backend
         .maintain(&authorized, None, deadline)
         .await
         .map_err(|error| {
             // A returned provider error is a definite rejection; unknown settlement has its own Outcome.
-            dispatched.store(false, std::sync::atomic::Ordering::Release);
+            effect.record_intent_dispatch(false);
             Error::from(error)
         })?;
     let result = match outcome {

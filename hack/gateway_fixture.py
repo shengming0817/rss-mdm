@@ -59,7 +59,7 @@ def serve_loopback(root, certificates, backend, port):
     repo = Path(__file__).resolve().parents[1]
     config = render(repo/'deployment', origin=origin, backend=backend, certificates=str(certificates),
                     web=False, bootstrap_origins=(origin,), body_limits=repo/'crates/management-http/src/body_limits.json').configuration
-    config = config.replace(f'listen {port} ssl;', f'listen 127.0.0.1:{port} ssl;')
+    config = config.replace(f'listen {port} ssl', f'listen 127.0.0.1:{port} ssl')
     config = config.replace('/tmp/mdm-', str(root/'mdm-')).replace('include /etc/nginx/mime.types;', 'types { }')
     target = root/'nginx.conf'
     target.write_text(config)

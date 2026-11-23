@@ -49,7 +49,7 @@ async fn upload(
     let version = Uuid::new_v4();
     let profile: rss_mdm_resource::TelemetryProfile = serde_json::from_value(json!({
         "template":{"resource":"metric-script","version":"v1","variant":"default","platform":"windows","architecture":"x86_64"},
-        "parameters":{},"fields":references,"projection":"current","sampleMillis":5000,"uploadMillis":10000,
+        "parameters":{},"fields":references,"projection":if page==16 {"history"} else {"current"},"sampleMillis":5000,"uploadMillis":10000,
         "budget":{"points":64,"bytes":65536,"resources":64,"executionMillis":1000,"outputBytes":4096},
         "boost":null,"backfillSeconds":3600}))?;
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
@@ -117,10 +117,43 @@ async fn upload(
     Ok(input.batch_id)
 }
 
+async fn verify_pool(
+    c: &Context,
+    f: &Fixture,
+    prepared: &mut crate::command_runtime_t2_support::Prepared,
+) -> Result<()> {
+    let mut resource = f.config.clone();
+    resource.connections = NonZeroU32::new(65).unwrap();
+    resource.validate()?;
+    let host = &mut prepared.config;
+    host.telemetry = vec![resource.clone()];
+    host.background.database_connection_budget = 65;
+    anyhow::ensure!(host.background.compile(host).is_err());
+    host.background.database_connection_budget = 4096;
+    host.background.compile(host)?;
+    // Use the physical factory used by PgStore, not the count of lazy connections at startup.
+    let pool = resource.runtime_pool().await?;
+    let mut held = Vec::new();
+    for _ in 0..65 {
+        held.push(pool.acquire().await?);
+    }
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=$1 AND usename=$2")
+            .bind(&resource.database().name)
+            .bind(&resource.database().user)
+            .fetch_one(&c.operator)
+            .await?;
+    anyhow::ensure!(count >= 65 && pool.options().get_max_connections() == 65);
+    drop(held);
+    pool.close().await;
+    Ok(())
+}
+
 pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
     use crate::command_runtime_t2_support::Prepared;
-    let prepared = Prepared::open(c, |_| {}).await?;
+    let mut prepared = Prepared::open(c, |_| {}).await?;
     let result=async {
+        verify_pool(c,f,&mut prepared).await?;
         fixture::persist_selection(c,&f.config).await?;
         let service=f.service(c,std::slice::from_ref(&f.config)).await?;
         let (registration,grant)=materials::seed_registration(c).await?;
@@ -130,6 +163,9 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         let trust=materials::seed_trust(c,&prepared.protection,&[rss_mdm_agent_wire::task_trust::KeyState::Active]).await?;
         materials::seed_ack(c,&trust,principal.device()).await?;
         let mut tx=crate::command_runtime_t2_support::seed_transaction(c).await?;
+        anyhow::ensure!(rss_mdm_inventory_postgres::publish_retention_policy_in(&mut tx,c.tenant,&inv::RetentionPolicy{
+            key:"standard".into(),revision:1,raw_seconds:86400,summary_seconds:86400,restore_seconds:0
+        }).await?);
         sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,device,source,epoch,next_sequence,enabled) VALUES($1::uuid,$2,'agent.script',$3,0,true)")
             .bind(c.tenant.to_string()).bind(principal.device().into_uuid()).bind(epoch).execute(&mut *tx).await?;
         tx.commit().await?;
@@ -151,18 +187,56 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         worker.await??;
         delivery??;
         let account=c.account(&[Permission::InventoryRead,Permission::TelemetryMaintain]).await?;
-        let http=http::Http::open(c,service,&account).await?;
+        let short=http::Http::with_timeout(c,service.clone(),&account,std::time::Duration::from_millis(750)).await?;
+        let http=http::Http::open(c,service.clone(),&account).await?;
         let target=json!({"source":"agent.script","epoch":epoch});
         let request=|action:Value| json!({"id":Uuid::new_v4(),"device":principal.device(),
             "field":"custom.history_0000","resource":"device","startMicros":0,"endMicros":1,"action":action});
-        let expire=request(json!({"action":"expire_receipts","target":target,"before_micros":1}));
+        let mut observer=f.provider_observer(c).await?;
+        let generation=epoch.to_string();
+        let (received,expired):(i64,bool)=sqlx::query_as("SELECT received_at,expired FROM rss_timeseries.batches WHERE tenant_id=$1::uuid AND generation=$2")
+            .bind(c.tenant.to_string()).bind(&generation).fetch_one(&mut observer).await?;
+        anyhow::ensure!(!expired);
+        let expire=request(json!({"action":"expire_receipts","target":target,"before_micros":received+1}));
         let close=request(json!({"action":"close_stream","target":target}));
         let reclaim=request(json!({"action":"reclaim","target":target}));
         assert_eq!(http.call("/telemetry/maintenance",close.clone()).await?.0,403);
         for bad in [json!({"source":"agent.native","epoch":epoch}),json!({"source":"agent.script","epoch":Uuid::new_v4()})] {
             assert_eq!(http.call("/telemetry/maintenance",request(json!({"action":"expire_receipts","target":bad,"before_micros":1}))).await?.0,403);
         }
+        let mut narrow=f.config.clone(); narrow.maintenance.authorization_bytes=NonZeroU32::new(1).unwrap();
+        let limited_service=f.service(c,&[narrow]).await?;
+        let limited=http::Http::open(c,limited_service,&account).await?;
+        assert_eq!(limited.call("/telemetry/maintenance",expire.clone()).await?,(422,json!({"code":"capacity_exceeded"})));
+        let other=Context::open("shared",&[]).await?;
+        let account_other=other.account(&[Permission::InventoryRead,Permission::TelemetryMaintain]).await?;
+        let foreign=http::Http::open(&other,service.clone(),&account_other).await?;
+        assert_eq!(foreign.call("/telemetry/maintenance",expire.clone()).await?.0,403);
+        drop(foreign); other.close().await;
         let bad_page = "custom.history_1024";
+        let mut lock = crate::command_runtime_t2_support::seed_transaction(c).await?;
+        rss_mdm_registration_service::device::store::lock_channel(
+            rss_mdm_install_support::StorageProfile::Mdm, &mut lock,&c.tenant.to_string(),principal.device(),inv::Channel::Agent
+        ).await?;
+        let pid:i32=sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *lock).await?;
+        let (status,error)=short.call("/telemetry/maintenance",expire.clone()).await?;
+        anyhow::ensure!(status==504 && error["code"]=="request_deadline","undispatched stream step: {status} {error}");
+        let delayed = http.call("/telemetry/maintenance",expire.clone());
+        let change = async {
+            c.wait_blocked(pid).await?;
+            sqlx::query("UPDATE mdm.field_versions SET definition=jsonb_set(definition,'{sensitivity}',to_jsonb('secret'::text)) WHERE tenant_id=$1::uuid AND field=$2")
+                .bind(c.tenant.to_string()).bind(bad_page).execute(&mut *lock).await?;
+            lock.commit().await?;
+            anyhow::Ok(())
+        };
+        let (rejected,modified) = tokio::join!(delayed, change);
+        modified?;
+        assert_eq!(rejected?.0,403);
+        let mut tx=crate::command_runtime_t2_support::seed_transaction(c).await?;
+        sqlx::query("UPDATE mdm.field_versions SET definition=jsonb_set(definition,'{sensitivity}',to_jsonb('standard'::text)) WHERE tenant_id=$1::uuid AND field=$2")
+            .bind(c.tenant.to_string()).bind(bad_page).execute(&mut *tx).await?;
+        tx.commit().await?;
+
         for replacement in [json!(["unknown.field"]),json!(["custom.history_0000"])] {
             let mut tx=crate::command_runtime_t2_support::seed_transaction(c).await?;
             sqlx::query("UPDATE mdm_telemetry.batches SET fields=ARRAY(SELECT jsonb_array_elements_text($3)) WHERE tenant_id=$1::uuid AND policy=$2")
@@ -176,11 +250,30 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND device=$2 AND source='agent.script' AND epoch=$3")
             .bind(c.tenant.to_string()).bind(principal.device().into_uuid()).bind(epoch).execute(&mut *tx).await?;
         tx.commit().await?;
-        for command in [expire,close,reclaim] {
+        let id=Uuid::parse_str(expire["id"].as_str().unwrap())?;
+        let intents:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
+        anyhow::ensure!(intents==0);
+        for command in [expire,close] {
             let progress=http.post("/telemetry/maintenance",command.clone()).await?;
             assert_eq!(progress["state"],"complete");
             assert_eq!(http.post("/telemetry/maintenance",command).await?,progress);
         }
+        let expired:bool=sqlx::query_scalar("SELECT expired FROM rss_timeseries.batches WHERE tenant_id=$1::uuid AND generation=$2")
+            .bind(c.tenant.to_string()).bind(&generation).fetch_one(&mut observer).await?;
+        anyhow::ensure!(expired);
+        let blocked=http.post("/telemetry/maintenance",reclaim.clone()).await?;
+        assert_eq!(blocked["state"],"blocked");
+        // Raw retention has its own proof. Establish its exact terminal prerequisite for reclaim.
+        anyhow::ensure!(sqlx::query("DELETE FROM rss_timeseries.samples WHERE tenant_id=$1::uuid AND generation=$2")
+            .bind(c.tenant.to_string()).bind(&generation).execute(&mut observer).await?.rows_affected()==1);
+        let completed=http.post("/telemetry/maintenance",reclaim.clone()).await?;
+        assert_eq!(completed["state"],"complete");
+        anyhow::ensure!(completed["processed"].as_u64().is_some_and(|v|v>0));
+        assert_eq!(http.post("/telemetry/maintenance",reclaim).await?,completed);
+        let left:i64=sqlx::query_scalar("SELECT count(*) FROM rss_timeseries.batches WHERE tenant_id=$1::uuid AND generation=$2")
+            .bind(c.tenant.to_string()).bind(&generation).fetch_one(&mut observer).await?;
+        anyhow::ensure!(left==0);
         anyhow::Ok(())
     }.await;
     fixture::with_cleanup(result, prepared.close().await)

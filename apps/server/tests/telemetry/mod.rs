@@ -397,6 +397,34 @@ async fn exercise(c: &Context, f: &Fixture, default: &Fixture) -> Result<()> {
         "telemetry role admits the live primary credential and recovers its receipt"
     );
     let http = http::Http::open(c, service.clone(), &account).await?;
+    let short = http::Http::with_timeout(
+        c,
+        service.clone(),
+        &account,
+        std::time::Duration::from_millis(750),
+    )
+    .await?;
+    short.stalled_body().await?;
+    let mut observer = f.provider_observer(c).await?;
+    use sqlx::Connection as _;
+    let mut hold = observer.begin().await?;
+    sqlx::query("LOCK TABLE rss_timeseries.samples IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *hold)
+        .await?;
+    let (status, error) = short
+        .call("/telemetry/history", query(&device, "custom.minimum"))
+        .await?;
+    anyhow::ensure!(
+        status == 504 && error["code"] == "request_deadline",
+        "provider deadline: {status} {error}"
+    );
+    hold.rollback().await?;
+    let mut too_many = query(&device, "custom.minimum");
+    too_many["maxPoints"] = json!(129);
+    assert_eq!(
+        http.call("/telemetry/history", too_many).await?,
+        (422, json!({"code":"capacity_exceeded"}))
+    );
     let h = validator("/telemetry/history");
     let a = validator("/telemetry/aggregate");
     capacity::verify(&http, &device, &h, epoch, &capacity_spec).await?;
@@ -637,7 +665,8 @@ async fn maintenance_commits_while_a_peer_gap_receipt_is_locked() -> Result<()> 
 async fn complete_stream_qualification() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let result = async {
-        let f = Fixture::open(&c).await?;
+        let mut f = Fixture::open(&c).await?;
+        f.config.limits.replay_micros = NonZeroU64::new(1000).unwrap();
         let result = Box::pin(stream::exercise(&c, &f)).await;
         fixture::with_cleanup(result, f.close(&c).await)
     }

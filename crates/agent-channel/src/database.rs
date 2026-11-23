@@ -50,3 +50,7 @@ pub(crate) fn db(e: sqlx::Error) -> Error {
         Error::Unavailable(Failure::Database)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/sql_budget.rs"]
+mod budget_t2;

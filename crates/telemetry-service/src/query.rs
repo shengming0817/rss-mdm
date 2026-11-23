@@ -212,8 +212,8 @@ impl Service {
                     .expect("query rejection")
                     .unwrap_or(Error::Storage))
             },
-            |_| Err(Error::Unknown),
-            |_| Err(Error::Unknown),
+            |_| Err(Error::Storage),
+            |_| Err(Error::Storage),
             |_| Err(Error::Storage),
         )
     }
@@ -227,12 +227,6 @@ async fn read_on(
     _audit: &RequestAudit,
     cutoff: Deadline,
 ) -> Result<Reply, Error> {
-    let backend = service
-        .backend_until(c, proof.binding().tenant(), cutoff, false)
-        .await?;
-    if input.max_points.get() > backend.budget.points.get() {
-        return Err(Error::Capacity);
-    }
     rss_mdm_authorization_service::lock_shared_on(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
@@ -263,6 +257,12 @@ async fn read_on(
     }
     if field.time_series.is_none() && !matches!(kind, ReadKind::Health) {
         return Err(Error::Invalid);
+    }
+    let backend = service
+        .backend_until(c, proof.binding().tenant(), cutoff, false)
+        .await?;
+    if input.max_points.get() > backend.budget.points.get() {
+        return Err(Error::Capacity);
     }
     if let ReadKind::Aggregate(aggregate) = kind {
         let result = aggregate_on(proof.binding(), &backend, c, input, aggregate, cutoff).await?;

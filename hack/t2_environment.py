@@ -6,6 +6,8 @@ from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 import uuid
 
@@ -21,6 +23,11 @@ def profiles(modules):
 
 @contextmanager
 def prepared(root, modules, binary, command, resources):
+    if 'telemetry.query' in modules:
+        binary_path = shutil.which('nginx')
+        require(binary_path is not None, 'telemetry.query requires nginx on the host PATH')
+        version = subprocess.run([binary_path, '-v'], capture_output=True, text=True, check=True)
+        resources.append(dict(kind='nginx', identity=version.stderr.strip(), action='host-loopback'))
     environment = Environment(root, group='foundation-t2')
     environment.root.mkdir(parents=True, exist_ok=True, mode=0o700)
     held = lock_file(environment.root / '.prepare.lock')

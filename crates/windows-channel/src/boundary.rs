@@ -200,7 +200,7 @@ async fn body(
 ) -> Result<(Request, tokio::sync::OwnedSemaphorePermit), Response> {
     let limit = 2 * 1024 * 1024;
     let permit = requests
-        .try_acquire_many_owned(limit as u32)
+        .try_acquire_many_owned(2 * limit as u32)
         .map_err(|_| limited(uuid::Uuid::new_v4()))?;
     let (parts, body) = request.into_parts();
     match tokio::time::timeout_at(deadline.instant().into(), axum::body::to_bytes(body, limit))

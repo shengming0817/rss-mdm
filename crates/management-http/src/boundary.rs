@@ -76,7 +76,7 @@ fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
         Some(Error::RollbackFailed) => Some(ResponseFailure::RollbackFailed),
         Some(Error::Unauthorized) => Some(ResponseFailure::Denied),
         Some(Error::Forbidden) => Some(ResponseFailure::Forbidden),
-        Some(Error::Unavailable(Failure::RequestDeadline))
+        Some(Error::RequestDeadline | Error::Unavailable(Failure::RequestDeadline))
         | Some(Error::RecoveryCredentials(rss_mdm_recovery_credentials::Error::Deadline)) => {
             Some(ResponseFailure::Deadline)
         }
@@ -385,7 +385,8 @@ async fn body(request: Request, next: Next, bytes: Arc<tokio::sync::Semaphore>) 
         BodyPolicy::Buffered(limit) | BodyPolicy::Sdk(limit) => limit,
     };
     let Ok(_reservation) = bytes.try_acquire_many_owned(
-        u32::try_from(limit).expect("compiled buffered route fits a byte reservation"),
+        u32::try_from(crate::BodyLimits::reservation(limit))
+            .expect("compiled buffered route fits a byte reservation"),
     ) else {
         let id = request
             .extensions()

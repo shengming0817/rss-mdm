@@ -52,14 +52,16 @@ def proxy_headers(authority, public_origin, device=False, agent=False):
         fields['Authorization'] = '""'
     return ''.join(f'        proxy_set_header {name} {value};\n' for name, value in fields.items())
 
-def location(match, backend, *, budget=None, streaming=False, headers='', windows_management=False):
+def location(match, backend, *, budget=None, streaming=False, stream_request=False, headers='', windows_management=False):
     body = '        location ' + match + ' {\n'
     body += ('            limit_conn mdm_server_connections 128;\n' if windows_management
              else '            limit_req zone=mdm_api burst=20 nodelay;\n')
     if budget:
         body += f'            client_max_body_size {budget};\n'
+    if streaming or stream_request:
+        body += '            proxy_request_buffering off;\n'
     if streaming:
-        body += '            proxy_request_buffering off;\n            proxy_buffering off;\n'
+        body += '            proxy_buffering off;\n'
     return body + headers + f'            proxy_pass http://{backend};\n        }}\n'
 
 def management(backend, limits, host_id):
@@ -102,8 +104,8 @@ def management(backend, limits, host_id):
     mapping = f'    map "$request_method:$uri" {variable} {{\n        default "";\n' + '\n'.join(patterns) + '\n    }\n'
     block = f'        if ({variable}) {{ rewrite ^ {variable} last; }}\n'
     login = location('~ ^/api/v1/identity/tenants/[^/]+/(login|session/reauthenticate)$',
-                     backend, budget=default).replace('zone=mdm_api burst=20', 'zone=mdm_login burst=10')
-    return mapping, block + ''.join(locations.values()) + login + location('/api/', backend, budget=default)
+                     backend, budget=default, stream_request=True).replace('zone=mdm_api burst=20', 'zone=mdm_login burst=10')
+    return mapping, block + ''.join(locations.values()) + login + location('/api/', backend, budget=default, stream_request=True)
 
 def scep_locations(host):
     result = ''
@@ -259,7 +261,7 @@ http {
         "" no-store;
         default $upstream_http_cache_control;
     }
-    log_format mdm_safe escape=json '{"event":"mdm_gateway","status":$status,"request_id":"$request_id","backend_request_id":"$upstream_http_x_request_id","utc":"$time_iso8601","method":"$request_method","path":"$uri","duration":"$request_time"}';
+    map $request_uri $mdm_original_path { ~^([^?]*) $1; }\n    log_format mdm_safe escape=json '{"event":"mdm_gateway","status":$status,"request_id":"$request_id","backend_request_id":"$upstream_http_x_request_id","utc":"$time_iso8601","method":"$request_method","path":"$mdm_original_path","duration":"$request_time"}';
     access_log /dev/stdout mdm_safe;
     limit_req_zone $binary_remote_addr zone=mdm_login:10m rate=20r/m;
     limit_req_zone $binary_remote_addr zone=mdm_api:10m rate=10r/s;

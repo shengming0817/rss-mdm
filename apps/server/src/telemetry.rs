@@ -91,15 +91,15 @@ impl Credential {
         .map_err(|_| invalid())
     }
 }
-async fn pool(database: &Database, max: NonZeroU32) -> Result<sqlx::PgPool, Error> {
-    sqlx::postgres::PgPoolOptions::new()
-        .max_connections(max.get())
-        .acquire_timeout(Duration::from_secs(6))
-        .connect_with(database.options()?)
-        .await
-        .map_err(|_| unavailable())
-}
 impl Config {
+    pub(crate) async fn runtime_pool(&self) -> Result<sqlx::PgPool, Error> {
+        sqlx::postgres::PgPoolOptions::new()
+            .max_connections(self.connections.get())
+            .acquire_timeout(Duration::from_secs(6))
+            .connect_with(self.database().options()?)
+            .await
+            .map_err(|_| unavailable())
+    }
     pub(crate) fn validate(&self) -> Result<(), Error> {
         if self.resource_id.is_nil()
             || self.cursor_key_file.is_none() != matches!(self.backend, Storage::ClickHouse { .. })
@@ -261,9 +261,9 @@ impl Config {
             cursor_micros: self.limits.cursor_micros,
         };
         let backend = match &self.backend {
-            Storage::Postgres { database }
-            | Storage::TimescaleShared { database, .. }
-            | Storage::TimescaleDedicated { database, .. } => {
+            Storage::Postgres { .. }
+            | Storage::TimescaleShared { .. }
+            | Storage::TimescaleDedicated { .. } => {
                 let key = read(
                     self.cursor_key_file.as_deref().ok_or_else(invalid)?,
                     32,
@@ -272,7 +272,7 @@ impl Config {
                 .as_slice()
                 .try_into()
                 .map_err(|_| invalid())?;
-                let runtime = pool(database, self.connections).await?;
+                let runtime = self.runtime_pool().await?;
                 if !matches!(sqlx::query_scalar::<_,uuid::Uuid>("SELECT id FROM public.mdm_telemetry_installation LIMIT 2").fetch_all(&runtime).await, Ok(ids) if ids==[self.resource_id])
                 {
                     runtime.close().await;
@@ -322,7 +322,6 @@ impl Config {
                 }
             }
             Storage::ClickHouse {
-                control,
                 endpoint,
                 ca_file,
                 writer,
@@ -330,6 +329,7 @@ impl Config {
                 max_scan_rows,
                 max_scan_bytes,
                 max_memory_bytes,
+                ..
             } => {
                 let connections = rss_timeseries_clickhouse::ConnectionConfig::new(
                     endpoint,
@@ -338,7 +338,7 @@ impl Config {
                     maintenance.load()?,
                 )
                 .map_err(|_| invalid())?;
-                let runtime = pool(control, self.connections).await?;
+                let runtime = self.runtime_pool().await?;
                 if !matches!(sqlx::query_scalar::<_,uuid::Uuid>("SELECT id FROM public.mdm_telemetry_installation LIMIT 2").fetch_all(&runtime).await, Ok(ids) if ids==[self.resource_id])
                 {
                     runtime.close().await;

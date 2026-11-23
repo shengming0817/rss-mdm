@@ -20,6 +20,8 @@ make ci-plan CI_BASE=origin/develop
 
 构建需要 libxml2 开发头文件、pkg-config 和 libclang；Linux 使用 `libxml2-dev clang pkg-config`，macOS 使用 `brew install libxml2 pkg-config llvm`。WSTEP 证书签名验证使用 libxml2 的原始 DOM 规范化，运行镜像需提供 libxml2；[Dockerfile](../../deployment/Dockerfile) 持有镜像依赖。
 
+遥测查询 T2 使用宿主 PATH 中的 nginx 启动独立 loopback HTTPS 入口。运行 `make t2 MODULE=telemetry.query`、选中该模块的 affected 验证或 `make ci-full` 前，安装带 HTTP SSL 模块的 nginx；T2 结果会记录实际版本。
+
 ## 后台运行预算
 
 运行配置的 `background` 设置设备后台并发、数据库总连接配额及各 owner 的领取、扫描、执行、重试和排空预算。启动按实际物理池及前台、领取、续租、结算预留核算；配额不足或溢出则拒绝启动。进程共享池和 worker，各领域分页发现自己的持久工作作用域。租户总量不参与预算乘算；新增租户不会创建常驻任务或池。

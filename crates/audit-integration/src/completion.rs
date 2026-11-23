@@ -39,8 +39,13 @@ pub async fn complete(
     deadline: rss_request_context::Deadline,
 ) -> Option<Replacement> {
     let snapshot = audit.snapshot();
+    let effect = if snapshot.intent_only {
+        WriteOutcome::CommitNotStarted
+    } else {
+        snapshot.write_outcome
+    };
     let mut replacement = if failure == Some(ResponseFailure::Deadline) {
-        protected_result(failure, snapshot.write_outcome)
+        protected_result(failure, effect)
     } else {
         None
     };
@@ -67,8 +72,7 @@ pub async fn complete(
             .await
         {
             reason = Some(failure_reason(&error));
-            replacement = protected_result(failure, snapshot.write_outcome)
-                .or(Some(Replacement::Audit(error)));
+            replacement = protected_result(failure, effect).or(Some(Replacement::Audit(error)));
         }
     }
     if snapshot.intent == crate::AuditIntent::Routine && status >= 400 {

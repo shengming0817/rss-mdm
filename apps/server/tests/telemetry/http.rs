@@ -10,6 +10,7 @@ pub(super) struct Http {
     origin: String,
     cookie: String,
     csrf: String,
+    buffers: Arc<tokio::sync::Semaphore>,
     client: reqwest::Client,
 }
 impl Drop for Http {
@@ -23,6 +24,14 @@ impl Http {
         c: &Context,
         service: Arc<rss_mdm_telemetry_service::Service>,
         account: &Account,
+    ) -> Result<Self> {
+        Self::with_timeout(c, service, account, Duration::from_secs(8)).await
+    }
+    pub async fn with_timeout(
+        c: &Context,
+        service: Arc<rss_mdm_telemetry_service::Service>,
+        account: &Account,
+        timeout: Duration,
     ) -> Result<Self> {
         use rss_mdm_management_http::{
             authorization::http::{AuthenticationState, mount_protection},
@@ -50,6 +59,7 @@ impl Http {
             telemetry: rss_mdm_management_http::telemetry::routes(Some(service)),
         }
         .assemble();
+        let buffers = Arc::new(tokio::sync::Semaphore::new(128 * 1024 * 1024));
         let router = boundary::wrap(
             mount_protection(
                 mounted,
@@ -60,12 +70,12 @@ impl Http {
                 false,
             ),
             boundary::Envelope {
-                request_timeout: Duration::from_secs(8),
+                request_timeout: timeout,
                 profile: rss_mdm_install_support::StorageProfile::Mdm,
                 host: format!("localhost:{port}"),
                 clock: crate::clock::monotonic(),
                 audit_store: c.audit.clone(),
-                buffered_bytes: Arc::new(tokio::sync::Semaphore::new(128 * 1024 * 1024)),
+                buffered_bytes: buffers.clone(),
             },
         )
         .into_axum()
@@ -95,24 +105,30 @@ impl Http {
         else {
             anyhow::bail!("session required");
         };
-        tokio::time::timeout(Duration::from_secs(10), async {
+        let identity = uuid::Uuid::new_v4().to_string();
+        let ready = identity.clone();
+        let router = router.route("/readyz", axum::routing::get(move || async move { ready }));
+        let task = tokio::spawn(async move {
+            axum::serve(tcp, router).await.unwrap();
+        });
+        let startup = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if let Some(status) = gateway.try_wait()? {
                     anyhow::bail!("production gateway exited: {status}");
                 }
-                if tokio::net::TcpStream::connect(("127.0.0.1", port))
-                    .await
-                    .is_ok()
+                if let Ok(response) = client.get(format!("{origin}/readyz")).send().await
+                    && response.text().await? == identity
                 {
                     return anyhow::Ok(());
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
-        .await??;
-        let task = tokio::spawn(async move {
-            axum::serve(tcp, router).await.unwrap();
-        });
+        .await;
+        if !matches!(&startup, Ok(Ok(()))) {
+            task.abort();
+        }
+        startup??;
         Ok(Self {
             task,
             gateway,
@@ -121,8 +137,42 @@ impl Http {
             origin,
             cookie: format!("__Host-identity-session={}", secret.expose()),
             csrf: secret.csrf(),
+            buffers,
             client,
         })
+    }
+    pub async fn stalled_body(&self) -> Result<()> {
+        use futures::StreamExt;
+        let chunks = futures::stream::iter([Ok::<_, std::io::Error>(vec![b'{'; 64])])
+            .chain(futures::stream::pending());
+        let available = self.buffers.available_permits();
+        let send = self
+            .client
+            .post(format!("{}/telemetry/history", self.base))
+            .header("origin", &self.origin)
+            .header("cookie", &self.cookie)
+            .header("x-csrf-token", &self.csrf)
+            .header("content-type", "application/json")
+            .body(reqwest::Body::wrap_stream(chunks))
+            .send();
+        let observe = async {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while self.buffers.available_permits() == available {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+        };
+        let (response, observed) = tokio::join!(send, observe);
+        observed?;
+        let response = response?;
+        assert_eq!(response.status(), 504);
+        assert_eq!(
+            response.json::<serde_json::Value>().await?["code"],
+            "request_deadline"
+        );
+        assert_eq!(self.buffers.available_permits(), available);
+        Ok(())
     }
     pub async fn call(
         &self,

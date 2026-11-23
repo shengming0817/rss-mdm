@@ -6,8 +6,8 @@ use sqlx::PgConnection;
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-type Cursor = (Uuid, Uuid, Uuid);
-const PAGE: u32 = 16;
+type Cursor = (Uuid, Uuid);
+const PAGE: i64 = 16;
 
 pub(super) async fn verify(
     service: &Service,
@@ -29,16 +29,13 @@ pub(super) async fn verify(
         .await
         .map_err(|_| Error::Storage)?;
     let mut cursor: Option<Cursor> = None;
-    let mut active_fields = BTreeSet::new();
     let mut found = false;
-    let mut remaining = service.maintenance_policy.authorization_batches.get();
     loop {
-        let limit = PAGE.min(remaining.saturating_add(1));
-        let page: Vec<(Uuid, Uuid, Uuid, Vec<String>)> = sqlx::query_as(
-            "SELECT policy,policy_version,id,fields FROM mdm_telemetry.batches
+        let page: Vec<Cursor> = sqlx::query_as(
+            "SELECT DISTINCT policy,policy_version FROM mdm_telemetry.batches
              WHERE tenant_id=$1::uuid AND device=$2 AND source=$3 AND epoch=$4
-             AND ($5::uuid IS NULL OR (policy,policy_version,id)>($5,$6,$7))
-             ORDER BY policy,policy_version,id LIMIT $8",
+             AND ($5::uuid IS NULL OR (policy,policy_version)>($5,$6))
+             ORDER BY policy,policy_version LIMIT $7",
         )
         .bind(tenant.to_string())
         .bind(input.device.into_uuid())
@@ -46,25 +43,28 @@ pub(super) async fn verify(
         .bind(target.epoch)
         .bind(cursor.map(|v| v.0))
         .bind(cursor.map(|v| v.1))
-        .bind(cursor.map(|v| v.2))
-        .bind(i64::from(limit))
+        .bind(PAGE)
         .fetch_all(&mut *c)
         .await?;
-        let length = u32::try_from(page.len()).map_err(|_| Error::Capacity)?;
-        remaining = remaining.checked_sub(length).ok_or(Error::Capacity)?;
-        for (policy, version, id, fields) in page {
-            if cursor.is_none_or(|v| (v.0, v.1) != (policy, version)) {
-                active_fields =
-                    qualified_fields(service, c, tenant, target, policy, version).await?;
-            }
-            let actual: BTreeSet<_> = fields.into_iter().collect();
-            if actual != active_fields {
+        let last_page = page.len() < PAGE as usize;
+        for (policy, version) in page {
+            let fields = qualified_fields(service, c, tenant, target, policy, version).await?;
+            found |= fields.contains(&input.field);
+            let keys: Vec<_> = fields.into_iter().collect();
+            // Compare every admitted batch in this indexed publication range in the database.
+            // Frequent repeats of an unchanged profile consume no additional host memory or round trips.
+            let differs: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_telemetry.batches
+                WHERE tenant_id=$1::uuid AND device=$2 AND source=$3 AND epoch=$4
+                  AND policy=$5 AND policy_version=$6
+                  AND NOT (cardinality(fields)=cardinality($7::text[]) AND fields @> $7 AND fields <@ $7))")
+                .bind(tenant.to_string()).bind(input.device.into_uuid()).bind(target.source.as_str())
+                .bind(target.epoch).bind(policy).bind(version).bind(&keys).fetch_one(&mut *c).await?;
+            if differs {
                 return Err(Error::Denied);
             }
-            found |= actual.contains(&input.field);
-            cursor = Some((policy, version, id));
+            cursor = Some((policy, version));
         }
-        if length < limit {
+        if last_page {
             return if found { Ok(()) } else { Err(Error::Denied) };
         }
     }
@@ -86,6 +86,13 @@ async fn qualified_fields(
         .ok_or(Error::Denied)?;
     if source != target.source || fields.is_empty() || fields.len() > 64 {
         return Err(Error::Denied);
+    }
+    let charge: usize = fields
+        .iter()
+        .map(|field| field.key.len() + std::mem::size_of::<i64>())
+        .sum();
+    if charge > service.maintenance_policy.authorization_bytes.get() as usize {
+        return Err(Error::Capacity);
     }
     let mut keys = Vec::with_capacity(fields.len());
     let mut versions = Vec::with_capacity(fields.len());

@@ -56,11 +56,17 @@ pub fn body_limits() -> &'static BodyLimits {
     &LIMITS
 }
 impl BodyLimits {
+    /// One contiguous request and one retained wire-size copy during decoding.
+    pub(crate) fn reservation(wire_bytes: usize) -> usize {
+        wire_bytes
+            .checked_mul(2)
+            .expect("compiled management body capacity")
+    }
     pub fn largest_buffer(&self) -> usize {
         self.routes
             .iter()
             .filter(|r| !matches!(r.mode, Mode::Streaming))
-            .map(|r| r.bytes)
+            .map(|r| Self::reservation(r.bytes))
             .max()
             .unwrap_or(self.default_bytes)
     }
@@ -99,7 +105,28 @@ pub(crate) async fn buffer(
     limit: usize,
 ) -> Result<axum::extract::Request, Error> {
     let (parts, body) = request.into_parts();
-    let read = axum::body::to_bytes(body, limit);
+    use axum::body::{Bytes, HttpBody};
+    use futures::StreamExt;
+    let exact = body
+        .size_hint()
+        .exact()
+        .and_then(|n| usize::try_from(n).ok());
+    if exact.is_some_and(|n| n > limit) {
+        return Err(Error::RequestTooLarge);
+    }
+    let capacity = exact.unwrap_or(limit);
+    let read = async move {
+        let mut stream = body.into_data_stream();
+        let mut bytes = Vec::with_capacity(capacity);
+        while let Some(frame) = stream.next().await {
+            let chunk = frame.map_err(|e| read_error(&e))?;
+            if chunk.len() > capacity - bytes.len() {
+                return Err(Error::RequestTooLarge);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok::<_, Error>(Bytes::from(bytes))
+    };
     let bytes = if let Some(control) = parts.extensions.get::<rss_axum::RequestControl>() {
         use rss_request_context::CancellationObserver;
         tokio::select! {
@@ -114,8 +141,7 @@ pub(crate) async fn buffer(
             .map_err(|_| Error::RequestDeadline)?
     } else {
         read.await
-    }
-    .map_err(|error| read_error(&error))?;
+    }?;
     let mut request = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
     axum::extract::DefaultBodyLimit::max(limit).apply(&mut request);
     Ok(request)
