@@ -83,7 +83,7 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
     .execute(&mut *skew)
     .await?;
     for (clock, expected) in [(100_i64, true), (101, false)] {
-        let eligible: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_apple.ade_work_scopes(NULL,NULL,1,$1) WHERE tenant_id=$2::uuid)")
+        let eligible: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_apple.ade_work_scopes(NULL,NULL,NULL,1,$1) WHERE tenant_id=$2::uuid)")
             .bind(clock).bind(c.tenant.to_string()).fetch_one(&mut *skew).await?;
         assert_eq!(eligible, expected);
     }
@@ -194,7 +194,7 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
         rss_mdm_apple_channel::push::registration(state.clone(), rss_mdm_work_page::external::Limits::new(8.try_into()?,7.try_into()?).unwrap(), push_hint.clone()).critical(),
     );
     launch.stage_deferred_task_with_token(
-        rss_mdm_apple_channel::ade::registration(state.clone(), ade_hint.clone()).critical(),
+        rss_mdm_apple_channel::ade::registration(state.clone(), 8.try_into()?, ade_hint.clone()).critical(),
     );
     launch.finish();
     let result=tokio::time::timeout(Duration::from_secs(15),async {

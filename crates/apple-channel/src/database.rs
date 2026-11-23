@@ -195,13 +195,14 @@ impl Store {
 impl Store {
     pub async fn ade_work_scopes(
         &self,
-        after: Option<(uuid::Uuid, i64)>,
+        after: Option<(uuid::Uuid, uuid::Uuid, i64)>,
         fresh_epoch: rss_transactional_messaging::fence::Epoch,
         observed_at: i64,
-    ) -> Result<Vec<(uuid::Uuid, i64)>, Error> {
-        sqlx::query_as("SELECT * FROM mdm_apple.ade_work_scopes($1,$2,$3,$4)")
+    ) -> Result<Vec<(uuid::Uuid, uuid::Uuid, i64)>, Error> {
+        sqlx::query_as("SELECT * FROM mdm_apple.ade_work_scopes($1,$2,$3,$4,$5)")
             .bind(after.map(|v| v.0))
             .bind(after.map(|v| v.1))
+            .bind(after.map(|v|v.2))
             .bind(fresh_epoch.get())
             .bind(observed_at)
             .fetch_all(&self.pool)

@@ -11,6 +11,7 @@ struct Work {
     revision: i64,
     token_revision: i64,
     lease: Uuid,
+    token: Option<client::Token>,
     kind: String,
     request: Value,
     previous_result: Option<Value>,
@@ -20,67 +21,71 @@ struct Work {
 }
 pub fn registration(
     app: Arc<HttpState>,
+    capacity: std::num::NonZeroUsize,
     notify: Arc<tokio::sync::Notify>,
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) =
         rss_runtime::ManagedTask::prepare("apple-ade", std::time::Duration::from_secs(8));
     task.into_registration(move |stop| async move {
-        rss_mdm_work_page::run(
-            std::num::NonZeroUsize::new(2).expect("parallel ADE bindings"),
+        use rss_mdm_work_page::{external::{Group, fair_share},Failure::Retry};
+        let result: Result<(), std::convert::Infallible> = rss_mdm_work_page::run_limited(
+            capacity,
             Duration::from_secs(5),
             &stop,
             &notify,
-            |after| {
+            (|&(tenant,org,_): &(Uuid,Uuid,i64)| [(Group::<(),_>::Tenant(tenant),fair_share(capacity)),(Group::Object((tenant,org)),1)], |after| {
                 let app = &app;
                 async move {
                     app.access
                         .ade_work_scopes(
                             after,
                             app.expected_epoch,
-                            now(app).map_err(|_| eprintln!("apple_ade_clock_failed"))?,
+                            now(app).map_err(|_| {eprintln!("apple_ade_clock_failed");Retry})?,
                         )
                         .await
-                        .map_err(|_| eprintln!("apple_ade_discovery_failed"))
+                        .map_err(|_| {eprintln!("apple_ade_discovery_failed");Retry})
                 }
-            },
-            |(tenant, epoch)| {
+            }),
+            |(tenant, organization,epoch),stop| {
                 let app = app.clone();
                 async move {
                     let tenant = rss_request_context::TenantId::parse(&tenant.to_string())
-                        .map_err(|_| ())?;
+                        .map_err(|_| Retry)?;
                     let epoch =
-                        rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| ())?;
+                        rss_transactional_messaging::fence::Epoch::new(epoch).map_err(|_| Retry)?;
+                    if stop.is_cancelled(){return Ok(Duration::from_secs(5));}
                     cycle(
                         rss_transactional_messaging::fence::ExecutionBinding::new(
                             app.storage,
                             tenant,
                             epoch,
                         ),
-                        &app,
+                        &app,organization,
                     )
                     .await
-                    .map_err(|_| eprintln!("apple_ade_cycle_failed"))
+                    .map_err(|_| {eprintln!("apple_ade_cycle_failed");Retry})
                 }
             },
             |_| {},
         )
         .await;
-        Ok(())
+        match result {Ok(())=>Ok(()),Err(never)=>match never {}}
     })
 }
 /// One bounded page/effect per invocation. Used by the real worker and protocol T2.
-pub async fn cycle(
+async fn cycle(
     execution: rss_transactional_messaging::fence::ExecutionBinding,
     app: &HttpState,
+    organization:Uuid,
 ) -> Result<Duration, Error> {
     let tenant = execution.tenant().to_string();
     let time = now(app)?;
     let mut scan = app.access.begin(&tenant).await?;
     let next: Option<i64> = sqlx::query_scalar("SELECT min(due) FROM (
-        SELECT CASE state WHEN 'pending' THEN next_attempt ELSE lease_until END AS due FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND expected_epoch=$3 AND state IN ('pending','running')
-        UNION ALL SELECT next_sync FROM mdm_apple.ade_servers s WHERE $4 AND tenant_id=$1::uuid AND enabled AND verified AND NOT token_invalid AND token_expires>$2 AND next_sync<token_expires
+        SELECT CASE state WHEN 'pending' THEN next_attempt ELSE lease_until END AS due FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND organization=$5 AND expected_epoch=$3 AND state IN ('pending','running')
+        UNION ALL SELECT next_sync FROM mdm_apple.ade_servers s WHERE $4 AND tenant_id=$1::uuid AND organization=$5 AND enabled AND verified AND NOT token_invalid AND token_expires>$2 AND next_sync<token_expires
         AND NOT EXISTS (SELECT FROM mdm_apple.ade_operations o WHERE o.tenant_id=s.tenant_id AND o.organization=s.organization AND o.state IN ('pending','running','unknown'))) work")
-        .bind(&tenant).bind(time).bind(execution.epoch().get()).bind(execution.epoch() == app.expected_epoch)
+        .bind(&tenant).bind(time).bind(execution.epoch().get()).bind(execution.epoch() == app.expected_epoch).bind(organization)
         .fetch_one(&mut *scan).await.map_err(db)?;
     scan.rollback().await.map_err(db)?;
     let Some(next) = next else {
@@ -111,14 +116,14 @@ pub async fn cycle(
                 time,
                 execution.epoch() == app.expected_epoch,
             ),
-            |ctx, tx| {
+            move |ctx, tx| {
                 Box::pin(async move {
                     let (app, audit, tenant, time, fresh) = *ctx;
                     let (work, changes) = tx
-                        .with_connection_context(&mut (tenant, time, fresh), |ctx, c| {
+                        .with_connection_context(&mut (tenant, time, fresh,organization,app), |ctx, c| {
                             Box::pin(async move {
-                                let (tenant, time, fresh) = *ctx;
-                                claim_in(c, tenant, time, fresh).await
+                                let (tenant, time, fresh,organization,app) = *ctx;
+                                claim_in(c, tenant, time, fresh,organization,app).await
                             })
                         })
                         .await?;
@@ -155,23 +160,19 @@ pub async fn cycle(
             .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
     );
     let (work, changed) = settled?;
-    let Some(work) = work else {
+    let Some(mut work) = work else {
         return Ok(if changed {
             Duration::ZERO
         } else {
             Duration::from_millis(100)
         });
     };
-    let mut tx = app.access.begin(&tenant).await?;
-    let row = server(&mut tx, &tenant, work.organization).await?;
-    let token = super::token(&row, app, &tenant, work.organization);
-    tx.rollback().await.map_err(db)?;
-    let response = match token {
-        Ok(token) => {
+    let response = match work.token.take() {
+        Some(token) => {
             let mut client = management::remote_client(app, token)?;
             perform(app, &tenant, &work, &mut client).await
         }
-        Err(_) => Err(client::RemoteError::Unauthorized),
+        None => Err(client::RemoteError::Unauthorized),
     };
     finish(execution, app, &tenant, &work, response).await?;
     Ok(Duration::ZERO)
@@ -181,10 +182,13 @@ async fn claim_in(
     tenant: &str,
     time: i64,
     fresh: bool,
+    organization:Uuid,
+    app:&HttpState,
 ) -> Result<(Option<Work>, Vec<(Uuid, &'static str, i32)>), Error> {
+    management::lock(c,tenant,organization).await?;
     let mut changes = Vec::new();
     let mut scheduled_id = None;
-    let scheduled=sqlx::query("SELECT organization,revision,token_revision,cursor FROM mdm_apple.ade_servers s WHERE $3 AND tenant_id=$1::uuid AND enabled AND verified AND NOT token_invalid AND token_expires>$2 AND next_sync<=$2 AND NOT EXISTS(SELECT 1 FROM mdm_apple.ade_operations o WHERE o.tenant_id=s.tenant_id AND o.organization=s.organization AND o.state IN('pending','running','unknown')) ORDER BY organization LIMIT 1 FOR UPDATE SKIP LOCKED").bind(tenant).bind(time).bind(fresh).fetch_optional(&mut *c).await.map_err(db)?;
+    let scheduled=sqlx::query("SELECT organization,revision,token_revision,cursor FROM mdm_apple.ade_servers s WHERE $3 AND tenant_id=$1::uuid AND organization=$4 AND enabled AND verified AND NOT token_invalid AND token_expires>$2 AND next_sync<=$2 AND NOT EXISTS(SELECT 1 FROM mdm_apple.ade_operations o WHERE o.tenant_id=s.tenant_id AND o.organization=s.organization AND o.state IN('pending','running','unknown')) ORDER BY organization LIMIT 1 FOR UPDATE SKIP LOCKED").bind(tenant).bind(time).bind(fresh).bind(organization).fetch_optional(&mut *c).await.map_err(db)?;
     if let Some(r) = scheduled {
         let organization: Uuid = r.try_get("organization").map_err(db)?;
         let id = Uuid::new_v4();
@@ -220,7 +224,7 @@ async fn claim_in(
         .map_err(db)?;
         sqlx::query("UPDATE mdm_apple.ade_servers SET next_sync=$3 WHERE tenant_id=$1::uuid AND organization=$2").bind(tenant).bind(organization).bind(time+1800).execute(&mut *c).await.map_err(db)?;
     }
-    let candidate=sqlx::query("SELECT id,organization FROM mdm_apple.ade_operations WHERE expected_epoch=current_setting('rss.execution_epoch')::bigint AND tenant_id=$1::uuid AND ($3::uuid IS NULL OR id=$3) AND ((state='pending' AND next_attempt<=$2) OR (state='running' AND lease_until<=$2)) ORDER BY created_at,id LIMIT 1").bind(tenant).bind(time).bind(scheduled_id).fetch_optional(&mut *c).await.map_err(db)?;
+    let candidate=sqlx::query("SELECT id,organization FROM mdm_apple.ade_operations WHERE expected_epoch=current_setting('rss.execution_epoch')::bigint AND tenant_id=$1::uuid AND organization=$4 AND ($3::uuid IS NULL OR id=$3) AND ((state='pending' AND next_attempt<=$2) OR (state='running' AND lease_until<=$2)) ORDER BY created_at,id LIMIT 1").bind(tenant).bind(time).bind(scheduled_id).bind(organization).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(candidate) = candidate else {
         return Ok((None, changes));
     };
@@ -271,6 +275,7 @@ async fn claim_in(
             organization,
             revision,
             token_revision,
+            token:super::token(&s,app,tenant,organization).ok(),
             lease,
             kind,
             request: r.try_get("request").map_err(db)?,

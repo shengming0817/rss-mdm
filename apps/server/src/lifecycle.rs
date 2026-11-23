@@ -781,6 +781,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                         launch.stage_task_with_token(
                             rss_mdm_apple_channel::ade::registration(
                                 app.apple_control.clone(),
+                                background.external.ade,
                                 signals.handle(crate::worker_wake::Work::Apple),
                             )
                             .critical(),
