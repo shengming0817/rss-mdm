@@ -206,7 +206,8 @@ async fn fresh(root: &Path, administrator: &crate::config::Database) -> Result<I
             "certificate_file":pg_root.join("server.crt"),"private_key_file":pg_root.join("server.key"),
             "trust_file":administrator.ca_file,"content_volume":root.join("content")},
         "database":{"name":"mdm_installation_proof","administrator":administrator},
-        "request_slots":32,"buffered_body_bytes":134217728,"device_concurrency":8,"planning_concurrency":8,"organization_name":"First organization","platform_login":"platform","administrator_login":"administrator",
+        "request_slots":32,"buffered_body_bytes":134217728,
+        "external_calls":{"apns":{"total":8,"per_credential":7},"wns":{"total":8,"per_credential":7},"ade":8,"publication":{"total":8,"per_source":7}},"device_concurrency":8,"planning_concurrency":8,"organization_name":"First organization","platform_login":"platform","administrator_login":"administrator",
         "platform_password_file":root.join("platform-password"),"administrator_password_file":root.join("administrator-password"),
         "origin":"https://mdm.example.test","listen":address,"trusted_gateway":"127.0.0.1"
     });
@@ -215,6 +216,15 @@ async fn fresh(root: &Path, administrator: &crate::config::Database) -> Result<I
         serde_json::to_vec(&installation_input)?,
     )?;
     let input: Input = crate::config::load(&root.join("install.json"))?;
+    let mut invalid_capacity = installation_input.clone();
+    invalid_capacity["external_calls"]["apns"] = json!({"total":2,"per_credential":2});
+    ensure!(matches!(
+        Box::pin(install(serde_json::from_value(invalid_capacity)?)).await,
+        Err(crate::installation::Error::Capacity(
+            "background.external_calls.apns.per_credential"
+        ))
+    ));
+    ensure!(!root.join("installation/installation.json").exists());
     let mut rejected = installation_input.clone();
     rejected["planning_concurrency"] = json!(1_000_000);
     ensure!(matches!(

@@ -56,7 +56,7 @@ impl Fixture {
                 storage.worker_budget.clone(),
             )
             .await?;
-            let software = assembly::software::assemble(
+            let software = Box::pin(assembly::software::assemble(
                 storage.discovery_pool.clone(),
                 config,
                 &resources.background,
@@ -78,7 +78,7 @@ impl Fixture {
                 storage.read_pool.clone(),
                 storage.reconcile.clone(),
                 storage.worker_budget.clone(),
-            )
+            ))
             .await?;
 
             let configuration = assembly::policy::configuration(

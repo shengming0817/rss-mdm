@@ -36,7 +36,12 @@ pub struct Push {
     secret: Zeroizing<String>,
     pub pfn: String,
     pub configuration: [u8; 32],
-    token: tokio::sync::Mutex<Option<(Zeroizing<String>, Instant)>>,
+    token: tokio::sync::Mutex<TokenState>,
+}
+enum TokenState {
+    Empty,
+    Ready(Zeroizing<String>, Instant),
+    Failed(Instant),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -116,6 +121,10 @@ pub(crate) fn validate(pfn: &str, sid: &str, secret: &str) -> Result<(), Error> 
     Ok(())
 }
 impl Push {
+    pub(crate) fn credential(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(self.sid.as_bytes()).into()
+    }
     pub fn material_revision(&self) -> Option<i64> {
         self.material_revision
     }
@@ -150,7 +159,7 @@ impl Push {
             sid,
             secret: Zeroizing::new(secret),
             configuration,
-            token: tokio::sync::Mutex::new(None),
+            token: tokio::sync::Mutex::new(TokenState::Empty),
         })
     }
     #[cfg(feature = "integration")]
@@ -176,13 +185,32 @@ impl Push {
     pub async fn validate_credentials(&self) -> Result<(), Error> {
         self.bearer().await.map(|_| ())
     }
-    async fn bearer(&self) -> Result<Zeroizing<String>, Error> {
+    pub(crate) async fn bearer(&self) -> Result<Zeroizing<String>, Error> {
+        let requested = self.clock.now();
         let mut cached = self.token.lock().await;
-        if let Some((token, expires)) = &*cached
-            && *expires > self.clock.now() + Duration::from_secs(30)
-        {
-            return Ok(token.clone());
+        match &*cached {
+            TokenState::Ready(token, expires)
+                if *expires > self.clock.now() + Duration::from_secs(30) =>
+            {
+                return Ok(token.clone());
+            }
+            TokenState::Failed(finished) if requested <= *finished => {
+                return Err(Error::Unavailable(Failure::Protocol));
+            }
+            _ => {}
         }
+        match self.refresh().await {
+            Ok((token, expiry)) => {
+                *cached = TokenState::Ready(token.clone(), expiry);
+                Ok(token)
+            }
+            Err(error) => {
+                *cached = TokenState::Failed(self.clock.now());
+                Err(error)
+            }
+        }
+    }
+    async fn refresh(&self) -> Result<(Zeroizing<String>, Instant), Error> {
         let mut response = self
             .client
             .post(&self.token_url)
@@ -222,14 +250,12 @@ impl Push {
         {
             return Err(Error::Unavailable(Failure::Protocol));
         }
-        let token = value.access_token;
-        *cached = Some((
-            token.clone(),
+        Ok((
+            value.access_token,
             self.clock.now() + Duration::from_secs(value.expires_in),
-        ));
-        Ok(token)
+        ))
     }
-    pub async fn send(&self, channel: &str) -> Result<Receipt, Error> {
+    pub(crate) async fn send(&self, channel: &str, token: &str) -> Result<Receipt, Error> {
         let uri = channel_uri(channel)?;
         #[cfg(feature = "integration")]
         let uri = if self.token_url.starts_with("https://localhost:") {
@@ -241,20 +267,10 @@ impl Push {
             uri
         };
 
-        let token = match self.bearer().await {
-            Ok(token) => token,
-            Err(_) => {
-                return Ok(Receipt {
-                    status: 0,
-                    outcome: PushOutcome::Retryable,
-                    retry_after: None,
-                });
-            }
-        };
         let response = self
             .client
             .post(uri)
-            .bearer_auth(token.as_str())
+            .bearer_auth(token)
             .header("content-type", "application/octet-stream")
             .header("x-wns-type", "wns/raw")
             .header("x-wns-cache-policy", "cache")
@@ -282,7 +298,11 @@ impl Push {
             200 => notification_outcome(response.headers()),
             406 | 429 | 500..=599 => PushOutcome::Retryable,
             401 => {
-                *self.token.lock().await = None;
+                if let Ok(mut cached) = self.token.try_lock()
+                    && matches!(&*cached,TokenState::Ready(current,_) if current.as_str()==token)
+                {
+                    *cached = TokenState::Empty;
+                }
                 PushOutcome::Retryable
             }
             404 | 410 => PushOutcome::Unregistered,

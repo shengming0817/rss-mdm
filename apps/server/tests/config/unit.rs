@@ -54,6 +54,7 @@ fn independent_secrets(value: &mut serde_json::Value) -> PathBuf {
         "/business_databases/content",
         "/business_databases/telemetry",
         "/business_databases/scheduler",
+        "/business_databases/wns",
         "/publication/database",
         "/tenant_administration/registry_database",
         "/tenant_administration/provisioning_database",
@@ -259,6 +260,30 @@ fn standard_agent_lifetime_rejects_extra_fields() {
         )
         .is_ok()
     );
+}
+
+#[test]
+fn external_capacity_is_per_owner_and_requires_explicit_valid_limits() {
+    let mut source: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+    source["background"]["external_calls"]["apns"]["total"] = serde_json::json!(16);
+    let config: Config = serde_json::from_value(source.clone()).unwrap();
+    let limits = config.background.compile(&config).unwrap().external;
+    assert_eq!(limits.apns.total.get(), 16);
+    assert_eq!(limits.wns.total.get(), 8);
+    for invalid in [0, 16, 17] {
+        source["background"]["external_calls"]["apns"]["per_credential"] =
+            serde_json::json!(invalid);
+        assert!(
+            serde_json::from_value::<Config>(source.clone())
+                .map_or(true, |config| config.background.compile(&config).is_err())
+        );
+    }
+    source["background"]
+        .as_object_mut()
+        .unwrap()
+        .remove("external_calls");
+    assert!(serde_json::from_value::<Config>(source).is_err());
 }
 
 #[test]

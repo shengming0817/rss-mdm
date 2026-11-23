@@ -514,18 +514,20 @@ impl WakeDemand for WindowsBusiness {
         &'a self,
         pool: &'a sqlx::PgPool,
         after: Option<(Uuid, Uuid)>,
-    ) -> Pending<'a, Vec<(Uuid, Uuid)>> {
+    ) -> Pending<'a, Vec<(Uuid, Uuid, Vec<u8>)>> {
         Box::pin(async move {
-            sqlx::query_as("SELECT tenant_id,device FROM mdm_windows.push_work_page($1,$2)")
-                .bind(after.map(|key| key.0))
-                .bind(after.map(|key| key.1))
-                .fetch_all(pool)
-                .await
-                .map_err(|_| {
-                    rss_mdm_windows_channel::Error::Unavailable(
-                        rss_mdm_windows_channel::Failure::Database,
-                    )
-                })
+            sqlx::query_as(
+                "SELECT tenant_id,device,credential FROM mdm_windows.push_work_page($1,$2)",
+            )
+            .bind(after.map(|key| key.0))
+            .bind(after.map(|key| key.1))
+            .fetch_all(pool)
+            .await
+            .map_err(|_| {
+                rss_mdm_windows_channel::Error::Unavailable(
+                    rss_mdm_windows_channel::Failure::Database,
+                )
+            })
         })
     }
 

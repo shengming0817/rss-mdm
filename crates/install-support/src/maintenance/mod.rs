@@ -5,6 +5,8 @@ pub mod journal;
 pub mod snapshot_tree;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("invalid capacity for {0}")]
+    Capacity(&'static str),
     #[error("installation input rejected")]
     Input,
     #[error("installation journal is busy")]

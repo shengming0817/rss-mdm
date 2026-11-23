@@ -31,6 +31,7 @@ pub(super) const ROLES: &[&str] = &[
     "mdm_content_runtime",
     "mdm_telemetry_runtime",
     "mdm_scheduler_runtime",
+    "mdm_wns_runtime",
     "mdm_software_driver",
     "mdm_webhook_operator",
     "mdm_scope_group_consumer",
@@ -69,6 +70,7 @@ pub struct Input {
     pub audit_mode: AuditMode,
     pub request_slots: usize,
     pub buffered_body_bytes: usize,
+    pub external_calls: crate::background::ExternalCalls,
     pub planning_concurrency: usize,
     pub device_concurrency: usize,
     pub organization_name: String,
@@ -119,6 +121,7 @@ fn invalid<T>(_: T) -> Error {
 impl Input {
     fn background(&self, budget: u32) -> crate::background::BackgroundConfig {
         crate::background::BackgroundConfig::installation(
+            self.external_calls,
             self.planning_concurrency,
             self.device_concurrency,
             budget,
@@ -128,6 +131,9 @@ impl Input {
         crate::config::http::Http::installation(self.request_slots, self.buffered_body_bytes)
             .compile(&crate::identity::policy::RuntimePolicy::installation())
             .map_err(invalid)?;
+        self.external_calls
+            .compile()
+            .map_err(super::capacity_error)?;
         let u = url::Url::parse(&self.origin).map_err(invalid)?;
         if u.scheme() != "https"
             || u.host_str().is_none()
@@ -279,6 +285,7 @@ pub async fn install(input: Input) -> Result<Receipt> {
         input
             .background(budget)
             .compile_pools(
+                false,
                 matches!(input.content_storage, ContentStorage::Volume),
                 false,
                 true,
@@ -583,7 +590,7 @@ fn runtime(
         "access_database":input.database("mdm_access")?,"runtime_database":input.database("mdm_runtime")?,"command_database":input.database("mdm_command_runtime")?,
         "storage_binding":{"target":saved.target,"lineage":saved.lineage,"epoch":1},
         "telemetry":[],
-        "business_databases":{"inventory":input.database("mdm_inventory_runtime")?,"scope":input.database("mdm_scope_runtime")?,"policy":input.database("mdm_policy_runtime")?,"resource":input.database("mdm_resource_runtime")?,"software":input.database("mdm_software_runtime")?,"content":input.database("mdm_content_runtime")?,"telemetry":input.database("mdm_telemetry_runtime")?,"scheduler":input.database("mdm_scheduler_runtime")?},
+        "business_databases":{"inventory":input.database("mdm_inventory_runtime")?,"scope":input.database("mdm_scope_runtime")?,"policy":input.database("mdm_policy_runtime")?,"resource":input.database("mdm_resource_runtime")?,"software":input.database("mdm_software_runtime")?,"content":input.database("mdm_content_runtime")?,"telemetry":input.database("mdm_telemetry_runtime")?,"scheduler":input.database("mdm_scheduler_runtime")?,"wns":input.database("mdm_wns_runtime")?},
         "publication":{"database":input.database("mdm_software_driver")?,"sources":[]},
         "tenant_administration":{"registry_database":input.database("mdm_tenant_registry")?,"provisioning_database":input.database("mdm_identity_provisioning")?,"fingerprint_key_file":journal.path("operation.key")?},
         "scope_group_database":input.database("mdm_scope_group_consumer")?,"asset_input_database":input.database("mdm_asset_ingress_consumer")?,"webhooks":{"networks":[],"recovery_database":input.database("mdm_webhook_operator")?},"content":null,"recovery_credentials":null

@@ -11,6 +11,7 @@
 ('mdm_windows.push_channels','lease_id'),
 ('mdm_windows.push_channels','lease_until'),
 ('mdm_windows.push_channels','settled_id'),
+('mdm_windows.push_channels','material_revision'),
 ('mdm_windows.push_channels','failures'),
 ('mdm_windows.push_channels','status'),
 ('mdm_windows.push_channels','outcome'),

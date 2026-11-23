@@ -56,6 +56,9 @@ pub struct Channels {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
+    ExternalCalls {
+        settings: crate::background::ExternalCalls,
+    },
     Telemetry {
         settings: Box<crate::telemetry::Config>,
     },
@@ -792,6 +795,13 @@ async fn apply_change(
     change: &Change,
 ) -> Result<()> {
     match change {
+        Change::ExternalCalls { settings } => {
+            if tenant.is_some() {
+                return Err(Error::Input);
+            }
+            settings.compile().map_err(super::capacity_error)?;
+            runtime["background"]["external_calls"] = json!(settings);
+        }
         Change::Telemetry { settings } => {
             if tenant.is_some() {
                 return Err(Error::Input);

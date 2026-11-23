@@ -277,7 +277,7 @@ class Environment:
             sql += source.read_text()
         sql += "GRANT rss_tmsg_relay TO da_owner;"
         for role in ('mdm_policy_runtime','mdm_resource_runtime','mdm_software_release_runtime','mdm_group_runtime',
-                     'mdm_inventory_runtime','mdm_scope_runtime','mdm_software_runtime','mdm_content_runtime','mdm_telemetry_runtime','mdm_scheduler_runtime','mdm_command_runtime','mdm_software_driver','mdm_webhook_operator','mdm_scope_group_consumer','mdm_asset_ingress_consumer'):
+                     'mdm_inventory_runtime','mdm_scope_runtime','mdm_software_runtime','mdm_content_runtime','mdm_telemetry_runtime','mdm_scheduler_runtime','mdm_wns_runtime','mdm_command_runtime','mdm_software_driver','mdm_webhook_operator','mdm_scope_group_consumer','mdm_asset_ingress_consumer'):
             sql += f"ALTER ROLE {role} LOGIN PASSWORD 'runtime-fixture';"
         for role, password in [('mdm_identity_runtime','identity-runtime-fixture'),('mdm_identity_maintenance','identity-maintenance-fixture'),('mdm_tenant_registry','tenant-registry-fixture'),('mdm_identity_provisioning','identity-provisioning-fixture')]:
             sql += f"ALTER ROLE {role} LOGIN PASSWORD '{password}';"
@@ -396,7 +396,7 @@ class Environment:
         config['identity']['database']=database(runtime,'mdm_identity_runtime')
         config['command_database']=database(runtime,'mdm_command_runtime')
         config['webhooks']['recovery_database']=database(runtime,'mdm_webhook_operator')
-        for owner in ('inventory','scope','policy','resource','software','content','telemetry','scheduler'):
+        for owner in ('inventory','scope','policy','resource','software','content','telemetry','scheduler','wns'):
             config['business_databases'][owner]=database(runtime,'mdm_'+owner+'_runtime')
         config['publication']['database']=database(runtime,'mdm_software_driver')
         config['scope_group_database']=database(runtime,'mdm_scope_group_consumer')
