@@ -435,6 +435,28 @@ pub(super) async fn verify(
         "principal":owner.principal,"account":creation,"policy":policy.id}),
     ))
     .await?;
+    let queued: da::AccountOffer = material::success(next().await?).await?;
+    assert_eq!(queued.binding_id, pending_binding);
+    let revoked=sqlx::query("DELETE FROM rss_da.authorization_rules WHERE tenant_id=$1 AND document::text LIKE '%' || $2 || '%'")
+        .bind(r.tenant).bind(owner.principal.to_string()).execute(&c.operator).await?.rows_affected();
+    assert_eq!(revoked, 1);
+    let denied = da::AccountEvent {
+        event_id: Uuid::new_v4(),
+        attempt_id: queued.attempt_id,
+        definition_digest: queued.definition_digest,
+        event: da::AccountObservation::Received,
+    };
+    assert_eq!(
+        peer.post(format!(
+            "{base}/account-operations/{}/events",
+            queued.task_id
+        ))
+        .json(&denied)
+        .send()
+        .await?
+        .status(),
+        403
+    );
     let remover = Manager::new(c, client).await?;
     let cancellation = Uuid::new_v4();
     let remove = access::Change {
