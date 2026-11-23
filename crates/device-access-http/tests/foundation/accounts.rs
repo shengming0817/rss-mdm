@@ -128,13 +128,13 @@ pub(super) async fn verify(
     )?;
     rss_mdm_recovery_credentials::Protection::select_on(DA, &mut tx, r.tenant, recipient.id())
         .await?;
-    let policy = rss_mdm_policy_postgres::device_access::Publication {
+    let policy = rss_mdm_agent_wire::da::Publication {
         id: Uuid::new_v4(),
         version: Uuid::new_v4(),
         revision: 1,
         managed_fields: vec![],
         enabled: true,
-        target: rss_mdm_policy_postgres::device_access::Target::Device { device: r.device },
+        target: rss_mdm_agent_wire::da::Target::Device { device: r.device },
         configuration: w::AccessConfiguration {
             self_enrollment: false,
             enabled: true,

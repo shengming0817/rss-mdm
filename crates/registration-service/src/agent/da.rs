@@ -557,7 +557,7 @@ impl RegistrationService {
         }
         tx.commit().await.map_err(db)?;
         a.bind_scope(binding).map_err(|_| Error::Unauthorized)?;
-        a.identify_device(&receipt.device);
+        a.target_device(&receipt.device);
         Ok(receipt)
     }
 }

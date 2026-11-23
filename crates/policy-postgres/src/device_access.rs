@@ -1,7 +1,7 @@
 //! Minimal DA configuration publications in the existing Policy provider.
 //! These publications have no Scope identity or Group backend dependency.
+use rss_mdm_agent_wire::da::Publication;
 use rss_mdm_agent_wire::da::{ConfigurationField, FieldAuthority, PolicyAuthority};
-pub use rss_mdm_agent_wire::da::{Publication, Target};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, Row};
 use std::collections::BTreeMap;

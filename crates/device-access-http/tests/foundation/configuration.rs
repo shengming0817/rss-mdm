@@ -97,7 +97,7 @@ pub async fn reject_account_change(
     c: &Context,
     m: &material::Material,
     device: &rss_mdm_agent_wire::DeviceId,
-    publication: &policy::Publication,
+    publication: &da::Publication,
 ) -> Result<()> {
     let token = material::device_administrator(c, device).await?;
     let actor = c
@@ -204,7 +204,7 @@ pub async fn verify_sources(
     base: &str,
     token: &str,
     actor: &AuthorizedPrincipal,
-    publication: &mut policy::Publication,
+    publication: &mut da::Publication,
     observation: &mut rss_mdm_device_access::deployment::Observation,
     ordinary: &da::SignedConfiguration,
 ) -> Result<()> {
@@ -508,7 +508,7 @@ pub async fn verify_sources(
         },
     )
     .await?;
-    observation.configuration = managed;
+    observation.configuration = managed.clone();
     observation.policy_version = publication.version;
     observation.sequence += 1;
     material::empty(
@@ -560,6 +560,30 @@ pub async fn verify_sources(
     let restored = diagnostic(client, &management, token, &observation.device).await?;
     assert_eq!(restored["evidence"], "verified");
     assert_eq!(restored["resolution"]["fields"][0]["locked"], true);
+    // Replay the old carrier after the new lock is established; its higher observation
+    // sequence cannot replace the remembered artifact with a pre-release revision.
+    let active = std::mem::replace(&mut observation.configuration, managed);
+    observation.sequence += 1;
+    material::empty(
+        client
+            .post(&url)
+            .json(&business::signed(observation)?)
+            .send()
+            .await?,
+    )
+    .await?;
+    let replay = diagnostic(client, &management, token, &observation.device).await?;
+    assert_eq!(replay["resolution"]["blocked"], "read_failed");
+    observation.configuration = active;
+    observation.sequence += 1;
+    material::empty(
+        client
+            .post(&url)
+            .json(&business::signed(observation)?)
+            .send()
+            .await?,
+    )
+    .await?;
     Ok(())
 }
 
@@ -569,14 +593,14 @@ pub async fn verify_override(
     client: &reqwest::Client,
     token: &str,
     observation: &rss_mdm_device_access::deployment::Observation,
-    device_policy: &policy::Publication,
+    device_policy: &da::Publication,
     base: &str,
 ) -> Result<()> {
     use rss_mdm_device_access::deployment::{ConfigurationDeployment, ConfigurationReadback};
     use rss_mdm_device_access_postgres::configuration::Change;
     let management = c.management_base();
     let read:serde_json::Value=sqlx::query_scalar("SELECT definition FROM rss_da.policies WHERE tenant_id=$1::uuid AND definition#>>'{target,kind}'='tenant_default'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
-    let mut default: policy::Publication = serde_json::from_value(read)?;
+    let mut default: da::Publication = serde_json::from_value(read)?;
     default.managed_fields = vec![da::ConfigurationField::Mac];
     default.configuration = device_policy.configuration.clone();
     let (separate, peer) = super::activate_grant(
@@ -595,7 +619,7 @@ pub async fn verify_override(
     target.id = Uuid::new_v4();
     target.version = Uuid::new_v4();
     target.revision = 1;
-    target.target = policy::Target::Device {
+    target.target = da::Target::Device {
         device: separate.device,
     };
     target.managed_fields.clear();
@@ -611,7 +635,7 @@ pub async fn verify_override(
         .principal
         .as_uuid();
     let (cookie, csrf) = super::credentials::login(c, client, principal).await?;
-    let _: policy::Publication = material::success(
+    let _: da::Publication = material::success(
         client
             .post(format!(
                 "{}/api/v1/tenants/{}/device-access/configurations",
@@ -642,7 +666,7 @@ pub async fn verify_override(
         },
     )
     .await?;
-    let export = |p: &policy::Publication, delivery| {
+    let export = |p: &da::Publication, delivery| {
         client
             .post(format!("{management}/configurations"))
             .bearer_auth(token)

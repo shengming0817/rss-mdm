@@ -11,7 +11,7 @@ use rss_mdm_task_trust::configuration::ConfigurationService;
 #[derive(serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Diagnostics {
-    pub publication: Option<policy::Publication>,
+    pub publication: Option<da::Publication>,
     pub managed_state: da::SourceState,
     pub evidence: Option<da::EvidenceLevel>,
     pub resolution: Resolution,
@@ -70,7 +70,7 @@ impl Service {
         self.read_with_session(p, (self, signing, authorities, p, device), |ctx, c| Box::pin(async move {
             let (service, signing, authorities, p, device) = *ctx;
             let tenant = tenant(p)?;
-            authorize(c, p, &policy::Target::Device { device: *device }, false, false).await?;
+            authorize(c, p, &da::Target::Device { device: *device }, false, false).await?;
             endpoints::lock_da_in(c, p.tenant_id(), device).await?;
             let anchor = endpoints::current_da_in(c, p.tenant_id(), device).await?.ok_or(Error::NotFound)?;
             policy::lock_publications_on(c, tenant).await.map_err(fault)?;

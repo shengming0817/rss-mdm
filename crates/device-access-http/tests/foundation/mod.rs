@@ -258,11 +258,11 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .await?,
     )
     .await?;
-    let publication = rss_mdm_policy_postgres::device_access::Publication {
+    let publication = rss_mdm_agent_wire::da::Publication {
         id: Uuid::new_v4(),
         version: Uuid::new_v4(),
         revision: 1,
-        target: rss_mdm_policy_postgres::device_access::Target::TenantDefault,
+        target: rss_mdm_agent_wire::da::Target::TenantDefault,
         enabled: true,
         managed_fields: vec![],
         configuration: serde_json::from_value(
@@ -276,7 +276,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     };
     let (cookie, csrf) =
         credentials::login(&c, &client, Uuid::parse_str(proof.principal_id())?).await?;
-    let published: rss_mdm_policy_postgres::device_access::Publication = material::success(
+    let published: rss_mdm_agent_wire::da::Publication = material::success(
         client
             .post(format!(
                 "{}/api/v1/tenants/{}/device-access/configurations",
@@ -295,7 +295,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         "{management}/admin/configuration-operations/{}",
         change.operation_id
     );
-    let recovered: rss_mdm_policy_postgres::device_access::Publication = material::success(
+    let recovered: rss_mdm_agent_wire::da::Publication = material::success(
         client
             .get(receipt_url)
             .header("cookie", cookie)
@@ -475,6 +475,11 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .status(),
         403
     );
+    let held: da::CurrentConfiguration =
+        material::success(peer.get(format!("{base}/configuration")).send().await?).await?;
+    assert_eq!(held.state, da::SourceState::Invalid);
+    assert!(held.artifact.is_none());
+    assert!(held.authorities.iter().any(|a| a.policy == second.policy));
     // Current trust and recovery remain available through rotation.
     let current: da::ConfigurationTrust = material::success(
         peer.get(format!("{base}/configuration-trust"))

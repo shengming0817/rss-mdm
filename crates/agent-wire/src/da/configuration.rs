@@ -72,7 +72,17 @@ pub struct PolicyAuthority {
     /// Disabling a publication suspends use without releasing its fields.
     pub enabled: bool,
     /// Fields ever granted by this policy. Only an explicit release clears an existing lock.
+    #[schemars(schema_with = "field_authorities_schema")]
     pub fields: std::collections::BTreeMap<ConfigurationField, FieldAuthority>,
+}
+
+fn field_authorities_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let mut schema = <std::collections::BTreeMap<ConfigurationField, FieldAuthority> as schemars::JsonSchema>::json_schema(generator);
+    schema.insert(
+        "propertyNames".into(),
+        generator.subschema_for::<ConfigurationField>().to_value(),
+    );
+    schema
 }
 
 impl PolicyAuthority {

@@ -149,7 +149,7 @@ pub async fn verify(
     client: &reqwest::Client,
     base: &str,
 ) -> Result<()> {
-    use rss_mdm_policy_postgres::device_access::{Publication, Target};
+    use rss_mdm_agent_wire::da::{Publication, Target};
     let business = assemble(c, m)?;
     let token = material::administrator(c)
         .await

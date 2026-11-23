@@ -293,6 +293,9 @@
             "$ref": "#/$defs/FieldAuthority"
           },
           "description": "Fields ever granted by this policy. Only an explicit release clears an existing lock.",
+          "propertyNames": {
+            "$ref": "#/$defs/ConfigurationField"
+          },
           "type": "object"
         },
         "policy": {

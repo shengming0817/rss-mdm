@@ -249,9 +249,7 @@ async fn list(
     CollectionResponse<
         Json<
             rss_mdm_query::Page<
-                rss_mdm_query::directory::Projection<
-                    rss_mdm_policy_postgres::device_access::Publication,
-                >,
+                rss_mdm_query::directory::Projection<rss_mdm_agent_wire::da::Publication>,
             >,
         >,
     >,
@@ -275,7 +273,7 @@ async fn detail(
     State(s): State<Arc<crate::management::Services>>,
     Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
     Path((_tenant, id)): Path<(Uuid, Uuid)>,
-) -> Result<Json<rss_mdm_policy_postgres::device_access::Publication>, BusinessError> {
+) -> Result<Json<rss_mdm_agent_wire::da::Publication>, BusinessError> {
     Ok(Json(s.business.configuration(&auth.proof, id).await?))
 }
 async fn versions(
@@ -352,7 +350,7 @@ async fn publication_operation(
     State(s): State<Arc<crate::management::Services>>,
     Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
     Path((_tenant, id)): Path<(Uuid, Uuid)>,
-) -> Result<Json<rss_mdm_policy_postgres::device_access::Publication>, BusinessError> {
+) -> Result<Json<rss_mdm_agent_wire::da::Publication>, BusinessError> {
     Ok(Json(
         s.business.publication_operation(&auth.proof, id).await?,
     ))

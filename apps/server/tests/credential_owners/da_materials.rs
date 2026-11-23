@@ -98,12 +98,12 @@ pub(super) async fn verify(
         enabled: true,
         role: None,
     };
-    let publication = rss_mdm_policy_postgres::device_access::Publication {
+    let publication = rss_mdm_agent_wire::da::Publication {
         managed_fields: vec![],
         id: Uuid::new_v4(),
         revision: 1,
         version: Uuid::new_v4(),
-        target: rss_mdm_policy_postgres::device_access::Target::Device { device: da.device },
+        target: rss_mdm_agent_wire::da::Target::Device { device: da.device },
         enabled: true,
         configuration: configuration.clone(),
     };

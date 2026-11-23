@@ -54,7 +54,7 @@ async fn configuration(
     Extension(a): Extension<RequestAudit>,
     CeremonyHeaders(headers): CeremonyHeaders,
     body: Body<Change>,
-) -> Result<Json<rss_mdm_policy_postgres::device_access::Publication>, Error> {
+) -> Result<Json<rss_mdm_agent_wire::da::Publication>, Error> {
     Ok(Json(
         s.registration
             .publish_configuration(

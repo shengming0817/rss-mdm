@@ -1,10 +1,11 @@
 //! Publication authorization, exact operation recovery and current-device distribution.
 use super::Change;
 use crate::{Error, Service, operations::Operation, service::Change as Changed};
+use rss_mdm_agent_wire::da::{Publication, Target};
 use rss_mdm_agent_wire::{da, runtime::Secret};
 use rss_mdm_audit_integration::{AuditIntent, RequestAudit};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
-use rss_mdm_policy_postgres::device_access::{self as policy, Publication, Target};
+use rss_mdm_policy_postgres::device_access as policy;
 use rss_mdm_registration_service::{DevicePrincipal, device::endpoints};
 use rss_mdm_task_trust::configuration::ConfigurationService;
 use serde::{Deserialize, Serialize};
@@ -364,19 +365,38 @@ impl Service {
                             .await?
                     }
                 };
-                if let Some(value) = &artifact {
-                    let config = signing.admit_device_on(c, p, value).await?;
-                    if config.id != publication.id
-                        || config.version != publication.version
-                        || config.delivery != da::DeliveryPermission::Da
-                    {
-                        return Err(Error::Conflict);
+                if let Some(value) = artifact {
+                    let admitted = signing
+                        .admit_device_on(c, p, &value)
+                        .await
+                        .map_err(Error::from)
+                        .and_then(|config| {
+                            if config.id == publication.id
+                                && config.version == publication.version
+                                && config.revision == publication.revision as u64
+                                && config.delivery == da::DeliveryPermission::Da
+                            {
+                                Ok(())
+                            } else {
+                                Err(Error::Conflict)
+                            }
+                        });
+                    match admitted {
+                        Ok(()) => {
+                            current.state = da::SourceState::Present;
+                            current.artifact = Some(value);
+                        }
+                        Err(Error::Forbidden | Error::Conflict | Error::Malformed)
+                            if id.is_none() =>
+                        {
+                            // A withheld backend candidate does not hide a protected field release.
+                            // Only the artifact may fail admission; reconfirm the caller itself.
+                            crate::reports::admit(c, service, p, None).await?;
+                            current.state = da::SourceState::Invalid;
+                        }
+                        Err(error) => return Err(error),
                     }
                 }
-                if artifact.is_some() {
-                    current.state = da::SourceState::Present;
-                }
-                current.artifact = artifact;
                 Ok(Changed {
                     value: current,
                     replay: false,
