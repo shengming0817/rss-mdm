@@ -82,6 +82,7 @@ pub(super) async fn verify(
     agent: &DevicePrincipal,
     da: &DaRegistration,
     person: Uuid,
+    management: &pg::Service,
 ) -> Result<()> {
     let tenant = Uuid::parse_str(&c.tenant.to_string())?;
     let account = w::AccessAccount::Windows {
@@ -131,7 +132,14 @@ pub(super) async fn verify(
         configuration,
         received_revision: None,
         applied_revision: None,
-        account_delivery: None,
+        account_delivery: Some(access::account_delivery::Target::Agent {
+            agent: pg::delivery::Agent {
+                installation: agent.installation(),
+                device: *agent.device(),
+            },
+            epoch: agent.epoch(),
+            revision: 1,
+        }),
         deployment_application: None,
         effect: None,
         applied_windows: None,
@@ -329,15 +337,10 @@ pub(super) async fn verify(
     .await
     .context("recover access and credential runs using their actual owners")?;
     let accepted = material_count(c, tenant).await?;
-    let mut setup = seed(c).await?;
-    sqlx::query(
-        "UPDATE rss_da.agent_delivery SET enabled=false WHERE tenant_id=$1 AND da_device=$2",
-    )
-    .bind(tenant)
-    .bind(da.device.into_uuid())
-    .execute(&mut *setup)
+    Box::pin(super::da_authorization::set_delivery(
+        c, management, agent, da, 1, false,
+    ))
     .await?;
-    setup.commit().await?;
     let mut tx = transaction(&pool, tenant).await?;
     assert!(matches!(
         materials.escrow(&mut tx, &task, &escrow).await,
@@ -353,15 +356,21 @@ pub(super) async fn verify(
     ));
     tx.rollback().await?;
     assert_eq!(material_count(c, tenant).await?, accepted);
-    let mut setup = seed(c).await?;
-    sqlx::query(
-        "UPDATE rss_da.agent_delivery SET enabled=true WHERE tenant_id=$1 AND da_device=$2",
-    )
-    .bind(tenant)
-    .bind(da.device.into_uuid())
-    .execute(&mut *setup)
+    Box::pin(super::da_authorization::set_delivery(
+        c, management, agent, da, 2, true,
+    ))
     .await?;
-    setup.commit().await?;
+    let mut tx = transaction(&pool, tenant).await?;
+    assert!(matches!(
+        materials.escrow(&mut tx, &task, &escrow).await,
+        Err(pg::Error::Forbidden)
+    ));
+    tx.rollback().await?;
+    let fresh = Box::pin(super::da_authorization::unbind(c, management, &binding)).await?;
+    assert!(
+        matches!(fresh.account_delivery,Some(access::account_delivery::Target::Agent{agent:target,epoch,revision:3})
+        if target.device==*agent.device() && target.installation==agent.installation() && epoch==agent.epoch())
+    );
     pool.close().await;
     Ok(())
 }

@@ -452,11 +452,19 @@ impl Service {
                     if old.as_ref().map_or(0, |b| b.revision) != input.expected_revision
                         || old.as_ref().is_some_and(|b| {
                             b.device != **device
-
-
                         })
                     {
                         return Err(Error::Conflict);
+                    }
+                    if let Some(prior)=old.as_ref(){
+                        if prior.state==State::Revoked && prior.account.is_none(){
+                            storage::require_retired_in(c,prior).await?;
+                        }
+                        if !matches!(input.action,Action::Unbind{..}|Action::Offboard{..}) {
+                            rss_mdm_recovery_credentials::tasks::device::require_rotation_settled(
+                                c,tenant,**device,prior.id,prior.generation
+                            ).await.map_err(crate::recovery::error)?;
+                        }
                     }
                     let mut value = match &input.action {
                         Action::Put { person, intent, policy } | Action::Reinstate { person, intent, policy } => {

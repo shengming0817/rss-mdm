@@ -598,6 +598,34 @@ impl Run {
     }
 }
 
+/// Called under the device lock before a binding revision invalidates the original rotation.
+pub async fn require_rotation_settled(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    device: DeviceId,
+    binding: Uuid,
+    generation: i64,
+) -> Result<(), Error> {
+    let pending: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT FROM rss_da.credential_runs WHERE tenant_id=$1 AND device=$2
+         AND da_execution#>>'{request,action}'='rotate'
+         AND da_execution#>>'{request,bindingId}'=$3
+         AND (da_execution#>>'{request,bindingGeneration}')::bigint=$4
+         AND state IN ('\"pending_application\"','\"reconciling\"'))",
+    )
+    .bind(tenant)
+    .bind(device.into_uuid())
+    .bind(binding.to_string())
+    .bind(generation)
+    .fetch_one(c)
+    .await?;
+    if pending {
+        Err(Error::Conflict)
+    } else {
+        Ok(())
+    }
+}
+
 /// The authenticated device confirmed removal of this binding and stopped its older factor journals.
 pub async fn retire_unbound(
     c: &mut PgConnection,

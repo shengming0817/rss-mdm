@@ -125,7 +125,7 @@ async fn task_binding(
         .map_err(|_| Error::Forbidden)?;
         b.device
     } else {
-        crate::delivery::for_binding_on(c, &b)
+        access::account_delivery::agent(c, &b)
             .await
             .map_err(custody_error)?
             .ok_or(Error::Forbidden)?

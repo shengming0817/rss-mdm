@@ -1046,6 +1046,14 @@
       "format": "uuid",
       "type": "string"
     },
+    "issuedExpiresAt": {
+      "description": "Read-only expiry originally issued for this event, including after expiry or withdrawal.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "permit": {
       "anyOf": [
         {

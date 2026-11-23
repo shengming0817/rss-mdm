@@ -98,7 +98,7 @@ pub(super) async fn authorize(
     c: &Context,
     agent: &DevicePrincipal,
     da: &DaRegistration,
-) -> Result<Uuid> {
+) -> Result<()> {
     let pool = c.inputs.pool(&c.profile, "da_access").await?;
     let runtime = crate::identity::open_runtime(
         &c.inputs.database(&c.profile, "da_access"),
@@ -251,9 +251,92 @@ pub(super) async fn authorize(
     let resolved = delivery::resolve_on(&mut tx, agent).await?;
     assert_eq!(*resolved.device(), da.device);
     tx.rollback().await?;
+    Box::pin(super::da_materials::verify(
+        c,
+        agent,
+        da,
+        Uuid::parse_str(actor.principal_id())?,
+        &service,
+    ))
+    .await?;
     drop(service);
     identity_runtime.close().await;
     runtime.close().await;
     pool.close().await;
-    Ok(Uuid::parse_str(actor.principal_id())?)
+    Ok(())
+}
+
+async fn manager(c: &Context) -> Result<(Account, AuthorizedPrincipal)> {
+    let account = c.account(&[Permission::AccountWrite]).await?;
+    let store = c.access().for_product(StorageProfile::Da);
+    let actor = rss_mdm_authorization_service::session::SessionAuthority::new(c.authority.clone())
+        .authenticate(c.execution(), &store, account.credential()?, deadline())
+        .await?;
+    Ok((account, actor))
+}
+pub(super) async fn set_delivery(
+    c: &Context,
+    service: &pg::Service,
+    agent: &DevicePrincipal,
+    da: &DaRegistration,
+    revision: i64,
+    enabled: bool,
+) -> Result<()> {
+    let (account, actor) = Box::pin(manager(c)).await?;
+    let change = delivery::Authorization {
+        operation_id: Uuid::new_v4(),
+        da: da.clone(),
+        agent: delivery::Agent {
+            device: *agent.device(),
+            installation: agent.installation(),
+        },
+        expected_revision: revision,
+        enabled,
+    };
+    let grant = Box::pin(proof(c, &account, change.step_up_context(&actor)?)).await?;
+    assert_eq!(
+        service
+            .authorize_agent_delivery(&actor, &change, &grant, &audit(c))
+            .await?,
+        revision + 1
+    );
+    Ok(())
+}
+pub(super) async fn unbind(
+    c: &Context,
+    service: &pg::Service,
+    b: &pg::device_access::Binding,
+) -> Result<pg::device_access::Binding> {
+    let (account, actor) = Box::pin(manager(c)).await?;
+    let change = pg::device_access::Change {
+        operation_id: Uuid::new_v4(),
+        expected_revision: b.revision,
+        action: pg::device_access::Action::Unbind {
+            disposition: rss_mdm_agent_wire::runtime::AccessAccountDisposition::Keep,
+        },
+    };
+    let grant = Box::pin(proof(
+        c,
+        &account,
+        change.step_up_context(&actor, &b.device, b.id, &Default::default())?,
+    ))
+    .await?;
+    let admission = pg::configuration::Admission {
+        installation: b.person.instance,
+        agent: None,
+        platform: None,
+        evidence: Arc::new(pg::evidence::Authorities::new(vec![])?),
+        broker_query: rss_mdm_agent_channel::enrollment_facts::DA_BROKER_QUERY,
+    };
+    Ok(Box::pin(service.change_device_access(
+        &actor,
+        &b.device,
+        b.id,
+        &change,
+        Some(&grant),
+        &Default::default(),
+        &admission,
+        &audit(c),
+    ))
+    .await?)
 }

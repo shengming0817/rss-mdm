@@ -696,6 +696,35 @@
         },
         {
           "additionalProperties": false,
+          "description": "The original create journal was stopped and proves it left no local account.",
+          "properties": {
+            "kind": {
+              "const": "create_absent",
+              "type": "string"
+            },
+            "value": {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "description": "Exact issued permit after its execution window closed.",
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Stable local account established by the device.",
           "properties": {
             "kind": {

@@ -50,6 +50,12 @@ pub enum AccountObservation {
         #[serde(rename = "expiresAt")]
         expires_at: i64,
     },
+    /// The original create journal was stopped and proves it left no local account.
+    CreateAbsent {
+        /// Exact issued permit after its execution window closed.
+        #[serde(rename = "expiresAt")]
+        expires_at: i64,
+    },
     /// Stable local account established by the device.
     Prepared(w::AccessPrepared),
     /// Encrypted RSS factor recovery material.
@@ -64,6 +70,8 @@ pub enum AccountObservation {
 pub struct AccountSettlement {
     /// The settled event.
     pub event_id: Uuid,
+    /// Read-only expiry originally issued for this event, including after expiry or withdrawal.
+    pub issued_expires_at: Option<i64>,
     /// Bounded Start permission, returned only for a current received event.
     pub permit: Option<w::AccessTaskSpec>,
     /// Exact custody acknowledgement for encrypted material.

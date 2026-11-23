@@ -92,6 +92,7 @@ async fn observe(
     let retry: da::AccountSettlement = material::success(send().await?).await?;
     assert_eq!(retry.permit, first.permit);
     assert_eq!(retry.receipt, first.receipt);
+    assert_eq!(retry.issued_expires_at, first.issued_expires_at);
     assert_eq!(retry.event_id, event.event_id);
     Ok(first)
 }
@@ -213,6 +214,46 @@ pub(super) async fn verify(
         .permit
         .context("current Start")?;
     task.validate()?;
+    let prepared = w::AccessPrepared {
+        binding_id: binding,
+        binding_generation: task.binding_generation,
+        revision: task.revision,
+        definition_digest: task.definition_digest,
+        account: account.clone(),
+    };
+    observe(
+        &peer,
+        base,
+        &offer,
+        da::AccountObservation::Prepared(prepared.clone()),
+    )
+    .await?;
+    let duplicate = da::AccountEvent {
+        event_id: Uuid::new_v4(),
+        attempt_id: offer.attempt_id,
+        definition_digest: offer.definition_digest,
+        event: da::AccountObservation::Prepared(prepared),
+    };
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_da.account_events WHERE run=$1")
+        .bind(offer.task_id)
+        .fetch_one(&c.operator)
+        .await?;
+    assert_eq!(
+        peer.post(format!(
+            "{base}/account-operations/{}/events",
+            offer.task_id
+        ))
+        .json(&duplicate)
+        .send()
+        .await?
+        .status(),
+        409
+    );
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_da.account_events WHERE run=$1")
+        .bind(offer.task_id)
+        .fetch_one(&c.operator)
+        .await?;
+    assert_eq!(before, after);
     let read: Value = material::success(progress(op, &admin.cookie).await?).await?;
     assert_eq!(read["received"], true);
     assert!(read["effect"].is_null());
@@ -337,6 +378,25 @@ pub(super) async fn verify(
             .await?,
         )
         .await?;
+        if action == Action::Rotate {
+            let manager = Manager::new(c, client).await?;
+            let reset = access::Change {
+                operation_id: Uuid::new_v4(),
+                expected_revision: 1,
+                action: access::Action::ResetFactors,
+            };
+            let denied = Box::pin(manager.change(
+                c,
+                client,
+                &r,
+                binding,
+                reset,
+                json!({"kind":"reset_factors"}),
+            ))
+            .await
+            .unwrap_err();
+            assert!(denied.to_string().contains("HTTP 409"), "{denied:#}");
+        }
         let settled: da::CredentialSettlement = material::success(
             send(da::CredentialEvent::Applied {
                 attempt_id: spec.attempt_id,
@@ -400,7 +460,13 @@ pub(super) async fn verify(
             disposition: w::AccessAccountDisposition::Keep,
         },
     };
+    // The management rule was replaced after Start. An already-completed removal still settles.
+    assert_eq!(sqlx::query("UPDATE rss_da.authorization_rules SET revision=revision+1 WHERE tenant_id=$1 AND document::text LIKE '%' || $2 || '%'")
+        .bind(r.tenant).bind(cleanup.principal.to_string()).execute(&c.operator).await?.rows_affected(),1);
     observe(&peer, base, &offer, da::AccountObservation::Result(result)).await?;
+    let applied:i64=sqlx::query_scalar("SELECT (document->>'appliedRevision')::bigint FROM rss_da.bindings WHERE tenant_id=$1 AND id=$2")
+      .bind(r.tenant).bind(binding).fetch_one(&c.operator).await?;
+    assert_eq!(applied, permit.revision);
     let completed: Value = material::success(progress(unlink, &cleanup.cookie).await?).await?;
     assert_eq!(completed["cleanupPending"], false);
     assert_eq!(completed["execution"], "succeeded");
@@ -458,11 +524,18 @@ pub(super) async fn verify(
         403
     );
     let remover = Manager::new(c, client).await?;
+    // Offboarding also requires tenant Identity administration.
+    let grant = serde_json::to_value(rss_mdm_authorization_service::Grant {
+        operation: rss_mdm_authorization_service::Permission::IdentityAccountsManage,
+        scope: rss_mdm_authorization_service::Scope::Tenant,
+    })?;
+    sqlx::query("UPDATE rss_da.authorization_rules SET document=jsonb_set(document,'{grants}',(document->'grants') || jsonb_build_array($3::jsonb)) WHERE tenant_id=$1 AND document::text LIKE '%' || $2 || '%'")
+       .bind(r.tenant).bind(remover.principal.to_string()).bind(grant).execute(&c.operator).await?;
     let cancellation = Uuid::new_v4();
     let remove = access::Change {
         operation_id: cancellation,
         expected_revision: 1,
-        action: access::Action::Unbind {
+        action: access::Action::Offboard {
             disposition: w::AccessAccountDisposition::Keep,
         },
     };
@@ -472,16 +545,232 @@ pub(super) async fn verify(
         &r,
         pending_binding,
         remove,
-        json!({"kind":"unbind","disposition":"keep"}),
+        json!({"kind":"offboard","disposition":"keep"}),
     ))
     .await?;
     let cancelled: Value =
         material::success(progress(cancellation, &remover.cookie).await?).await?;
     assert_eq!(cancelled["cleanupPending"], false);
     assert_eq!(cancelled["received"], false);
+    let lifecycle: Value = material::success(
+        client
+            .get(format!(
+                "{management}/operations/{cancellation}/offboarding"
+            ))
+            .header("cookie", &remover.cookie)
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(lifecycle["devices"][0]["phase"], "confirmed");
     assert_eq!(
         material::success::<Option<da::AccountOffer>>(next().await?).await?,
         None
     );
+    Box::pin(interrupted_create(c, client, &r, &peer, base, policy.id)).await
+}
+
+async fn interrupted_create(
+    c: &Context,
+    client: &reqwest::Client,
+    r: &da::Registration,
+    peer: &reqwest::Client,
+    base: &str,
+    policy: Uuid,
+) -> Result<()> {
+    let manager = Manager::new(c, client).await?;
+    let binding = Uuid::new_v4();
+    let person = rss_mdm_device_access::Person {
+        instance: r.service_id,
+        principal: manager.principal,
+    };
+    let intent = rss_mdm_device_access::AccountIntent::Create {
+        platform: w::TaskPlatform::Windows,
+        name: "journaluser".into(),
+    };
+    let put = |revision| access::Change {
+        expected_revision: revision,
+        operation_id: Uuid::new_v4(),
+        action: access::Action::Put {
+            person: person.clone(),
+            intent: intent.clone(),
+            policy,
+        },
+    };
+    let body = json!({"kind":"put","instance":person.instance,"principal":person.principal,"account":intent,"policy":policy});
+    Box::pin(manager.change(c, client, r, binding, put(0), body.clone())).await?;
+    let next = || peer.post(format!("{base}/account-operations/next")).send();
+    let offer: da::AccountOffer = material::success(next().await?).await?;
+    let ack = da::AccountEvent {
+        event_id: Uuid::new_v4(),
+        attempt_id: offer.attempt_id,
+        definition_digest: offer.definition_digest,
+        event: da::AccountObservation::Received,
+    };
+    let send = |event: &da::AccountEvent| {
+        peer.post(format!(
+            "{base}/account-operations/{}/events",
+            offer.task_id
+        ))
+        .json(event)
+        .send()
+    };
+    assert!(send(&ack).await?.status().is_success()); // Drop the entire Start response.
+    let expired = expire_permit(c, offer.task_id, ack.event_id).await?;
+    let replay: da::AccountSettlement = material::success(send(&ack).await?).await?;
+    assert_eq!(replay.issued_expires_at, Some(expired));
+    assert!(replay.permit.is_none());
+    let renewal = da::AccountEvent {
+        event_id: Uuid::new_v4(),
+        event: da::AccountObservation::NotStarted {
+            expires_at: expired,
+        },
+        ..ack.clone()
+    };
+    let renewed: da::AccountSettlement = material::success(send(&renewal).await?).await?;
+    assert!(renewed.permit.is_some());
+    let historical: da::AccountSettlement = material::success(send(&ack).await?).await?;
+    assert!(historical.permit.is_none());
+    assert_eq!(historical.issued_expires_at, Some(expired));
+    let renewed_expiry = expire_permit(c, offer.task_id, renewal.event_id).await?;
+    let remover = Manager::new(c, client).await?;
+    let unlink = Uuid::new_v4();
+    Box::pin(remover.change(
+        c,
+        client,
+        r,
+        binding,
+        access::Change {
+            expected_revision: 1,
+            operation_id: unlink,
+            action: access::Action::Unbind {
+                disposition: w::AccessAccountDisposition::Keep,
+            },
+        },
+        json!({"kind":"unbind","disposition":"keep"}),
+    ))
+    .await?;
+    let stale = Manager::new(c, client).await?;
+    let conflict = Box::pin(stale.change(c, client, r, binding, put(2), body.clone()))
+        .await
+        .unwrap_err();
+    assert!(conflict.to_string().contains("HTTP 409"), "{conflict:#}");
+    assert_eq!(
+        material::success::<da::AccountOffer>(next().await?).await?,
+        offer
+    );
+    let confirmation = da::AccountObservation::NotStarted {
+        expires_at: renewed_expiry,
+    };
+    assert!(
+        observe(peer, base, &offer, confirmation)
+            .await?
+            .permit
+            .is_none()
+    );
+    let progress: Value = material::success(
+        client
+            .get(format!(
+                "{}/api/v1/tenants/{}/devices/{}/device-access/operations/{unlink}/execution",
+                c.browser_origin, c.tenant, r.device
+            ))
+            .header("cookie", &remover.cookie)
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(progress["cleanupPending"], false);
+    assert!(progress["effect"].is_null());
+    assert!(
+        material::success::<Option<da::AccountOffer>>(next().await?)
+            .await?
+            .is_none()
+    );
+    let replacement = Manager::new(c, client).await?;
+    Box::pin(replacement.change(c, client, r, binding, put(2), body)).await?;
+    let fresh: da::AccountOffer = material::success(next().await?).await?;
+    assert_ne!(fresh.task_id, offer.task_id);
+    let start = observe(peer, base, &fresh, da::AccountObservation::Received).await?;
+    // Exercise the end of a renewal window. All earlier permits have been attested unused.
+    let expired = expire_permit(c, fresh.task_id, start.event_id).await?;
+    sqlx::query("UPDATE rss_da.access_runs SET da_journal=jsonb_set(da_journal,'{renewals}','64') WHERE id=$1")
+        .bind(fresh.task_id).execute(&c.operator).await?;
+    let released = observe(
+        peer,
+        base,
+        &fresh,
+        da::AccountObservation::NotStarted {
+            expires_at: expired,
+        },
+    )
+    .await?;
+    assert!(released.permit.is_none());
+    let resumed: da::AccountOffer = material::success(next().await?).await?;
+    assert_eq!(resumed.operation_id, fresh.operation_id);
+    assert_eq!(resumed.task_id, fresh.task_id);
+    assert_ne!(resumed.attempt_id, fresh.attempt_id);
+    let start = observe(peer, base, &resumed, da::AccountObservation::Received).await?;
+    let permit = start.permit.context("fresh issuance")?;
+    observe(
+        peer,
+        base,
+        &resumed,
+        da::AccountObservation::Result(w::AccessResult {
+            binding_id: binding,
+            binding_generation: permit.binding_generation,
+            revision: permit.revision,
+            definition_digest: permit.definition_digest,
+            effect: w::AccessEffect::Unknown,
+        }),
+    )
+    .await?;
+    let expired = expire_permit(c, resumed.task_id, start.event_id).await?;
+    let cleanup = Manager::new(c, client).await?;
+    Box::pin(cleanup.change(
+        c,
+        client,
+        r,
+        binding,
+        access::Change {
+            expected_revision: 3,
+            operation_id: Uuid::new_v4(),
+            action: access::Action::Unbind {
+                disposition: w::AccessAccountDisposition::Keep,
+            },
+        },
+        json!({"kind":"unbind","disposition":"keep"}),
+    ))
+    .await?;
+    let stopped = observe(
+        peer,
+        base,
+        &resumed,
+        da::AccountObservation::CreateAbsent {
+            expires_at: expired,
+        },
+    )
+    .await?;
+    assert!(stopped.permit.is_none());
+    assert!(
+        material::success::<Option<da::AccountOffer>>(next().await?)
+            .await?
+            .is_none()
+    );
     Ok(())
+}
+
+async fn expire_permit(c: &Context, task: Uuid, event: Uuid) -> Result<i64> {
+    // Advance this fixture's persisted permit timestamps across expiry without a five-minute sleep.
+    let mut tx = c.seed().await?;
+    let expired = now() - 1;
+    sqlx::query("UPDATE rss_da.access_runs SET da_journal=jsonb_set(jsonb_set(da_journal,'{start,expiresAt}',to_jsonb($2::bigint)),'{start,deadline}',to_jsonb($2::bigint)),state=jsonb_set(state,'{deadline}',to_jsonb($2::bigint)) WHERE id=$1")
+      .bind(task).bind(expired).execute(&mut *tx).await?;
+    sqlx::query("UPDATE rss_da.account_events SET permit_until=$2 WHERE run=$1 AND event=$3")
+        .bind(task)
+        .bind(expired)
+        .bind(event)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(expired)
 }
