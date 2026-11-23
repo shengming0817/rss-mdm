@@ -253,12 +253,12 @@ REVOKE ALL ON FUNCTION mdm_apple.scep_attempt_tenants(uuid,uuid),mdm_apple.scep_
 GRANT EXECUTE ON FUNCTION mdm_apple.scep_attempt_tenants(uuid,uuid),mdm_apple.scep_certificate_tenants(bytea) TO mdm_access;
 
 CREATE POLICY push_work_discovery ON mdm_apple.channels FOR SELECT TO mdm_owner USING(true);
-CREATE FUNCTION mdm_apple.push_work_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+CREATE FUNCTION mdm_apple.maintenance_work_scopes(after_tenant uuid) RETURNS TABLE(tenant_id uuid) LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  SELECT tenant_id FROM (
  (SELECT DISTINCT tenant_id FROM mdm_apple.channels WHERE state='active' AND (after_tenant IS NULL OR tenant_id>after_tenant) ORDER BY tenant_id LIMIT 32)
  UNION
  (SELECT DISTINCT tenant_id FROM mdm_apple.scep_attempts WHERE state='bound' AND (after_tenant IS NULL OR tenant_id>after_tenant) ORDER BY tenant_id LIMIT 32)
  ) work ORDER BY tenant_id LIMIT 32
 $$;
-REVOKE ALL ON FUNCTION mdm_apple.push_work_scopes(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_apple.push_work_scopes(uuid) TO mdm_access;
+REVOKE ALL ON FUNCTION mdm_apple.maintenance_work_scopes(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_apple.maintenance_work_scopes(uuid) TO mdm_access;

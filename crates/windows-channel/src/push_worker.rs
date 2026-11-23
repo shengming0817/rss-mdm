@@ -33,6 +33,8 @@ struct Wake {
     device: rss_mdm_agent_wire::DeviceId,
     revision: i64,
     uri: zeroize::Zeroizing<String>,
+    credential: [u8;32],
+    material_revision: Option<i64>,
 }
 fn audit(
     execution: rss_transactional_messaging::fence::ExecutionBinding,
@@ -77,8 +79,8 @@ async fn cycle(
     {
         return Err(Error::Conflict);
     }
-    let rows = sqlx::query("SELECT p.device, p.revision, CAST(EXTRACT(EPOCH FROM GREATEST(p.next_push, COALESCE(p.lease_until, p.next_push)) - clock_timestamp()) AS double precision) AS wait_seconds FROM mdm_windows.push_channels AS p INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (p.tenant_id, p.device) WHERE p.tenant_id = CAST($1 AS uuid) AND p.device = ANY($2) AND p.configuration = $3 AND p.attempt_until > clock_timestamp() AND (p.outcome IS NULL OR p.outcome IN ('accepted', 'retryable', 'unknown')) AND r.state = 'active' ORDER BY p.device")
-            .bind(tenant).bind(candidates.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).bind(push.configuration.as_slice()).fetch_all(&mut *read).await.map_err(db)?;
+    let rows = sqlx::query("SELECT p.device, p.revision, CAST(EXTRACT(EPOCH FROM GREATEST(p.next_push, COALESCE(p.lease_until, p.next_push)) - clock_timestamp()) AS double precision) AS wait_seconds FROM mdm_windows.push_channels AS p INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (p.tenant_id, p.device) WHERE p.tenant_id = CAST($1 AS uuid) AND p.device = ANY($2) AND p.configuration = $3 AND p.attempt_until > clock_timestamp() AND (p.outcome IS NULL OR p.outcome IN ('accepted', 'retryable', 'unknown') OR (p.outcome='rejected' AND p.material_revision IS DISTINCT FROM $4)) AND r.state = 'active' ORDER BY p.device")
+            .bind(tenant).bind(candidates.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).bind(push.configuration.as_slice()).bind(push.material_revision).fetch_all(&mut *read).await.map_err(db)?;
     read.rollback().await.map_err(db)?;
     for row in rows {
         if stop.is_cancelled() {
@@ -146,7 +148,7 @@ async fn attempt(
                 let (store,audit,eligibility,tenant,device,revision,id,configuration,material_revision)=*inputs;
                 let sealed=tx.with_connection_context(&mut (audit.binding()?,eligibility,tenant,device,revision,id,configuration,material_revision),|(execution,eligibility,tenant,device,revision,id,configuration,material_revision),c|Box::pin(async move {
                     if !eligibility.pending(*execution, c, device).await? { return Ok::<_,Error>(None) }
-                    sqlx::query_scalar::<_,Vec<u8>>("UPDATE mdm_windows.push_channels SET lease_id = $5, lease_until = clock_timestamp() + CAST('30 seconds' AS interval), settled_id = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND revision = $3 AND configuration = $4 AND attempt_until > clock_timestamp() AND next_push <= clock_timestamp() AND (lease_until IS NULL OR lease_until <= clock_timestamp()) AND (outcome IS NULL OR outcome IN ('accepted', 'retryable', 'unknown')) AND (CAST($6 AS bigint) IS NULL OR EXISTS (SELECT 1 FROM mdm_wns.versions AS w WHERE w.tenant_id = CAST($1 AS uuid) AND w.revision = $6 AND w.selected AND NOT w.revoked AND w.qualified_at IS NOT NULL)) RETURNING uri")
+                    sqlx::query_scalar::<_,Vec<u8>>("UPDATE mdm_windows.push_channels SET lease_id = $5, material_revision=$6, lease_until = clock_timestamp() + CAST('30 seconds' AS interval), settled_id = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND revision = $3 AND configuration = $4 AND attempt_until > clock_timestamp() AND next_push <= clock_timestamp() AND (lease_until IS NULL OR lease_until <= clock_timestamp()) AND (outcome IS NULL OR outcome IN ('accepted', 'retryable', 'unknown') OR (outcome='rejected' AND material_revision IS DISTINCT FROM $6)) AND EXISTS (SELECT FROM mdm_wns.versions w JOIN mdm_wns.heads h ON (h.tenant_id,h.desired_revision)=(w.tenant_id,w.revision) WHERE w.tenant_id=$1::uuid AND w.revision=$6 AND w.selected AND NOT w.revoked AND w.qualified_at IS NOT NULL AND mdm_wns.provider_available(w.sid_digest) FOR SHARE OF h,w) RETURNING uri")
                         .bind(*tenant).bind(device.into_uuid()).bind(*revision).bind(configuration.as_slice()).bind(*id).bind(*material_revision).fetch_optional(c).await.map_err(db)
                 })).await?;
                 if sealed.is_some() {
@@ -184,6 +186,8 @@ async fn attempt(
 
         revision,
         uri,
+        credential:push.credential(),
+        material_revision:push.material_revision,
     };
     let receipt = push.send(&wake.uri).await.unwrap_or(crate::push::Receipt {
         status: 0,
@@ -212,6 +216,15 @@ async fn settle(
             &budget.source_control(),(store,&audit,key,tenant,wake,status,outcome,retry_after),|inputs,tx|Box::pin(async move {
         let (store,audit,key,tenant,wake,status,outcome,retry_after)=*inputs;
         let changed=tx.with_connection_context(&mut (key,tenant,wake,status,outcome,retry_after),|(key,tenant,wake,status,outcome,retry_after),c|Box::pin(async move {
+            if *status == 406 {
+                let (seconds,date) = match *retry_after {
+                    Some(RetryAfter::Seconds(seconds)) => (i64::from(seconds),None),
+                    Some(RetryAfter::Date(at)) => (0,Some(at)),
+                    None => (30,None),
+                };
+                sqlx::query("INSERT INTO mdm_wns.provider_throttles(tenant_id,sid_digest,retry_at) VALUES($1::uuid,$2,GREATEST(clock_timestamp()+make_interval(secs=>$3),to_timestamp($4))) ON CONFLICT(tenant_id,sid_digest) DO UPDATE SET retry_at=GREATEST(mdm_wns.provider_throttles.retry_at,EXCLUDED.retry_at)")
+                    .bind(*tenant).bind(wake.credential.as_slice()).bind(seconds as f64).bind(date.map(|v|v as f64)).execute(&mut *c).await.map_err(db)?;
+            }
             let row=sqlx::query("SELECT revision, configuration, digest, lease_id, settled_id, failures, status, outcome FROM mdm_windows.push_channels WHERE tenant_id = CAST($1 AS uuid) AND device = $2 FOR UPDATE")
                 .bind(*tenant).bind(wake.device.into_uuid()).fetch_optional(&mut *c).await.map_err(db)?;
             let Some(row)=row else {return Ok::<_,Error>(None)};
@@ -254,7 +267,7 @@ async fn settle(
         })).await?;
         if let Some((changed,_))=changed {
 
-            let fact=Fact::observation(audit, &format!("windows-push:{}:settle",wake.id), 200, "success", None).and_then(|f|f.with_details(serde_json::json!({"status":status,"outcome":outcome,"channelRevision":wake.revision,"retryAfter":retry_after}))).map_err(Error::from)?;
+            let fact=Fact::observation(audit, &format!("windows-push:{}:settle",wake.id), 200, "success", None).and_then(|f|f.with_details(serde_json::json!({"status":status,"outcome":outcome,"channelRevision":wake.revision,"materialRevision":wake.material_revision,"retryAfter":retry_after}))).map_err(Error::from)?;
             (if !changed { Ok(()) } else { store.append(tx, &fact).await }).map_err(Error::from)?;audit.mark_commit_started();
         }
         Ok(changed.map_or(RECONCILE, |(_, wait)| wait))
@@ -271,35 +284,37 @@ async fn settle(
 pub fn registration(
     app: Arc<crate::HttpState>,
     eligibility: Arc<dyn WakeDemand>,
+    limits: rss_mdm_work_page::external::Limits,
     notify: Arc<tokio::sync::Notify>,
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) = rss_runtime::ManagedTask::prepare("windows-wns", Duration::from_secs(8));
     task.into_registration(move |stop| async move {
-        rss_mdm_work_page::run_grouped(
-            std::num::NonZeroUsize::new(2).expect("parallel WNS tenants"),
+        let result: Result<(), std::convert::Infallible> = rss_mdm_work_page::run_limited(
+            limits.total,
             RECONCILE,
             &stop,
             &notify,
             (
-                |(tenant, _)| tenant,
+                |key:&(Uuid,Uuid,Vec<u8>)| limits.quotas(key.0, key.2.clone(), (key.0,key.1)),
                 |after| {
                     let (app, eligibility) = (&app, &eligibility);
                     async move {
                         eligibility
-                            .candidates(&app.access.pool, after)
+                            .candidates(&app.access.pool, after.map(|(t,d,_)| (t,d)))
                             .await
-                            .map_err(|_| eprintln!("windows_push_discovery_failed"))
+                            .map_err(|_| {eprintln!("windows_push_discovery_failed");rss_mdm_work_page::Failure::Retry})
                     }
                 },
             ),
-            |(tenant, device)| {
-                let (app, eligibility, stop) = (app.clone(), eligibility.clone(), stop.clone());
+            |(tenant, device, credential), stop| {
+                let (app, eligibility) = (app.clone(), eligibility.clone());
                 async move {
                     let result = async {
                         let tenant =
                             TenantId::parse(&tenant.to_string()).map_err(|_| Error::Malformed)?;
                         let execution = app.execution(tenant);
                         let windows = app.windows(execution).await?;
+                        if !windows.push.as_ref().is_some_and(|push| push.credential().as_slice()==credential.as_slice()) { return Ok(Duration::ZERO); }
                         let device = rss_mdm_agent_wire::DeviceId::try_from(device)
                             .map_err(|_| Error::Malformed)?;
                         let scan = cycle(
@@ -326,13 +341,13 @@ pub fn registration(
                         eprintln!(
                             "{}",
                             serde_json::json!({"event":"windows_push_unavailable","tenant":tenant})
-                        )
+                        );rss_mdm_work_page::Failure::Retry
                     })
                 }
             },
             |_| {},
         )
         .await;
-        Ok(())
+        match result { Ok(())=>Ok(()), Err(never)=>match never {} }
     })
 }

@@ -52,6 +52,7 @@ CREATE TABLE mdm_windows.push_channels (
   , next_push timestamptz NOT NULL DEFAULT clock_timestamp()
   , lease_id uuid
   , lease_until timestamptz
+  , material_revision bigint CHECK (material_revision > 0)
   , settled_id uuid
   , failures integer NOT NULL DEFAULT 0 CHECK (failures BETWEEN 0 AND 6)
   , status integer CHECK (status BETWEEN 0 AND 599)

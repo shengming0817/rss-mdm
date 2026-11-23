@@ -17,7 +17,7 @@ impl WakeDemand for FailFirstPage {
         &'a self,
         pool: &'a sqlx::PgPool,
         after: Option<(Uuid, Uuid)>,
-    ) -> Pending<'a, Vec<(Uuid, Uuid)>> {
+    ) -> Pending<'a, Vec<(Uuid, Uuid, Vec<u8>)>> {
         if self.first.swap(false, Ordering::AcqRel) {
             return Box::pin(async {
                 Err(rss_mdm_windows_channel::Error::Unavailable(
@@ -175,7 +175,7 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
         &sibling,
         key,
         config,
-        b"https://fixture.notify.windows.com/held",
+        b"https://fixture.notify.windows.com/live",
     )
     .await?;
     let peer_config = selected_configuration(&other, key).await?;
@@ -237,6 +237,7 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
         push::registration(
             h.state.clone(),
             owner.clone(),
+            rss_mdm_work_page::external::Limits::new(8.try_into()?,7.try_into()?).unwrap(),
             Arc::new(tokio::sync::Notify::new()),
         )
         .critical(),
@@ -247,12 +248,12 @@ async fn failed_page_recovers_without_hint_and_invalid_channel_leaves_discovery(
         loop {
             let finished:bool=sqlx::query_scalar("SELECT outcome IS NOT DISTINCT FROM 'unregistered' FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND device=$2")
                 .bind(other.tenant.to_string()).bind(peer.device.into_uuid()).fetch_one(&other.operator).await?;
-            if finished { break; }
+            if finished && sqlx::query_scalar::<_,bool>("SELECT outcome IS NOT DISTINCT FROM 'unregistered' AND settled_id IS NOT NULL FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND device=$2").bind(&t).bind(sibling.device.into_uuid()).fetch_one(&c.operator).await? { break; }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         let states:(i64,i64)=sqlx::query_as("SELECT count(*) FILTER (WHERE lease_id IS NOT NULL),count(settled_id) FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid")
             .bind(&t).fetch_one(&c.operator).await?;
-        assert_eq!(states,(1,0), "B settles while one A device is still held and its sibling is queued");
+        assert_eq!(states,(1,1), "A2 and B settle while A1 still owns its lease");
         release.cancel();
         while discovered().await? {tokio::time::sleep(Duration::from_millis(20)).await;}
         let row:(String,i32,bool)=sqlx::query_as("SELECT outcome,status,settled_id IS NOT NULL FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND device=$2")

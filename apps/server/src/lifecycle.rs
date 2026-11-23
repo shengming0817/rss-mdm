@@ -786,7 +786,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                             .critical(),
                         );
                     }
-                    if app.apple.is_some(){launch.stage_task_with_token(rss_mdm_apple_channel::push::registration(app.apple_control.clone(),signals.handle(crate::worker_wake::Work::Apple)).critical());}
+                    if app.apple.is_some(){launch.stage_task_with_token(rss_mdm_apple_channel::push::registration(app.apple_control.clone(),background.external.apns,signals.handle(crate::worker_wake::Work::Apple)).critical());}
                     launch.stage_deferred_task_with_token(publications.registration().critical());
                     launch.stage_deferred_task_with_token(
                         device_work.registration(background.device, background.device_drain, signals.handle(crate::worker_wake::Work::Devices)),
@@ -824,7 +824,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                             .registration(signals.handle(crate::worker_wake::Work::Inventory))
                             .critical(),
                     );
-                    if app.windows.is_some(){launch.stage_task_with_token(rss_mdm_windows_channel::push::registration(app.windows_control.clone(),windows_business.clone(),signals.handle(crate::worker_wake::Work::WindowsPush)).critical());}
+                    if app.windows.is_some(){launch.stage_task_with_token(rss_mdm_windows_channel::push::registration(app.windows_control.clone(),windows_business.clone(),background.external.wns,signals.handle(crate::worker_wake::Work::WindowsPush)).critical());}
                     if native_listeners {
                         launch.stage_task_with_token(
                             rss_mdm_windows_channel::retention::registration(

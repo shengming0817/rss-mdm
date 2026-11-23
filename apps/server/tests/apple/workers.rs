@@ -72,6 +72,8 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
     for (ctx, native) in [first, second] {
         support::apple(ctx, native, key.clone(), &[]).await?;
     }
+    let sibling=identity::seed(&c,"apple").await?;
+    support::seed_channels(&c,&sibling,&key,&[]).await?;
     let org = pending(first.0, first.1, &key).await?;
     let mut skew = command::seed_transaction(&c).await?;
     sqlx::query(
@@ -189,7 +191,7 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
     let push_hint = Arc::new(Notify::new());
     let ade_hint = Arc::new(Notify::new());
     launch.stage_deferred_task_with_token(
-        rss_mdm_apple_channel::push::registration(state.clone(), push_hint.clone()).critical(),
+        rss_mdm_apple_channel::push::registration(state.clone(), rss_mdm_work_page::external::Limits::new(8.try_into()?,7.try_into()?).unwrap(), push_hint.clone()).critical(),
     );
     launch.stage_deferred_task_with_token(
         rss_mdm_apple_channel::ade::registration(state.clone(), ade_hint.clone()).critical(),
@@ -197,6 +199,7 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
     launch.finish();
     let result=tokio::time::timeout(Duration::from_secs(15),async {
         tokio::join!(apns_waiting.notified(),ade_waiting.notified());
+        let sibling_org=pending(&c,&sibling,&key).await?;
         let second_org = pending(second.0, second.1, &key).await?;
         push_hint.notify_one();
         ade_hint.notify_one();
@@ -209,7 +212,8 @@ async fn independent_tenants_progress_through_live_apple_workers() -> Result<()>
                 EXISTS(SELECT FROM mdm_apple.ade_operations WHERE organization=$5 AND state='running')")
                 .bind(c.tenant.to_string()).bind(other.tenant.to_string()).bind(blocked_push_id.get().copied().unwrap())
                 .bind(second_org).bind(org).bind(other_n.device.into_uuid()).bind(n.device.into_uuid()).fetch_one(&c.operator).await?;
-            if pushed && synced && blocked {break;}
+            let siblings:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND device=$2 AND push_outcome='accepted') AND EXISTS(SELECT FROM mdm_apple.ade_servers WHERE tenant_id=$1::uuid AND organization=$3 AND cursor='complete')").bind(c.tenant.to_string()).bind(sibling.device.into_uuid()).bind(sibling_org).fetch_one(&c.operator).await?;
+            if pushed && synced && blocked && siblings {break;}
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         Ok::<_,anyhow::Error>(())

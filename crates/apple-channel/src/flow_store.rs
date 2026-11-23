@@ -65,26 +65,14 @@ impl channels::ApplePush for Store {
             sqlx::query_scalar("SELECT count(*)<>2 FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase IN('resolve_device','resolve_security') AND state='acknowledged' AND accepted").bind(tenant).bind(operation).fetch_one(c).await.map_err(storage)
         })
     }
-    fn push_due<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        configuration: [u8; 32],
-    ) -> Pending<'a, bool> {
+    fn push_candidate<'a>(&'a self,c:&'a mut PgConnection,tenant:String,channel:crate::push::Channel,configuration:[u8;32]) -> Pending<'a,Option<channels::PushCandidate>> {
         Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND state='active' AND (push_outcome IS DISTINCT FROM 'rejected' OR push_configuration IS DISTINCT FROM $2) AND next_push<=clock_timestamp() AND (push_lease_until IS NULL OR push_lease_until<clock_timestamp()))").bind(tenant).bind(configuration.as_slice()).fetch_one(c).await.map_err(storage)
-        })
-    }
-    fn push_candidates<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        configuration: [u8; 32],
-    ) -> Pending<'a, Vec<channels::PushCandidate>> {
-        Box::pin(async move {
-            let rows=sqlx::query("SELECT device, user_key, material, token_revision FROM mdm_apple.channels WHERE tenant_id = CAST($1 AS uuid) AND state = 'active' AND (push_outcome IS DISTINCT FROM 'rejected' OR push_configuration IS DISTINCT FROM $2) AND next_push <= clock_timestamp() AND (push_lease_until IS NULL OR push_lease_until < clock_timestamp()) ORDER BY next_push, device, user_key LIMIT 32 FOR UPDATE SKIP LOCKED").bind(&tenant).bind(configuration.as_slice()).fetch_all(&mut *c).await.map_err(storage)?;
-            let mut result = Vec::new();
-            for row in rows {
+            // Material selection and channel ownership are checked on the claim connection.
+            let current: bool = sqlx::query_scalar("SELECT mdm_apple.claim_push_material($1,$2)")
+                .bind(channel.material_revision).bind(&channel.topic).fetch_one(&mut *c).await.map_err(storage)?;
+            if !current { return Ok(None); }
+            let Some(row)=sqlx::query("SELECT device,user_key,material,token_revision FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND state='active' AND (push_outcome IS DISTINCT FROM 'rejected' OR push_configuration IS DISTINCT FROM $4) AND next_push<=clock_timestamp() AND (push_lease_until IS NULL OR push_lease_until<=clock_timestamp()) FOR UPDATE SKIP LOCKED")
+                .bind(&tenant).bind(channel.device).bind(&channel.user_key).bind(configuration.as_slice()).fetch_optional(&mut *c).await.map_err(storage)? else {return Ok(None)};
                 let device = row
                     .try_get::<uuid::Uuid, _>("device")
                     .and_then(|id| {
@@ -141,20 +129,12 @@ impl channels::ApplePush for Store {
                     let scope: String = scope.iter().map(|byte| format!("{byte:02x}")).collect();
                     channels::PushDisposition::Invalid { scope }
                 };
-                result.push(channels::PushCandidate {
+                Ok(Some(channels::PushCandidate {
                     revision,
                     user_key,
-                    device: row
-                        .try_get::<uuid::Uuid, _>("device")
-                        .and_then(|id| {
-                            rss_mdm_agent_wire::DeviceId::try_from(id)
-                                .map_err(|e| sqlx::Error::Decode(Box::new(e)))
-                        })
-                        .map_err(storage)?,
+                    device,
                     disposition,
-                });
-            }
-            Ok(result)
+                }))
         })
     }
     fn reject_push<'a>(

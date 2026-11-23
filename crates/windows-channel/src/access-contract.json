@@ -73,6 +73,7 @@
         "lease_id",
         "lease_until",
         "settled_id",
+        "material_revision",
         "failures",
         "status",
         "outcome"
@@ -145,6 +146,13 @@
         "accepted"
       ],
       "delete_policy": "expires_at<clock_timestamp"
+    },
+    {
+      "schema": "mdm_wns",
+      "table": "provider_throttles",
+      "read_write": true,
+      "updates": ["retry_at"],
+      "delete_policy": null
     },
     {
       "schema": "mdm_wns",
@@ -234,6 +242,7 @@
     }
   ],
   "functions": [
+    {"name":"mdm_wns.provider_available","search_path":"search_path=pg_catalog"},
     {
       "name": "mdm_windows.entra_flow_scopes",
       "search_path": "search_path=pg_catalog"

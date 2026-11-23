@@ -37,4 +37,21 @@ GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA mdm_wns TO mdm_access;
 GRANT UPDATE(revision) ON mdm_wns.heads TO mdm_access;
 GRANT UPDATE(revoked) ON mdm_wns.versions TO mdm_access;
 -- 资格核验和切换仅由受限部署进程完成；普通 HTTP 只保留候选请求。
+-- One deadline per contributing tenant and OAuth identity, including across credential rotations.
+CREATE TABLE mdm_wns.provider_throttles (
+ tenant_id uuid NOT NULL, sid_digest bytea NOT NULL CHECK(octet_length(sid_digest)=32),
+ retry_at timestamptz NOT NULL, PRIMARY KEY(tenant_id,sid_digest)
+);
+ALTER TABLE mdm_wns.provider_throttles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_wns.provider_throttles FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_wns.provider_throttles USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE POLICY cooldown_discovery ON mdm_wns.provider_throttles FOR SELECT TO mdm_owner USING(true);
+CREATE INDEX ON mdm_wns.provider_throttles(sid_digest,retry_at);
+GRANT SELECT,INSERT,UPDATE(retry_at) ON mdm_wns.provider_throttles TO mdm_access;
+CREATE FUNCTION mdm_wns.provider_available(digest bytea) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT NOT EXISTS(SELECT FROM mdm_wns.provider_throttles WHERE sid_digest=digest AND retry_at>statement_timestamp())
+$$;
+REVOKE ALL ON FUNCTION mdm_wns.provider_available(bytea) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_wns.provider_available(bytea) TO mdm_access;
 COMMIT;

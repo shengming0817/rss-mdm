@@ -152,12 +152,9 @@ impl Runtime {
         if let Some(revision) = revision
             && crate::wns_materials::is_selected(&mut tx, &tenant, revision).await?
         {
-            let mut transports = self.push.lock().await;
-            let push = if let Some((old, push)) = transports.get(&tenant)
-                && *old == revision
-            {
-                push.clone()
-            } else {
+            let cached=self.push.lock().await.get(&tenant)
+                .filter(|(stored,_)| *stored==revision).map(|(_,push)|push.clone());
+            let push = if let Some(push)=cached {push} else {
                 let push = crate::wns_materials::load(
                     &mut tx,
                     &tenant,
@@ -173,8 +170,12 @@ impl Runtime {
                     None => push,
                 };
                 let push = Arc::new(push);
-                transports.insert(tenant.clone(), (revision, push.clone()));
-                push
+                let mut transports=self.push.lock().await;
+                match transports.get(&tenant) {
+                    Some((stored,cached)) if *stored==revision => cached.clone(),
+                    Some((stored,_)) if *stored>revision => push,
+                    _ => {transports.insert(tenant.clone(), (revision, push.clone()));push}
+                }
             };
             windows.push = Some(push);
         } else {

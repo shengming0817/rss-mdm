@@ -89,18 +89,7 @@ pub trait ApplePush: Send + Sync {
         tenant: String,
         operation: Uuid,
     ) -> Pending<'a, bool>;
-    fn push_due<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        configuration: [u8; 32],
-    ) -> Pending<'a, bool>;
-    fn push_candidates<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        configuration: [u8; 32],
-    ) -> Pending<'a, Vec<PushCandidate>>;
+    fn push_candidate<'a>(&'a self, c: &'a mut PgConnection, tenant: String, channel: crate::push::Channel, configuration: [u8;32]) -> Pending<'a, Option<PushCandidate>>;
     fn reject_push<'a>(
         &'a self,
         c: &'a mut PgConnection,

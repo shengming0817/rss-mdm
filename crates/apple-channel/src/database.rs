@@ -211,11 +211,16 @@ impl Store {
 }
 
 impl Store {
-    pub async fn push_work_scopes(
+    pub(crate) async fn push_channel_page(&self,after:Option<crate::push::Candidate>) -> Result<Vec<crate::push::Candidate>,Error>{
+        sqlx::query_as::<_,crate::push::Candidate>("SELECT * FROM mdm_apple.push_channel_page($1,$2,$3)")
+                   .bind(after.as_ref().map(|r|r.0)).bind(after.as_ref().map(|r|r.1)).bind(after.as_ref().map(|r|&r.2))
+                   .fetch_all(&self.pool).await.map_err(db)
+    }
+    pub async fn maintenance_work_scopes(
         &self,
         after: Option<uuid::Uuid>,
     ) -> Result<Vec<uuid::Uuid>, Error> {
-        sqlx::query_scalar("SELECT tenant_id FROM mdm_apple.push_work_scopes($1)")
+        sqlx::query_scalar("SELECT tenant_id FROM mdm_apple.maintenance_work_scopes($1)")
             .bind(after)
             .fetch_all(&self.pool)
             .await
