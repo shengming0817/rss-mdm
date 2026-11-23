@@ -1167,7 +1167,7 @@ async fn members(
 #[ignore = "T2: actual Compliance worker preserves unrelated results, retains Unknown candidates and follows Group entry/exit"]
 async fn compliance_workers_share_candidate_and_freshness_semantics() -> Result<()> {
     use rss_mdm_compliance::Current;
-    let c = Context::open("shared", &[]).await?;
+    let c = Context::open("planning_workers", &[]).await?;
     let account = c
         .account(&[
             P::InventoryRead,
@@ -2219,8 +2219,8 @@ async fn peer_advances_during_locked_checkpoint(
     lock: &'static str,
     receipt: &'static str,
 ) -> Result<()> {
-    let first = Context::open("shared", &[]).await?;
-    let second = Context::open("shared", &[]).await?;
+    let first = Context::open("planning_workers", &[]).await?;
+    let second = Context::open("planning_workers", &[]).await?;
     let (slow, peer) = if first.tenant.to_string() < second.tenant.to_string() {
         (&first, &second)
     } else {
@@ -2389,8 +2389,8 @@ async fn asset_query_commits_during_a_peer_run_lock() -> Result<()> {
 #[ignore = "T2: the Policy event worker commits a peer batch while a prior event's final work receipt is locked"]
 async fn event_batch_commits_during_a_peer_receipt_lock() -> Result<()> {
     use crate::authority_t2_support::{blocked_attempt, wait_for_blocked_attempt};
-    let a = Context::open("shared", &[]).await?;
-    let b = Context::open("shared", &[]).await?;
+    let a = Context::open("planning_workers", &[]).await?;
+    let b = Context::open("planning_workers", &[]).await?;
     let owners = Owners::open(&a).await?;
     let scopes = crate::scope_t2::open(&a).await?;
     let fixture = crate::policy_configuration_t2::fixture::Fixture::open(&a).await?;

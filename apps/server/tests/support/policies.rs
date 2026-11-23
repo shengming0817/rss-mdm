@@ -9,8 +9,8 @@ use rss_mdm_policy_service::{
 use std::sync::Arc;
 use uuid::Uuid;
 pub struct Fixture {
-    resources: fixture::Fixture,
-    owner: crate::owner_storage::OwnerRuntime,
+    pub(crate) resources: fixture::Fixture,
+    pub(crate) owner: crate::owner_storage::OwnerRuntime,
     pub policies: Arc<Policies>,
 }
 impl Fixture {
@@ -35,7 +35,7 @@ impl Fixture {
             Arc::new(crate::clock::SystemClock),
             owner.audit.clone(),
             vec![7; 32],
-            c.inputs.pool("shared", "mdm_access").await?,
+            c.inputs.pool(&c.profile, "mdm_access").await?,
         )
         .await?;
         let policies = crate::assembly::policy::management(

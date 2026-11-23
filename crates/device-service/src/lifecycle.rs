@@ -98,7 +98,7 @@ pub async fn accept_in(
     }
     if let Some(id)=sqlx::query_scalar("SELECT id FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND version=$2 AND (object_kind,object_id)=($3,$4) AND occurrence=$5")
         .bind(&tenant).bind(input.version).bind(input.target.object.kind()).bind(input.target.object.uuid()).bind(input.occurrence).fetch_optional(&mut *c).await? {
-        let replay = link_policy_in(c, &tenant, input, id).await?;
+        let replay = link_policy_in(c, &tenant, input.policy, input.version, id).await?;
         return Ok((id,replay));
     }
     let mut existing = std::collections::BTreeSet::new();
@@ -119,7 +119,7 @@ pub async fn accept_in(
         let id = *existing.first().ok_or(Error::Conflict)?;
         let prior = read_in(c, tenant_id, id).await?;
         if prior.target.members == input.target.members {
-            let replay = link_policy_in(c, &tenant, input, id).await?;
+            let replay = link_policy_in(c, &tenant, input.policy, input.version, id).await?;
             return Ok((id, replay));
         }
         return Err(Error::Conflict);
@@ -162,18 +162,96 @@ pub async fn accept_in(
         sqlx::query("INSERT INTO mdm_devices.retirement_channels (tenant_id, operation, device, channel, stage, effect) VALUES (CAST($1 AS uuid), $2, $3, $4, 'cleanup', 'pending')")
             .bind(&tenant).bind(id).bind(member.device.into_uuid()).bind(member.channel.as_str()).execute(&mut *c).await?;
     }
-    link_policy_in(c, &tenant, input, id).await?;
+    link_policy_in(c, &tenant, input.policy, input.version, id).await?;
     Ok((id, false))
+}
+
+/// A retained intent for exactly the frozen object and registrations. This evidence can
+/// only link an existing operation; it cannot admit a new retirement.
+pub struct ExistingRetirement {
+    operation: Uuid,
+    target: DeviceObject,
+    revoked: Vec<Uuid>,
+}
+impl ExistingRetirement {
+    pub fn operation(&self) -> Uuid {
+        self.operation
+    }
+
+    /// Recognize only the retired registration's exact frozen whole-object or endpoint fact.
+    pub fn confirms(
+        &self,
+        source: &DeviceObject,
+        member: &rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
+    ) -> bool {
+        self.revoked.contains(&member.device.into_uuid())
+            && self.target.members.contains(member)
+            && source.verified
+            && (source == &self.target
+                || (source.object == ObjectRef::Endpoint(member.device)
+                    && source.members.as_slice() == std::slice::from_ref(member)))
+    }
+}
+
+pub async fn existing_retirement_on(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    target: &DeviceObject,
+) -> Result<Option<ExistingRetirement>> {
+    if !target.verified || !(1..=2).contains(&target.members.len()) {
+        return Ok(None);
+    }
+    let ids = target
+        .members
+        .iter()
+        .map(|m| m.device.into_uuid())
+        .collect::<Vec<_>>();
+    let frozen = serde_json::to_value(target).map_err(|_| Error::Malformed)?;
+    let row=sqlx::query_as::<_,(Uuid,Vec<Uuid>)>(
+        "SELECT r.id, coalesce(array_agg(d.id) FILTER(WHERE d.state='revoked' AND ch.stage='complete'),ARRAY[]::uuid[])
+         FROM mdm_access.devices d JOIN mdm_devices.retirements r ON (r.tenant_id,r.id)=(d.tenant_id,d.retirement)
+         JOIN mdm_devices.retirement_channels ch ON (ch.tenant_id,ch.operation,ch.device)=(r.tenant_id,r.id,d.id)
+         WHERE d.tenant_id=$1::uuid AND d.id=ANY($2) AND r.target=$3
+         AND (r.object_kind=0 OR EXISTS(SELECT FROM mdm_devices.associations a WHERE a.tenant_id=r.tenant_id AND a.id=r.object_id AND a.state='confirmed' AND a.version=(r.target->>'associationVersion')::bigint))
+         GROUP BY r.id HAVING count(*)=cardinality($2)")
+        .bind(tenant.to_string()).bind(&ids).bind(frozen).fetch_optional(c).await?;
+    Ok(row.map(|(operation, revoked)| ExistingRetirement {
+        operation,
+        target: target.clone(),
+        revoked,
+    }))
+}
+
+/// The caller holds the member and Scope fences. Link only an exact pre-existing intent.
+pub async fn reuse_in(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    expected: Uuid,
+    policy: Uuid,
+    version: Uuid,
+    target: &DeviceObject,
+) -> Result<(Uuid, bool)> {
+    let matched = existing_retirement_on(c, tenant, target)
+        .await?
+        .ok_or(Error::Conflict)?;
+    if matched.operation() != expected {
+        return Err(Error::Conflict);
+    }
+    Ok((
+        expected,
+        link_policy_in(c, &tenant.to_string(), policy, version, expected).await?,
+    ))
 }
 
 async fn link_policy_in(
     c: &mut PgConnection,
     tenant: &str,
-    input: &Acceptance<'_>,
+    policy: Uuid,
+    version: Uuid,
     operation: Uuid,
 ) -> Result<bool> {
     let inserted = sqlx::query("INSERT INTO mdm_devices.retirement_policies(tenant_id,policy,version,operation) VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING")
-        .bind(tenant).bind(input.policy).bind(input.version).bind(operation).execute(c).await?;
+        .bind(tenant).bind(policy).bind(version).bind(operation).execute(c).await?;
     Ok(inserted.rows_affected() == 0)
 }
 

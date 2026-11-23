@@ -123,6 +123,7 @@ macro_rules! policy_admission {
                 concat!($work, ".authority_revision"),
                 concat!($work, ".failure"),
                 concat!($work, ".failure_detail"),
+                concat!($work, ".retirement_result"),
                 concat!($policies, ".revision"),
                 concat!($policies, ".current_version"),
                 concat!($policies, ".version_number"),

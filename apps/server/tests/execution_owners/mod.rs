@@ -6,7 +6,7 @@ mod composition;
 mod inventory;
 mod locking;
 mod mixed;
-mod retirement;
+pub(super) mod retirement;
 mod workers;
 use crate::{
     authority_t2_support::Context, command_runtime_t2_support as command,

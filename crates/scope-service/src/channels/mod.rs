@@ -77,6 +77,9 @@ pub struct DeviceAssignment {
     pub cursor: rss_mdm_agent_wire::ObjectRef,
     pub object: DeviceObject,
     pub admission: ScopeAdmission,
+    /// An eligible execution can only reuse this exact Device intention when present.
+    #[serde(skip)]
+    pub existing_retirement: Option<Uuid>,
     pub scope_result: Uuid,
 }
 

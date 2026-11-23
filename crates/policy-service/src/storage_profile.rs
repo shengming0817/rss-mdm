@@ -4,7 +4,6 @@ pub(crate) struct Statements {
     pub admission: &'static str,
     pub events_event_device_current_in_1: &'static str,
     pub events_event_scope_in_1: &'static str,
-    pub management_lifecycle_advance_lifecycle_work_in_1: &'static str,
 }
 macro_rules! define_storage {
     ($module:ident, $policy_schema:literal, $scope_schema:literal, $access_schema:literal, $access_role:literal, $policy_versions:literal, $policy_assignments:literal, $policy_triggers:literal, $policy_requests:literal, $policy_work:literal, $policy_schedule_scan:literal, $policy_event_batches:literal, $policy_event_members:literal, $scope_tasks:literal, $scope_asset_dispatch:literal, $scope_group_changes:literal, $owner:literal, $policy_runtime:literal, $scope_runtime:literal, $command_runtime:literal, $inventory_runtime:literal) => {
@@ -20,7 +19,6 @@ macro_rules! define_storage {
 "###),
                 events_event_device_current_in_1: concat!("SELECT EXISTS (SELECT 1 FROM ", $access_schema, "devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active')"),
                 events_event_scope_in_1: concat!("SELECT channel FROM ", $access_schema, "devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2"),
-                management_lifecycle_advance_lifecycle_work_in_1: concat!("SELECT ", $policy_schema, "lock_policy($1)"),
             };
         }
     };
