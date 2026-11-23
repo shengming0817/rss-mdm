@@ -147,7 +147,7 @@ async fn certificate(h: &Harness) -> Result<()> {
 #[tokio::test]
 #[ignore = "T2: cleanup cancels both owners and waits for Running and Unknown evidence before unenrollment"]
 async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
-    let mut h = Harness::open().await?;
+    let mut h = Box::pin(Harness::open()).await?;
     certificate(&h).await?;
     super::super::directory_queries_t2::history::seal(
         &h.c,

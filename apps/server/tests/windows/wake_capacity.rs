@@ -3,6 +3,13 @@ use super::*;
 use rss_request_context::Clock as _;
 use std::sync::atomic::AtomicUsize;
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "measures two readings of the same injected host clock for the capacity report"
+)]
+fn elapsed(start: std::time::Instant) -> Duration {
+    crate::lifecycle::RuntimeTimer.now().duration_since(start)
+}
 #[derive(Default)]
 struct Traffic {
     active: AtomicUsize,
@@ -206,10 +213,10 @@ async fn configured_wns_capacity_measures_actual_sends_and_settlements() -> Resu
             loop {
                 let before=crate::lifecycle::RuntimeTimer.now();
                 let conn=pool.acquire().await?;
-                waits.push(crate::lifecycle::RuntimeTimer.now().duration_since(before).as_secs_f64()*1000.);
+                waits.push(elapsed(before).as_secs_f64()*1000.);
                 drop(conn);
                 let (count,p95):(i64,Option<f64>)=sqlx::query_as("SELECT count(*),percentile_cont(0.95) WITHIN GROUP(ORDER BY (extract(epoch FROM next_push)::float8-120-$2)*1000) FROM mdm_windows.push_channels WHERE tenant_id=ANY($1) AND settled_id IS NOT NULL AND status=200 AND outcome='accepted'").bind(&tenants).bind(db_start).fetch_one(&c.operator).await?;
-                if count==JOBS {break Ok::<_,anyhow::Error>((p95.unwrap(),crate::lifecycle::RuntimeTimer.now().duration_since(start).as_secs_f64()));}
+                if count==JOBS {break Ok::<_,anyhow::Error>((p95.unwrap(),elapsed(start).as_secs_f64()));}
                 tokio::time::sleep(Duration::from_millis(15)).await;
             }
         }).await;
