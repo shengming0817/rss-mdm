@@ -64,6 +64,14 @@
     {
       "type": "AccountSettlement",
       "file": "account-settlement-v1.schema.json"
+    },
+    {
+      "type": "CurrentConfiguration",
+      "file": "current-configuration-v1.schema.json"
+    },
+    {
+      "type": "RevocationReceipt",
+      "file": "revocation-receipt-v1.schema.json"
     }
   ]
 }

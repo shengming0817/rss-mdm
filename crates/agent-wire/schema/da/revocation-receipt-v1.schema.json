@@ -1,0 +1,53 @@
+{
+  "$defs": {
+    "DeviceId": {
+      "format": "uuid",
+      "maxLength": 36,
+      "minLength": 36,
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Original administrative revocation of this installation's exact DA credential.",
+  "properties": {
+    "credential": {
+      "description": "Credential verified at activation and current when revocation committed.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "device": {
+      "$ref": "#/$defs/DeviceId",
+      "description": "DA registration being retired."
+    },
+    "operationId": {
+      "description": "Administrator's original revoke operation.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "serviceId": {
+      "description": "DA service instance from the activation receipt.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "tenant": {
+      "description": "Tenant owning the credential.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "serviceId",
+    "tenant",
+    "device",
+    "credential",
+    "operationId"
+  ],
+  "title": "RevocationReceipt",
+  "type": "object",
+  "$id": "https://rss.example/da/v1/RevocationReceipt"
+}

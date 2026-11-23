@@ -18,6 +18,91 @@ pub enum ConfigurationField {
     Windows,
 }
 
+/// The only supported DA assignment selectors.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Target {
+    /// Default for DA registrations without an explicit override.
+    TenantDefault,
+    /// An override applies to exactly one DA device.
+    Device {
+        /// DA device identity, never an Inventory object or Group ID.
+        device: crate::DeviceId,
+    },
+}
+/// One current publication; previous immutable versions remain queryable.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Publication {
+    /// Policy identity.
+    pub id: Uuid,
+    /// Configuration CAS.
+    pub revision: i64,
+    /// Immutable definition version.
+    pub version: Uuid,
+    /// Closed assignment selector.
+    pub target: Target,
+    /// Disabled overrides deliberately block fallback to the tenant default.
+    pub enabled: bool,
+    /// Client groups authorized for managed-mandatory transport.
+    pub managed_fields: Vec<ConfigurationField>,
+    /// Validated device access configuration.
+    pub configuration: crate::runtime::AccessConfiguration,
+}
+/// Last protected change in a single field's authorization. A release survives ordinary edits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FieldAuthority {
+    /// True while this issuer grants managed delivery for the field.
+    pub authorized: bool,
+    /// First publication revision of the current grant or release.
+    pub revision: u64,
+}
+
+/// Complete field authority of one applicable policy at the time of this device read.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PolicyAuthority {
+    /// Original issuing policy.
+    pub policy: Uuid,
+    /// Current immutable version of that policy.
+    pub version: Uuid,
+    /// Compare within the same issuer to detect rollback.
+    pub revision: u64,
+    /// Disabling a publication suspends use without releasing its fields.
+    pub enabled: bool,
+    /// Fields ever granted by this policy. Only an explicit release clears an existing lock.
+    pub fields: std::collections::BTreeMap<ConfigurationField, FieldAuthority>,
+}
+
+impl PolicyAuthority {
+    /// A signed managed artifact must fall within the issuer's uninterrupted current grant.
+    pub fn authorizes(&self, artifact: &Configuration, field: ConfigurationField) -> bool {
+        self.policy == artifact.id
+            && artifact.delivery == DeliveryPermission::ManagedMandatory
+            && artifact.managed_fields.contains(&field)
+            && self.fields.get(&field).is_some_and(|grant| {
+                grant.authorized && (grant.revision..=self.revision).contains(&artifact.revision)
+            })
+    }
+}
+
+/// Backend selection and all applicable issuer authorities from the same authenticated read.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CurrentConfiguration {
+    /// Service, tenant and DA device authenticated by this connection.
+    pub identity: super::ReportIdentity,
+    /// Availability of the selected backend artifact.
+    pub state: super::SourceState,
+    /// Device override or tenant default, including disabled publications.
+    pub publication: Option<Publication>,
+    /// Original signed backend payload when available.
+    pub artifact: Option<SignedConfiguration>,
+    /// Device override and tenant default, independent of backend selection.
+    pub authorities: Vec<PolicyAuthority>,
+}
+
 /// Native payload identity bound by the inner signature, never mutable display metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
