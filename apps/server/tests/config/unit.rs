@@ -314,3 +314,22 @@ fn inventory_drain_must_fit_the_process_shutdown_budget() {
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn http_concurrency_and_buffer_memory_are_independent_of_listener_capacity() {
+    let mut config: Config =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+    for slots in [1, 5, 32] {
+        config.http.request_slots = slots;
+        assert_eq!(
+            config
+                .http
+                .compile(&config.identity.runtime)
+                .unwrap()
+                .request_slots,
+            slots
+        );
+    }
+    config.http.buffered_body_bytes = rss_mdm_management_http::body_limits().largest_buffer() - 1;
+    assert!(config.http.compile(&config.identity.runtime).is_err());
+}

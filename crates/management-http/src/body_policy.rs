@@ -41,23 +41,37 @@ struct RouteLimit {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum Mode { Buffered, Streaming, Sdk }
+enum Mode {
+    Buffered,
+    Streaming,
+    Sdk,
+}
 
 /// Product request limits exported unchanged with each host's gateway facts.
 pub fn body_limits() -> &'static BodyLimits {
-    static LIMITS: std::sync::LazyLock<BodyLimits> = std::sync::LazyLock::new(||
-        serde_json::from_str(include_str!("body_limits.json")).expect("compiled management body limits"));
+    static LIMITS: std::sync::LazyLock<BodyLimits> = std::sync::LazyLock::new(|| {
+        serde_json::from_str(include_str!("body_limits.json"))
+            .expect("compiled management body limits")
+    });
     &LIMITS
 }
 impl BodyLimits {
     pub fn largest_buffer(&self) -> usize {
-        self.routes.iter().filter(|r| !matches!(r.mode,Mode::Streaming))
-            .map(|r| r.bytes).max().unwrap_or(self.default_bytes)
+        self.routes
+            .iter()
+            .filter(|r| !matches!(r.mode, Mode::Streaming))
+            .map(|r| r.bytes)
+            .max()
+            .unwrap_or(self.default_bytes)
     }
 }
 pub(crate) fn for_route(route: &str, method: &Method) -> BodyPolicy {
     let limits = body_limits();
-    let Some(rule) = limits.routes.iter().find(|r| r.method == method.as_str() && r.path == route) else {
+    let Some(rule) = limits
+        .routes
+        .iter()
+        .find(|r| r.method == method.as_str() && r.path == route)
+    else {
         return BodyPolicy::Buffered(limits.default_bytes);
     };
     match rule.mode {
@@ -85,12 +99,22 @@ pub(crate) async fn buffer(
     limit: usize,
 ) -> Result<axum::extract::Request, Error> {
     let (parts, body) = request.into_parts();
-    let bytes = tokio::time::timeout(
-        std::time::Duration::from_secs(8),
-        axum::body::to_bytes(body, limit),
-    )
-    .await
-    .map_err(|_| Error::Unavailable(crate::Failure::RequestDeadline))?
+    let read = axum::body::to_bytes(body, limit);
+    let bytes = if let Some(control) = parts.extensions.get::<rss_axum::RequestControl>() {
+        use rss_request_context::CancellationObserver;
+        tokio::select! {
+            biased;
+            () = control.cancelled() => return Err(Error::RequestDeadline),
+            result = tokio::time::timeout_at(control.deadline().instant().into(), read) =>
+                result.map_err(|_| Error::RequestDeadline)?,
+        }
+    } else if let Some(deadline) = parts.extensions.get::<rss_request_context::Deadline>() {
+        tokio::time::timeout_at(deadline.instant().into(), read)
+            .await
+            .map_err(|_| Error::RequestDeadline)?
+    } else {
+        read.await
+    }
     .map_err(|error| read_error(&error))?;
     let mut request = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
     axum::extract::DefaultBodyLimit::max(limit).apply(&mut request);
@@ -110,12 +134,19 @@ mod tests {
     #[test]
     fn gateway_uses_domain_envelope_sizes() {
         for (path, expected) in [
-            ("/api/v1/tenants/{tenant}/software/source-snapshots/{source}",
-             rss_mdm_software_service::source_snapshots::MAX_REQUEST_BYTES),
-            ("/api/v1/tenants/{tenant}/devices/{id}/inventory-scopes",
-             rss_mdm_inventory_service::assets::windows::MAX_PAGE_BODY_BYTES),
+            (
+                "/api/v1/tenants/{tenant}/software/source-snapshots/{source}",
+                rss_mdm_software_service::source_snapshots::MAX_REQUEST_BYTES,
+            ),
+            (
+                "/api/v1/tenants/{tenant}/devices/{id}/inventory-scopes",
+                rss_mdm_inventory_service::assets::windows::MAX_PAGE_BODY_BYTES,
+            ),
         ] {
-            assert_eq!(for_route(path, &Method::POST), BodyPolicy::Buffered(expected));
+            assert_eq!(
+                for_route(path, &Method::POST),
+                BodyPolicy::Buffered(expected)
+            );
         }
     }
 

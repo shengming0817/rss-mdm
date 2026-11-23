@@ -154,7 +154,7 @@ use rss_mdm_inventory::ReportSource as InventorySource;
 use rss_observation::{Batch, Body, Change, Id};
 use rss_request_context::TenantId;
 use serde_json::Value;
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc};
 use uuid::Uuid;
 
 fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
@@ -233,19 +233,17 @@ impl IntoResponse for AgentError {
 }
 
 pub(crate) async fn bounded<T>(
+    control: &rss_axum::RequestControl,
     work: impl Future<Output = Result<T, AgentError>>,
 ) -> Result<T, AgentError> {
-    bounded_for(Duration::from_secs(8), work).await
+    use rss_request_context::CancellationObserver;
+    tokio::select! {
+        biased;
+        () = control.cancelled() => Err(Error::Unavailable(Failure::RequestDeadline).into()),
+        result = tokio::time::timeout_at(control.deadline().instant().into(),work) =>
+            result.map_err(|_| AgentError::Service(Error::Unavailable(Failure::RequestDeadline)))?,
+    }
 }
-async fn bounded_for<T>(
-    budget: Duration,
-    work: impl Future<Output = Result<T, AgentError>>,
-) -> Result<T, AgentError> {
-    tokio::time::timeout(budget, work)
-        .await
-        .map_err(|_| AgentError::Service(Error::Unavailable(Failure::RequestDeadline)))?
-}
-
 pub fn ingress_error(code: wire::ErrorCode) -> Response {
     AgentError::Wire(code).into_response()
 }
@@ -341,14 +339,17 @@ async fn status(
 ) -> Result<Json<wire::ReportStatus>, AgentError> {
     let id =
         Uuid::parse_str(&id).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    status_inner(
-        &origin,
-        &app,
-        &audit,
-        &headers,
-        peer.as_ref().map(|p| &p.0),
-        id,
+    bounded(
         &control,
+        status_inner(
+            &origin,
+            &app,
+            &audit,
+            &headers,
+            peer.as_ref().map(|p| &p.0),
+            id,
+            &control,
+        ),
     )
     .await
 }
@@ -380,7 +381,10 @@ async fn status_inner(
     audit.bind_scope(principal.binding()).map_err(Error::from)?;
     audit.identify_device(principal.device());
     audit.target_device(principal.device());
-    let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
+    let mut tx = app
+        .access
+        .begin(&principal.tenant().to_string(), control)
+        .await?;
     let live_scope = crate::device::store::revalidate_source(
         principal.profile(),
         &mut tx,

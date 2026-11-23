@@ -37,6 +37,7 @@ pub(crate) struct Assembly {
     pub(crate) providers: Arc<rss_mdm_pki_service::providers::Providers>,
     pub(crate) credential_receipts:
         Option<Arc<rss_mdm_recovery_credentials::native_receipts::NativeReceipts>>,
+    pub(crate) request_timeout: std::time::Duration,
     pub(crate) request_budget: rss_axum::RequestBudget,
     pub(crate) da: Option<Arc<device_access::Assembly>>,
     pub(crate) script_work: Arc<rss_mdm_script_service::worker::Worker>,
@@ -449,6 +450,7 @@ pub(crate) async fn from_compiled(
         execution: execution.clone(),
     });
     let state = Arc::new(Assembly {
+        request_timeout: std::time::Duration::from_secs(config.http.request_seconds),
         request_budget: http.request,
         da,
         script_work,

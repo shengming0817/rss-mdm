@@ -148,7 +148,7 @@ impl Query {
     }
 
     pub fn validate(&self) -> Result<(), Error> {
-        if !(1..=1024).contains(&self.limit.unwrap_or(50))
+        if self.limit.is_some_and(|limit| !(1..=1024).contains(&limit))
             || self.operation_id.is_some_and(|v| v.is_nil())
             || self.request_id.is_some_and(|v| v.is_nil())
             || self.from.is_some_and(|v| v < 0)

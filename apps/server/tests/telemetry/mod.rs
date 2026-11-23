@@ -2,6 +2,7 @@
 mod capacity;
 mod fixture;
 mod http;
+mod stream;
 use crate::{authority_t2_support::Context, device_material_support as materials};
 use anyhow::{Context as _, Result};
 use fixture::{Fixture, SeedAuthority, deadline};
@@ -282,8 +283,10 @@ async fn exercise(c: &Context, f: &Fixture, default: &Fixture) -> Result<()> {
             .await
             .with_context(|| format!("seed {key}"))?;
     }
-    capacity::seed(c, f, &device, epoch).await?;
-    let account = c.account(&[Permission::InventoryRead]).await?;
+    let capacity_spec = capacity::seed(c, f, &device, epoch).await?;
+    let account = c
+        .account(&[Permission::InventoryRead, Permission::TelemetryMaintain])
+        .await?;
     let binding = f.config.configuration_binding()?;
     fixture::persist_selection(c, &f.config).await?;
     let mut absent = f.config.clone();
@@ -401,7 +404,7 @@ async fn exercise(c: &Context, f: &Fixture, default: &Fixture) -> Result<()> {
     .await?;
     let h = validator("/telemetry/history");
     let a = validator("/telemetry/aggregate");
-    capacity::verify(&http, &device, &h).await?;
+    capacity::verify(&http, &device, &h, epoch, &capacity_spec).await?;
     for (field, n) in [("custom.minimum", i64::MIN), ("custom.maximum", i64::MAX)] {
         let mut input = query(&device, field);
         input["maxPoints"] = json!(1);
@@ -636,5 +639,19 @@ async fn maintenance_commits_while_a_peer_gap_receipt_is_locked() -> Result<()> 
     let result = fixture::with_cleanup(result, f.close(a).await);
     first.close().await;
     second.close().await;
+    result
+}
+
+#[tokio::test]
+#[ignore = "T2: all admitted fields of one incarnation fence real PostgreSQL stream maintenance"]
+async fn complete_stream_qualification() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let result = async {
+        let f = Fixture::open(&c).await?;
+        let result = Box::pin(stream::exercise(&c, &f)).await;
+        fixture::with_cleanup(result, f.close(&c).await)
+    }
+    .await;
+    c.close().await;
     result
 }

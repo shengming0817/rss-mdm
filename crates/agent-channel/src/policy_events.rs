@@ -79,6 +79,7 @@ fn error(e: rss_mdm_policy_service::Error) -> AgentError {
 }
 async fn invoke(
     axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
+    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
     State(s): State<Arc<StateServices>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -91,7 +92,7 @@ async fn invoke(
     >,
     AgentError,
 > {
-    crate::bounded(async {
+    crate::bounded(&control, async {
         let Json(input) = input.map_err(|_| Error::Malformed)?;
         let p = tasks::authenticate(
             &origin,
@@ -99,6 +100,7 @@ async fn invoke(
             &headers,
             peer.as_ref().map(|p| &p.0),
             &audit,
+            &control,
         )
         .await?;
         s.events
@@ -111,6 +113,7 @@ async fn invoke(
 }
 async fn list(
     axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
+    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
     State(s): State<Arc<StateServices>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -124,13 +127,14 @@ async fn list(
     >,
     AgentError,
 > {
-    crate::bounded(async {
+    crate::bounded(&control, async {
         let p = tasks::authenticate(
             &origin,
             &s.tasks,
             &headers,
             peer.as_ref().map(|p| &p.0),
             &audit,
+            &control,
         )
         .await?;
         s.events
@@ -150,19 +154,21 @@ async fn list(
 }
 async fn read(
     axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
+    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
     State(s): State<Arc<StateServices>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     Path(batch): Path<Uuid>,
 ) -> Result<Json<queries::Batch>, AgentError> {
-    crate::bounded(async {
+    crate::bounded(&control, async {
         let p = tasks::authenticate(
             &origin,
             &s.tasks,
             &headers,
             peer.as_ref().map(|p| &p.0),
             &audit,
+            &control,
         )
         .await?;
         s.events
@@ -182,6 +188,7 @@ async fn read(
 }
 async fn members(
     axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
+    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
     State(s): State<Arc<StateServices>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
@@ -196,13 +203,14 @@ async fn members(
     >,
     AgentError,
 > {
-    crate::bounded(async {
+    crate::bounded(&control, async {
         let p = tasks::authenticate(
             &origin,
             &s.tasks,
             &headers,
             peer.as_ref().map(|p| &p.0),
             &audit,
+            &control,
         )
         .await?;
         s.events

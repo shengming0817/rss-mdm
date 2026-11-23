@@ -90,10 +90,11 @@ impl Timeline {
         proof
             .require(Permission::AuditRead, None)
             .map_err(|_| Error::Forbidden)?;
-        query.validate()?;
-        if query.limit.unwrap_or(50) > self.query_budget.rows {
+        let limit = query.limit.unwrap_or(50.min(self.query_budget.rows));
+        if limit > self.query_budget.rows {
             return Err(Error::BudgetExceeded);
         }
+        query.validate()?;
         let token = query
             .cursor
             .as_ref()
@@ -128,18 +129,27 @@ impl Timeline {
             .read(
                 proof.binding().tenant(),
                 &control,
-                (self, proof, family, query, token),
+                (self, proof, family, query, token, limit),
                 |ctx, tx| {
                     Box::pin(async move {
                         let indexed = tx
                             .with_connection_context(ctx, |ctx, c| {
                                 Box::pin(async move {
-                                    ctx.0.read_index(c, ctx.1, ctx.3, ctx.4.as_ref()).await
+                                    ctx.0
+                                        .read_index(c, ctx.1, ctx.3, ctx.4.as_ref(), ctx.5)
+                                        .await
                                 })
                             })
                             .await?;
-                        ctx.0
-                            .page_in(ctx.1, ctx.2, ctx.3, ctx.4.as_ref(), indexed.0, indexed.1)
+                        ctx.0.page_in(
+                            ctx.1,
+                            ctx.2,
+                            ctx.3,
+                            ctx.4.as_ref(),
+                            indexed.0,
+                            indexed.1,
+                            ctx.5,
+                        )
                     })
                 },
             )
@@ -370,6 +380,7 @@ impl Timeline {
         proof: &AuthorizedPrincipal,
         query: &Query,
         token: Option<&cursor::Cursor>,
+        limit: usize,
     ) -> Result<(bool, Vec<sqlx::postgres::PgRow>), Error> {
         // Authorization is reloaded after acquiring the audit read transaction, before exposing facts.
         rss_mdm_authorization_service::lock_on(
@@ -402,7 +413,7 @@ impl Timeline {
         // Coverage and result rows share one statement snapshot, not a durable consumption offset.
         let rows=sqlx::query("WITH coverage AS (SELECT NOT EXISTS(SELECT 1 FROM rss_audit.records r WHERE r.tenant_id=$1::uuid AND starts_with(r.source_id,$17::text) AND NOT EXISTS(SELECT 1 FROM mdm_timeline.facts f WHERE f.tenant_id=r.tenant_id AND f.source=r.source_id AND f.event_id=r.event_id)) AS complete), candidates AS MATERIALIZED (SELECT document,digest,position,recorded_at,row_number() OVER (ORDER BY recorded_at DESC,position DESC) AS row_index FROM mdm_timeline.facts WHERE tenant_id=$1::uuid AND starts_with(source,$17::text) AND (instance_id=$2::uuid OR (instance_id IS NULL AND source IN ('mdm.business','mdm.request','da.business','da.request') AND document->'fact'->>'actorKind' IN ('service','device','unidentified'))) AND ($3::uuid IS NULL OR devices @> ARRAY[$3]) AND ($4::uuid IS NULL OR operation_id=$4 OR ($16::text IS NULL AND operations @> ARRAY[$4])) AND ($5::text IS NULL OR CASE WHEN $16::text IS NULL THEN actor ELSE document->'operation'->>'actor' END=$5) AND ($6::text IS NULL OR action=$6) AND ($7::text IS NULL OR outcome=$7) AND ($8::bigint IS NULL OR recorded_at>=$8) AND ($9::bigint IS NULL OR recorded_at<$9) AND ($13::text IS NULL OR document->'fact'->'target'->>'id'=$13) AND ($14::text IS NULL OR document->'fact'->'target'->>'type'=$14) AND ($15::text IS NULL OR document->'fact'->>'requestId'=$15) AND ($16::text IS NULL OR document->'operation'->>'owner'=$16) AND ($10::bigint IS NULL OR (recorded_at,position)<($10,$11)) ORDER BY recorded_at DESC,position DESC LIMIT $12), budget AS (SELECT coalesce(sum(octet_length(document::text)) FILTER (WHERE row_index < $12),0) <= $18 AS fits FROM candidates) SELECT coverage.complete,budget.fits,CASE WHEN budget.fits AND f.row_index < $12 THEN f.document END AS document,f.digest,f.position,f.recorded_at FROM coverage CROSS JOIN budget LEFT JOIN candidates f ON true ORDER BY f.recorded_at DESC,f.position DESC")
             .bind(proof.binding().tenant().to_string()).bind(proof.instance_id()).bind(query.device.map(|id|id.into_uuid())).bind(query.operation_id)
-            .bind(&query.actor).bind(&query.action).bind(&query.outcome).bind(query.from).bind(query.until).bind(token.map(|v|v.after_at)).bind(token.map(|v|v.after_position)).bind((query.limit.unwrap_or(50)+1) as i64).bind(&query.target_id).bind(&query.target_type).bind(query.request_id.map(|id|id.to_string())).bind(query.owner.map(|owner|serde_json::to_value(owner).expect("closed owner").as_str().expect("owner string").to_owned())).bind(format!("{}.",self.profile.name())).bind(self.query_budget.bytes).fetch_all(c).await?;
+            .bind(&query.actor).bind(&query.action).bind(&query.outcome).bind(query.from).bind(query.until).bind(token.map(|v|v.after_at)).bind(token.map(|v|v.after_position)).bind((limit+1) as i64).bind(&query.target_id).bind(&query.target_type).bind(query.request_id.map(|id|id.to_string())).bind(query.owner.map(|owner|serde_json::to_value(owner).expect("closed owner").as_str().expect("owner string").to_owned())).bind(format!("{}.",self.profile.name())).bind(self.query_budget.bytes).fetch_all(c).await?;
         if !rows
             .first()
             .ok_or(Error::Storage)?
@@ -421,10 +432,10 @@ impl Timeline {
         token: Option<&cursor::Cursor>,
         complete: bool,
         mut rows: Vec<sqlx::postgres::PgRow>,
+        limit: usize,
     ) -> Result<DiagnosticPage, Error> {
         let tenant = proof.binding().tenant().to_string();
         self.validate_cursor(proof, family, query, token)?;
-        let limit = query.limit.unwrap_or(50);
         if rows
             .first()
             .is_some_and(|v| v.try_get::<Option<i64>, _>("position").ok() == Some(None))
@@ -564,7 +575,7 @@ fn audit_error(error: rss_audit_postgres::Error) -> Error {
     use rss_audit_postgres::Error as E;
     match error {
         E::Storage { .. } | E::Messaging(_) => Error::Storage,
-        E::ReadBudgetExceeded => Error::Deadline,
+        E::ReadBudgetExceeded => Error::BudgetExceeded,
         E::Rollback {
             operation,
             settlement,

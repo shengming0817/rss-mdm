@@ -55,6 +55,39 @@ class Browser:
         finally:
             connection.close()
 
+def ingress_capacity(browser, principal):
+    profile = f'/api/v1/identity/tenants/{TENANT}/accounts/{principal}/profile'
+    status, original = browser.call('GET', profile)
+    require(status == 200, 'local profile read')
+    operation = str(uuid.uuid4())
+    value = dict(displayName='Candidate', username=None, email=None, maxAgeSeconds=60,
+                 extensions={f'field{n:04}': 'value' * 24 for n in range(256)})
+    change = dict(operationId=operation, expectedRevision=original['revision'], value=value)
+    csrf = browser.csrf
+    browser.csrf = ''
+    require(browser.call('PUT', profile, change)[0] == 403, 'profile CSRF')
+    browser.csrf = csrf
+    status, receipt = browser.call('PUT', profile, change)
+    require(status == 200 and receipt['operationId'] == operation, 'large profile write')
+    require(browser.call('GET', profile) == (200, dict(revision=receipt['revision'], value=value)), 'large profile readback')
+    require(browser.call('PUT', profile, change) == (200, receipt), 'large profile replay')
+    require(browser.call('GET', profile + '/operations/' + operation) == (200, receipt), 'large profile receipt')
+    require(browser.call('PUT', profile, dict(change, padding='x' * 98304))[0] == 413, 'profile wire ceiling')
+
+    key = 'custom.capacity_enum'
+    path = f'/api/v1/tenants/{TENANT}/asset-fields/' + key
+    members = [f'state{n:04}' + 's' * 128 for n in range(1024)]
+    definition = dict(key=key, version=1, valueType=dict(kind='enum', values=members),
+                      nullable=False, manual=False, sources={'agent.builtin': 0}, platforms=['windows'],
+                      sensitivity='standard', unit=None, searchable=False, itemKey=None, timeSeries=None)
+    change = dict(operationId=str(uuid.uuid4()), expectedRevision=0, input=dict(action='put', definition=definition))
+    status, _ = browser.call('PUT', path, change)
+    require(status in (200, 202), 'large field publication')
+    def published():
+        status, result = browser.call('GET', path)
+        return status == 200 and result['asset']['field']['valueType']['values'] == members
+    wait(published, 'complete field vocabulary readback')
+
 def native_pki_journey(deployed,browser):
     root=deployed.root;fixture=root/'pki/agent'
     csr=base64.b64encode((fixture/'agent.der').read_bytes()).decode()
@@ -159,6 +192,7 @@ def run_smoke(directory):
         administrator=browser
         status,account=administrator.call('POST',tenant+'/accounts',dict(login='scoped',password=PASSWORD))
         require(status==201 and isinstance(account.get('principalId'),str),'candidate scoped account creation')
+        ingress_capacity(administrator, account["principalId"])
         browser=Browser(deployed.port,deployed.root/'ca.crt')
         require(browser.call('POST',tenant+'/login',dict(login='scoped',password=PASSWORD))[0]==200,
                 'candidate scoped account login')
@@ -195,7 +229,7 @@ def run_smoke(directory):
         require("mdm_request" in logs, "candidate request diagnostics missing")
         require(elapsed<45 and docker("inspect","--format","{{.State.ExitCode}}",server,stage=Stage.EXIT)=="0" and "mdm_shutdown_failure" not in logs,"candidate bounded shutdown failed")
         result=dict(source=manifest["source"],candidate_sha256=sha(directory/"candidate.json"),manifest_digest=digest,archive_sha256=sha(archive),platform=manifest["platform"],
-                    checks=pki_checks+["management_bootstrap","management_login","management_grants","management_business_isolation","migrate","migration_replay","initialize","authorization_initialize","authorization_replay","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
+                    checks=pki_checks+["large_profile_write_read_replay","large_field_publication","management_bootstrap","management_login","management_grants","management_business_isolation","migrate","migration_replay","initialize","authorization_initialize","authorization_replay","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
                     shutdown_seconds=round(elapsed,3),limits=["disposable MDM PostgreSQL and TLS namespace","no real Windows or macOS device T3"])
         if deployed.web is not None:
             result["ui"] = deployed.web

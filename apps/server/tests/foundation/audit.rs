@@ -40,8 +40,7 @@ async fn sensitive_http_body_is_withheld_when_audit_cannot_commit() -> Result<()
     let router = rss_mdm_management_http::boundary::wrap(
         routes,
         rss_mdm_management_http::boundary::Envelope {
-            request_budget: rss_axum::RequestBudget::new(std::time::Duration::from_secs(8))
-                .unwrap(),
+            request_timeout: std::time::Duration::from_secs(8),
             profile: rss_mdm_install_support::StorageProfile::Mdm,
 
             host: "mdm.example.test".into(),
@@ -179,7 +178,7 @@ async fn large_audit_records_and_complete_query_pages_share_current_capacity() -
         let full = c.database.timeline(
             store.clone(),
             &[37; 32],
-            QueryBudget::new(1024, 8 * 1024 * 1024)?,
+            QueryBudget::new(20, 8 * 1024 * 1024)?,
         )?;
         assert_eq!(
             full.query(
@@ -187,7 +186,7 @@ async fn large_audit_records_and_complete_query_pages_share_current_capacity() -
                 "audit",
                 &Query {
                     action: Some("capacity_read".into()),
-                    limit: Some(2),
+                    limit: None,
                     ..Query::default()
                 }
             )
@@ -196,6 +195,18 @@ async fn large_audit_records_and_complete_query_pages_share_current_capacity() -
             .len(),
             2
         );
+        assert!(matches!(
+            full.query(
+                &proof,
+                "audit",
+                &Query {
+                    limit: Some(21),
+                    ..Query::default()
+                }
+            )
+            .await,
+            Err(rss_mdm_timeline_service::Error::BudgetExceeded)
+        ));
         let one_document: i64 = sqlx::query_scalar("SELECT max(octet_length(document::text))::bigint FROM mdm_timeline.facts WHERE tenant_id=$1::uuid AND action='capacity_read'")
             .bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
         let timeline = c.database.timeline(
@@ -439,7 +450,7 @@ async fn request_timeout_is_projected_after_audit_settlement() -> Result<()> {
     let router = rss_mdm_management_http::boundary::wrap(
         routes,
         rss_mdm_management_http::boundary::Envelope {
-            request_budget: rss_axum::RequestBudget::new(Duration::from_millis(30))?,
+            request_timeout: Duration::from_millis(30),
             profile: rss_mdm_install_support::StorageProfile::Mdm,
 
             host: "mdm.example.test".into(),
@@ -451,7 +462,7 @@ async fn request_timeout_is_projected_after_audit_settlement() -> Result<()> {
     .into_axum()
     .layer(Extension(c.execution()));
     for (path, expected) in [
-        ("/budget/read", "service_unavailable"),
+        ("/budget/read", "request_deadline"),
         ("/budget/commit", "operation_unknown"),
         ("/settled", "downstream"),
     ] {
@@ -464,7 +475,10 @@ async fn request_timeout_is_projected_after_audit_settlement() -> Result<()> {
                     .body(axum::body::Body::empty())?,
             )
             .await?;
-        assert_eq!(response.status(), 503);
+        assert_eq!(
+            response.status(),
+            if path == "/budget/read" { 504 } else { 503 }
+        );
         uuid::Uuid::parse_str(response.headers()["x-request-id"].to_str()?)?;
         assert_eq!(response.headers()["cache-control"], "no-store");
         if path == "/settled" {

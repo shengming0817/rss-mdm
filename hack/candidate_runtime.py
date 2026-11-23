@@ -351,7 +351,7 @@ class Candidate:
         database=dict(host=self.pg_host,port=5432,name=name,user='postgres',
             password_file='/run/mdm/telemetry-administrator',ca_file='/run/mdm/ca.crt')
         runtime=dict(database,user='r_'+uuid.uuid4().hex,password_file='/run/mdm/telemetry-password')
-        config=dict(resource_id=str(uuid.uuid4()),backend=dict(kind='postgres',database=runtime),connections=2,maintenance=dict(rows=4096,buckets=64,step_seconds=6),
+        config=dict(resource_id=str(uuid.uuid4()),backend=dict(kind='postgres',database=runtime),connections=2,maintenance=dict(authorization_batches=65536,rows=4096,buckets=64,step_seconds=6),
             cursor_key_file='/run/mdm/telemetry-cursor',ingress=dict(requestBytes=1048576,pendingBatches=64,
             batchesPerMinute=120,bytesPerMinute=8388608),limits=dict(max_points=4096,max_series=4096,
             max_bytes=1048576,replay_micros=86400000000,cursor_micros=60000000))

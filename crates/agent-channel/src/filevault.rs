@@ -73,12 +73,13 @@ async fn principal(
 }
 async fn configuration(
     axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
+    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     RuntimeHeaders(headers): RuntimeHeaders,
 ) -> Result<Json<w::Configuration>, AgentError> {
-    crate::bounded(async {
+    crate::bounded(&control, async {
         let p = principal(&origin, &s, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         s.recovery.configuration(&p).await.map(Json).map_err(error)
     })
@@ -86,13 +87,14 @@ async fn configuration(
 }
 async fn upload(
     axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
+    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     RuntimeHeaders(headers): RuntimeHeaders,
     input: Result<Json<w::Upload>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<w::Receipt>, AgentError> {
-    crate::bounded(async {
+    crate::bounded(&control, async {
         let p = principal(&origin, &s, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         let Json(input) = input.map_err(|_| Error::Malformed)?;
         s.recovery
@@ -105,13 +107,14 @@ async fn upload(
 }
 async fn receipt(
     axum::Extension(origin): axum::Extension<rss_mdm_certificate::GatewayOrigin>,
+    axum::Extension(control): axum::Extension<rss_axum::RequestControl>,
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     RuntimeHeaders(headers): RuntimeHeaders,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Option<w::Receipt>>, AgentError> {
-    crate::bounded(async {
+    crate::bounded(&control, async {
         let p = principal(&origin, &s, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         s.recovery.receipt(&p, id).await.map(Json).map_err(error)
     })

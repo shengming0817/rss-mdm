@@ -23,6 +23,7 @@ CREATE TABLE mdm_telemetry.batches (
   , current_assets boolean NOT NULL
   , PRIMARY KEY (tenant_id, id)
 );
+CREATE INDEX batches_stream_history ON mdm_telemetry.batches(tenant_id,device,source,epoch,policy,policy_version,id);
 CREATE INDEX pending_registration
   ON mdm_telemetry.batches (tenant_id
                           , device)

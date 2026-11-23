@@ -47,7 +47,7 @@ impl Fixture {
         runtime.password_file = directory.path().join("password");
         let config: crate::telemetry::Config = serde_json::from_value(serde_json::json!({
             "resource_id":Uuid::new_v4(),"backend":{"kind":"postgres","database":runtime},"connections":2,"cursor_key_file":directory.path().join("cursor"),
-            "maintenance":{"rows":4096,"buckets":64,"step_seconds":6},
+            "maintenance":{"authorization_batches":65536,"rows":points.min(128),"buckets":series.min(16),"step_seconds":6},
             "ingress":{"requestBytes":1048576,"pendingBatches":64,"batchesPerMinute":120,"bytesPerMinute":8388608},
             "limits":{"max_points":points,"max_series":series,"max_bytes":1048576,"replay_micros":86400000000u64,"cursor_micros":60000000}
         }))?;

@@ -463,8 +463,7 @@ async fn original_result_survives_lost_response_new_config_and_index_failure() -
     let router = rss_mdm_management_http::boundary::wrap(
         routes,
         rss_mdm_management_http::boundary::Envelope {
-            request_budget: rss_axum::RequestBudget::new(std::time::Duration::from_secs(8))
-                .unwrap(),
+            request_timeout: std::time::Duration::from_secs(8),
             profile: rss_mdm_install_support::StorageProfile::Mdm,
 
             host: "localhost".into(),

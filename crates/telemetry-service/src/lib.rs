@@ -32,6 +32,9 @@ pub enum Error {
     /// Explicit resource capacity was exceeded.
     #[error("telemetry capacity exceeded")]
     Capacity,
+    /// The request stopped before a confirmed effect.
+    #[error("telemetry deadline elapsed")]
+    Deadline,
     /// A provider could not confirm the effect.
     #[error("telemetry outcome unknown")]
     Unknown,
@@ -52,10 +55,17 @@ impl From<rss_timeseries::Error> for Error {
             | rss_timeseries::Error::InvalidCursor => Self::Invalid,
             rss_timeseries::Error::Unsupported => Self::Unsupported,
             rss_timeseries::Error::Unauthorized => Self::Denied,
-            rss_timeseries::Error::Deadline
-            | rss_timeseries::Error::Unavailable
-            | rss_timeseries::Error::Invariant => Self::Storage,
+            rss_timeseries::Error::Deadline => Self::Deadline,
+            rss_timeseries::Error::Unavailable | rss_timeseries::Error::Invariant => Self::Storage,
         }
+    }
+}
+fn authorization_error(error: rss_mdm_authorization_service::Error) -> Error {
+    use rss_mdm_authorization_service::Error as E;
+    match error {
+        E::Unauthorized | E::Forbidden => Error::Denied,
+        E::Deadline => Error::Deadline,
+        _ => Error::Storage,
     }
 }
 impl From<sqlx::Error> for Error {

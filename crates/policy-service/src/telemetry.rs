@@ -118,6 +118,42 @@ impl Reader {
         .ok_or(Error::Forbidden)?;
         serde_json::from_value(value).map_err(|_| Error::Unavailable(Failure::PolicyStorage))
     }
+    /// Read a published version without decoding collector material or full field definitions.
+    pub async fn qualification_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        tenant: TenantId,
+        policy: Uuid,
+        version: Uuid,
+    ) -> Result<
+        Option<(
+            rss_mdm_inventory::Source,
+            rss_mdm_resource::TelemetryProjection,
+            Vec<rss_mdm_resource::TelemetryFieldReference>,
+        )>,
+        Error,
+    > {
+        let value = rss_mdm_policy_postgres::telemetry::qualification_on(
+            self.profile(),
+            c,
+            tenant,
+            policy,
+            version,
+        )
+        .await
+        .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
+        value
+            .map(|(source, projection, fields)| {
+                let bad = || Error::Unavailable(Failure::PolicyStorage);
+                Ok((
+                    rss_mdm_inventory::Source::parse(&source).map_err(|_| bad())?,
+                    serde_json::from_value(serde_json::Value::String(projection))
+                        .map_err(|_| bad())?,
+                    serde_json::from_value(fields).map_err(|_| bad())?,
+                ))
+            })
+            .transpose()
+    }
     pub async fn candidates_on(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,

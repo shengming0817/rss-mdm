@@ -18,7 +18,9 @@ fn error(error: rss_mdm_timeline_service::Error) -> Error {
         E::Conflict => Error::Conflict,
         E::Forbidden => Error::Forbidden,
         E::Integrity => Error::Unavailable(Failure::AuditIntegrity),
-        E::Storage | E::Deadline | E::BudgetExceeded => Error::Unavailable(Failure::Timeline),
+        E::Deadline => Error::RequestDeadline,
+        E::BudgetExceeded => Error::CapacityExceeded,
+        E::Storage => Error::Unavailable(Failure::Timeline),
     }
 }
 pub fn routes() -> Router<Arc<Timeline>, impl rss_mdm_http_contract::module::Declaration + use<>> {

@@ -12,7 +12,7 @@ use rss_mdm_audit_integration::{
     completion::{Replacement, ResponseFailure},
 };
 use rss_mdm_http_contract::Router;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 #[derive(Clone)]
 pub struct Envelope {
     pub request_budget: rss_axum::RequestBudget,
@@ -50,6 +50,14 @@ fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
     }
 }
 pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next: Next) -> Response {
+    let Some(control) = request
+        .extensions()
+        .get::<rss_axum::RequestControl>()
+        .cloned()
+    else {
+        return project(Error::Unavailable(Failure::RequestDeadline));
+    };
+    let deadline = control.deadline();
     let started = envelope.clock.now();
     let route = request
         .extensions()
@@ -64,7 +72,10 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
     );
     let id = audit.request_id();
     request.extensions_mut().insert(audit.clone());
-    let host_lease = request.extensions().get::<Arc<tokio::sync::OwnedSemaphorePermit>>().cloned();
+    let host_lease = request
+        .extensions()
+        .get::<Arc<tokio::sync::OwnedSemaphorePermit>>()
+        .cloned();
     let lifecycle = request
         .extensions()
         .get::<rss_runtime::AdmissionGate>()
@@ -83,7 +94,7 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
     {
         Err(project(Error::Malformed))
     } else {
-        body(request, envelope.buffered_bytes.clone()).await
+        body(request, envelope.buffered_bytes.clone(), deadline).await
     };
     let Some(permit) = lifecycle.and_then(|gate| gate.try_admit().ok()) else {
         audit.finalize(None);
@@ -103,6 +114,7 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
             &audit,
             response.status().as_u16(),
             failure,
+            deadline,
         )
         .await
         {
@@ -160,12 +172,20 @@ fn limited(id: uuid::Uuid) -> Response {
 async fn body(
     request: Request,
     requests: Arc<tokio::sync::Semaphore>,
+    deadline: rss_request_context::Deadline,
 ) -> Result<(Request, tokio::sync::OwnedSemaphorePermit), Response> {
     let limit = 2 * 1024 * 1024;
-    let permit = requests.try_acquire_many_owned(limit as u32).map_err(|_| limited(uuid::Uuid::new_v4()))?;
+    let permit = requests
+        .try_acquire_many_owned(limit as u32)
+        .map_err(|_| limited(uuid::Uuid::new_v4()))?;
     let (parts, body) = request.into_parts();
-    match tokio::time::timeout(Duration::from_secs(8), axum::body::to_bytes(body, limit)).await {
-        Ok(Ok(bytes)) => Ok((Request::from_parts(parts, axum::body::Body::from(bytes)), permit)),
+    match tokio::time::timeout_at(deadline.instant().into(), axum::body::to_bytes(body, limit))
+        .await
+    {
+        Ok(Ok(bytes)) => Ok((
+            Request::from_parts(parts, axum::body::Body::from(bytes)),
+            permit,
+        )),
         Ok(Err(_)) => Err(StatusCode::PAYLOAD_TOO_LARGE.into_response()),
         Err(_) => Err(project(Error::Unavailable(Failure::RequestDeadline))),
     }

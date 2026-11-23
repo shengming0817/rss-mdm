@@ -72,6 +72,7 @@ struct HttpExecution {
     management: ExecutionBinding,
     rp: rss_identity_postgres::RpGeneration,
     timeout: Duration,
+    management_timeout: Duration,
     federation: Option<rss_identity_postgres::Federation>,
 }
 const TENANT_PREFIXES: [&str; 3] = [
@@ -98,7 +99,7 @@ impl ScopeFailure {
             Self::Malformed => Error::Malformed,
             Self::Forbidden => Error::Forbidden,
             Self::Unavailable => Error::Unavailable(Failure::IdentityStorage),
-            Self::Deadline => Error::Unavailable(Failure::RequestDeadline),
+            Self::Deadline => Error::RequestDeadline,
         }
     }
     fn identity(self, path: &str) -> bool {
@@ -144,7 +145,10 @@ pub(crate) fn scope_rejections(
     _: &str,
     path: &str,
 ) -> Vec<rss_mdm_http_contract::signature::Response> {
-    let mut responses = vec![ScopeFailure::Unavailable.contract(path)];
+    let mut responses = vec![
+        ScopeFailure::Unavailable.contract(path),
+        ScopeFailure::Deadline.contract(path),
+    ];
     if TENANT_PREFIXES
         .iter()
         .any(|prefix| path.starts_with(prefix))
@@ -165,8 +169,13 @@ async fn execution_scope(
     next: Next,
 ) -> Response {
     let (mut parts, body) = request.into_parts();
+    let timeout = if parts.uri.path().starts_with("/api/v1/identity/") {
+        scope.timeout
+    } else {
+        scope.management_timeout
+    };
     let Ok(mut cutoff) =
-        rss_request_context::Deadline::from_timeout(&crate::lifecycle::RuntimeTimer, scope.timeout)
+        rss_request_context::Deadline::from_timeout(&crate::lifecycle::RuntimeTimer, timeout)
     else {
         return ScopeFailure::Deadline.response(parts.uri.path());
     };
@@ -211,6 +220,13 @@ async fn execution_scope(
         match admitted {
             Ok(true) => (),
             Ok(false) => return ScopeFailure::Forbidden.response(path),
+            Err(_)
+                if cutoff.is_expired(rss_request_context::Clock::now(
+                    &crate::lifecycle::RuntimeTimer,
+                )) =>
+            {
+                return ScopeFailure::Deadline.response(path);
+            }
             Err(_) => return ScopeFailure::Unavailable.response(path),
         }
         parts.extensions.insert(binding);
@@ -523,7 +539,7 @@ impl Identity {
         admission: Arc<rss_mdm_management_http::api_access::BearerAdmission>,
         mut envelope: rss_mdm_management_http::boundary::Envelope,
     ) -> IdentityRoutes {
-        envelope.request_budget = self.request_budget;
+        envelope.request_timeout = self.request_timeout;
         let bearer = self
             .bearer_routes
             .clone()
@@ -536,7 +552,7 @@ impl Identity {
             envelope,
         ))
     }
-    pub(crate) fn scope_browser(&self, router: Router) -> Router {
+    pub(crate) fn scope_browser(&self, router: Router, management_timeout: Duration) -> Router {
         router.layer(axum::middleware::from_fn_with_state(
             HttpExecution {
                 storage: self.storage.clone(),
@@ -545,6 +561,7 @@ impl Identity {
                 management: self.management_binding,
                 rp: self.rp_generation,
                 timeout: self.request_timeout,
+                management_timeout,
                 federation: self.federation.clone(),
             },
             execution_scope,

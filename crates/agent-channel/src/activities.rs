@@ -106,7 +106,7 @@ async fn page(
     raw: OwnedQuery<ActivityQuery>,
     changes: bool,
 ) -> Result<CollectionResponse<Json<ManagementActivityPage>>, AgentError> {
-    crate::bounded(async {
+    crate::bounded(&control, async {
         let p = crate::authenticate(
             origin,
             &s.tasks.enrollment,
@@ -154,7 +154,7 @@ async fn detail(
     Path(id): Path<String>,
     raw: OwnedQuery<ActivityView>,
 ) -> Result<Json<ManagementActivityDetail>, AgentError> {
-    crate::bounded(async {
+    crate::bounded(&control, async {
         let personal = raw.parse()?;
         let p = crate::authenticate(
             &origin,

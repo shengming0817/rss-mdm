@@ -40,7 +40,6 @@ struct Dispatch {
     browser: Router,
     routes: Arc<Vec<(ChannelKind, ChannelRouter)>>,
     product_origin: String,
-    request_slots: Arc<tokio::sync::Semaphore>,
 }
 pub(crate) fn router(
     browser: Router,
@@ -59,13 +58,38 @@ pub(crate) fn router(
             (kind, route)
         })
         .collect();
-    Router::new().fallback(dispatch).with_state(Dispatch {
-        browser,
-        routes: Arc::new(routes),
-        product_origin,
-        request_slots,
-    })
+    Router::new()
+        .fallback(dispatch)
+        .with_state(Dispatch {
+            browser,
+            routes: Arc::new(routes),
+            product_origin,
+        })
+        .layer(axum::middleware::from_fn_with_state(
+            request_slots,
+            admit_request,
+        ))
 }
+async fn admit_request(
+    State(slots): State<Arc<tokio::sync::Semaphore>>,
+    mut request: Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if matches!(request.uri().path(), "/livez" | "/readyz") {
+        return next.run(request).await;
+    }
+    let Ok(permit) = slots.try_acquire_owned() else {
+        let delay = std::time::Duration::from_secs(1);
+        if kind(request.uri().path()) == Some(ChannelKind::Agent) {
+            return super::admission::agent_limited(request.uri().path());
+        }
+        return super::admission::limited(delay);
+    };
+    let lease = Arc::new(permit);
+    request.extensions_mut().insert(lease.clone());
+    next.run(request).await
+}
+
 fn single<'a>(request: &'a Request, name: &str) -> Result<Option<&'a str>, ()> {
     let mut values = request.headers().get_all(name).iter();
     let value = values
@@ -180,15 +204,6 @@ async fn dispatch(State(state): State<Dispatch>, mut request: Request) -> Respon
             .await
             .unwrap_or_else(|never| match never {});
     }
-    let Ok(permit) = state.request_slots.clone().try_acquire_owned() else {
-        let delay = std::time::Duration::from_secs(1);
-        if kind(request.uri().path()) == Some(ChannelKind::Agent) {
-            return super::admission::agent_limited(request.uri().path());
-        }
-        return super::admission::limited(delay);
-    };
-    let lease = Arc::new(permit);
-    request.extensions_mut().insert(lease.clone());
     // Anonymous package delivery has one public contract, also usable from the console origin.
     let package_path = request
         .uri()
@@ -241,4 +256,57 @@ async fn dispatch(State(state): State<Dispatch>, mut request: Request) -> Respon
         .oneshot(request)
         .await
         .unwrap_or_else(|never| match never {})
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    #[tokio::test]
+    async fn every_request_holds_exactly_one_slot_until_its_consumer_finishes() {
+        for capacity in [1, 5] {
+            let slots = Arc::new(tokio::sync::Semaphore::new(capacity));
+            let (entered, mut arrivals) = tokio::sync::mpsc::channel(capacity);
+            let release = Arc::new(tokio::sync::Notify::new());
+            let app = Router::new()
+                .fallback({
+                    let release = release.clone();
+                    move |axum::Extension(lease): axum::Extension<
+                        Arc<tokio::sync::OwnedSemaphorePermit>,
+                    >| {
+                        let entered = entered.clone();
+                        let release = release.clone();
+                        async move {
+                            let resume = release.notified();
+                            entered.send(()).await.unwrap();
+                            resume.await;
+                            drop(lease);
+                            StatusCode::OK
+                        }
+                    }
+                })
+                .layer(axum::middleware::from_fn_with_state(
+                    slots.clone(),
+                    super::admit_request,
+                ));
+            let mut tasks = Vec::new();
+            for _ in 0..capacity {
+                tasks.push(tokio::spawn(
+                    app.clone().oneshot(Request::new(axum::body::Body::empty())),
+                ));
+                arrivals.recv().await.unwrap();
+            }
+            assert_eq!(
+                app.oneshot(Request::new(axum::body::Body::empty()))
+                    .await
+                    .unwrap()
+                    .status(),
+                429
+            );
+            release.notify_waiters();
+            for task in tasks {
+                assert_eq!(task.await.unwrap().unwrap().status(), 200);
+            }
+            assert_eq!(slots.available_permits(), capacity);
+        }
+    }
 }

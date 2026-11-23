@@ -141,7 +141,7 @@ pub(crate) fn from_state(
         clock: state.clock.clone(),
     });
     let management_boundary = rss_mdm_management_http::boundary::Envelope {
-        request_budget: state.request_budget,
+        request_timeout: state.request_timeout,
         profile: rss_mdm_install_support::StorageProfile::Mdm,
         host: host.clone(),
         clock: monotonic.clone(),
@@ -544,10 +544,7 @@ pub(crate) fn from_state(
             crate::native::ChannelRouter {
                 origins: pki.origins.clone(),
                 router: router.into_checked_axum(rss_mdm_http_contract::module::Listener::Agent),
-                admission: crate::native::admission::Admission::new(
-                    monotonic.clone(),
-                    "agent-tls",
-                ),
+                admission: crate::native::admission::Admission::new(monotonic.clone(), "agent-tls"),
             },
         ));
     }
@@ -604,7 +601,7 @@ pub(crate) fn from_state(
         .merge(browser.into_checked_axum(rss_mdm_http_contract::module::Listener::Browser));
     let browser = state
         .identity
-        .scope_browser(browser)
+        .scope_browser(browser, state.request_timeout)
         .layer(DefaultBodyLimit::max(16384));
     crate::native::Routers {
         windows_control: windows_state.clone(),
