@@ -141,14 +141,8 @@ impl Timeline {
                                 })
                             })
                             .await?;
-                        ctx.0.page_in(
-                            ctx.1,
-                            ctx.2,
-                            ctx.3,
-                            ctx.4.as_ref(),
-                            indexed,
-                            ctx.5,
-                        )
+                        ctx.0
+                            .page_in(ctx.1, ctx.2, ctx.3, ctx.4.as_ref(), indexed, ctx.5)
                     })
                 },
             )
@@ -432,7 +426,7 @@ impl Timeline {
         indexed: (bool, Vec<sqlx::postgres::PgRow>),
         limit: usize,
     ) -> Result<DiagnosticPage, Error> {
-        let (complete,mut rows)=indexed;
+        let (complete, mut rows) = indexed;
         let tenant = proof.binding().tenant().to_string();
         self.validate_cursor(proof, family, query, token)?;
         if rows

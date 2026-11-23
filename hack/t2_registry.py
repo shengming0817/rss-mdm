@@ -16,7 +16,7 @@ MODULES = {
                 'crates/policy-service/src/telemetry.rs','crates/policy-postgres/src/telemetry.rs','crates/policy-postgres/src/storage_profile.rs','crates/agent-wire/tests/fixtures/telemetry-v1-vectors.json',
                 'crates/telemetry-service/*', 'apps/server/src/telemetry.rs', 'apps/server/tests/telemetry/*',
                 'crates/http-contract/*', 'crates/inventory/src/telemetry.rs', 'crates/inventory/src/time_series.rs', 'crates/inventory/src/catalog.rs')),
-    'directory.query': dict(prefix='assembly::directory_queries_t2::', profiles=('shared',),
+    'directory.query': dict(prefix='assembly::directory_queries_t2::', profiles=('directory_query',),
         inputs=('crates/agent-wire/src/identity.rs', 'crates/query/*','crates/query-postgres/*','crates/resource/*','crates/resource-postgres/*','crates/resource-service/*',
                 'crates/certificate-archive-service/*','crates/webhook-service/*','crates/apple-channel/src/management_query.rs',
                 'crates/apple-channel/src/ade/management.rs','crates/group-postgres/*','crates/group-service/*',

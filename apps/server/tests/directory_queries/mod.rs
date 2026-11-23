@@ -125,7 +125,7 @@ fn page(body: &Value) -> &Value {
     reason = "real App lifecycle and loopback HTTP fixture"
 )]
 async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<()> {
-    let c = Context::open("shared", &[]).await?;
+    let c = Context::open("directory_query", &[]).await?;
     let manager = c
         .account(&[
             P::ResourceRead,
@@ -162,7 +162,8 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
     let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = reservation.local_addr()?;
     let mut config =
-        crate::host_t2_support::configuration(&c.inputs, "shared", address, Uuid::new_v4()).await?;
+        crate::host_t2_support::configuration(&c.inputs, &c.profile, address, Uuid::new_v4())
+            .await?;
     config["agent_pki"] = pki["agent_pki"].clone();
     config["device_pki"] = pki["device_pki"].clone();
     config["recovery_credentials"] = recovery;
@@ -175,7 +176,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
     let target = format!("directory-{}", c.tenant);
     config["publication"]["sources"] = json!([{"name":target,"credentials":{},"target":{"Winget":{"base":format!("https://mdm.example.test/api/v1/tenants/{{tenant}}/software/native/sources/{target}/"),"artifacts_base":format!("https://mdm.example.test/api/v1/tenants/{{tenant}}/software/native/sources/{target}/artifacts/")}}}]);
     // A source enabled for another tenant must not hide this tenant's WinGet target.
-    let peer = Context::open("shared", &[]).await?;
+    let peer = Context::open("directory_query", &[]).await?;
     let brew = format!("brew-{}", c.tenant);
     let repository = content.join("brew.git");
     anyhow::ensure!(
