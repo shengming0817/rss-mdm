@@ -380,9 +380,7 @@ pub fn registration(
             &stop,
             &notify,
             (
-                |key: &(Uuid, Uuid, Vec<u8>)| {
-                    limits.push_quotas(key.0, key.2.clone(), (key.0, key.1))
-                },
+                |key: &(Uuid, Uuid, Vec<u8>)| limits.work(key.0, key.2.clone(), (key.0, key.1)),
                 |after| {
                     let (app, eligibility) = (&app, &eligibility);
                     async move {
@@ -404,7 +402,16 @@ pub fn registration(
                         } else {
                             None
                         };
-                        Ok(rss_mdm_work_page::Page { rows, next })
+                        Ok(rss_mdm_work_page::Page::scheduled(
+                            rows.into_iter()
+                                .map(|(tenant, device, credential, wait_ms)| {
+                                    (
+                                        (tenant, device, credential),
+                                        Duration::from_millis(wait_ms.unsigned_abs()),
+                                    )
+                                }),
+                            next,
+                        ))
                     }
                 },
             ),

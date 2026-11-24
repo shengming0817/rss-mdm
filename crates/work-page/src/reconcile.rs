@@ -3,6 +3,7 @@ use super::{
     Failure,
     capacity::{Capacity, Slot},
 };
+use futures::{StreamExt, stream::FuturesUnordered};
 use rss_reconcile::{
     Claim, ClaimBatch, Completion, Control, DurableStore, Error, ErrorKind, Observation, Policy,
     ReconcileDiff, ReconcileStep, Reconciler, ResourceSet, Scope, Target, Timer,
@@ -19,13 +20,61 @@ use uuid::Uuid;
 
 const RECOVERY: Duration = Duration::from_secs(5);
 
+/// A grant belongs to one RSS claim round. The store can announce more durable
+/// work as soon as it knows the result, before a slow claim finishes.
+pub struct Grant {
+    slots: Vec<ClaimSlot>,
+    refill: Arc<Notify>,
+}
+
+struct ClaimSlot {
+    _host: Slot,
+    _registration: Option<Slot>,
+}
+
+// A registration can have a narrower execution policy than the shared host.
+// Acquire the narrower budget first so its waiters never hold idle host slots.
+fn request(
+    host: &Arc<Capacity>,
+    registration: Option<&Arc<Capacity>>,
+    tenant: Uuid,
+    width: usize,
+    stop: &CancellationToken,
+) -> impl Future<Output = Vec<ClaimSlot>> + Send + use<> {
+    let first = registration.unwrap_or(host).acquire(tenant, width, stop);
+    let shared = registration.map(|_| host.clone());
+    let stop = stop.clone();
+    async move {
+        let granted = first.await;
+        if let Some(host) = shared {
+            host.acquire(tenant, granted.len(), &stop)
+                .await
+                .into_iter()
+                .zip(granted)
+                .map(|(host, local)| ClaimSlot {
+                    _host: host,
+                    _registration: Some(local),
+                })
+                .collect()
+        } else {
+            granted
+                .into_iter()
+                .map(|host| ClaimSlot {
+                    _host: host,
+                    _registration: None,
+                })
+                .collect()
+        }
+    }
+}
+
 pub async fn run<P, B>(
     budget: &Arc<Capacity>,
     policy: Policy,
     stop: &CancellationToken,
     notify: &Notify,
     page: impl Fn(Option<Uuid>) -> P,
-    batch: impl Fn(Uuid, Vec<Slot>, CancellationToken) -> B + Send + Sync + 'static,
+    batch: impl Fn(Uuid, Grant, CancellationToken) -> B + Send + Sync + 'static,
 ) -> Result<(), Error>
 where
     P: Future<Output = Result<Vec<Uuid>, ErrorKind>>,
@@ -34,10 +83,12 @@ where
     let limit = NonZeroUsize::new(policy.concurrency())
         .expect("validated policy")
         .min(budget.limit());
+    let registration = (limit < budget.limit()).then(|| Capacity::new(limit));
     let batch = Arc::new(batch);
     let claim_limit = policy.claim_batch_size().min(limit.get());
+    // One additional discovered tenant may wait for the next physical slot.
     super::run_fallible(
-        limit,
+        limit.saturating_add(1),
         RECOVERY,
         stop,
         notify,
@@ -53,19 +104,40 @@ where
         |tenant, admission| {
             let budget = budget.clone();
             let batch = batch.clone();
+            let registration = registration.clone();
+            let admission = admission.child_token();
+            let first = request(&budget,registration.as_ref(),tenant,claim_limit,&admission);
             async move {
-                let slots = budget.acquire(tenant, claim_limit, &admission).await;
-                if slots.is_empty() {
-                    return Ok(RECOVERY);
+                let refill = Arc::new(Notify::new());
+                let attempt = |slots| {
+                    let (stop, batch, refill) = (admission.clone(), batch.clone(), refill.clone());
+                    async move {
+                        let slots: Vec<ClaimSlot> = slots.await;
+                        if slots.is_empty() { return Ok(RECOVERY); }
+                        batch(tenant, Grant { slots, refill }, stop).await
+                    }
+                };
+                let mut attempts = FuturesUnordered::from_iter([attempt(first)]);
+                let mut delay = RECOVERY;
+                let mut failure = None;
+                while !attempts.is_empty() {
+                    tokio::select! {
+                        biased;
+                        result = attempts.next() => match result.expect("owned claim round") {
+                            Ok(next) => delay = delay.min(next),
+                            Err(error) => {
+                                admission.cancel();
+                                let classified = match error.kind() {
+                                    ErrorKind::Transient | ErrorKind::Deadline | ErrorKind::CommitUnknown => Failure::Retry,
+                                    _ => Failure::Fatal(error),
+                                };
+                                if !matches!(failure, Some(Failure::Fatal(_))) { failure = Some(classified); }
+                            }
+                        },
+                        () = refill.notified(), if !admission.is_cancelled() => attempts.push(attempt(request(&budget,registration.as_ref(),tenant,claim_limit,&admission))),
+                    }
                 }
-                batch(tenant, slots, admission)
-                    .await
-                    .map_err(|error| match error.kind() {
-                        ErrorKind::Transient | ErrorKind::Deadline | ErrorKind::CommitUnknown => {
-                            Failure::Retry
-                        }
-                        _ => Failure::Fatal(error),
-                    })
+                failure.map_or(Ok(delay), Err)
             }
         },
         |_| {},
@@ -77,7 +149,7 @@ where
 /// with that exact claim so unrelated completions can refill the budget.
 pub async fn batch<S: DurableStore, R: Reconciler<S::Claim>>(
     (store, reconciler): (&S, &R),
-    slots: Vec<Slot>,
+    grant: Grant,
     scope: &Scope,
     policy: Policy,
     stop: &CancellationToken,
@@ -92,7 +164,8 @@ pub async fn batch<S: DurableStore, R: Reconciler<S::Claim>>(
     let control = Control::new(&timer, Duration::MAX, &force);
     let store = Admitted {
         store,
-        slots: Mutex::new(slots),
+        slots: Mutex::new(grant.slots),
+        refill: grant.refill,
         next_scan: Mutex::new(None),
     };
     let report = rss_reconcile::run_batch(
@@ -122,12 +195,13 @@ pub async fn batch<S: DurableStore, R: Reconciler<S::Claim>>(
 
 struct Admitted<'a, S> {
     store: &'a S,
-    slots: Mutex<Vec<Slot>>,
+    slots: Mutex<Vec<ClaimSlot>>,
+    refill: Arc<Notify>,
     next_scan: Mutex<Option<Duration>>,
 }
 struct Leased<C> {
     claim: C,
-    _slot: Slot,
+    _slot: ClaimSlot,
 }
 impl<C: Claim> Claim for Leased<C> {
     fn target(&self) -> &Target {
@@ -176,6 +250,9 @@ impl<S: DurableStore> DurableStore for Admitted<'_, S> {
             return Err(Error::new(ErrorKind::Invariant));
         }
         if batch.more {
+            if !batch.claims.is_empty() {
+                self.refill.notify_one();
+            }
             *self.next_scan.lock().expect("batch scan hint") = Some(Duration::ZERO);
         }
         Ok(ClaimBatch {

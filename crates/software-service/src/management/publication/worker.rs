@@ -63,7 +63,7 @@ impl PublicationDirectory {
                 &tokio::sync::Notify::new(),
                 (
                     |job: &Job| {
-                        limits.source_quotas(
+                        limits.work(
                             job.tenant,
                             job.source.clone(),
                             (job.tenant, job.binding, job.slot.clone()),

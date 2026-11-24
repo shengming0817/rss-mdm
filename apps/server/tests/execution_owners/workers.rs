@@ -1010,19 +1010,25 @@ async fn registered_owners_share_capacity_and_drain() -> Result<()> {
     let config = &a.a.resources.background;
     let width = config.tasks.concurrency();
     anyhow::ensure!(width == 8);
+    let first = TaskOwner::Script.seed(&a).await?;
     for _ in 1..width {
         TaskOwner::Script.seed(&a).await?;
     }
-    for _ in 0..2 {
-        TaskOwner::Collection.seed(&b).await?;
-    }
+    let backlog = TaskOwner::Script.seed(&a).await?;
+    let mut one = a.c.operator.begin().await?;
+    sqlx::query(
+        "SELECT FROM mdm_script.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 FOR UPDATE",
+    )
+    .bind(a.c.tenant.to_string())
+    .bind(first)
+    .execute(&mut *one)
+    .await?;
     let mut held = a.c.operator.begin().await?;
-    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_script.policy_recovery WHERE tenant_id=$1::uuid FOR UPDATE")
-        .bind(a.c.tenant.to_string()).fetch_all(&mut *held).await?[0];
-    let mut peer = b.c.operator.begin().await?;
-    let peer_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_inventory.collection_policy_recovery WHERE tenant_id=$1::uuid FOR UPDATE")
-        .bind(b.c.tenant.to_string()).fetch_all(&mut *peer).await?[0];
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_script.policy_recovery WHERE tenant_id=$1::uuid AND policy<>$2 FOR UPDATE")
+        .bind(a.c.tenant.to_string()).bind(first).fetch_all(&mut *held).await?[0];
     let notify = Arc::new(tokio::sync::Notify::new());
+    let start = crate::lifecycle::RuntimeTimer;
+    let started = rss_request_context::Clock::now(&start);
     let script = start_owner(a.a.script_work.clone().registration(
         config.tasks,
         config.tasks_drain,
@@ -1035,17 +1041,50 @@ async fn registered_owners_share_capacity_and_drain() -> Result<()> {
     };
     let attempt = wait_for_blocked_attempt(&a.c.operator, pid, TaskOwner::Script.table()).await?;
     tokio::time::timeout(Duration::from_secs(5), async {
-        while counts().await?.0 != 7 {
+        while counts().await? != (8, 0) {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         Ok::<_, anyhow::Error>(())
     })
     .await??;
-    let collection = start_owner(a.a.collection_work.clone().registration(
+    let claimed = rss_request_context::Clock::now(&start);
+    let peer_id = TaskOwner::Collection.seed(&b).await?;
+    let mut peer = b.c.operator.begin().await?;
+    let peer_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_inventory.collection_policy_recovery WHERE tenant_id=$1::uuid FOR UPDATE")
+        .bind(b.c.tenant.to_string()).fetch_all(&mut *peer).await?[0];
+    // The second checkout follows consumption of the first real discovery page.
+    let discovered = CancellationToken::new();
+    let checkouts = std::sync::atomic::AtomicUsize::new(0);
+    let discovery = sqlx::postgres::PgPoolOptions::new()
+        .min_connections(1)
+        .max_connections(1)
+        .before_acquire({
+            let discovered = discovered.clone();
+            move |_, _| {
+                if checkouts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                    discovered.cancel();
+                }
+                Box::pin(async { Ok(true) })
+            }
+        })
+        .connect_with(a.c.inputs.options("worker_capacity", "mdm_access")?)
+        .await?;
+    let storage = &a.a.resources.storage;
+    let peer_worker = collection::worker::Worker::new(
+        discovery.clone(),
+        storage.storage,
+        a.a.collections.clone(),
+        storage.reconcile.clone(),
+        storage.worker_budget.clone(),
+    )?;
+    let collection = start_owner(Arc::new(peer_worker).registration(
         config.tasks,
         config.tasks_drain,
         Arc::default(),
     ))?;
+    tokio::time::timeout(Duration::from_secs(3), discovered.cancelled()).await?;
+    anyhow::ensure!(counts().await? == (8, 0));
+    one.rollback().await?;
     wait_for_blocked_attempt(&b.c.operator, peer_pid, TaskOwner::Collection.table()).await?;
     let peak = counts().await?;
     anyhow::ensure!(peak == (7, 1), "observed shared execution peak {peak:?}");
@@ -1053,19 +1092,22 @@ async fn registered_owners_share_capacity_and_drain() -> Result<()> {
         "shared execution peak: Script {} + Collection {}",
         peak.0, peak.1
     );
+    let backlog_epoch: i64 = sqlx::query_scalar("SELECT epoch FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity=$3")
+        .bind(a.c.tenant.to_string()).bind(script::wake::scope(a.c.tenant).reconciler()).bind(format!("policy:{backlog}")).fetch_one(&a.c.operator).await?;
+    anyhow::ensure!(backlog_epoch == 0);
+    let drain = script.shutdown();
     peer.rollback().await?;
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let done: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_inventory.collection_policy_recovery WHERE tenant_id=$1::uuid AND input_consumed=input_revision AND runs_done")
-                .bind(b.c.tenant.to_string()).fetch_one(&b.c.operator).await?;
-            if done == 2 { return Ok::<_,anyhow::Error>(()); }
+            let done: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_inventory.collection_policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 AND input_consumed=input_revision AND runs_done")
+                .bind(b.c.tenant.to_string()).bind(peer_id).fetch_one(&b.c.operator).await?;
+            if done == 1 { return Ok::<_,anyhow::Error>(()); }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }).await??;
     anyhow::ensure!(
         blocked_attempt(&a.c.operator, pid, TaskOwner::Script.table()).await? == Some(attempt)
     );
-    let drain = script.shutdown();
     let late = TaskOwner::Script.seed(&b).await?;
     notify.notify_one();
     held.rollback().await?;
@@ -1075,8 +1117,49 @@ async fn registered_owners_share_capacity_and_drain() -> Result<()> {
     anyhow::ensure!(late_epoch == 0, "new rows stay unclaimed after stop");
     let drained: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_script.policy_recovery WHERE tenant_id=$1::uuid AND input_consumed=input_revision AND runs_done")
         .bind(a.c.tenant.to_string()).fetch_one(&a.c.operator).await?;
-    anyhow::ensure!(drained == 7);
+    anyhow::ensure!(drained == 8);
+    let elapsed = rss_request_context::Clock::now(&start) - started;
+    eprintln!(
+        "background peak 8, initial claim wait {:?}, held workload elapsed {:?}, completions/s {:.2}",
+        claimed - started,
+        elapsed,
+        9.0 / elapsed.as_secs_f64()
+    );
     anyhow::ensure!(collection.shutdown().join().await?.is_clean());
+    discovery.close().await;
+
+    // Reuse the retained backlog and a second independent task to exercise a one-slot host.
+    let extra = TaskOwner::Script.seed(&a).await?;
+    let mut serial_lock = a.c.operator.begin().await?;
+    sqlx::query("SELECT FROM mdm_script.policy_recovery WHERE tenant_id=$1::uuid AND policy=ANY($2) FOR UPDATE")
+        .bind(a.c.tenant.to_string()).bind(&[extra, backlog][..]).execute(&mut *serial_lock).await?;
+    let serial = script::worker::Worker::new(
+        storage.discovery_pool.clone(),
+        storage.storage,
+        a.a.scripts.clone(),
+        storage.reconcile.clone(),
+        rss_mdm_work_page::capacity::Capacity::new(std::num::NonZeroUsize::MIN),
+    )?;
+    let task =
+        start_owner(Arc::new(serial).registration(policy()?, config.tasks_drain, Arc::default()))?;
+    tokio::time::timeout(Duration::from_secs(4), async {
+        while counts().await?.0 != 1 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
+    serial_lock.rollback().await?;
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            anyhow::ensure!(counts().await?.0 <= 1);
+            let completed: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_script.policy_recovery WHERE tenant_id=$1::uuid AND policy=ANY($2) AND input_consumed=input_revision AND runs_done")
+                .bind(a.c.tenant.to_string()).bind(&[extra, backlog][..]).fetch_one(&a.c.operator).await?;
+            if completed == 2 { break Ok::<_,anyhow::Error>(()); }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await??;
+    anyhow::ensure!(task.shutdown().join().await?.is_clean());
     b.close().await?;
     a.close().await
 }

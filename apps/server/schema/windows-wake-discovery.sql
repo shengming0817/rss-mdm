@@ -16,9 +16,10 @@ BEGIN
 END $$;
 REVOKE ALL ON FUNCTION mdm_windows.wake_target_credential(uuid,uuid,text,bytea,bigint) FROM PUBLIC;
 
-CREATE FUNCTION mdm_windows.push_work_page(after_tenant uuid,after_device uuid) RETURNS TABLE(tenant_id uuid,device uuid,credential bytea)
+CREATE FUNCTION mdm_windows.push_work_page(after_tenant uuid,after_device uuid) RETURNS TABLE(tenant_id uuid,device uuid,credential bytea,wait_ms bigint)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
- SELECT DISTINCT w.tenant_id,w.device,provider.credential FROM (
+ SELECT DISTINCT w.tenant_id,w.device,provider.credential,
+  ceil(greatest(0,extract(epoch FROM greatest(p.next_push,p.lease_until)-statement_timestamp()))*1000)::bigint FROM (
     SELECT * FROM mdm_devices.windows_wake_inputs() UNION ALL
     SELECT * FROM mdm_planning.configuration_windows_wake_inputs() UNION ALL
     SELECT * FROM mdm_software_deployment.windows_wake_inputs() UNION ALL

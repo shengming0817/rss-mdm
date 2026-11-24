@@ -40,76 +40,89 @@ impl Capacity {
 
     /// Prefer tenants with fewer executing items, keeping FIFO order for ties.
     /// At equal usage give another waiting tenant a turn before repeating the last grant.
-    pub async fn acquire(
+    pub fn acquire(
         self: &Arc<Self>,
         tenant: Uuid,
         width: usize,
         stop: &CancellationToken,
-    ) -> Vec<Slot> {
-        if width == 0 {
-            return Vec::new();
-        }
+    ) -> impl Future<Output = Vec<Slot>> + Send + use<> {
         let mut changed = self.changed.subscribe();
+        let stop = stop.clone();
         let ticket = Ticket {
-            capacity: self,
+            capacity: self.clone(),
             id: Arc::new(()),
         };
         let tenant_limit = self.per_tenant.get();
-        self.state
-            .lock()
-            .expect("capacity state")
-            .waiting
-            .push_back((ticket.id.clone(), tenant));
-        loop {
-            {
-                let mut state = self.state.lock().expect("capacity state");
-                if stop.is_cancelled() {
-                    return Vec::new();
-                }
-                let used = state.tenants.get(&tenant).copied().unwrap_or(0);
-                let free = (self.limit.get() - state.active).min(tenant_limit - used);
-                if free > 0
-                    && state
-                        .waiting
-                        .iter()
-                        .min_by_key(|(_, key)| (state.tenants.get(key).copied().unwrap_or(0), Some(*key) == state.last))
-                        .is_some_and(|(id, _)| Arc::ptr_eq(id, &ticket.id))
-                {
-                    // Divide spare capacity among current contenders. An idle tenant
-                    // merely listed on a discovery page has no claim on the budget.
-                    let contenders = state
-                        .waiting
-                        .iter()
-                        .map(|(_, key)| *key)
-                        .filter(|key| state.tenants.get(key).copied().unwrap_or(0) < tenant_limit)
-                        .collect::<std::collections::BTreeSet<_>>()
-                        .len();
-                    let fair_share = (self.limit.get() - state.active).div_ceil(contenders);
-                    let count = width.min(free).min(fair_share);
-                    state.last = Some(tenant);
-                    state.active += count;
-                    *state.tenants.entry(tenant).or_default() += count;
-                    return (0..count)
-                        .map(|_| Slot {
-                            capacity: self.clone(),
-                            tenant,
-                        })
-                        .collect();
-                }
+        if width > 0 && !stop.is_cancelled() {
+            self.state
+                .lock()
+                .expect("capacity state")
+                .waiting
+                .push_back((ticket.id.clone(), tenant));
+        }
+        async move {
+            if width == 0 {
+                return Vec::new();
             }
-            tokio::select! {
-                () = stop.cancelled() => return Vec::new(),
-                result = changed.changed() => result.expect("live capacity"),
+            let capacity = &ticket.capacity;
+            loop {
+                {
+                    let mut state = capacity.state.lock().expect("capacity state");
+                    if stop.is_cancelled() {
+                        return Vec::new();
+                    }
+                    let used = state.tenants.get(&tenant).copied().unwrap_or(0);
+                    let free = (capacity.limit.get() - state.active).min(tenant_limit - used);
+                    if free > 0
+                        && state
+                            .waiting
+                            .iter()
+                            .min_by_key(|(_, key)| {
+                                (
+                                    state.tenants.get(key).copied().unwrap_or(0),
+                                    Some(*key) == state.last,
+                                )
+                            })
+                            .is_some_and(|(id, _)| Arc::ptr_eq(id, &ticket.id))
+                    {
+                        // Divide spare capacity among current contenders. An idle tenant
+                        // merely listed on a discovery page has no claim on the budget.
+                        let contenders = state
+                            .waiting
+                            .iter()
+                            .map(|(_, key)| *key)
+                            .filter(|key| {
+                                state.tenants.get(key).copied().unwrap_or(0) < tenant_limit
+                            })
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .len();
+                        let fair_share = (capacity.limit.get() - state.active).div_ceil(contenders);
+                        let count = width.min(free).min(fair_share);
+                        state.last = Some(tenant);
+                        state.active += count;
+                        *state.tenants.entry(tenant).or_default() += count;
+                        return (0..count)
+                            .map(|_| Slot {
+                                capacity: capacity.clone(),
+                                tenant,
+                            })
+                            .collect();
+                    }
+                }
+                tokio::select! {
+                    () = stop.cancelled() => return Vec::new(),
+                    result = changed.changed() => result.expect("live capacity"),
+                }
             }
         }
     }
 }
 
-struct Ticket<'a> {
-    capacity: &'a Capacity,
+struct Ticket {
+    capacity: Arc<Capacity>,
     id: Arc<()>,
 }
-impl Drop for Ticket<'_> {
+impl Drop for Ticket {
     fn drop(&mut self) {
         self.capacity
             .state
