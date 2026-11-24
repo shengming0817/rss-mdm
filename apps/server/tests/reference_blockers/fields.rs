@@ -211,6 +211,10 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
         clock: Arc::new(crate::clock::SystemClock),
         cursor_key: vec![7; 32],
         reconcile_messaging: messaging,
+        users: Arc::new(rss_mdm_device_service::personnel::QualifiedUsers {
+            authority: c.authority.clone(),
+            platform: serde_json::Value::Null,
+        }),
         software_sources: a::software::Sources {
             objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
             groups: rss_mdm_group_postgres::GroupStore::new(

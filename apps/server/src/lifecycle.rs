@@ -211,7 +211,6 @@ let scope_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::M
 let policy_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Runtime(&compiled.config.business_databases.policy),probe,compiled.background.policy_connections,audit_store.clone(),"policy-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let resource_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.resource),probe,2,audit_store.clone(),"resource-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let software_owner=crate::owner_storage::OwnerRuntime::open(crate::owner_storage::Messaging::Producer(&compiled.config.business_databases.software),probe,2,audit_store.clone(),"software-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
-let inventory_services=crate::assembly::inventory::Services::new(runtime.clone(),access.archive_pool(),inventory_owner.runtime.clone(),inventory_owner.audit.clone(),probe,&cursor_key,application_clock.clone()).await.map_err(assembly_error)?;
 let policy_application=crate::assembly::policy::application(&compiled.background,&policy_owner,probe,&cursor_key,application_clock.clone(),protection.clone(),content.clone()).await.map_err(assembly_error)?;
 let publications=crate::assembly::publication::open(access.archive_pool(),&compiled.config.publication,&compiled.config.storage_binding,&software_owner,probe,&cursor_key,application_clock.clone(),content.clone(),|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let resource_catalog=crate::assembly::resource::catalog(resource_owner.audit.clone(),resource_owner.runtime.clone(),probe,application_clock.clone(),cursor_key.clone()).await.map_err(assembly_error)?;
@@ -228,6 +227,12 @@ let asset_input_health=Arc::new(crate::local_delivery::Health::default());
                         .await
                         .map_err(|error| ProcessError::at("startup.identity", error))?;
                         let da=if compiled.config.device_access.is_some() {Some(Arc::new(crate::assembly::device_access::open(&compiled.config,&identity,&access.authorization_store(),protection.clone(),&cursor_key,|resource|startup.stage_resource(resource)).await.map_err(assembly_error)?))} else {None};
+                        let platform = da.as_ref().and_then(|d|d.runtime.platform.platform_sso.as_ref())
+                            .map(|p|p.qualification_configuration()).transpose().map_err(|_|assembly_error(crate::Error::Configuration(crate::ConfigIssue::DeviceAccess)))?;
+                        let users=Arc::new(rss_mdm_device_service::personnel::QualifiedUsers {
+                            authority:identity.authority.clone(), platform:serde_json::to_value(platform).map_err(|_|assembly_error(crate::Error::Configuration(crate::ConfigIssue::DeviceAccess)))?,
+                        });
+let inventory_services=crate::assembly::inventory::Services::new(runtime.clone(),access.archive_pool(),&inventory_owner,probe,&cursor_key,application_clock.clone(),users.clone()).await.map_err(assembly_error)?;
                         if let Some(da)=&da {
                         if let Some(pki)=&da.pki {startup.stage_task_with_token(crate::device_pki::registration("da-device-pki-maintenance",pki.clone()));}
                         if let Some(listener)=crate::assembly::device_access::listener(&compiled.config,compiled.http,&identity,da).await.map_err(assembly_error)? {startup.stage_task_with_token(listener.critical());}
@@ -517,11 +522,9 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                             scopes.clone(),
                             scheduler.store.clone(),
                         ));
-                        let platform = da.as_ref().and_then(|d|d.runtime.platform.platform_sso.as_ref())
-                            .map(|p|p.qualification_configuration()).transpose().map_err(|_|assembly_error(crate::Error::Configuration(crate::ConfigIssue::DeviceAccess)))?;
                         let device_fields=crate::administration::user_profiles::device_fields::Refresh {
                             runtime:inventory_owner.runtime.clone(), identity:identity.authority.clone(), federation:identity.federation.clone(),
-                            platform:serde_json::to_value(platform).map_err(|_|assembly_error(crate::Error::Configuration(crate::ConfigIssue::DeviceAccess)))?,
+                            users,
                             max_age:std::num::NonZeroU32::new(compiled.config.identity.runtime.profile.max_age_seconds).expect("validated profile age"),
                         };
                         let group_work =

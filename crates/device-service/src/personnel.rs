@@ -4,6 +4,7 @@ use crate::{Error, Result};
 use rss_identity_postgres::{Authority, AuthorityError, PersonnelRevision};
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_mdm_device_access::deployment::PlatformConfiguration;
+use rss_mdm_inventory_service::assets::personnel::{DeviceSubjects, DeviceSubjectsRead};
 use rss_request_context::Clock;
 use rss_transactional_messaging::policy::OperationDeadline;
 use serde_json::Value;
@@ -118,7 +119,7 @@ async fn query_rows(
 }
 
 /// Resolves a bounded inventory page using the same credential and platform qualifications as the device directory.
-pub async fn device_subjects(
+async fn device_subjects(
     authority: &Authority,
     binding: rss_transactional_messaging::fence::ExecutionBinding,
     platform: Value,
@@ -170,11 +171,40 @@ pub async fn device_subjects(
     Ok(rows)
 }
 
-pub struct DeviceSubjects {
-    pub device: uuid::Uuid,
-    pub registration: Option<uuid::Uuid>,
-    pub current: Option<uuid::Uuid>,
-    pub registration_revision: i64,
-    pub current_revision: i64,
-    pub current_until: Option<i64>,
+#[derive(Clone)]
+pub struct QualifiedUsers {
+    pub authority: Authority,
+    pub platform: Value,
+}
+impl DeviceSubjectsRead for QualifiedUsers {
+    fn read<'a>(
+        &'a self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        devices: &'a [uuid::Uuid],
+        deadline: OperationDeadline,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = rss_mdm_inventory_service::transaction::Result<Vec<DeviceSubjects>>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            device_subjects(
+                &self.authority,
+                binding,
+                self.platform.clone(),
+                devices,
+                deadline,
+            )
+            .await
+            .map_err(|_| {
+                rss_mdm_inventory_service::Error::Unavailable(
+                    rss_mdm_inventory_service::Failure::AssetsStorage,
+                )
+                .into()
+            })
+        })
+    }
 }

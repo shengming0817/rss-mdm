@@ -12,27 +12,18 @@ pub(super) async fn next(
         .await
         .map_err(invalid)?;
     let mut candidates = desired_fields(c, providers, after).await?;
-    let rows = sqlx::query("SELECT DISTINCT ON (field) field,version,CASE WHEN field LIKE 'device.%user.%' THEN definition END AS definition,coalesce(octet_length(definition::text),0) AS bytes FROM mdm.field_versions WHERE tenant_id=$1::uuid ORDER BY field,version DESC")
-        .bind(tenant.to_string()).fetch_all(&mut *c).await?;
-    let mut previous = BTreeMap::new();
-    let mut count = 0;
-    let mut bytes = 0i64;
-    for row in rows {
-        let size = i64::from(row.try_get::<i32, _>("bytes")?);
-        count += usize::from(size > 0);
-        bytes += size;
-        let key = rss_mdm_inventory::FieldKey::parse(row.try_get("field")?).map_err(invalid)?;
-        if let Some((role, _)) = personnel::attribute(key) {
-            let raw: Option<Value> = row.try_get("definition")?;
-            let definition: Option<FieldDefinition> = raw
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(invalid)?;
-            if role == DeviceUser::Registration && definition.is_some() {
-                candidates.entry(key).or_insert(None);
-            }
-            previous.insert(key, (row.try_get::<i64, _>("version")?, definition, size));
+    // Two indexed seeks also advance through retired keys without loading their history.
+    let prefix = "device.registration_user.";
+    let mut bound = after.unwrap_or(prefix).to_owned();
+    for _ in 0..2 {
+        let key: Option<String> = sqlx::query_scalar("SELECT field FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field>$2 AND field<'device.registration_user/' ORDER BY field LIMIT 1")
+            .bind(tenant.to_string()).bind(&bound).fetch_optional(&mut *c).await?;
+        let Some(key) = key else { break };
+        let name = rss_mdm_inventory::FieldKey::parse(&key).map_err(invalid)?;
+        if personnel::attribute(name).is_some() {
+            candidates.entry(name).or_insert(None);
         }
+        bound = key;
     }
     let mut candidates = candidates
         .into_iter()
@@ -42,74 +33,79 @@ pub(super) async fn next(
     };
     let next = candidates.next().map(|_| key.as_str().to_owned());
     let attribute = personnel::attribute(key).expect("server field").1;
-    let old: Vec<_> = previous
-        .iter()
-        .filter(|(key, (_, old, _))| {
-            old.is_some() && personnel::attribute(**key).is_some_and(|(_, a)| a == attribute)
-        })
-        .collect();
-    if let Some(mut field) = field {
-        let available = rss_mdm_inventory::MAX_CATALOG_BYTES as i64 - bytes
-            + old.iter().map(|(_, (_, _, size))| size).sum::<i64>();
-        if count - old.len() + field.fields.len() <= rss_mdm_inventory::catalog_capacity()
-            && publish(c, binding, &mut field, &previous, available).await?
-        {
-            return Ok((Some(field), next));
-        }
-    }
-    for (key, (version, _, _)) in old {
-        sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,NULL)")
-            .bind(tenant.to_string())
-            .bind(key.as_str())
-            .bind(version + 1)
-            .execute(&mut *c)
-            .await?;
-    }
-    Ok((None, next))
+    let field = publish(c, binding, attribute, field).await?;
+    Ok((field, next))
 }
 
 async fn publish(
     c: &mut PgConnection,
     binding: ExecutionBinding,
-    field: &mut Field,
-    previous: &BTreeMap<rss_mdm_inventory::FieldKey, (i64, Option<FieldDefinition>, i64)>,
-    remaining_bytes: i64,
-) -> Result<bool> {
+    attribute: Attribute,
+    mut field: Option<Field>,
+) -> Result<Option<Field>> {
     let tenant = binding.tenant();
-    let mut changed = Vec::new();
-    let mut field_bytes = 0i64;
-    for (_, definition) in &mut field.fields {
-        let old = previous.get(&definition.key);
-        let previous_version = old.map_or(0, |(v, _, _)| *v);
-        definition.version = definition.version.max(previous_version as u64);
-        if let Some((_, Some(published), size)) = old
-            && published == definition
-        {
-            field_bytes += size;
-            continue;
+    let keys = DeviceUser::ALL.map(|role| role.key(attribute).as_str().to_owned());
+    let mut writes = Vec::new();
+    let mut retire = Vec::new();
+    for (index, key) in keys.iter().enumerate() {
+        let previous:Option<(i64,Option<Value>)>=sqlx::query_as("SELECT version,definition FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field=$2 ORDER BY version DESC LIMIT 1")
+            .bind(tenant.to_string()).bind(key).fetch_optional(&mut *c).await?;
+        let (version, old) = previous.unwrap_or((0, None));
+        if old.is_some() {
+            retire.push((key, version + 1, None));
         }
-        definition.version = definition.version.max((previous_version + 1) as u64);
-        let body = serde_json::to_value(&*definition).map_err(invalid)?;
-        let size: i32 = sqlx::query_scalar("SELECT octet_length($1::jsonb::text)")
-            .bind(&body)
-            .fetch_one(&mut *c)
-            .await?;
-        field_bytes += i64::from(size);
-        changed.push((definition.key, definition.version, body));
+        let definition = field.as_mut().map(|f| &mut f.fields[index].1);
+        let body = if let Some(def) = definition {
+            def.version = def.version.max(version as u64);
+            if old.as_ref() == Some(&serde_json::to_value(&*def).map_err(invalid)?) {
+                continue;
+            }
+            def.version = def.version.max((version + 1) as u64);
+            Some(serde_json::to_value(&*def).map_err(invalid)?)
+        } else {
+            if old.is_none() {
+                continue;
+            }
+            None
+        };
+        let new_version = field
+            .as_ref()
+            .map_or(version + 1, |f| f.fields[index].1.version as i64);
+        writes.push((key, new_version, body));
     }
-    if field_bytes > remaining_bytes {
-        return Ok(false);
+    if !writes.is_empty() {
+        if let Some(f) = &field {
+            let definitions = f
+                .fields
+                .iter()
+                .map(|(_, d)| serde_json::to_value(d))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(invalid)?;
+            // The ordinary catalog capacity only changes on definition publication.
+            let fits: bool = sqlx::query_scalar(include_str!("capacity.sql"))
+                .bind(tenant.to_string())
+                .bind(&keys[..])
+                .bind(Value::Array(definitions))
+                .bind(rss_mdm_inventory::catalog_capacity() as i64)
+                .bind(rss_mdm_inventory::MAX_CATALOG_BYTES as i64)
+                .fetch_one(&mut *c)
+                .await?;
+            if !fits {
+                field = None;
+                writes = retire;
+            }
+        }
+        for (key, version, body) in writes {
+            sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,$4)")
+                .bind(tenant.to_string())
+                .bind(key)
+                .bind(version)
+                .bind(body)
+                .execute(&mut *c)
+                .await?;
+        }
     }
-    for (key, version, body) in changed {
-        sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,$4)")
-            .bind(tenant.to_string())
-            .bind(key.as_str())
-            .bind(version as i64)
-            .bind(body)
-            .execute(&mut *c)
-            .await?;
-    }
-    Ok(true)
+    Ok(field)
 }
 
 async fn desired_fields(

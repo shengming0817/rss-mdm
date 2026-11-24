@@ -51,19 +51,6 @@ impl Compliance {
                             })
                         })
                         .await?;
-                    for row in &rows {
-                        let definition: Definition =
-                            stored(serde_json::from_value(row["definition"].clone()))?;
-                        stored(definition.validate())?;
-                        if q.schema().fields().iter().any(|f| {
-                            (f.name == "definition" || f.name.starts_with("definition.criteria"))
-                                && q.selects(&f.name)
-                        }) {
-                            require_fields(&current, p, &definition)?;
-                        }
-                    }
-                    p.check_live()?;
-
                     let rows = rows
                         .into_iter()
                         .map(|row| {
@@ -72,6 +59,17 @@ impl Compliance {
                             >(row))
                         })
                         .collect::<Result<Vec<_>>>()?;
+                    let exposes_criteria = q.schema().fields().iter().any(|f| {
+                        (f.name == "definition" || f.name.starts_with("definition.criteria"))
+                            && q.selects(&f.name)
+                    });
+                    for row in rows.iter().take(q.limit()) {
+                        stored(row.definition.validate())?;
+                        if exposes_criteria {
+                            require_fields(&current, p, &row.definition)?;
+                        }
+                    }
+                    p.check_live()?;
                     Ok(q.page_typed(rows, &codec, &binding)
                         .map_err(crate::query_error)?)
                 })

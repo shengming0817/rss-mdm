@@ -535,3 +535,18 @@ pub fn require_visible_rule(catalog: &Catalog, rule: &g::Rule) -> Result<()> {
     }
     Ok(())
 }
+
+/// Drafts must still be executable with the currently visible dictionary.
+pub fn require_current_rule(catalog: &Catalog, rule: &g::Rule) -> Result<()> {
+    for (name, expected) in rule.view().fields {
+        let key = checked_input(FieldKey::parse(name))?;
+        let path = checked_input(catalog.path(key))?;
+        if path.root.sensitivity == rss_mdm_inventory::Sensitivity::Secret {
+            return Err(Error::Forbidden.into());
+        }
+        if &dictionary_field(key, &path)? != expected {
+            return Err(Error::Malformed.into());
+        }
+    }
+    Ok(())
+}

@@ -27,13 +27,12 @@ fn condition(actor: &str, field: &str, id: &str) -> Result<group::preview::Reque
 #[tokio::test]
 #[ignore = "T2: ordinary device predicates qualify account attribution and reject revoked group inputs"]
 async fn registration_and_current_fields_share_preview_and_revoke_local_membership() -> Result<()> {
-    let c = Context::open("shared", &[]).await?;
+    let c = Context::open("planning_workers", &[]).await?;
     let account = c
         .account(&[
             P::InventoryRead,
             P::GroupRead,
             P::GroupWrite,
-            P::GroupRecompute,
             P::Enrollment,
             P::InventorySensitiveRead,
             P::UserGroupRead,
@@ -57,7 +56,10 @@ async fn registration_and_current_fields_share_preview_and_revoke_local_membersh
         runtime: owners.storage.runtime.clone(),
         identity: c.authority.clone(),
         federation: None,
-        platform: serde_json::Value::Null,
+        users: Arc::new(rss_mdm_device_service::personnel::QualifiedUsers {
+            authority: c.authority.clone(),
+            platform: serde_json::Value::Null,
+        }),
         max_age: 3600u32.try_into()?,
     };
     while refresh.advance(c.execution()).await? {}
@@ -113,6 +115,23 @@ async fn registration_and_current_fields_share_preview_and_revoke_local_membersh
     .fetch_one(&c.operator)
     .await?;
     assert_eq!(count, 1);
+    let scope = super::scope(&c, &[saved]).await?;
+    let scopes = crate::scope_t2::open(&c).await?;
+    let fixture = crate::policy_configuration_t2::fixture::Fixture::open(&c).await?;
+    let policy =
+        crate::policy_configuration_t2::seed(&c, scope, &endpoint, &fixture.resources.protection)
+            .await?;
+    let mut tx = seed_transaction(&c).await?;
+    sqlx::query("UPDATE mdm_scope.scopes SET policy_id=$3 WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(c.tenant.to_string())
+        .bind(scope)
+        .bind(policy)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    let workers =
+        super::asset_inputs::Workers::start_policy(&c, &owners, scopes, Some(&fixture)).await?;
+    super::asset_inputs::wait_sql(&c,"SELECT EXISTS(SELECT FROM mdm_scope.scopes s JOIN mdm_scope.scope_channel_results r ON(r.tenant_id,r.run)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.channel='mdm' AND r.matched)",scope).await?;
     let (agent, grant) = crate::device_material_support::seed_registration(&c).await?;
     let (_, peer, certificate, trust) = crate::device_material_support::qualified_agent(
         &c,
@@ -160,42 +179,15 @@ async fn registration_and_current_fields_share_preview_and_revoke_local_membersh
             .items,
         vec![rss_mdm_agent_wire::ObjectRef::Endpoint(agent)]
     );
-    let revision: i64 = sqlx::query_scalar(
-        "SELECT revision FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2",
+    super::asset_inputs::wait_sql(
+        &c,
+        "SELECT member_count=0 FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2",
+        saved,
     )
-    .bind(c.tenant.to_string())
-    .bind(saved)
-    .fetch_one(&c.operator)
     .await?;
-    let accepted = owners
-        .groups
-        .execute(
-            &group::Command::Group {
-                id: saved,
-                change: Box::new(group::operation::Operation {
-                    operation_id: Uuid::new_v4(),
-                    expected_revision: revision as u64,
-                    input: group::GroupChange::Recompute {},
-                }),
-            },
-            &c.request(&proof)?,
-            &proof,
-        )
-        .await?;
-    owners
-        .settle(
-            &c,
-            Uuid::parse_str(accepted["task"].as_str().context("recompute")?)?,
-        )
-        .await?;
-    let count: i64 = sqlx::query_scalar(
-        "SELECT member_count FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2",
-    )
-    .bind(c.tenant.to_string())
-    .bind(saved)
-    .fetch_one(&c.operator)
-    .await?;
-    assert_eq!(count, 0);
+    super::asset_inputs::wait_sql(&c,"SELECT s.resolution IS NOT NULL AND NOT EXISTS(SELECT FROM mdm_scope.scope_channel_results r WHERE(r.tenant_id,r.run)=(s.tenant_id,s.resolution) AND r.matched) AND EXISTS(SELECT FROM mdm_policy.work w WHERE (w.tenant_id,w.id)=(s.tenant_id,s.resolution) AND w.completed AND w.failure IS NULL) FROM mdm_scope.scopes s WHERE s.tenant_id=$1::uuid AND s.id=$2",scope).await?;
+    workers.close().await?;
+    fixture.close().await?;
     drop(owners);
     c.close().await;
     Ok(())

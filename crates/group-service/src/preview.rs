@@ -107,7 +107,7 @@ impl Groups {
                         &catalog,
                     )?;
                     let current_catalog = assets::catalog_in(tx, proof.binding().tenant()).await?;
-                    assets::filter::require_visible_rule(&current_catalog, &rule)?;
+                    assets::filter::require_current_rule(&current_catalog, &rule)?;
                     let mut targets = rule.groups().into_iter().collect::<BTreeSet<_>>();
                     if let Some(editing) = &request.editing {
                         targets.insert(editing.group_id.to_string());
@@ -136,7 +136,7 @@ impl Groups {
                         .await?;
                     // Current visibility and live authentication remain required even for a fixed cut.
                     let current_catalog = assets::catalog_in(tx, proof.binding().tenant()).await?;
-                    assets::filter::require_visible_rule(&current_catalog, &rule)?;
+                    assets::filter::require_current_rule(&current_catalog, &rule)?;
                     proof.check_live()?;
                     Ok(Response {
                         items,

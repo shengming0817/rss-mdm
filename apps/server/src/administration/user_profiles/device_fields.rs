@@ -34,7 +34,7 @@ pub(crate) struct Refresh {
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) identity: Authority,
     pub(crate) federation: Option<Federation>,
-    pub(crate) platform: Value,
+    pub(crate) users: Arc<dyn rss_mdm_inventory_service::assets::personnel::DeviceSubjectsRead>,
     pub(crate) max_age: NonZeroU32,
 }
 
@@ -122,15 +122,11 @@ impl Refresh {
         devices: &[Uuid],
         field: &Field,
     ) -> Result<()> {
-        let subjects = rss_mdm_device_service::personnel::device_subjects(
-            &self.identity,
-            binding,
-            self.platform.clone(),
-            devices,
-            crate::identity::deadline(),
-        )
-        .await
-        .map_err(invalid)?;
+        let subjects = self
+            .users
+            .read(binding, devices, crate::identity::deadline())
+            .await
+            .map_err(invalid)?;
         let ids: Vec<_> = subjects
             .iter()
             .flat_map(|row| [row.registration, row.current])
@@ -234,7 +230,7 @@ struct Field {
 impl Field {
     fn observation(
         &self,
-        row: &rss_mdm_device_service::personnel::DeviceSubjects,
+        row: &rss_mdm_inventory_service::assets::personnel::DeviceSubjects,
         role: DeviceUser,
         def: &FieldDefinition,
         facts: &BTreeMap<Uuid, PersonnelFact>,

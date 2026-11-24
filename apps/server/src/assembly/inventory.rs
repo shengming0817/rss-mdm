@@ -10,12 +10,14 @@ impl Services {
     pub(crate) async fn new(
         inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
         read_pool: sqlx::PgPool,
-        runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-        audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+        owner: &crate::owner_storage::OwnerRuntime,
         probe: rss_transactional_messaging::fence::ExecutionBinding,
         key: &[u8],
         clock: Arc<dyn crate::clock::Clock>,
+        users: Arc<dyn rss_mdm_inventory_service::assets::personnel::DeviceSubjectsRead>,
     ) -> Result<Self, Error> {
+        let runtime = owner.runtime.clone();
+        let audit_store = owner.audit.clone();
         runtime
             .local_tx(probe, crate::identity::deadline(), move |tx| {
                 Box::pin(async move {
@@ -88,6 +90,7 @@ impl Services {
                     clock: Arc::new(crate::clock::InventoryClock(clock.clone())),
                     cursor_key: key.to_vec(),
                     reconcile_messaging: messaging.clone(),
+                    users,
                     software_sources: rss_mdm_inventory_service::assets::software::Sources {
                         objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
                         groups: groups.source_reader(),

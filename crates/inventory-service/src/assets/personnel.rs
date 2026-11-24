@@ -6,12 +6,42 @@ use rss_mdm_authorization_service::{Permission, Snapshot, context::AuthorizedPri
 use rss_mdm_inventory::personnel::{self, Attribute, DeviceUser};
 use sqlx::Row;
 
+pub struct DeviceSubjects {
+    pub device: uuid::Uuid,
+    pub registration: Option<uuid::Uuid>,
+    pub current: Option<uuid::Uuid>,
+    pub registration_revision: i64,
+    pub current_revision: i64,
+    pub current_until: Option<i64>,
+}
+
+impl DeviceSubjects {
+    pub(super) fn qualifies(&self, key: FieldKey, fact: &Fact) -> bool {
+        let binding = match DeviceUser::for_key(key) {
+            Some(DeviceUser::Registration) => (self.registration, self.registration_revision),
+            Some(DeviceUser::Current) => (self.current, self.current_revision),
+            None => return false,
+        };
+        binding.0.is_some() && binding == (fact.subject, fact.binding_revision)
+    }
+}
+
+pub trait DeviceSubjectsRead: Send + Sync {
+    fn read<'a>(
+        &'a self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        devices: &'a [Uuid],
+        deadline: rss_transactional_messaging::policy::OperationDeadline,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<DeviceSubjects>>> + Send + 'a>>;
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Fact {
     pub subject: Option<Uuid>,
     pub value: Option<Scalar>,
     pub revision: i64,
     pub observed_at: i64,
+    pub binding_revision: i64,
 }
 
 pub fn permissions(key: FieldKey) -> impl Iterator<Item = Permission> {
@@ -92,6 +122,7 @@ pub(super) async fn load_in(
                     .map_err(|_| Error::Conflict)?,
                 revision: row.try_get("revision")?,
                 observed_at: row.try_get("observed_at")?,
+                binding_revision: row.try_get("binding_revision")?,
             },
         );
     }

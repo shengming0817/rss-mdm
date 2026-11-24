@@ -132,6 +132,7 @@ impl AssetService {
     }
     pub(super) async fn asset_query_items(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         scope: &ReadScope,
@@ -193,7 +194,24 @@ impl AssetService {
                 .clock
                 .unix_seconds()
                 .ok_or(Error::Unavailable(Failure::AssetsStorage))?;
-            personnel::load_in(tx, &state.cut, now, true, &ids, &state.fields).await?
+            let mut facts =
+                personnel::load_in(tx, &state.cut, now, true, &ids, &state.fields).await?;
+            let devices: Vec<_> = facts.keys().map(|d| d.into_uuid()).collect();
+            let mut qualified = BTreeMap::new();
+            if !devices.is_empty() {
+                let users = self
+                    .users
+                    .read(binding, &devices, crate::transaction::deadline())
+                    .await?;
+                for u in users {
+                    let device = crate::database::device_id(u.device)?;
+                    if let Some(mut fields) = facts.remove(&device) {
+                        fields.retain(|key, fact| u.qualifies(*key, fact));
+                        qualified.insert(device, fields);
+                    }
+                }
+            }
+            qualified
         };
         let tenant = tx.tenant_id().to_string();
         let rows=tx.with_connection(move |c|Box::pin(async move {
