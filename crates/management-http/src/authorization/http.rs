@@ -316,6 +316,7 @@ fn programmatic_allowed(path: &str, authorization: bool, management: bool) -> bo
 fn api_key_allowed(path: &str) -> bool {
     !path.contains("/device-access/credential-operations")
         && !path.contains("/device-access/credential-policies")
+        && !path.ends_with("/device-access/enterprise/configuration/operations/{operationId}")
         && !path.ends_with("/apple/platform-sso/status")
 }
 

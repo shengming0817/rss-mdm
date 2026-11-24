@@ -498,7 +498,8 @@ impl EnterpriseReceipt {
             Some("subject" | "windows_key") if !application_only => {}
             _ => return Err(Error::NotFound),
         }
-        match serde_json::from_value(document).map_err(|_| Error::Corrupt)? {
+        // Typed decoding must see the original bytes so duplicate fields remain detectable.
+        match serde_json::from_str(raw).map_err(|_| Error::Corrupt)? {
             Record::RelyingParty(rp) => {
                 if rp.revision < 1
                     || !valid_rp(&rp.id, &rp.callback, &rp.capabilities)

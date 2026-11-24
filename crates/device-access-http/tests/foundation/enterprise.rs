@@ -275,9 +275,48 @@ pub(super) async fn verify(
     );
     assert_eq!(business::counts(c).await?, after);
 
+    // Only the tenant differs from the authenticated actor's coordinates.
+    let foreign = Uuid::new_v4();
+    assert_eq!(
+        sqlx::query(
+            "INSERT INTO rss_da.operations(tenant_id,instance,actor,operation_id,digest,result)
+            SELECT $1,instance,actor,$2,digest,result FROM rss_da.operations
+            WHERE tenant_id=$3::uuid AND instance=$4::uuid AND actor=$5 AND operation_id=$6"
+        )
+        .bind(management)
+        .bind(foreign)
+        .bind(c.tenant.to_string())
+        .bind(&c.inputs.installation.instance_id)
+        .bind(principal)
+        .bind(first)
+        .execute(&c.operator)
+        .await?
+        .rows_affected(),
+        1
+    );
+    missing(
+        read(&format!("{root}/operations/{foreign}"), &browser.cookie)
+            .send()
+            .await?,
+    )
+    .await?;
+
+    let stored: String = sqlx::query_scalar(
+        "SELECT result FROM rss_da.operations
+        WHERE tenant_id=$1::uuid AND instance=$2::uuid AND actor=$3 AND operation_id=$4",
+    )
+    .bind(c.tenant.to_string())
+    .bind(&c.inputs.installation.instance_id)
+    .bind(principal)
+    .bind(first)
+    .fetch_one(&c.operator)
+    .await?;
+    let repeated = stored.replacen(r#""revision":1"#, r#""revision":2,"revision":1"#, 1);
+    assert_ne!(stored, repeated);
     // Seed another DA owner's receipt and a damaged, positively identified RP receipt.
     for (result, expected_status) in [
         ("22", StatusCode::NOT_FOUND),
+        (repeated.as_str(), StatusCode::SERVICE_UNAVAILABLE),
         (
             r#"{"kind":"unrecognized","value":{}}"#,
             StatusCode::NOT_FOUND,
