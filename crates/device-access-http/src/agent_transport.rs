@@ -36,7 +36,7 @@ impl IntoResponse for AgentError {
             | Error::CursorInvalidated
             | Error::EnrollmentPaused => wire::ErrorCode::OperationConflict,
             Error::CommitUnknown | Error::RollbackFailed => wire::ErrorCode::OperationUnknown,
-            Error::NotFound => wire::ErrorCode::ReportNotFound,
+            Error::NotFound | Error::OperationNotFound => wire::ErrorCode::ReportNotFound,
             Error::Unsupported => wire::ErrorCode::UnsupportedCapability,
             Error::Unavailable | Error::RegistrationLimit | Error::Classified(_) => {
                 wire::ErrorCode::ServiceUnavailable
