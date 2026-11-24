@@ -153,8 +153,6 @@ pub(super) async fn verify(
         authority: w::AccessWindowsAuthority::Local,
     };
     let employee = material::seed_administrator(c, Some(&r.device)).await?;
-    sqlx::query("DELETE FROM rss_da.authorization_rules WHERE tenant_id=$1 AND document#>>'{subject,user,principalId}'=$2")
-        .bind(r.tenant).bind(employee.to_string()).execute(&c.operator).await?;
     let binding = Uuid::new_v4();
     let op = Uuid::new_v4();
     let intent = rss_mdm_device_access::AccountIntent::Existing {

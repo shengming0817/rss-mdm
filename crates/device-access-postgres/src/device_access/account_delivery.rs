@@ -1119,24 +1119,25 @@ impl Service {
                 let (actor,device,id)=*ctx;
                 let b=super::service::operation_on(c,actor,device,id).await?;
                 let row=sqlx::query(
-                    "SELECT r.id,r.state,r.result,r.da_target IS NOT NULL AND live.revision>(r.access_binding->>'revision')::bigint AS superseded,COALESCE((da_journal->>'received')::boolean,false) AS issued
-                     FROM rss_da.access_runs r JOIN rss_da.bindings live ON (r.tenant_id,r.binding_id)=(live.tenant_id,live.id) WHERE r.tenant_id=$1 AND r.binding_id=$2
-                     AND access_binding->>'operationId'=$3 AND access_binding->>'revision'=$4
-                     ORDER BY r.created_at DESC,r.id DESC LIMIT 1"
-                )
-                .bind(b.tenant).bind(b.id).bind(id.to_string()).bind(b.revision.to_string())
-                .fetch_optional(&mut *c).await.map_err(db)?;
+                    "SELECT r.id,r.state,r.result,live.revision>$4 AS superseded,COALESCE((r.da_journal->>'received')::boolean,false) AS issued
+                     FROM rss_da.bindings live LEFT JOIN LATERAL (
+                         SELECT id,state,result,da_journal FROM rss_da.access_runs WHERE tenant_id=live.tenant_id AND binding_id=live.id
+                         AND access_binding->>'operationId'=$3 AND (access_binding->>'revision')::bigint=$4 ORDER BY created_at DESC,id DESC LIMIT 1
+                     ) r ON true WHERE live.tenant_id=$1 AND live.id=$2"
+                ).bind(b.tenant).bind(b.id).bind(id.to_string()).bind(b.revision)
+                .fetch_one(&mut *c).await.map_err(db)?;
+                let superseded: bool = row.try_get("superseded").map_err(db)?;
                 let mut progress=Progress{
                     operation_id:id,binding_id:b.id,revision:b.revision,task_id:None,
                     received:false,execution:Execution::NotStarted,cancellation:rss_mdm_task_state::Cancellation::None,effect:None,
                     cleanup_pending:b.state==State::Revoked,
                 };
-                if let Some(row)=row{
-                    let mut state=row.try_get::<sqlx::types::Json<RunState>,_>("state").map_err(db)?.0;
+                if let Some(state)=row.try_get::<Option<sqlx::types::Json<RunState>>,_>("state").map_err(db)? {
+                    let mut state=state.0;
                     state.expire(crate::platform_sso::store::now(c).await?);
                     progress.task_id=Some(row.try_get("id").map_err(db)?);
                     progress.execution=state.execution;
-                    if state.execution==Execution::NotStarted && row.try_get::<bool,_>("superseded").map_err(db)? {
+                    if state.execution==Execution::NotStarted && superseded {
                         // A later durable revision fences this unstarted permit in the delivery path.
                         state.cancel();
                     }
@@ -1153,6 +1154,9 @@ impl Service {
                         progress.execution=Execution::Succeeded;
                         progress.effect=Some(result.0.effect.into());
                     }
+                }
+                if superseded && progress.task_id.is_none() && progress.effect.is_none() {
+                    progress.cancellation=rss_mdm_task_state::Cancellation::Confirmed;
                 }
                 if progress.cleanup_pending {
                     let phases=super::lifecycle::cleanup_phases(c,actor.tenant_id(),std::slice::from_ref(&b)).await?;

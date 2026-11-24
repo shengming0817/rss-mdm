@@ -211,8 +211,12 @@ impl AssetService {
                     .get(&rss_mdm_inventory::builtin::CLIENT_MODULES)
                     .and_then(|field| {
                         field.sources.iter().find(|fact| {
-                            matches!(fact.state, rss_mdm_inventory::State::Known(_))
-                                && fact.evidence.source == rss_mdm_inventory::Source::AgentBuiltin
+                            matches!(
+                                fact.state,
+                                rss_mdm_inventory::State::Known(_)
+                                    | rss_mdm_inventory::State::Unknown { .. }
+                                    | rss_mdm_inventory::State::Unsupported
+                            ) && fact.evidence.source == rss_mdm_inventory::Source::AgentBuiltin
                                 && fact.evidence.dataset.as_deref()
                                     == Some(rss_mdm_inventory::builtin::MDM_ENROLLMENT.as_str())
                         })

@@ -49,11 +49,12 @@ pub(super) async fn change(
         Err(Error::Forbidden) => false,
         Err(error) => return Err(error),
     };
-    if manager && !matches!(input.action, Action::RepairBinding) {
-        return Ok(None);
-    }
     if !matches!(input.action, Action::RepairBinding | Action::ResetFactors) {
-        return Err(Error::Forbidden);
+        return if manager {
+            Ok(None)
+        } else {
+            Err(Error::Forbidden)
+        };
     }
     let epoch = registration(c, p, device).await?;
     let tenant = Uuid::parse_str(p.tenant_id()).map_err(|_| Error::Corrupt)?;
@@ -61,8 +62,14 @@ pub(super) async fn change(
     if b.device != *device {
         return Err(Error::NotFound);
     }
-    if !manager && b.person != service::person(p)? {
-        return Err(Error::Forbidden);
+    let employee = b.person == service::person(p)?;
+    if !employee {
+        if !manager {
+            return Err(Error::Forbidden);
+        }
+        if matches!(input.action, Action::ResetFactors) {
+            return Ok(None);
+        }
     }
     owned(c, &b, epoch).await?;
     if b.revision != input.expected_revision {
@@ -88,7 +95,7 @@ pub(super) async fn change(
     {
         return Err(Error::Forbidden);
     }
-    Ok((!manager).then_some((b, epoch)))
+    Ok(employee.then_some((b, epoch)))
 }
 
 /// Results keep their original revision. Access follows the current binding owner.

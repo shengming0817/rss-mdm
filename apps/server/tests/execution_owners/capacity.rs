@@ -488,12 +488,16 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
         send_as(body, Some(module_certificate.clone())).await?,
         accepted
     );
+    let enrolled = w::Scalar::String("this_organization".into());
     let partial = w::ReportRequest::new(
         Uuid::new_v4(),
         4,
         now() - 120,
         frozen.clone(),
-        w::ReportBody::Partial(vec![enrollment_fact.clone()]),
+        w::ReportBody::Partial(vec![w::FieldValue {
+            field: enrollment_fact.field,
+            value: w::CollectedValue::Value(enrolled.clone()),
+        }]),
     )?;
     assert_eq!(
         send_as(partial.canonical()?, Some(module_certificate))
@@ -510,11 +514,15 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
                 &mut tx,
                 module_context.tenant,
                 std::slice::from_ref(&scope),
-                &[CLIENT_MODULES],
+                &[CLIENT_MODULES, MDM_ENROLLMENT],
             )
             .await?;
             tx.rollback().await?;
-            if let Some(fact) = facts.scalars.first() {
+            if facts.scalars.iter().any(|f| {
+                f.field == MDM_ENROLLMENT
+                    && matches!(&f.fact.state, State::Known(v) if v == &enrolled)
+            }) && let Some(fact) = facts.scalars.iter().find(|f| f.field == CLIENT_MODULES)
+            {
                 assert_eq!(fact.fact.evidence.received_at, receipt.received_at);
                 assert_eq!(fact.fact.evidence.observed_at, report.observed_at());
                 let State::Known(actual) = &fact.fact.state else {
@@ -627,7 +635,7 @@ async fn check_module_detail(
 
         let mut tx = command::seed_transaction(c).await?;
         let changed = sqlx::query(
-            "UPDATE mdm.inventory SET received_at=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='channel.client.modules'"
+            "UPDATE mdm.inventory SET state='unknown_native',value=NULL,received_at=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='channel.client.modules'"
         ).bind(c.tenant.to_string()).bind(device.into_uuid()).bind(receipt.received_at-901).execute(&mut *tx).await?;
         assert_eq!(changed.rows_affected(),1);
         tx.commit().await?;

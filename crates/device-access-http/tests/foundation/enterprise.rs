@@ -127,7 +127,7 @@ impl<'a> Browser<'a> {
             .context("missing purpose-bound grant")
     }
 
-    async fn submit(&mut self, change: &Value) -> Result<reqwest::Response> {
+    pub(super) async fn submit(&mut self, change: &Value) -> Result<reqwest::Response> {
         let grant = self.grant(change).await?;
         Ok(self
             .post(&self.configurations, Some(&grant))

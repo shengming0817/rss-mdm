@@ -71,6 +71,7 @@ pub(super) async fn recover(
     };
     let key = SigningKey::new()?;
     let previous = rss_mdm_device_access_postgres::enterprise::WindowsSource {
+        renewed_by: None,
         id: Uuid::new_v4(),
         version: 1,
         binding_id: binding,
@@ -84,7 +85,7 @@ pub(super) async fn recover(
         public_key: key.public.clone(),
     };
     sqlx::query("INSERT INTO rss_da.windows_sources(tenant_id,binding,id,version,document) VALUES($1,$2,$3,1,$4)")
-        .bind(r.tenant).bind(binding).bind(previous.id).bind(sqlx::types::Json(previous)).execute(&c.operator).await?;
+        .bind(r.tenant).bind(binding).bind(previous.id).bind(sqlx::types::Json(&previous)).execute(&c.operator).await?;
     let malformed = client
         .post(format!("{resource}/step-up/oidc/{}", Uuid::new_v4()))
         .header("cookie", &cookie)
@@ -121,17 +122,26 @@ pub(super) async fn recover(
     let mut reset = Uuid::nil();
     let mut repair = Uuid::nil();
     for (revision, action) in [(1, "repair_binding"), (2, "reset_factors")] {
+        if revision == 1 {
+            let grant = rss_mdm_authorization_service::Grant {
+                operation: rss_mdm_authorization_service::Permission::AccountWrite,
+                scope: rss_mdm_authorization_service::Scope::Device { id: r.device },
+            };
+            sqlx::query("UPDATE rss_da.authorization_rules SET document=jsonb_set(document,'{grants}',(document->'grants') || jsonb_build_array($3::jsonb)),revision=revision+1 WHERE tenant_id=$1 AND document#>>'{subject,user,principalId}'=$2")
+                .bind(r.tenant).bind(employee.to_string()).bind(sqlx::types::Json(grant)).execute(&c.operator).await?;
+        } else {
+            sqlx::query("DELETE FROM rss_da.authorization_rules WHERE tenant_id=$1 AND document#>>'{subject,user,principalId}'=$2")
+                .bind(r.tenant).bind(employee.to_string()).execute(&c.operator).await?;
+        }
         let operation = Uuid::new_v4();
         let input =
             json!({"operationId":operation,"expectedRevision":revision,"action":{"kind":action}});
         assert!(put(&input, &cookie).await?.status().is_client_error());
         let grant = browser.grant(&input).await?;
-        let wrong = json!({"operationId":operation,"expectedRevision":revision,"action":{"kind":"unbind","disposition":"keep"}});
-        assert!(
-            put(&wrong, &format!("{cookie}; {grant}"))
-                .await?
-                .status()
-                .is_client_error()
+        let wrong = json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"action":{"kind":action}});
+        assert_eq!(
+            put(&wrong, &format!("{cookie}; {grant}")).await?.status(),
+            401
         );
         if revision == 1 {
             repair = operation;
@@ -255,7 +265,7 @@ pub(super) async fn recover(
     .await?;
     assert_eq!(progress["execution"], "succeeded");
     assert_eq!(progress["revision"], task.revision);
-    let renew = |k: &SigningKey| -> Result<KeyRegistration> {
+    let registration = |k: &SigningKey, operation: Uuid| -> Result<KeyRegistration> {
         let mut registration = KeyRegistration {
             binding_id: binding,
             binding_generation: 1,
@@ -264,7 +274,7 @@ pub(super) async fn recover(
             public_key: k.public.clone(),
             signature: String::new(),
         };
-        let bytes = registration.signing_bytes(r.tenant, r.service_id, employee, reset)?;
+        let bytes = registration.signing_bytes(r.tenant, r.service_id, employee, operation)?;
         registration.signature = URL_SAFE_NO_PAD.encode(
             k.key
                 .sign(&SystemRandom::new(), &bytes)
@@ -273,6 +283,7 @@ pub(super) async fn recover(
         );
         Ok(registration)
     };
+    let renew = |k: &SigningKey| registration(k, reset);
     let endpoint = format!("operations/{reset}/windows-key");
     let verified = observation.local_session.clone();
     observation.local_session = Some(w::AccessLocalSession {
@@ -291,8 +302,17 @@ pub(super) async fn recover(
     .await?;
     assert_eq!(
         post(&endpoint).json(&renew(&key)?).send().await?.status(),
-        403
+        401
     );
+    let shared: w::AccessDirectory = material::success(
+        peer.get(format!("{base}/device-access"))
+            .header("x-rss-user-session", credential)
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(shared.device_id, r.device);
+    assert!(shared.bindings.iter().all(|b| b.id != binding));
     observation.local_session = verified;
     observation.sequence += 1;
     material::empty(
@@ -302,16 +322,33 @@ pub(super) async fn recover(
             .await?,
     )
     .await?;
-    // A management replacement after acceptance has a different source version, even with the same public key.
-    let set_version = |version: i64| {
-        sqlx::query("UPDATE rss_da.windows_sources SET version=$3,document=jsonb_set(document,'{version}',to_jsonb($3::bigint)) WHERE tenant_id=$1 AND binding=$2")
-        .bind(r.tenant).bind(binding).bind(version).execute(&c.operator)
+    let mut invalid = renew(&key)?;
+    invalid.signature = URL_SAFE_NO_PAD.encode([0u8; 64]);
+    assert_eq!(post(&endpoint).json(&invalid).send().await?.status(), 401);
+    let replacement = SigningKey::new()?;
+    let change = Uuid::new_v4();
+    let manager = material::seed_administrator(c, None).await?;
+    let privilege = rss_mdm_authorization_service::Grant {
+        operation: rss_mdm_authorization_service::Permission::EnterpriseApplicationsWrite,
+        scope: rss_mdm_authorization_service::Scope::Tenant,
     };
-    set_version(2).await?;
+    sqlx::query("UPDATE rss_da.authorization_rules SET document=jsonb_set(document,'{grants}',(document->'grants') || jsonb_build_array($3::jsonb)),revision=revision+1 WHERE tenant_id=$1 AND document#>>'{subject,user,principalId}'=$2")
+        .bind(r.tenant).bind(manager.to_string()).bind(sqlx::types::Json(privilege)).execute(&c.operator).await?;
+    let (mgmt_cookie, mgmt_csrf) = credentials::login(c, client, manager).await?;
+    let config = format!(
+        "{}/api/v1/tenants/{}/device-access/enterprise/configuration",
+        c.browser_origin, r.tenant
+    );
+    let mut admin = enterprise::Browser::new(c, client, config, mgmt_cookie, mgmt_csrf);
+    admin.register().await?;
+    let change = json!({"operationId":change,"expectedRevision":1,"configuration":{"kind":"windows_key","registration":registration(&replacement, change)?}});
+    material::empty(admin.submit(&change).await?).await?;
     let rejected: String =
-        material::success(post(&endpoint).json(&renew(&key)?).send().await?).await?;
+        material::success(post(&endpoint).json(&renew(&replacement)?).send().await?).await?;
     assert_eq!(rejected, "registration_required");
-    set_version(1).await?;
+    // Restore the independent fixture branch in which the administrator left the original source intact.
+    sqlx::query("UPDATE rss_da.windows_sources SET version=1, document=$3 WHERE tenant_id=$1 AND binding=$2")
+        .bind(r.tenant).bind(binding).bind(sqlx::types::Json(&previous)).execute(&c.operator).await?;
     for (candidate, expected) in [
         (&SigningKey::new()?, "registration_required"),
         (&key, "current"),

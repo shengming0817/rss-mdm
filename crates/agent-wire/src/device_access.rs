@@ -813,6 +813,8 @@ pub struct AccessPrepared {
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccessBindingStatus {
+    /// Operation which requested this desired revision.
+    pub operation_id: Uuid,
     /// Desired account handling on revocation.
     pub account_disposition: AccessAccountDisposition,
     /// Stable binding.
@@ -853,6 +855,8 @@ pub struct AccessPolicyOption {
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccessDirectory {
+    /// DA registration resolved from the authenticated endpoint.
+    pub device_id: crate::DeviceId,
     /// Eligible policies in this scan page.
     pub policies: Vec<AccessPolicyOption>,
     /// Cursor for the next policy scan.

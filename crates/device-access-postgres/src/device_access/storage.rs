@@ -28,14 +28,9 @@ pub async fn lock_registration(
         device,
     )
     .await?;
-    rss_mdm_registration_service::device::endpoints::lock_da_in(c, &tenant, device).await?;
-    let current =
-        rss_mdm_registration_service::device::endpoints::current_da_in(c, &tenant, device)
-            .await?
-            .ok_or(Error::Conflict)?;
-    if current.device != *device {
-        return Err(Error::Conflict);
-    }
+    rss_mdm_registration_service::device::endpoints::current_da_in(c, &tenant, device)
+        .await?
+        .ok_or(Error::Conflict)?;
     Ok(())
 }
 

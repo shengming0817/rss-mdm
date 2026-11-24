@@ -369,6 +369,9 @@ pub fn target_fingerprint(
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WindowsSource {
+    /// The employee operation which last renewed this registration. Management registration clears it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub renewed_by: Option<Uuid>,
     pub id: Uuid,
     pub version: i64,
     pub binding_id: Uuid,
@@ -472,6 +475,7 @@ async fn register_key_on(
         return Err(Error::Conflict);
     }
     let source = WindowsSource {
+        renewed_by: None,
         id: previous.map_or_else(Uuid::new_v4, |s| s.id),
         version: expected.checked_add(1).ok_or(Error::Capacity)?,
         binding_id: binding.id,
@@ -542,6 +546,9 @@ impl Service {
                     let (peer, actor, key, admission, operation) = *ctx;
                     let da = crate::delivery::resolve_on(c, peer).await?;
                     let tenant = Uuid::parse_str(actor.tenant_id()).map_err(|_| Error::Corrupt)?;
+                    if storage::get_in(c, tenant, key.binding_id).await?.device != *da.device() {
+                        return Err(Error::Forbidden);
+                    }
                     let b = storage::require_active_in(
                         c,
                         tenant,
@@ -588,7 +595,7 @@ impl Service {
                             replay: true,
                         });
                     };
-                    let replay = previous.current(&b);
+                    let replay = previous.current(&b) && previous.renewed_by == Some(operation);
                     let eligible = windows_key.is_some_and(|key| {
                         key.id == previous.id
                             && (key.version == previous.version
@@ -612,6 +619,7 @@ impl Service {
                     if !replay {
                         previous.version =
                             previous.version.checked_add(1).ok_or(Error::Capacity)?;
+                        previous.renewed_by = Some(operation);
                         previous.binding_revision = b.revision;
                         previous.factor_generation = b.factor_generation;
                         save_windows_source_on(c, &b, &previous).await?;

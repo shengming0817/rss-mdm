@@ -79,6 +79,7 @@ pub struct Binding {
 impl Binding {
     pub fn status(&self) -> Result<rss_mdm_agent_wire::runtime::AccessBindingStatus, Error> {
         Ok(rss_mdm_agent_wire::runtime::AccessBindingStatus {
+            operation_id: self.operation_id,
             definition_digest: self.definition_digest()?,
             account_disposition: self.account_disposition,
             id: self.id,

@@ -138,6 +138,11 @@
           "format": "uuid",
           "type": "string"
         },
+        "operationId": {
+          "description": "Operation which requested this desired revision.",
+          "format": "uuid",
+          "type": "string"
+        },
         "receivedRevision": {
           "description": "Last received desired revision.",
           "format": "int64",
@@ -157,6 +162,7 @@
         }
       },
       "required": [
+        "operationId",
         "accountDisposition",
         "id",
         "bindingGeneration",
@@ -925,6 +931,16 @@
         }
       ]
     },
+    "DeviceId": {
+      "format": "uuid",
+      "maxLength": 36,
+      "minLength": 36,
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
     "LoginConfiguration": {
       "additionalProperties": false,
       "description": "Business configuration compiled into one device-wide System profile. No deployment secrets.",
@@ -1020,6 +1036,10 @@
       },
       "type": "array"
     },
+    "deviceId": {
+      "$ref": "#/$defs/DeviceId",
+      "description": "DA registration resolved from the authenticated endpoint."
+    },
     "nextCursor": {
       "description": "Cursor for the next policy scan.",
       "type": [
@@ -1036,6 +1056,7 @@
     }
   },
   "required": [
+    "deviceId",
     "policies",
     "bindings"
   ],

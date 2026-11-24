@@ -191,6 +191,7 @@ impl Service {
                         .map_err(|_| Error::Malformed)?;
                     employee.check_live()?;
                     Ok(rss_mdm_agent_wire::runtime::AccessDirectory {
+                        device_id: *endpoint.device(),
                         policies,
                         next_cursor,
                         bindings,
@@ -425,7 +426,7 @@ impl Service {
             self.write_admitted(
             &self.access_audit,
             audit,
-            (actor, device, id, input, admission, audit, proof, &context, idp_fingerprints, expected_epoch),
+            (actor, device, id, input, admission, audit, proof, &context, idp_fingerprints, expected_epoch, &hash),
             |ctx, c| Box::pin(async move {
                 let proof = ctx.6.ok_or(Error::Unauthorized)?;
                 rss_identity_postgres::consume_step_up_on(c, ctx.0.session()?, ctx.7, proof.expose())
@@ -438,24 +439,17 @@ impl Service {
             }),
             |ctx, c| {
                 Box::pin(async move {
-                    let (actor, device, id, input, admission, audit, _, _, idp_fingerprints, expected_epoch) = ctx;
+                    let (actor, device, id, input, admission, audit, _, _, idp_fingerprints, expected_epoch, hash) = ctx;
                     let employee=owner::change(c,actor,device,*id,input,*admission).await?;
                     if employee.as_ref().map(|(_, epoch)| *epoch) != *expected_epoch { return Err(Error::Conflict); }
                     let tenant = Uuid::parse_str(actor.tenant_id()).map_err(|_| Error::Corrupt)?;
                     if matches!(input.action,Action::Offboard{..}) {super::lifecycle::lock_offboarding_on(c,tenant,*id).await?;}
-                    crate::delivery::lock_da_target(c,actor.tenant_id(),device,None).await?;
-                    rss_mdm_registration_service::lifecycle::require_work_in(rss_mdm_install_support::StorageProfile::Da, c, actor.tenant_id(), device).await?;
-                    rss_mdm_registration_service::device::endpoints::lock_da_in(c,
-                        actor.tenant_id(),
-                        device)
-                    .await?;
-                    rss_mdm_registration_service::device::endpoints::current_da_in(c,
-                        actor.tenant_id(),
-                        device)
-                    .await?
-                    .ok_or(Error::Conflict)?;
-                    let hash = digest(&("device_access_change", *device, *id, *input, *idp_fingerprints))?;
-                    let op = Operation::new(actor, input.operation_id, &hash)?;
+                    if employee.is_none() {
+                        storage::lock_registration(c, tenant, device).await?;
+                    } else {
+                        rss_mdm_registration_service::lifecycle::require_work_in(rss_mdm_install_support::StorageProfile::Da, c, actor.tenant_id(), device).await?;
+                    }
+                    let op = Operation::new(actor, input.operation_id, hash)?;
                     if crate::operations::replay( c, &op).await?.is_some() {
                         // Roll back this proof consumption, then return the committed receipt.
                         return Err(Error::Conflict);

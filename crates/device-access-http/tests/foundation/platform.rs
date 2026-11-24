@@ -606,11 +606,13 @@ pub async fn verify(
             .await?,
     )
     .await?;
+    assert_eq!(directory.device_id, registration.device);
     let desired = directory
         .bindings
         .iter()
         .find(|item| item.id == id)
         .context("device-visible Mac target")?;
+    assert_eq!(desired.operation_id, operation);
     assert_eq!(desired.revision, binding.revision + 1);
     observation.applications.push(access::AccessResult {
         binding_id: desired.id,

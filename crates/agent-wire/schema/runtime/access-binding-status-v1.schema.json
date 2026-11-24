@@ -953,6 +953,11 @@
       "format": "uuid",
       "type": "string"
     },
+    "operationId": {
+      "description": "Operation which requested this desired revision.",
+      "format": "uuid",
+      "type": "string"
+    },
     "receivedRevision": {
       "description": "Last received desired revision.",
       "format": "int64",
@@ -972,6 +977,7 @@
     }
   },
   "required": [
+    "operationId",
     "accountDisposition",
     "id",
     "bindingGeneration",
