@@ -112,27 +112,51 @@ pub(super) async fn require_employee_target(
     c: &mut PgConnection,
     b: &Binding,
     epoch: Uuid,
+    store: Option<&dyn rss_mdm_registration_service::participants::agent::Store>,
 ) -> Result<(), Error> {
-    match &b.account_delivery {
+    let agent = match &b.account_delivery {
         Some(Target::Da {
             epoch: original, ..
-        }) if *original == epoch => Ok(()),
+        }) => {
+            return if *original == epoch {
+                Ok(())
+            } else {
+                Err(Error::Forbidden)
+            };
+        }
         Some(Target::Agent {
             agent,
             epoch: original,
             ..
         }) => {
-            if delivery::for_binding_on(c, b).await?.as_ref() == Some(agent)
-                && agent_epoch(c, b, agent).await? == *original
+            if delivery::for_binding_on(c, b).await?.as_ref() != Some(agent)
+                || agent_epoch(c, b, agent).await? != *original
             {
-                Ok(())
-            } else {
-                Err(Error::Forbidden)
+                return Err(Error::Forbidden);
             }
+            agent.device
         }
-        None if b.intent.platform() == w::TaskPlatform::Macos => Ok(()),
-        None if delivery::for_binding_on(c, b).await?.is_some() => Ok(()),
-        _ => Err(Error::Unsupported),
+        None if b.intent.platform() == w::TaskPlatform::Macos => return Ok(()),
+        None => {
+            delivery::for_binding_on(c, b)
+                .await?
+                .ok_or(Error::Unsupported)?
+                .device
+        }
+    };
+    let native = store
+        .ok_or(Error::Unsupported)?
+        .binding(c, b.tenant.to_string(), agent)
+        .await?
+        .ok_or(Error::Unsupported)?;
+    if matches!(
+        (b.intent.platform(), native.platform.as_str()),
+        (w::TaskPlatform::Windows, "windows") | (w::TaskPlatform::Macos, "macos")
+    ) && super::execution::admission::capable(&native, &b.configuration.windows)
+    {
+        Ok(())
+    } else {
+        Err(Error::Unsupported)
     }
 }
 /// A new management revision may use fresh authorization for the same physical recipient.

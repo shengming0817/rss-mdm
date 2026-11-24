@@ -99,7 +99,8 @@ pub(super) async fn change(
         return Err(Error::Forbidden);
     }
     if employee {
-        super::account_delivery::require_employee_target(c, &b, epoch).await?;
+        super::account_delivery::require_employee_target(c, &b, epoch, admission.agent_store())
+            .await?;
     }
     Ok(employee.then_some((b, epoch)))
 }

@@ -180,6 +180,7 @@ impl Binding {
 
 /// Product composition checks the current policy and live native interactive context.
 pub trait Admission: Send + Sync {
+    fn agent_store(&self) -> Option<&dyn rss_mdm_registration_service::participants::agent::Store>;
     fn broker_release_query(&self) -> &'static str {
         crate::broker_release_query!(
             "SELECT NULL::uuid AS tenant_id,NULL::uuid AS installation,NULL::uuid AS device,NULL::uuid AS registration,NULL::bigint AS generation,NULL::text AS platform,NULL::jsonb AS capabilities,NULL::jsonb AS execution_context WHERE false"

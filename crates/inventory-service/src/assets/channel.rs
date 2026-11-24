@@ -129,7 +129,7 @@ pub async fn snapshot_details_in(
         let Some(scope) = latest.try_get::<Option<String>, _>("scope").map_err(db)? else {
             continue;
         };
-        let (device, source, field) = *by_scope.get(&scope).ok_or(Error::Malformed)?;
+        let (device, source, field) = by_scope.remove(&scope).ok_or(Error::Malformed)?;
         let kind: String = latest.try_get("result").map_err(db)?;
         if !(kind == "snapshot" || (source == ReportSource::AgentBuiltin && kind == "partial")) {
             continue;
@@ -177,6 +177,26 @@ pub async fn snapshot_details_in(
             None => Observation::ProjectionPending { evidence },
         };
         result.insert((device, source.as_str().to_owned()), observed);
+    }
+    // A run can age out while its last reported enrollment fact is still current.
+    // Scopes with a retained run have already settled above, including pending projections.
+    for fact in facts.scalars {
+        if let Some((device, ReportSource::AgentBuiltin, field)) = by_scope.get(&fact.scope)
+            && fact.field == *field
+            && fact.fact.evidence.source == rss_mdm_inventory::Source::AgentBuiltin
+            && let State::Known(Scalar::String(state)) = fact.fact.state
+        {
+            result.insert(
+                (*device, ReportSource::AgentBuiltin.as_str().to_owned()),
+                Observation::Ready(Current {
+                    state,
+                    snapshot: Uuid::parse_str(&fact.fact.evidence.snapshot_id)
+                        .map_err(|_| Error::Malformed)?,
+                    received_at: fact.fact.evidence.received_at,
+                    evidence: None,
+                }),
+            );
+        }
     }
     Ok(result)
 }

@@ -550,7 +550,10 @@ impl Service {
                     let (peer, actor, key, admission, operation, audit) = *ctx;
                     let da = crate::delivery::resolve_on(c, peer).await?;
                     let tenant = Uuid::parse_str(actor.tenant_id()).map_err(|_| Error::Corrupt)?;
-                    if storage::get_in(c, tenant, key.binding_id).await?.device != *da.device() {
+                    let candidate = storage::get_in(c, tenant, key.binding_id).await?;
+                    if candidate.device != *da.device()
+                        || candidate.person != service::person(actor)?
+                    {
                         return Err(Error::NotFound);
                     }
                     let b = storage::require_active_in(
@@ -567,9 +570,7 @@ impl Service {
                     else {
                         return Err(Error::Forbidden);
                     };
-                    if b.device != *da.device()
-                        || b.person != service::person(actor)?
-                        || b.operation_id != operation
+                    if b.operation_id != operation
                         || b.intent.platform() != rss_mdm_agent_wire::runtime::TaskPlatform::Windows
                         || b.factor_generation != key.factor_generation
                         || b.revision != key.binding_revision

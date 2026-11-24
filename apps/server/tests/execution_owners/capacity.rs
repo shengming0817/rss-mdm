@@ -552,6 +552,20 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     };
     assert_eq!(current.state, enrolled);
     assert_eq!(current.snapshot, partial.report_id());
+    // Simulate bounded history pruning inside this fixture transaction. The projected field survives.
+    sqlx::query("DELETE FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND device=$2 AND source='agent.builtin'")
+        .bind(module_context.tenant.to_string()).bind(device.into_uuid()).execute(&mut *read).await?;
+    let pruned = rss_mdm_inventory_service::assets::channel::detail_in(
+        profile,
+        &mut read,
+        module_context.tenant,
+        device,
+        rss_mdm_inventory::ReportSource::AgentBuiltin,
+    )
+    .await?;
+    assert!(
+        matches!(pruned,rss_mdm_inventory::channel::Observation::Ready(fact) if fact.snapshot==current.snapshot && fact.received_at==current.received_at && fact.state==current.state)
+    );
     read.rollback().await?;
     assert!(worker_lifecycle.shutdown().join().await?.is_clean());
     Box::pin(check_module_detail(
