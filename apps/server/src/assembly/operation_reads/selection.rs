@@ -67,6 +67,10 @@ async fn candidates(
     }
     Ok(output)
 }
+pub(super) fn id(row: &Value) -> Result<Uuid, Error> {
+    row["id"].as_str().and_then(|s| Uuid::parse_str(s).ok()).ok_or(Error::Unavailable(Failure::CommandInvariant))
+}
+
 async fn classify(
     s: &Operations,
     c: &mut sqlx::PgConnection,
@@ -75,17 +79,9 @@ async fn classify(
     rows: &mut [Value],
     now: i64,
 ) -> Result<(), Error> {
-    let ids = rows
-        .iter()
-        .filter(|v| v["kind"] == "command")
-        .map(|v| {
-            Uuid::parse_str(v["id"].as_str().ok_or(Error::Malformed)?).map_err(|_| Error::Malformed)
-        })
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let mut decisions = s.decisions(c, p, grant, ids, now).await?;
+    let mut decisions = s.decisions(c, p, grant, rows, now).await?;
     for row in rows {
-        let id = Uuid::parse_str(row["id"].as_str().ok_or(Error::Malformed)?)
-            .map_err(|_| Error::Malformed)?;
+        let id = id(row)?;
         let decision = if row["kind"] == "command" {
             decisions.remove(&id).ok_or(Error::Conflict)?
         } else {
