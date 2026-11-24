@@ -210,7 +210,7 @@ CREATE TRIGGER manual_history AFTER INSERT OR UPDATE OR DELETE ON mdm.manual_ass
 
 
 CREATE TABLE mdm.field_versions (
- tenant_id uuid NOT NULL, field text NOT NULL, version bigint NOT NULL CHECK(version>0),
+ tenant_id uuid NOT NULL, field text COLLATE "C" NOT NULL, version bigint NOT NULL CHECK(version>0),
  revision bigint NOT NULL, definition jsonb,
  PRIMARY KEY(tenant_id,field,version),
  FOREIGN KEY(tenant_id,revision) REFERENCES mdm.asset_changes(tenant_id,revision),

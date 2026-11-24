@@ -22,7 +22,7 @@ use std::{
 use uuid::Uuid;
 
 mod catalog;
-// One attribute per transaction; each device contributes at most two subjects.
+// Read one source per page. Each device contributes at most two subjects.
 const PAGE: i64 = 8;
 type Result<T> = std::result::Result<T, sqlx::Error>;
 fn invalid(_: impl std::fmt::Debug) -> sqlx::Error {
@@ -152,8 +152,8 @@ impl Refresh {
         let mut writes = Vec::new();
         let facts = self.facts(c, binding, field, &principals).await?;
         for row in &subjects {
-            for (role, def) in &field.fields {
-                writes.push(field.observation(row, *role, def, &facts, &groups));
+            for output in &field.fields {
+                writes.push(field.observation(row, output, &facts, &groups));
             }
         }
         sqlx::query(include_str!("device_fields/write.sql"))
@@ -221,9 +221,14 @@ impl Refresh {
     }
 }
 
+struct Output {
+    role: DeviceUser,
+    attribute: Attribute,
+    definition: FieldDefinition,
+}
 struct Field {
     attribute: Attribute,
-    fields: Vec<(DeviceUser, FieldDefinition)>,
+    fields: Vec<Output>,
     profile: Option<model::DefinitionValue>,
     after: i64,
 }
@@ -231,18 +236,18 @@ impl Field {
     fn observation(
         &self,
         row: &rss_mdm_inventory_service::assets::personnel::DeviceSubjects,
-        role: DeviceUser,
-        def: &FieldDefinition,
+        output: &Output,
         facts: &BTreeMap<Uuid, PersonnelFact>,
         groups: &BTreeMap<Uuid, Vec<Scalar>>,
     ) -> Value {
-        let (id, binding_revision, bound) = match role {
+        let def = &output.definition;
+        let (id, binding_revision, bound) = match output.role {
             DeviceUser::Registration => (row.registration, row.registration_revision, None),
             DeviceUser::Current => (row.current, row.current_revision, row.current_until),
         };
         let fact = id.and_then(|id| facts.get(&id));
         let scalar = fact
-            .and_then(|fact| self.value(fact, groups))
+            .and_then(|fact| self.value(output.attribute, fact, groups))
             .filter(|v| def.value_type.validate_value(v).is_ok());
         let sourced = matches!(
             self.attribute,
@@ -273,12 +278,17 @@ impl Field {
         json!({"device":row.device,"field":def.key,"field_version":def.version,"subject":id,"value":scalar,
                         "valid_until":scalar.as_ref().and(end),"fingerprint":[binding_revision,source]})
     }
-    fn value(&self, f: &PersonnelFact, groups: &BTreeMap<Uuid, Vec<Scalar>>) -> Option<Scalar> {
+    fn value(
+        &self,
+        attribute: Attribute,
+        f: &PersonnelFact,
+        groups: &BTreeMap<Uuid, Vec<Scalar>>,
+    ) -> Option<Scalar> {
         if matches!(f.status, ProfileStatus::Unavailable) {
             return None;
         }
         let id = f.principal.as_uuid();
-        Some(match self.attribute {
+        Some(match attribute {
             Attribute::Principal => Scalar::String(id.to_string()),
             Attribute::LocalGroups => Scalar::Array(groups.get(&id).cloned().unwrap_or_default()),
             Attribute::Provider(_, which) => {

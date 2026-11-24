@@ -8,17 +8,16 @@ pub(super) async fn next(
     after: Option<&str>,
 ) -> Result<(Option<Field>, Option<String>)> {
     let tenant = binding.tenant();
-    rss_mdm_inventory_postgres::lock_catalog_write_in(c, tenant)
-        .await
-        .map_err(invalid)?;
     let mut candidates = desired_fields(c, providers, after).await?;
     // Two indexed seeks also advance through retired keys without loading their history.
     let prefix = "device.registration_user.";
     let mut bound = after.unwrap_or(prefix).to_owned();
     for _ in 0..2 {
-        let key: Option<String> = sqlx::query_scalar("SELECT field FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field>$2 AND field<'device.registration_user/' ORDER BY field LIMIT 1")
+        let key: Option<String> = sqlx::query_scalar("SELECT field FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field>$2 ORDER BY field LIMIT 1")
             .bind(tenant.to_string()).bind(&bound).fetch_optional(&mut *c).await?;
-        let Some(key) = key else { break };
+        let Some(key) = key.filter(|key| key.starts_with(prefix)) else {
+            break;
+        };
         let name = rss_mdm_inventory::FieldKey::parse(&key).map_err(invalid)?;
         if personnel::attribute(name).is_some() {
             candidates.entry(name).or_insert(None);
@@ -33,6 +32,12 @@ pub(super) async fn next(
     };
     let next = candidates.next().map(|_| key.as_str().to_owned());
     let attribute = personnel::attribute(key).expect("server field").1;
+    if matches!(
+        attribute,
+        Attribute::Provider(_, ProviderAttribute::DepartmentAncestors)
+    ) {
+        return Ok((None, next));
+    }
     let field = publish(c, binding, attribute, field).await?;
     Ok((field, next))
 }
@@ -44,7 +49,9 @@ async fn publish(
     mut field: Option<Field>,
 ) -> Result<Option<Field>> {
     let tenant = binding.tenant();
-    let keys = DeviceUser::ALL.map(|role| role.key(attribute).as_str().to_owned());
+    let keys: Vec<_> = outputs(attribute)
+        .map(|(role, a)| role.key(a).as_str().to_owned())
+        .collect();
     let mut writes = Vec::new();
     let mut retire = Vec::new();
     for (index, key) in keys.iter().enumerate() {
@@ -54,7 +61,7 @@ async fn publish(
         if old.is_some() {
             retire.push((key, version + 1, None));
         }
-        let definition = field.as_mut().map(|f| &mut f.fields[index].1);
+        let definition = field.as_mut().map(|f| &mut f.fields[index].definition);
         let body = if let Some(def) = definition {
             def.version = def.version.max(version as u64);
             if old.as_ref() == Some(&serde_json::to_value(&*def).map_err(invalid)?) {
@@ -70,21 +77,24 @@ async fn publish(
         };
         let new_version = field
             .as_ref()
-            .map_or(version + 1, |f| f.fields[index].1.version as i64);
+            .map_or(version + 1, |f| f.fields[index].definition.version as i64);
         writes.push((key, new_version, body));
     }
     if !writes.is_empty() {
+        rss_mdm_inventory_postgres::lock_catalog_write_in(c, tenant)
+            .await
+            .map_err(invalid)?;
         if let Some(f) = &field {
             let definitions = f
                 .fields
                 .iter()
-                .map(|(_, d)| serde_json::to_value(d))
+                .map(|o| serde_json::to_value(&o.definition))
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(invalid)?;
             // The ordinary catalog capacity only changes on definition publication.
             let fits: bool = sqlx::query_scalar(include_str!("capacity.sql"))
                 .bind(tenant.to_string())
-                .bind(&keys[..])
+                .bind(&keys)
                 .bind(Value::Array(definitions))
                 .bind(rss_mdm_inventory::catalog_capacity() as i64)
                 .bind(rss_mdm_inventory::MAX_CATALOG_BYTES as i64)
@@ -108,6 +118,20 @@ async fn publish(
     Ok(field)
 }
 
+// The Identity department snapshot supplies both membership views in a single asset revision.
+fn outputs(attribute: Attribute) -> impl Iterator<Item = (DeviceUser, Attribute)> {
+    let ancestors = match attribute {
+        Attribute::Provider(id, ProviderAttribute::Departments) => Some(Attribute::Provider(
+            id,
+            ProviderAttribute::DepartmentAncestors,
+        )),
+        _ => None,
+    };
+    std::iter::once(attribute)
+        .chain(ancestors)
+        .flat_map(|a| DeviceUser::ALL.map(|role| (role, a)))
+}
+
 async fn desired_fields(
     c: &mut PgConnection,
     providers: &[Uuid],
@@ -122,9 +146,12 @@ async fn desired_fields(
                 attribute,
                 profile,
                 after,
-                fields: DeviceUser::ALL
-                    .into_iter()
-                    .map(|role| (role, role.definition(attribute, revision, kind.clone())))
+                fields: outputs(attribute)
+                    .map(|(role, attribute)| Output {
+                        role,
+                        attribute,
+                        definition: role.definition(attribute, revision, kind.clone()),
+                    })
                     .collect(),
             }),
         );
