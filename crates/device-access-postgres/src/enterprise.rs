@@ -536,18 +536,22 @@ impl Service {
             "device_access_windows_key_renew",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        self.write_admitted(
+        self.write_keyed(
             &self.access_audit,
             audit,
-            (peer, actor, key, admission, operation),
+            Some(format!(
+                "device-access:windows-key:{operation}:{}",
+                audit.request_id()
+            )),
+            (peer, actor, key, admission, operation, audit),
             |ctx, c| Box::pin(async move { service::admit_session(c, ctx.1).await }),
             |ctx, c| {
                 Box::pin(async move {
-                    let (peer, actor, key, admission, operation) = *ctx;
+                    let (peer, actor, key, admission, operation, audit) = *ctx;
                     let da = crate::delivery::resolve_on(c, peer).await?;
                     let tenant = Uuid::parse_str(actor.tenant_id()).map_err(|_| Error::Corrupt)?;
                     if storage::get_in(c, tenant, key.binding_id).await?.device != *da.device() {
-                        return Err(Error::Forbidden);
+                        return Err(Error::NotFound);
                     }
                     let b = storage::require_active_in(
                         c,
@@ -589,11 +593,19 @@ impl Service {
                     {
                         return Err(Error::Forbidden);
                     }
-                    let Some(mut previous) = windows_source_on(c, &b).await? else {
-                        return Ok(AuditedChange {
+                    let registration_required = || {
+                        audit.operation(
+                            operation,
+                            "device_access_windows_key_registration_required",
+                            rss_mdm_audit_integration::AuditIntent::Management,
+                        );
+                        Ok(AuditedChange {
                             value: KeyRenewal::RegistrationRequired,
-                            replay: true,
-                        });
+                            replay: false,
+                        })
+                    };
+                    let Some(mut previous) = windows_source_on(c, &b).await? else {
+                        return registration_required();
                     };
                     let replay = previous.current(&b) && previous.renewed_by == Some(operation);
                     let eligible = windows_key.is_some_and(|key| {
@@ -607,10 +619,7 @@ impl Service {
                         || previous.person != b.person
                         || previous.public_key != key.public_key
                     {
-                        return Ok(AuditedChange {
-                            value: KeyRenewal::RegistrationRequired,
-                            replay: true,
-                        });
+                        return registration_required();
                     }
                     let payload = key
                         .signing_bytes(tenant, b.person.instance, b.person.principal, operation)

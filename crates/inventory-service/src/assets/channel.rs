@@ -97,10 +97,15 @@ pub async fn snapshot_details_in(
         scopes.push(scope);
     }
     let keys = by_scope.keys().cloned().collect::<Vec<_>>();
+    let fields = by_scope
+        .values()
+        .map(|(_, _, field)| field.as_str())
+        .collect::<Vec<_>>();
     let rows =
         sqlx::query(crate::storage_profile::sql(profile).assets_channel_snapshot_details_in_2)
             .bind(tenant.to_string())
             .bind(keys)
+            .bind(fields)
             .fetch_all(&mut *c)
             .await
             .map_err(db)?;
@@ -124,10 +129,11 @@ pub async fn snapshot_details_in(
         let Some(scope) = latest.try_get::<Option<String>, _>("scope").map_err(db)? else {
             continue;
         };
-        if latest.try_get::<String, _>("result").map_err(db)? != "snapshot" {
+        let (device, source, field) = *by_scope.get(&scope).ok_or(Error::Malformed)?;
+        let kind: String = latest.try_get("result").map_err(db)?;
+        if !(kind == "snapshot" || (source == ReportSource::AgentBuiltin && kind == "partial")) {
             continue;
         }
-        let (device, source, field) = *by_scope.get(&scope).ok_or(Error::Malformed)?;
         let id: Uuid = latest.try_get("id").map_err(db)?;
         let attempt: crate::collection::Attempts =
             serde_json::from_str(latest.try_get("attempts").map_err(db)?)

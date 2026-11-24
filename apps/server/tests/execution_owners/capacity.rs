@@ -538,6 +538,21 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
         }
     })
     .await??;
+    let mut read = command::seed_transaction(&module_context).await?;
+    let channel = rss_mdm_inventory_service::assets::channel::detail_in(
+        profile,
+        &mut read,
+        module_context.tenant,
+        device,
+        rss_mdm_inventory::ReportSource::AgentBuiltin,
+    )
+    .await?;
+    let rss_mdm_inventory::channel::Observation::Ready(current) = channel else {
+        anyhow::bail!("expected projected enrollment after partial report");
+    };
+    assert_eq!(current.state, enrolled);
+    assert_eq!(current.snapshot, partial.report_id());
+    read.rollback().await?;
     assert!(worker_lifecycle.shutdown().join().await?.is_clean());
     Box::pin(check_module_detail(
         &module_context,

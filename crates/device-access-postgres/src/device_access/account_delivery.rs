@@ -107,6 +107,34 @@ pub(super) async fn select(
         epoch,
     }))
 }
+/// An employee can use the existing recipient; only management can change it.
+pub(super) async fn require_employee_target(
+    c: &mut PgConnection,
+    b: &Binding,
+    epoch: Uuid,
+) -> Result<(), Error> {
+    match &b.account_delivery {
+        Some(Target::Da {
+            epoch: original, ..
+        }) if *original == epoch => Ok(()),
+        Some(Target::Agent {
+            agent,
+            epoch: original,
+            ..
+        }) => {
+            if delivery::for_binding_on(c, b).await?.as_ref() == Some(agent)
+                && agent_epoch(c, b, agent).await? == *original
+            {
+                Ok(())
+            } else {
+                Err(Error::Forbidden)
+            }
+        }
+        None if b.intent.platform() == w::TaskPlatform::Macos => Ok(()),
+        None if delivery::for_binding_on(c, b).await?.is_some() => Ok(()),
+        _ => Err(Error::Unsupported),
+    }
+}
 /// A new management revision may use fresh authorization for the same physical recipient.
 pub(super) async fn refresh_target(
     c: &mut PgConnection,

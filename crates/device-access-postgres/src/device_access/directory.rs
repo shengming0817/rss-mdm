@@ -102,13 +102,6 @@ async fn reader_scope(
         Err(Error::Forbidden) => {
             let who = super::service::person(p)?;
             let tenant = uuid::Uuid::parse_str(p.tenant_id()).map_err(|_| Error::Corrupt)?;
-            rss_mdm_registration_service::device::endpoints::current_da_in(
-                c,
-                p.tenant_id(),
-                device,
-            )
-            .await?
-            .ok_or(Error::NotFound)?;
             super::lifecycle::require_subject_on(c, tenant, &who).await?;
             Some(who)
         }
@@ -143,6 +136,17 @@ impl Service {
                     || b.account.is_none()
                     || b.state == rss_mdm_device_access::State::Revoked
             })
+        {
+            return Err(Error::NotFound);
+        }
+        if owner.is_some()
+            && rss_mdm_registration_service::device::endpoints::current_da_in(
+                &mut tx,
+                p.tenant_id(),
+                device,
+            )
+            .await?
+            .is_none()
         {
             return Err(Error::NotFound);
         }
@@ -186,7 +190,7 @@ impl Service {
                 .push_bind(owner.instance)
                 .push(" AND b.principal=")
                 .push_bind(owner.principal)
-                .push(" AND b.state <> 'revoked' AND b.account IS NOT NULL");
+                .push(" AND b.state <> 'revoked' AND b.account IS NOT NULL AND rss_da.current_da_registration(b.device) IS NOT NULL");
         }
         rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*BINDINGS).map_err(error)?;
         let rows: Vec<Value> = sql

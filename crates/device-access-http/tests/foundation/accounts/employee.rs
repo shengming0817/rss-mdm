@@ -118,7 +118,7 @@ pub(super) async fn recover(
         .header("origin", &c.browser_origin).header("x-identity-request","1")
         .json(&json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"reset_factors"}}))
         .send().await?;
-    assert_eq!(denied.status(), 403);
+    assert_eq!(denied.status(), 404);
     let mut reset = Uuid::nil();
     let mut repair = Uuid::nil();
     for (revision, action) in [(1, "repair_binding"), (2, "reset_factors")] {

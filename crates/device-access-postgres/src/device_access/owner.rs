@@ -56,21 +56,17 @@ pub(super) async fn change(
             Err(Error::Forbidden)
         };
     }
-    let epoch = registration(c, p, device).await?;
     let tenant = Uuid::parse_str(p.tenant_id()).map_err(|_| Error::Corrupt)?;
+    crate::delivery::lock_da_target(c, p.tenant_id(), device, None).await?;
     let b = storage::get_in(c, tenant, id).await?;
-    if b.device != *device {
+    let employee = b.person == service::person(p)?;
+    if b.device != *device || (!manager && !employee) {
         return Err(Error::NotFound);
     }
-    let employee = b.person == service::person(p)?;
-    if !employee {
-        if !manager {
-            return Err(Error::Forbidden);
-        }
-        if matches!(input.action, Action::ResetFactors) {
-            return Ok(None);
-        }
+    if !employee && matches!(input.action, Action::ResetFactors) {
+        return Ok(None);
     }
+    let epoch = endpoints::current_da_epoch_in(c, p.tenant_id(), device).await?;
     owned(c, &b, epoch).await?;
     if b.revision != input.expected_revision {
         return Err(Error::Conflict);
@@ -85,6 +81,13 @@ pub(super) async fn change(
         return Err(Error::Unsupported);
     }
     let policy = admission.policy(c, tenant, device, b.policy).await?;
+    if manager
+        && matches!(input.action, Action::ResetFactors)
+        && (policy.version != b.policy_version || policy.configuration != b.configuration)
+    {
+        // Administrative reset may apply a newer policy under its normal management proof.
+        return Ok(None);
+    }
     if policy.version != b.policy_version
         || policy.configuration != b.configuration
         || !policy.configuration.enabled
@@ -94,6 +97,9 @@ pub(super) async fn change(
             .is_some_and(|account| policy.configuration.admits(account))
     {
         return Err(Error::Forbidden);
+    }
+    if employee {
+        super::account_delivery::require_employee_target(c, &b, epoch).await?;
     }
     Ok(employee.then_some((b, epoch)))
 }

@@ -601,27 +601,25 @@ async fn oidc_step_up(
     request.extensions_mut().insert(control.deadline());
     request.extensions_mut().insert(auth.proof.binding());
     request.extensions_mut().insert(context);
-    let response = router.oneshot(request).await.expect("router is infallible");
-    if response.status().is_success()
-        || response.status() == axum::http::StatusCode::TOO_MANY_REQUESTS
+    let mut response = router.oneshot(request).await.expect("router is infallible");
+    if let Some(class) = response
+        .extensions()
+        .get::<rss_identity_http_axum::HttpFailure>()
+        .copied()
     {
-        Ok(OidcRedirect(response))
-    } else {
-        if response.status().is_server_error()
-            && let Some(rss_identity_http_axum::HttpFailure::Authority(error)) = response
-                .extensions()
-                .get::<rss_identity_http_axum::HttpFailure>()
-        {
-            return Err(crate::identity::failure(*error));
+        let failure = match class {
+            rss_identity_http_axum::HttpFailure::RequestTimeout => {
+                Some(rss_mdm_audit_integration::completion::ResponseFailure::Deadline)
+            }
+            rss_identity_http_axum::HttpFailure::Authority(error) => {
+                crate::identity::failure(error).failure()
+            }
+        };
+        if let Some(failure) = failure {
+            response.extensions_mut().insert(failure);
         }
-        Err(match response.status().as_u16() {
-            400 => Error::Malformed,
-            401 => Error::Unauthorized,
-            403 => Error::Forbidden,
-            409 => Error::Conflict,
-            _ => Error::Unavailable,
-        })
     }
+    Ok(OidcRedirect(response))
 }
 
 async fn offboarding(
