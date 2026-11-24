@@ -43,7 +43,7 @@ pub struct DeploymentApplication {
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Binding {
-    /// Frozen transport for a locally manageable Windows RSS-factor revision.
+    /// Frozen transport for a directly managed local account operation.
     pub account_delivery: Option<account_delivery::Target>,
     /// Operation that owns the current desired revision.
     pub operation_id: Uuid,

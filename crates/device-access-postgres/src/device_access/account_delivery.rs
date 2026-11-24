@@ -1,4 +1,4 @@
-//! Windows RSS-factor execution over the current DA device certificate.
+//! Local account execution over the current DA device certificate.
 use super::{Binding, Origin, participants::AccessRecovery, storage};
 use crate::{Error, Service, database::db, delivery, recovery::AccessMaterials, service::Change};
 use rss_mdm_agent_wire::{DeviceId, da, runtime as w};
@@ -62,19 +62,22 @@ pub(super) async fn select(
     if b.state == State::Revoked || b.account_delivery.is_some() {
         if b.state != State::Revoked
             && matches!(b.account_delivery, Some(Target::Da { .. }))
+            && b.intent.platform() == w::TaskPlatform::Windows
             && !has_custody
         {
             return Err(Error::Unsupported);
         }
         return refresh_target(c, b).await;
     }
-    if b.intent.platform() != w::TaskPlatform::Windows
+    let mac_create = matches!(b.intent, super::AccountIntent::Create { platform: w::TaskPlatform::Macos, .. })
+        && matches!(b.origin, Origin::Administrator { .. });
+    if !mac_create && (b.intent.platform() != w::TaskPlatform::Windows
         || !b
             .configuration
             .windows
             .accounts()
             .contains(&w::AccessWindowsKind::Local)
-        || b.account.as_ref().is_some_and(|a| !local(a))
+        || b.account.as_ref().is_some_and(|a| !local(a)))
     {
         return Ok(None);
     }
@@ -89,7 +92,7 @@ pub(super) async fn select(
             epoch,
         }));
     }
-    if !has_custody {
+    if !mac_create && !has_custody {
         return Err(Error::Unsupported);
     }
     let epoch = endpoints::current_da_epoch_in(c, &b.tenant.to_string(), &b.device).await?;
@@ -641,7 +644,12 @@ impl Run {
                 input.definition_digest,
             )
             .await?;
-            let windows = if b.state == State::Revoked {
+            let platform = b.intent.platform();
+            let architecture = match platform {
+                w::TaskPlatform::Macos => w::TaskArchitecture::Aarch64,
+                w::TaskPlatform::Windows => w::TaskArchitecture::X86_64,
+            };
+            let windows = if platform == w::TaskPlatform::Macos || b.state == State::Revoked {
                 None
             } else {
                 Some(materials.plan(c, b, now).await?)
@@ -649,7 +657,7 @@ impl Run {
             let spec = super::execution::admission::task_spec(
                 b,
                 b.device,
-                w::TaskArchitecture::X86_64,
+                architecture,
                 super::execution::storage::TaskIssue {
                     run: self.id,
                     attempt: input.attempt_id,
@@ -691,7 +699,7 @@ impl Run {
             }
             self.journal.renewals += 1;
             // The earlier permit has expired, and the device proved the local attempt never started.
-            if b.state != State::Revoked {
+            if start.windows.is_some() {
                 start.windows = Some(materials.plan(c, b, now).await?);
             }
             start.expires_at = now + 300;
@@ -722,7 +730,7 @@ impl Run {
                 self.journal.prepared = Some(v.account.clone());
             }
             E::Escrow(v) => {
-                if self.journal.custody.is_some() {
+                if task.platform != w::TaskPlatform::Windows || self.journal.custody.is_some() {
                     return Err(Error::Conflict);
                 }
                 let mut receipts = materials.escrow(c, task, v).await?;

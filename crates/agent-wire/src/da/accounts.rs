@@ -1,4 +1,4 @@
-//! Direct delivery of a frozen Windows account operation over the DA device listener.
+//! Direct delivery of a frozen local account operation over the DA device listener.
 use crate::runtime as w;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -33,7 +33,7 @@ pub struct AccountEvent {
     pub event: AccountObservation,
 }
 
-/// Closed set of Windows account observations accepted by DA.
+/// Closed set of local account observations accepted by DA.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
