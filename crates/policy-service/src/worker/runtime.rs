@@ -45,8 +45,8 @@ impl PolicyWork {
         })
     }
 
-    fn execution(&self) -> Option<&dyn crate::events::participants::ExecutionEvents> {
-        self.events.as_ref().map(|events| events.execution.as_ref())
+    fn member_owners(&self) -> Option<&crate::events::participants::MemberOwners> {
+        self.events.as_ref().map(|events| events.members.as_ref())
     }
     fn application(
         &self,
@@ -71,7 +71,7 @@ impl PolicyWork {
         ]
         .contains(&scope.reconciler())
             || (scope.reconciler() == jobs::event_domain(self.profile())
-                && self.execution().is_none())
+                && self.member_owners().is_none())
         {
             return Err(rss_reconcile::Error::new(
                 rss_reconcile::ErrorKind::Invariant,
@@ -327,7 +327,7 @@ impl PolicyWork {
                             self.application(claim.target().entity())?,
                             claim.target().entity(),
                             &failure,
-                            self.execution(),
+                            self.member_owners(),
                         ),
                         self.work_owner(claim.target().entity())?.1,
                         self.work_owner(claim.target().entity())?.2,
@@ -709,7 +709,7 @@ impl PolicyWork {
         cancel: &tokio_util::sync::CancellationToken,
         notify: &tokio::sync::Notify,
     ) -> std::result::Result<(), rss_runtime::ShutdownError> {
-        if events && self.execution().is_none() {
+        if events && self.member_owners().is_none() {
             cancel.cancelled().await;
             return Ok(());
         }

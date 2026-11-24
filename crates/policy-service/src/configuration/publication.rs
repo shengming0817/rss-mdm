@@ -3,6 +3,12 @@ use super::*;
 use rss_mdm_authorization_service::{Snapshot, context::AuthorizedPrincipal};
 use rss_mdm_policy::{Architecture, ExactResourceBinding, Exit, Platform};
 use rss_mdm_resource as resource;
+pub(crate) struct Publication<'a> {
+    pub policy: Uuid,
+    pub version: Uuid,
+    pub binding: &'a ExactResourceBinding,
+    pub exit: Exit,
+}
 pub struct Publications {
     pub runtime: Arc<PgRuntime>,
     pub content: Option<Arc<rss_mdm_content_service::Store>>,
@@ -70,43 +76,35 @@ impl Publications {
             )
             .await?)
     }
-    pub async fn freeze_in(
+    pub(crate) async fn freeze_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        policy: &rss_mdm_policy::Policy,
+        input: Publication<'_>,
         verified: Option<&rss_mdm_content_service::Verified>,
         proof: &AuthorizedPrincipal,
         snapshot: &Snapshot,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<frozen::Frozen> {
         self.runtime.validate_transaction(tx)?;
         if tx.tenant_id() != proof.binding().tenant() {
             return Err(Error::Forbidden.into());
         }
-        let rss_mdm_policy::Action::Configuration {
-            resource: binding,
-            exit,
-        } = &policy.definition.action
-        else {
-            return Err(Error::Unsupported.into());
-        };
         let (native, version) = self
-            .validate_in(tx, binding, *exit, verified, proof, snapshot)
+            .validate_in(tx, input.binding, input.exit, verified, proof, snapshot)
             .await?;
-        let frozen = frozen::Frozen::Configuration {
+        Ok(frozen::Frozen::Configuration {
             native: Protected::seal(
                 &self.protection,
                 tx.tenant_id(),
                 Owner::Policy {
-                    policy: policy.id,
-                    version: policy.version,
+                    policy: input.policy,
+                    version: input.version,
                 },
                 &native,
             )?,
-            platform: binding.platform,
-            exit: *exit,
+            platform: input.binding.platform,
+            exit: input.exit,
             resource_digest: version.digest().bytes(),
-        };
-        checked_input(serde_json::to_value(frozen))
+        })
     }
     pub(crate) async fn validate_in(
         &self,

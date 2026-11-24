@@ -663,13 +663,9 @@ pub async fn load_policy_version(
     tx: &mut PgTransaction<'_>,
     id: Uuid,
 ) -> Result<ScheduledPolicy> {
-    let (_policy, frozen) = crate::deployment::sources::storage::version_in(reader, tx, id).await?;
-    match frozen {
-        crate::deployment::frozen::Published::Software { .. } => Ok(ScheduledPolicy::Software(
-            crate::deployment::sources::software::read_in(reader, tx, id).await?,
-        )),
-        _ => Err(Error::Unsupported.into()),
-    }
+    crate::deployment::sources::software::read_in(reader, tx, id)
+        .await
+        .map(ScheduledPolicy::Software)
 }
 
 pub async fn load_source(

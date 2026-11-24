@@ -32,7 +32,16 @@ impl Binding {
             || self.native_collection()
     }
 }
-pub trait Store: Send + Sync {
+/// Single-device binding read used to revalidate an Agent's advertised capabilities.
+pub trait BindingReader: Send + Sync {
+    fn binding<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        device: rss_mdm_agent_wire::DeviceId,
+    ) -> Pending<'a, Option<Binding>>;
+}
+pub trait Store: BindingReader {
     fn bindings<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -53,23 +62,10 @@ pub trait Store: Send + Sync {
         tenant: String,
         device: rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, Option<rss_mdm_agent_wire::runtime::TaskClaimRequest>>;
-    fn binding<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        device: rss_mdm_agent_wire::DeviceId,
-    ) -> Pending<'a, Option<Binding>> {
-        Box::pin(async move {
-            Ok(self
-                .bindings(c, tenant, vec![device])
-                .await?
-                .remove(&device))
-        })
-    }
 }
 pub async fn agent_binding_in(
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-    store: std::sync::Arc<dyn Store>,
+    store: std::sync::Arc<dyn BindingReader>,
     device: rss_mdm_agent_wire::DeviceId,
 ) -> crate::control::transaction::Result<Option<Binding>> {
     let tenant = tx.tenant_id();
@@ -81,7 +77,7 @@ pub async fn agent_binding_in(
 pub async fn agent_binding_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
-    store: std::sync::Arc<dyn Store>,
+    store: std::sync::Arc<dyn BindingReader>,
     device: rss_mdm_agent_wire::DeviceId,
 ) -> crate::control::transaction::Result<Option<Binding>> {
     Ok(store.binding(c, tenant.to_string(), device).await?)

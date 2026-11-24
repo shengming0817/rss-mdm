@@ -110,7 +110,7 @@ fn software_capability(
     }
 }
 
-use rss_mdm_device_service::control::agent_facts::Store;
+use rss_mdm_device_service::control::agent_facts::BindingReader;
 impl Devices {
     pub async fn directory_capabilities_on(
         &self,

@@ -1,4 +1,4 @@
-//! Execution consumes published Policy inputs and narrow Scope authority facts.
+//! Software deployment consumes published Policy inputs and narrow Scope authority facts.
 use crate::deployment::{Error, action_contract::*, frozen::Published, transaction::*};
 use rss_mdm_policy::{Action, Policy};
 use rss_transactional_messaging_postgres::PgTransaction;

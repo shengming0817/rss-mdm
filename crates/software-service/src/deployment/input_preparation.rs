@@ -1,4 +1,4 @@
-//! Execution-owned resource preparation inside the caller's original transaction.
+//! Software resource preparation inside the caller's original transaction.
 use crate::deployment::frozen::FrozenSoftwareAction;
 pub(crate) mod preview;
 mod publication;
@@ -6,7 +6,7 @@ mod request;
 mod software;
 use crate::deployment::authorization::{Permission, context::AuthorizedPrincipal};
 use crate::deployment::{Error, Inputs, action_contract::*, frozen::Published, transaction::*};
-pub use request::{PublicationAuthority, PublicationInput};
+pub use request::PublicationInput;
 use rss_mdm_policy::{Action, Platform, SoftwareIntent};
 use rss_mdm_resource::{self as resource, self as r};
 use rss_transactional_messaging_postgres::PgTransaction;
@@ -17,12 +17,11 @@ impl Inputs {
         &self,
         tx: &mut PgTransaction<'_>,
         input: &PublicationInput<'_>,
-        authority: &PublicationAuthority<'_>,
+        proof: &AuthorizedPrincipal,
+        snapshot: &crate::deployment::authorization::Snapshot,
     ) -> Result<Published> {
         self.validate_in(tx)?;
-        authority
-            .snapshot
-            .require_all_devices(authority.proof, Permission::SoftwareDeploy)?;
+        snapshot.require_all_devices(proof, Permission::SoftwareDeploy)?;
         let frozen = match input {
             PublicationInput::AgentInstall {
                 binding,
@@ -30,15 +29,8 @@ impl Inputs {
                 lifetime,
             } => Published::AgentInstall {
                 action: Box::new(
-                    self.freeze_agent_in(
-                        tx,
-                        authority.proof,
-                        authority.snapshot,
-                        binding,
-                        schedule,
-                        *lifetime,
-                    )
-                    .await?,
+                    self.freeze_agent_in(tx, proof, snapshot, binding, schedule, *lifetime)
+                        .await?,
                 ),
             },
 
@@ -86,35 +78,31 @@ pub fn authorize_action(
 
 impl Inputs {
     /// Resolve only backend-owned software lifecycle; caller retains Policy authorization and locks.
-    pub async fn software_binding_in(
+    pub async fn agent_package_digest_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        action: &rss_mdm_policy::Action,
-    ) -> Result<Option<[u8; 32]>> {
+        packages: &std::collections::BTreeMap<rss_mdm_policy::SoftwareTarget, uuid::Uuid>,
+    ) -> Result<[u8; 32]> {
         self.validate_in(tx)?;
-        if let rss_mdm_policy::Action::EnsureAgentInstalled { packages, .. } = action {
-            let tenant = tx.tenant_id();
-            let mut bindings = Vec::new();
-            for (target, id) in packages {
-                let id = *id;
-                let package = tx
-                    .with_connection(move |c| {
-                        Box::pin(async move {
-                            Ok(crate::agent_packages::resolve_in(c, tenant, id)
-                                .await
-                                .map_err(crate::deployment::agent_preparation::publication_error))
-                        })
+
+        let tenant = tx.tenant_id();
+        let mut bindings = Vec::new();
+        for (target, id) in packages {
+            let id = *id;
+            let package = tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(crate::agent_packages::resolve_in(c, tenant, id)
+                            .await
+                            .map_err(crate::deployment::agent_preparation::publication_error))
                     })
-                    .await??;
-                bindings.push((*target, id, package.digest, package.lifecycle));
-            }
-            return Ok(Some(
-                crate::deployment::transaction::fingerprint(&bindings)?
-                    .try_into()
-                    .map_err(|_| Error::Malformed)?,
-            ));
+                })
+                .await??;
+            bindings.push((*target, id, package.digest, package.lifecycle));
         }
-        Ok(None)
+        crate::deployment::transaction::fingerprint(&bindings)?
+            .try_into()
+            .map_err(|_| Error::Malformed.into())
     }
 }
 

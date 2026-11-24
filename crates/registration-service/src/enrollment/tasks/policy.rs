@@ -11,6 +11,39 @@ use uuid::Uuid;
 pub enum Published {
     Enrollment { action: Box<FrozenEnrollment> },
 }
+pub fn publish(
+    entries: &crate::enrollment::task::Entries,
+    proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+    snapshot: &rss_mdm_authorization_service::Snapshot,
+    organization: Uuid,
+    schedule: &rss_mdm_policy::schedule::Schedule,
+    lifetime: u32,
+    self_service: Option<&rss_mdm_policy::SelfService>,
+) -> std::result::Result<Published, Error> {
+    if let Some(access) = self_service {
+        super::self_service::validate_access(access, proof.tenant_id(), proof.instance_id())?;
+    }
+    let action = crate::enrollment::task::prepare(
+        entries,
+        proof,
+        snapshot,
+        organization,
+        schedule,
+        lifetime,
+    )
+    .map_err(|error| match error {
+        crate::Error::CommitUnknown => Error::CommitUnknown,
+        crate::Error::RollbackFailed => Error::RollbackFailed,
+        crate::Error::Malformed => Error::Malformed,
+        crate::Error::Forbidden => Error::Forbidden,
+        crate::Error::Unauthorized => Error::Unauthorized,
+        crate::Error::Conflict => Error::Conflict,
+        _ => Error::Unsupported,
+    })?;
+    Ok(Published::Enrollment {
+        action: Box::new(action),
+    })
+}
 pub struct EnrollmentPolicy {
     pub id: Uuid,
     pub owner: Uuid,

@@ -18,12 +18,20 @@ impl crate::enrollment::tasks::Transactions {
         let profile = self.profile();
 
         self.validate_in(tx)?;
+        if tx.tenant_id() != binding.tenant() || tx.expected_epoch() != binding.epoch() {
+            return Err(crate::enrollment::tasks::Error::Forbidden.into());
+        }
         crate::enrollment::tasks::storage::lock_device(profile, tx, &target.device).await?;
         let now = crate::enrollment::tasks::storage::now(tx).await?;
         if now >= deadline {
             return Ok(Decision::Expired);
         }
         let plan = crate::enrollment::tasks::policy::read_in(self, tx, version).await?;
+        if plan.policy.version != version {
+            return Ok(Decision::Rejected {
+                reason: "policy_changed".into(),
+            });
+        }
         if !plan.active {
             return Ok(Decision::Rejected {
                 reason: "policy_disabled".into(),
@@ -84,15 +92,27 @@ impl crate::enrollment::tasks::Transactions {
     pub async fn event_parent_current_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        target: &crate::enrollment::tasks::Target,
+        device: rss_mdm_agent_wire::DeviceId,
         id: Uuid,
     ) -> crate::enrollment::tasks::Result<bool> {
         let profile = self.profile();
 
         self.validate_in(tx)?;
         let run = crate::enrollment::tasks::storage::load_run(profile, tx, id).await?;
-        Ok(run.target.device == target.device
+        Ok(run.target.device == device
             && run.state.execution == rss_mdm_task_state::Execution::Running
             && run.state.started_at.is_some())
+    }
+}
+impl super::Transactions {
+    pub async fn event_progress_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+    ) -> super::Result<rss_mdm_task_state::RunState> {
+        self.validate_in(tx)?;
+        Ok(super::storage::read_run(self.profile(), tx, id)
+            .await?
+            .state)
     }
 }

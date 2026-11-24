@@ -2,6 +2,7 @@
 use super::*;
 use crate::deployment::agent_facts;
 use crate::deployment::frozen::Published;
+use crate::deployment::queries::records;
 use crate::deployment::sources as policies;
 use crate::installation::package::{Identity, Package};
 use rss_mdm_inventory::ReportSource;
@@ -130,7 +131,7 @@ pub async fn installation_observation(
     apple: Arc<dyn apple_facts::AppleResults>,
     agent: Arc<dyn agent_facts::Store>,
     op: &storage::Operation,
-) -> Result<serde_json::Value> {
+) -> Result<records::InstallationObservation> {
     let tenant = tx.tenant_id();
     tx.with_connection_context(
         &mut (windows, apple, agent, op, inventory),
@@ -166,7 +167,7 @@ pub async fn installation_observation_on(
     agent: Arc<dyn agent_facts::Store>,
     op: &storage::Operation,
     lock: bool,
-) -> Result<serde_json::Value> {
+) -> Result<records::InstallationObservation> {
     installation_observations_on(inventory, c, tenant, windows, apple, agent, &[op], lock)
         .await?
         .remove(&op.id)
@@ -185,7 +186,7 @@ pub(crate) async fn installation_observations_on(
     agent: Arc<dyn agent_facts::Store>,
     ops: &[&storage::Operation],
     lock: bool,
-) -> Result<std::collections::BTreeMap<Uuid, serde_json::Value>> {
+) -> Result<std::collections::BTreeMap<Uuid, records::InstallationObservation>> {
     use sqlx::Row;
     if ops.is_empty() {
         return Ok(Default::default());
@@ -303,7 +304,7 @@ struct InstallationFacts {
 fn installation_from_facts(
     op: &storage::Operation,
     facts: InstallationFacts,
-) -> Result<serde_json::Value> {
+) -> Result<records::InstallationObservation> {
     let InstallationFacts {
         current,
         sent,
@@ -431,14 +432,18 @@ fn installation_from_facts(
             crate::deployment::windows_results::InstallationDelivery::Unknown => "unknown",
         };
     }
-    let registered = if let Some(registration) = bound {
-        serde_json::json!({"deviceId":registration.device,"state":registration.state,"capabilities":profile})
-    } else {
-        serde_json::Value::Null
-    };
-    Ok(
-        serde_json::json!({"protocol":source.as_str(),"delivery":delivery,"installation":installation,"agentRegistration":registered,"bootstrap":bootstrap,"observedAt":observed_at}),
-    )
+    Ok(records::InstallationObservation {
+        protocol: source.as_str().into(),
+        delivery: delivery.into(),
+        installation: installation.into(),
+        bootstrap,
+        agent_registration: bound.map(|registration| records::AgentRegistration {
+            device_id: registration.device,
+            state: registration.state,
+            capabilities: profile,
+        }),
+        observed_at,
+    })
 }
 
 const INSTALLATION_PAGE: &str = r#"
@@ -799,13 +804,13 @@ impl crate::deployment::transactions::Transactions {
                 &op,
             )
             .await?;
-            let event = match observation["installation"].as_str() {
-                Some("installed") => dc::DeviceEvent::Reported(op.request.digest(
+            let event = match observation.installation.as_str() {
+                "installed" => dc::DeviceEvent::Reported(op.request.digest(
                     &self.protection,
                     tx.tenant_id(),
                     &op.device,
                 )?),
-                Some("failed") => dc::DeviceEvent::Rejected,
+                "failed" => dc::DeviceEvent::Rejected,
                 _ => continue,
             };
             let report = dc::DeviceReport {
@@ -866,10 +871,9 @@ impl crate::deployment::transactions::Transactions {
     pub(crate) async fn agent_install_event_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        policy: &rss_mdm_policy::Policy,
+        member: &crate::deployment::policy_events::EventMember,
+        action: &crate::installation::package::FrozenInstall,
         target: &crate::deployment::Target,
-        deadline: i64,
-        origin: rss_mdm_audit_integration::activity::ActivityOrigin,
         audit: &RequestAudit,
     ) -> Result<rss_mdm_agent_wire::runtime::PolicyEventDecision> {
         use rss_mdm_agent_wire::runtime::{
@@ -878,11 +882,6 @@ impl crate::deployment::transactions::Transactions {
         if let Some((rss_mdm_inventory::channel::Observation::Ready(fact), platform)) =
             self.agent_install_fact_in(tx, target.device).await?
         {
-            let (_, Published::AgentInstall { action }) =
-                policies::storage::version_in(&self.policy_reader, tx, policy.version).await?
-            else {
-                return Err(Error::Malformed.into());
-            };
             let architecture = fact
                 .evidence
                 .as_ref()
@@ -932,11 +931,6 @@ impl crate::deployment::transactions::Transactions {
             let authority::Authority::AgentInstall { package, .. } = operation.authority else {
                 return Err(Error::Malformed.into());
             };
-            let (_, Published::AgentInstall { action }) =
-                policies::storage::version_in(&self.policy_reader, tx, policy.version).await?
-            else {
-                return Err(Error::Malformed.into());
-            };
             let digest = crate::deployment::transaction::fingerprint(&package)?;
             let mut same = false;
             for candidate in action.packages.values() {
@@ -955,7 +949,7 @@ impl crate::deployment::transactions::Transactions {
                 tx,
                 &target.device,
                 audit,
-                Some((policy.id, deadline, origin)),
+                Some((member.policy, member.deadline, member.origin)),
             )
             .await?
         {

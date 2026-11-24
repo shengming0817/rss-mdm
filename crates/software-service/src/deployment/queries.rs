@@ -166,7 +166,7 @@ impl Queries {
             reauthorization: decision.reauthorization,
             command_status: records::CommandStatus(command),
             observation,
-            agent_installation: agent_installation.map(records::decode).transpose()?,
+            agent_installation,
         })
     }
 }

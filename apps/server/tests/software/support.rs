@@ -303,13 +303,14 @@ pub(super) async fn decision(
                     .0
                     .accept_policy_event_in(
                         tx,
-                        &policy,
+                        &owner::policy_events::EventMember {
+                            policy: policy.id,
+                            version: policy.version,
+                            id: ctx.4,
+                            origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
+                            deadline: now() + 300,
+                        },
                         ctx.1,
-                        (
-                            ctx.4,
-                            rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
-                        ),
-                        now() + 300,
                         ctx.5,
                     )
                     .await?;

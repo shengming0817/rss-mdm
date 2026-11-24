@@ -22,6 +22,7 @@ pub mod telemetry;
 pub mod authorization;
 pub use rss_mdm_policy::Policy;
 mod draft;
+mod publication;
 pub mod scopes;
 pub use draft::{Change, View};
 pub struct Policies {
@@ -32,13 +33,14 @@ pub struct Policies {
     runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
     audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
-    inputs: std::sync::Arc<dyn crate::inputs::ExecutionPublication>,
+    software: std::sync::Arc<rss_mdm_software_service::deployment::Inputs>,
+    enrollment_entries: rss_mdm_registration_service::enrollment::task::Entries,
     script: Option<std::sync::Arc<rss_mdm_script_service::inputs::Inputs>>,
     credentials: Option<std::sync::Arc<rss_mdm_recovery_credentials::tasks::publication::Inputs>>,
     collections:
         Option<std::sync::Arc<rss_mdm_inventory_service::collection::execution::inputs::Inputs>>,
     configuration: Option<std::sync::Arc<crate::configuration::publication::Publications>>,
-    changes: std::sync::Arc<dyn crate::inputs::ExecutionChanges>,
+    changes: std::sync::Arc<dyn crate::inputs::PublishedPolicyDependents>,
     mdm_software_enabled: bool,
 }
 /// Dependencies for this Policy application, supplied by the host.
@@ -50,14 +52,15 @@ pub struct Dependencies {
     pub runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     pub policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
-    pub inputs: std::sync::Arc<dyn crate::inputs::ExecutionPublication>,
+    pub software: std::sync::Arc<rss_mdm_software_service::deployment::Inputs>,
+    pub enrollment_entries: rss_mdm_registration_service::enrollment::task::Entries,
     pub script: Option<std::sync::Arc<rss_mdm_script_service::inputs::Inputs>>,
     pub credentials:
         Option<std::sync::Arc<rss_mdm_recovery_credentials::tasks::publication::Inputs>>,
     pub collections:
         Option<std::sync::Arc<rss_mdm_inventory_service::collection::execution::inputs::Inputs>>,
     pub configuration: Option<std::sync::Arc<crate::configuration::publication::Publications>>,
-    pub changes: std::sync::Arc<dyn crate::inputs::ExecutionChanges>,
+    pub changes: std::sync::Arc<dyn crate::inputs::PublishedPolicyDependents>,
     pub mdm_software_enabled: bool,
 }
 impl Policies {
@@ -73,7 +76,8 @@ impl Policies {
             runtime,
             audit_store,
             policy_store,
-            inputs,
+            software,
+            enrollment_entries,
             script,
             collections,
             credentials,
@@ -89,7 +93,8 @@ impl Policies {
             runtime,
             audit_store,
             policy_store,
-            inputs,
+            software,
+            enrollment_entries,
             script,
             collections,
             credentials,
@@ -254,7 +259,13 @@ impl Policies {
                     if old.as_ref().map_or(0, |p| p.revision as u64) != op.expected_revision || old.as_ref().is_some_and(|p| p.state == rss_mdm_policy::State::Archived) { return Err(Error::Conflict.into()); }
                     let core_change = s.bind_change_in(tx, p, id, old.as_ref(), &op.input).await?;
                     let now = crate::action_admission::now(tx).await?;
-                    let execution_binding=match &core_change { rss_mdm_policy::Change::Put {definition,..} if matches!(definition.action, Action::EnsureAgentInstalled { .. })=>s.inputs.software_binding_in(tx,&definition.action).await?,rss_mdm_policy::Change::Put {..}=>None,_=>old.as_ref().and_then(|p|p.execution_binding) };
+                    let execution_binding = match &core_change {
+                        rss_mdm_policy::Change::Put { definition, .. } => match &definition.action {
+                            Action::EnsureAgentInstalled { packages, .. } => Some(s.software.agent_package_digest_in(tx, packages).await?),
+                            _ => None,
+                        },
+                        _ => old.as_ref().and_then(|policy| policy.execution_binding),
+                    };
                     let changed_policy = Policy::apply(
                         id,
                         old.as_ref(),
@@ -267,50 +278,12 @@ impl Policies {
                     let policy = changed_policy.policy;
                     if policy.state.is_enabled() && !s.mdm_software_enabled && matches!(policy.definition.action,Action::Software{channel:rss_mdm_policy::SoftwareChannel::Mdm,..}) { return Err(Error::MdmSoftwareDisabled.into()); }
                     authorize_policy_snapshot(&authorization, p, &policy.definition)?;
-                    if changed {
-                        let frozen = if let Action::TelemetryProfile { resource } = &policy.definition.action {
-                            telemetry::freeze(profile, tx, resource, p, &authorization, s.profile_validator.as_ref(), policy.id, policy.version).await?
-                        } else {
-                        if matches!(policy.definition.action,Action::Configuration{..}) {
-                            s.configuration.as_ref().ok_or(Error::Unsupported)?.freeze_in(tx,&policy,verified,p,&authorization).await?
-                        } else if let Action::UnmanageDevice{schedule,run_lifetime_seconds}=&policy.definition.action {
-                            checked_input(serde_json::to_value(rss_mdm_device_service::control::frozen::Frozen::UnmanageDevice{schedule:schedule.clone(),run_lifetime_seconds:*run_lifetime_seconds,actor:p.actor()}))?
-                        } else if let Action::DeviceAccess{mac,windows,self_enrollment,role}=&policy.definition.action {
-                            let configuration=rss_mdm_agent_wire::runtime::AccessConfiguration{mac:mac.clone(),windows:windows.clone(),self_enrollment:*self_enrollment,enabled:true,role:role.map(|r|match r {rss_mdm_policy::AccessRole::Standard=>rss_mdm_agent_wire::runtime::AccessRole::Standard,rss_mdm_policy::AccessRole::Administrator=>rss_mdm_agent_wire::runtime::AccessRole::Administrator})};
-                            configuration.validate().map_err(|_|Error::Malformed)?;
-                            // MDM owns this publication; DA consumes only explicitly qualified sources.
-                            serde_json::json!({"kind":"device_access","configuration":configuration})
-                        } else if matches!(policy.definition.action,Action::Credential{..}) {
-                            checked_input(serde_json::to_value(s.credentials.as_ref().ok_or(Error::Unsupported)?.publish_in(tx,&policy.definition.action,p,&authorization)?))?
-                        } else if let Action::Execution {resource,parameters,schedule,frequency,run_lifetime_seconds}=&policy.definition.action {
-                            checked_input(serde_json::to_value(s.script.as_ref().ok_or(Error::Unsupported)?.publish_in(tx,&rss_mdm_script_service::inputs::Publication {
-                                binding:resource,parameters:rss_mdm_script_service::Parameters::Sources(parameters),schedule,frequency:*frequency,lifetime:*run_lifetime_seconds,
-                            },verified.ok_or(Error::Conflict)?,p,&authorization).await?))?
-                        } else if let Action::AgentCollection{resource,schedule,frequency,run_lifetime_seconds}|Action::NativeCollection{resource,schedule,frequency,run_lifetime_seconds}=&policy.definition.action {
-                            checked_input(serde_json::to_value(s.collections.as_ref().ok_or(Error::Unsupported)?.publish_in(tx,&rss_mdm_inventory_service::collection::execution::inputs::Publication {
-                                channel:if matches!(policy.definition.action,Action::AgentCollection{..}){rss_mdm_inventory::Channel::Agent}else{rss_mdm_inventory::Channel::Mdm},
-                                binding:resource,schedule,frequency:*frequency,lifetime:*run_lifetime_seconds,
-                            },verified.ok_or(Error::Conflict)?,p,&authorization).await?))?
-                        } else {
-                            s.inputs.publish_in(tx,&policy,p,&authorization).await?
-                        }
-                        };
-                        storage::write_in(
-                            s,
-                            tx,
-                            &policy,
-                            &core_change,
-                            Some(&frozen),
-                            p,
-                            now,
-                        )
-                        .await?;
-                    } else {
-                        storage::write_in(s, tx, &policy, &core_change, None, p, now)
-                            .await?;
-                    }
+                    let frozen = if changed {
+                        Some(s.freeze_in(tx, &policy, verified, p, &authorization).await?)
+                    } else { None };
+                    storage::write_in(s, tx, &policy, &core_change, frozen, p, now).await?;
                     // Publication performs no Agent fanout. Native reconciliation is a bounded background job.
-                    storage::enqueue_change_in( profile, &s.reconcile_messaging, s.changes.as_ref(), tx, &policy, old.as_ref()).await?;
+                    storage::enqueue_change_in(s, tx, &policy).await?;
                     s.retire_children_in(tx, old.as_ref(), &policy).await?;
                     let value = s.view_in(tx, p, &policy).await?;
                     checked(

@@ -653,7 +653,7 @@ impl PolicyReader {
     }
 }
 
-/// Serialize management and Execution source recovery using the existing Policy aggregate key.
+/// Serialize Policy management and dependent recovery using the existing Policy aggregate key.
 /// This lock also covers creation, where no Policy row exists yet.
 pub async fn lock_coordination_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<(), PgError> {
     let key = format!("{}:policy:{id}", tx.tenant_id());

@@ -73,10 +73,3 @@ impl<'a> TryFrom<&'a Action> for PublicationInput<'a> {
         })
     }
 }
-
-/// Native grants are bound to the exact current authority and persisted owner identity.
-pub struct PublicationAuthority<'a> {
-    pub proof: &'a rss_mdm_authorization_service::context::AuthorizedPrincipal,
-    pub snapshot: &'a rss_mdm_authorization_service::Snapshot,
-    pub devices: Option<&'a std::collections::BTreeSet<rss_mdm_agent_wire::DeviceId>>,
-}

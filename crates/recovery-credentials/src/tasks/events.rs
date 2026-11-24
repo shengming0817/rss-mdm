@@ -21,12 +21,20 @@ impl crate::tasks::Transactions {
         let profile = self.profile();
 
         self.validate_in(tx)?;
+        if tx.tenant_id() != binding.tenant() || tx.expected_epoch() != binding.epoch() {
+            return Err(super::Error::Forbidden.into());
+        }
         crate::tasks::storage::lock_device(profile, tx, &target.device).await?;
         let now = crate::tasks::storage::now(tx).await?;
         if now >= deadline {
             return Ok(Decision::Expired);
         }
         let plan = crate::tasks::policy::read_in(&self.policy_reader, tx, version).await?;
+        if plan.policy.version != version {
+            return Ok(Decision::Rejected {
+                reason: "policy_changed".into(),
+            });
+        }
         if !plan.active {
             return Ok(Decision::Rejected {
                 reason: "policy_disabled".into(),
@@ -87,14 +95,22 @@ impl crate::tasks::Transactions {
     pub async fn event_parent_current_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        target: &crate::tasks::Target,
+        device: rss_mdm_agent_wire::DeviceId,
         id: Uuid,
     ) -> crate::tasks::Result<bool> {
         let profile = self.profile();
         self.validate_in(tx)?;
         let run = crate::tasks::storage::load_run(profile, tx, id).await?;
-        Ok(run.target.device == target.device
+        Ok(run.target.device == device
             && run.state.execution == rss_mdm_task_state::Execution::Running
             && run.state.started_at.is_some())
     }
+}
+/// Historical progress stays readable when the product has disabled new credential tasks.
+pub async fn event_progress_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> super::Result<rss_mdm_task_state::RunState> {
+    Ok(super::storage::read_run(profile, tx, id).await?.state)
 }

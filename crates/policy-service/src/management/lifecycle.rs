@@ -161,7 +161,12 @@ impl crate::application::Application {
             .await?
             .map_err(Error::from)?;
         if existing.is_none() {
-            self.changes.retirement_accepted_in(tx, accepted.0).await?;
+            rss_mdm_device_service::control::unmanage::wake_in(
+                &self.reconcile_messaging,
+                tx,
+                accepted.0,
+            )
+            .await?;
         }
         if !accepted.1 {
             let audit = RequestAudit::new(

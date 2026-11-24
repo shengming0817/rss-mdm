@@ -25,46 +25,21 @@ pub trait ProfileValidator: Send + Sync {
 }
 
 use crate::transaction::Fault;
-use rss_mdm_authorization_service::{Snapshot, context::AuthorizedPrincipal};
-use rss_mdm_policy::{Action, Policy};
-/// Publication of actions still owned by Execution. Configuration never enters this port.
-pub trait ExecutionPublication: Send + Sync {
-    fn software_binding_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        action: &'a Action,
-    ) -> Pending<'a, Option<[u8; 32]>, Fault>;
-    fn publish_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        policy: &'a Policy,
-        proof: &'a AuthorizedPrincipal,
-        snapshot: &'a Snapshot,
-    ) -> Pending<'a, serde_json::Value, Fault>;
-}
-/// Durable changes in remaining Execution work, borrowing the original Policy transaction.
-pub trait ExecutionChanges: Send + Sync {
+/// Wake the owners of this Policy's published versions in the writer's transaction.
+pub trait PublishedPolicyDependents: Send + Sync {
     fn policy_changed_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        policy: &'a rss_mdm_policy::Policy,
-        previous: Option<&'a rss_mdm_policy::Policy>,
+        policy: uuid::Uuid,
+        kinds: &'a [rss_mdm_policy::ActionKind],
     ) -> Pending<'a, (), Fault>;
-    fn assignment_changed_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        version: uuid::Uuid,
-        target: &'a rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
-        available: bool,
-    ) -> Pending<'a, (), Fault>;
+}
+/// Foreign native work waiting on Configuration progress.
+pub trait ConfigurationDependents: Send + Sync {
     fn configuration_progressed_in<'a>(
         &'a self,
+        messaging: &'a rss_reconcile_postgres::PgMessagingStore,
         tx: &'a mut PgTransaction<'_>,
         devices: &'a [rss_mdm_agent_wire::DeviceId],
-    ) -> Pending<'a, (), Fault>;
-    fn retirement_accepted_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        retirement: uuid::Uuid,
     ) -> Pending<'a, (), Fault>;
 }

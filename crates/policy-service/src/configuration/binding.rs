@@ -11,7 +11,7 @@ pub struct Dependencies {
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub content: Option<Arc<rss_mdm_content_service::Store>>,
     pub channels: Arc<dyn channels::Channels>,
-    pub changes: Arc<dyn crate::inputs::ExecutionChanges>,
+    pub changes: Arc<dyn crate::inputs::ConfigurationDependents>,
 }
 impl Transactions {
     pub async fn bind(dependencies: Dependencies) -> std::result::Result<Self, Error> {

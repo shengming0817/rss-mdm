@@ -23,6 +23,15 @@ pub fn rss(operation: &rss_mdm_policy::CredentialOperation) -> bool {
             | rss_mdm_policy::CredentialOperation::VerifyRssLogin { .. }
     )
 }
+pub fn profile(
+    operation: &rss_mdm_policy::CredentialOperation,
+) -> rss_mdm_install_support::StorageProfile {
+    if rss(operation) {
+        rss_mdm_install_support::StorageProfile::Da
+    } else {
+        rss_mdm_install_support::StorageProfile::Mdm
+    }
+}
 pub(crate) async fn anchor(
     service: &super::Transactions,
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,

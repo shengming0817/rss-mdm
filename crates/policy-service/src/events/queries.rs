@@ -170,9 +170,7 @@ impl Events {
                 Box::pin(async move {
                     let (s, proof, principal, agent, device, batch, members, q) = *ctx;
                     if let Some(principal) = principal {
-                        s.execution
-                            .verify_event_device_in(tx, principal, None)
-                            .await?;
+                        s.verify_agent_in(tx, principal).await?;
                     }
                     let identity = if let Some(proof) = proof {
                         let snapshot = crate::action_admission::current(tx, proof).await?;
@@ -227,7 +225,9 @@ impl Events {
                             {
                                 for reference in refs {
                                     item.operations.push(
-                                        s.progress.policy_event_operation_in(tx, reference).await?,
+                                        s.operations
+                                            .policy_event_operation_in(tx, reference)
+                                            .await?,
                                     );
                                 }
                             }

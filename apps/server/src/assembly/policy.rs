@@ -20,7 +20,6 @@ pub(crate) async fn application(
         content,
     )
     .await?;
-    let changes = changes(owner.runtime.clone(), probe).await?;
     Ok(Arc::new(
         Application::new(rss_mdm_policy_service::application::Dependencies {
             profile: rss_mdm_install_support::StorageProfile::Mdm,
@@ -30,7 +29,6 @@ pub(crate) async fn application(
             clock: Arc::new(crate::clock::PolicyClock(clock)),
             cursor_key: key,
             objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
-            changes,
             configuration: Some(configuration),
         })
         .await?,
@@ -117,12 +115,16 @@ pub(crate) async fn events(
             .map_err(super::owner_errors::credential)?,
         ));
     }
-    let participants = Arc::new(super::policy_ports::Events {
+    let members = Arc::new(rss_mdm_policy_service::events::participants::MemberOwners {
         software,
         enrollment,
         credentials,
         scripts,
         collections,
+    });
+    let operations = Arc::new(super::policy_ports::OperationReads {
+        runtime: application.runtime.clone(),
+        members: members.clone(),
         configuration: application
             .configuration
             .clone()
@@ -130,8 +132,9 @@ pub(crate) async fn events(
     });
     Ok(Arc::new(Events {
         application,
-        execution: participants.clone(),
-        progress: participants,
+        members,
+        operations,
+        agent_bindings: Arc::new(super::agent_facts::AgentFacts),
     }))
 }
 #[expect(
@@ -171,10 +174,8 @@ pub(crate) async fn management(
             runtime: application.runtime.clone(),
             audit_store: application.audit_store.clone(),
             policy_store: store,
-            inputs: Arc::new(super::policy_ports::Publication {
-                software: software_inputs,
-                enrollment_entries,
-            }),
+            software: software_inputs,
+            enrollment_entries,
             credentials: Some(Arc::new(
                 rss_mdm_recovery_credentials::tasks::publication::Inputs::bind(
                     application.runtime.clone(),
@@ -201,7 +202,9 @@ pub(crate) async fn management(
                     protection,
                 },
             )),
-            changes: application.changes.clone(),
+            changes: Arc::new(super::policy_ports::PolicyDependents(
+                application.reconcile_messaging.clone(),
+            )),
             mdm_software_enabled,
         },
     )))
@@ -245,29 +248,6 @@ impl rss_mdm_scope_service::sources::ScopeDependents for ScopeDependents {
     }
 }
 
-pub(crate) async fn changes(
-    runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    execution: rss_transactional_messaging::fence::ExecutionBinding,
-) -> Result<Arc<dyn rss_mdm_policy_service::inputs::ExecutionChanges>, crate::Error> {
-    let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
-        runtime.clone(),
-        execution,
-        rss_mdm_policy_service::transaction::deadline(),
-    ))
-    .await
-    .map_err(|_| crate::Error::Unavailable(crate::Failure::PlanningStorage))?;
-    Ok(Arc::new(super::policy_ports::Changes {
-        reader: rss_mdm_policy_postgres::PolicyReader::bind(
-            rss_mdm_install_support::StorageProfile::Mdm,
-            runtime,
-        ),
-        messaging,
-        targets: Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
-            rss_mdm_install_support::StorageProfile::Mdm,
-            Some(Arc::new(rss_mdm_device_service::planning::PlanningObjects)),
-        )),
-    }))
-}
 pub(crate) async fn configuration(
     background: &crate::background::Compiled,
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
@@ -276,7 +256,10 @@ pub(crate) async fn configuration(
     protection: Arc<rss_mdm_native_protection::Protector>,
     content: Option<Arc<rss_mdm_content_service::Store>>,
 ) -> Result<Arc<rss_mdm_policy_service::configuration::Transactions>, crate::Error> {
-    let changes = changes(runtime.clone(), probe).await?;
+    let targets = Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        Some(Arc::new(rss_mdm_device_service::planning::PlanningObjects)),
+    ));
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
     let audit = Arc::new(
@@ -292,16 +275,13 @@ pub(crate) async fn configuration(
                 runtime,
                 probe,
                 audit_store: audit,
-                source: Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
-                    rss_mdm_install_support::StorageProfile::Mdm,
-                    Some(Arc::new(rss_mdm_device_service::planning::PlanningObjects)),
-                )),
+                source: targets.clone(),
                 protection: protection.clone(),
                 content,
                 channels: Arc::new(super::configuration_channels::ConfigurationChannels {
                     protection,
                 }),
-                changes,
+                changes: Arc::new(super::policy_ports::NativeDependents(targets)),
             },
         )
         .await?,

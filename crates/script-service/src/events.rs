@@ -16,12 +16,20 @@ impl crate::Transactions {
         deadline: i64,
     ) -> crate::transaction::Result<Decision> {
         self.validate_in(tx)?;
+        if tx.tenant_id() != binding.tenant() || tx.expected_epoch() != binding.epoch() {
+            return Err(crate::Error::Forbidden.into());
+        }
         crate::storage::lock_device(tx, &target.device).await?;
         let now = crate::storage::now(tx).await?;
         if now >= deadline {
             return Ok(Decision::Expired);
         }
         let plan = crate::policy::read_in(self, tx, version).await?;
+        if plan.policy.version != version {
+            return Ok(Decision::Rejected {
+                reason: "policy_changed".into(),
+            });
+        }
         if !plan.active {
             return Ok(Decision::Rejected {
                 reason: "policy_disabled".into(),
@@ -79,13 +87,23 @@ impl crate::Transactions {
     pub async fn event_parent_current_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        target: &crate::Target,
+        device: rss_mdm_agent_wire::DeviceId,
         id: Uuid,
     ) -> crate::Result<bool> {
         self.validate_in(tx)?;
         let run = crate::storage::load_run(tx, id).await?;
-        Ok(run.target.device == target.device
+        Ok(run.target.device == device
             && run.state.execution == rss_mdm_task_state::Execution::Running
             && run.state.started_at.is_some())
+    }
+}
+impl crate::Transactions {
+    pub async fn event_progress_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+    ) -> crate::Result<rss_mdm_task_state::RunState> {
+        self.validate_in(tx)?;
+        Ok(crate::storage::read_run(tx, id).await?.state)
     }
 }

@@ -426,3 +426,40 @@ impl From<rss_mdm_scope_service::transaction::Fault> for Fault {
         }
     }
 }
+
+impl From<rss_mdm_software_service::deployment::transaction::Fault> for Fault {
+    fn from(e: rss_mdm_software_service::deployment::transaction::Fault) -> Self {
+        match e {
+            rss_mdm_software_service::deployment::transaction::Fault::Request(e) => {
+                Fault::Request(e.into())
+            }
+            rss_mdm_software_service::deployment::transaction::Fault::Storage(e) => {
+                Fault::Storage(e)
+            }
+            rss_mdm_software_service::deployment::transaction::Fault::Sql(e) => Fault::Sql(e),
+        }
+    }
+}
+
+impl From<rss_mdm_registration_service::enrollment::tasks::transaction::Fault> for Fault {
+    fn from(e: rss_mdm_registration_service::enrollment::tasks::transaction::Fault) -> Self {
+        use rss_mdm_registration_service::enrollment::tasks::transaction::Fault as F;
+        match e {
+            F::Storage(e) => Fault::Storage(e),
+            F::Sql(e) => Fault::Sql(e),
+            F::Request(e) => Fault::Request(e.into()),
+        }
+    }
+}
+
+impl From<rss_mdm_device_service::control::transaction::Fault> for Fault {
+    fn from(e: rss_mdm_device_service::control::transaction::Fault) -> Self {
+        match e {
+            rss_mdm_device_service::control::transaction::Fault::Request(e) => {
+                Fault::Request(e.into())
+            }
+            rss_mdm_device_service::control::transaction::Fault::Storage(e) => Fault::Storage(e),
+            rss_mdm_device_service::control::transaction::Fault::Sql(e) => Fault::Sql(e),
+        }
+    }
+}

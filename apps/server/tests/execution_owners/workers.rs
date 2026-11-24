@@ -205,7 +205,32 @@ async fn resume(
 async fn checkpoint_restart(collection: bool) -> Result<()> {
     let mut h = Harness::open().await?;
     let (policy, ids) = seed_runs(&h, collection).await?;
-    wake(&h, collection, policy).await?;
+    use rss_mdm_policy_service::inputs::PublishedPolicyDependents;
+    let messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
+        h.a.resources.storage.runtime.clone(),
+        h.c.execution(),
+        script::transaction::deadline(),
+    ))
+    .await?;
+    let dependents = super::super::policy_ports::PolicyDependents(messaging);
+    let reader = rss_mdm_policy_postgres::PolicyReader::bind(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        h.a.resources.storage.runtime.clone(),
+    );
+    rss_mdm_policy_service::transaction::inspect(
+        &h.a.resources.storage.runtime,
+        h.c.execution(),
+        (dependents, reader),
+        move |ctx, tx| {
+            Box::pin(async move {
+                let kinds = rss_mdm_policy_service::transaction::checked(
+                    ctx.1.action_kinds_in(tx, policy).await?,
+                )?;
+                ctx.0.policy_changed_in(tx, policy, &kinds).await
+            })
+        },
+    )
+    .await?;
     let scope = first_page(&h, collection, policy, &ids).await?;
     let a = Fixture::open(&h.c).await?;
     let (audit, delivery) = super::delivery(&h.c, &a).await?;

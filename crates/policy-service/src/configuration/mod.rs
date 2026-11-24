@@ -23,7 +23,7 @@ pub use model::{Create, NativeTarget, Task};
 pub struct Transactions {
     pub(crate) recovery_batch: rss_device_command::BatchLimit,
     pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
-    pub(crate) changes: Arc<dyn crate::inputs::ExecutionChanges>,
+    pub(crate) changes: Arc<dyn crate::inputs::ConfigurationDependents>,
     pub(crate) outbox: Arc<rss_transactional_messaging_postgres::PgOutboxStore<()>>,
 
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
@@ -132,4 +132,16 @@ pub(crate) fn device_ids(
     ids: Vec<uuid::Uuid>,
 ) -> std::result::Result<Vec<rss_mdm_agent_wire::DeviceId>, sqlx::Error> {
     ids.into_iter().map(device_id).collect()
+}
+
+impl Transactions {
+    async fn notify_dependents_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        devices: &[rss_mdm_agent_wire::DeviceId],
+    ) -> Result<()> {
+        self.changes
+            .configuration_progressed_in(&self.reconcile_messaging, tx, devices)
+            .await
+    }
 }
