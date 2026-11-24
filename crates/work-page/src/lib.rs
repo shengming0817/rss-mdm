@@ -459,6 +459,82 @@ mod tests {
         assert_eq!(page.next, Some(start + Duration::from_secs(5)));
     }
     #[tokio::test]
+    async fn fast_handoffs_while_the_later_page_is_pending_rotate_all_waiting_tenants() {
+        let stop = CancellationToken::new();
+        let notify = Notify::new();
+        let (reader, mut reads) = tokio::sync::mpsc::unbounded_channel();
+        let (jobs, mut started) = tokio::sync::mpsc::unbounded_channel();
+        let worker = run_limited(
+            NonZeroUsize::MIN,
+            Duration::from_secs(60),
+            &stop,
+            &notify,
+            (
+                |key: &u32| Work {
+                    tenant: *key / 4,
+                    resource: 0,
+                    resource_limit: 1,
+                    object: *key,
+                },
+                |after| {
+                    let (return_page, receive) = tokio::sync::oneshot::channel::<Vec<u32>>();
+                    reader.send((after, return_page)).unwrap();
+                    async move { Ok::<_, Failure>(receive.await.unwrap()) }
+                },
+            ),
+            |key, _| {
+                let jobs = jobs.clone();
+                async move {
+                    let (release, wait) = tokio::sync::oneshot::channel();
+                    jobs.send((key, release)).unwrap();
+                    let _ = wait.await;
+                    Ok(Duration::ZERO)
+                }
+            },
+            |_| {},
+        );
+        let proof = async {
+            let (cursor, first) = reads.recv().await.unwrap();
+            assert_eq!(cursor, None);
+            first.send(vec![0, 1]).unwrap();
+            let (key, mut held) = started.recv().await.unwrap();
+            assert_eq!(key / 4, 0);
+            let mut seen = BTreeSet::new();
+            for _ in 0..12 {
+                let (cursor, page) = reads.recv().await.unwrap();
+                assert_eq!(cursor, Some(1));
+                page.send(vec![4, 8, 12, 16]).unwrap();
+                let (cursor, end) = reads.recv().await.unwrap();
+                assert_eq!(cursor, Some(16));
+                end.send(Vec::new()).unwrap();
+                held.send(()).unwrap();
+                let (fast, release) = started.recv().await.unwrap();
+                seen.insert(fast / 4);
+                if seen.is_superset(&BTreeSet::from([1, 2, 3, 4])) {
+                    stop.cancel();
+                    drop(release);
+                    return;
+                }
+                let (cursor, first) = reads.recv().await.unwrap();
+                assert_eq!(cursor, None);
+                first.send(vec![0, 1]).unwrap();
+                // The next page cannot complete until the fast job has finished.
+                release.send(()).unwrap();
+                let (hot, release) = started.recv().await.unwrap();
+                assert_eq!(hot / 4, 0);
+                held = release;
+            }
+            panic!("lost a discovered tenant across fast handoffs: {seen:?}");
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(worker, proof)
+        })
+        .await
+        .unwrap();
+        result.unwrap();
+    }
+
+    #[tokio::test]
     async fn a_saturated_group_hands_its_slot_to_a_waiter_during_page_io() {
         let stop = CancellationToken::new();
         let release = CancellationToken::new();

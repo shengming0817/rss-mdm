@@ -28,6 +28,10 @@ pub(crate) struct Admission<K, T, R, O> {
     shares: BTreeMap<(T, R), usize>,
     objects: BTreeSet<O>,
     last: Option<(K, T, R)>,
+    // Only admission of an elected contender advances its contested class.
+    // A fast cached hot successor may run between scans without rewinding this cursor.
+    rotation: BTreeMap<(Option<T>, Option<R>), (T, R)>,
+    elected: BTreeMap<K, (Option<T>, Option<R>)>,
 }
 
 fn decrement<G: Ord>(counts: &mut BTreeMap<G, usize>, group: &G) {
@@ -49,6 +53,8 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
             shares: BTreeMap::new(),
             objects: BTreeSet::new(),
             last: None,
+            rotation: BTreeMap::new(),
+            elected: BTreeMap::new(),
         }
     }
 
@@ -65,6 +71,7 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
 
     pub(crate) fn finish_scan(&mut self, round: u64) {
         self.pending.retain(|_, (_, seen)| *seen == round);
+        self.elected.retain(|key, _| self.pending.contains_key(key));
     }
 
     fn available(&self, work: Work<T, R, O>) -> bool {
@@ -74,19 +81,33 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
 
     // The cyclic lane cursor survives page compaction. An old candidate from A
     // cannot repeatedly displace C after B has just received the last grant.
-    fn priority(&self, key: &K, turn: u64, work: Work<T, R, O>) -> impl Ord + use<K, T, R, O> {
+    fn priority(
+        &self,
+        key: &K,
+        turn: u64,
+        work: Work<T, R, O>,
+        cursor: Option<&(T, R)>,
+        prefer_elected: bool,
+    ) -> impl Ord + use<K, T, R, O> {
         let lane = (work.tenant, work.resource);
         let usage = (
             self.tenants.get(&lane.0).copied().unwrap_or(0),
             self.resources.get(&lane.1).copied().unwrap_or(0),
             self.shares.get(&lane).copied().unwrap_or(0),
         );
-        let wrapped = self
-            .last
-            .as_ref()
-            .is_some_and(|(_, t, r)| (&lane.0, &lane.1) <= (t, r));
+        let cursor = cursor
+            .map(|(t, r)| (t, r))
+            .or_else(|| self.last.as_ref().map(|(_, t, r)| (t, r)));
+        let wrapped = cursor.is_some_and(|previous| (&lane.0, &lane.1) <= previous);
         let key_wrapped = self.last.as_ref().is_some_and(|(last, _, _)| key <= last);
-        (usage, wrapped, lane, turn, key_wrapped)
+        (
+            usage,
+            prefer_elected && !self.elected.contains_key(key),
+            wrapped,
+            lane,
+            turn,
+            key_wrapped,
+        )
     }
 
     pub(crate) fn take(&mut self, binding: &impl Fn(&K) -> Work<T, R, O>) -> Option<K> {
@@ -97,7 +118,7 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
             .pending
             .iter()
             .filter(|(key, _)| self.available(binding(key)))
-            .min_by_key(|(key, (turn, _))| self.priority(key, *turn, binding(key)))
+            .min_by_key(|(key, (turn, _))| self.priority(key, *turn, binding(key), None, true))
             .map(|(key, _)| key.clone())?;
         self.pending.remove(&key);
         let work = binding(&key);
@@ -109,6 +130,10 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
             .shares
             .entry((work.tenant.clone(), work.resource.clone()))
             .or_default() += 1;
+        if let Some(class) = self.elected.remove(&key) {
+            self.rotation
+                .insert(class, (work.tenant.clone(), work.resource.clone()));
+        }
         self.last = Some((key.clone(), work.tenant, work.resource));
         Some(key)
     }
@@ -119,6 +144,7 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
     // host-width of distinct lanes in waiting order, independently of backlog size.
     pub(crate) fn retain_successors(&mut self, binding: &impl Fn(&K) -> Work<T, R, O>) -> bool {
         let mut classes = BTreeMap::new();
+        let previous = std::mem::take(&mut self.elected);
         for (key, waiting) in std::mem::take(&mut self.pending) {
             let work = binding(&key);
             let class = (
@@ -132,7 +158,14 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
             );
             let width = self.limit.min(work.resource_limit);
             let lane = (work.tenant, work.resource);
-            let priority = self.priority(&key, waiting.0, binding(&key));
+            let owner = (class.0.clone(), class.1.clone());
+            let priority = self.priority(
+                &key,
+                waiting.0,
+                binding(&key),
+                self.rotation.get(&owner),
+                false,
+            );
             let candidates = classes.entry(class).or_insert_with(BTreeMap::new);
             let objects = candidates.entry(lane).or_insert_with(BTreeMap::new);
             let candidate = (priority, key, waiting, width);
@@ -149,7 +182,10 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
                 }
             }
         }
-        for lanes in classes.into_values() {
+        for ((tenant, resource, _), lanes) in classes {
+            let owner = (tenant, resource);
+            let contested = lanes.len() > self.limit;
+
             let mut lanes: Vec<_> = lanes
                 .into_values()
                 .map(|objects| {
@@ -161,13 +197,20 @@ impl<K: Clone + Ord, T: Clone + Ord, R: Clone + Ord, O: Ord> Admission<K, T, R, 
                 .collect();
             lanes.sort_unstable_by(|a, b| a[0].cmp(&b[0]));
             for candidates in lanes.into_iter().take(self.limit) {
-                self.pending.extend(
-                    candidates
-                        .into_iter()
-                        .map(|(_, key, waiting, _)| (key, waiting)),
-                );
+                for (_, key, waiting, _) in candidates {
+                    if contested || previous.get(&key) == Some(&owner) {
+                        self.elected.insert(key.clone(), owner.clone());
+                    }
+                    self.pending.insert(key, waiting);
+                }
             }
         }
+        self.rotation.retain(|(tenant, resource), _| {
+            tenant.as_ref().is_none_or(|t| self.tenants.contains_key(t))
+                && resource
+                    .as_ref()
+                    .is_none_or(|r| self.resources.contains_key(r))
+        });
         !self.pending.is_empty()
     }
 
@@ -246,5 +289,36 @@ mod tests {
             assert!(admission.take(&binding).is_some());
         }
         assert!(admission.take(&binding).is_none());
+    }
+    #[test]
+    fn quick_contenders_finishing_between_pages_cannot_reset_the_contested_turn() {
+        for tenants in [true, false] {
+            let binding = |key: &u32| Work {
+                tenant: if tenants { *key / 4 } else { 0 },
+                resource: if tenants { 0 } else { *key / 4 },
+                resource_limit: 1,
+                object: *key,
+            };
+            let mut ready = Admission::new(1);
+            let mut run = 0;
+            ready.discover(run, 0);
+            assert_eq!(ready.take(&binding), Some(run));
+            let mut served = BTreeSet::from([0]);
+            for round in 1..=24 {
+                for key in 0..32 {
+                    ready.discover(key, round);
+                }
+                ready.retain_successors(&binding);
+                ready.finish(&run, binding(&run));
+                run = ready.take(&binding).unwrap();
+                served.insert(run / 4);
+                // This fast request can finish before the next page future resolves.
+                ready.retain_successors(&binding);
+                ready.finish(&run, binding(&run));
+                run = ready.take(&binding).unwrap();
+                served.insert(run / 4);
+            }
+            assert_eq!(served, (0..8).collect());
+        }
     }
 }
