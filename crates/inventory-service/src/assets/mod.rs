@@ -31,6 +31,7 @@ mod runs;
 mod scopes;
 pub use fields::{FieldChange, FieldView};
 mod model;
+pub mod personnel;
 pub mod planning;
 pub mod raw_snapshot;
 pub mod software;

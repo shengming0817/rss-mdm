@@ -68,6 +68,7 @@ impl Groups {
                     after.map(endpoint).transpose()?,
                     limit,
                     &assets::ReadScope {
+                        personnel: rss_mdm_inventory_service::assets::personnel::Access::all(),
                         collection_scope: rss_mdm_inventory::CollectionScope::Device,
                         subject: "group".into(),
                         authority: "internal".into(),

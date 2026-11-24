@@ -75,7 +75,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             include_str!("../../schema/installation.sql"),
         ),
         (
-            "identity-authority-v18",
+            "identity-authority-v19",
             rss_identity_postgres::MIGRATION_SQL,
         ),
         (
@@ -530,6 +530,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_inventory_service::read_snapshot_sql(
                 rss_mdm_install_support::StorageProfile::Mdm,
             ),
+        ),
+        (
+            "device-personnel-fields-v1",
+            include_str!("../../schema/personnel-fields.sql"),
         ),
         ("device-directory-v1", rss_mdm_device_service::DIRECTORY_SQL),
         (

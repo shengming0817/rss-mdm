@@ -80,6 +80,20 @@ impl Groups {
                     let authority = query_authority(tx, proof).await?;
                     authority.require(proof, Permission::GroupRead, None)?;
                     authority.require_all_devices(proof, Permission::InventoryRead)?;
+                    let mut targets = Vec::new();
+                    request.criteria.criteria.referenced_groups(&mut targets);
+                    if let Some(editing) = &request.editing {
+                        targets.push(editing.group_id);
+                    }
+                    let mut required = criteria::source_permissions(tx, targets).await?;
+                    required.extend(request.criteria.criteria.personnel_permissions());
+                    for permission in required {
+                        if permission.device() {
+                            authority.require_all_devices(proof, permission)?;
+                        } else {
+                            authority.require(proof, permission, None)?;
+                        }
+                    }
                     group_checked(s.groups.lock_graph_in(tx).await?)?;
                     let snapshot = if request.asset_context == AssetContext::AssociatedDevice {
                         let reader = s.objects.clone();

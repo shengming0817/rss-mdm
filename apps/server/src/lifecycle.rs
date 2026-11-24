@@ -517,11 +517,18 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                             scopes.clone(),
                             scheduler.store.clone(),
                         ));
+                        let platform = da.as_ref().and_then(|d|d.runtime.platform.platform_sso.as_ref())
+                            .map(|p|p.qualification_configuration()).transpose().map_err(|_|assembly_error(crate::Error::Configuration(crate::ConfigIssue::DeviceAccess)))?;
+                        let device_fields=crate::administration::user_profiles::device_fields::Refresh {
+                            runtime:inventory_owner.runtime.clone(), identity:identity.authority.clone(), federation:identity.federation.clone(),
+                            platform:serde_json::to_value(platform).map_err(|_|assembly_error(crate::Error::Configuration(crate::ConfigIssue::DeviceAccess)))?,
+                            max_age:std::num::NonZeroU32::new(compiled.config.identity.runtime.profile.max_age_seconds).expect("validated profile age"),
+                        };
                         let group_work =
                             Arc::new(rss_mdm_group_service::runtime::GroupWork::new(
                                 inventory_services.groups.clone(),
                                 scheduler.store.clone(),
-                            ));
+                            ).with_device_fields(Arc::new(device_fields)));
                         let query_work =
                             Arc::new(rss_mdm_inventory_service::assets::runtime::QueryWork::new(
                                 inventory_services.assets.clone(),

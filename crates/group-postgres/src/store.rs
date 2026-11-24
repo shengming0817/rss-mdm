@@ -77,6 +77,12 @@ impl GroupStore {
             runtime,
         })
     }
+    /// Apply the host's freshness checks to this store and its source readers.
+    pub fn with_input_validity(mut self, validity: crate::InputValidity) -> Self {
+        self.sources = self.sources.with_input_validity(validity);
+        self
+    }
+
     /// Borrow the read capabilities of this already admitted Group owner.
     pub fn source_reader(&self) -> crate::GroupSources {
         self.sources.clone()

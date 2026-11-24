@@ -21,6 +21,9 @@ impl Services {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
+                            rss_identity_postgres::verify_personnel_fact_read(c)
+                                .await
+                                .map_err(|_| sqlx::Error::Protocol("personnel read role".into()))?;
                             rss_mdm_inventory_service::admit_storage_in(
                                 rss_mdm_install_support::StorageProfile::Mdm,
                                 c,
@@ -57,7 +60,10 @@ impl Services {
                 rss_mdm_inventory_service::transaction::deadline(),
             )
             .await
-            .map_err(|_| Error::Unavailable(Failure::Database))?,
+            .map_err(|_| Error::Unavailable(Failure::Database))?
+            .with_input_validity(
+                crate::administration::user_profiles::device_fields::group_current,
+            ),
         );
         let group_service = Arc::new(
             rss_mdm_group_service::Groups::new(rss_mdm_group_service::Dependencies {

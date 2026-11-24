@@ -13,14 +13,32 @@ use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use sqlx::Row;
 use std::sync::Arc;
 
+/// Product-specific validity of the immutable input carried by a membership build.
+pub type InputValidity = for<'a> fn(
+    &'a mut sqlx::PgConnection,
+    GroupId,
+    &'a str,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<bool, sqlx::Error>> + Send + 'a>,
+>;
+
 /// A caller-bound reader of immutable Group results with a narrow reference-lock capability.
 #[derive(Clone)]
 pub struct GroupSources {
     runtime: Arc<PgRuntime>,
+    validity: Option<InputValidity>,
 }
 impl GroupSources {
     pub(crate) fn bound(runtime: Arc<PgRuntime>) -> Self {
-        Self { runtime }
+        Self {
+            runtime,
+            validity: None,
+        }
+    }
+    /// Attach the host's qualification of time-dependent input snapshots.
+    pub fn with_input_validity(mut self, validity: InputValidity) -> Self {
+        self.validity = Some(validity);
+        self
     }
     /// Admit only the source-reader profile, without Group mutation or Outbox privileges.
     pub async fn bind(
@@ -119,6 +137,18 @@ impl GroupSources {
         let group = input!(self.get_in(tx, source.group).await?);
         if let Some(run) = source.coordinates.member_set {
             let build = input!(self.build_in(tx, run).await?);
+            if let Some(check) = self.validity {
+                let version = build.request.input_version.clone();
+                let group = source.group;
+                if !tx
+                    .with_connection(move |c| {
+                        Box::pin(async move { check(c, group, &version).await })
+                    })
+                    .await?
+                {
+                    return Ok(Ok(false));
+                }
+            }
             return Ok(Ok(group.is_some_and(|g| {
                 !g.deleted
                     && build.request.group == source.group

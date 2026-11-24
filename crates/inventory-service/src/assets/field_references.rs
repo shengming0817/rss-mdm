@@ -157,6 +157,7 @@ impl AssetService {
         crate::transaction::inspect(&self.runtime,proof.binding(),(self,proof,field,q),|ctx,tx|Box::pin(async move{
             let(s,p,field,q)=*ctx;let current=query_authority(tx,p).await?;
             current.require(p,Permission::InventoryFieldsWrite,None)?;
+            if !personnel::readable(field,p,&current){return Err(Error::Forbidden.into());}
             catalog_in(tx,p.binding().tenant()).await?.definition(field).map_err(|_|Error::NotFound)?;
             let binding=fingerprint(&(SCHEMA.id,p.binding().tenant().to_string(),p.instance_id(),p.principal_id(),current.query_binding(p)?,field,q.limit())).map_err(crate::query_error)?;
             let codec=CursorCodec::from_key(s.asset_cursor_key.clone());

@@ -62,10 +62,20 @@ impl AssetService {
         self.validate_query(tx.tenant_id(), q, &catalog)?;
         if let Some(criteria) = &q.criteria {
             filter::require_visible(&catalog, &criteria.criteria)?;
+            let compiled = rule(tx.tenant_id(), Uuid::nil(), &criteria.criteria, &catalog)?;
+            for name in compiled.view().fields.keys() {
+                if !scope.personnel.allows(
+                    checked_input(FieldKey::parse(name))?,
+                    scope.devices.as_ref(),
+                ) {
+                    return Err(Error::Forbidden.into());
+                }
+            }
         }
         for key in q.fields.iter().chain(q.sort.iter().map(|s| &s.field)) {
-            if checked_input(catalog.definition(*key))?.sensitivity
-                == rss_mdm_inventory::Sensitivity::Secret
+            if !scope.personnel.allows(*key, scope.devices.as_ref())
+                || checked_input(catalog.definition(*key))?.sensitivity
+                    == rss_mdm_inventory::Sensitivity::Secret
             {
                 return Err(Error::Forbidden.into());
             }
@@ -219,6 +229,31 @@ impl AssetService {
         let last = page.devices.last().map(|d| d.scalars.device).or(after);
         let done = page.next.is_none();
         let mut ids = Vec::new();
+        let projected = q
+            .fields
+            .iter()
+            .chain(q.sort.iter().map(|s| &s.field))
+            .copied()
+            .filter(|key| rss_mdm_inventory::personnel::attribute(*key).is_some())
+            .collect::<BTreeSet<_>>();
+        if projected
+            .iter()
+            .any(|key| !scope.personnel.allows(*key, scope.devices.as_ref()))
+        {
+            return Err(Error::Forbidden.into());
+        }
+        let page_ids = page
+            .devices
+            .iter()
+            .map(|d| d.scalars.device)
+            .collect::<Vec<_>>();
+        let mut facts = personnel::load_in(
+            tx,
+            cut,
+            &page_ids,
+            &projected.iter().copied().collect::<Vec<_>>(),
+        )
+        .await?;
         let mut keys = Vec::new();
         let mut documents = Vec::new();
         let mut digests = Vec::new();
@@ -228,6 +263,23 @@ impl AssetService {
                 continue;
             }
             let mut device = self.summary_view(summary, &catalog, scope, cut)?;
+            let available = facts.remove(&device.device).unwrap_or_default();
+            for key in &projected {
+                let fact = available.get(key);
+                if let Some(f) = fact {
+                    device.revisions.insert(*key, f.revision);
+                }
+                device.fields.insert(
+                    *key,
+                    rss_mdm_inventory::ResolvedField {
+                        field: *key,
+                        state: fact
+                            .and_then(|f| f.value.clone())
+                            .map_or(State::Missing, State::Known),
+                        sources: Vec::new(),
+                    },
+                );
+            }
             for channel in &device.channels {
                 *facets.entry(("channels", channel.clone())).or_default() += 1;
             }

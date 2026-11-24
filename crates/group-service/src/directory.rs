@@ -113,6 +113,13 @@ impl Groups {
                             .map_err(crate::query_error)?;
                         for group in page {
                             let id = stored(Uuid::parse_str(&group.id.to_string()))?;
+                            if !criteria::permits(
+                                &current,
+                                p,
+                                &criteria::source_permissions(tx, vec![id]).await?,
+                            ) {
+                                continue;
+                            }
                             if q.referenceable_for == Some(id) {
                                 continue;
                             }

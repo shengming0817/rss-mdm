@@ -24,7 +24,7 @@ pub use event::{EVENT_SCHEMA, GroupChangeKind, GroupChanged};
 pub use model::*;
 pub use store::GroupStore;
 mod source_reader;
-pub use source_reader::GroupSources;
+pub use source_reader::{GroupSources, InputValidity};
 /// One-time owner migration; not executable by the runtime role. No legacy upgrade path.
 pub const MIGRATION_SQL: &str = include_str!("../migrations/install.sql");
 #[cfg(test)]

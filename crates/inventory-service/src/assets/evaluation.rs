@@ -351,6 +351,7 @@ mod tests {
             actor: Some("actor".into()),
         };
         let mut device = DeviceSummary {
+            personnel: Default::default(),
             scalars: DeviceView {
                 collection_scope: CollectionScope::Device,
                 device: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")

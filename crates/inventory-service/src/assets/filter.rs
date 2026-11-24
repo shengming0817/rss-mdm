@@ -218,6 +218,35 @@ enum InputState {
     Scalar(rss_mdm_inventory::State),
     Array(rss_mdm_inventory::ArrayState),
 }
+fn server_input<'a>(
+    facts: impl Iterator<Item = &'a personnel::Fact>,
+    verified: bool,
+    expected: usize,
+) -> Result<(InputState, String, i64)> {
+    let facts: Vec<_> = facts.collect();
+    let state = match facts.first() {
+        Some(first)
+            if verified
+                && facts
+                    .iter()
+                    .all(|f| f.subject == first.subject && f.value == first.value) =>
+        {
+            if facts.len() == expected {
+                first.value.clone().map_or(State::Missing, State::Known)
+            } else {
+                State::Missing
+            }
+        }
+        Some(_) => State::Conflict,
+        None => State::Missing,
+    };
+    Ok((
+        InputState::Scalar(state),
+        digest(&facts)?,
+        facts.iter().map(|f| f.observed_at).max().unwrap_or(0),
+    ))
+}
+
 fn object(
     tenant: TenantId,
     key: rss_mdm_agent_wire::ObjectRef,
@@ -296,6 +325,9 @@ pub(super) fn page(
                 rule,
                 progress,
                 |key| {
+                    if rss_mdm_inventory::personnel::DeviceUser::for_key(key).is_some() {
+                        return server_input(device.personnel.get(&key).into_iter(), true, 1);
+                    }
                     if let Some(f) = device.arrays.get(&key) {
                         Ok((
                             InputState::Array(f.state.clone()),
@@ -345,6 +377,16 @@ pub(super) fn associated_page(
             rule,
             progress,
             |key| {
+                if rss_mdm_inventory::personnel::DeviceUser::for_key(key).is_some() {
+                    return server_input(
+                        devices
+                            .iter()
+                            .filter(|d| input.members.iter().any(|m| m.device == d.scalars.device))
+                            .filter_map(|d| d.personnel.get(&key)),
+                        input.verified,
+                        input.members.len(),
+                    );
+                }
                 let definition = checked_input(catalog.definition(key))?;
                 let allowed = |device: &DeviceSummary, e: &rss_mdm_inventory::Evidence| {
                     input.members.iter().any(|m| {

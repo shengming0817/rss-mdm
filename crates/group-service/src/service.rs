@@ -211,6 +211,55 @@ impl Groups {
                             )?,
                         },
                     ];
+                    let mut targets = match command {
+                        Command::Group { id, .. } | Command::GroupRead { id } => vec![*id],
+                        Command::GroupPage { group, .. } => vec![*group],
+                        Command::TaskRead { target, .. } => {
+                            vec![checked_input(Uuid::parse_str(target))?]
+                        }
+                    };
+                    let mut required = std::collections::BTreeSet::new();
+                    if let Command::Group { change, .. } = command
+                        && let GroupChange::Create {
+                            criteria: Some(condition),
+                            ..
+                        }
+                        | GroupChange::Rule {
+                            criteria: condition,
+                        } = &change.input
+                    {
+                        required.extend(condition.criteria.personnel_permissions());
+                        condition.criteria.referenced_groups(&mut targets);
+                    }
+                    if let Command::GroupPage { group, result, .. } = command {
+                        let owner =
+                            checked_input(rss_mdm_group::GroupId::parse(&group.to_string()))?;
+                        let run =
+                            checked_input(rss_mdm_group::OperationId::parse(&result.to_string()))?;
+                        let build = group_checked(s.groups.build_in(tx, run).await?)?;
+                        if build.request.group != owner {
+                            return Err(Error::Group(GroupMissing::Group).into());
+                        }
+                        if let Some(version) = build.request.rule_version {
+                            let rule = group_checked(s.groups.rule_in(tx, owner, &version).await?)?
+                                .ok_or(Error::Conflict)?;
+                            let condition = criteria::view(rule.view().criteria)?;
+                            required.extend(condition.personnel_permissions());
+                            condition.referenced_groups(&mut targets);
+                        }
+                    }
+                    required.extend(criteria::source_permissions(tx, targets).await?);
+                    for permission in required {
+                        let evidence = if permission.device() {
+                            OperationAuthority::all_devices(&snapshot, proof, permission)?
+                        } else {
+                            OperationAuthority::tenant(&snapshot, proof, permission)?
+                        };
+                        authority.push(RequiredAuthority {
+                            permission,
+                            evidence,
+                        });
+                    }
                     if nested {
                         authority.push(RequiredAuthority {
                             permission: Permission::GroupRead,

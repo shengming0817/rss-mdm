@@ -83,7 +83,7 @@ impl rss_mdm_install_support::Host for MdmInstallation<'_> {
         Box::pin(async move {
             if receipts
                 .iter()
-                .any(|(name, _, _)| name == "identity-authority-v18")
+                .any(|(name, _, _)| name == "identity-authority-v19")
             {
                 verify_installation(c, self.installation, self.instance).await?;
             }
@@ -126,7 +126,7 @@ async fn apply_schema(
             .execute(&mut **tx)
             .await
             .map_err(|_| MigrationError::at(name, "restore installer role"))?;
-    } else if name == "identity-authority-v18" {
+    } else if name == "identity-authority-v19" {
         install_identity_in(tx, installation, instance)
             .await
             .map_err(|_| MigrationError::at(name, "identity installation"))?;
@@ -224,6 +224,7 @@ async fn install_identity_in(
     instance: rss_identity_core::InstanceId,
 ) -> std::result::Result<(), sqlx::Error> {
     rss_identity_postgres::install(tx, instance).await?;
+    rss_identity_postgres::grant_personnel_fact_read(tx, "mdm_inventory_runtime").await?;
     rss_identity_postgres::grant_platform_subject_admission(tx, "mdm_access").await?;
     rss_identity_postgres::grant_platform_subject_admission(tx, "da_access").await?;
     rss_identity_postgres::grant_profile(

@@ -10,13 +10,32 @@ use rss_reconcile_postgres::{PgClaim, ProtectedStep};
 use rss_transactional_messaging_postgres::PgError;
 use std::{sync::Mutex, time::Duration};
 
+type Binding = rss_transactional_messaging::fence::ExecutionBinding;
+/// Refresh the device-field inputs ahead of normal rule reconciliation.
+pub trait DeviceFieldRefresh: Send + Sync {
+    fn advance(
+        &self,
+        binding: Binding,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::result::Result<(), ReconcileError>> + Send + '_>,
+    >;
+}
 pub struct GroupWork {
+    fields: Option<Arc<dyn DeviceFieldRefresh>>,
     groups: Arc<Groups>,
     schedule: Scheduler,
 }
 impl GroupWork {
     pub fn new(groups: Arc<Groups>, schedule: Scheduler) -> Self {
-        Self { groups, schedule }
+        Self {
+            groups,
+            schedule,
+            fields: None,
+        }
+    }
+    pub fn with_device_fields(mut self, fields: Arc<dyn DeviceFieldRefresh>) -> Self {
+        self.fields = Some(fields);
+        self
     }
     async fn capture<T: Timer>(
         &self,
@@ -475,6 +494,23 @@ impl GroupWork {
                         let tenant = TenantId::parse(&tenant.to_string()).map_err(|_| {
                             rss_reconcile::Error::new(rss_reconcile::ErrorKind::InvalidInput)
                         })?;
+                        if let Some(fields) = &owner.fields {
+                            let epoch: Option<i64> = sqlx::query_scalar(
+                                "SELECT mdm_assets.group_work_epoch($1::uuid,NULL)",
+                            )
+                            .bind(tenant.to_string())
+                            .fetch_one(&owner.groups.read_pool)
+                            .await
+                            .map_err(|e| storage(e.into()))?;
+                            if let Some(epoch) = epoch {
+                                let epoch =
+                                    rss_transactional_messaging::fence::Epoch::new(epoch)
+                                        .map_err(|_| ReconcileError::new(ErrorKind::Invariant))?;
+                                fields
+                                    .advance(Binding::new(owner.groups.storage, tenant, epoch))
+                                    .await?;
+                            }
+                        }
                         let scope = Scope::new(tenant, "mdm.groups").expect("constant scope");
                         rss_mdm_work_page::reconcile::batch(
                             (owner.as_ref(), owner.as_ref()),

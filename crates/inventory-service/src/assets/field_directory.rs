@@ -10,8 +10,9 @@ pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
 });
 fn entry(definition: &rss_mdm_inventory::FieldDefinition) -> Result<FieldView> {
     Ok(FieldView {
-        definition: crate::collection::wire::to_wire_field(definition)?,
+        definition: definition.clone(),
         operations: definition.operations(),
+        device_user: super::fields::DeviceUserField::for_key(definition.key),
     })
 }
 
@@ -38,7 +39,11 @@ impl AssetService {
                         current.inventory_devices(p)?;
                     }
                     let catalog = catalog_in(tx, p.binding().tenant()).await?;
-                    let entries = catalog.fields().map(entry).collect::<Result<Vec<_>>>()?;
+                    let entries = catalog
+                        .fields()
+                        .filter(|f| personnel::readable(f.key, p, &current))
+                        .map(entry)
+                        .collect::<Result<Vec<_>>>()?;
                     let codec = CursorCodec::from_key(s.asset_cursor_key.clone());
                     let binding = q
                         .binding(&(
@@ -108,6 +113,9 @@ impl AssetService {
                     let field = catalog.definition(key).map_err(|_| Error::NotFound)?;
                     // Catalog descriptors are discoverable metadata. Sensitive conditions
                     // and values remain checked by their existing read/compile owners.
+                    if !personnel::readable(key, p, &current) {
+                        return Err(Error::Forbidden.into());
+                    }
                     let value = entry(field)?;
                     p.check_live()?;
 

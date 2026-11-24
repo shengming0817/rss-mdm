@@ -1,0 +1,13 @@
+-- Current qualification also applies to a previously captured asset snapshot.
+WITH latest AS (
+ SELECT DISTINCT ON(device,field) device,field,subject,revision,observed_at,valid_until,value,field_version
+ FROM mdm_assets.personnel_history WHERE tenant_id=$1::uuid AND device=ANY($2) AND field=ANY($3)
+ ORDER BY device,field,revision DESC
+)
+SELECT h.device,h.field,h.subject,h.revision,h.observed_at,
+ CASE WHEN h.valid_until IS NULL OR h.valid_until>extract(epoch FROM statement_timestamp()) THEN h.value END AS value
+FROM latest h JOIN LATERAL (
+ SELECT version,revision,definition FROM mdm.field_versions v WHERE v.tenant_id=$1::uuid AND v.field=h.field ORDER BY version DESC LIMIT 1
+) v ON v.definition IS NOT NULL AND v.version=h.field_version
+WHERE mdm.asset_visible($4,v.revision) AND mdm.asset_visible($4,h.revision)
+ORDER BY h.device,h.field
