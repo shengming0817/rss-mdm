@@ -28,6 +28,7 @@ pub use changes::{
 };
 mod channels;
 mod cut;
+pub mod personnel;
 pub use cut::{AssetCut, InvalidAssetCut};
 mod hardware;
 mod software;

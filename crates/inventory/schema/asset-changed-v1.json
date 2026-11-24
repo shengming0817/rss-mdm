@@ -22,6 +22,7 @@
     "kind": {
       "enum": [
         "inventory",
+        "derived",
         "manual",
         "device",
         "source",
