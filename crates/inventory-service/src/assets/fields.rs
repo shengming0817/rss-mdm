@@ -136,7 +136,6 @@ pub struct FieldView {
     #[serde(flatten)]
     pub definition: FieldDefinition,
     pub operations: Vec<rss_mdm_inventory::Operator>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_user: Option<DeviceUserField>,
 }
 
