@@ -138,6 +138,7 @@ class T2Status(unittest.TestCase):
         self.assertEqual(affected(['apps/server/tests/foundation/tenants.rs']), ['foundation.tenants'])
         self.assertEqual(affected(['apps/server/tests/identity/unit.rs']), [])
         self.assertEqual(affected(['Cargo.toml']), [])
+        self.assertIn('registration.device_access', affected(['apps/server/src/assembly/operation_reads/sources.rs']))
         self.assertEqual(affected(['apps/server/tests/support/authority.rs']), sorted(MODULES))
         self.assertEqual(profiles(['foundation.tenants', 'foundation.authorization']), ['http_scope', 'shared', 'transaction'])
         decision = ci_impact.selected([], t2=['foundation.tenants'])
@@ -149,8 +150,11 @@ class T2Status(unittest.TestCase):
     def test_channel_sql_and_signature_retirement_select_real_consumers(self):
         for schema in ('install.sql', 'relations.sql'):
             with self.subTest(schema=schema):
-                self.assertEqual(affected(['crates/device-service/schema/control-' + schema]),
-                                 ['agent.delivery', 'apple.protocol', 'device.control', 'device.retirement', 'operation.diagnostics', 'policy.configuration', 'windows.protocol'])
+                control = ['agent.delivery', 'apple.protocol', 'device.control', 'device.retirement',
+                           'operation.diagnostics', 'policy.configuration', 'windows.protocol']
+                if schema == 'install.sql':
+                    control.append('execution.directory')
+                self.assertEqual(affected(['crates/device-service/schema/control-' + schema]), sorted(control))
                 self.assertEqual(affected(['crates/agent-channel/schema/' + schema]),
                                  ['agent.delivery', 'agent.foundation', 'device.retirement', 'inventory.collection', 'script.delivery', 'task.composition', 'task.locking', 'task.recovery', 'task_trust'])
         for path in ('crates/device-service/src/lifecycle.rs',
