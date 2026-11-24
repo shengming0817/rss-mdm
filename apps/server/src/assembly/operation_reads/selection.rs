@@ -5,7 +5,7 @@ use super::*;
 use rss_mdm_query::directory::Position;
 use sources::Scope;
 use sqlx::Row;
-const BATCH: usize = 1000;
+pub(super) const BATCH: usize = 1000;
 pub(super) fn metadata(name: &str) -> bool {
     !name.starts_with("authorization.") && !name.starts_with("reauthorization.")
 }

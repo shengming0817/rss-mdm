@@ -15,6 +15,7 @@ pub(super) enum Owner {
 
 struct Source {
     relation: &'static str,
+    identities: Option<&'static str>,
     command: Option<Command>,
     run: Option<Run>,
 }
@@ -24,6 +25,7 @@ static COLLECTION: LazyLock<String> =
 static SOURCES: LazyLock<[Source; 11]> = LazyLock::new(|| {
     let source = |relation, command, run| Source {
         relation,
+        identities: None,
         command,
         run,
     };
@@ -69,11 +71,14 @@ static SOURCES: LazyLock<[Source; 11]> = LazyLock::new(|| {
             Some(Command::Recovery),
             None,
         ),
-        source(
-            rss_mdm_script_service::queries::RELATION_SQL,
-            None,
-            Some(Run::Script),
-        ),
+        Source {
+            identities: Some(rss_mdm_script_service::storage::IDENTITY_RELATION),
+            ..source(
+                rss_mdm_script_service::queries::RELATION_SQL,
+                None,
+                Some(Run::Script),
+            )
+        },
         source(&COLLECTION, None, Some(Run::Collection)),
     ]
 });
@@ -205,24 +210,27 @@ impl<'a> Scope<'a> {
 // a different device, metadata predicate, seek position, or public projection.
 fn ambiguity(sql: &mut QueryBuilder<Postgres>, page: bool) {
     if page {
-        // At most one key per candidate in a single bounded fetch.
-        sql.push(",candidate_keys AS MATERIALIZED (SELECT array_agg(id) AS ids FROM selected)");
+        // The complete page of keys fits in a single bounded lookup.
+        sql.push(",candidate_keys AS (SELECT array_agg(id) AS ids FROM selected)");
+    } else {
+        // A whole-statistic join can choose to scan unrelated tenant history. Probe
+        // the same indexed keys as a page, bounding each array independently. The
+        // relational grouping and selected tuplestore can spill under work_mem.
+        sql.push(",candidate_keys AS (SELECT array_agg(id) AS ids FROM (SELECT id, (row_number() OVER () - 1) / ")
+            .push(selection::BATCH).push(" AS batch FROM selected) numbered GROUP BY batch)");
     }
-    sql.push(",ambiguous AS (SELECT memberships.id FROM (");
-    for i in 0..SOURCES.len() {
+    sql.push(",ambiguous AS (SELECT FROM candidate_keys k CROSS JOIN LATERAL (SELECT id FROM (");
+    for (i, source) in SOURCES.iter().enumerate() {
         if i > 0 {
             sql.push(" UNION ALL ");
         }
-        sql.push("SELECT id FROM owner_").push(i);
-        if page {
-            sql.push(" WHERE id=ANY((SELECT ids FROM candidate_keys)::uuid[])");
+        sql.push("SELECT id FROM ");
+        if let Some(identities) = source.identities {
+            sql.push("(").push(identities).push(") owned");
+        } else {
+            sql.push("owner_").push(i);
         }
+        sql.push(" WHERE id=ANY(k.ids)");
     }
-    sql.push(") memberships");
-    if !page {
-        // Let PostgreSQL join or spill large sets under work_mem. A single exact
-        // statistic can contain millions of candidates; never pack it into one array.
-        sql.push(" JOIN selected USING(id)");
-    }
-    sql.push(" GROUP BY memberships.id HAVING count(*)>1 LIMIT 1)");
+    sql.push(") memberships GROUP BY id HAVING count(*)>1 LIMIT 1) duplicates LIMIT 1)");
 }

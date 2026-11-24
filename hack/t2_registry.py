@@ -77,7 +77,7 @@ MODULES = {
                 'apps/server/src/assembly/device_reads.rs', 'crates/device-service/src/control/device_control.rs',
                 'crates/registration-service/schema/tasks/relations.sql', 'crates/recovery-credentials/schema/task-relations.sql',
                 'crates/software-service/schema/deployment/relations.sql', 'apps/server/schema/da-host-grants.sql',
-                'apps/server/src/assembly/operation_reads/*', 'apps/server/tests/execution_owners/directory.rs', 'apps/server/tests/execution_owners/directory/*', 'crates/script-service/schema/install.sql',
+                'apps/server/src/assembly/operation_reads/*', 'apps/server/tests/execution_owners/directory.rs', 'apps/server/tests/execution_owners/directory/*', 'crates/script-service/schema/install.sql', 'crates/script-service/src/storage.rs',
                 'crates/device-access-postgres/src/device_access/execution/queries.rs',
                 'apps/server/tests/execution_owners/fixture.rs', 'apps/server/tests/execution_owners/retirement.rs',
                 'crates/script-service/src/queries.rs', 'crates/inventory-service/src/collection/execution/queries.rs',
