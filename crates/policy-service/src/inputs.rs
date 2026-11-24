@@ -25,23 +25,6 @@ pub trait ProfileValidator: Send + Sync {
 }
 
 use crate::transaction::Fault;
-use rss_mdm_authorization_service::{Snapshot, context::AuthorizedPrincipal};
-use rss_mdm_policy::{Action, Policy};
-/// Publication of actions still owned by Execution. Configuration never enters this port.
-pub trait ExecutionPublication: Send + Sync {
-    fn software_binding_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        action: &'a Action,
-    ) -> Pending<'a, Option<[u8; 32]>, Fault>;
-    fn publish_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        policy: &'a Policy,
-        proof: &'a AuthorizedPrincipal,
-        snapshot: &'a Snapshot,
-    ) -> Pending<'a, serde_json::Value, Fault>;
-}
 /// Durable changes in remaining Execution work, borrowing the original Policy transaction.
 pub trait ExecutionChanges: Send + Sync {
     fn policy_changed_in<'a>(

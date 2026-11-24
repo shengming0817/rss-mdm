@@ -7,6 +7,13 @@ use super::{
 use rss_mdm_authorization_service::{Snapshot, context::AuthorizedPrincipal};
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use std::sync::Arc;
+pub struct Publication<'a> {
+    pub operation: &'a rss_mdm_policy::CredentialOperation,
+    pub architecture: rss_mdm_policy::Architecture,
+    pub schedule: &'a rss_mdm_policy::schedule::Schedule,
+    pub frequency: rss_mdm_policy::Frequency,
+    pub lifetime: u32,
+}
 pub struct Inputs {
     runtime: Arc<PgRuntime>,
 
@@ -19,7 +26,7 @@ impl Inputs {
     pub fn publish_in(
         &self,
         tx: &PgTransaction<'_>,
-        definition: &rss_mdm_policy::Action,
+        input: &Publication<'_>,
         proof: &AuthorizedPrincipal,
         snapshot: &Snapshot,
     ) -> Result<Frozen> {
@@ -28,26 +35,17 @@ impl Inputs {
         if !self.enabled {
             return Err(Error::Unsupported.into());
         }
-        let rss_mdm_policy::Action::Credential {
-            operation,
-            architecture,
-            schedule,
-            frequency,
-            run_lifetime_seconds,
-        } = definition
-        else {
-            return Err(Error::Unsupported.into());
-        };
-        snapshot.require_all_devices(proof, super::credential_tasks::permission(operation))?;
+        snapshot
+            .require_all_devices(proof, super::credential_tasks::permission(input.operation))?;
         Ok(Frozen::Credential {
-            frequency: *frequency,
+            frequency: input.frequency,
             action: Box::new(FrozenCredential {
-                operation: operation.clone(),
+                operation: input.operation.clone(),
                 input: ExecutionInput {
                     platform: rss_mdm_policy::Platform::Windows,
-                    architecture: *architecture,
-                    schedule: schedule.clone(),
-                    run_lifetime_seconds: *run_lifetime_seconds,
+                    architecture: input.architecture,
+                    schedule: input.schedule.clone(),
+                    run_lifetime_seconds: input.lifetime,
                 },
             }),
         })

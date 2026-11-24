@@ -171,10 +171,8 @@ pub(crate) async fn management(
             runtime: application.runtime.clone(),
             audit_store: application.audit_store.clone(),
             policy_store: store,
-            inputs: Arc::new(super::policy_ports::Publication {
-                software: software_inputs,
-                enrollment_entries,
-            }),
+            software: software_inputs,
+            enrollment_entries,
             credentials: Some(Arc::new(
                 rss_mdm_recovery_credentials::tasks::publication::Inputs::bind(
                     application.runtime.clone(),

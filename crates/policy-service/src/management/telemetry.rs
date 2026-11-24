@@ -118,7 +118,7 @@ pub(super) async fn freeze(
     validator: &dyn crate::inputs::ProfileValidator,
     policy: Uuid,
     version_id: Uuid,
-) -> Result<Value> {
+) -> Result<FrozenProfile> {
     use rss_mdm_resource as r;
     let frozen = prepare_in(profile, tx, binding, proof, snapshot, validator).await?;
     let definition = &frozen.profile;
@@ -151,7 +151,7 @@ pub(super) async fn freeze(
         })
         .await?;
     }
-    checked_input(serde_json::to_value(frozen))
+    Ok(frozen)
 }
 
 use crate::telemetry::{FrozenCollector, FrozenProfile};

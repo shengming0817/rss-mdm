@@ -407,12 +407,12 @@ pub(super) async fn operation_permissions(
             super::native_ownership::Owner::Software => {
                 rss_mdm_software_service::deployment::storage::load_on(c, tenant, protection, id)
                     .await
-                    .map_err(super::policy_ports::software_fault)
+                    .map_err(Fault::from)
                     .map_err(fault)?
                     .request
                     .task
                     .permissions()
-                    .map_err(super::policy_ports::software_error)?
+                    .map_err(Error::from)?
             }
             super::native_ownership::Owner::Registration => {
                 rss_mdm_registration_service::installation::storage::load_on(

@@ -1,7 +1,6 @@
 //! Static mappings for the foreign capabilities consumed by Policy.
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::{RequestAudit, activity::ActivityOrigin};
-use rss_mdm_authorization_service::{Snapshot, context::AuthorizedPrincipal};
 use rss_mdm_policy::{Action, Policy};
 use rss_mdm_policy_service::events::participants::*;
 use rss_mdm_policy_service::{Error, Failure, inputs::*, transaction::Fault};
@@ -91,88 +90,6 @@ pub(super) fn fault(e: rss_mdm_device_service::control::transaction::Fault) -> F
         rss_mdm_device_service::control::transaction::Fault::Sql(e) => Fault::Sql(e),
     }
 }
-pub(super) struct Publication {
-    pub software: Arc<rss_mdm_software_service::deployment::Inputs>,
-    pub enrollment_entries: rss_mdm_registration_service::enrollment::task::Entries,
-}
-
-impl ExecutionPublication for Publication {
-    fn software_binding_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        action: &'a Action,
-    ) -> Pending<'a, Option<[u8; 32]>, Fault> {
-        Box::pin(async move {
-            self.software
-                .software_binding_in(tx, action)
-                .await
-                .map_err(software_fault)
-        })
-    }
-    fn publish_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        policy: &'a Policy,
-        proof: &'a AuthorizedPrincipal,
-        snapshot: &'a Snapshot,
-    ) -> Pending<'a, serde_json::Value, Fault> {
-        Box::pin(async move {
-            if matches!(
-                policy.definition.action,
-                Action::Software { .. } | Action::EnsureAgentInstalled { .. }
-            ) {
-                use rss_mdm_software_service::deployment::input_preparation as software;
-                let input = software::PublicationInput::try_from(&policy.definition.action)
-                    .map_err(software_error)?;
-                let frozen = self
-                    .software
-                    .publish_in(
-                        tx,
-                        &input,
-                        &software::PublicationAuthority {
-                            proof,
-                            snapshot,
-                            devices: None,
-                        },
-                    )
-                    .await
-                    .map_err(software_fault)?;
-                return serde_json::to_value(frozen)
-                    .map_err(|_| Error::Unavailable(Failure::PreparationContract).into());
-            }
-            if let Action::RequestMdmEnrollment {
-                organization,
-                schedule,
-                run_lifetime_seconds,
-            } = &policy.definition.action
-            {
-                use rss_mdm_registration_service::enrollment::{task, tasks};
-                if let Some(config) = &policy.definition.self_service {
-                    tasks::self_service::validate_access(
-                        config,
-                        proof.tenant_id(),
-                        proof.instance_id(),
-                    )
-                    .map_err(enrollment_error)?;
-                }
-                let action = task::prepare(
-                    &self.enrollment_entries,
-                    proof,
-                    snapshot,
-                    *organization,
-                    schedule,
-                    *run_lifetime_seconds,
-                )
-                .map_err(registration_input_error)?;
-                return serde_json::to_value(tasks::policy::Published::Enrollment {
-                    action: Box::new(action),
-                })
-                .map_err(|_| Error::Unavailable(Failure::PreparationContract).into());
-            }
-            Err(Error::Unsupported.into())
-        })
-    }
-}
 pub(super) struct Changes {
     pub reader: rss_mdm_policy_postgres::PolicyReader,
     pub messaging: rss_reconcile_postgres::PgMessagingStore,
@@ -203,7 +120,7 @@ impl ExecutionChanges for Changes {
                     id,
                 )
                 .await
-                .map_err(software_fault)?;
+                .map_err(Fault::from)?;
             }
             if kinds.contains(&K::RequestMdmEnrollment) {
                 rss_mdm_registration_service::enrollment::tasks::wake::policy_in(
@@ -213,7 +130,7 @@ impl ExecutionChanges for Changes {
                     id,
                 )
                 .await
-                .map_err(enrollment_fault)?;
+                .map_err(Fault::from)?;
             }
             if kinds.contains(&K::Credential) {
                 for profile in [
@@ -270,7 +187,7 @@ impl ExecutionChanges for Changes {
                     rss_mdm_inventory_service::collection::execution::wake::policy_in( &self.messaging, tx, persisted.policy).await?;
                 }
                 ActionKind::Software if !available => {
-                    rss_mdm_software_service::deployment::sources::storage::wake_execution_in( &self.messaging, tx, persisted.policy).await.map_err(software_fault)?;
+                    rss_mdm_software_service::deployment::sources::storage::wake_execution_in( &self.messaging, tx, persisted.policy).await.map_err(Fault::from)?;
                 }
                 ActionKind::NativeCollection => {
                     if let Some(verified) = rss_mdm_inventory_service::collection::execution::scheduled::VerifiedNativeCollectionVersion::verify_in(&self.reader, tx, version).await? {
@@ -278,8 +195,8 @@ impl ExecutionChanges for Changes {
                     }
                 }
                 ActionKind::Software => {
-                    if let Some(verified) = rss_mdm_software_service::deployment::actions::scheduled::VerifiedSoftwareVersion::verify_in(&self.reader, tx, version).await.map_err(software_fault)? {
-                        verified.wake_assignment_in(&self.messaging, tx, target).await.map_err(software_fault)?;
+                    if let Some(verified) = rss_mdm_software_service::deployment::actions::scheduled::VerifiedSoftwareVersion::verify_in(&self.reader, tx, version).await.map_err(Fault::from)? {
+                        verified.wake_assignment_in(&self.messaging, tx, target).await.map_err(Fault::from)?;
                     }
                 }
                 _ => {}
@@ -301,7 +218,7 @@ impl ExecutionChanges for Changes {
                 devices,
             )
             .await
-            .map_err(software_fault)?;
+            .map_err(Fault::from)?;
             rss_mdm_device_service::control::wake::wake_native_batch_in(
                 &self.messaging,
                 tx,
@@ -389,7 +306,7 @@ impl ExecutionEvents for Events {
             self.software
                 .apply_event_context_in(tx, &software_target(value), context)
                 .await
-                .map_err(software_fault)
+                .map_err(Fault::from)
         })
     }
     fn event_parent_current_in<'a>(
@@ -423,7 +340,7 @@ impl ExecutionEvents for Events {
                     .software
                     .event_parent_current_in(tx, &software_target(value), source)
                     .await
-                    .map_err(software_fault),
+                    .map_err(Fault::from),
                 Owner::Access => {
                     let device = value.device;
                     tx.with_connection(move|c|Box::pin(async move{rss_mdm_device_access_postgres::device_access::execution::events::parent_current_on(c,&device,id).await})).await.map_err(Into::into)
@@ -452,7 +369,7 @@ impl ExecutionEvents for Events {
                         id,
                     )
                     .await
-                    .map_err(enrollment_fault),
+                    .map_err(Fault::from),
                 Owner::Script => self
                     .scripts
                     .event_parent_current_in(
@@ -502,7 +419,7 @@ impl ExecutionEvents for Events {
                             audit,
                         )
                         .await
-                        .map_err(software_fault);
+                        .map_err(Fault::from);
                 }
                 rss_mdm_policy::ActionKind::DeviceAccess => {
                     return Ok(wire::PolicyEventDecision::NoChange {
@@ -543,7 +460,7 @@ impl ExecutionEvents for Events {
                             deadline,
                         )
                         .await
-                        .map_err(enrollment_fault);
+                        .map_err(Fault::from);
                 }
                 rss_mdm_policy::ActionKind::Execution => {
                     return self
@@ -633,7 +550,7 @@ impl ExecutionProgress for Events {
                                 rss_mdm_registration_service::enrollment::tasks::storage::read_run(rss_mdm_install_support::StorageProfile::Mdm, tx, id,
                                 )
                                 .await
-                                .map_err(enrollment_fault)?
+                                .map_err(Fault::from)?
                                 .state,
                             allowed_actions: [],
                         });
@@ -644,7 +561,7 @@ impl ExecutionProgress for Events {
                             .policy_event_operation_in(tx, reference)
                             .await
                             .map(software_progress)
-                            .map_err(software_fault);
+                            .map_err(Fault::from);
                     }
                     super::task_ownership::Owner::Device => {}
                 }
@@ -664,7 +581,7 @@ impl ExecutionProgress for Events {
                         .policy_event_operation_in(tx, reference)
                         .await
                         .map(software_progress)
-                        .map_err(software_fault);
+                        .map_err(Fault::from);
                 }
                 if owner == super::native_ownership::Owner::Configuration {
                     return self.configuration.event_progress_in(tx, reference).await;
@@ -705,128 +622,6 @@ impl ExecutionProgress for Events {
                 }
             })
         })
-    }
-}
-
-pub(super) fn software_error(e: rss_mdm_software_service::deployment::Error) -> Error {
-    use rss_mdm_software_service::deployment::Error as E;
-    match e {
-        E::MdmSoftwareDisabled => Error::MdmSoftwareDisabled,
-        E::Malformed => Error::Malformed,
-        E::Unauthorized => Error::Unauthorized,
-        E::Forbidden => Error::Forbidden,
-        E::ReadConflict
-        | E::CursorInvalidated
-        | E::Conflict
-        | E::EnrollmentPaused
-        | E::WindowsDeclaredEnrollmentNotReady => Error::Conflict,
-        E::CommitUnknown => Error::CommitUnknown,
-        E::RollbackFailed => Error::RollbackFailed,
-        E::Unsupported => Error::Unsupported,
-        E::NotFound | E::Resource(_) => Error::ResourceMissing,
-        E::Unavailable(f) => Error::Unavailable(match f {
-            rss_mdm_software_service::deployment::Failure::RequestDeadline => {
-                Failure::RequestDeadline
-            }
-            rss_mdm_software_service::deployment::Failure::Audit => Failure::Audit,
-            rss_mdm_software_service::deployment::Failure::AuditIntegrity => {
-                Failure::AuditIntegrity
-            }
-            rss_mdm_software_service::deployment::Failure::AuditAdmission => {
-                Failure::AuditAdmission
-            }
-            rss_mdm_software_service::deployment::Failure::AuditIsolation => {
-                Failure::AuditIsolation
-            }
-            rss_mdm_software_service::deployment::Failure::AuditContract => Failure::AuditContract,
-            rss_mdm_software_service::deployment::Failure::NativeProtection => {
-                Failure::NativeProtection
-            }
-            rss_mdm_software_service::deployment::Failure::NativeInputIntegrity => {
-                Failure::NativeInputIntegrity
-            }
-            rss_mdm_software_service::deployment::Failure::CommandInvariant => {
-                Failure::CommandInvariant
-            }
-            rss_mdm_software_service::deployment::Failure::ContentStorage => {
-                Failure::ContentStorage
-            }
-            rss_mdm_software_service::deployment::Failure::ContentMetadata => {
-                Failure::ContentMetadata
-            }
-            rss_mdm_software_service::deployment::Failure::ContentInvariant => {
-                Failure::ContentInvariant
-            }
-            rss_mdm_software_service::deployment::Failure::ContentDeadline => {
-                Failure::ContentDeadline
-            }
-            rss_mdm_software_service::deployment::Failure::ContentCleanup => {
-                Failure::ContentCleanup
-            }
-            rss_mdm_software_service::deployment::Failure::AutomationConnection => {
-                Failure::AutomationConnection
-            }
-            rss_mdm_software_service::deployment::Failure::AutomationAdmission => {
-                Failure::AutomationAdmission
-            }
-            rss_mdm_software_service::deployment::Failure::AutomationStorage => {
-                Failure::AutomationStorage
-            }
-            rss_mdm_software_service::deployment::Failure::Database => Failure::Database,
-            rss_mdm_software_service::deployment::Failure::AssetObjectLimit => {
-                Failure::AssetObjectLimit
-            }
-            rss_mdm_software_service::deployment::Failure::AssetSourceLimit => {
-                Failure::AssetSourceLimit
-            }
-            rss_mdm_software_service::deployment::Failure::AssetBytesLimit => {
-                Failure::AssetBytesLimit
-            }
-            rss_mdm_software_service::deployment::Failure::Clock => Failure::Clock,
-            rss_mdm_software_service::deployment::Failure::Capacity => Failure::Capacity,
-            rss_mdm_software_service::deployment::Failure::Runtime => Failure::Runtime,
-            rss_mdm_software_service::deployment::Failure::SoftwareCatalogInvariant => {
-                Failure::SoftwareIntegrity
-            }
-            rss_mdm_software_service::deployment::Failure::PlanningAdmission => {
-                Failure::PolicyAdmission
-            }
-            rss_mdm_software_service::deployment::Failure::PlanningStorage => {
-                Failure::PolicyStorage
-            }
-            rss_mdm_software_service::deployment::Failure::Timeline
-            | rss_mdm_software_service::deployment::Failure::IdentityStorage
-            | rss_mdm_software_service::deployment::Failure::ResourceAdmission
-            | rss_mdm_software_service::deployment::Failure::CommandAdmission
-            | rss_mdm_software_service::deployment::Failure::ContentImport
-            | rss_mdm_software_service::deployment::Failure::SoftwareCatalogStorage
-            | rss_mdm_software_service::deployment::Failure::CommandStorage
-            | rss_mdm_software_service::deployment::Failure::AssetsStorage
-            | rss_mdm_software_service::deployment::Failure::ComplianceStorage
-            | rss_mdm_software_service::deployment::Failure::ResourceStorage
-            | rss_mdm_software_service::deployment::Failure::PublicationStorage
-            | rss_mdm_software_service::deployment::Failure::InventoryQuery
-            | rss_mdm_software_service::deployment::Failure::AssetCandidates
-            | rss_mdm_software_service::deployment::Failure::AssetSources
-            | rss_mdm_software_service::deployment::Failure::ManualQuery
-            | rss_mdm_software_service::deployment::Failure::CollectionQuery
-            | rss_mdm_software_service::deployment::Failure::InventoryRuntime
-            | rss_mdm_software_service::deployment::Failure::Protocol => Failure::Preparation,
-        }),
-        E::Configuration(_) => Error::Unavailable(Failure::PreparationConfiguration),
-        E::Execution(_) | E::Publication(_) | E::CertificateRequest => {
-            Error::Unavailable(Failure::PreparationContract)
-        }
-    }
-}
-
-pub(super) fn software_fault(e: rss_mdm_software_service::deployment::transaction::Fault) -> Fault {
-    match e {
-        rss_mdm_software_service::deployment::transaction::Fault::Request(e) => {
-            Fault::Request(software_error(e))
-        }
-        rss_mdm_software_service::deployment::transaction::Fault::Storage(e) => Fault::Storage(e),
-        rss_mdm_software_service::deployment::transaction::Fault::Sql(e) => Fault::Sql(e),
     }
 }
 
@@ -917,45 +712,6 @@ fn software_progress(
             allowed_actions,
         },
     }
-}
-fn enrollment_error(e: rss_mdm_registration_service::enrollment::tasks::Error) -> Error {
-    use rss_mdm_registration_service::enrollment::tasks::Error as E;
-    match e {
-        E::Unsupported => Error::Unsupported,
-        E::CommitUnknown => Error::CommitUnknown,
-        E::RollbackFailed => Error::RollbackFailed,
-        E::Malformed => Error::Malformed,
-        E::Forbidden => Error::Forbidden,
-        E::Unauthorized => Error::Unauthorized,
-        E::Conflict => Error::Conflict,
-        E::NotFound => Error::NotFound,
-        E::Audit(_) => Error::Unavailable(Failure::Audit),
-        E::Invariant => Error::Unavailable(Failure::CommandInvariant),
-        E::Unavailable => Error::Unavailable(Failure::PolicyStorage),
-    }
-}
-fn enrollment_fault(
-    e: rss_mdm_registration_service::enrollment::tasks::transaction::Fault,
-) -> Fault {
-    use rss_mdm_registration_service::enrollment::tasks::transaction::Fault as F;
-    match e {
-        F::Storage(e) => Fault::Storage(e),
-        F::Sql(e) => Fault::Sql(e),
-        F::Request(e) => Fault::Request(enrollment_error(e)),
-    }
-}
-fn registration_input_error(e: rss_mdm_registration_service::Error) -> Fault {
-    use rss_mdm_registration_service::Error as E;
-    match e {
-        E::CommitUnknown => Error::CommitUnknown,
-        E::RollbackFailed => Error::RollbackFailed,
-        E::Malformed => Error::Malformed,
-        E::Forbidden => Error::Forbidden,
-        E::Unauthorized => Error::Unauthorized,
-        E::Conflict => Error::Conflict,
-        _ => Error::Unsupported,
-    }
-    .into()
 }
 
 pub(super) fn credential_profile(

@@ -12,7 +12,7 @@ pub(super) async fn write_in(
     tx: &mut PgTransaction<'_>,
     p: &Policy,
     change: &rss_mdm_policy::Change,
-    frozen: Option<&Value>,
+    frozen: Option<Value>,
     proof: &AuthorizedPrincipal,
     now: i64,
 ) -> Result<()> {
@@ -24,9 +24,7 @@ pub(super) async fn write_in(
     let publication = rss_mdm_policy_postgres::Publication {
         change: change.clone(),
         policy: p.clone(),
-        frozen: frozen
-            .map(|value| checked_input(serde_json::to_value(value)))
-            .transpose()?,
+        frozen,
         author: checked_input(serde_json::to_value(proof.actor()))?,
         at: now,
     };
