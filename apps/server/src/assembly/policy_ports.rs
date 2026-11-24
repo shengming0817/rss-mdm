@@ -234,7 +234,6 @@ impl OperationOwners for OperationReads {
                     let state = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
-                                self.runtime.validate_transaction(tx)?;
                                 Ok(rss_mdm_device_service::lifecycle::read_in(c, tenant, id).await)
                             })
                         })
