@@ -27,6 +27,12 @@ impl<K: Clone> Page<K> {
         Self { rows, after, next }
     }
 
+    /// Filter local eligibility while keeping the cursor of the full durable page.
+    pub fn retain(mut self, eligible: impl FnMut(&K) -> bool) -> Self {
+        self.rows.retain(eligible);
+        self
+    }
+
     /// Advance past every durable row, including rows whose deadline is still ahead.
     pub fn scheduled(
         rows: impl IntoIterator<Item = (K, Duration)>,

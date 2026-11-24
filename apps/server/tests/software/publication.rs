@@ -114,12 +114,12 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
     use rss_mdm_software_release as rel;
     use rss_mdm_software_service::management::publication::service::PublicationDirectory;
     use std::os::unix::fs::PermissionsExt;
-    let c = Context::open("shared", &[]).await?;
+    let c = Context::open("external_capacity", &[]).await?;
     let workspace = tempfile::tempdir()?;
     let root = workspace.path();
     let mut config = crate::host_t2_support::configuration(
         &c.inputs,
-        "shared",
+        "external_capacity",
         "127.0.0.1:10000".parse()?,
         Uuid::new_v4(),
     )
@@ -313,7 +313,7 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
             }
         })
         .acquire_timeout(Duration::from_secs(15))
-        .connect_with(c.inputs.options("shared", "mdm_access")?)
+        .connect_with(c.inputs.options("external_capacity", "mdm_access")?)
         .await?;
     let directory = Arc::new(PublicationDirectory {
         storage: c.execution().storage(),

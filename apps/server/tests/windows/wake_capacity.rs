@@ -64,9 +64,9 @@ impl rss_mdm_windows_channel::participants::WakeDemand for PeerPage {
 #[tokio::test]
 #[ignore = "T2: configured WNS limits bound actual provider requests on a fixed cross-page workload"]
 async fn configured_wns_capacity_measures_actual_sends_and_settlements() -> Result<()> {
-    let c = Context::open("shared", &[]).await?;
-    let peer = Context::open("shared", &[]).await?;
-    let third = Context::open("shared", &[]).await?;
+    let c = Context::open("external_capacity", &[]).await?;
+    let peer = Context::open("external_capacity", &[]).await?;
+    let third = Context::open("external_capacity", &[]).await?;
     let (c, third) = if c.tenant.to_string() < third.tenant.to_string() {
         (c, third)
     } else {
