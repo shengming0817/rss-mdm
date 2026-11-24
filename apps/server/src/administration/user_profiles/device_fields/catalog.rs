@@ -1,78 +1,71 @@
 //! Translate approved product mappings into ordinary versioned inventory definitions.
 use super::*;
 
-pub(super) async fn fields(
+pub(super) async fn next(
     c: &mut PgConnection,
     binding: ExecutionBinding,
     providers: &[Uuid],
-) -> Result<Vec<Field>> {
+    after: Option<&str>,
+) -> Result<(Option<Field>, Option<String>)> {
     let tenant = binding.tenant();
     rss_mdm_inventory_postgres::lock_catalog_write_in(c, tenant)
         .await
         .map_err(invalid)?;
-    let rows=sqlx::query("SELECT DISTINCT ON (field) field,version,definition,coalesce(octet_length(definition::text),0) AS bytes FROM mdm.field_versions WHERE tenant_id=$1::uuid ORDER BY field,version DESC")
+    let mut candidates = desired_fields(c, providers, after).await?;
+    let rows = sqlx::query("SELECT DISTINCT ON (field) field,version,CASE WHEN field LIKE 'device.%user.%' THEN definition END AS definition,coalesce(octet_length(definition::text),0) AS bytes FROM mdm.field_versions WHERE tenant_id=$1::uuid ORDER BY field,version DESC")
         .bind(tenant.to_string()).fetch_all(&mut *c).await?;
     let mut previous = BTreeMap::new();
     let mut count = 0;
     let mut bytes = 0i64;
     for row in rows {
-        let key = rss_mdm_inventory::FieldKey::parse(row.try_get("field")?).map_err(invalid)?;
         let size = i64::from(row.try_get::<i32, _>("bytes")?);
-        if DeviceUser::for_key(key).is_some() {
+        count += usize::from(size > 0);
+        bytes += size;
+        let key = rss_mdm_inventory::FieldKey::parse(row.try_get("field")?).map_err(invalid)?;
+        if let Some((role, _)) = personnel::attribute(key) {
             let raw: Option<Value> = row.try_get("definition")?;
             let definition: Option<FieldDefinition> = raw
                 .map(serde_json::from_value)
                 .transpose()
                 .map_err(invalid)?;
+            if role == DeviceUser::Registration && definition.is_some() {
+                candidates.entry(key).or_insert(None);
+            }
             previous.insert(key, (row.try_get::<i64, _>("version")?, definition, size));
-        } else if size > 0 {
-            count += 1;
-            bytes += size;
         }
     }
-    let mut fields = desired_fields(c, providers).await?;
-    // Keep published attributes first when the shared field catalog is full.
-    fields.sort_by_key(|f| {
-        !f.fields.iter().any(|(_, d)| {
-            previous
-                .get(&d.key)
-                .is_some_and(|(_, old, _)| old.is_some())
+    let mut candidates = candidates
+        .into_iter()
+        .filter(|(key, _)| after.is_none_or(|s| key.as_str() > s));
+    let Some((key, field)) = candidates.next() else {
+        return Ok((None, None));
+    };
+    let next = candidates.next().map(|_| key.as_str().to_owned());
+    let attribute = personnel::attribute(key).expect("server field").1;
+    let old: Vec<_> = previous
+        .iter()
+        .filter(|(key, (_, old, _))| {
+            old.is_some() && personnel::attribute(**key).is_some_and(|(_, a)| a == attribute)
         })
-    });
-    let mut accepted = Vec::new();
-    for mut field in fields {
-        if count + field.fields.len() > rss_mdm_inventory::catalog_capacity() {
-            continue;
-        }
-        let Some(field_bytes) = publish(
-            c,
-            binding,
-            &mut field,
-            &previous,
-            rss_mdm_inventory::MAX_CATALOG_BYTES as i64 - bytes,
-        )
-        .await?
-        else {
-            continue;
-        };
-        count += field.fields.len();
-        bytes += field_bytes;
-        for (_, d) in &field.fields {
-            previous.remove(&d.key);
-        }
-        accepted.push(field);
-    }
-    for (key, (version, old, _)) in previous {
-        if old.is_some() {
-            sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,NULL)")
-                .bind(tenant.to_string())
-                .bind(key.as_str())
-                .bind(version + 1)
-                .execute(&mut *c)
-                .await?;
+        .collect();
+    if let Some(mut field) = field {
+        let available = rss_mdm_inventory::MAX_CATALOG_BYTES as i64 - bytes
+            + old.iter().map(|(_, (_, _, size))| size).sum::<i64>();
+        if count - old.len() + field.fields.len() <= rss_mdm_inventory::catalog_capacity()
+            && publish(c, binding, &mut field, &previous, available).await?
+        {
+            return Ok((Some(field), next));
         }
     }
-    Ok(accepted)
+    for (key, (version, _, _)) in old {
+        sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,NULL)")
+            .bind(tenant.to_string())
+            .bind(key.as_str())
+            .bind(version + 1)
+            .execute(&mut *c)
+            .await?;
+    }
+    Ok((None, next))
 }
 
 async fn publish(
@@ -81,7 +74,7 @@ async fn publish(
     field: &mut Field,
     previous: &BTreeMap<rss_mdm_inventory::FieldKey, (i64, Option<FieldDefinition>, i64)>,
     remaining_bytes: i64,
-) -> Result<Option<i64>> {
+) -> Result<bool> {
     let tenant = binding.tenant();
     let mut changed = Vec::new();
     let mut field_bytes = 0i64;
@@ -105,7 +98,7 @@ async fn publish(
         changed.push((definition.key, definition.version, body));
     }
     if field_bytes > remaining_bytes {
-        return Ok(None);
+        return Ok(false);
     }
     for (key, version, body) in changed {
         sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,$4)")
@@ -116,33 +109,33 @@ async fn publish(
             .execute(&mut *c)
             .await?;
     }
-    Ok(Some(field_bytes))
+    Ok(true)
 }
 
-async fn desired_fields(c: &mut PgConnection, providers: &[Uuid]) -> Result<Vec<Field>> {
-    let mut fields = Vec::new();
+async fn desired_fields(
+    c: &mut PgConnection,
+    providers: &[Uuid],
+    after: Option<&str>,
+) -> Result<BTreeMap<rss_mdm_inventory::FieldKey, Option<Field>>> {
+    let mut fields = BTreeMap::new();
+    let mut invalid_mappings = Vec::new();
     let mut add = |attribute, kind: ValueType, profile, after, revision: u64| {
-        fields.push(Field {
-            attribute,
-            profile,
-            after,
-            fields: DeviceUser::ALL
-                .into_iter()
-                .map(|role| (role, role.definition(attribute, revision, kind.clone())))
-                .collect(),
-        });
+        fields.insert(
+            DeviceUser::Registration.key(attribute),
+            Some(Field {
+                attribute,
+                profile,
+                after,
+                fields: DeviceUser::ALL
+                    .into_iter()
+                    .map(|role| (role, role.definition(attribute, revision, kind.clone())))
+                    .collect(),
+            }),
+        );
     };
-    add(
-        Attribute::Principal,
-        ValueType::String {
-            max_length: 36,
-            allow_empty: false,
-        },
-        None,
-        0,
-        1,
-    );
-    add(Attribute::LocalGroups, personnel::identifiers(), None, 0, 1);
+    for (attribute, kind) in personnel::fixed_attributes() {
+        add(attribute, kind, None, 0, 1);
+    }
     for id in providers {
         for attr in ProviderAttribute::ALL {
             add(
@@ -154,12 +147,14 @@ async fn desired_fields(c: &mut PgConnection, providers: &[Uuid]) -> Result<Vec<
             );
         }
     }
-    let definitions=sqlx::query("SELECT field_id,revision,collected_after_micros,value FROM mdm_user_profiles.device_fields ORDER BY field_id LIMIT $1")
-        .bind(rss_mdm_inventory::catalog_capacity() as i64 + 1).fetch_all(&mut *c).await?;
+    let definitions=sqlx::query("SELECT field_id,revision,collected_after_micros,value FROM mdm_user_profiles.device_fields WHERE $1::text IS NULL OR ('device.registration_user.profile.f_' || replace(field_id::text,'-','')) COLLATE \"C\" > $1 ORDER BY field_id LIMIT 2")
+        .bind(after).fetch_all(&mut *c).await?;
     for row in definitions {
         let d: model::DefinitionValue =
             serde_json::from_value(row.try_get("value")?).map_err(invalid)?;
         if model::device_path(&d.pointer).is_none() {
+            invalid_mappings
+                .push(DeviceUser::Registration.key(Attribute::Profile(row.try_get("field_id")?)));
             continue;
         }
         let kind = match d.value_type {
@@ -180,6 +175,9 @@ async fn desired_fields(c: &mut PgConnection, providers: &[Uuid]) -> Result<Vec<
             row.try_get("collected_after_micros")?,
             version,
         );
+    }
+    for key in invalid_mappings {
+        fields.insert(key, None);
     }
     Ok(fields)
 }

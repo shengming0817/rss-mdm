@@ -5,6 +5,7 @@ use rss_mdm_inventory_service::objects::ObjectSnapshot;
 
 pub(crate) struct ConditionPageRequest<'a> {
     pub cut: &'a rss_mdm_inventory::AssetCut,
+    pub as_of: i64,
     pub snapshot: Option<&'a ObjectSnapshot>,
     pub condition: &'a criteria::Condition,
     pub rule: &'a rss_mdm_group::Rule,
@@ -28,6 +29,7 @@ impl Groups {
     ) -> Result<ConditionPage> {
         let ConditionPageRequest {
             cut,
+            as_of,
             snapshot,
             condition,
             rule,
@@ -86,6 +88,7 @@ impl Groups {
                 tx,
                 progress,
                 assets::planning::ConditionRequest {
+                    as_of,
                     cut,
                     devices: &devices,
                     catalog: &catalog,

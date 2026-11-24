@@ -12,7 +12,6 @@ fn entry(definition: &rss_mdm_inventory::FieldDefinition) -> Result<FieldView> {
     Ok(FieldView {
         definition: definition.clone(),
         operations: definition.operations(),
-        device_user: super::fields::DeviceUserField::for_key(definition.key),
     })
 }
 

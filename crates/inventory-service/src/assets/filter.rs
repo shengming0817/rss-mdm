@@ -259,7 +259,19 @@ fn object(
     let mut facts = BTreeMap::new();
     for (name, expected) in rule.view().fields {
         let key = checked_input(FieldKey::parse(name))?;
-        let path = checked_input(catalog.path(key))?;
+        let path = catalog.path(key);
+        if rss_mdm_inventory::personnel::attribute(key).is_some()
+            && path
+                .as_ref()
+                .ok()
+                .and_then(|p| dictionary_field(key, p).ok())
+                .as_ref()
+                != Some(expected)
+        {
+            // The saved rule owns its type. An unavailable input evaluates to Unknown.
+            continue;
+        }
+        let path = checked_input(path)?;
         if &dictionary_field(key, &path)? != expected {
             return Err(Error::Malformed.into());
         }
@@ -384,7 +396,12 @@ pub(super) fn associated_page(
                             .filter(|d| input.members.iter().any(|m| m.device == d.scalars.device))
                             .filter_map(|d| d.personnel.get(&key)),
                         input.verified,
-                        input.members.len(),
+                        input
+                            .members
+                            .iter()
+                            .map(|m| m.device)
+                            .collect::<BTreeSet<_>>()
+                            .len(),
                     );
                 }
                 let definition = checked_input(catalog.definition(key))?;
@@ -505,6 +522,11 @@ pub fn require_visible(catalog: &Catalog, criteria: &Criteria) -> Result<()> {
 pub fn require_visible_rule(catalog: &Catalog, rule: &g::Rule) -> Result<()> {
     for name in rule.view().fields.keys() {
         let key = checked_input(FieldKey::parse(name))?;
+        if rss_mdm_inventory::personnel::attribute(key).is_some()
+            && catalog.definition(key).is_err()
+        {
+            continue;
+        }
         if checked_input(catalog.path(key))?.root.sensitivity
             == rss_mdm_inventory::Sensitivity::Secret
         {

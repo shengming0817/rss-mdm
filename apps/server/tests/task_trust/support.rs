@@ -127,6 +127,20 @@ pub async fn peer_material(
     Vec<u8>,
     Vec<u8>,
 )> {
+    let (peer, certificate, csr, _) = qualified_peer_material(c, device, purpose).await?;
+    Ok((peer, certificate, csr))
+}
+
+pub async fn qualified_peer_material(
+    c: &Context,
+    device: &rss_mdm_agent_wire::DeviceId,
+    purpose: rss_mdm_agent_wire::pki::Purpose,
+) -> Result<(
+    rss_mdm_device_trust::device_identity::VerifiedDevicePeer,
+    Vec<u8>,
+    Vec<u8>,
+    rss_mdm_agent_wire::pki::Trust,
+)> {
     use base64::engine::general_purpose::STANDARD;
     use sha2::{Digest, Sha256};
     let (purpose_name, provisioner) = match purpose {
@@ -195,7 +209,12 @@ pub async fn peer_material(
         .output()
         .await?;
     anyhow::ensure!(csr.status.success(), "CSR conversion");
-    Ok((peer, evidence.chain()[0].to_vec(), csr.stdout))
+    Ok((
+        peer,
+        evidence.chain()[0].to_vec(),
+        csr.stdout,
+        trust.trust.public()?,
+    ))
 }
 
 pub async fn authenticated_agent(

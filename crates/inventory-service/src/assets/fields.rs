@@ -136,48 +136,4 @@ pub struct FieldView {
     #[serde(flatten)]
     pub definition: FieldDefinition,
     pub operations: Vec<rss_mdm_inventory::Operator>,
-    pub device_user: Option<DeviceUserField>,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DeviceUserField {
-    pub user: rss_mdm_inventory::personnel::DeviceUser,
-    pub attribute: UserAttribute,
-}
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum UserAttribute {
-    PrincipalId,
-    LocalGroupIds,
-    IdpGroupIds { provider_id: Uuid },
-    DepartmentIds { provider_id: Uuid },
-    DepartmentAncestorIds { provider_id: Uuid },
-    Profile { field_id: Uuid },
-}
-impl DeviceUserField {
-    pub(super) fn for_key(key: FieldKey) -> Option<Self> {
-        use rss_mdm_inventory::personnel::{Attribute, ProviderAttribute, attribute};
-        let (user, field) = attribute(key)?;
-        Some(Self {
-            user,
-            attribute: match field {
-                Attribute::Principal => UserAttribute::PrincipalId,
-                Attribute::LocalGroups => UserAttribute::LocalGroupIds,
-                Attribute::Profile(field_id) => UserAttribute::Profile { field_id },
-                Attribute::Provider(provider_id, which) => match which {
-                    ProviderAttribute::Groups => UserAttribute::IdpGroupIds { provider_id },
-                    ProviderAttribute::Departments => UserAttribute::DepartmentIds { provider_id },
-                    ProviderAttribute::DepartmentAncestors => {
-                        UserAttribute::DepartmentAncestorIds { provider_id }
-                    }
-                },
-            },
-        })
-    }
 }

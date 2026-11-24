@@ -156,6 +156,7 @@ impl SnapshotReader {
 /// Frozen rule input and caller authorization for one bounded asset page.
 pub struct ConditionRequest<'a> {
     pub cut: &'a rss_mdm_inventory::AssetCut,
+    pub as_of: i64,
     pub devices: &'a [DeviceSummary],
     pub catalog: &'a rss_mdm_inventory::Catalog,
     pub authorization: &'a ReadScope,
@@ -175,6 +176,7 @@ impl SnapshotReader {
 
         let ConditionRequest {
             cut,
+            as_of,
             devices,
             catalog,
             authorization,
@@ -305,7 +307,7 @@ impl SnapshotReader {
         }) {
             return Err(Error::Forbidden.into());
         }
-        let server_fields = personnel::load_in(tx, cut, &ids, &keys_to_read).await?;
+        let server_fields = personnel::load_in(tx, cut, as_of, false, &ids, &keys_to_read).await?;
         let mut prepared = Vec::new();
         let mut versions = BTreeMap::new();
         for scope in &scopes {

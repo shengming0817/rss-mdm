@@ -246,6 +246,7 @@ impl Groups {
                 .condition_page_in(
                     tx,
                     crate::input::ConditionPageRequest {
+                        as_of: at.unix_seconds(),
                         cut,
                         snapshot,
                         condition: &request.criteria,

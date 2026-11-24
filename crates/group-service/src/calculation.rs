@@ -417,6 +417,7 @@ impl Groups {
                     .condition_page_in(
                         tx,
                         crate::input::ConditionPageRequest {
+                            as_of: build.request.as_of.unix_seconds(),
                             cut: asset_cut,
                             snapshot: snapshot.as_ref(),
                             condition: &condition,

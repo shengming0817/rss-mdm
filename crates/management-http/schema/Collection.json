@@ -184,37 +184,6 @@
   },
   "FieldView": {
     "$defs": {
-      "DeviceUser": {
-        "description": "User-valued fields of an enrolled device.",
-        "oneOf": [
-          {
-            "const": "registration",
-            "description": "Principal recorded at registration.",
-            "type": "string"
-          },
-          {
-            "const": "current",
-            "description": "Principal of the currently qualified session.",
-            "type": "string"
-          }
-        ]
-      },
-      "DeviceUserField": {
-        "additionalProperties": false,
-        "properties": {
-          "attribute": {
-            "$ref": "#/$defs/UserAttribute"
-          },
-          "user": {
-            "$ref": "#/$defs/DeviceUser"
-          }
-        },
-        "required": [
-          "user",
-          "attribute"
-        ],
-        "type": "object"
-      },
       "FieldKey": {
         "description": "Validated field identity. Admission requires lookup in the tenant's catalog.",
         "maxLength": 128,
@@ -539,108 +508,6 @@
         ],
         "type": "object"
       },
-      "UserAttribute": {
-        "oneOf": [
-          {
-            "additionalProperties": false,
-            "properties": {
-              "kind": {
-                "const": "principal_id",
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "kind": {
-                "const": "local_group_ids",
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "kind": {
-                "const": "idp_group_ids",
-                "type": "string"
-              },
-              "providerId": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind",
-              "providerId"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "kind": {
-                "const": "department_ids",
-                "type": "string"
-              },
-              "providerId": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind",
-              "providerId"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "kind": {
-                "const": "department_ancestor_ids",
-                "type": "string"
-              },
-              "providerId": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind",
-              "providerId"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "fieldId": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "kind": {
-                "const": "profile",
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind",
-              "fieldId"
-            ],
-            "type": "object"
-          }
-        ]
-      },
       "ValueType": {
         "description": "Closed structural schema for one field.",
         "oneOf": [
@@ -825,16 +692,6 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "description": "Actual field directory entry, including fields owned by the server.",
     "properties": {
-      "deviceUser": {
-        "anyOf": [
-          {
-            "$ref": "#/$defs/DeviceUserField"
-          },
-          {
-            "type": "null"
-          }
-        ]
-      },
       "itemKey": {
         "description": "Optional stable item-key property for a structured inventory list.",
         "type": [
@@ -928,8 +785,7 @@
       "unit",
       "searchable",
       "itemKey",
-      "operations",
-      "deviceUser"
+      "operations"
     ],
     "title": "FieldView",
     "type": "object"

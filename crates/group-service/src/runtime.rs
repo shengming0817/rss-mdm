@@ -17,7 +17,9 @@ pub trait DeviceFieldRefresh: Send + Sync {
         &self,
         binding: Binding,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = std::result::Result<(), ReconcileError>> + Send + '_>,
+        Box<
+            dyn std::future::Future<Output = std::result::Result<bool, ReconcileError>> + Send + '_,
+        >,
     >;
 }
 pub struct GroupWork {
@@ -523,18 +525,20 @@ impl GroupWork {
                                             .map_err(|_| {
                                                 ReconcileError::new(ErrorKind::Invariant)
                                             })?;
-                                    fields
+                                    return fields
                                         .advance(Binding::new(owner.groups.storage, tenant, epoch))
-                                        .await?;
+                                        .await;
                                 }
-                                Ok::<(), ReconcileError>(())
+                                Ok::<bool, ReconcileError>(false)
                             }
                             .await;
                             let source =
                                 Scope::new(tenant, "mdm.personnel").expect("constant scope");
-                            owner
-                                .groups
-                                .record_scan(&source, result.err().map(|e| e.kind()));
+                            if !matches!(result, Ok(false)) {
+                                owner
+                                    .groups
+                                    .record_scan(&source, result.err().map(|e| e.kind()));
+                            }
                         }
                         Ok(())
                     }

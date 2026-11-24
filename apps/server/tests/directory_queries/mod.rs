@@ -279,7 +279,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         assert!(restricted_body["firstUse"].get("summary").is_none());
         let (status, descriptor)=http.get("/asset-fields/device.current_user.principal_id",&[]).await?;
         assert_eq!(status,200,"{descriptor}");
-        assert_eq!(descriptor["asset"]["field"]["deviceUser"],json!({"user":"current","attribute":{"kind":"principal_id"}}));
+        assert_eq!(descriptor["asset"]["field"]["key"], "device.current_user.principal_id");
         let (status,_)=http.get("/asset-fields/device.registration_user.principal_id",&[]).await?;
         assert_eq!(status,403);
         let blocked=json!({"assetContext":"endpoint","criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.registration_user.principal_id","op":"eq","value":{"kind":"string","value":manager.user.principal_id}}}});

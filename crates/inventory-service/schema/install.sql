@@ -267,7 +267,7 @@ CREATE TABLE mdm_assets.personnel_history (
  CHECK (value IS NULL OR subject IS NOT NULL)
 );
 CREATE TABLE mdm_assets.personnel_cursor (
- tenant_id uuid PRIMARY KEY, after_device uuid, next_scan timestamptz NOT NULL DEFAULT '-infinity'
+ tenant_id uuid PRIMARY KEY, after_device uuid, after_field text, next_scan timestamptz NOT NULL DEFAULT '-infinity'
 );
 DO $$DECLARE relation text; BEGIN
  FOREACH relation IN ARRAY ARRAY['personnel_history','personnel_cursor'] LOOP
@@ -277,4 +277,4 @@ DO $$DECLARE relation text; BEGIN
  END LOOP;
 END$$;
 GRANT SELECT,INSERT ON mdm_assets.personnel_history TO mdm_inventory_runtime;
-GRANT SELECT,INSERT,UPDATE(after_device,next_scan) ON mdm_assets.personnel_cursor TO mdm_inventory_runtime;
+GRANT SELECT,INSERT,UPDATE(after_device,after_field,next_scan) ON mdm_assets.personnel_cursor TO mdm_inventory_runtime;

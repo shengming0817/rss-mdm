@@ -47,6 +47,8 @@ pub fn readable(key: FieldKey, proof: &AuthorizedPrincipal, authority: &Snapshot
 pub(super) async fn load_in(
     tx: &mut PgTransaction<'_>,
     cut: &AssetCut,
+    as_of: i64,
+    current: bool,
     ids: &[DeviceId],
     fields: &[FieldKey],
 ) -> Result<BTreeMap<DeviceId, BTreeMap<FieldKey, Fact>>> {
@@ -68,6 +70,8 @@ pub(super) async fn load_in(
                     .bind(ids)
                     .bind(keys)
                     .bind(cut)
+                    .bind(as_of)
+                    .bind(current)
                     .fetch_all(c)
                     .await
             })
@@ -113,7 +117,7 @@ impl Access {
             departments: true,
         }
     }
-    pub(super) fn from_snapshot(p: &AuthorizedPrincipal, snapshot: &Snapshot) -> Self {
+    pub fn from_snapshot(p: &AuthorizedPrincipal, snapshot: &Snapshot) -> Self {
         Self {
             departments: snapshot
                 .require(p, Permission::DepartmentRead, None)
@@ -145,24 +149,51 @@ impl Access {
     }
 }
 
-impl ReadScope {
-    pub fn permits_condition(&self, c: &Criteria) -> bool {
+impl Access {
+    pub fn permits_condition(&self, c: &Criteria, devices: Option<&BTreeSet<DeviceId>>) -> bool {
         match c {
-            Criteria::Predicate { field, .. } => {
-                self.personnel.allows(*field, self.devices.as_ref())
-            }
+            Criteria::Predicate { field, .. } => self.allows(*field, devices),
             Criteria::And { children } | Criteria::Or { children } => {
-                children.iter().all(|c| self.permits_condition(c))
+                children.iter().all(|c| self.permits_condition(c, devices))
             }
         }
     }
+}
+impl Query {
+    pub(super) fn personnel_fields(&self) -> BTreeSet<FieldKey> {
+        fn collect(criteria: &Criteria, keys: &mut BTreeSet<FieldKey>) {
+            match criteria {
+                Criteria::Predicate { field, .. } => {
+                    keys.insert(*field);
+                }
+                Criteria::Or { children } | Criteria::And { children } => {
+                    for child in children {
+                        collect(child, keys);
+                    }
+                }
+            }
+        }
+        let mut keys: BTreeSet<_> = self
+            .fields
+            .iter()
+            .copied()
+            .chain(self.sort.iter().map(|s| s.field))
+            .collect();
+        if let Some(c) = &self.criteria {
+            collect(&c.criteria, &mut keys);
+        }
+        keys.retain(|k| personnel::attribute(*k).is_some());
+        keys
+    }
+}
+
+impl ReadScope {
+    pub fn permits_condition(&self, c: &Criteria) -> bool {
+        self.personnel.permits_condition(c, self.devices.as_ref())
+    }
     pub fn permits_query(&self, q: &Query) -> bool {
-        q.criteria
-            .as_ref()
-            .is_none_or(|c| self.permits_condition(&c.criteria))
-            && q.fields
-                .iter()
-                .chain(q.sort.iter().map(|s| &s.field))
-                .all(|key| self.personnel.allows(*key, self.devices.as_ref()))
+        q.personnel_fields()
+            .into_iter()
+            .all(|k| self.personnel.allows(k, self.devices.as_ref()))
     }
 }

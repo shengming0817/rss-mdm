@@ -154,6 +154,7 @@ impl AssetService {
                     tx,
                     evaluation_progress,
                     crate::assets::planning::ConditionRequest {
+                        as_of: *as_of,
                         cut,
                         devices: &page.devices,
                         catalog: &page.catalog,
@@ -243,6 +244,8 @@ impl AssetService {
         let mut facts = personnel::load_in(
             tx,
             cut,
+            *as_of,
+            false,
             &page_ids,
             &projected.iter().copied().collect::<Vec<_>>(),
         )

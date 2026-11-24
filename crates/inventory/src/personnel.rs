@@ -34,13 +34,8 @@ impl DeviceUser {
         })
     }
 
-    /// Construct an ordinary server-owned catalog field.
-    pub fn definition(
-        self,
-        attribute: Attribute,
-        version: u64,
-        value_type: ValueType,
-    ) -> FieldDefinition {
+    /// Canonical inventory key for this device attribute.
+    pub fn key(self, attribute: Attribute) -> FieldKey {
         let suffix = match attribute {
             Attribute::Principal => "principal_id".to_owned(),
             Attribute::LocalGroups => "local_group_ids".to_owned(),
@@ -49,9 +44,19 @@ impl DeviceUser {
             }
             Attribute::Profile(id) => format!("profile.f_{}", id.simple()),
         };
+        FieldKey::parse(&format!("{}.{suffix}", self.prefix()))
+            .expect("bounded personnel field key")
+    }
+
+    /// Construct an ordinary server-owned catalog field.
+    pub fn definition(
+        self,
+        attribute: Attribute,
+        version: u64,
+        value_type: ValueType,
+    ) -> FieldDefinition {
         FieldDefinition {
-            key: FieldKey::parse(&format!("{}.{suffix}", self.prefix()))
-                .expect("bounded personnel field key"),
+            key: self.key(attribute),
             value_type,
             version,
             time_series: None,
@@ -116,19 +121,24 @@ pub fn identifiers() -> ValueType {
 }
 /// Fields available without provider or profile configuration.
 pub fn fixed_fields() -> impl Iterator<Item = FieldDefinition> {
-    DeviceUser::ALL.into_iter().flat_map(|user| {
-        [
-            user.definition(
-                Attribute::Principal,
-                1,
-                ValueType::String {
-                    max_length: 36,
-                    allow_empty: false,
-                },
-            ),
-            user.definition(Attribute::LocalGroups, 1, identifiers()),
-        ]
+    fixed_attributes().flat_map(|(attribute, kind)| {
+        DeviceUser::ALL.map(|user| user.definition(attribute, 1, kind.clone()))
     })
+}
+
+/// Attribute types shared by the installed and refreshed device field catalogs.
+pub fn fixed_attributes() -> impl Iterator<Item = (Attribute, ValueType)> {
+    [
+        (
+            Attribute::Principal,
+            ValueType::String {
+                max_length: 36,
+                allow_empty: false,
+            },
+        ),
+        (Attribute::LocalGroups, identifiers()),
+    ]
+    .into_iter()
 }
 
 /// Decode canonical, server-owned dictionary paths.

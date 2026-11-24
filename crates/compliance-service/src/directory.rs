@@ -55,6 +55,12 @@ impl Compliance {
                         let definition: Definition =
                             stored(serde_json::from_value(row["definition"].clone()))?;
                         stored(definition.validate())?;
+                        if q.schema().fields().iter().any(|f| {
+                            (f.name == "definition" || f.name.starts_with("definition.criteria"))
+                                && q.selects(&f.name)
+                        }) {
+                            require_fields(&current, p, &definition)?;
+                        }
                     }
                     p.check_live()?;
 

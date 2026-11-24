@@ -309,6 +309,7 @@ impl Groups {
                                     audit.snapshot().actor,
                                     audit.snapshot().instance,
                                 )))?,
+                                (&snapshot, proof),
                             )
                             .await?
                         }
