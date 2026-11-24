@@ -281,14 +281,26 @@ fn project_result(b: &mut Binding, report: &AccessResult) -> Result<bool, Error>
             }) {
                 return Err(Error::Conflict);
             }
-            let required = b
-                .configuration
-                .role
-                .or(if b.account.is_none() && b.created_by_rss {
+            let direct_create = matches!(
+                b.account_delivery,
+                Some(super::account_delivery::Target::Da { .. })
+            ) && matches!(
+                b.intent,
+                super::AccountIntent::Create {
+                    platform: TaskPlatform::Macos,
+                    ..
+                }
+            );
+            if direct_create && b.account.as_ref() != Some(account) {
+                return Err(Error::Conflict);
+            }
+            let required = b.configuration.role.or(
+                if direct_create || (b.account.is_none() && b.created_by_rss) {
                     Some(rss_mdm_agent_wire::runtime::AccessRole::Standard)
                 } else {
                     None
-                });
+                },
+            );
             if required.is_some_and(|expected| expected != *role) {
                 return Err(Error::Conflict);
             }

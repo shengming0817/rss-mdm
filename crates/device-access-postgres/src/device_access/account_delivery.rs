@@ -126,6 +126,16 @@ pub(super) async fn refresh_target(
     }
     Ok(b.account_delivery.clone())
 }
+/// Under the DA device fence, a late UID may already belong to a different live binding.
+async fn has_other_owner(
+    c: &mut PgConnection,
+    b: &Binding,
+    account: &w::AccessAccount,
+) -> Result<bool, Error> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT FROM rss_da.bindings WHERE tenant_id=$1 AND device=$2 AND id<>$3 AND state<>'revoked' AND account=$4)")
+        .bind(b.tenant).bind(b.device.into_uuid()).bind(b.id).bind(sqlx::types::Json(account))
+        .fetch_one(c).await.map_err(db)
+}
 fn local(a: &w::AccessAccount) -> bool {
     matches!(
         a,
@@ -282,6 +292,12 @@ impl Run {
         }
         let b = storage::locked_in(c, self.binding.tenant, self.binding.id).await?;
         if b.definition_digest()? != self.binding.definition_digest()? {
+            return Err(Error::Conflict);
+        }
+        if b.state == State::Revoked
+            && let Some(account @ w::AccessAccount::Macos { .. }) = &b.account
+            && has_other_owner(c, &b, account).await?
+        {
             return Err(Error::Conflict);
         }
         // Only the explicit unbind disposition remains actionable after the binding is revoked.
@@ -669,12 +685,17 @@ impl Run {
                 role,
                 ..
             } => {
-                self.state
-                    .result(event.attempt_id, *role == expected_role)
-                    .map_err(|_| Error::Conflict)?;
-                Some(w::AccessAccount::Macos {
+                let account = w::AccessAccount::Macos {
                     generated_uid: *generated_uid,
-                })
+                };
+                let claimed_elsewhere = current && has_other_owner(c, b, &account).await?;
+                self.state
+                    .result(
+                        event.attempt_id,
+                        *role == expected_role && !claimed_elsewhere,
+                    )
+                    .map_err(|_| Error::Conflict)?;
+                (!claimed_elsewhere).then_some(account)
             }
             w::AccessEffect::Failed { .. } => {
                 self.state

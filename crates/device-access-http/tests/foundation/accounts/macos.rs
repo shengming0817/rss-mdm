@@ -8,7 +8,7 @@ pub(in crate::foundation) async fn verify(
     base: &str,
     other_device: &reqwest::Client,
 ) -> Result<()> {
-    let mut config = rss_da_app::config::load(runtime_file)?;
+    let mut config: rss_da_app::config::Config = rss_da_app::config::load(runtime_file)?;
     config.recovery = None;
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let host = tokio::spawn(rss_da_app::host::serve(config, async move {
@@ -95,6 +95,45 @@ fn report(t: &w::AccessTaskSpec, effect: w::AccessEffect) -> da::AccountObservat
         definition_digest: t.definition_digest,
         effect,
     })
+}
+
+// Exercise the shared Applied projection without fabricating a PSSO deployment receipt.
+async fn reject_premature_application(
+    c: &Context,
+    t: &w::AccessTaskSpec,
+    uid: Uuid,
+    role: w::AccessRole,
+) -> Result<()> {
+    let effect = w::AccessEffect::Applied {
+        account: w::AccessAccount::Macos { generated_uid: uid },
+        role,
+        mac: Some(w::AccessMacFacts {
+            secure_token: w::AccessObservation::Present,
+            volume_owner: w::AccessObservation::Present,
+            filevault_unlock: w::AccessObservation::Present,
+            platform_sso: None,
+        }),
+        windows: None,
+    };
+    let da::AccountObservation::Result(result) = report(t, effect) else {
+        unreachable!()
+    };
+    let mut tx = c.seed().await?;
+    assert!(matches!(
+        access::storage::result_in(
+            &mut tx,
+            t.tenant_id,
+            t.task_id,
+            t.attempt_id,
+            Uuid::new_v4(),
+            &result,
+            true
+        )
+        .await,
+        Err(rss_mdm_device_access_postgres::Error::Conflict)
+    ));
+    tx.rollback().await?;
+    Ok(())
 }
 
 async fn scenario(
@@ -225,6 +264,7 @@ async fn scenario(
         )
     );
     assert!(matches!(t.action, w::AccessAction::Create { .. }) && t.windows.is_none());
+    reject_premature_application(c, &t, Uuid::new_v4(), w::AccessRole::Standard).await?;
     let progress = |id, admin: &Manager| {
         client
             .get(format!(
@@ -237,14 +277,17 @@ async fn scenario(
     let received: Value = material::success(progress(op, owner).await?).await?;
     assert_eq!(received["received"], true);
     assert!(received["effect"].is_null());
-    observe(&peer, base, &offer, report(&t, w::AccessEffect::Unknown)).await?;
-    let uncertain: Value = material::success(progress(op, owner).await?).await?;
-    assert_eq!(uncertain["execution"], "unknown");
-    assert_eq!(offer, material::success(next().await?).await?);
+    let active: da::AccountSettlement =
+        material::success(peer.post(&url).json(&ack).send().await?).await?;
+    assert_eq!(active.permit.as_ref(), Some(&t));
     let cleanup = unlink(c, &client, &r, owner, binding).await?;
     let replay: da::AccountSettlement =
         material::success(peer.post(&url).json(&ack).send().await?).await?;
     assert!(replay.permit.is_none());
+    observe(&peer, base, &offer, report(&t, w::AccessEffect::Unknown)).await?;
+    let uncertain: Value = material::success(progress(op, owner).await?).await?;
+    assert_eq!(uncertain["execution"], "unknown");
+    assert_eq!(offer, material::success(next().await?).await?);
     let other = Box::pin(Manager::new(c, &client)).await?;
     let blocked = assign(
         c,
@@ -259,6 +302,36 @@ async fn scenario(
     .unwrap_err();
     assert!(blocked.to_string().contains("HTTP 409"), "{blocked:#}");
     let uid = Uuid::new_v4();
+    // The UID is still unknown to the original operation. A separate binding was established
+    // before its delayed journal arrived. Preserve the report but withhold cleanup authority.
+    let existing_owner = Box::pin(Manager::new(c, &client)).await?;
+    let existing_id = Uuid::new_v4();
+    let person = rss_mdm_device_access::Person {
+        instance: r.service_id,
+        principal: existing_owner.principal,
+    };
+    let intent = rss_mdm_device_access::AccountIntent::Existing {
+        account: w::AccessAccount::Macos { generated_uid: uid },
+    };
+    let body = json!({"kind":"put","instance":person.instance,"principal":person.principal,"account":intent,"policy":policy.id});
+    existing_owner
+        .change(
+            c,
+            &client,
+            &r,
+            existing_id,
+            access::Change {
+                operation_id: Uuid::new_v4(),
+                expected_revision: 0,
+                action: access::Action::Put {
+                    person,
+                    intent,
+                    policy: policy.id,
+                },
+            },
+            body,
+        )
+        .await?;
     let created = |uid, role| w::AccessEffect::MacAccountCreated {
         generated_uid: uid,
         role,
@@ -295,6 +368,12 @@ async fn scenario(
     assert_eq!(settled["effect"]["volumeOwner"], "absent");
     let n:i64=sqlx::query_scalar("SELECT count(*) FROM rss_da.results WHERE task=$1 AND document#>>'{effect,state}'='mac_account_created'").bind(t.task_id).fetch_one(&c.operator).await?;
     assert_eq!(n, 1);
+    assert!(
+        material::success::<Option<da::AccountOffer>>(next().await?)
+            .await?
+            .is_none()
+    );
+    unlink(c, &client, &r, &existing_owner, existing_id).await?;
     let clean_offer: da::AccountOffer = material::success(next().await?).await?;
     assert_eq!(clean_offer.operation_id, cleanup);
     let clean = observe(&peer, base, &clean_offer, da::AccountObservation::Received)
@@ -344,14 +423,20 @@ async fn scenario(
     assert_eq!(binding["account"]["generatedUid"], json!(uid));
     assert!(binding["appliedRevision"].is_null());
     assert_eq!(binding["state"], "pending");
+    reject_premature_application(c, &t, uid, w::AccessRole::Administrator).await?;
     let denying = Box::pin(Manager::new(c, &client)).await?;
     let id = Uuid::new_v4();
     let op = assign(c, &client, &r, &denying, id, policy.id, "collision").await?;
     let offer: da::AccountOffer = material::success(next().await?).await?;
-    let t = observe(&peer, base, &offer, da::AccountObservation::Received)
-        .await?
-        .permit
-        .context("attempt before policy revision")?;
+    let grant = observe(&peer, base, &offer, da::AccountObservation::Received).await?;
+    let t = grant.permit.context("attempt before policy revision")?;
+    let replay_ack = da::AccountEvent {
+        event_id: grant.event_id,
+        attempt_id: offer.attempt_id,
+        definition_digest: offer.definition_digest,
+        event: da::AccountObservation::Received,
+    };
+    let target = format!("{base}/account-operations/{}/events", offer.task_id);
     policy.version = Uuid::new_v4();
     policy.revision += 1;
     let mut tx = c.seed().await?;
@@ -365,6 +450,10 @@ async fn scenario(
     )
     .await?;
     tx.commit().await?;
+    let withdrawn: da::AccountSettlement =
+        material::success(peer.post(&target).json(&replay_ack).send().await?).await?;
+    assert!(withdrawn.permit.is_none());
+    assert_eq!(withdrawn.issued_expires_at, Some(t.expires_at));
     let stale = peer
         .post(format!(
             "{base}/account-operations/{}/events",

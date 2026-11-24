@@ -372,7 +372,7 @@ Agent 使用设备证书读取 `GET /api/v1/agent/runtime/management-activities`
 
 授权管理员可以读回他人原操作，但写入继续使用当前认证主体。null 仅表示没有找到指定原回执；链已关联、该次管理操作已提交、设备已持证激活是不同事实。刷新、重新登录、超时或未知结果都不授权自动重放写入。查询不返回 secret、原始 CSR、签发配置，也不会重新签发或延长期限。
 
-仅注册 DA 的 Apple silicon Mac 可领取管理员通过既有绑定入口分配的本地建号操作。设备以当前 DA mTLS 身份向 `POST /api/v1/da/account-operations/next` 领取，将原操作、任务、尝试、绑定和摘要与本地安装一起持久记录，再向 `POST /api/v1/da/account-operations/{taskId}/events` 发送 `received`。开始前核对返回的 Start、租户和设备、员工、代际、修订、策略、短名、角色与到期时间。账号密码只经本机受保护输入。显式 Agent 投递使用原 Agent 通道。
+仅注册 DA 的 Apple silicon Mac 可领取管理员通过既有绑定入口分配的本地建号操作。设备以当前 DA mTLS 身份向 `POST /api/v1/da/account-operations/next` 领取，将原操作、任务、尝试、绑定和摘要与本地安装一起持久记录，再向 `POST /api/v1/da/account-operations/{taskId}/events` 发送 `received`。服务端按管理员指定的平台签发许可；设备在开始前核实本机为 macOS/Aarch64，核对 Start 中的租户和设备、员工、代际、修订、策略、短名、角色与到期时间。账号密码只经本机受保护输入。显式 Agent 投递使用原 Agent 通道。
 
 按原尝试上报 `result`。原生日志及回读确认本次创建后，`mac_account_created` 携带 GeneratedUID、实际角色及分别观察的 Secure Token、卷所有权和 FileVault 解锁资格。角色与授权不符时原操作保留已创建事实并标记执行失败。PSSO 配置应用与注册仍按各自证据确认。明确拒绝且本次未留下账号时报告 `failed`（如同名冲突）；建号是否发生尚未查清时报告 `unknown` 并继续核对原尝试。重放同一事件 ID 和内容可找回回执。过期许可只有在本机日志证明从未启动时才可续领；解绑后精确的未启动或已停止且未留下账号的证明可结清待清理操作。晚到的创建结果供原操作及明确等待它的解绑使用。管理员在原操作的 `/execution` 查看接收、执行、实际效果和待清理状态。
 
