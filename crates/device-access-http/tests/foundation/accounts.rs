@@ -1,4 +1,5 @@
 //! mTLS account consumer on an installation with no Agent schema or delivery relationship.
+pub(super) mod macos;
 use super::*;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rss_identity_core::session::{BearerSecret, SessionSecret};

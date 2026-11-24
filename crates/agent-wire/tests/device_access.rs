@@ -626,3 +626,16 @@ fn cms_upload_is_bounded_and_receipt_cannot_acknowledge_different_material() {
     assert!(input.decode().is_err());
     assert!(!format!("{input:?}").contains(&input.cms));
 }
+
+#[test]
+fn mac_created_proves_only_the_native_creation() {
+    let mut value = serde_json::json!({"state":"mac_account_created","generatedUid":Uuid::new_v4(),"role":"standard",
+        "secureToken":"absent","volumeOwner":"unknown","filevaultUnlock":"needs_administrator"});
+    let effect: AccessEffect = serde_json::from_value(value.clone()).unwrap();
+    assert!(effect.validate_for(TaskPlatform::Macos).is_ok());
+    assert!(effect.validate_for(TaskPlatform::Windows).is_err());
+    assert!(!effect.complete(&configuration(), TaskPlatform::Macos));
+    assert_eq!(serde_json::to_value(&effect).unwrap(), value);
+    value["password"] = "local only".into();
+    assert!(serde_json::from_value::<AccessEffect>(value).is_err());
+}

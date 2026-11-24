@@ -698,6 +698,15 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     stop.send(())
         .map_err(|_| anyhow::anyhow!("DA host stopped early"))?;
     tokio::time::timeout(Duration::from_secs(50), running).await???;
+    Box::pin(accounts::macos::verify(
+        &c,
+        &material,
+        &installed_host.runtime_file,
+        base,
+        &current_peer,
+    ))
+    .await
+    .context("standalone Mac account protocol")?;
     c.close().await;
 
     Box::pin(recovery::verify(
