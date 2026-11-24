@@ -134,7 +134,7 @@ pub(crate) async fn events(
         application,
         members,
         operations,
-        agent_facts: Arc::new(super::agent_facts::AgentFacts),
+        agent_bindings: Arc::new(super::agent_facts::AgentFacts),
     }))
 }
 #[expect(

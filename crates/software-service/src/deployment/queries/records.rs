@@ -210,18 +210,9 @@ pub struct WindowsFrame {
 }
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BootstrapObservation {
-    pub state: String,
-    pub delivery: Uuid,
-    pub cleanup: Option<Uuid>,
-    pub cleanup_complete: bool,
-    pub cleanup_retry_at: i64,
-    pub deadline: i64,
-}
-#[derive(schemars::JsonSchema, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct InstallationObservation {
-    pub bootstrap: Option<BootstrapObservation>,
+    pub bootstrap:
+        Option<rss_mdm_registration_service::installation::queries::BootstrapObservation>,
     pub protocol: String,
     pub delivery: String,
     pub installation: String,
@@ -232,8 +223,10 @@ pub struct InstallationObservation {
 #[serde(rename_all = "camelCase")]
 pub struct AgentRegistration {
     pub device_id: rss_mdm_agent_wire::DeviceId,
-    pub state: String,
-    pub capabilities: Option<Vec<String>>,
+    #[schemars(with = "String")]
+    pub state: rss_mdm_registration_service::enrollment::read::RegistrationState,
+    #[schemars(with = "Option<Vec<String>>")]
+    pub capabilities: Option<Vec<rss_mdm_agent_wire::runtime::Capability>>,
 }
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]

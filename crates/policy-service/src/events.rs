@@ -18,7 +18,7 @@ pub struct Events {
     pub application: Arc<Application>,
     pub members: Arc<MemberOwners>,
     pub operations: Arc<dyn OperationOwners>,
-    pub agent_facts: Arc<dyn rss_mdm_device_service::control::agent_facts::Store>,
+    pub agent_bindings: Arc<dyn rss_mdm_device_service::control::agent_facts::BindingReader>,
 }
 #[derive(Clone, Copy)]
 enum Requester<'a> {
@@ -77,7 +77,7 @@ impl Events {
         .await??;
         let binding = rss_mdm_device_service::control::agent_facts::agent_binding_in(
             tx,
-            self.agent_facts.clone(),
+            self.agent_bindings.clone(),
             *principal.device(),
         )
         .await?;

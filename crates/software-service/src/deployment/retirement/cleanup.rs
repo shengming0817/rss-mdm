@@ -46,7 +46,7 @@ impl Transactions {
             .await?;
             // Only the installation owner's correlated post-dispatch observation
             // can prove absence. Bootstrap removal is not program removal.
-            if observation["installation"] == "absent" {
+            if observation.installation == "absent" {
                 continue;
             }
             let lifecycle = self.lifecycle.clone();

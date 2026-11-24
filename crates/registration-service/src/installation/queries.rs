@@ -48,9 +48,10 @@ pub enum BootstrapState {
     Revoked,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapObservation {
+    #[schemars(with = "String")]
     pub state: BootstrapState,
     pub delivery: Uuid,
     pub cleanup: Option<Uuid>,

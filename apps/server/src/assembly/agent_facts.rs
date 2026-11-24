@@ -1,5 +1,5 @@
 //! Static mapping of Agent facts to their business consumers.
-use rss_mdm_device_service::control::agent_facts::{Binding, Pending, Store};
+use rss_mdm_device_service::control::agent_facts::{Binding, BindingReader, Pending, Store};
 use sqlx::PgConnection;
 use uuid::Uuid;
 pub(crate) struct AgentFacts;
@@ -14,6 +14,20 @@ fn error(e: rss_mdm_agent_channel::Error) -> rss_mdm_device_service::control::Er
         A::CommitUnknown => E::CommitUnknown,
         A::RollbackFailed => E::RollbackFailed,
         _ => E::Unavailable(Failure::CommandStorage),
+    }
+}
+impl BindingReader for AgentFacts {
+    fn binding<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        device: rss_mdm_agent_wire::DeviceId,
+    ) -> Pending<'a, Option<Binding>> {
+        Box::pin(async move {
+            Ok(Store::bindings(self, c, tenant, vec![device])
+                .await?
+                .remove(&device))
+        })
     }
 }
 impl Store for AgentFacts {

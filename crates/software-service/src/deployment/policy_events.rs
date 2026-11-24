@@ -243,14 +243,7 @@ impl crate::deployment::transactions::Transactions {
         };
         Ok(NativeEventProgress {
             state: command.status(),
-            installation: installation
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| {
-                    crate::deployment::Error::Unavailable(
-                        crate::deployment::Failure::CommandStorage,
-                    )
-                })?,
+            installation,
         })
     }
 }
