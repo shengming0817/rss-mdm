@@ -60,6 +60,28 @@ async fn advance(h: &Harness, worker: &PolicyWork, batch: Uuid) -> Result<()> {
     Ok(())
 }
 
+async fn check_historical_credential(h: &Harness, events: &Events) -> Result<()> {
+    use rss_mdm_policy_service::{Error, Failure, transaction};
+    let state = rss_mdm_task_state::RunState::new(now() + 300, now())?;
+    let id = super::super::retirement::credential_run(h, &state).await?;
+    let reference = w::PolicyEventOperation::Run { id };
+    let read = |runtime| {
+        transaction::inspect(
+            runtime,
+            h.c.execution(),
+            (&events.operations, &reference),
+            |ctx, tx| Box::pin(async move { ctx.0.policy_event_operation_in(tx, ctx.1).await }),
+        )
+    };
+    let progress = read(&events.application.runtime).await?;
+    assert_eq!(serde_json::to_value(progress)?["state"], json!(state));
+    assert!(matches!(
+        read(&h.a.resources.storage.runtime).await,
+        Err(Error::Unavailable(Failure::PolicyStorage))
+    ));
+    Ok(())
+}
+
 #[tokio::test]
 #[ignore = "T2: authenticated Policy event replay and owner-decided Script/Native Collection progress through member HTTP"]
 async fn original_parent_receipt_and_member_progress() -> Result<()> {
@@ -89,6 +111,7 @@ async fn original_parent_receipt_and_member_progress() -> Result<()> {
         Vec::new(),
     )
     .await?;
+    check_historical_credential(&h, &events).await?;
     let worker = PolicyWork::new(
         h.c.database.archive_pool(),
         h.c.execution().storage(),
@@ -108,13 +131,15 @@ async fn original_parent_receipt_and_member_progress() -> Result<()> {
     sqlx::query("UPDATE mdm_policy.policies SET definition=jsonb_set(definition,'{customEvent}',to_jsonb('child-event'::text)) WHERE tenant_id=$1::uuid AND id=$2")
         .bind(h.c.tenant.to_string()).bind(child).execute(&mut *setup).await?;
     setup.commit().await?;
-    let input = w::PolicyEventRequest {
+    let agent_request = w::PolicyEventRequest {
         operation_id: Uuid::new_v4(),
         event: w::PolicyEventName::parse("child-event")?,
         source: w::PolicyEventSource::Policy { run_id: parent },
         execution_context: Some(context()),
     };
-    let accepted = events.invoke_agent(&h.p, &input, &request(&h.c)).await?;
+    let accepted = events
+        .invoke_agent(&h.p, &agent_request, &request(&h.c))
+        .await?;
     assert_eq!(accepted.members, 1);
     let at = now();
     h.event(
@@ -130,14 +155,14 @@ async fn original_parent_receipt_and_member_progress() -> Result<()> {
     .await?;
     assert_eq!(
         events
-            .invoke_agent(&h.p, &input, &request(&h.c))
+            .invoke_agent(&h.p, &agent_request, &request(&h.c))
             .await?
             .batch_id,
         accepted.batch_id
     );
     let fresh = w::PolicyEventRequest {
         operation_id: Uuid::new_v4(),
-        ..input.clone()
+        ..agent_request.clone()
     };
     assert!(matches!(
         events.invoke_agent(&h.p, &fresh, &request(&h.c)).await,
@@ -223,7 +248,9 @@ async fn original_parent_receipt_and_member_progress() -> Result<()> {
         .await?;
     invalid.commit().await?;
     assert!(matches!(
-        events.invoke_agent(&h.p, &fresh, &request(&h.c)).await,
+        events
+            .invoke_agent(&h.p, &agent_request, &request(&h.c))
+            .await,
         Err(rss_mdm_policy_service::Error::Unauthorized)
     ));
     owner.runtime.close().await;

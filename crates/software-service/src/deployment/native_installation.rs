@@ -866,10 +866,9 @@ impl crate::deployment::transactions::Transactions {
     pub(crate) async fn agent_install_event_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        policy: &rss_mdm_policy::Policy,
+        member: &crate::deployment::policy_events::EventMember,
+        action: &crate::installation::package::FrozenInstall,
         target: &crate::deployment::Target,
-        deadline: i64,
-        origin: rss_mdm_audit_integration::activity::ActivityOrigin,
         audit: &RequestAudit,
     ) -> Result<rss_mdm_agent_wire::runtime::PolicyEventDecision> {
         use rss_mdm_agent_wire::runtime::{
@@ -878,11 +877,6 @@ impl crate::deployment::transactions::Transactions {
         if let Some((rss_mdm_inventory::channel::Observation::Ready(fact), platform)) =
             self.agent_install_fact_in(tx, target.device).await?
         {
-            let (_, Published::AgentInstall { action }) =
-                policies::storage::version_in(&self.policy_reader, tx, policy.version).await?
-            else {
-                return Err(Error::Malformed.into());
-            };
             let architecture = fact
                 .evidence
                 .as_ref()
@@ -932,11 +926,6 @@ impl crate::deployment::transactions::Transactions {
             let authority::Authority::AgentInstall { package, .. } = operation.authority else {
                 return Err(Error::Malformed.into());
             };
-            let (_, Published::AgentInstall { action }) =
-                policies::storage::version_in(&self.policy_reader, tx, policy.version).await?
-            else {
-                return Err(Error::Malformed.into());
-            };
             let digest = crate::deployment::transaction::fingerprint(&package)?;
             let mut same = false;
             for candidate in action.packages.values() {
@@ -955,7 +944,7 @@ impl crate::deployment::transactions::Transactions {
                 tx,
                 &target.device,
                 audit,
-                Some((policy.id, deadline, origin)),
+                Some((member.policy, member.deadline, member.origin)),
             )
             .await?
         {

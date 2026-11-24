@@ -325,7 +325,7 @@ impl From<rss_mdm_registration_service::enrollment::tasks::Error> for Error {
             E::Unauthorized => Error::Unauthorized,
             E::Conflict => Error::Conflict,
             E::NotFound => Error::NotFound,
-            E::Audit(_) => Error::Unavailable(Failure::Audit),
+            E::Audit(e) => Self::from(e.as_ref()),
             E::Invariant => Error::Unavailable(Failure::CommandInvariant),
             E::Unavailable => Error::Unavailable(Failure::PolicyStorage),
         }

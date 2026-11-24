@@ -494,19 +494,15 @@ async fn changes_wake_published_owners_through_disable_and_replay() -> Result<()
         .change(&p, id, &disable, &c.request(&p)?)
         .await?;
     assert_eq!(wake_revisions().await?, (4, 3, 0));
-    let facts = || async {
-        sqlx::query_scalar::<_,i64>("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.business'")
-        .bind(c.tenant.to_string()).fetch_one(&c.operator).await
-    };
-    let before = facts().await?;
-    assert!(before > 0);
+    let coordinate = second.operation_id.to_string();
+    assert_eq!(c.audit_count("mdm.business", &coordinate).await?, 1);
     let replay = fixture
         .policies
         .change(&p, id, &second, &c.request(&p)?)
         .await?;
     assert_eq!(replay.version_id, view.version_id);
     assert_eq!(wake_revisions().await?, (4, 3, 0));
-    assert_eq!(facts().await?, before);
+    assert_eq!(c.audit_count("mdm.business", &coordinate).await?, 1);
     fixture.close().await?;
     c.close().await;
     Ok(())

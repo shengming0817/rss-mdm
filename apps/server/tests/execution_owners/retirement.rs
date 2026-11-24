@@ -516,7 +516,10 @@ pub(super) async fn native(
     Ok((policy, task, object))
 }
 
-async fn credential_run(h: &Harness, state: &rss_mdm_task_state::RunState) -> Result<Uuid> {
+pub(super) async fn credential_run(
+    h: &Harness,
+    state: &rss_mdm_task_state::RunState,
+) -> Result<Uuid> {
     use rss_mdm_recovery_credentials::tasks::{
         credential_tasks::FrozenCredential,
         policy::{ExecutionInput, Frozen},

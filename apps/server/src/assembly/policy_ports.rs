@@ -89,6 +89,7 @@ impl ConfigurationDependents for NativeDependents {
 }
 
 pub(super) struct OperationReads {
+    pub runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub members: Arc<MemberOwners>,
     pub configuration: Arc<rss_mdm_policy_service::configuration::Transactions>,
 }
@@ -101,6 +102,7 @@ impl OperationOwners for OperationReads {
         id: Uuid,
     ) -> Pending<'a, bool, Fault> {
         Box::pin(async move {
+            self.runtime.validate_transaction(tx)?;
             let tenant = tx.tenant_id();
             let owner = tx
                 .with_connection(move |c| {
@@ -157,6 +159,7 @@ impl OperationOwners for OperationReads {
         reference: &'a wire::PolicyEventOperation,
     ) -> Pending<'a, EventOperationProgress, Fault> {
         Box::pin(async move {
+            self.runtime.validate_transaction(tx)?;
             Ok(match *reference {
                 wire::PolicyEventOperation::Run { id } => {
                     use super::task_ownership::Owner;
@@ -231,6 +234,7 @@ impl OperationOwners for OperationReads {
                     let state = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
+                                self.runtime.validate_transaction(tx)?;
                                 Ok(rss_mdm_device_service::lifecycle::read_in(c, tenant, id).await)
                             })
                         })

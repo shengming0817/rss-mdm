@@ -123,6 +123,7 @@ pub(crate) async fn events(
         collections,
     });
     let operations = Arc::new(super::policy_ports::OperationReads {
+        runtime: application.runtime.clone(),
         members: members.clone(),
         configuration: application
             .configuration

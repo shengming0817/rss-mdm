@@ -16,6 +16,15 @@ pub fn rejected(reason: &str) -> Decision {
         reason: reason.into(),
     }
 }
+/// Identity and lifetime of the durable Policy event member being dispatched.
+pub struct EventMember {
+    pub policy: Uuid,
+    pub version: Uuid,
+    pub id: Uuid,
+    pub origin: rss_mdm_audit_integration::activity::ActivityOrigin,
+    pub deadline: i64,
+}
+
 pub struct NativeEventProgress {
     pub state: rss_device_command::Status,
     pub installation: Option<crate::deployment::queries::records::InstallationObservation>,
@@ -31,11 +40,8 @@ impl crate::deployment::transactions::Transactions {
     pub async fn accept_policy_event_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        policy_id: Uuid,
-        version: Uuid,
+        member: &EventMember,
         target: &Target,
-        cause: (Uuid, rss_mdm_audit_integration::activity::ActivityOrigin),
-        deadline: i64,
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<Decision> {
         self.validate_policy_transaction_in(tx)?;
@@ -43,7 +49,13 @@ impl crate::deployment::transactions::Transactions {
         if tx.tenant_id() != binding.tenant() || tx.expected_epoch() != binding.epoch() {
             return Err(crate::deployment::Error::Forbidden.into());
         }
-        let (request, origin) = cause;
+        let EventMember {
+            policy: policy_id,
+            version,
+            id: request,
+            origin,
+            deadline,
+        } = *member;
         let now = crate::deployment::storage::now(tx).await?;
         if now >= deadline {
             return Ok(Decision::Expired);
@@ -81,11 +93,23 @@ impl crate::deployment::transactions::Transactions {
         ) {
             return Ok(rejected("scope_not_eligible"));
         }
-        match &policy.definition.action {
-            Action::Software { .. } => {
-                let plan =
-                    runs::load_policy_version(&self.policy_reader, tx, policy.version).await?;
-                let runs::ScheduledPolicy::Software(software) = plan;
+        let record = crate::deployment::transaction::checked(
+            self.policy_reader.version_in(tx, version).await?,
+        )?
+        .ok_or(crate::deployment::Error::NotFound)?;
+        let kind = policy.definition.action.kind();
+        if record.policy != policy_id || record.action_kind != kind {
+            return Err(crate::deployment::Error::Unavailable(
+                crate::deployment::Failure::CommandInvariant,
+            )
+            .into());
+        }
+        let published = crate::deployment::stored(serde_json::from_value(record.frozen))?;
+        match kind {
+            rss_mdm_policy::ActionKind::Software => {
+                let software = crate::deployment::sources::software::from_published(
+                    version, policy, published,
+                )?;
                 let preparation = crate::deployment::actions::software::slot_in(
                     self,
                     tx,
@@ -122,9 +146,7 @@ impl crate::deployment::transactions::Transactions {
                         request: None,
                         origin,
                         invocation: None,
-                        source: runs::Source::Policy {
-                            version: policy.version,
-                        },
+                        source: runs::Source::Policy { version },
                         target,
                         id: request,
                         occurrence: slot.occurrence,
@@ -141,12 +163,16 @@ impl crate::deployment::transactions::Transactions {
                 })
             }
 
-            Action::EnsureAgentInstalled { .. } => {
-                self.agent_install_event_in(tx, &policy, target, deadline, origin, audit)
+            rss_mdm_policy::ActionKind::EnsureAgentInstalled => {
+                let crate::deployment::frozen::Published::AgentInstall { action } = published
+                else {
+                    return Err(crate::deployment::Error::Malformed.into());
+                };
+                self.agent_install_event_in(tx, member, &action, target, audit)
                     .await
             }
 
-            // App dispatches these actions directly to their business owners.
+            // Only actions published by Software can produce Software work.
             _ => Err(crate::deployment::Error::Unsupported.into()),
         }
     }

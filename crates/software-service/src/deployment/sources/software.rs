@@ -44,6 +44,13 @@ pub async fn read_in(
     id: Uuid,
 ) -> Result<SoftwareExecutionPolicy> {
     let (policy, frozen) = storage::version_in(reader, tx, id).await?;
+    from_published(id, policy, frozen)
+}
+pub(crate) fn from_published(
+    id: Uuid,
+    policy: rss_mdm_policy::Policy,
+    frozen: Published,
+) -> Result<SoftwareExecutionPolicy> {
     let Published::Software { action } = frozen else {
         return Err(Error::Unsupported.into());
     };
@@ -70,25 +77,7 @@ pub async fn read_on(
     id: Uuid,
 ) -> Result<SoftwareExecutionPolicy> {
     let (policy, frozen) = storage::version_on(reader, c, id).await?;
-    let Published::Software { action } = frozen else {
-        return Err(Error::Unsupported.into());
-    };
-    let rollout = match policy.definition.action {
-        Action::Software { rollout, .. } => Some(rollout),
-        _ => None,
-    };
-    let active = policy.state.is_enabled() && rollout.is_some();
-    Ok(SoftwareExecutionPolicy {
-        id,
-        owner: policy.id,
-        assignment: SoftwareAssignment::persisted(
-            policy.definition.scope,
-            rollout,
-            *action,
-            id,
-            active,
-        ),
-    })
+    from_published(id, policy, frozen)
 }
 impl SoftwareAssignment {
     pub(crate) fn pending_admission(&self, scope: Uuid, rollout: SoftwareRollout) -> Self {

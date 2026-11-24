@@ -707,13 +707,16 @@ impl Application {
                 .software
                 .accept_policy_event_in(
                     tx,
-                    policy.id,
-                    policy.version,
+                    &rss_mdm_software_service::deployment::policy_events::EventMember {
+                        policy: policy.id,
+                        version: policy.version,
+                        id: member,
+                        origin,
+                        deadline,
+                    },
                     &rss_mdm_software_service::deployment::Target {
                         device: target.device,
                     },
-                    (member, origin),
-                    deadline,
                     audit,
                 )
                 .await?),
