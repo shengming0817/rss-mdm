@@ -447,7 +447,7 @@ async fn scenario(
     let clean = cleanup_ack.permit.context("cleanup for late Created")?;
     let replacement_id = Uuid::new_v4();
     let next_disposition = || {
-        owner.change(
+        other.change(
             c,
             &client,
             &r,
@@ -464,21 +464,21 @@ async fn scenario(
     };
     let busy = Box::pin(next_disposition()).await.unwrap_err();
     assert!(busy.to_string().contains("HTTP 409"), "{busy:#}");
-    let held: da::AccountSettlement = material::success(
+    let original_ack = da::AccountEvent {
+        event_id: cleanup_ack.event_id,
+        attempt_id: clean_offer.attempt_id,
+        definition_digest: clean_offer.definition_digest,
+        event: da::AccountObservation::Received,
+    };
+    let replay_start = || {
         peer.post(format!(
             "{base}/account-operations/{}/events",
             clean_offer.task_id
         ))
-        .json(&da::AccountEvent {
-            event_id: cleanup_ack.event_id,
-            attempt_id: clean_offer.attempt_id,
-            definition_digest: clean_offer.definition_digest,
-            event: da::AccountObservation::Received,
-        })
+        .json(&original_ack)
         .send()
-        .await?,
-    )
-    .await?;
+    };
+    let held: da::AccountSettlement = material::success(replay_start().await?).await?;
     assert_eq!(held.permit.as_ref(), Some(&clean));
     assert!(
         matches!(clean.action,w::AccessAction::Unbind{account:w::AccessAccount::Macos{generated_uid},disposition:w::AccessAccountDisposition::Keep} if generated_uid==uid)
@@ -521,20 +521,22 @@ async fn scenario(
     let redundant = Box::pin(unlink(c, &client, &r, &other, competing)).await?;
     let redundant: Value = material::success(progress(redundant, &other).await?).await?;
     assert_eq!(redundant["cleanupPending"], false);
-    observe(
+    let (instance, rule): (Uuid, Value) = sqlx::query_as("DELETE FROM rss_da.authorization_rules WHERE tenant_id=$1 AND document#>>'{subject,user,principalId}'=$2 RETURNING instance,document")
+        .bind(r.tenant).bind(owner.principal.to_string()).fetch_one(&c.operator).await?;
+    let expiry = expire_permit(c, clean_offer.task_id, cleanup_ack.event_id).await?;
+    let busy = Box::pin(next_disposition()).await.unwrap_err();
+    assert!(busy.to_string().contains("HTTP 409"), "{busy:#}");
+    let closed = observe(
         &peer,
         base,
         &clean_offer,
-        report(
-            &clean,
-            w::AccessEffect::Unbound {
-                disposition: w::AccessAccountDisposition::Keep,
-            },
-        ),
+        da::AccountObservation::NotStarted { expires_at: expiry },
     )
     .await?;
-    let finished: Value = material::success(progress(cleanup, owner).await?).await?;
-    assert_eq!(finished["cleanupPending"], false);
+    assert!(closed.permit.is_none() && closed.issued_expires_at.is_none());
+    let history: da::AccountSettlement = material::success(replay_start().await?).await?;
+    assert!(history.permit.is_none());
+    assert_eq!(history.issued_expires_at, Some(expiry));
     assert!(
         material::success::<Option<da::AccountOffer>>(next().await?)
             .await?
@@ -543,7 +545,7 @@ async fn scenario(
     let unfulfilled: Value =
         material::success(progress(other_cleanup, &existing_owner).await?).await?;
     assert_eq!(unfulfilled["cleanupPending"], true);
-    // The previously rejected change is admissible only after the exact original disposition settled.
+    // The new administrator can take over while the original grant is still withdrawn.
     Box::pin(next_disposition()).await?;
     let later: da::AccountOffer = material::success(next().await?).await?;
     assert_eq!(later.operation_id, replacement_id);
@@ -570,6 +572,14 @@ async fn scenario(
         ),
     )
     .await?;
+    // A fresh grant lets the original administrator read its receipt. The unexecuted Keep remains open.
+    sqlx::query("INSERT INTO rss_da.authorization_rules(tenant_id,instance,id,revision,document) VALUES ($1,$2,$3,1,$4)")
+        .bind(r.tenant).bind(instance).bind(Uuid::new_v4()).bind(rule).execute(&c.operator).await?;
+    let original: Value = material::success(progress(cleanup, owner).await?).await?;
+    assert_eq!(original["cleanupPending"], true);
+    assert!(original["effect"].is_null());
+    let replacement: Value = material::success(progress(replacement_id, &other).await?).await?;
+    assert_eq!(replacement["cleanupPending"], false);
     // A known creation with wrong privilege stays observable without enabling login.
     let id = Uuid::new_v4();
     let op = assign(c, &client, &r, &other, id, policy.id, "LocalUser").await?;

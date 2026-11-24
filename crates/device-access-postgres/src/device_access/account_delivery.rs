@@ -545,17 +545,20 @@ impl Service {
                 if run.state.attempt()!=Some(input.attempt_id) || run.state.cancellation == rss_mdm_task_state::Cancellation::Confirmed {
                     return Err(Error::Conflict);
                 }
-                let settled_absence = run.settle_absence(c,input,now).await?;
-                let receipt = if settled_absence {
-                    None
-                } else {
-                    let (binding,current)=run.event_binding(c,input,now).await?;
-                    let materials=AccessMaterials::for_device(s.recovery.clone(),p);
-                    let receipt=run.observe(c,&materials,input,&binding,now,current).await?;
-                    run.journal.native_observed |= !grant;
-                    receipt
+                let materials=AccessMaterials::for_device(s.recovery.clone(),p);
+                let receipt=match input.event {
+                    da::AccountObservation::NotStarted { expires_at } | da::AccountObservation::CreateAbsent { expires_at } => {
+                        run.expired_permit(c, &materials, input, expires_at, now).await?;
+                        None
+                    }
+                    _ => {
+                        let (binding,current)=run.event_binding(c,input,now).await?;
+                        let receipt=run.observe(c,&materials,input,&binding,now,current).await?;
+                        run.journal.native_observed |= !grant;
+                        receipt
+                    }
                 };
-                let permit = run.journal.start.as_ref().filter(|_| grant && !settled_absence);
+                let permit = run.journal.start.as_ref().filter(|_| grant && run.state.execution == Execution::Running);
                 let permit_until=permit.map(|t|t.expires_at);
                 sqlx::query("INSERT INTO rss_da.account_events(tenant_id,run,event,digest,permit_until,receipt) VALUES($1,$2,$3,$4,$5,$6)")
                     .bind(run.binding.tenant).bind(id).bind(input.event_id).bind(digest.as_slice()).bind(permit_until)
@@ -655,20 +658,17 @@ impl Run {
             .map_err(db)?;
         Ok(())
     }
-    async fn settle_absence(
+    /// An expired permit can be reconciled by its device. Only a fresh authorization may renew it.
+    async fn expired_permit(
         &mut self,
         c: &mut PgConnection,
+        materials: &AccessMaterials,
         input: &da::AccountEvent,
+        expires_at: i64,
         now: i64,
-    ) -> Result<bool, Error> {
-        use da::AccountObservation as E;
-        let expires_at = match input.event {
-            E::NotStarted { expires_at } | E::CreateAbsent { expires_at } => expires_at,
-            _ => return Ok(false),
-        };
-        let Some(start) = self.journal.start.as_ref() else {
-            return Err(Error::Conflict);
-        };
+    ) -> Result<(), Error> {
+        let unused = matches!(input.event, da::AccountObservation::NotStarted { .. });
+        let start = self.journal.start.as_ref().ok_or(Error::Conflict)?;
         if !matches!(
             self.state.execution,
             Execution::Running | Execution::Unknown
@@ -676,28 +676,56 @@ impl Run {
             || expires_at > now
             || self.journal.prepared.is_some()
             || self.journal.custody.is_some()
-            || (matches!(input.event, E::NotStarted { .. }) && self.journal.native_observed)
+            || (unused && self.journal.native_observed)
         {
             return Err(Error::Conflict);
         }
-        if !matches!(start.action, w::AccessAction::Create { .. }) {
-            return Ok(false);
+        let create = matches!(start.action, w::AccessAction::Create { .. });
+        let platform = start.platform;
+        if !unused && !create {
+            return Err(Error::Conflict);
         }
-        if let Some((cleanup, state)) = self.waiting_cleanup(c).await? {
+        if create && let Some((cleanup, state)) = self.waiting_cleanup(c).await? {
             Self::confirm_no_cleanup(c, self.binding.tenant, cleanup, state).await?;
-        } else if start.platform == w::TaskPlatform::Macos {
+        } else if unused {
             match self.authorize(c, now).await {
-                Ok(_) if matches!(input.event, E::NotStarted { .. }) => return Ok(false),
-                Ok(_) | Err(Error::Forbidden | Error::Conflict) => (),
+                Ok(binding) => {
+                    if self.state.execution != Execution::Running {
+                        return Err(Error::Conflict);
+                    }
+                    let start = self.journal.start.as_mut().ok_or(Error::Corrupt)?;
+                    // Bound receipts per attempt; the same operation remains claimable.
+                    if self.journal.renewals >= 64 {
+                        self.state = RunState::new(i64::MAX, now).map_err(|_| Error::Corrupt)?;
+                        self.journal = Journal {
+                            received: true,
+                            ..Journal::default()
+                        };
+                        return Ok(());
+                    }
+                    self.journal.renewals += 1;
+                    if start.windows.is_some() {
+                        start.windows = Some(materials.plan(c, &binding, now).await?);
+                    }
+                    start.expires_at = now + 300;
+                    start.deadline = start.expires_at;
+                    self.state.deadline = start.deadline;
+                    self.state.delivery = rss_mdm_task_state::Delivery::Received {
+                        attempt: input.attempt_id,
+                        lease_until: start.deadline,
+                    };
+                    return Ok(());
+                }
+                Err(Error::Forbidden | Error::Conflict) => (),
                 Err(error) => return Err(error),
             }
-        } else {
-            return Ok(false);
+        } else if platform != w::TaskPlatform::Macos {
+            return Err(Error::Conflict);
         }
 
-        if matches!(input.event, E::NotStarted { .. }) {
+        if unused {
             self.state.execution = Execution::NotStarted;
-        } else if start.platform == w::TaskPlatform::Macos {
+        } else if platform == w::TaskPlatform::Macos {
             self.state
                 .result(input.attempt_id, false)
                 .map_err(|_| Error::Conflict)?;
@@ -712,8 +740,7 @@ impl Run {
         self.state.cancel();
         self.state
             .cancelled(input.attempt_id)
-            .map_err(|_| Error::Conflict)?;
-        Ok(true)
+            .map_err(|_| Error::Conflict)
     }
     /// Creation evidence settles the original attempt even when configuration or authority changed.
     async fn mac_create_result(
@@ -885,43 +912,9 @@ impl Run {
         ) {
             return Err(Error::Conflict);
         }
-        if let E::NotStarted { expires_at } = input.event {
-            let start = self.journal.start.as_mut().ok_or(Error::Conflict)?;
-            if self.state.execution != Execution::Running
-                || start.expires_at > now
-                || start.expires_at != expires_at
-                || self.journal.native_observed
-            {
-                return Err(Error::Conflict);
-            }
-            // Bound receipts per attempt while keeping an offline device able to make progress.
-            // Only an authenticated unused-expired proof may release this attempt for a fresh offer.
-            if self.journal.renewals >= 64 {
-                self.state = RunState::new(i64::MAX, now).map_err(|_| Error::Corrupt)?;
-                self.journal = Journal {
-                    received: true,
-                    ..Journal::default()
-                };
-                return Ok(None);
-            }
-            self.journal.renewals += 1;
-            // The earlier permit has expired, and the device proved the local attempt never started.
-            if start.windows.is_some() {
-                start.windows = Some(materials.plan(c, b, now).await?);
-            }
-            start.expires_at = now + 300;
-            start.deadline = start.expires_at;
-            self.state.deadline = start.deadline;
-            self.state.delivery = rss_mdm_task_state::Delivery::Received {
-                attempt: input.attempt_id,
-                lease_until: start.deadline,
-            };
-            return Ok(None);
-        }
         let task = self.journal.start.as_ref().ok_or(Error::Conflict)?;
         match &input.event {
-            E::Received | E::NotStarted { .. } => unreachable!(),
-            E::CreateAbsent { .. } => return Err(Error::Conflict),
+            E::Received | E::NotStarted { .. } | E::CreateAbsent { .. } => unreachable!(),
             E::Prepared(v) => {
                 if self.journal.prepared.is_some()
                     || !local(&v.account)
