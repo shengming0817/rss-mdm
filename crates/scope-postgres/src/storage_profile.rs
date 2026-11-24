@@ -72,6 +72,16 @@ pub(crate) struct Statements {
     pub operation_receipt: &'static str,
     pub queue_counts: &'static str,
 }
+// MDM publishes tenant-qualified inventory fields consumed by device groups.
+// DA uses its own deployment profile and has no personnel-field publisher.
+macro_rules! group_input_validity {
+    (mdm) => {
+        " OR NOT mdm_user_profiles.group_inputs_current(g.id,s.asset_cut)"
+    };
+    (da) => {
+        ""
+    };
+}
 macro_rules! define_storage {
     ($module:ident, $schema:literal, $schema_decl:literal, $schema_name:literal, $access_schema:literal, $access:literal, $tasks:literal, $tasks_name:literal, $asset_dispatch:literal, $asset_dispatch_name:literal, $group_changes:literal, $group_changes_name:literal, $owner:literal, $command_runtime:literal, $inventory_runtime:literal, $scope_runtime:literal, $policy_runtime:literal, $telemetry_runtime:literal, $scope_admission_header:literal, $scope_state_header:literal, $channel_admission_header:literal, $create_mdm_scope:literal, $role_mdm_identity_runtime:literal, $role_mdm_resource_runtime:literal, $role_mdm_software_runtime:literal, $object_qualification:literal, $index_26:literal, $index_27:literal, $index_28:literal, $index_29:literal, $index_30:literal, $index_31:literal, $index_32:literal, $index_33:literal, $index_34:literal, $index_35:literal, $index_36:literal, $index_37:literal, $index_38:literal, $index_39:literal, $index_40:literal, $index_41:literal, $index_42:literal, $index_43:literal, $index_44:literal, $access_contract_external_relations:literal, $operations:literal, $operations_name:literal) => {
         mod $module {
@@ -258,10 +268,10 @@ BEGIN
  WHERE x.tenant_id=tenant AND x.id=p_scope;
  IF NOT FOUND OR s.deleted THEN RETURN jsonb_build_object('state','excluded'); END IF;
  IF s.phase IS DISTINCT FROM 'published' OR s.definition_revision IS DISTINCT FROM s.revision THEN RETURN jsonb_build_object('state','pending'); END IF;
- -- Only explicit definition changes invalidate a complete publication.
+ -- Recheck each frozen source at admission.
  IF EXISTS(SELECT 1 FROM jsonb_array_elements(s.input->'sources') src
  LEFT JOIN LATERAL mdm_group.scope_source(CASE WHEN src->'reference'->>'kind'='group' THEN (src->'reference'->>'id')::uuid END) g ON true
- WHERE src->'reference'->>'kind'='group' AND (g.id IS NULL OR g.deleted OR g.definition_version IS DISTINCT FROM (src->'coordinates'->>'definitionVersion')::bigint))
+ WHERE src->'reference'->>'kind'='group' AND (g.id IS NULL OR g.deleted OR g.definition_version IS DISTINCT FROM (src->'coordinates'->>'definitionVersion')::bigint"###,group_input_validity!($module),r###"))
  THEN RETURN jsonb_build_object('state','pending'); END IF;
  RETURN jsonb_build_object('state','fresh');
 END;
