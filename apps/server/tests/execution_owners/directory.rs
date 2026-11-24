@@ -1,4 +1,5 @@
 //! A real aggregate read retains native ownership through the production collection response.
+mod budget;
 use super::*;
 use axum::response::IntoResponse;
 use rss_mdm_authorization_service::Permission;

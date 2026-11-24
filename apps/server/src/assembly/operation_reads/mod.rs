@@ -17,7 +17,12 @@ pub(crate) struct Budgets {
     pub statistics: usize,
 }
 impl Default for Budgets {
-    fn default() -> Self { Self { page: 1_048_576, statistics: 4_194_304 } }
+    fn default() -> Self {
+        Self {
+            page: 1_048_576,
+            statistics: 4_194_304,
+        }
+    }
 }
 pub(crate) struct Operations {
     pub budgets: Budgets,
@@ -181,7 +186,9 @@ impl Operations {
         let mut recovery = Vec::new();
         let mut configuration = Vec::new();
         for row in rows {
-            let sources::Owner::Command(owner) = sources::owner(row)? else { continue };
+            let sources::Owner::Command(owner) = sources::owner(row)? else {
+                continue;
+            };
             let id = selection::id(row)?;
             match owner {
                 Owner::Device => execution.push(id),
@@ -433,12 +440,27 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
         let proof = request.proof.as_ref();
         Box::pin(async move {
             q.require_schema(&SCHEMA).map_err(query_error)?;
-            self.tasks.snapshot(request,(self,proof,q,codec),|ctx,c,grant,now|Box::pin(async move{
-                let(s,p,q,codec)=*ctx;let authority=grant.query_binding(p)?;
-                let binding=q.binding(&(p.tenant_id(),p.instance_id(),p.principal_id(),"live-operations",&authority)).map_err(query_error)?;
-                let page=selection::page(s,c,(p,grant),q,codec,&binding,now).await?;
-                s.hydrate(c, (p, grant), q, now, page).await
-            })).await.inspect(|_|audit.require_final_request())
+            self.tasks
+                .snapshot(request, (self, proof, q, codec), |ctx, c, grant, now| {
+                    Box::pin(async move {
+                        let (s, p, q, codec) = *ctx;
+                        let authority = grant.query_binding(p)?;
+                        let binding = q
+                            .binding(&(
+                                p.tenant_id(),
+                                p.instance_id(),
+                                p.principal_id(),
+                                "live-operations",
+                                &authority,
+                            ))
+                            .map_err(query_error)?;
+                        let page =
+                            selection::page(s, c, (p, grant), q, codec, &binding, now).await?;
+                        s.hydrate(c, (p, grant), q, now, page).await
+                    })
+                })
+                .await
+                .inspect(|_| audit.require_final_request())
         })
     }
     fn statistics<'a>(

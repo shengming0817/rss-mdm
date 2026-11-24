@@ -27,29 +27,52 @@ struct Scan<'a> {
 
 impl<'a> Scan<'a> {
     fn new(
-        p: &AuthorizedPrincipal, grant: &Grant, query: &'a Query, after: Option<Position>,
-        limit: usize, stage: &'static str,
+        p: &AuthorizedPrincipal,
+        grant: &Grant,
+        query: &'a Query,
+        after: Option<Position>,
+        limit: usize,
+        stage: &'static str,
     ) -> Result<Self, Error> {
-        let devices = grant.devices_for(p, Permission::OperationRead)?
+        let devices = grant
+            .devices_for(p, Permission::OperationRead)?
             .map(|ids| ids.into_iter().map(|id| id.into_uuid()).collect());
         let scope = Scope::new(p.tenant_id().to_owned(), devices, query);
-        Ok(Self {scope, query, after, remaining: limit, limit, stage, exhausted: false})
+        Ok(Self {
+            scope,
+            query,
+            after,
+            remaining: limit,
+            limit,
+            stage,
+            exhausted: false,
+        })
     }
 
-    async fn next(&mut self, c: &mut sqlx::PgConnection, requested: usize) -> Result<Vec<Value>, Error> {
-        if self.exhausted { return Ok(Vec::new()); }
+    async fn next(
+        &mut self,
+        c: &mut sqlx::PgConnection,
+        requested: usize,
+    ) -> Result<Vec<Value>, Error> {
+        if self.exhausted {
+            return Ok(Vec::new());
+        }
         // At the boundary, the next query may only distinguish exhaustion from overflow.
         let size = requested.min(self.remaining.max(1));
         let mut sql = sqlx::QueryBuilder::new("");
         self.scope.page(&mut sql, self.after.as_ref(), size)?;
         let rows = sql.build().fetch_all(c).await.map_err(super::sql)?;
         rss_mdm_query_postgres::observe_rows("operations.candidates", &rows).map_err(super::sql)?;
-        check_budget(self.limit - self.remaining + rows.len(), self.limit, self.stage)?;
+        check_budget(
+            self.limit - self.remaining + rows.len(),
+            self.limit,
+            self.stage,
+        )?;
         self.remaining -= rows.len();
         self.exhausted = rows.len() < size;
         let mut output = Vec::with_capacity(rows.len());
         for row in rows {
-            if row.try_get::<bool,_>("ambiguous").map_err(super::sql)? {
+            if row.try_get::<bool, _>("ambiguous").map_err(super::sql)? {
                 return Err(Error::Unavailable(Failure::CommandInvariant));
             }
             output.push(row.try_get("document").map_err(super::sql)?);
@@ -63,13 +86,24 @@ impl<'a> Scan<'a> {
 
 fn check_budget(rows: usize, limit: usize, stage: &'static str) -> Result<(), Error> {
     // The narrow ownership probe works on 16-byte UUIDs.
-    if rss_mdm_query_postgres::within_budget(stage, rows as u64, rows as u64 * 16, limit as u64, limit as u64 * 16) {
+    if rss_mdm_query_postgres::within_budget(
+        stage,
+        rows as u64,
+        rows as u64 * 16,
+        limit as u64,
+        limit as u64 * 16,
+    ) {
         Ok(())
-    } else { Err(Error::Unavailable(Failure::Capacity)) }
+    } else {
+        Err(Error::Unavailable(Failure::Capacity))
+    }
 }
 
 pub(super) fn id(row: &Value) -> Result<Uuid, Error> {
-    row["id"].as_str().and_then(|s| Uuid::parse_str(s).ok()).ok_or(Error::Unavailable(Failure::CommandInvariant))
+    row["id"]
+        .as_str()
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or(Error::Unavailable(Failure::CommandInvariant))
 }
 
 async fn classify(
@@ -114,8 +148,11 @@ async fn matching(
     }
 }
 fn split(rows: &[Value], start: usize) -> Result<usize, Error> {
-    let sizes = rows[start..].iter().take(BATCH).map(|row|
-        row["inputBytes"].as_i64().ok_or(Error::Unavailable(Failure::CommandInvariant)));
+    let sizes = rows[start..].iter().take(BATCH).map(|row| {
+        row["inputBytes"]
+            .as_i64()
+            .ok_or(Error::Unavailable(Failure::CommandInvariant))
+    });
     Ok(start + input_prefix(sizes)?)
 }
 
@@ -150,23 +187,33 @@ pub(super) async fn page(
     let filtering = classified(q);
     let mut items = Vec::new();
     while items.len() <= q.limit() {
-        let size = if filtering { BATCH } else { q.limit() + 1 - items.len() };
+        let size = if filtering {
+            BATCH
+        } else {
+            q.limit() + 1 - items.len()
+        };
         let rows = scan.next(c, size).await?;
-        if rows.is_empty() { break; }
+        if rows.is_empty() {
+            break;
+        }
         if filtering {
             let mut start = 0;
             while start < rows.len() && items.len() <= q.limit() {
                 let end = split(&rows, start)?;
                 let mut batch = rows[start..end].to_vec();
-                classify(s,c,p,grant,&mut batch,as_of).await?;
-                items.extend(matching(c,q,batch).await?);
+                classify(s, c, p, grant, &mut batch, as_of).await?;
+                items.extend(matching(c, q, batch).await?);
                 start = end;
             }
-        } else { items.extend(rows); }
+        } else {
+            items.extend(rows);
+        }
     }
-    let mut page = q.unprojected_page(items,codec,binding).map_err(query_error)?;
+    let mut page = q
+        .unprojected_page(items, codec, binding)
+        .map_err(query_error)?;
     if !filtering && (q.selects("authorization") || q.selects("reauthorization")) {
-        enrich(s,c,p,grant,&mut page.items,as_of).await?;
+        enrich(s, c, p, grant, &mut page.items, as_of).await?;
     }
     Ok(page)
 }
@@ -183,33 +230,59 @@ pub(super) async fn statistics(
     let mut scan = Scan::new(p, grant, q, None, s.budgets.statistics, stage)?;
     let statistics = if !classified(q) {
         let mut sql = sqlx::QueryBuilder::new("");
-        scan.scope.totals(&mut sql,s.budgets.statistics)?;
-        let (total, commands, runs, unknown, ambiguous): (i64,i64,i64,i64,bool) =
-            sql.build_query_as().fetch_one(c).await.map_err(super::sql)?;
+        scan.scope.totals(&mut sql, s.budgets.statistics)?;
+        let (total, commands, runs, unknown, ambiguous): (i64, i64, i64, i64, bool) = sql
+            .build_query_as()
+            .fetch_one(c)
+            .await
+            .map_err(super::sql)?;
         check_budget(total as usize, s.budgets.statistics, stage)?;
-        if ambiguous { return Err(Error::Unavailable(Failure::CommandInvariant)); }
-        Statistics { total:total as u64, commands:commands as u64, action_runs:runs as u64, unknown:unknown as u64 }
+        if ambiguous {
+            return Err(Error::Unavailable(Failure::CommandInvariant));
+        }
+        Statistics {
+            total: total as u64,
+            commands: commands as u64,
+            action_runs: runs as u64,
+            unknown: unknown as u64,
+        }
     } else {
-        let mut counts = Statistics {total:0,commands:0,action_runs:0,unknown:0};
+        let mut counts = Statistics {
+            total: 0,
+            commands: 0,
+            action_runs: 0,
+            unknown: 0,
+        };
         loop {
-            let rows = scan.next(c,BATCH).await?;
-            if rows.is_empty() { break; }
+            let rows = scan.next(c, BATCH).await?;
+            if rows.is_empty() {
+                break;
+            }
             let mut start = 0;
             while start < rows.len() {
-                let end = split(&rows,start)?;
+                let end = split(&rows, start)?;
                 let mut batch = rows[start..end].to_vec();
-                classify(s,c,p,grant,&mut batch,now).await?;
-                for row in matching(c,q,batch).await? {
+                classify(s, c, p, grant, &mut batch, now).await?;
+                for row in matching(c, q, batch).await? {
                     counts.total += 1;
-                    if row["kind"] == "command" { counts.commands += 1 } else { counts.action_runs += 1 }
-                    if row["status"] == "unknown" { counts.unknown += 1 }
+                    if row["kind"] == "command" {
+                        counts.commands += 1
+                    } else {
+                        counts.action_runs += 1
+                    }
+                    if row["status"] == "unknown" {
+                        counts.unknown += 1
+                    }
                 }
                 start = end;
             }
         }
         counts
     };
-    Ok(rss_mdm_query::Statistics {statistics, as_of:now})
+    Ok(rss_mdm_query::Statistics {
+        statistics,
+        as_of: now,
+    })
 }
 
 fn input_prefix(sizes: impl IntoIterator<Item = Result<i64, Error>>) -> Result<usize, Error> {

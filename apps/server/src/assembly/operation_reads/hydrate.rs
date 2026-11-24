@@ -1,6 +1,6 @@
 //! Hydration uses the owner already verified in the directory's fact snapshot.
-use super::*;
 use super::super::task_ownership::Owner as Run;
+use super::*;
 use sources::Owner;
 
 impl Operations {
@@ -16,7 +16,8 @@ impl Operations {
         let evidence_requested = q.selects("evidence");
         let mut summaries = BTreeMap::new();
         if evidence_requested {
-            let (mut device, mut software, mut script, mut collection) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            let (mut device, mut software, mut script, mut collection) =
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new());
             for row in &page.items {
                 let group = match sources::owner(row)? {
                     Owner::Run(Run::Device) => &mut device,
@@ -28,25 +29,63 @@ impl Operations {
                 group.push(selection::id(row)?);
             }
             let tenant = p.binding().tenant();
-            summaries.extend(rss_mdm_device_service::control::directory::run_summaries_on(c, tenant, device).await.map_err(execution_fault)?
-                .into_iter().map(|(id,v)| (id,Evidence::Device(v))));
-            summaries.extend(rss_mdm_software_service::deployment::directory::run_summaries_on(c, tenant, software).await.map_err(software_fault)?
-                .into_iter().map(|(id,v)| (id,Evidence::Software(v))));
-            summaries.extend(rss_mdm_script_service::queries::run_summaries_on(c, tenant, script).await.map_err(super::super::task_reads::script_fault)?
-                .into_iter().map(|(id,v)| (id,Evidence::Script(Box::new(v)))));
-            summaries.extend(rss_mdm_inventory_service::collection::execution::queries::run_summaries_on(c, tenant, collection).await?
-                .into_iter().map(|(id,v)| (id,Evidence::Collection(Box::new(v)))));
+            summaries.extend(
+                rss_mdm_device_service::control::directory::run_summaries_on(c, tenant, device)
+                    .await
+                    .map_err(execution_fault)?
+                    .into_iter()
+                    .map(|(id, v)| (id, Evidence::Device(v))),
+            );
+            summaries.extend(
+                rss_mdm_software_service::deployment::directory::run_summaries_on(
+                    c, tenant, software,
+                )
+                .await
+                .map_err(software_fault)?
+                .into_iter()
+                .map(|(id, v)| (id, Evidence::Software(v))),
+            );
+            summaries.extend(
+                rss_mdm_script_service::queries::run_summaries_on(c, tenant, script)
+                    .await
+                    .map_err(super::super::task_reads::script_fault)?
+                    .into_iter()
+                    .map(|(id, v)| (id, Evidence::Script(Box::new(v)))),
+            );
+            summaries.extend(
+                rss_mdm_inventory_service::collection::execution::queries::run_summaries_on(
+                    c, tenant, collection,
+                )
+                .await?
+                .into_iter()
+                .map(|(id, v)| (id, Evidence::Collection(Box::new(v)))),
+            );
         }
 
         let tenant = p.tenant_id();
         let mut items = Vec::with_capacity(page.items.len());
         for row in page.items {
             let owner = sources::owner(&row)?;
-            let authorization = row.get("authorization").cloned().map(serde_json::from_value).transpose().map_err(|_|Error::Unavailable(Failure::CommandInvariant))?;
-            let reauthorization = row.get("reauthorization").cloned().map(serde_json::from_value).transpose().map_err(|_|Error::Unavailable(Failure::CommandInvariant))?;
-            let metadata: Metadata = serde_json::from_value(row).map_err(|_| Error::Unavailable(Failure::CommandInvariant))?;
+            let authorization = row
+                .get("authorization")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Unavailable(Failure::CommandInvariant))?;
+            let reauthorization = row
+                .get("reauthorization")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Unavailable(Failure::CommandInvariant))?;
+            let metadata: Metadata = serde_json::from_value(row)
+                .map_err(|_| Error::Unavailable(Failure::CommandInvariant))?;
             let id = metadata.id;
-            let policy = || metadata.policy.ok_or(Error::Unavailable(Failure::CommandInvariant));
+            let policy = || {
+                metadata
+                    .policy
+                    .ok_or(Error::Unavailable(Failure::CommandInvariant))
+            };
             let evidence = if evidence_requested {
                 Some(match owner {
                     Owner::Command(owner) => Evidence::Native {detail: Box::new(self.detail_owned_on(c,p,grant,now,&metadata.device,id,true,owner).await?)},
@@ -55,13 +94,32 @@ impl Operations {
                     Owner::Run(Run::Credential(profile)) => Evidence::Credential(rss_mdm_recovery_credentials::tasks::queries::detail_on(profile,c,tenant,policy()?,id,p,grant).await.map_err(super::super::task_reads::credential_fault)?),
                     Owner::Run(Run::Registration) => Evidence::Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::detail_on(rss_mdm_install_support::StorageProfile::Mdm,c,tenant,policy()?,id,p,grant).await.map_err(super::super::task_reads::enrollment_fault)?),
                 })
-            } else { None };
-            let detail_url = match metadata.kind {
-                KindOfOperation::Command => format!("/api/v1/tenants/{tenant}/devices/{}/operations/{id}",metadata.device),
-                KindOfOperation::ActionRun => format!("/api/v1/tenants/{tenant}/policies/{}/runs/{id}",policy()?),
+            } else {
+                None
             };
-            items.push(q.project_typed(Item {metadata,evidence,authorization,reauthorization,detail_url}).map_err(query_error)?);
+            let detail_url = match metadata.kind {
+                KindOfOperation::Command => format!(
+                    "/api/v1/tenants/{tenant}/devices/{}/operations/{id}",
+                    metadata.device
+                ),
+                KindOfOperation::ActionRun => {
+                    format!("/api/v1/tenants/{tenant}/policies/{}/runs/{id}", policy()?)
+                }
+            };
+            items.push(
+                q.project_typed(Item {
+                    metadata,
+                    evidence,
+                    authorization,
+                    reauthorization,
+                    detail_url,
+                })
+                .map_err(query_error)?,
+            );
         }
-        Ok(Page {items, next_cursor: page.next_cursor})
+        Ok(Page {
+            items,
+            next_cursor: page.next_cursor,
+        })
     }
 }
