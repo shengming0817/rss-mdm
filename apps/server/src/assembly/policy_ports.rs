@@ -7,117 +7,20 @@ use rss_mdm_policy_service::{Error, Failure, inputs::*, transaction::Fault};
 use rss_transactional_messaging_postgres::PgTransaction;
 use std::sync::Arc;
 use uuid::Uuid;
-pub(super) fn error(e: rss_mdm_device_service::control::Error) -> Error {
-    use rss_mdm_device_service::control::Error as E;
-    match e {
-        E::Malformed => Error::Malformed,
-        E::Unauthorized => Error::Unauthorized,
-        E::Forbidden => Error::Forbidden,
-        E::ReadConflict
-        | E::CursorInvalidated
-        | E::Conflict
-        | E::EnrollmentPaused
-        | E::WindowsDeclaredEnrollmentNotReady => Error::Conflict,
-        E::CommitUnknown => Error::CommitUnknown,
-        E::RollbackFailed => Error::RollbackFailed,
-        E::Unsupported => Error::Unsupported,
-        E::NotFound | E::Resource(_) => Error::ResourceMissing,
-        E::Unavailable(f) => Error::Unavailable(match f {
-            rss_mdm_device_service::control::Failure::RequestDeadline => Failure::RequestDeadline,
-            rss_mdm_device_service::control::Failure::Audit => Failure::Audit,
-            rss_mdm_device_service::control::Failure::AuditIntegrity => Failure::AuditIntegrity,
-            rss_mdm_device_service::control::Failure::AuditAdmission => Failure::AuditAdmission,
-            rss_mdm_device_service::control::Failure::AuditIsolation => Failure::AuditIsolation,
-            rss_mdm_device_service::control::Failure::AuditContract => Failure::AuditContract,
-            rss_mdm_device_service::control::Failure::NativeProtection => Failure::NativeProtection,
-            rss_mdm_device_service::control::Failure::NativeInputIntegrity => {
-                Failure::NativeInputIntegrity
-            }
-            rss_mdm_device_service::control::Failure::CommandInvariant => Failure::CommandInvariant,
-            rss_mdm_device_service::control::Failure::ContentStorage => Failure::ContentStorage,
-            rss_mdm_device_service::control::Failure::ContentMetadata => Failure::ContentMetadata,
-            rss_mdm_device_service::control::Failure::ContentInvariant => Failure::ContentInvariant,
-            rss_mdm_device_service::control::Failure::ContentDeadline => Failure::ContentDeadline,
-            rss_mdm_device_service::control::Failure::ContentCleanup => Failure::ContentCleanup,
-            rss_mdm_device_service::control::Failure::AutomationConnection => {
-                Failure::AutomationConnection
-            }
-            rss_mdm_device_service::control::Failure::AutomationAdmission => {
-                Failure::AutomationAdmission
-            }
-            rss_mdm_device_service::control::Failure::AutomationStorage => {
-                Failure::AutomationStorage
-            }
-            rss_mdm_device_service::control::Failure::Database => Failure::Database,
-            rss_mdm_device_service::control::Failure::AssetObjectLimit => Failure::AssetObjectLimit,
-            rss_mdm_device_service::control::Failure::AssetSourceLimit => Failure::AssetSourceLimit,
-            rss_mdm_device_service::control::Failure::AssetBytesLimit => Failure::AssetBytesLimit,
-            rss_mdm_device_service::control::Failure::Clock => Failure::Clock,
-            rss_mdm_device_service::control::Failure::Capacity => Failure::Capacity,
-            rss_mdm_device_service::control::Failure::Runtime => Failure::Runtime,
-            rss_mdm_device_service::control::Failure::SoftwareCatalogInvariant => {
-                Failure::SoftwareIntegrity
-            }
-            rss_mdm_device_service::control::Failure::PlanningAdmission => Failure::PolicyAdmission,
-            rss_mdm_device_service::control::Failure::PlanningStorage => Failure::PolicyStorage,
-            rss_mdm_device_service::control::Failure::Timeline
-            | rss_mdm_device_service::control::Failure::IdentityStorage
-            | rss_mdm_device_service::control::Failure::ResourceAdmission
-            | rss_mdm_device_service::control::Failure::CommandAdmission
-            | rss_mdm_device_service::control::Failure::ContentImport
-            | rss_mdm_device_service::control::Failure::SoftwareCatalogStorage
-            | rss_mdm_device_service::control::Failure::CommandStorage
-            | rss_mdm_device_service::control::Failure::AssetsStorage
-            | rss_mdm_device_service::control::Failure::ComplianceStorage
-            | rss_mdm_device_service::control::Failure::ResourceStorage
-            | rss_mdm_device_service::control::Failure::PublicationStorage
-            | rss_mdm_device_service::control::Failure::InventoryQuery
-            | rss_mdm_device_service::control::Failure::AssetCandidates
-            | rss_mdm_device_service::control::Failure::AssetSources
-            | rss_mdm_device_service::control::Failure::ManualQuery
-            | rss_mdm_device_service::control::Failure::CollectionQuery
-            | rss_mdm_device_service::control::Failure::InventoryRuntime
-            | rss_mdm_device_service::control::Failure::Protocol => Failure::Preparation,
-        }),
-        E::Configuration(_) => Error::Unavailable(Failure::PreparationConfiguration),
-        E::Execution(_) | E::CertificateRequest => Error::Unavailable(Failure::PreparationContract),
-    }
-}
-pub(super) fn fault(e: rss_mdm_device_service::control::transaction::Fault) -> Fault {
-    match e {
-        rss_mdm_device_service::control::transaction::Fault::Request(e) => Fault::Request(error(e)),
-        rss_mdm_device_service::control::transaction::Fault::Storage(e) => Fault::Storage(e),
-        rss_mdm_device_service::control::transaction::Fault::Sql(e) => Fault::Sql(e),
-    }
-}
-pub(super) struct Changes {
-    pub reader: rss_mdm_policy_postgres::PolicyReader,
-    pub messaging: rss_reconcile_postgres::PgMessagingStore,
-    pub targets: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
-}
-impl ExecutionChanges for Changes {
+
+pub(super) struct PolicyDependents(pub rss_reconcile_postgres::PgMessagingStore);
+impl PublishedPolicyDependents for PolicyDependents {
     fn policy_changed_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        policy: &'a Policy,
-        previous: Option<&'a Policy>,
+        id: Uuid,
+        kinds: &'a [rss_mdm_policy::ActionKind],
     ) -> Pending<'a, (), Fault> {
         Box::pin(async move {
             use rss_mdm_policy::ActionKind as K;
-            if previous.is_some_and(|p| p.id != policy.id) {
-                return Err(Error::Malformed.into());
-            }
-            let mut kinds = rss_mdm_policy_service::transaction::checked(
-                self.reader.action_kinds_in(tx, policy.id).await?,
-            )?;
-            kinds.push(policy.definition.action.kind());
-            kinds.extend(previous.map(|p| p.definition.action.kind()));
-            let id = policy.id;
             if kinds.contains(&K::Software) || kinds.contains(&K::EnsureAgentInstalled) {
                 rss_mdm_software_service::deployment::sources::storage::wake_execution_in(
-                    &self.messaging,
-                    tx,
-                    id,
+                    &self.0, tx, id,
                 )
                 .await
                 .map_err(Fault::from)?;
@@ -125,7 +28,7 @@ impl ExecutionChanges for Changes {
             if kinds.contains(&K::RequestMdmEnrollment) {
                 rss_mdm_registration_service::enrollment::tasks::wake::policy_in(
                     rss_mdm_install_support::StorageProfile::Mdm,
-                    &self.messaging,
+                    &self.0,
                     tx,
                     id,
                 )
@@ -137,109 +40,53 @@ impl ExecutionChanges for Changes {
                     rss_mdm_install_support::StorageProfile::Mdm,
                     rss_mdm_install_support::StorageProfile::Da,
                 ] {
-                    rss_mdm_recovery_credentials::tasks::wake::policy_in(
-                        profile,
-                        &self.messaging,
-                        tx,
-                        id,
-                    )
-                    .await?;
+                    rss_mdm_recovery_credentials::tasks::wake::policy_in(profile, &self.0, tx, id)
+                        .await?;
                 }
             }
             if kinds.contains(&K::Execution) {
-                rss_mdm_script_service::wake::policy_in(&self.messaging, tx, id).await?;
+                rss_mdm_script_service::wake::policy_in(&self.0, tx, id).await?;
             }
             if kinds.contains(&K::NativeCollection) || kinds.contains(&K::AgentCollection) {
-                rss_mdm_inventory_service::collection::execution::wake::policy_in(
-                    &self.messaging,
-                    tx,
-                    id,
-                )
-                .await?;
+                rss_mdm_inventory_service::collection::execution::wake::policy_in(&self.0, tx, id)
+                    .await?;
             }
             if kinds.contains(&K::UnmanageDevice) {
                 rss_mdm_device_service::control::sources::storage::wake_execution_in(
-                    &self.messaging,
-                    tx,
-                    id,
+                    &self.0, tx, id,
                 )
                 .await
-                .map_err(fault)?;
+                .map_err(Fault::from)?;
             }
             Ok(())
         })
     }
-    fn assignment_changed_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        version: Uuid,
-        target: &'a rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
-        available: bool,
-    ) -> Pending<'a, (), Fault> {
-        Box::pin(async move {
-            use rss_mdm_policy::ActionKind;
-            let persisted = rss_mdm_policy_service::transaction::checked(
-                self.reader.version_in(tx, version).await?,
-            )?
-            .ok_or(Error::NotFound)?;
-            match persisted.action_kind {
-                ActionKind::NativeCollection if !available => {
-                    rss_mdm_inventory_service::collection::execution::wake::policy_in( &self.messaging, tx, persisted.policy).await?;
-                }
-                ActionKind::Software if !available => {
-                    rss_mdm_software_service::deployment::sources::storage::wake_execution_in( &self.messaging, tx, persisted.policy).await.map_err(Fault::from)?;
-                }
-                ActionKind::NativeCollection => {
-                    if let Some(verified) = rss_mdm_inventory_service::collection::execution::scheduled::VerifiedNativeCollectionVersion::verify_in(&self.reader, tx, version).await? {
-                        verified.wake_assignment_in(&self.messaging, tx, target).await?;
-                    }
-                }
-                ActionKind::Software => {
-                    if let Some(verified) = rss_mdm_software_service::deployment::actions::scheduled::VerifiedSoftwareVersion::verify_in(&self.reader, tx, version).await.map_err(Fault::from)? {
-                        verified.wake_assignment_in(&self.messaging, tx, target).await.map_err(Fault::from)?;
-                    }
-                }
-                _ => {}
-            }
-            Ok(())
-        })
-    }
+}
 
+pub(super) struct NativeDependents(pub Arc<rss_mdm_scope_service::channels::ChannelTargets>);
+impl ConfigurationDependents for NativeDependents {
     fn configuration_progressed_in<'a>(
         &'a self,
+        messaging: &'a rss_reconcile_postgres::PgMessagingStore,
         tx: &'a mut PgTransaction<'_>,
         devices: &'a [rss_mdm_agent_wire::DeviceId],
     ) -> Pending<'a, (), Fault> {
         Box::pin(async move {
             rss_mdm_software_service::deployment::wake::wake_native_batch_in(
-                &self.messaging,
-                Arc::new(super::software_sources::Source(self.targets.clone())),
+                messaging,
+                Arc::new(super::software_sources::Source(self.0.clone())),
                 tx,
                 devices,
             )
             .await
             .map_err(Fault::from)?;
-            rss_mdm_device_service::control::wake::wake_native_batch_in(
-                &self.messaging,
-                tx,
-                devices,
-            )
-            .await
-            .map_err(fault)
-        })
-    }
-    fn retirement_accepted_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        retirement: Uuid,
-    ) -> Pending<'a, (), Fault> {
-        Box::pin(async move {
-            rss_mdm_device_service::control::unmanage::wake_in(&self.messaging, tx, retirement)
+            rss_mdm_device_service::control::wake::wake_native_batch_in(messaging, tx, devices)
                 .await
-                .map_err(fault)
+                .map_err(Fault::from)
         })
     }
 }
+
 pub(super) struct Events {
     pub software: Arc<rss_mdm_software_service::deployment::Transactions>,
     pub enrollment: Arc<rss_mdm_registration_service::enrollment::tasks::Transactions>,
@@ -281,7 +128,7 @@ impl ExecutionEvents for Events {
                 *principal.device(),
             )
             .await
-            .map_err(fault)?;
+            .map_err(Fault::from)?;
             if !binding.is_some_and(|b| b.inventory() && b.task()) {
                 return Err(Error::Forbidden.into());
             }
@@ -331,7 +178,7 @@ impl ExecutionEvents for Events {
                 Owner::Device => {
                     let run = rss_mdm_device_service::control::actions::storage::load_run(tx, id)
                         .await
-                        .map_err(fault)?;
+                        .map_err(Fault::from)?;
                     Ok(run.target.device == value.device
                         && run.state.execution == rss_mdm_task_state::Execution::Running
                         && run.state.started_at.is_some())
@@ -592,7 +439,7 @@ impl ExecutionProgress for Events {
                     reference: reference.clone(),
                     state: rss_mdm_device_service::control::actions::storage::read_run(tx, *id)
                         .await
-                        .map_err(fault)?
+                        .map_err(Fault::from)?
                         .state,
                     allowed_actions: [],
                 },
@@ -600,7 +447,7 @@ impl ExecutionProgress for Events {
                     reference: reference.clone(),
                     state: rss_mdm_device_service::control::storage::status_in(tx, *id)
                         .await
-                        .map_err(fault)?,
+                        .map_err(Fault::from)?,
                     agent_installation: None,
                     allowed_actions: [],
                 },

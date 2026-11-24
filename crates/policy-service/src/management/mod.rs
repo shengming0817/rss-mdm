@@ -40,7 +40,7 @@ pub struct Policies {
     collections:
         Option<std::sync::Arc<rss_mdm_inventory_service::collection::execution::inputs::Inputs>>,
     configuration: Option<std::sync::Arc<crate::configuration::publication::Publications>>,
-    changes: std::sync::Arc<dyn crate::inputs::ExecutionChanges>,
+    changes: std::sync::Arc<dyn crate::inputs::PublishedPolicyDependents>,
     mdm_software_enabled: bool,
 }
 /// Dependencies for this Policy application, supplied by the host.
@@ -60,7 +60,7 @@ pub struct Dependencies {
     pub collections:
         Option<std::sync::Arc<rss_mdm_inventory_service::collection::execution::inputs::Inputs>>,
     pub configuration: Option<std::sync::Arc<crate::configuration::publication::Publications>>,
-    pub changes: std::sync::Arc<dyn crate::inputs::ExecutionChanges>,
+    pub changes: std::sync::Arc<dyn crate::inputs::PublishedPolicyDependents>,
     pub mdm_software_enabled: bool,
 }
 impl Policies {
@@ -283,7 +283,7 @@ impl Policies {
                     } else { None };
                     storage::write_in(s, tx, &policy, &core_change, frozen, p, now).await?;
                     // Publication performs no Agent fanout. Native reconciliation is a bounded background job.
-                    storage::enqueue_change_in( profile, &s.reconcile_messaging, s.changes.as_ref(), tx, &policy, old.as_ref()).await?;
+                    storage::enqueue_change_in(s, tx, &policy).await?;
                     s.retire_children_in(tx, old.as_ref(), &policy).await?;
                     let value = s.view_in(tx, p, &policy).await?;
                     checked(

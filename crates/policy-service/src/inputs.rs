@@ -25,29 +25,21 @@ pub trait ProfileValidator: Send + Sync {
 }
 
 use crate::transaction::Fault;
-/// Durable changes in remaining Execution work, borrowing the original Policy transaction.
-pub trait ExecutionChanges: Send + Sync {
+/// Wake the owners of this Policy's published versions in the writer's transaction.
+pub trait PublishedPolicyDependents: Send + Sync {
     fn policy_changed_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        policy: &'a rss_mdm_policy::Policy,
-        previous: Option<&'a rss_mdm_policy::Policy>,
+        policy: uuid::Uuid,
+        kinds: &'a [rss_mdm_policy::ActionKind],
     ) -> Pending<'a, (), Fault>;
-    fn assignment_changed_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        version: uuid::Uuid,
-        target: &'a rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
-        available: bool,
-    ) -> Pending<'a, (), Fault>;
+}
+/// Foreign native work waiting on Configuration progress.
+pub trait ConfigurationDependents: Send + Sync {
     fn configuration_progressed_in<'a>(
         &'a self,
+        messaging: &'a rss_reconcile_postgres::PgMessagingStore,
         tx: &'a mut PgTransaction<'_>,
         devices: &'a [rss_mdm_agent_wire::DeviceId],
-    ) -> Pending<'a, (), Fault>;
-    fn retirement_accepted_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        retirement: uuid::Uuid,
     ) -> Pending<'a, (), Fault>;
 }

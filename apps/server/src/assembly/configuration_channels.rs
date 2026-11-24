@@ -13,10 +13,10 @@ pub(crate) struct ConfigurationChannels {
     pub protection: Arc<rss_mdm_native_protection::Protector>,
 }
 fn apple_error(e: rss_mdm_apple_channel::Error) -> Error {
-    super::policy_ports::error(super::apple_facts::error(e))
+    Error::from(super::apple_facts::error(e))
 }
 fn windows_error(e: rss_mdm_windows_channel::Error) -> Error {
-    super::policy_ports::error(super::windows_results::error(e))
+    Error::from(super::windows_results::error(e))
 }
 fn fault(e: Fault) -> Error {
     match e {
@@ -449,12 +449,12 @@ pub(super) async fn operation_permissions(
             super::native_ownership::Owner::Device => {
                 rss_mdm_device_service::control::storage::load_on(c, tenant, protection, id)
                     .await
-                    .map_err(super::policy_ports::fault)
+                    .map_err(Fault::from)
                     .map_err(fault)?
                     .request
                     .task
                     .permissions()
-                    .map_err(super::policy_ports::error)?
+                    .map_err(Error::from)?
             }
         });
     }

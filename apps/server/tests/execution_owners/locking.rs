@@ -1,7 +1,7 @@
 //! Policy change and recovery use the real PostgreSQL wait graph and production wake adapter.
 use super::*;
 use rss_mdm_inventory_service::collection::execution as collection;
-use rss_mdm_policy_service::inputs::ExecutionChanges;
+use rss_mdm_policy_service::inputs::PublishedPolicyDependents;
 use rss_reconcile::{DurableStore, ReconcileStep, Reconciler};
 use rss_transactional_messaging_postgres::PgRuntime;
 use std::{
@@ -22,23 +22,19 @@ async fn change(
     collection: bool,
     gate: &Gate,
 ) -> Result<()> {
-    let changes = super::super::policy_ports::Changes {
-        reader: rss_mdm_policy_postgres::PolicyReader::bind(
-            rss_mdm_install_support::StorageProfile::Mdm,
-            runtime.clone(),
-        ),
-        messaging: Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
+    let reader = rss_mdm_policy_postgres::PolicyReader::bind(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        runtime.clone(),
+    );
+    let changes = super::super::policy_ports::PolicyDependents(
+        Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
             binding,
             script::transaction::deadline(),
         ))
         .await?,
-        targets: Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
-            rss_mdm_install_support::StorageProfile::Mdm,
-            Some(Arc::new(rss_mdm_device_service::planning::PlanningObjects)),
-        )),
-    };
-    script::transaction::inspect(runtime,binding,(changes,gate),move |ctx,tx|Box::pin(async move {
+    );
+    script::transaction::inspect(runtime,binding,(changes,gate,reader),move |ctx,tx|Box::pin(async move {
         let tenant=tx.tenant_id().to_string();
         let pid=tx.with_connection(move |c|Box::pin(async move {
             // The management writer owns the Policy row before enqueue_change_in calls Changes.
@@ -54,8 +50,8 @@ async fn change(
         ctx.1.pid.store(pid,Ordering::Release);
         ctx.1.ready.notify_one();
         ctx.1.resume.notified().await;
-        let current=script::transaction::checked(ctx.0.reader.locked_in(tx,policy).await?)?.expect("policy");
-        script::transaction::checked(ctx.0.policy_changed_in( tx,&current,None).await)?;
+        let kinds=script::transaction::checked(ctx.2.action_kinds_in(tx,policy).await?)?;
+        script::transaction::checked(ctx.0.policy_changed_in(tx,policy,&kinds).await)?;
         Ok(())
     })).await?;
     Ok(())

@@ -31,14 +31,13 @@ pub(super) async fn write_in(
     checked(service.policy_store.publish_in(tx, &publication).await?)?;
     Ok(())
 }
-pub async fn enqueue_change_in(
-    profile: rss_mdm_install_support::StorageProfile,
-    reconcile: &rss_reconcile_postgres::PgMessagingStore,
-    changes: &dyn crate::inputs::ExecutionChanges,
+pub(super) async fn enqueue_change_in(
+    service: &Policies,
     tx: &mut PgTransaction<'_>,
     policy: &Policy,
-    old: Option<&Policy>,
 ) -> Result<()> {
+    let profile = service.profile();
+    let reconcile = &service.reconcile_messaging;
     if policy.state.is_enabled()
         && matches!(
             policy.definition.action,
@@ -70,6 +69,16 @@ pub async fn enqueue_change_in(
         &crate::worker::Work::PolicyReconcile { policy: policy.id },
     )
     .await?;
-    changes.policy_changed_in(tx, policy, old).await?;
+    let kinds = checked(
+        service
+            .policy_store
+            .reader()
+            .action_kinds_in(tx, policy.id)
+            .await?,
+    )?;
+    service
+        .changes
+        .policy_changed_in(tx, policy.id, &kinds)
+        .await?;
     Ok(())
 }

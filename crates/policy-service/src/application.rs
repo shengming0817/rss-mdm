@@ -17,7 +17,6 @@ pub struct Application {
     pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
 
     pub clock: Arc<dyn crate::clock::Clock>,
-    pub changes: Arc<dyn crate::inputs::ExecutionChanges>,
     pub configuration: Option<std::sync::Arc<crate::configuration::Transactions>>,
 }
 pub(crate) use crate::transaction::*;
@@ -29,7 +28,6 @@ pub struct Dependencies<'a> {
     pub clock: Arc<dyn crate::clock::Clock>,
     pub cursor_key: &'a [u8],
     pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
-    pub changes: Arc<dyn crate::inputs::ExecutionChanges>,
     pub configuration: Option<std::sync::Arc<crate::configuration::Transactions>>,
 }
 impl Application {
@@ -45,7 +43,6 @@ impl Application {
             clock,
             cursor_key,
             objects,
-            changes,
             configuration,
         } = dependencies;
 
@@ -63,7 +60,6 @@ impl Application {
             automation_task: std::sync::OnceLock::new(),
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, cursor_key),
             objects,
-            changes,
             configuration,
             reconcile_messaging,
             runtime,

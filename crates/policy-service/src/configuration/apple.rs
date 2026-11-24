@@ -145,7 +145,11 @@ impl Transactions {
         if transition.command.version() != previous {
             service
                 .changes
-                .configuration_progressed_in(tx, std::slice::from_ref(&op.device))
+                .configuration_progressed_in(
+                    &self.reconcile_messaging,
+                    tx,
+                    std::slice::from_ref(&op.device),
+                )
                 .await?;
         }
         let withdrawal_received = transition.command.status() == dc::Status::Received
@@ -299,7 +303,11 @@ async fn complete_ddm(
     if transition.command.version() != previous {
         service
             .changes
-            .configuration_progressed_in(tx, std::slice::from_ref(&op.device))
+            .configuration_progressed_in(
+                &self.reconcile_messaging,
+                tx,
+                std::slice::from_ref(&op.device),
+            )
             .await?;
     }
     service

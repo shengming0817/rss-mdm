@@ -779,7 +779,12 @@ impl Application {
             })
             .await?
             .map_err(Error::from)?;
-        self.changes.retirement_accepted_in(tx, accepted.0).await?;
+        rss_mdm_device_service::control::unmanage::wake_in(
+            &self.reconcile_messaging,
+            tx,
+            accepted.0,
+        )
+        .await?;
         Ok(wire::PolicyEventDecision::Accepted {
             operations: vec![wire::PolicyEventOperation::Retirement { id: accepted.0 }],
         })

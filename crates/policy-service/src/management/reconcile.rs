@@ -180,14 +180,8 @@ impl crate::application::Application {
                     available,
                 )
                 .await?;
-                if matches!(
-                    p.definition.action.kind(),
-                    rss_mdm_policy::ActionKind::NativeCollection
-                        | rss_mdm_policy::ActionKind::Software
-                ) && let Some(target) = &assignment.target
-                {
-                    self.changes
-                        .assignment_changed_in(tx, version, target, available)
+                if let Some(target) = &assignment.target {
+                    self.assignment_changed_in(tx, &p, target, available)
                         .await?;
                 }
             }
@@ -240,9 +234,7 @@ impl crate::application::Application {
             let Some(target) = target else {
                 continue;
             };
-            self.changes
-                .assignment_changed_in(tx, version, &target, false)
-                .await?;
+            self.assignment_changed_in(tx, &p, &target, false).await?;
             let device = target.device;
             if let Some(configuration) = &self.configuration {
                 configuration
@@ -317,6 +309,57 @@ impl crate::application::Application {
         let result = self.audit_store.append_in(tx, &fact).await;
         audit.finalize(None);
         result?;
+        Ok(())
+    }
+}
+
+impl crate::application::Application {
+    async fn assignment_changed_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        policy: &Policy,
+        target: &rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
+        available: bool,
+    ) -> Result<()> {
+        use rss_mdm_inventory_service::collection::execution as collection;
+        use rss_mdm_policy::ActionKind;
+        use rss_mdm_software_service::deployment as software;
+        let messaging = &self.reconcile_messaging;
+        let reader =
+            rss_mdm_policy_postgres::PolicyReader::bind(self.profile(), self.runtime.clone());
+        match policy.definition.action.kind() {
+            ActionKind::NativeCollection if !available => {
+                collection::wake::policy_in(messaging, tx, policy.id).await?
+            }
+            ActionKind::Software if !available => {
+                software::sources::storage::wake_execution_in(messaging, tx, policy.id).await?
+            }
+            ActionKind::NativeCollection => {
+                if let Some(proof) =
+                    collection::scheduled::VerifiedNativeCollectionVersion::verify_in(
+                        &reader,
+                        tx,
+                        policy.version,
+                    )
+                    .await?
+                {
+                    proof.wake_assignment_in(messaging, tx, target).await?;
+                }
+            }
+            ActionKind::Software => {
+                if let Some(proof) =
+                    software::actions::scheduled::VerifiedSoftwareVersion::verify_in(
+                        &reader,
+                        tx,
+                        policy.version,
+                    )
+                    .await?
+                {
+                    proof.wake_assignment_in(messaging, tx, target).await?;
+                }
+            }
+            _ => {}
+        }
         Ok(())
     }
 }

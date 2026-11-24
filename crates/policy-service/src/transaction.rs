@@ -451,3 +451,15 @@ impl From<rss_mdm_registration_service::enrollment::tasks::transaction::Fault> f
         }
     }
 }
+
+impl From<rss_mdm_device_service::control::transaction::Fault> for Fault {
+    fn from(e: rss_mdm_device_service::control::transaction::Fault) -> Self {
+        match e {
+            rss_mdm_device_service::control::transaction::Fault::Request(e) => {
+                Fault::Request(e.into())
+            }
+            rss_mdm_device_service::control::transaction::Fault::Storage(e) => Fault::Storage(e),
+            rss_mdm_device_service::control::transaction::Fault::Sql(e) => Fault::Sql(e),
+        }
+    }
+}
