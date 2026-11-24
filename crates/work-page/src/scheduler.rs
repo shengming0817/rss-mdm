@@ -23,7 +23,11 @@ impl Scheduler {
             .ok_or_else(|| Error::new(ErrorKind::InvalidInput))?;
         Ok(Self {
             store: PgStore::new(pool, control).await?,
-            connections: Capacity::new(maximum),
+            // A blocked tenant must leave a physical connection for peer settlements.
+            connections: Capacity::with_tenant_limit(
+                maximum,
+                NonZeroUsize::new(maximum.get() - 1).unwrap_or(NonZeroUsize::MIN),
+            ),
         })
     }
 

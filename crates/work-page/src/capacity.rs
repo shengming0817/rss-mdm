@@ -10,20 +10,26 @@ use uuid::Uuid;
 
 pub struct Capacity {
     limit: NonZeroUsize,
+    per_tenant: NonZeroUsize,
     state: Mutex<State>,
     changed: watch::Sender<()>,
 }
 #[derive(Default)]
 struct State {
     active: usize,
+    last: Option<Uuid>,
     tenants: BTreeMap<Uuid, usize>,
     waiting: VecDeque<(Arc<()>, Uuid)>,
 }
 
 impl Capacity {
     pub fn new(limit: NonZeroUsize) -> Arc<Self> {
+        Self::with_tenant_limit(limit, limit)
+    }
+    pub(crate) fn with_tenant_limit(limit: NonZeroUsize, per_tenant: NonZeroUsize) -> Arc<Self> {
         Arc::new(Self {
             limit,
+            per_tenant,
             state: Mutex::default(),
             changed: watch::channel(()).0,
         })
@@ -33,7 +39,7 @@ impl Capacity {
     }
 
     /// Prefer tenants with fewer executing items, keeping FIFO order for ties.
-    /// One tenant cannot occupy the last slot of a multi-slot budget.
+    /// At equal usage give another waiting tenant a turn before repeating the last grant.
     pub async fn acquire(
         self: &Arc<Self>,
         tenant: Uuid,
@@ -48,7 +54,7 @@ impl Capacity {
             capacity: self,
             id: Arc::new(()),
         };
-        let tenant_limit = self.limit.get().saturating_sub(1).max(1);
+        let tenant_limit = self.per_tenant.get();
         self.state
             .lock()
             .expect("capacity state")
@@ -66,7 +72,7 @@ impl Capacity {
                     && state
                         .waiting
                         .iter()
-                        .min_by_key(|(_, key)| state.tenants.get(key).copied().unwrap_or(0))
+                        .min_by_key(|(_, key)| (state.tenants.get(key).copied().unwrap_or(0), Some(*key) == state.last))
                         .is_some_and(|(id, _)| Arc::ptr_eq(id, &ticket.id))
                 {
                     // Divide spare capacity among current contenders. An idle tenant
@@ -80,6 +86,7 @@ impl Capacity {
                         .len();
                     let fair_share = (self.limit.get() - state.active).div_ceil(contenders);
                     let count = width.min(free).min(fair_share);
+                    state.last = Some(tenant);
                     state.active += count;
                     *state.tenants.entry(tenant).or_default() += count;
                     return (0..count)
@@ -140,33 +147,24 @@ mod tests {
     use std::time::Duration;
 
     #[tokio::test]
-    async fn a_late_tenant_can_work_while_all_hot_tenant_slots_are_held() {
-        let budget = Capacity::new(NonZeroUsize::new(8).unwrap());
-        let stop = CancellationToken::new();
-        let tenant = Uuid::from_u128(1);
-        let slots = budget.acquire(tenant, 8, &stop).await;
-        assert_eq!(slots.len(), 7);
-        let mut hot = Box::pin(budget.acquire(tenant, 1, &stop));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(1), &mut hot)
-                .await
-                .is_err()
-        );
-        for peer in 2..=20 {
-            let slots = budget.acquire(Uuid::from_u128(peer), 8, &stop).await;
-            assert_eq!(slots.len(), 1);
+    async fn a_discovered_peer_wins_the_next_released_slot() {
+        for limit in [1, 2, 8] {
+            let budget = Capacity::new(NonZeroUsize::new(limit).unwrap());
+            let stop = CancellationToken::new();
+            let tenant = Uuid::from_u128(1);
+            let mut slots = budget.acquire(tenant, 8, &stop).await;
+            assert_eq!(slots.len(), limit);
+            let mut hot = Box::pin(budget.acquire(tenant, 1, &stop));
+            let mut peer = Box::pin(budget.acquire(Uuid::from_u128(2), 8, &stop));
+            assert!(futures::poll!(&mut hot).is_pending());
+            assert!(futures::poll!(&mut peer).is_pending());
+            drop(slots.pop().unwrap());
+            assert!(futures::poll!(&mut hot).is_pending());
+            let peer = peer.await;
+            assert_eq!(peer.len(), 1);
+            stop.cancel();
+            assert!(hot.await.is_empty());
         }
-        stop.cancel();
-        assert!(hot.await.is_empty());
-        drop(slots);
-    }
-    #[tokio::test]
-    async fn two_slots_allow_one_item_per_tenant() {
-        let budget = Capacity::new(NonZeroUsize::new(2).unwrap());
-        let stop = CancellationToken::new();
-        let first = budget.acquire(Uuid::from_u128(1), 8, &stop).await;
-        let peer = budget.acquire(Uuid::from_u128(2), 8, &stop).await;
-        assert_eq!((first.len(), peer.len()), (1, 1));
     }
     #[tokio::test]
     async fn capacity_one_serializes_all_registrations() {
