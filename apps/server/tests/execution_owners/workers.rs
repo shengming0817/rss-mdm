@@ -1243,72 +1243,151 @@ async fn registered_owners_share_capacity_and_drain() -> Result<()> {
     a.close().await
 }
 
-// Each host opens its own scheduling pool against the same RSS target. Both may
-// recheck a hint, but only the current lease may settle the replacement.
+// Two independent host loops observe the same durable target. The original
+// host must recheck its old hint, and the replacing host must run before the
+// five-second fallback. Each acknowledged batch reports its observed epoch.
 async fn rescheduled_target_across_hosts(a: &Harness, b: &Harness) -> Result<()> {
-    use rss_reconcile::{Completion, ResourceSet, Scope, Target};
-    let first = &a.a.resources.storage.reconcile;
-    let second = &b.a.resources.storage.reconcile;
+    use rss_reconcile::*;
+    use rss_reconcile_postgres::PgClaim;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    use tokio::sync::{Notify, mpsc, oneshot};
+    struct Delay {
+        first: Duration,
+        epoch: AtomicI64,
+    }
+    impl Reconciler<PgClaim> for Delay {
+        type State = ();
+        async fn observe<T: Timer>(
+            &self,
+            claim: &PgClaim,
+            _: &Control<'_, T>,
+        ) -> std::result::Result<ReconcileStep<ReconcileDiff<()>>, Error> {
+            let previous = self.epoch.swap(claim.epoch(), Ordering::SeqCst);
+            if previous == 0 {
+                return Ok(ReconcileStep::Deferred(self.first));
+            }
+            Ok(ReconcileStep::Ready(ReconcileDiff::between(
+                DesiredState::present(()),
+                ActualState::present(()),
+            )))
+        }
+        async fn apply<T: Timer>(
+            &self,
+            _: &PgClaim,
+            _: ReconcileDiff<()>,
+            _: &Control<'_, T>,
+        ) -> std::result::Result<ReconcileStep<()>, Error> {
+            unreachable!("matched target")
+        }
+    }
     let timer = rss_mdm_policy_service::clock::Timer::new();
-    let cancel = CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cancel);
+    let stop = CancellationToken::new();
+    let control = Control::new(&timer, Duration::from_secs(10), &stop);
     let scope = Scope::new(a.c.tenant, "mdm.replacement-proof")?;
+    let tenant = Uuid::from_bytes(a.c.tenant.octets());
     let target = Target::new(scope.clone(), "deployment")?;
     let resources = ResourceSet::empty(a.c.tenant);
-    let lease = Duration::from_secs(10);
-    first.wake(&target, &resources, &control).await?;
-    let original = first
-        .claim_due(&scope, 1, 64, lease, &control)
-        .await?
-        .claims
-        .pop()
-        .expect("original claim");
-    first
-        .finish(
-            &original,
-            Completion::Deferred(Duration::from_secs(86_400)),
-            &control,
-        )
-        .await?;
-    second.wake(&target, &resources, &control).await?;
-    let next = second
-        .claim_due(&scope, 1, 64, lease, &control)
-        .await?
-        .claims
-        .pop()
-        .expect("replacement claim");
-    second
-        .finish(
-            &next,
-            Completion::Deferred(Duration::from_millis(50)),
-            &control,
-        )
-        .await?;
-    let stale = first
-        .finish(&original, Completion::Converged, &control)
-        .await
-        .unwrap_err();
-    anyhow::ensure!(stale.kind() == rss_reconcile::ErrorKind::Fenced);
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let (left, right) = tokio::try_join!(
-        first.claim_due(&scope, 1, 64, lease, &control),
-        second.claim_due(&scope, 1, 64, lease, &control)
-    )?;
-    anyhow::ensure!(left.claims.len() + right.claims.len() == 1);
-    if let Some(claim) = left.claims.first() {
-        first.finish(claim, Completion::Converged, &control).await?;
-    } else {
-        second
-            .finish(&right.claims[0], Completion::Converged, &control)
+    let policy = policy()?;
+    let notify = Notify::new();
+    let host = |store: rss_mdm_work_page::scheduler::Scheduler,
+                budget,
+                delay,
+                events: mpsc::UnboundedSender<Option<i64>>| {
+        let stop = &stop;
+        let scope = scope.clone();
+        let notify = &notify;
+        async move {
+            let observer = std::sync::Arc::new(Delay {
+                first: delay,
+                epoch: AtomicI64::new(0),
+            });
+            rss_mdm_work_page::reconcile::run(
+                &budget,
+                policy,
+                stop,
+                notify,
+                move |after| {
+                    std::future::ready(Ok(if after.is_none() {
+                        vec![tenant]
+                    } else {
+                        vec![]
+                    }))
+                },
+                move |_, grant, stop| {
+                    let (scope, store, observer, events) = (
+                        scope.clone(),
+                        store.clone(),
+                        observer.clone(),
+                        events.clone(),
+                    );
+                    async move {
+                        let before = observer.epoch.load(Ordering::SeqCst);
+                        rss_mdm_work_page::reconcile::batch(
+                            (&store, &*observer),
+                            grant,
+                            &scope,
+                            policy,
+                            &stop,
+                            |_| {},
+                        )
+                        .await?;
+                        let after = observer.epoch.load(Ordering::SeqCst);
+                        let _ = events.send((after != before).then_some(after));
+                        Ok(())
+                    }
+                },
+            )
             .await?;
-    }
-    anyhow::ensure!(
-        first
-            .claim_due(&scope, 1, 64, lease, &control)
-            .await?
-            .claims
-            .is_empty()
+            anyhow::Ok(())
+        }
+    };
+    let first = &a.a.resources.storage;
+    let second = &b.a.resources.storage;
+    first.reconcile.wake(&target, &resources, &control).await?;
+    let (a_send, mut a_events) = mpsc::unbounded_channel();
+    let (b_send, mut b_events) = mpsc::unbounded_channel();
+    let (start, ready) = oneshot::channel();
+    let left = host(
+        first.reconcile.clone(),
+        first.worker_budget.clone(),
+        Duration::from_millis(700),
+        a_send,
     );
+    let right = async {
+        ready.await?;
+        host(
+            second.reconcile.clone(),
+            second.worker_budget.clone(),
+            Duration::from_millis(1500),
+            b_send,
+        )
+        .await
+    };
+    let expectation = async {
+        anyhow::ensure!(a_events.recv().await == Some(Some(1)));
+        second.reconcile.wake(&target, &resources, &control).await?;
+        start
+            .send(())
+            .map_err(|_| anyhow::anyhow!("second scheduling loop closed"))?;
+        anyhow::ensure!(b_events.recv().await == Some(Some(2)));
+        anyhow::ensure!(
+            a_events.recv().await == Some(None),
+            "original host must recheck the superseded deadline"
+        );
+        anyhow::ensure!(
+            b_events.recv().await == Some(Some(3)),
+            "replacement host must claim its actual deadline"
+        );
+        let settled:bool=sqlx::query_scalar("SELECT epoch=3 AND next_run IS NULL AND token IS NULL FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity=$3")
+            .bind(a.c.tenant.to_string()).bind(scope.reconciler()).bind(target.entity()).fetch_one(&a.c.operator).await?;
+        anyhow::ensure!(settled);
+        stop.cancel();
+        anyhow::Ok(())
+    };
+    tokio::time::timeout(Duration::from_secs(4), async {
+        tokio::try_join!(left, right, expectation)
+    })
+    .await??;
     Ok(())
 }
 

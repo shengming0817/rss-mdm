@@ -299,6 +299,7 @@ async fn authorize(call: &Call<'_>, c: &mut sqlx::PgConnection) -> Result<Qualif
         if bound != call.binding {
             return Err(Error::Conflict);
         }
+        proof.check_live().map_err(|_| Error::Denied)?;
         if let Some(result) = result
             && result["state"] == "complete"
         {
@@ -306,7 +307,18 @@ async fn authorize(call: &Call<'_>, c: &mut sqlx::PgConnection) -> Result<Qualif
                 serde_json::from_value(result).map_err(|_| Error::Storage)?,
             ));
         }
+        if call.phase == Phase::Execute
+            && call.audit.snapshot().write_outcome
+                != rss_mdm_audit_integration::WriteOutcome::Committed
+        {
+            // A fresh request can observe a previously acknowledged intent and
+            // dispatch under the current grant in this very transaction.
+            call.audit.mark_commit_started();
+            call.audit.mark_intent_committed();
+        }
     }
+    sqlx::query("DELETE FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid AND id=$2 AND expires_at<=clock_timestamp()")
+        .bind(tenant.to_string()).bind(input.id).execute(&mut *c).await?;
     let conflicting:bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid AND id=$2 AND binding<>$3)")
         .bind(tenant.to_string()).bind(input.id).bind(call.binding).fetch_one(&mut *c).await?;
     if conflicting {
@@ -550,7 +562,10 @@ impl Call<'_> {
             result = authorize(self, c) => result?,
         };
         match qualified {
-            Qualification::Advanced => return Ok(Pass::Advanced),
+            Qualification::Advanced => {
+                self.auth.proof.check_live().map_err(|_| Error::Denied)?;
+                return Ok(Pass::Advanced);
+            }
             Qualification::Rejected(error) => return Ok(Pass::Rejected(error)),
             Qualification::Replay(result) => return Ok(Pass::Finished(result)),
             Qualification::Ready => {}
@@ -564,6 +579,7 @@ impl Call<'_> {
                 if !accepted && crate::selection::pending(c, tenant).await?.is_some() {
                     return Err(Error::Conflict);
                 }
+                self.auth.proof.check_live().map_err(|_| Error::Denied)?;
                 if !accepted {
                     let request = Stored {
                         input: self.input.clone(),
@@ -630,13 +646,12 @@ impl Service {
             )
         })
         .map_err(|_| Error::Storage)?;
-        let mut phase = if input.stream_target().is_some() {
-            Phase::Scan
-        } else {
-            Phase::Admit
-        };
+        // On the first transaction consult the durable receipt. Even a budget
+        // that fits only one final pass can admit now and dispatch on the retry.
+        let mut resume = true;
+        let mut phase = Phase::Admit;
         loop {
-            let call = Call {
+            let mut call = Call {
                 service: self,
                 auth,
                 input,
@@ -654,9 +669,16 @@ impl Service {
                         cutoff,
                         &crate::backend::SystemClock,
                     ),
-                    (&call, &fact, &mut rejection),
-                    |(call, fact, rejection), tx| {
+                    (&mut call, &fact, &mut rejection),
+                    move |(call, fact, rejection), tx| {
                         Box::pin(async move {
+                            if resume {
+                                let existing = tx.with_connection_context(&mut (execution.tenant(),call.input.id),|(tenant,id),c|Box::pin(async move{
+                                    sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2)")
+                                        .bind(tenant.to_string()).bind(*id).fetch_one(c).await
+                                })).await?;
+                                if existing {call.phase=Phase::Execute;}
+                            }
                             if call.phase == Phase::Admit {
                                 call.service
                                     .audit_store
@@ -666,7 +688,7 @@ impl Service {
                             }
                             let pass = tx
                                 .with_connection_context(
-                                    &mut (*call, rejection),
+                                    &mut (&**call, rejection),
                                     |(call, rejection), c| {
                                         Box::pin(async move {
                                             call.run_on(c).await.map_err(|error| {
@@ -694,9 +716,13 @@ impl Service {
                     },
                 )
                 .await;
+            phase = call.phase;
+            resume = false;
             let uncertain = || {
                 let state = audit.snapshot();
-                (phase == Phase::Execute && !state.intent_only)
+                (phase == Phase::Execute
+                    && state.write_outcome == rss_mdm_audit_integration::WriteOutcome::Committed
+                    && !state.intent_only)
                     || (phase == Phase::Admit
                         && state.write_outcome == rss_mdm_audit_integration::WriteOutcome::Unknown)
             };
@@ -788,6 +814,7 @@ async fn step_on(
     {
         return Err(Error::Deadline);
     }
+    proof.check_live().map_err(|_| Error::Denied)?;
     effect.record_intent_dispatch(true);
     let outcome = backend
         .maintain(&authorized, None, deadline)

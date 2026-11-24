@@ -370,8 +370,11 @@ Agent 在现有 mTLS runtime 边界读取
 `telemetry_maintain`，删除/恢复要求 `telemetry_delete`。维护请求的 ID 绑定完整内容，
 每次调用重新授权；`more` 需要以相同请求继续，`blocked` 表示依赖尚未满足，不能当作成功。
 对关闭流、回收流和清理回执，收到 `504 request_deadline` 后使用原 ID 和相同内容重试。
-服务会续验已确认的冻结版本。每租户最多保留 256 个核验进度，最后一次推进满 24 小时后过期；
-数据库恢复后重新核验。业务受理后若返回 `503 operation_unknown`，使用同一 ID 查询回执或重试。
+服务从已确认的位置继续。每租户最多保留 256 个进度，新增操作若收到 `422 capacity_exceeded`，
+可待已有核验结束或过期后重试。进度在最后一次推进满 24 小时后过期，数据库恢复后重新核验。
+业务受理后若收到 `503 operation_unknown`，持有设备范围内 `inventory_read` 和 `operation_read`
+权限的调用方可用 `GET /api/v1/tenants/{tenant}/operation-diagnostics/operations/telemetry/{operationId}`
+查询回执。查不到回执时，继续使用原 ID 和原请求内容重试。
 删除恢复使用原 selection、窗口和 fence；后台存储继续保护恢复期、汇总边界与幂等承诺。
 
 Agent 从 runtime 的 `GET /telemetry/configurations` 发现当前授权分配，再获取精确 Policy/version 配置。目录是有界完整集合，超出容量明确失败，不把部分结果当作撤销清单；当前最多扫描 256 个启用的遥测 Policy。目录中的 `supported=false` 表示现有能力或环境不满足，不能降级执行。配置含原生计划或脚本字面量输入、显式映射、字段定义与配置绑定；上传为 `{batchId, configuration: SignedTelemetryConfiguration, observations}`，原样保存并携带签名配置，不再重复提交 policy/policyVersion/binding。脚本内容从该精确配置的 `/content` 路径获取，检查当前注册、配置取得资格和字节摘要。

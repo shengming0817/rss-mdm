@@ -157,28 +157,7 @@ async fn late_page_deadline(
             .bind(key)
             .fetch_one(&mut *tx)
             .await?;
-        let observed = std::sync::atomic::AtomicBool::new(false);
-        let attempts = async {
-            for _ in 0..16 {
-                let response = short
-                    .call("/telemetry/maintenance", operation.clone())
-                    .await?;
-                anyhow::ensure!(
-                    response == (504, json!({"code":"request_deadline"})),
-                    "qualification returned {response:?}"
-                );
-                if observed.load(std::sync::atomic::Ordering::SeqCst) {
-                    return anyhow::Ok(());
-                }
-            }
-            anyhow::bail!("request budget never reached gated publication")
-        };
-        let watch = async {
-            c.wait_blocked(pid).await?;
-            observed.store(true, std::sync::atomic::Ordering::SeqCst);
-            anyhow::Ok(())
-        };
-        tokio::try_join!(watch, attempts)?;
+        wait_for_cutoff(c, short, operation, pid).await?;
         tx.rollback().await?;
         anyhow::Ok(())
     }
@@ -189,6 +168,37 @@ async fn late_page_deadline(
     .execute(&c.operator)
     .await?;
     result
+}
+
+async fn wait_for_cutoff(
+    c: &Context,
+    short: &http::Http,
+    operation: &Value,
+    pid: i32,
+) -> Result<()> {
+    let observed = std::sync::atomic::AtomicBool::new(false);
+    let attempts = async {
+        for _ in 0..16 {
+            let response = short
+                .call("/telemetry/maintenance", operation.clone())
+                .await?;
+            anyhow::ensure!(
+                response == (504, json!({"code":"request_deadline"})),
+                "qualification returned {response:?}"
+            );
+            if observed.load(std::sync::atomic::Ordering::SeqCst) {
+                return anyhow::Ok(());
+            }
+        }
+        anyhow::bail!("request budget never reached gated publication")
+    };
+    let watch = async {
+        c.wait_blocked(pid).await?;
+        observed.store(true, std::sync::atomic::Ordering::SeqCst);
+        anyhow::Ok(())
+    };
+    tokio::try_join!(watch, attempts)?;
+    Ok(())
 }
 
 async fn verify_pool(
@@ -293,6 +303,8 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         drop(foreign); other.close().await;
         let probe_op=request(json!({"action":"expire_receipts","target":target,"before_micros":0}));
         fixed_budget(c,&short,&probe_op,first_batch).await?;
+        let final_pass=request(json!({"action":"expire_receipts","target":target,"before_micros":0}));
+        checkpoints::resume_final_pass(c,&short,&final_pass).await?;
         late_page_deadline(c,&short,&expire,17).await?;
         checkpoints::boundaries(c,&short,&http,&expire,&account,first_batch).await?;
         let provider_expired:bool=sqlx::query_scalar("SELECT expired FROM rss_timeseries.batches WHERE tenant_id=$1::uuid AND generation=$2")

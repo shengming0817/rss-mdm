@@ -116,24 +116,79 @@ pub(super) async fn boundaries(
 
     let rows=sqlx::query("INSERT INTO mdm_telemetry.stream_checks
         SELECT tenant_id,gen_random_uuid(),sha256('quota'),device,source,epoch,catalog_revision,byte_limit,policy,version,found,expires_at
-        FROM mdm_telemetry.stream_checks CROSS JOIN generate_series(1,255) WHERE tenant_id=$1::uuid AND id=$2")
+        FROM mdm_telemetry.stream_checks CROSS JOIN generate_series(1,254) WHERE tenant_id=$1::uuid AND id=$2")
         .bind(c.tenant.to_string()).bind(id).execute(&c.operator).await?.rows_affected();
-    assert_eq!(rows, 255);
+    assert_eq!(rows, 254);
+    let (other_device, _) = materials::seed_registration(c).await?;
+    let seeded=sqlx::query("INSERT INTO mdm_telemetry.batches(expected_epoch,tenant_id,id,device,credential,source,epoch,policy,policy_version,input_digest,context_digest,fields,received_at,delivery,first_observed,last_observed,quality,observations,current_assets)
+      SELECT expected_epoch,tenant_id,gen_random_uuid(),$3,credential,source,epoch,policy,policy_version,input_digest,context_digest,fields,received_at,delivery,first_observed,last_observed,quality,observations,current_assets FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND id=$2")
+      .bind(c.tenant.to_string()).bind(batch).bind(other_device.into_uuid()).execute(&c.operator).await?.rows_affected();
+    assert_eq!(seeded, 1);
+    // Hold admission past both callers' deadlines so the winning check cannot
+    // finish and free its slot while the other endpoint is competing for it.
+    let mut gate = crate::command_runtime_t2_support::seed_transaction(c).await?;
+    rss_mdm_telemetry_service::selection::lock_change(&mut gate, c.tenant).await?;
     let fresh = || {
-        let mut next = request.clone();
-        next["id"] = json!(Uuid::new_v4());
-        next
+        let mut value = request.clone();
+        value["id"] = json!(Uuid::new_v4());
+        value
     };
-    let (a, b) = tokio::join!(
-        http.call("/telemetry/maintenance", fresh()),
-        http.call("/telemetry/maintenance", fresh())
-    );
-    for response in [a?, b?] {
-        assert_eq!(response, (422, json!({"code":"capacity_exceeded"})));
-    }
+    let one = fresh();
+    let mut two = fresh();
+    two["device"] = json!(other_device);
+    // Pause the first INSERT after its capacity read. The contender must wait
+    // behind that transaction (or the same gate if serialization regresses).
+    let probe = format!("quota_{}", Uuid::new_v4().simple());
+    let key = Uuid::new_v4().as_u128() as i64;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {probe}; CREATE FUNCTION {probe}.wait() RETURNS trigger
+        LANGUAGE plpgsql SET search_path=pg_catalog AS $$ BEGIN PERFORM pg_advisory_xact_lock({key}::bigint); RETURN NEW; END $$;
+        REVOKE ALL ON FUNCTION {probe}.wait() FROM PUBLIC;
+        CREATE TRIGGER {probe} BEFORE INSERT ON mdm_telemetry.stream_checks FOR EACH ROW WHEN (NEW.tenant_id='{}'::uuid) EXECUTE FUNCTION {probe}.wait()",c.tenant))).execute(&c.operator).await?;
+    let mut insert = c.operator.begin().await?;
+    let blocker: i32 = sqlx::query_scalar("SELECT pg_backend_pid() FROM pg_advisory_xact_lock($1)")
+        .bind(key)
+        .fetch_one(&mut *insert)
+        .await?;
+    let both_wait = async {
+        tokio::time::timeout(std::time::Duration::from_secs(4),async {
+            loop {
+                let blocked:i64=sqlx::query_scalar("WITH RECURSIVE waiting(pid) AS (SELECT $1::int UNION SELECT p.pid FROM waiting w JOIN pg_stat_activity p ON w.pid=ANY(pg_blocking_pids(p.pid))) SELECT count(*)-1 FROM waiting")
+                    .bind(blocker).fetch_one(&c.operator).await?;
+                if blocked>=2 {break anyhow::Ok(());}
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }).await??;
+        insert.rollback().await?;
+        anyhow::Ok(())
+    };
+    let (a, b, ()) = tokio::try_join!(
+        http.call("/telemetry/maintenance", one),
+        http.call("/telemetry/maintenance", two),
+        both_wait
+    )?;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "DROP TRIGGER {probe} ON mdm_telemetry.stream_checks; DROP SCHEMA {probe} CASCADE"
+    )))
+    .execute(&c.operator)
+    .await?;
+    gate.rollback().await?;
+    let mut statuses = [a.0, b.0];
+    statuses.sort();
+    assert_eq!(statuses, [422, 504]);
+    let size: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid",
+    )
+    .bind(c.tenant.to_string())
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(size, 256);
+
     super::late_page_deadline(c, short, request, 17).await?;
     sqlx::query("UPDATE mdm_telemetry.stream_checks SET expires_at=clock_timestamp()-interval '1 minute' WHERE tenant_id=$1::uuid")
         .bind(c.tenant.to_string()).execute(&c.operator).await?;
+    let mut replacement = request.clone();
+    replacement["resource"] = json!("after-expiry");
+    super::late_page_deadline(c, short, &replacement, 1).await?;
     // Expiry and an actual catalog publication must both send a saved prefix back to the first read.
     super::late_page_deadline(c, short, request, 1).await?;
     super::late_page_deadline(c, short, request, 17).await?;
@@ -190,4 +245,48 @@ pub(super) async fn boundaries(
     sqlx::query("UPDATE mdm.field_versions SET definition=jsonb_set(definition,'{sensitivity}',to_jsonb('standard'::text))
         WHERE tenant_id=$1::uuid AND field='custom.history_0001'").bind(c.tenant.to_string()).execute(&c.operator).await?;
     Ok(())
+}
+
+pub(super) async fn resume_final_pass(
+    c: &Context,
+    short: &http::Http,
+    request: &Value,
+) -> Result<()> {
+    let id = Uuid::parse_str(request["id"].as_str().unwrap())?;
+    let mut held = crate::command_runtime_t2_support::seed_transaction(c).await?;
+    rss_mdm_telemetry_service::selection::lock_change(&mut held, c.tenant).await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *held)
+        .await?;
+    super::wait_for_cutoff(c, short, request, pid).await?;
+    held.rollback().await?;
+    let ready:(Uuid,bool)=sqlx::query_as("SELECT policy,EXISTS(SELECT FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2)
+        FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
+    assert_eq!(ready, (Uuid::from_u128(49), false));
+    // One live qualification fits; two cannot fit the same 750 ms host budget.
+    let probe = format!("finish_{}", Uuid::new_v4().simple());
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {probe};
+        CREATE FUNCTION {probe}.visit() RETURNS boolean VOLATILE LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN IF current_setting('mdm_test.visited',true) IS DISTINCT FROM 'yes' THEN
+          PERFORM set_config('mdm_test.visited','yes',true); PERFORM pg_sleep(0.39); END IF; RETURN true; END $$;
+        REVOKE ALL ON FUNCTION {probe}.visit() FROM PUBLIC; GRANT EXECUTE ON FUNCTION {probe}.visit() TO mdm_telemetry_runtime;
+        CREATE POLICY {probe} ON mdm.field_versions AS RESTRICTIVE FOR SELECT TO mdm_telemetry_runtime
+        USING(CASE WHEN tenant_id='{}'::uuid AND field='custom.history_0000' THEN {probe}.visit() ELSE true END)",c.tenant))).execute(&c.operator).await?;
+    let proof=async {
+        assert_eq!(short.call("/telemetry/maintenance",request.clone()).await?,(504,json!({"code":"request_deadline"})));
+        let accepted:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 AND result IS NULL)")
+            .bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
+        anyhow::ensure!(accepted,"the first budget must admit the verified tail");
+        let result=short.post("/telemetry/maintenance",request.clone()).await?;
+        anyhow::ensure!(result["state"]=="complete");
+        assert_eq!(short.post("/telemetry/maintenance",request.clone()).await?,result);
+        anyhow::Ok(())
+    }.await;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "DROP POLICY {probe} ON mdm.field_versions; DROP SCHEMA {probe} CASCADE"
+    )))
+    .execute(&c.operator)
+    .await?;
+    proof
 }
