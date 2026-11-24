@@ -120,54 +120,7 @@ impl Refresh {
         }
         let mut writes = Vec::new();
         for field in fields {
-            let path = field
-                .profile
-                .as_ref()
-                .and_then(|d| model::device_path(&d.pointer))
-                .unwrap_or_default();
-            let account_path = [String::from("emailVerified")];
-            let request = match field.attribute {
-                Attribute::Provider(id, which) => {
-                    let provider = ProviderId::parse(&id.to_string()).map_err(invalid)?;
-                    match which {
-                        ProviderAttribute::Groups => PersonnelField::Groups(provider),
-                        _ => PersonnelField::Departments(provider),
-                    }
-                }
-                Attribute::Profile(_) => PersonnelField::Profile {
-                    source: model::source(
-                        &field
-                            .profile
-                            .as_ref()
-                            .ok_or_else(|| invalid("definition"))?
-                            .source,
-                    )
-                    .map_err(invalid)?,
-                    path: &path,
-                    max_age_seconds: self.max_age,
-                },
-                // Identity local profiles define emailVerified as Missing for active accounts.
-                // The owner reports Unavailable for a disabled account or inactive membership.
-                _ => PersonnelField::Profile {
-                    source: rss_identity_postgres::ProfileSource::IdentityLocal,
-                    path: &account_path,
-                    max_age_seconds: self.max_age,
-                },
-            };
-            let page = read_personnel_facts_on(
-                c,
-                self.identity.instance(),
-                binding.tenant(),
-                &principals,
-                request,
-            )
-            .await
-            .map_err(invalid)?;
-            let facts = page
-                .items
-                .into_iter()
-                .map(|fact| (fact.principal.as_uuid(), fact))
-                .collect::<BTreeMap<_, _>>();
+            let facts = self.facts(c, binding, &field, &principals).await?;
             for row in &subjects {
                 for (role, def) in &field.fields {
                     writes.push(field.observation(row, *role, def, &facts, &groups));
@@ -189,6 +142,62 @@ impl Refresh {
         sqlx::query("UPDATE mdm_assets.personnel_cursor SET after_device=$2,next_scan=CASE WHEN $2::uuid IS NULL THEN clock_timestamp()+interval '30 seconds' ELSE clock_timestamp() END WHERE tenant_id=$1::uuid")
             .bind(tenant).bind(after).execute(c).await?;
         Ok(())
+    }
+    async fn facts(
+        &self,
+        c: &mut PgConnection,
+        binding: ExecutionBinding,
+        field: &Field,
+        principals: &[PrincipalId],
+    ) -> Result<BTreeMap<Uuid, PersonnelFact>> {
+        let path = field
+            .profile
+            .as_ref()
+            .and_then(|d| model::device_path(&d.pointer))
+            .unwrap_or_default();
+        let account_path = [String::from("emailVerified")];
+        let request = match field.attribute {
+            Attribute::Provider(id, which) => {
+                let provider = ProviderId::parse(&id.to_string()).map_err(invalid)?;
+                match which {
+                    ProviderAttribute::Groups => PersonnelField::Groups(provider),
+                    _ => PersonnelField::Departments(provider),
+                }
+            }
+            Attribute::Profile(_) => PersonnelField::Profile {
+                source: model::source(
+                    &field
+                        .profile
+                        .as_ref()
+                        .ok_or_else(|| invalid("definition"))?
+                        .source,
+                )
+                .map_err(invalid)?,
+                path: &path,
+                max_age_seconds: self.max_age,
+            },
+            // Identity local profiles define emailVerified as Missing for active accounts.
+            // The owner reports Unavailable for a disabled account or inactive membership.
+            _ => PersonnelField::Profile {
+                source: rss_identity_postgres::ProfileSource::IdentityLocal,
+                path: &account_path,
+                max_age_seconds: self.max_age,
+            },
+        };
+        let page = read_personnel_facts_on(
+            c,
+            self.identity.instance(),
+            binding.tenant(),
+            principals,
+            request,
+        )
+        .await
+        .map_err(invalid)?;
+        Ok(page
+            .items
+            .into_iter()
+            .map(|fact| (fact.principal.as_uuid(), fact))
+            .collect())
     }
 }
 

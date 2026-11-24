@@ -44,39 +44,17 @@ pub(super) async fn fields(
         if count + field.fields.len() > rss_mdm_inventory::catalog_capacity() {
             continue;
         }
-        let mut changed = Vec::new();
-        let mut field_bytes = 0i64;
-        for (_, definition) in &mut field.fields {
-            let old = previous.get(&definition.key);
-            let previous_version = old.map_or(0, |(v, _, _)| *v);
-            definition.version = definition.version.max(previous_version as u64);
-            if let Some((_, Some(published), size)) = old
-                && published == definition
-            {
-                field_bytes += size;
-                continue;
-            }
-            definition.version = definition.version.max((previous_version + 1) as u64);
-            let body = serde_json::to_value(&*definition).map_err(invalid)?;
-            let size: i32 = sqlx::query_scalar("SELECT octet_length($1::jsonb::text)")
-                .bind(&body)
-                .fetch_one(&mut *c)
-                .await?;
-            field_bytes += i64::from(size);
-            changed.push((definition.key, definition.version, body));
-        }
-        if bytes + field_bytes > rss_mdm_inventory::MAX_CATALOG_BYTES as i64 {
+        let Some(field_bytes) = publish(
+            c,
+            binding,
+            &mut field,
+            &previous,
+            rss_mdm_inventory::MAX_CATALOG_BYTES as i64 - bytes,
+        )
+        .await?
+        else {
             continue;
-        }
-        for (key, version, body) in changed {
-            sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,$4)")
-                .bind(tenant.to_string())
-                .bind(key.as_str())
-                .bind(version as i64)
-                .bind(body)
-                .execute(&mut *c)
-                .await?;
-        }
+        };
         count += field.fields.len();
         bytes += field_bytes;
         for (_, d) in &field.fields {
@@ -95,6 +73,50 @@ pub(super) async fn fields(
         }
     }
     Ok(accepted)
+}
+
+async fn publish(
+    c: &mut PgConnection,
+    binding: ExecutionBinding,
+    field: &mut Field,
+    previous: &BTreeMap<rss_mdm_inventory::FieldKey, (i64, Option<FieldDefinition>, i64)>,
+    remaining_bytes: i64,
+) -> Result<Option<i64>> {
+    let tenant = binding.tenant();
+    let mut changed = Vec::new();
+    let mut field_bytes = 0i64;
+    for (_, definition) in &mut field.fields {
+        let old = previous.get(&definition.key);
+        let previous_version = old.map_or(0, |(v, _, _)| *v);
+        definition.version = definition.version.max(previous_version as u64);
+        if let Some((_, Some(published), size)) = old
+            && published == definition
+        {
+            field_bytes += size;
+            continue;
+        }
+        definition.version = definition.version.max((previous_version + 1) as u64);
+        let body = serde_json::to_value(&*definition).map_err(invalid)?;
+        let size: i32 = sqlx::query_scalar("SELECT octet_length($1::jsonb::text)")
+            .bind(&body)
+            .fetch_one(&mut *c)
+            .await?;
+        field_bytes += i64::from(size);
+        changed.push((definition.key, definition.version, body));
+    }
+    if field_bytes > remaining_bytes {
+        return Ok(None);
+    }
+    for (key, version, body) in changed {
+        sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,$4)")
+            .bind(tenant.to_string())
+            .bind(key.as_str())
+            .bind(version as i64)
+            .bind(body)
+            .execute(&mut *c)
+            .await?;
+    }
+    Ok(Some(field_bytes))
 }
 
 async fn desired_fields(c: &mut PgConnection, providers: &[Uuid]) -> Result<Vec<Field>> {
