@@ -21,11 +21,20 @@ impl Claim for Item {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scenario {
+    EarlyEmpty,
+    NewWork,
+    SlowCursor,
+    LockedCursor,
+}
+
 struct Store {
     start: Instant,
     due: Mutex<BTreeMap<String, (Instant, bool)>>,
     scans: Mutex<Vec<(Duration, Vec<String>)>>,
-    slow_page: bool,
+    scenario: Scenario,
+    tail_pending: std::sync::atomic::AtomicBool,
 }
 impl DurableStore for Store {
     type Claim = Item;
@@ -66,11 +75,21 @@ impl DurableStore for Store {
     ) -> Result<ClaimBatch<Item>, Error> {
         let started = Instant::now();
         let elapsed = started - self.start;
+        // The tail of the delayed cursor sweep cannot revisit the earlier ticket.
+        let tail = self.tail_pending.swap(false, Ordering::SeqCst);
+        let locked = self.scenario == Scenario::LockedCursor
+            && elapsed == SHORT
+            && !self
+                .scans
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(at, _)| *at == SHORT);
         let claims: Vec<_> = {
             let mut due = self.due.lock().unwrap();
             let names: Vec<_> = due
                 .iter()
-                .filter(|(_, (at, _))| *at <= started)
+                .filter(|(_, (at, _))| !tail && !locked && *at <= started)
                 .take(limit)
                 .map(|(name, _)| name.clone())
                 .collect();
@@ -84,11 +103,14 @@ impl DurableStore for Store {
             self.scans.lock().unwrap().push((elapsed, names));
             claims
         };
-        if self.slow_page && elapsed == Duration::from_millis(5) {
+        let slow_head =
+            self.scenario == Scenario::SlowCursor && elapsed == Duration::from_millis(5);
+        if slow_head {
+            self.tail_pending.store(true, Ordering::SeqCst);
             tokio::time::sleep_until(self.start + Duration::from_millis(25)).await;
         }
-        scanned(scope, started);
-        let more = self.scans.lock().unwrap().len() == 1;
+        let more = self.scans.lock().unwrap().len() == 1 || slow_head;
+        scanned(scope, started, more, claims.is_empty());
         Ok(ClaimBatch { claims, more })
     }
     async fn finish<T: Timer>(
@@ -145,7 +167,7 @@ impl Reconciler<Item> for Store {
         Ok(ReconcileStep::Ready(()))
     }
 }
-async fn verify_schedule(new_work: bool, slow_page: bool) {
+async fn verify_schedule(scenario: Scenario) {
     let start = Instant::now();
     let store = Arc::new(Store {
         start,
@@ -154,7 +176,8 @@ async fn verify_schedule(new_work: bool, slow_page: bool) {
             ("late".into(), (start, true)),
         ])),
         scans: Mutex::default(),
-        slow_page,
+        scenario,
+        tail_pending: Default::default(),
     });
     let id = Uuid::from_u128(1);
     let scope = Scope::new(TenantId::parse(&id.to_string()).unwrap(), "planning").unwrap();
@@ -183,7 +206,7 @@ async fn verify_schedule(new_work: bool, slow_page: bool) {
             assert_eq!(scans.len(), 2, "more must produce exactly one extra page");
             assert!(scans[1].1.is_empty());
         }
-        if new_work {
+        if scenario == Scenario::NewWork {
             store
                 .due
                 .lock()
@@ -193,7 +216,7 @@ async fn verify_schedule(new_work: bool, slow_page: bool) {
         notify.notify_one();
         tokio::time::sleep_until(start + LATE + Duration::from_millis(1)).await;
         assert_eq!(store.scans.lock().unwrap()[2].0, Duration::from_millis(5));
-        let short_due = if slow_page {
+        let short_due = if scenario == Scenario::SlowCursor {
             Duration::from_millis(25)
         } else {
             SHORT
@@ -204,11 +227,19 @@ async fn verify_schedule(new_work: bool, slow_page: bool) {
             .flat_map(|(time, names)| names.iter().map(|name| (*time, name.as_str())))
             .collect();
         let mut expected = vec![(Duration::ZERO, "late"), (Duration::ZERO, "short")];
-        if new_work {
+        if scenario == Scenario::NewWork {
             expected.push((Duration::from_millis(5), "new"));
         }
         expected.extend([(short_due, "short"), (LATE, "late")]);
         assert_eq!(nonempty, expected);
+        if scenario == Scenario::SlowCursor {
+            assert!(
+                history
+                    .iter()
+                    .any(|(at, names)| *at == short_due && names.is_empty()),
+                "cursor tail must finish before the fresh pass recovers the skipped ticket"
+            );
+        }
         tokio::time::sleep_until(start + LATE + RECOVERY - Duration::from_millis(1)).await;
         assert_eq!(
             store.scans.lock().unwrap().len(),
@@ -229,15 +260,20 @@ async fn verify_schedule(new_work: bool, slow_page: bool) {
 
 #[tokio::test(start_paused = true)]
 async fn early_empty_notification_preserves_both_settlements_after_more() {
-    verify_schedule(false, false).await;
+    verify_schedule(Scenario::EarlyEmpty).await;
 }
 #[tokio::test(start_paused = true)]
 async fn notification_claims_new_work_before_the_original_deadline() {
-    verify_schedule(true, false).await;
+    verify_schedule(Scenario::NewWork).await;
 }
 #[tokio::test(start_paused = true)]
 async fn an_in_flight_empty_page_cannot_consume_a_later_deadline() {
-    verify_schedule(false, true).await;
+    verify_schedule(Scenario::SlowCursor).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_locked_empty_terminal_page_gets_a_fresh_scan() {
+    verify_schedule(Scenario::LockedCursor).await;
 }
 
 #[tokio::test(start_paused = true)]

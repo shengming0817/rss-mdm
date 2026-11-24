@@ -33,6 +33,8 @@ struct Tenant {
     active: BTreeSet<usize>,
     claiming: Option<usize>,
     deadlines: BTreeSet<Instant>,
+    sweep_start: Option<Instant>,
+    empty_through: Option<Instant>,
     immediate: bool,
     recovery: Option<Instant>,
     retry: Option<Instant>,
@@ -109,12 +111,31 @@ impl Drop for Round {
 // to the owning batch, including during RSS's concurrent attempt polling.
 tokio::task_local! { static CURRENT: (Scope, Arc<Round>); }
 
-pub(crate) fn scanned(scope: &Scope, started: Instant) {
+pub(crate) fn scanned(scope: &Scope, started: Instant, more: bool, empty: bool) {
     let _ = CURRENT.try_with(|(owner, round)| {
         if owner == scope {
             let mut running = round.running.lock().expect("active claim rounds");
             let tenant = running.get_mut(&round.tenant).expect("active tenant");
-            while tenant.deadlines.first().is_some_and(|at| *at <= started) {
+            // A tail page cannot cover a ticket behind its cursor or beyond its
+            // high-water mark. Only retire through the start of the whole sweep.
+            let start = *tenant.sweep_start.get_or_insert(started);
+            if more {
+                return;
+            }
+            tenant.sweep_start = None;
+            // A locked shared cursor also returns a terminal empty page. Allow
+            // one fresh pass for each due hint, then fall back to idle recovery.
+            let through = if empty {
+                tenant.empty_through.replace(start)
+            } else {
+                tenant.empty_through = None;
+                Some(start)
+            };
+            while tenant
+                .deadlines
+                .first()
+                .is_some_and(|at| through.is_some_and(|end| *at <= end))
+            {
                 tenant.deadlines.pop_first();
             }
         }

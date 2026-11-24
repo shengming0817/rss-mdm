@@ -186,7 +186,7 @@ impl DurableStore for Scheduler {
             .store
             .claim_due(scope, limit, scan_budget, lease, control)
             .await?;
-        crate::reconcile::scanned(scope, started);
+        crate::reconcile::scanned(scope, started, batch.more, batch.claims.is_empty());
         Ok(batch)
     }
     async fn renew<T: Timer>(
