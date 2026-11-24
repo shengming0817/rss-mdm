@@ -37,7 +37,7 @@ queued 是持久受理，published 是 Outbox 网关接纳，received 是关联�
 
 Remote 与旧通用直接命令无部署升级义务，已完整退出。当前安装 schema 不接受旧安装账本；不提供历史执行导入或兼容查询。
 
-`GET /api/v1/tenants/{tenant}/operations` 使用 `filter/sort/fields/limit/cursor`，返回 `items/nextCursor`；设备、Policy、状态条件写入 filter，排序以 `(id,kind)` 保证复合身份唯一，cursor 为签名的不透明值。精确统计单独请求 `/api/v1/tenants/{tenant}/operations/statistics`，使用相同 filter 并返回观察时刻。摘要移除原始输出与诊断流，完整证据沿 detailUrl 检查当前设备范围权限。仅选择 id/kind 等元数据时不读取大型执行证据；证据按选中页批量补齐。每页实时读取执行事实和证据，后台变化不作废普通目录游标；写操作的回滚与恢复仍由业务事务保证。脚本、原生采集、配置和软件继续走各自 Policy owner，见[企业任务](enterprise-tasks.md)。
+`GET /api/v1/tenants/{tenant}/operations` 使用 `filter/sort/fields/limit/cursor`，返回 `items/nextCursor`；设备、Policy、状态条件写入 filter，排序以 `(id,kind)` 补足稳定位置，cursor 为签名的不透明值。列表按获授权设备、筛选和游标读取候选；收到 `query_cursor_invalidated` 后从首页重读。精确统计单独请求 `/api/v1/tenants/{tenant}/operations/statistics`，使用相同 filter 并返回观察时刻。摘要移除原始输出与诊断流，完整证据沿 detailUrl 检查当前设备范围权限。仅选择 id/kind 等元数据时不读取大型执行证据；证据按选中页批量补齐。每页实时读取执行事实和证据，后台变化不作废普通目录游标；写操作的回滚与恢复仍由业务事务保证。脚本、原生采集、配置和软件继续走各自 Policy owner，见[企业任务](enterprise-tasks.md)。
 
 授权受阻筛选使用 `filter=authorization.state==blocked`；可同时过滤 `authorization.reason` 和 `reauthorization.state`。这些派生字段不参与排序。`authorization.state` 为 `authorized/blocked/not_applicable`，业务阻断原因是 `lifecycle_blocked/device_inactive/input_mismatch/source_invalid`；依赖故障或材料损坏直接返回错误。`reauthorization.state` 为 `available/unavailable/not_applicable`；available 返回 `confirmationRequired`，unavailable 的原因包括 `permission_denied/terminal/already_received/expired/device_inactive/input_mismatch/unsupported`。Policy action_run 对这两个设备命令合同返回 not_applicable。
 

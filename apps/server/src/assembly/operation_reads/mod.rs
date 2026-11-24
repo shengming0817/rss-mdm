@@ -3,7 +3,7 @@ use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, Snapshot as Grant, context::AuthorizedPrincipal};
 use rss_mdm_management_http::{Error, Failure, execution::operations::*};
 use rss_mdm_query::{cursor::CursorCodec, directory::Query};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 mod declarations;
@@ -457,12 +457,7 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
                 .snapshot(request, (self, proof, q), |ctx, c, grant, now| {
                     Box::pin(async move {
                         let (s, p, q) = *ctx;
-                        let allowed = grant
-                            .devices_for(p, Permission::OperationRead)?
-                            .map(|ids| ids.into_iter().collect());
-                        let value = selection::statistics(s, c, p, grant, q, allowed, now).await?;
-                        serde_json::from_value(value)
-                            .map_err(|_| Error::Unavailable(Failure::CommandInvariant))
+                        selection::statistics(s, c, p, grant, q, now).await
                     })
                 })
                 .await

@@ -3,11 +3,10 @@
 use super::*;
 
 use rss_mdm_query::directory::Position;
-use serde::{Deserialize, Serialize};
+use sources::Scope;
 use sqlx::Row;
 const BATCH: usize = 1000;
-const DOCUMENT: &str = "jsonb_build_object('id',id,'kind',kind,'device',device,'origin',source_kind,'policy',policy,'deadline',deadline,'status',status)";
-fn metadata(name: &str) -> bool {
+pub(super) fn metadata(name: &str) -> bool {
     !name.starts_with("authorization.") && !name.starts_with("reauthorization.")
 }
 pub(super) fn classified(q: &Query) -> bool {
@@ -16,57 +15,59 @@ pub(super) fn classified(q: &Query) -> bool {
         .iter()
         .any(|f| !metadata(&f.name) && q.mentions(&f.name))
 }
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Continuation {
-    position: Position,
+struct Scan<'a> {
+    scope: Scope<'a>,
+    query: &'a Query,
+    after: Option<Position>,
+    remaining: usize,
+    limit: usize,
+    stage: &'static str,
+    exhausted: bool,
 }
 
-async fn candidates(
-    c: &mut sqlx::PgConnection,
-    tenant: String,
-    allowed: Option<Vec<rss_mdm_agent_wire::DeviceId>>,
-    q: &Query,
-    after: Option<&Position>,
-    bounds: (i64, usize),
-    source_rows: &mut Option<i64>,
-) -> Result<Vec<Value>, Error> {
-    let (limit, size) = bounds;
-    let mut sql = relation(tenant, allowed, limit, *source_rows);
-    sql.push(",selected AS(SELECT * FROM visible WHERE true");
-    rss_mdm_query_postgres::prefilter(&mut sql, q, &*BINDINGS, metadata).map_err(query_error)?;
-    rss_mdm_query_postgres::page_limit(&mut sql, q, after, &*BINDINGS, size)
-        .map_err(query_error)?;
-    sql.push(") SELECT b.rows AS source_rows,CASE WHEN s.id IS NOT NULL THEN ").push(DOCUMENT).push(" END AS document,coalesce(s.input_bytes,0)::bigint AS input_bytes FROM source_budget b LEFT JOIN selected s ON true");
-    rss_mdm_query_postgres::order(&mut sql, q, &*BINDINGS).map_err(query_error)?;
-    let rows = {
-        let c = &mut *c;
-        sql.build().fetch_all(c).await.map_err(super::sql)
-    }?;
-    rss_mdm_query_postgres::observe_rows("operations.candidates", &rows).map_err(super::sql)?;
-    let count = rows
-        .first()
-        .ok_or(Error::Conflict)?
-        .try_get("source_rows")
-        .map_err(super::sql)?;
-    check_sources(count, limit, "operations.sources")?;
-    *source_rows = Some(count);
-    let mut output = Vec::new();
-    for row in rows {
-        if let Some(mut value) = row
-            .try_get::<Option<Value>, _>("document")
-            .map_err(super::sql)?
-        {
-            value["inputBytes"] = json!(
-                row.try_get::<Option<i64>, _>("input_bytes")
-                    .map_err(super::sql)?
-                    .ok_or(Error::Unavailable(Failure::CommandInvariant))?
-            );
-            output.push(value);
-        }
+impl<'a> Scan<'a> {
+    fn new(
+        p: &AuthorizedPrincipal, grant: &Grant, query: &'a Query, after: Option<Position>,
+        limit: usize, stage: &'static str,
+    ) -> Result<Self, Error> {
+        let devices = grant.devices_for(p, Permission::OperationRead)?
+            .map(|ids| ids.into_iter().map(|id| id.into_uuid()).collect());
+        let scope = Scope::new(p.tenant_id().to_owned(), devices, query);
+        Ok(Self {scope, query, after, remaining: limit, limit, stage, exhausted: false})
     }
-    Ok(output)
+
+    async fn next(&mut self, c: &mut sqlx::PgConnection, requested: usize) -> Result<Vec<Value>, Error> {
+        if self.exhausted { return Ok(Vec::new()); }
+        // At the boundary, the next query may only distinguish exhaustion from overflow.
+        let size = requested.min(self.remaining.max(1));
+        let mut sql = sqlx::QueryBuilder::new("");
+        self.scope.page(&mut sql, self.after.as_ref(), size)?;
+        let rows = sql.build().fetch_all(c).await.map_err(super::sql)?;
+        rss_mdm_query_postgres::observe_rows("operations.candidates", &rows).map_err(super::sql)?;
+        check_budget(self.limit - self.remaining + rows.len(), self.limit, self.stage)?;
+        self.remaining -= rows.len();
+        self.exhausted = rows.len() < size;
+        let mut output = Vec::with_capacity(rows.len());
+        for row in rows {
+            if row.try_get::<bool,_>("ambiguous").map_err(super::sql)? {
+                return Err(Error::Unavailable(Failure::CommandInvariant));
+            }
+            output.push(row.try_get("document").map_err(super::sql)?);
+        }
+        if let Some(last) = output.last() {
+            self.after = Some(self.query.position(last).map_err(query_error)?);
+        }
+        Ok(output)
+    }
 }
+
+fn check_budget(rows: usize, limit: usize, stage: &'static str) -> Result<(), Error> {
+    // The narrow ownership probe works on 16-byte UUIDs.
+    if rss_mdm_query_postgres::within_budget(stage, rows as u64, rows as u64 * 16, limit as u64, limit as u64 * 16) {
+        Ok(())
+    } else { Err(Error::Unavailable(Failure::Capacity)) }
+}
+
 pub(super) fn id(row: &Value) -> Result<Uuid, Error> {
     row["id"].as_str().and_then(|s| Uuid::parse_str(s).ok()).ok_or(Error::Unavailable(Failure::CommandInvariant))
 }
@@ -101,7 +102,7 @@ async fn matching(
     let mut sql = sqlx::QueryBuilder::new(
         "WITH batch AS(SELECT value AS document FROM jsonb_array_elements(",
     );
-    sql.push_bind(Value::Array(rows)).push("::jsonb)), classified AS(SELECT document,(document->>'id')::uuid AS id,document->>'kind' AS kind,document->>'device' AS device,(document->>'policy')::uuid AS policy,document->>'origin' AS source_kind,(document->>'deadline')::bigint AS deadline,document->>'status' AS status,document->'authorization' AS authorization_summary,document->'reauthorization' AS reauthorization_summary FROM batch) SELECT document FROM classified WHERE true");
+    sql.push_bind(Value::Array(rows)).push("::jsonb)), classified AS(SELECT document,(document->>'id')::uuid AS id,document->>'kind' AS kind,(document->>'device')::uuid AS device,(document->>'policy')::uuid AS policy,document->>'origin' AS source_kind,(document->>'deadline')::bigint AS deadline,document->>'status' AS status,document->'authorization' AS authorization_summary,document->'reauthorization' AS reauthorization_summary FROM batch) SELECT document FROM classified WHERE true");
     rss_mdm_query_postgres::filter(&mut sql, q, &*BINDINGS).map_err(query_error)?;
     rss_mdm_query_postgres::order(&mut sql, q, &*BINDINGS).map_err(query_error)?;
     {
@@ -113,10 +114,8 @@ async fn matching(
     }
 }
 fn split(rows: &[Value], start: usize) -> Result<usize, Error> {
-    let sizes = rows[start..]
-        .iter()
-        .map(|row| row["inputBytes"].as_i64().ok_or(Error::Malformed))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let sizes = rows[start..].iter().take(BATCH).map(|row|
+        row["inputBytes"].as_i64().ok_or(Error::Unavailable(Failure::CommandInvariant)));
     Ok(start + input_prefix(sizes)?)
 }
 
@@ -144,166 +143,80 @@ pub(super) async fn page(
     codec: &CursorCodec,
     binding: &str,
     as_of: i64,
-) -> Result<Page<Value>, Error> {
+) -> Result<rss_mdm_query::Page<Value>, Error> {
     let (p, grant) = authority;
-    let allowed = grant
-        .devices_for(p, Permission::OperationRead)?
-        .map(|ids| ids.into_iter().collect::<Vec<_>>());
-    let token = q
-        .cursor()
-        .map(|token| {
-            codec
-                .decode::<Continuation>(token, binding)
-                .map_err(query_error)
-        })
-        .transpose()?;
-    if let Some(token) = &token {
-        q.validate_position(&token.position).map_err(query_error)?;
-    }
-    let mut after = token.map(|t| t.position);
+    let after = q.after(codec, binding).map_err(query_error)?;
+    let mut scan = Scan::new(p, grant, q, after, s.budgets.page, "operations.sources")?;
     let filtering = classified(q);
     let mut items = Vec::new();
-    let mut source_rows = None;
-    loop {
-        let rows = candidates(
-            c,
-            p.tenant_id().to_owned(),
-            allowed.clone(),
-            q,
-            after.as_ref(),
-            (PAGE_SOURCES, if filtering { BATCH } else { q.limit() + 1 }),
-            &mut source_rows,
-        )
-        .await?;
-
-        if rows.is_empty() {
-            break;
-        }
-        after = rows
-            .last()
-            .map(|r| q.position(r))
-            .transpose()
-            .map_err(query_error)?;
+    while items.len() <= q.limit() {
+        let size = if filtering { BATCH } else { q.limit() + 1 - items.len() };
+        let rows = scan.next(c, size).await?;
+        if rows.is_empty() { break; }
         if filtering {
             let mut start = 0;
-            while start < rows.len() {
+            while start < rows.len() && items.len() <= q.limit() {
                 let end = split(&rows, start)?;
                 let mut batch = rows[start..end].to_vec();
-                classify(s, c, p, grant, &mut batch, as_of).await?;
-                items.extend(matching(c, q, batch).await?);
+                classify(s,c,p,grant,&mut batch,as_of).await?;
+                items.extend(matching(c,q,batch).await?);
                 start = end;
-                if items.len() > q.limit() {
-                    break;
-                }
             }
-        } else {
-            items.extend(rows)
-        }
-        if !filtering || items.len() > q.limit() {
-            break;
-        }
+        } else { items.extend(rows); }
     }
-    let more = items.len() > q.limit();
-    items.truncate(q.limit());
+    let mut page = q.unprojected_page(items,codec,binding).map_err(query_error)?;
     if !filtering && (q.selects("authorization") || q.selects("reauthorization")) {
-        enrich(s, c, p, grant, &mut items, as_of).await?;
+        enrich(s,c,p,grant,&mut page.items,as_of).await?;
     }
-    let next_cursor = if more {
-        items
-            .last()
-            .map(|r| {
-                Ok(codec
-                    .encode(
-                        binding,
-                        &Continuation {
-                            position: q.position(r)?,
-                        },
-                    )?
-                    .as_str()
-                    .to_owned())
-            })
-            .transpose()
-            .map_err(query_error)?
-    } else {
-        None
-    };
-    Ok(Page { items, next_cursor })
+    Ok(page)
 }
+
 pub(super) async fn statistics(
     s: &Operations,
     c: &mut sqlx::PgConnection,
     p: &AuthorizedPrincipal,
     grant: &Grant,
     q: &Query,
-    allowed: Option<Vec<rss_mdm_agent_wire::DeviceId>>,
     now: i64,
-) -> Result<Value, Error> {
-    if !classified(q) {
-        let mut sql = relation(p.tenant_id().to_owned(), allowed, STATISTICS_SOURCES, None);
-        sql.push("SELECT b.rows,CASE WHEN b.rows<=4194304 THEN (SELECT jsonb_build_object('statistics',jsonb_build_object('total',count(*),'commands',count(*) FILTER(WHERE kind='command'),'actionRuns',count(*) FILTER(WHERE kind='action_run'),'unknown',count(*) FILTER(WHERE status='unknown')),'asOf',").push_bind(now).push(") FROM visible WHERE true");
-        rss_mdm_query_postgres::filter(&mut sql, q, &*BINDINGS).map_err(query_error)?;
-        sql.push(") END FROM source_budget b");
-        let (count, value): (i64, Option<Value>) = {
-            let c = &mut *c;
-            sql.build_query_as().fetch_one(c).await.map_err(super::sql)
-        }?;
-        check_sources(count, STATISTICS_SOURCES, "operations.statistics.sources")?;
-        return value.ok_or(Error::Conflict);
-    }
-    let mut after = None;
-    let mut source_rows = None;
-    let mut total = 0u64;
-    let mut commands = 0u64;
-    let mut runs = 0u64;
-    let mut unknown = 0u64;
-    loop {
-        let rows = candidates(
-            c,
-            p.tenant_id().to_owned(),
-            allowed.clone(),
-            q,
-            after.as_ref(),
-            (STATISTICS_SOURCES, BATCH),
-            &mut source_rows,
-        )
-        .await?;
-
-        if rows.is_empty() {
-            break;
-        }
-        after = rows
-            .last()
-            .map(|r| q.position(r))
-            .transpose()
-            .map_err(query_error)?;
-        let mut start = 0;
-        while start < rows.len() {
-            let end = split(&rows, start)?;
-            let mut batch = rows[start..end].to_vec();
-            classify(s, c, p, grant, &mut batch, now).await?;
-            for row in matching(c, q, batch).await? {
-                total += 1;
-                if row["kind"] == "command" {
-                    commands += 1
-                } else {
-                    runs += 1
+) -> Result<rss_mdm_query::Statistics<Statistics>, Error> {
+    let stage = "operations.statistics.sources";
+    let mut scan = Scan::new(p, grant, q, None, s.budgets.statistics, stage)?;
+    let statistics = if !classified(q) {
+        let mut sql = sqlx::QueryBuilder::new("");
+        scan.scope.totals(&mut sql,s.budgets.statistics)?;
+        let (total, commands, runs, unknown, ambiguous): (i64,i64,i64,i64,bool) =
+            sql.build_query_as().fetch_one(c).await.map_err(super::sql)?;
+        check_budget(total as usize, s.budgets.statistics, stage)?;
+        if ambiguous { return Err(Error::Unavailable(Failure::CommandInvariant)); }
+        Statistics { total:total as u64, commands:commands as u64, action_runs:runs as u64, unknown:unknown as u64 }
+    } else {
+        let mut counts = Statistics {total:0,commands:0,action_runs:0,unknown:0};
+        loop {
+            let rows = scan.next(c,BATCH).await?;
+            if rows.is_empty() { break; }
+            let mut start = 0;
+            while start < rows.len() {
+                let end = split(&rows,start)?;
+                let mut batch = rows[start..end].to_vec();
+                classify(s,c,p,grant,&mut batch,now).await?;
+                for row in matching(c,q,batch).await? {
+                    counts.total += 1;
+                    if row["kind"] == "command" { counts.commands += 1 } else { counts.action_runs += 1 }
+                    if row["status"] == "unknown" { counts.unknown += 1 }
                 }
-                if row["status"] == "unknown" {
-                    unknown += 1
-                }
+                start = end;
             }
-            start = end;
         }
-    }
-    Ok(
-        json!({"statistics":{"total":total,"commands":commands,"actionRuns":runs,"unknown":unknown},"asOf":now}),
-    )
+        counts
+    };
+    Ok(rss_mdm_query::Statistics {statistics, as_of:now})
 }
 
-fn input_prefix(sizes: impl IntoIterator<Item = i64>) -> Result<usize, Error> {
+fn input_prefix(sizes: impl IntoIterator<Item = Result<i64, Error>>) -> Result<usize, Error> {
     let mut total = 0i64;
     let mut count = 0;
     for size in sizes {
+        let size = size?;
         if size < 0 {
             return Err(Error::Unavailable(Failure::CommandInvariant));
         }
