@@ -16,7 +16,10 @@ def external_calls():
     def capacity(owner, resource):
         total = int(os.environ[f'MDM_{owner}_CONCURRENCY'])
         requested = os.environ.get(f'MDM_{owner}_{resource.upper()}')
-        return {'total': total, resource: int(requested) if requested else max(1, total - 1)}
+        settings = {'total': total}
+        if requested:
+            settings[resource] = int(requested)
+        return settings
     return dict(apns=capacity('APNS', 'per_credential'), wns=capacity('WNS', 'per_credential'),
                 ade=int(os.environ['MDM_ADE_CONCURRENCY']), publication=capacity('PUBLICATION', 'per_source'))
 

@@ -70,6 +70,7 @@ pub struct Input {
     pub audit_mode: AuditMode,
     pub request_slots: usize,
     pub buffered_body_bytes: usize,
+    #[serde(deserialize_with = "installation_external_calls")]
     pub external_calls: crate::background::ExternalCalls,
     pub planning_concurrency: usize,
     pub device_concurrency: usize,
@@ -81,6 +82,28 @@ pub struct Input {
     pub origin: String,
     pub listen: SocketAddr,
     pub trusted_gateway: IpAddr,
+}
+// Only the first-install input may omit a sublimit. Serialize the effective
+// configuration into the installation fingerprint and the exported host revision.
+fn installation_external_calls<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<crate::background::ExternalCalls, D::Error> {
+    let mut input = serde_json::Value::deserialize(deserializer)?;
+    for (owner, field) in [
+        ("apns", "per_credential"),
+        ("wns", "per_credential"),
+        ("publication", "per_source"),
+    ] {
+        if let Some(fields) = input
+            .get_mut(owner)
+            .and_then(serde_json::Value::as_object_mut)
+            && !fields.contains_key(field)
+            && let Some(total) = fields.get("total").cloned()
+        {
+            fields.insert(field.into(), total);
+        }
+    }
+    serde_json::from_value(input).map_err(serde::de::Error::custom)
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
