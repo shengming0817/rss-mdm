@@ -55,7 +55,7 @@ async fn plans(h: &Harness, device: Uuid, after: Uuid) -> Result<()> {
         .join("../../artifacts/local-t2/operation-plans");
     std::fs::create_dir_all(&artifacts)?;
     for label in ["first", "deep", "statistics"] {
-        let mut sql = sqlx::QueryBuilder::new("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ");
+        let mut sql = sqlx::QueryBuilder::new("EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) ");
         match label {
             "first" => scope.page(&mut sql, None, 2)?,
             "deep" => scope.page(
@@ -79,9 +79,7 @@ async fn plans(h: &Harness, device: Uuid, after: Uuid) -> Result<()> {
             if node["Subplan Name"] == "CTE selected" {
                 selected = Some(actual * loops);
             }
-            if node["Relation Name"] == "runs"
-                && node["Alias"].as_str().is_some_and(|a| a.starts_with('r'))
-            {
+            if node["Relation Name"] == "runs" && node["Schema"] == "mdm_script" {
                 script_rows +=
                     loops * (actual + node["Rows Removed by Filter"].as_u64().unwrap_or(0));
             }
@@ -91,7 +89,7 @@ async fn plans(h: &Harness, device: Uuid, after: Uuid) -> Result<()> {
         assert_eq!(selected, Some(expected), "{label} scoped probe");
         eprintln!("operations {label}: selected={expected} run table rows examined={script_rows}");
         assert!(
-            script_rows < 128,
+            (1..128).contains(&script_rows),
             "{label} examined {script_rows} run rows with 4096 unrelated rows"
         );
     }
@@ -104,88 +102,159 @@ async fn plans(h: &Harness, device: Uuid, after: Uuid) -> Result<()> {
 async fn scoped_pages_and_statistics_charge_only_eligible_history() -> Result<()> {
     let mut h = Harness::open().await?;
     let peer = Context::open("shared", &[]).await?;
-    let result = async {
-        let (_,version) = h.policy("budget-script").await?;
-        let hidden = h.object.clone();
-        let native = super::super::retirement::native_controls(&mut h,1).await?;
-        let command_id = Uuid::from_u128(1);
-        let first = Uuid::from_u128(8192);
-        let second = Uuid::from_u128(16384);
-        let extra = Uuid::from_u128(32768);
-        runs(&h.c,version,&h.object,&[first,second,extra]).await?;
-        runs(&h.c,version,&hidden,&(2..4098).map(Uuid::from_u128).collect::<Vec<_>>()).await?;
-        // A different tenant owns the same UUID as the visible native command.
-        let other = planning::endpoint(&peer).await?;
-        let scope = planning::published(&peer,&other).await?.scope;
-        let (_,other_version) = Harness::script_policy(&peer,scope,"budget-script","system").await?;
-        runs(&peer,other_version,&other,&[command_id]).await?;
-
-        let account = h.c.account(&[Permission::OperationRead]).await?;
-        let rule = rss_mdm_authorization_service::Rule {
-            subject:rss_mdm_authorization_service::Subject::User {user:account.user.clone()},
-            grants:vec![rss_mdm_authorization_service::Grant {operation:Permission::OperationRead,
-                scope:rss_mdm_authorization_service::Scope::Device {id:native.device}}],
-        };
-        sqlx::query("UPDATE mdm_access.authorization_rules SET document=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2")
-            .bind(h.c.tenant.to_string()).bind(account.rule).bind(serde_json::to_value(rule)?).execute(&h.c.operator).await?;
-        let proof=Arc::new(h.c.authenticate(&account).await?);
-        let operations=Arc::new(Operations {
-            budgets:Budgets {page:3,statistics:3},
-            apple:Arc::new(rss_mdm_apple_channel::flow_store::Store{protection:h.a.resources.protection.clone()}),
-            tasks:h.a.task_reads.clone(),registration:h.a.registration.native.clone(),recovery:None,execution:h.a.service.clone(),
-        });
-        let codec = CursorCodec::new(&[8;32])?;
-        let router = rss_mdm_management_http::execution::http::read_routes().with_state::<()>(operations.clone())
-            .layer(axum::Extension(codec.clone())).layer(axum::Extension(h.c.read_auth(proof.clone())))
-            .layer(axum::Extension(h.c.request(&proof)?)).into_axum();
-        let router=axum::Router::new().nest("/api/v1/tenants/{tenant}",router);
-        let path=format!("/api/v1/tenants/{}/operations",h.c.tenant);
-        let stats_path=format!("{path}/statistics");
-        let matching=format!("id!={extra};(device=={},authorization.state==not_applicable)",native.device);
-        let filter=format!("id!={extra}");
-        for expression in [&filter,&matching] {
-            let mut cursor = None::<String>;
-            for expected in [first,second,command_id] {
-                // Same non-null policy sorts by id, followed by the command's NULL policy.
-                let mut pairs=vec![("filter",expression.as_str()),("sort","policy"),("limit","1"),("fields","id,kind")];
-                if let Some(token)=cursor.as_deref() { pairs.push(("cursor",token)); }
-                let (status,page)=http(&router,&path,&pairs).await?;
-                assert_eq!(status,axum::http::StatusCode::OK,"{page}");
-                assert_eq!(page["items"].as_array().unwrap().len(),1);
-                assert_eq!(page["items"][0]["id"],json!(expected));
-                cursor=page["nextCursor"].as_str().map(str::to_owned);
-                assert_eq!(cursor.is_some(),expected!=command_id);
-            }
-            let (status,totals)=http(&router,&stats_path,&[("filter",expression)]).await?;
-            assert_eq!(status,axum::http::StatusCode::OK,"{totals}");
-            assert_eq!(totals["statistics"],json!({"total":3,"commands":1,"actionRuns":2,"unknown":0}));
-        }
-        // Unclassified lists stop at the first lookahead even if the eligible set is larger.
-        assert_eq!(http(&router,&path,&[("limit","1"),("fields","id")]).await?.0,axum::http::StatusCode::OK);
-        let request = h.c.read_auth(proof.clone());
-        let audit = h.c.request(&proof)?;
-        for raw in ["","filter=authorization.state==blocked"] {
-            let q=SCHEMA.statistics(raw)?;
-            assert!(matches!(operations.statistics(&request,&q,&audit).await,Err(Error::Unavailable(Failure::Capacity))));
-            assert_eq!(http(&router,&stats_path,&if raw.is_empty(){vec![]}else{vec![("filter","authorization.state==blocked")]}).await?.0,axum::http::StatusCode::SERVICE_UNAVAILABLE);
-        }
-        let q=SCHEMA.parse("filter=authorization.state==blocked&limit=1&fields=id")?;
-        assert!(matches!(operations.directory(&request,&q,&codec,&audit).await,Err(Error::Unavailable(Failure::Capacity))));
-        plans(&h,native.device.into_uuid(),first).await?;
-
-        // A conflicting owner on a hidden device remains detectable even when the
-        // query selects only commands, and even for an id-only response.
-        runs(&h.c,version,&hidden,&[command_id]).await?;
-        let q=SCHEMA.parse("filter=kind==command&fields=id&limit=1")?;
-        assert!(matches!(operations.directory(&request,&q,&codec,&audit).await,Err(Error::Unavailable(Failure::CommandInvariant))));
-        let q=SCHEMA.statistics("filter=kind==command")?;
-        assert!(matches!(operations.statistics(&request,&q,&audit).await,Err(Error::Unavailable(Failure::CommandInvariant))));
-        let (status,page)=http(&router,&path,&[("filter",&format!("id=={first}")),("fields","id")]).await?;
-        assert_eq!(status,axum::http::StatusCode::OK);
-        assert_eq!(page["items"],json!([{"id":first}]));
-        Ok::<_,anyhow::Error>(())
-    }.await;
+    let result = verify(&mut h, &peer).await;
     peer.close().await;
     h.close().await?;
     result
+}
+
+async fn verify(h: &mut Harness, peer: &Context) -> Result<()> {
+    let (_, version) = h.policy("budget-script").await?;
+    let hidden = h.object.clone();
+    let native = super::super::retirement::native_controls(h, 1).await?;
+    let command_id = Uuid::from_u128(1);
+    let first = Uuid::from_u128(8192);
+    let second = Uuid::from_u128(16384);
+    let extra = Uuid::from_u128(32768);
+    runs(&h.c, version, &h.object, &[first, second, extra]).await?;
+    runs(
+        &h.c,
+        version,
+        &hidden,
+        &(2..4098).map(Uuid::from_u128).collect::<Vec<_>>(),
+    )
+    .await?;
+    // A different tenant owns the same UUID as the visible native command.
+    let other = planning::endpoint(peer).await?;
+    let scope = planning::published(peer, &other).await?.scope;
+    let (_, other_version) = Harness::script_policy(peer, scope, "budget-script", "system").await?;
+    runs(peer, other_version, &other, &[command_id]).await?;
+
+    let account = h.c.account(&[Permission::OperationRead]).await?;
+    let rule = rss_mdm_authorization_service::Rule {
+        subject: rss_mdm_authorization_service::Subject::User {
+            user: account.user.clone(),
+        },
+        grants: vec![rss_mdm_authorization_service::Grant {
+            operation: Permission::OperationRead,
+            scope: rss_mdm_authorization_service::Scope::Device { id: native.device },
+        }],
+    };
+    sqlx::query("UPDATE mdm_access.authorization_rules SET document=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(h.c.tenant.to_string()).bind(account.rule).bind(serde_json::to_value(rule)?).execute(&h.c.operator).await?;
+    let proof = Arc::new(h.c.authenticate(&account).await?);
+    let operations = Arc::new(Operations {
+        budgets: Budgets {
+            page: 3,
+            statistics: 3,
+        },
+        apple: Arc::new(rss_mdm_apple_channel::flow_store::Store {
+            protection: h.a.resources.protection.clone(),
+        }),
+        tasks: h.a.task_reads.clone(),
+        registration: h.a.registration.native.clone(),
+        recovery: None,
+        execution: h.a.service.clone(),
+    });
+    let codec = CursorCodec::new(&[8; 32])?;
+    let router = rss_mdm_management_http::execution::http::read_routes()
+        .with_state::<()>(operations.clone())
+        .layer(axum::Extension(codec.clone()))
+        .layer(axum::Extension(h.c.read_auth(proof.clone())))
+        .layer(axum::Extension(h.c.request(&proof)?))
+        .into_axum();
+    let router = axum::Router::new().nest("/api/v1/tenants/{tenant}", router);
+    let path = format!("/api/v1/tenants/{}/operations", h.c.tenant);
+    let stats_path = format!("{path}/statistics");
+    let matching = format!(
+        "id!={extra};(device=={},authorization.state==not_applicable)",
+        native.device
+    );
+    let filter = format!("id!={extra}");
+    for expression in [&filter, &matching] {
+        let mut cursor = None::<String>;
+        for expected in [first, second, command_id] {
+            // Same non-null policy sorts by id, followed by the command's NULL policy.
+            let mut pairs = vec![
+                ("filter", expression.as_str()),
+                ("sort", "policy"),
+                ("limit", "1"),
+                ("fields", "id,kind"),
+            ];
+            if let Some(token) = cursor.as_deref() {
+                pairs.push(("cursor", token));
+            }
+            let (status, page) = http(&router, &path, &pairs).await?;
+            assert_eq!(status, axum::http::StatusCode::OK, "{page}");
+            assert_eq!(page["items"].as_array().unwrap().len(), 1);
+            assert_eq!(page["items"][0]["id"], json!(expected));
+            cursor = page["nextCursor"].as_str().map(str::to_owned);
+            assert_eq!(cursor.is_some(), expected != command_id);
+        }
+        let (status, totals) = http(&router, &stats_path, &[("filter", expression)]).await?;
+        assert_eq!(status, axum::http::StatusCode::OK, "{totals}");
+        assert_eq!(
+            totals["statistics"],
+            json!({"total":3,"commands":1,"actionRuns":2,"unknown":0})
+        );
+    }
+    // Unclassified lists stop at the first lookahead even if the eligible set is larger.
+    assert_eq!(
+        http(&router, &path, &[("limit", "1"), ("fields", "id")])
+            .await?
+            .0,
+        axum::http::StatusCode::OK
+    );
+    let request = h.c.read_auth(proof.clone());
+    let audit = h.c.request(&proof)?;
+    for raw in ["", "filter=authorization.state==blocked"] {
+        let q = SCHEMA.statistics(raw)?;
+        assert!(matches!(
+            operations.statistics(&request, &q, &audit).await,
+            Err(Error::Unavailable(Failure::Capacity))
+        ));
+        assert_eq!(
+            http(
+                &router,
+                &stats_path,
+                &if raw.is_empty() {
+                    vec![]
+                } else {
+                    vec![("filter", "authorization.state==blocked")]
+                }
+            )
+            .await?
+            .0,
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+    let q = SCHEMA.parse("filter=authorization.state==blocked&limit=1&fields=id")?;
+    assert!(matches!(
+        operations.directory(&request, &q, &codec, &audit).await,
+        Err(Error::Unavailable(Failure::Capacity))
+    ));
+    plans(h, native.device.into_uuid(), first).await?;
+
+    // A conflicting owner on a hidden device remains detectable even when the
+    // query selects only commands, and even for an id-only response.
+    runs(&h.c, version, &hidden, &[command_id]).await?;
+    let q = SCHEMA.parse("filter=kind==command&fields=id&limit=1")?;
+    assert!(matches!(
+        operations.directory(&request, &q, &codec, &audit).await,
+        Err(Error::Unavailable(Failure::CommandInvariant))
+    ));
+    let q = SCHEMA.statistics("filter=kind==command")?;
+    assert!(matches!(
+        operations.statistics(&request, &q, &audit).await,
+        Err(Error::Unavailable(Failure::CommandInvariant))
+    ));
+    let (status, page) = http(
+        &router,
+        &path,
+        &[("filter", &format!("id=={first}")), ("fields", "id")],
+    )
+    .await?;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(page["items"], json!([{"id":first}]));
+    Ok(())
 }

@@ -87,13 +87,61 @@ impl Operations {
                     .ok_or(Error::Unavailable(Failure::CommandInvariant))
             };
             let evidence = if evidence_requested {
-                Some(match owner {
-                    Owner::Command(owner) => Evidence::Native {detail: Box::new(self.detail_owned_on(c,p,grant,now,&metadata.device,id,true,owner).await?)},
-                    Owner::Run(Run::Device | Run::Software | Run::Script | Run::Collection) => summaries.remove(&id).ok_or(Error::Unavailable(Failure::CommandInvariant))?,
-                    Owner::Run(Run::Access) => Evidence::Access(rss_mdm_device_access_postgres::device_access::execution::queries::detail_on(c,tenant,policy()?,id,p,grant).await.map_err(super::super::task_reads::access_fault)?),
-                    Owner::Run(Run::Credential(profile)) => Evidence::Credential(rss_mdm_recovery_credentials::tasks::queries::detail_on(profile,c,tenant,policy()?,id,p,grant).await.map_err(super::super::task_reads::credential_fault)?),
-                    Owner::Run(Run::Registration) => Evidence::Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::detail_on(rss_mdm_install_support::StorageProfile::Mdm,c,tenant,policy()?,id,p,grant).await.map_err(super::super::task_reads::enrollment_fault)?),
-                })
+                let value = match owner {
+                    Owner::Command(owner) => Evidence::Native {
+                        detail: Box::new(
+                            self.detail_owned_on(
+                                c,
+                                p,
+                                grant,
+                                now,
+                                &metadata.device,
+                                id,
+                                true,
+                                owner,
+                            )
+                            .await?,
+                        ),
+                    },
+                    Owner::Run(Run::Device | Run::Software | Run::Script | Run::Collection) => {
+                        summaries
+                            .remove(&id)
+                            .ok_or(Error::Unavailable(Failure::CommandInvariant))?
+                    }
+                    Owner::Run(Run::Access) => {
+                        use rss_mdm_device_access_postgres::device_access::execution::queries;
+                        Evidence::Access(
+                            queries::detail_on(c, tenant, policy()?, id, p, grant)
+                                .await
+                                .map_err(super::super::task_reads::access_fault)?,
+                        )
+                    }
+                    Owner::Run(Run::Credential(profile)) => {
+                        use rss_mdm_recovery_credentials::tasks::queries;
+                        Evidence::Credential(
+                            queries::detail_on(profile, c, tenant, policy()?, id, p, grant)
+                                .await
+                                .map_err(super::super::task_reads::credential_fault)?,
+                        )
+                    }
+                    Owner::Run(Run::Registration) => {
+                        use rss_mdm_registration_service::enrollment::tasks::queries;
+                        Evidence::Enrollment(
+                            queries::detail_on(
+                                rss_mdm_install_support::StorageProfile::Mdm,
+                                c,
+                                tenant,
+                                policy()?,
+                                id,
+                                p,
+                                grant,
+                            )
+                            .await
+                            .map_err(super::super::task_reads::enrollment_fault)?,
+                        )
+                    }
+                };
+                Some(value)
             } else {
                 None
             };
