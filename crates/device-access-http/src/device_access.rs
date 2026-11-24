@@ -51,7 +51,7 @@ pub fn mount(
 }
 fn register() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
-        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { publish_credential_policy, credential_policy, request_credential, credential_status, get_materials, post_material_step_up, post_material_disclose, get_list, get_binding, put_change, post_step_up, get_operation, get_execution, get_offboarding, post_offboarding_identity, get_enterprise_list, post_enterprise_change, get_enterprise_detail, post_enterprise_step_up, post_offboarding_idp } }
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { publish_credential_policy, credential_policy, request_credential, credential_status, get_materials, post_material_step_up, post_material_disclose, get_list, get_binding, put_change, post_step_up, get_operation, get_execution, get_offboarding, post_offboarding_identity, get_enterprise_list, post_enterprise_change, get_enterprise_detail, get_enterprise_operation, post_enterprise_step_up, post_offboarding_idp } }
         RegisterModule1 {
             publish_credential_policy: rss_mdm_http_contract::module::Route::new(
                 "/devices/{device}/device-access/credential-policies",
@@ -197,6 +197,14 @@ fn register() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Decla
                     &[RouteOperation::Get],
                 ),
             ),
+            get_enterprise_operation: rss_mdm_http_contract::module::Route::new(
+                "/device-access/enterprise/configuration/operations/{operationId}",
+                get(
+                    enterprise_operation,
+                    &contracts::ENTERPRISE_CONFIGURATION,
+                    &[RouteOperation::Get],
+                ),
+            ),
             post_enterprise_step_up: rss_mdm_http_contract::module::Route::new(
                 "/device-access/enterprise/configuration/step-up",
                 rss_mdm_http_contract::routing::post(
@@ -307,6 +315,27 @@ async fn binding(
         .await
         .map(Json)
         .map_err(Into::into)
+}
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApplicationOperationQuery {
+    application_id: Option<String>,
+}
+async fn enterprise_operation(
+    State(s): State<Arc<Services>>,
+    Extension(auth): Extension<RequestAuth>,
+    Path((_tenant, operation)): Path<(Uuid, Uuid)>,
+    axum::extract::Query(query): axum::extract::Query<ApplicationOperationQuery>,
+) -> Result<Json<rss_mdm_device_access_postgres::enterprise::ApplicationReceipt>, Error> {
+    s.registration
+        .enterprise_operation(&auth.proof, operation)
+        .await
+        .and_then(|v| v.application(query.application_id.as_deref()))
+        .map(Json)
+        .map_err(|e| match e {
+            rss_mdm_device_access_postgres::Error::NotFound => Error::OperationNotFound,
+            e => e.into(),
+        })
 }
 async fn enterprise_detail(
     State(s): State<Arc<Services>>,
