@@ -8,7 +8,18 @@ use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 mod declarations;
 mod selection;
+pub(super) mod sources;
+
+#[derive(Clone, Copy)]
+pub(crate) struct Budgets {
+    pub page: usize,
+    pub statistics: usize,
+}
+impl Default for Budgets {
+    fn default() -> Self { Self { page: 1_048_576, statistics: 4_194_304 } }
+}
 pub(crate) struct Operations {
+    pub budgets: Budgets,
     pub apple: Arc<rss_mdm_apple_channel::flow_store::Store>,
     pub tasks: Arc<super::task_reads::Reads>,
     pub registration: Arc<rss_mdm_registration_service::installation::Service>,
@@ -60,75 +71,7 @@ static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
         rss_mdm_query_postgres::Bindings::mapped(&SCHEMA, column)
             .expect("Complete operation SQL dispatch")
     });
-const PAGE_SOURCES: i64 = 1_048_576;
 const CONFIGURATION_RELATION: &str = "SELECT id,device,kind,source_kind,policy_version,policy,deadline,status,input_bytes FROM mdm_planning.configuration_execution_facts WHERE tenant_id=$1::uuid";
-const STATISTICS_SOURCES: i64 = 4_194_304;
-fn check_sources(rows: i64, limit: i64, stage: &'static str) -> Result<(), Error> {
-    if rows < 0 {
-        return Err(Error::Unavailable(Failure::CommandInvariant));
-    }
-    if !rss_mdm_query_postgres::within_budget(
-        stage,
-        rows as u64,
-        rows as u64 * 16,
-        limit as u64,
-        limit as u64 * 16,
-    ) {
-        return Err(Error::Unavailable(Failure::Capacity));
-    }
-    Ok(())
-}
-
-fn relation(
-    tenant: String,
-    allowed: Option<Vec<rss_mdm_agent_wire::DeviceId>>,
-    source_limit: i64,
-    source_rows: Option<i64>,
-) -> sqlx::QueryBuilder<sqlx::Postgres> {
-    let mut sql = sqlx::QueryBuilder::new("WITH tenant_context AS(SELECT ");
-    sql.push_bind(tenant).push("::uuid),executions AS(");
-    sql.push(CONFIGURATION_RELATION)
-        .push(" UNION ALL ")
-        .push(rss_mdm_device_service::control::directory::RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_software_service::deployment::directory::RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_registration_service::installation::queries::RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_registration_service::enrollment::tasks::queries::RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_device_access_postgres::device_access::execution::queries::RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_recovery_credentials::tasks::queries::RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_recovery_credentials::tasks::queries::DA_RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_recovery_credentials::native::queries::RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_script_service::queries::RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_inventory_service::collection::execution::queries::relation_sql());
-    sql.push("),source_probe AS MATERIALIZED(SELECT id FROM executions LIMIT ")
-        .push_bind(source_limit + 1)
-        .push("),source_count AS MATERIALIZED (");
-    if let Some(rows) = source_rows {
-        sql.push("SELECT ").push_bind(rows).push("::bigint AS rows");
-    } else {
-        sql.push("SELECT count(*) AS rows FROM source_probe");
-    }
-    sql.push("),source_budget AS MATERIALIZED(SELECT CASE WHEN EXISTS(SELECT id FROM source_probe GROUP BY id HAVING count(*)>1) THEN -1 ELSE rows END AS rows FROM source_count),visible AS(SELECT * FROM executions WHERE (SELECT rows FROM source_budget) BETWEEN 0 AND ").push_bind(source_limit);
-    if let Some(ids) = allowed {
-        sql.push(" AND device=ANY(")
-            .push_bind(
-                ids.into_iter()
-                    .map(rss_mdm_agent_wire::DeviceId::into_uuid)
-                    .collect::<Vec<_>>(),
-            )
-            .push(")");
-    }
-    sql.push(") ");
-    sql
-}
 impl Operations {
     #[expect(
         clippy::too_many_arguments,
