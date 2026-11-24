@@ -488,7 +488,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
         send_as(body, Some(module_certificate.clone())).await?,
         accepted
     );
-    let enrolled = w::Scalar::String("this_organization".into());
+    let enrolled = "this_organization";
     let partial = w::ReportRequest::new(
         Uuid::new_v4(),
         4,
@@ -496,7 +496,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
         frozen.clone(),
         w::ReportBody::Partial(vec![w::FieldValue {
             field: enrollment_fact.field,
-            value: w::CollectedValue::Value(enrolled.clone()),
+            value: w::CollectedValue::Value(w::Scalar::String(enrolled.into())),
         }]),
     )?;
     assert_eq!(
@@ -520,7 +520,7 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
             tx.rollback().await?;
             if facts.scalars.iter().any(|f| {
                 f.field == MDM_ENROLLMENT
-                    && matches!(&f.fact.state, State::Known(v) if v == &enrolled)
+                    && matches!(&f.fact.state, State::Known(Scalar::String(v)) if v == enrolled)
             }) && let Some(fact) = facts.scalars.iter().find(|f| f.field == CLIENT_MODULES)
             {
                 assert_eq!(fact.fact.evidence.received_at, receipt.received_at);
