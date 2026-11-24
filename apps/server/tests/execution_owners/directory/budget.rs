@@ -493,18 +493,12 @@ async fn independent_statistics(h: &Harness, busy: &DeviceObject, version: Uuid)
         Uuid::from_u128(4098),
         Uuid::new_v4()
     );
-    let (status, totals) = http(&router, &path, &[("filter", &mixed)]).await?;
-    assert_eq!(status, axum::http::StatusCode::OK, "{totals}");
-    assert_eq!(totals["statistics"]["total"], 4097);
+    let expected = json!({"total":4097,"commands":0,"actionRuns":4097,"unknown":0});
+    exact_totals(&router, &path, &mixed, &expected).await?;
     // Five explicit grants used to send classified statistics into the list sort fallback.
     scope_account(&h.c, &account, busy.members[0].device, 4).await?;
     let filter = "authorization.state==not_applicable";
-    let (status, totals) = http(&router, &path, &[("filter", filter)]).await?;
-    assert_eq!(status, axum::http::StatusCode::OK, "{totals}");
-    assert_eq!(
-        totals["statistics"],
-        json!({"total":4097,"commands":0,"actionRuns":4097,"unknown":0})
-    );
+    exact_totals(&router, &path, filter, &expected).await?;
     runs(&h.c, version, busy, &[Uuid::from_u128(4099)]).await?;
     let q = SCHEMA.statistics(&format!("filter={filter}"))?;
     assert!(matches!(
@@ -548,5 +542,17 @@ async fn scope_account(
     };
     sqlx::query("UPDATE mdm_access.authorization_rules SET document=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2")
         .bind(c.tenant.to_string()).bind(account.rule).bind(serde_json::to_value(rule)?).execute(&c.operator).await?;
+    Ok(())
+}
+
+async fn exact_totals(
+    router: &axum::Router,
+    path: &str,
+    filter: &str,
+    expected: &Value,
+) -> Result<()> {
+    let (status, body) = http(router, path, &[("filter", filter)]).await?;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+    assert_eq!(&body["statistics"], expected);
     Ok(())
 }
