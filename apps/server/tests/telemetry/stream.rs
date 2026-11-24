@@ -139,8 +139,7 @@ async fn upload(
     Ok(input.batch_id)
 }
 
-// A read policy in the isolated PostgreSQL fixture pauses precisely the seventeenth
-// publication. The normal verifier must finish its first page to reach this row.
+// Gate a particular frozen read and wait until the real HTTP request reaches it.
 async fn late_page_deadline(
     c: &Context,
     short: &http::Http,

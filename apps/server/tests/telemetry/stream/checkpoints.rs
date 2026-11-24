@@ -189,4 +189,5 @@ pub(super) async fn boundaries(
     );
     sqlx::query("UPDATE mdm.field_versions SET definition=jsonb_set(definition,'{sensitivity}',to_jsonb('standard'::text))
         WHERE tenant_id=$1::uuid AND field='custom.history_0001'").bind(c.tenant.to_string()).execute(&c.operator).await?;
+    Ok(())
 }
