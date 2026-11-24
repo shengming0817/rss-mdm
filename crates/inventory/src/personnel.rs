@@ -5,8 +5,6 @@ use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// User-valued fields of an enrolled device.
-#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
 pub enum DeviceUser {
     /// Principal recorded at registration.
     Registration,

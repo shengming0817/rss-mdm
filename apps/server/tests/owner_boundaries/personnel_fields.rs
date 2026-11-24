@@ -113,7 +113,14 @@ async fn registration_and_current_fields_share_preview_and_revoke_local_membersh
     .await?;
     assert_eq!(count, 1);
     let (agent, grant) = crate::device_material_support::seed_registration(&c).await?;
-    crate::device_material_support::authenticated_agent(&c, grant, &agent, vec![]).await?;
+    crate::device_material_support::authenticated_agent(
+        &c,
+        grant,
+        &agent,
+        vec![rss_mdm_agent_wire::runtime::Capability::InventoryCollectionV1],
+    )
+    .await
+    .context("registered agent credential")?;
     let (peer, certificate, _, trust) = crate::device_material_support::qualified_peer_material(
         &c,
         &agent,
