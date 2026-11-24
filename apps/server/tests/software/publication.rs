@@ -282,6 +282,7 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
     let first_page = CancellationToken::new();
     let scan_again = CancellationToken::new();
     let consumed = CancellationToken::new();
+    let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let checkouts = std::sync::atomic::AtomicUsize::new(0);
     let discovery = sqlx::postgres::PgPoolOptions::new()
         .min_connections(1)
@@ -289,7 +290,11 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
         .before_acquire({
             let (first_page, scan_again, consumed) =
                 (first_page.clone(), scan_again.clone(), consumed.clone());
+            let armed = armed.clone();
             move |_, _| {
+                if !armed.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Box::pin(async { Ok(true) });
+                }
                 let n = checkouts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let (first_page, scan_again, consumed) =
                     (first_page.clone(), scan_again.clone(), consumed.clone());
@@ -321,6 +326,7 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
             crate::clock::SystemClock,
         ))),
     });
+    armed.store(true, std::sync::atomic::Ordering::SeqCst);
     gate.active
         .store(true, std::sync::atomic::Ordering::Release);
     let mut stack = rss_runtime::ShutdownStack::try_new(
@@ -349,7 +355,13 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
         }
         Ok::<_, anyhow::Error>(())
     })
-    .await??;
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "software discovery or initial eight held requests timed out (observed {})",
+            held.len()
+        )
+    })??;
     // Submit also verifies content. Allow this admission read, keeping all worker reads held.
     let (fast_record, ()) = tokio::join!(submit(&fast_op, &brew), async {
         let (id, release) = observed.recv().await.unwrap();
@@ -392,7 +404,9 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
     gate.release.cancel();
     anyhow::ensure!(drain.join().await?.is_clean());
 
-    probe??;
+    probe.map_err(|_| {
+        anyhow::anyhow!("timed out waiting for the discovered software peer receipt")
+    })??;
     anyhow::ensure!(matches!(
         slow_op
             .record(&records[0].0, cutoff())

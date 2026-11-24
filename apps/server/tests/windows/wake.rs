@@ -20,7 +20,7 @@ impl WakeDemand for FailFirstPage {
         &'a self,
         pool: &'a sqlx::PgPool,
         after: Option<(Uuid, Uuid)>,
-    ) -> Pending<'a, Vec<(Uuid, Uuid, Vec<u8>, i64)>> {
+    ) -> Pending<'a, Vec<rss_mdm_windows_channel::participants::WakeCandidate>> {
         if self.first.swap(false, Ordering::AcqRel) {
             return Box::pin(async {
                 Err(rss_mdm_windows_channel::Error::Unavailable(

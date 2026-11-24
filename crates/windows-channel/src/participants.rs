@@ -163,12 +163,15 @@ pub trait Departure: Send + Sync {
         registration: rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, ()>;
 }
+/// Ordered discovery row: tenant, device, selected SID digest and milliseconds until due.
+pub type WakeCandidate = (uuid::Uuid, uuid::Uuid, Vec<u8>, i64);
+
 pub trait WakeDemand: Send + Sync {
     fn candidates<'a>(
         &'a self,
         pool: &'a sqlx::PgPool,
         after: Option<(uuid::Uuid, uuid::Uuid)>,
-    ) -> Pending<'a, Vec<(uuid::Uuid, uuid::Uuid, Vec<u8>, i64)>>;
+    ) -> Pending<'a, Vec<WakeCandidate>>;
     fn pending<'a>(
         &'a self,
         execution: rss_transactional_messaging::fence::ExecutionBinding,

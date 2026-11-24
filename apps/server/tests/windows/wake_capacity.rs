@@ -32,7 +32,10 @@ impl rss_mdm_windows_channel::participants::WakeDemand for PeerPage {
         &'a self,
         pool: &'a sqlx::PgPool,
         after: Option<(Uuid, Uuid)>,
-    ) -> rss_mdm_windows_channel::participants::Pending<'a, Vec<(Uuid, Uuid, Vec<u8>, i64)>> {
+    ) -> rss_mdm_windows_channel::participants::Pending<
+        'a,
+        Vec<rss_mdm_windows_channel::participants::WakeCandidate>,
+    > {
         Box::pin(async move {
             if after.is_some_and(|key| key >= self.peer) && self.ready.load(Ordering::Acquire) {
                 self.consumed.cancel();

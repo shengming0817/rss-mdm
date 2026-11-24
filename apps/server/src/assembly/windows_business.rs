@@ -514,7 +514,7 @@ impl WakeDemand for WindowsBusiness {
         &'a self,
         pool: &'a sqlx::PgPool,
         after: Option<(Uuid, Uuid)>,
-    ) -> Pending<'a, Vec<(Uuid, Uuid, Vec<u8>, i64)>> {
+    ) -> Pending<'a, Vec<rss_mdm_windows_channel::participants::WakeCandidate>> {
         Box::pin(async move {
             sqlx::query_as(
                 "SELECT tenant_id,device,credential,wait_ms FROM mdm_windows.push_work_page($1,$2)",

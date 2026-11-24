@@ -1015,7 +1015,9 @@ async fn registered_owners_share_capacity_and_drain() -> Result<()> {
         TaskOwner::Script.seed(&a).await?;
     }
     let backlog = TaskOwner::Script.seed(&a).await?;
-    let mut one = a.c.operator.begin().await?;
+    // Keep an observer connection available while the two independent locks are held.
+    let lock_pool = a.c.inputs.pool("worker_capacity", "postgres").await?;
+    let mut one = lock_pool.begin().await?;
     sqlx::query(
         "SELECT FROM mdm_script.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 FOR UPDATE",
     )
@@ -1054,14 +1056,18 @@ async fn registered_owners_share_capacity_and_drain() -> Result<()> {
         .bind(b.c.tenant.to_string()).fetch_all(&mut *peer).await?[0];
     // The second checkout follows consumption of the first real discovery page.
     let discovered = CancellationToken::new();
+    let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let checkouts = std::sync::atomic::AtomicUsize::new(0);
     let discovery = sqlx::postgres::PgPoolOptions::new()
         .min_connections(1)
         .max_connections(1)
         .before_acquire({
             let discovered = discovered.clone();
+            let armed = armed.clone();
             move |_, _| {
-                if checkouts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                if armed.load(std::sync::atomic::Ordering::SeqCst)
+                    && checkouts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1
+                {
                     discovered.cancel();
                 }
                 Box::pin(async { Ok(true) })
@@ -1077,6 +1083,7 @@ async fn registered_owners_share_capacity_and_drain() -> Result<()> {
         storage.reconcile.clone(),
         storage.worker_budget.clone(),
     )?;
+    armed.store(true, std::sync::atomic::Ordering::SeqCst);
     let collection = start_owner(Arc::new(peer_worker).registration(
         config.tasks,
         config.tasks_drain,
@@ -1127,6 +1134,7 @@ async fn registered_owners_share_capacity_and_drain() -> Result<()> {
     );
     anyhow::ensure!(collection.shutdown().join().await?.is_clean());
     discovery.close().await;
+    lock_pool.close().await;
 
     // Reuse the retained backlog and a second independent task to exercise a one-slot host.
     let extra = TaskOwner::Script.seed(&a).await?;
