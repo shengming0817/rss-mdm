@@ -30,7 +30,7 @@ struct PeerPage {
 impl rss_mdm_windows_channel::participants::WakeDemand for PeerPage {
     fn candidates<'a>(
         &'a self,
-        pool: &'a sqlx::PgPool,
+        connection: &'a mut sqlx::PgConnection,
         after: Option<(Uuid, Uuid)>,
     ) -> rss_mdm_windows_channel::participants::Pending<
         'a,
@@ -40,7 +40,7 @@ impl rss_mdm_windows_channel::participants::WakeDemand for PeerPage {
             if after.is_some_and(|key| key >= self.peer) && self.ready.load(Ordering::Acquire) {
                 self.consumed.cancel();
             }
-            let rows = self.owner.candidates(pool, after).await?;
+            let rows = self.owner.candidates(connection, after).await?;
             if after.is_some()
                 && rows
                     .iter()

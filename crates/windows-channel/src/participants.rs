@@ -169,7 +169,7 @@ pub type WakeCandidate = (uuid::Uuid, uuid::Uuid, Vec<u8>, i64);
 pub trait WakeDemand: Send + Sync {
     fn candidates<'a>(
         &'a self,
-        pool: &'a sqlx::PgPool,
+        connection: &'a mut sqlx::PgConnection,
         after: Option<(uuid::Uuid, uuid::Uuid)>,
     ) -> Pending<'a, Vec<WakeCandidate>>;
     fn pending<'a>(
