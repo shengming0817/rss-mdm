@@ -369,6 +369,9 @@ pub fn target_fingerprint(
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WindowsSource {
+    /// The employee operation which last renewed this registration. Management registration clears it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub renewed_by: Option<Uuid>,
     pub id: Uuid,
     pub version: i64,
     pub binding_id: Uuid,
@@ -377,6 +380,56 @@ pub struct WindowsSource {
     pub binding_revision: i64,
     pub person: Person,
     pub public_key: rss_mdm_agent_wire::platform_sso::PublicKey,
+}
+/// Version of the registered source eligible immediately before an employee change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct KeyVersion {
+    pub id: Uuid,
+    pub version: i64,
+}
+impl WindowsSource {
+    fn coordinate(&self) -> KeyVersion {
+        KeyVersion {
+            id: self.id,
+            version: self.version,
+        }
+    }
+    fn current(&self, b: &crate::device_access::Binding) -> bool {
+        self.version > 0
+            && self.binding_id == b.id
+            && self.binding_generation == b.generation
+            && self.person == b.person
+            && self.factor_generation == b.factor_generation
+            && self.binding_revision == b.revision
+    }
+}
+pub(crate) async fn eligible_key(
+    c: &mut PgConnection,
+    b: &crate::device_access::Binding,
+    epoch: Uuid,
+) -> Result<Option<KeyVersion>, Error> {
+    use crate::device_access::Origin;
+    use rss_mdm_device_access::State;
+    if b.intent.platform() != rss_mdm_agent_wire::runtime::TaskPlatform::Windows {
+        return Ok(None);
+    }
+    let Some(source) = windows_source_on(c, b).await? else {
+        return Ok(None);
+    };
+    if b.state == State::Active && b.applied_revision == Some(b.revision) && source.current(b) {
+        return Ok(Some(source.coordinate()));
+    }
+    // Consecutive employee changes may be pending while the device is offline.
+    if let Origin::Employee {
+        registration_epoch,
+        windows_key,
+    } = b.origin
+        && registration_epoch == epoch
+        && windows_key == Some(source.coordinate())
+    {
+        return Ok(windows_key);
+    }
+    Ok(None)
 }
 async fn register_key_on(
     c: &mut PgConnection,
@@ -417,34 +470,179 @@ async fn register_key_on(
         )
         .map_err(|_| Error::Malformed)?;
     verify_signature(&key.public_key, &key.signature, &bytes)?;
-    let previous: Option<serde_json::Value> = sqlx::query_scalar(
-        "SELECT document FROM rss_da.windows_sources WHERE tenant_id=$1 AND binding=$2 FOR UPDATE",
-    )
-    .bind(tenant)
-    .bind(binding.id)
-    .fetch_optional(&mut *c)
-    .await
-    .map_err(db)?;
-    let previous: Option<WindowsSource> = previous
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|_| Error::Corrupt)?;
+    let previous = windows_source_on(c, &binding).await?;
     if previous.as_ref().map_or(0, |s| s.version) != expected {
         return Err(Error::Conflict);
     }
     let source = WindowsSource {
+        renewed_by: None,
         id: previous.map_or_else(Uuid::new_v4, |s| s.id),
         version: expected.checked_add(1).ok_or(Error::Capacity)?,
         binding_id: binding.id,
         binding_generation: binding.generation,
         factor_generation: binding.factor_generation,
         binding_revision: binding.revision,
-        person: binding.person,
+        person: binding.person.clone(),
         public_key: key.public_key.clone(),
     };
-    sqlx::query("INSERT INTO rss_da.windows_sources(tenant_id,binding,id,version,document) VALUES($1,$2,$3,$4,$5) ON CONFLICT(tenant_id,binding) DO UPDATE SET version=excluded.version,document=excluded.document")
-        .bind(tenant).bind(source.binding_id).bind(source.id).bind(source.version).bind(serde_json::to_value(&source).map_err(|_|Error::Malformed)?).execute(c).await.map_err(db)?;
+    save_windows_source_on(c, &binding, &source).await?;
     Ok(source)
+}
+async fn windows_source_on(
+    c: &mut PgConnection,
+    b: &crate::device_access::Binding,
+) -> Result<Option<WindowsSource>, Error> {
+    let value: Option<sqlx::types::Json<WindowsSource>> = sqlx::query_scalar(
+        "SELECT document FROM rss_da.windows_sources WHERE tenant_id=$1 AND binding=$2 FOR UPDATE",
+    )
+    .bind(b.tenant)
+    .bind(b.id)
+    .fetch_optional(c)
+    .await
+    .map_err(db)?;
+    Ok(value.map(|v| v.0))
+}
+async fn save_windows_source_on(
+    c: &mut PgConnection,
+    b: &crate::device_access::Binding,
+    source: &WindowsSource,
+) -> Result<(), Error> {
+    sqlx::query("INSERT INTO rss_da.windows_sources(tenant_id,binding,id,version,document) VALUES($1,$2,$3,$4,$5) ON CONFLICT(tenant_id,binding) DO UPDATE SET version=excluded.version,document=excluded.document")
+        .bind(b.tenant).bind(b.id).bind(source.id).bind(source.version).bind(sqlx::types::Json(source)).execute(c).await.map_err(db)?;
+    Ok(())
+}
+
+use rss_mdm_agent_wire::enterprise::KeyRenewal;
+
+impl Service {
+    /// Continue the original employee operation after native application. A replacement key
+    /// cannot establish its own trust by signing its proposed registration.
+    pub async fn renew_windows_key(
+        &self,
+        peer: &rss_mdm_registration_service::DevicePrincipal,
+        actor: &AuthorizedPrincipal,
+        operation: Uuid,
+        key: &rss_mdm_agent_wire::enterprise::KeyRegistration,
+        admission: &dyn crate::device_access::Admission,
+        audit: &RequestAudit,
+    ) -> Result<KeyRenewal, Error> {
+        use crate::device_access::{Origin, service, storage};
+        self.proof(actor, audit)?;
+        if operation.is_nil() || peer.tenant().to_string() != actor.tenant_id() {
+            return Err(Error::Forbidden);
+        }
+        audit.operation(
+            operation,
+            "device_access_windows_key_renew",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        self.write_keyed(
+            &self.access_audit,
+            audit,
+            Some(format!(
+                "device-access:windows-key:{operation}:{}",
+                audit.request_id()
+            )),
+            (peer, actor, key, admission, operation, audit),
+            |ctx, c| Box::pin(async move { service::admit_session(c, ctx.1).await }),
+            |ctx, c| {
+                Box::pin(async move {
+                    let (peer, actor, key, admission, operation, audit) = *ctx;
+                    let da = crate::delivery::resolve_on(c, peer).await?;
+                    let tenant = Uuid::parse_str(actor.tenant_id()).map_err(|_| Error::Corrupt)?;
+                    let candidate = storage::get_in(c, tenant, key.binding_id).await?;
+                    if candidate.device != *da.device()
+                        || candidate.person != service::person(actor)?
+                    {
+                        return Err(Error::NotFound);
+                    }
+                    let b = storage::require_active_in(
+                        c,
+                        tenant,
+                        key.binding_id,
+                        key.binding_generation,
+                    )
+                    .await?;
+                    let Origin::Employee {
+                        registration_epoch,
+                        windows_key,
+                    } = b.origin
+                    else {
+                        return Err(Error::Forbidden);
+                    };
+                    if b.operation_id != operation
+                        || b.intent.platform() != rss_mdm_agent_wire::runtime::TaskPlatform::Windows
+                        || b.factor_generation != key.factor_generation
+                        || b.revision != key.binding_revision
+                        || rss_mdm_registration_service::device::endpoints::current_da_epoch_in(
+                            c,
+                            actor.tenant_id(),
+                            &b.device,
+                        )
+                        .await?
+                            != registration_epoch
+                        || Some(admission.local_session(c, peer).await?.account) != b.account
+                    {
+                        return Err(Error::Forbidden);
+                    }
+                    crate::device_access::lifecycle::require_subject_on(c, tenant, &b.person)
+                        .await?;
+                    let policy = admission.policy(c, tenant, &b.device, b.policy).await?;
+                    if policy.version != b.policy_version
+                        || policy.configuration != b.configuration
+                        || !policy.configuration.enabled
+                    {
+                        return Err(Error::Forbidden);
+                    }
+                    let registration_required = || {
+                        audit.operation(
+                            operation,
+                            "device_access_windows_key_registration_required",
+                            rss_mdm_audit_integration::AuditIntent::Management,
+                        );
+                        Ok(AuditedChange {
+                            value: KeyRenewal::RegistrationRequired,
+                            replay: false,
+                        })
+                    };
+                    let Some(mut previous) = windows_source_on(c, &b).await? else {
+                        return registration_required();
+                    };
+                    let replay = previous.current(&b) && previous.renewed_by == Some(operation);
+                    let eligible = windows_key.is_some_and(|key| {
+                        key.id == previous.id
+                            && (key.version == previous.version
+                                || (replay && key.version.checked_add(1) == Some(previous.version)))
+                    });
+                    if !eligible
+                        || previous.binding_id != b.id
+                        || previous.binding_generation != b.generation
+                        || previous.person != b.person
+                        || previous.public_key != key.public_key
+                    {
+                        return registration_required();
+                    }
+                    let payload = key
+                        .signing_bytes(tenant, b.person.instance, b.person.principal, operation)
+                        .map_err(|_| Error::Malformed)?;
+                    verify_signature(&previous.public_key, &key.signature, &payload)?;
+                    if !replay {
+                        previous.version =
+                            previous.version.checked_add(1).ok_or(Error::Capacity)?;
+                        previous.renewed_by = Some(operation);
+                        previous.binding_revision = b.revision;
+                        previous.factor_generation = b.factor_generation;
+                        save_windows_source_on(c, &b, &previous).await?;
+                    }
+                    Ok(AuditedChange {
+                        value: KeyRenewal::Current,
+                        replay,
+                    })
+                })
+            },
+        )
+        .await
+    }
 }
 pub fn verify_signature(
     key: &rss_mdm_agent_wire::platform_sso::PublicKey,

@@ -9,6 +9,8 @@ pub const OS_VERSION: FieldKey = FieldKey::literal("device.os.version");
 pub const AGENT_INSTALLATION: FieldKey = FieldKey::literal("channel.agent.installation");
 /// MDM enrollment observed through Agent.
 pub const MDM_ENROLLMENT: FieldKey = FieldKey::literal("channel.mdm.enrollment");
+/// Local module observations from this Agent registration.
+pub const CLIENT_MODULES: FieldKey = FieldKey::literal("channel.client.modules");
 /// Corporate agent's version.
 pub const CORPORATE_AGENT_VERSION: FieldKey = FieldKey::literal("custom.corporate_agent.version");
 /// Corporate agent's health.
@@ -54,6 +56,26 @@ fn field(key: FieldKey, value_type: ValueType, sources: &[Source]) -> FieldDefin
         item_key: None,
     }
 }
+fn client_modules() -> ValueType {
+    let flag = Property {
+        value_type: ValueType::Boolean,
+        required: false,
+    };
+    let module = ValueType::Record {
+        properties: [("installed".into(), flag.clone()), ("enabled".into(), flag)].into(),
+    };
+    ValueType::Object {
+        properties: [
+            ("da".into(), module.clone()),
+            ("mdm".into(), module),
+            (
+                "application".into(),
+                vocabulary(&["unknown", "received", "pending", "applied", "rejected"]),
+            ),
+        ]
+        .into(),
+    }
+}
 /// Seed definitions are immutable inputs to the same published catalog, never a fallback reader.
 pub fn fields() -> Vec<FieldDefinition> {
     use Source::*;
@@ -83,6 +105,7 @@ pub fn fields() -> Vec<FieldDefinition> {
             ]),
             &[AgentBuiltin],
         ),
+        field(CLIENT_MODULES, client_modules(), &[AgentBuiltin]),
         field(
             CORPORATE_AGENT_VERSION,
             string(),
@@ -177,5 +200,6 @@ pub fn protected(key: FieldKey) -> bool {
             | "device.manufacturer"
             | "channel.agent.installation"
             | "channel.mdm.enrollment"
+            | "channel.client.modules"
     )
 }

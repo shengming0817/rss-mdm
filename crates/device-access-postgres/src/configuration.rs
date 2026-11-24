@@ -60,6 +60,9 @@ impl Admission {
     }
 }
 impl AdmissionPort for Admission {
+    fn agent_store(&self) -> Option<&dyn agent::Store> {
+        self.agent.as_deref()
+    }
     fn broker_release_query(&self) -> &'static str {
         self.broker_query
     }

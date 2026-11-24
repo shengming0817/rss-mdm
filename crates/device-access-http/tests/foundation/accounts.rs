@@ -1,4 +1,5 @@
 //! mTLS account consumer on an installation with no Agent schema or delivery relationship.
+mod employee;
 pub(super) mod macos;
 use super::*;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -151,6 +152,7 @@ pub(super) async fn verify(
         sid: "S-1-5-21-2-3-4-1002".into(),
         authority: w::AccessWindowsAuthority::Local,
     };
+    let employee = material::seed_administrator(c, Some(&r.device)).await?;
     let binding = Uuid::new_v4();
     let op = Uuid::new_v4();
     let intent = rss_mdm_device_access::AccountIntent::Existing {
@@ -162,13 +164,13 @@ pub(super) async fn verify(
         action: access::Action::Put {
             person: rss_mdm_device_access::Person {
                 instance: r.service_id,
-                principal: admin.principal,
+                principal: employee,
             },
             intent: intent.clone(),
             policy: policy.id,
         },
     };
-    Box::pin(admin.change(c,client,&r,binding,change,json!({"kind":"put","instance":r.service_id,"principal":admin.principal,"account":intent,"policy":policy.id}))).await?;
+    Box::pin(admin.change(c,client,&r,binding,change,json!({"kind":"put","instance":r.service_id,"principal":employee,"account":intent,"policy":policy.id}))).await?;
     let progress = |operation: Uuid, cookie: &str| {
         client
             .get(format!("{management}/operations/{operation}/execution"))
@@ -406,11 +408,15 @@ pub(super) async fn verify(
         .await?;
         assert_eq!(settled.state, State::Applied);
     }
+    let revision = Box::pin(employee::recover(
+        c, client, &peer, base, &r, &policy, binding, employee, &report,
+    ))
+    .await?;
     let cleanup = Box::pin(Manager::new(c, client)).await?;
     let unlink = Uuid::new_v4();
     let change = access::Change {
         operation_id: unlink,
-        expected_revision: 1,
+        expected_revision: revision,
         action: access::Action::Unbind {
             disposition: w::AccessAccountDisposition::Keep,
         },

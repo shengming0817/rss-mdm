@@ -354,9 +354,6 @@ pub async fn verify(
         .account()
         .principal
         .as_uuid();
-    let (actor, secret) = Box::pin(business::login(c, principal))
-        .await
-        .context("platform proof cookie login")?;
     let old: Value = sqlx::query_scalar("SELECT definition FROM rss_da.policies WHERE tenant_id=$1::uuid AND (definition#>>'{target,device}')::uuid=$2")
         .bind(c.tenant.to_string()).bind(registration.device.into_uuid()).fetch_one(&c.operator).await?;
     let mut publication: rss_mdm_agent_wire::da::Publication = serde_json::from_value(old)?;
@@ -523,13 +520,14 @@ pub async fn verify(
         client,
         base,
         &token,
-        &actor,
+        principal,
         &mut publication,
         &mut observation,
         &exported,
     ))
     .await?;
 
+    let employee = material::seed_administrator(c, Some(&registration.device)).await?;
     let id = Uuid::new_v4();
     let change = pg::device_access::Change {
         operation_id: Uuid::new_v4(),
@@ -537,7 +535,7 @@ pub async fn verify(
         action: pg::device_access::Action::Put {
             person: rss_mdm_device_access::Person {
                 instance: Uuid::parse_str(&c.inputs.installation.instance_id)?,
-                principal,
+                principal: employee,
             },
             intent: rss_mdm_device_access::AccountIntent::Existing {
                 account: account.clone(),
@@ -546,6 +544,9 @@ pub async fn verify(
         },
     };
     let fingerprints = std::collections::BTreeMap::new();
+    let (actor, secret) = Box::pin(business::login(c, principal))
+        .await
+        .context("platform proof cookie login")?;
     let proof = Box::pin(business::operation_proof(
         c,
         &secret,
@@ -590,11 +591,34 @@ pub async fn verify(
         "registration is not application evidence"
     );
     observation.sequence += 1;
+    let (operation, employee_cookie) =
+        Box::pin(repair_binding(c, client, &binding, employee)).await?;
+    let directory: access::AccessDirectory = material::success(
+        peer.get(format!("{base}/device-access"))
+            .header(
+                "x-rss-user-session",
+                employee_cookie
+                    .split_once('=')
+                    .context("employee session")?
+                    .1,
+            )
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(directory.device_id, registration.device);
+    let desired = directory
+        .bindings
+        .iter()
+        .find(|item| item.id == id)
+        .context("device-visible Mac target")?;
+    assert_eq!(desired.operation_id, operation);
+    assert_eq!(desired.revision, binding.revision + 1);
     observation.applications.push(access::AccessResult {
-        binding_id: binding.id,
-        binding_generation: binding.generation,
-        revision: binding.revision,
-        definition_digest: binding.definition_digest()?,
+        binding_id: desired.id,
+        binding_generation: desired.binding_generation,
+        revision: desired.revision,
+        definition_digest: desired.definition_digest,
         effect: access::AccessEffect::Applied {
             account,
             role: access::AccessRole::Standard,
@@ -663,8 +687,26 @@ pub async fn verify(
     .await?;
     assert_eq!(
         no_tasks,
-        (0, 0, 0),
-        "native evidence synthesizes no Agent delivery, run or ACK"
+        (0, 0, 1),
+        "the signed application has one native result and no delivery or run"
+    );
+    let progress: Value = material::success(
+        client
+            .get(format!(
+                "{}/api/v1/tenants/{}/devices/{}/device-access/operations/{}/execution",
+                c.browser_origin, c.tenant, registration.device, operation
+            ))
+            .header("cookie", &employee_cookie)
+            .send()
+            .await?,
+    )
+    .await?;
+    assert!(progress["taskId"].is_null());
+    assert_eq!(progress["received"], false);
+    assert_eq!(progress["execution"], "succeeded");
+    assert_eq!(
+        progress["effect"],
+        serde_json::to_value(&observation.applications[0].effect)?
     );
     let mut tx = c.seed().await?;
     let expired: bool = sqlx::query_scalar(
@@ -679,7 +721,7 @@ pub async fn verify(
         pg::device_access::storage::get_in(&mut tx, observation.tenant, binding.id).await?;
     assert!(stored.deployment_application.is_some());
     assert!(
-        serde_json::to_value(stored.status())?
+        serde_json::to_value(stored.status()?)?
             .get("deploymentApplication")
             .is_none()
     );
@@ -793,4 +835,36 @@ pub async fn verify(
     ))
     .await?;
     Ok(session)
+}
+
+async fn repair_binding(
+    c: &Context,
+    client: &reqwest::Client,
+    b: &pg::device_access::Binding,
+    principal: Uuid,
+) -> Result<(Uuid, String)> {
+    let operation = Uuid::new_v4();
+    let (cookie, csrf) = credentials::login(c, client, principal).await?;
+    let resource = format!(
+        "{}/api/v1/tenants/{}/devices/{}/device-access/bindings/{}",
+        c.browser_origin, c.tenant, b.device, b.id
+    );
+    let mut browser =
+        enterprise::Browser::new(c, client, resource.clone(), cookie.clone(), csrf.clone());
+    browser.register().await?;
+    let input = json!({"operationId":operation,"expectedRevision":b.revision,"action":{"kind":"repair_binding"}});
+    let grant = browser.grant(&input).await?;
+    material::empty(
+        client
+            .put(resource)
+            .header("cookie", format!("{cookie}; {grant}"))
+            .header("origin", &c.browser_origin)
+            .header("x-csrf-token", &csrf)
+            .header("x-identity-request", "1")
+            .json(&input)
+            .send()
+            .await?,
+    )
+    .await?;
+    Ok((operation, cookie))
 }

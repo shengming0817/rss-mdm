@@ -35,7 +35,7 @@ pub(super) fn deployment(c: &Context, m: &material::Material) -> Result<Value> {
     }))
 }
 
-struct Browser<'a> {
+pub(super) struct Browser<'a> {
     client: &'a Client,
     origin: &'a str,
     identity: String,
@@ -44,7 +44,24 @@ struct Browser<'a> {
     csrf: String,
     key: WebauthnAuthenticator<SoftPasskey>,
 }
-impl Browser<'_> {
+impl<'a> Browser<'a> {
+    pub(super) fn new(
+        c: &'a Context,
+        client: &'a Client,
+        configurations: String,
+        cookie: String,
+        csrf: String,
+    ) -> Self {
+        Self {
+            client,
+            origin: &c.browser_origin,
+            identity: format!("{}/api/v1/identity/tenants/{}", c.browser_origin, c.tenant),
+            configurations,
+            cookie,
+            csrf,
+            key: WebauthnAuthenticator::new(SoftPasskey::new(true)),
+        }
+    }
     fn post(&self, url: &str, grant: Option<&str>) -> RequestBuilder {
         let cookie = match grant {
             Some(grant) => format!("{}; {grant}", self.cookie),
@@ -58,7 +75,7 @@ impl Browser<'_> {
             .header("origin", self.origin)
     }
 
-    async fn register(&mut self) -> Result<()> {
+    pub(super) async fn register(&mut self) -> Result<()> {
         let begin = format!("{}/webauthn/register/begin", self.identity);
         let challenge: Value = material::success(
             self.post(&begin, None)
@@ -80,7 +97,7 @@ impl Browser<'_> {
         Ok(())
     }
 
-    async fn grant(&mut self, change: &Value) -> Result<String> {
+    pub(super) async fn grant(&mut self, change: &Value) -> Result<String> {
         let challenge: Value = material::success(
             self.post(&format!("{}/step-up", self.configurations), None)
                 .json(change)
@@ -110,7 +127,7 @@ impl Browser<'_> {
             .context("missing purpose-bound grant")
     }
 
-    async fn submit(&mut self, change: &Value) -> Result<reqwest::Response> {
+    pub(super) async fn submit(&mut self, change: &Value) -> Result<reqwest::Response> {
         let grant = self.grant(change).await?;
         Ok(self
             .post(&self.configurations, Some(&grant))

@@ -160,9 +160,7 @@ pub async fn publish_protected(
     let (actor, secret) = Box::pin(business::login(c, principal)).await?;
     let service = &business::assemble(c, m)?.service;
     assert!(matches!(
-        service
-            .publish_configuration(&actor, change, None, &business::audit(c))
-            .await,
+        Box::pin(service.publish_configuration(&actor, change, None, &business::audit(c))).await,
         Err(rss_mdm_device_access_postgres::Error::Unauthorized)
     ));
     let proof = Box::pin(business::operation_proof(
@@ -171,8 +169,7 @@ pub async fn publish_protected(
         change.step_up_context(&actor)?,
     ))
     .await?;
-    service
-        .publish_configuration(&actor, change, Some(&proof), &business::audit(c))
+    Box::pin(service.publish_configuration(&actor, change, Some(&proof), &business::audit(c)))
         .await?;
     Ok(())
 }
@@ -203,7 +200,7 @@ pub async fn verify_sources(
     client: &reqwest::Client,
     base: &str,
     token: &str,
-    actor: &AuthorizedPrincipal,
+    principal: Uuid,
     publication: &mut da::Publication,
     observation: &mut rss_mdm_device_access::deployment::Observation,
     ordinary: &da::SignedConfiguration,
@@ -423,9 +420,10 @@ pub async fn verify_sources(
     publication.configuration.mac = None;
     publication.configuration.windows = AccessWindowsConfiguration::Whfb;
     let service = &business::assemble(c, m)?.service;
+    let (actor, _) = Box::pin(business::login(c, principal)).await?;
     service
         .publish_configuration(
-            actor,
+            &actor,
             &Change {
                 operation_id: Uuid::new_v4(),
                 expected_revision: publication.revision - 1,

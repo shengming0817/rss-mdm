@@ -390,6 +390,10 @@ pub(crate) async fn reconcile_in(
                         }
                     }
                     if b.revision != expected {
+                        // This revision belongs to policy reconciliation, outside the employee's operation.
+                        if let access::Origin::Employee { windows_key, .. } = &mut b.origin {
+                            *windows_key = None;
+                        }
                         access::storage::save_in(c, &b, expected)
                             .await
                             .map_err(|_| {

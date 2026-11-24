@@ -13,7 +13,7 @@ use sqlx::{PgConnection, Row};
 fn tenant_uuid(tenant: rss_request_context::TenantId) -> Result<Uuid, Error> {
     Uuid::parse_str(&tenant.to_string()).map_err(|_| Error::Corrupt)
 }
-fn person(p: &AuthorizedPrincipal) -> Result<Person, Error> {
+pub(crate) fn person(p: &AuthorizedPrincipal) -> Result<Person, Error> {
     p.session()?;
     Ok(Person {
         instance: Uuid::parse_str(p.instance_id()).map_err(|_| Error::Corrupt)?,
@@ -64,10 +64,7 @@ pub(crate) async fn authorize(
     device: &rss_mdm_agent_wire::DeviceId,
     permission: Permission,
 ) -> Result<(), Error> {
-    grants(c, p)
-        .await?
-        .require(p, permission, Some(device))
-        .map_err(|_| Error::Forbidden)?;
+    grants(c, p).await?.require(p, permission, Some(device))?;
     Ok(())
 }
 
@@ -79,146 +76,165 @@ impl Service {
         query: &rss_mdm_query::window::Query,
         admission: &dyn Admission,
     ) -> Result<rss_mdm_agent_wire::runtime::AccessDirectory, Error> {
-        let execution = device.binding();
-
         let employee = request.proof.as_ref();
-        if device.tenant() != execution.tenant()
-            || employee.tenant_id() != execution.tenant().to_string()
-        {
+        if employee.tenant_id() != device.tenant().to_string() {
             return Err(Error::Forbidden);
         }
         query
             .require_schema(&super::DISCOVERY)
             .map_err(|_| Error::Malformed)?;
-        let who = person(employee)?;
-        let reference = employee
-            .session()?
-            .reference()
-            .map_err(|_| Error::Unauthorized)?;
-        let fresh = request.revalidate().await?;
-        let mut tx = self.store.snapshot(employee.tenant_id()).await?;
-        let endpoint = crate::delivery::resolve_on(&mut tx, device).await?;
-        rss_mdm_registration_service::lifecycle::require_work_in(
-            rss_mdm_install_support::StorageProfile::Da,
-            &mut tx,
-            employee.tenant_id(),
-            endpoint.device(),
+        let fresh = request.revalidate().await?.ok_or(Error::Unauthorized)?;
+        self.read_with_session(
+            employee,
+            (self, employee, device, admission, query, &fresh),
+            |ctx, c| {
+                Box::pin(async move {
+                    let (service, employee, device, admission, query, fresh) = *ctx;
+                    let who = person(employee)?;
+                    let reference = employee
+                        .session()?
+                        .reference()
+                        .map_err(|_| Error::Unauthorized)?;
+                    let tenant = tenant_uuid(device.tenant())?;
+                    rss_mdm_authorization_service::lock_shared_on(
+                        employee.authority_profile(),
+                        c,
+                        employee.tenant_id(),
+                        employee.instance_id(),
+                    )
+                    .await?;
+                    let endpoint = crate::delivery::resolve_on(c, device).await?;
+                    rss_mdm_registration_service::lifecycle::require_work_in(
+                        rss_mdm_install_support::StorageProfile::Da,
+                        c,
+                        employee.tenant_id(),
+                        endpoint.device(),
+                    )
+                    .await?;
+                    let authority = rss_mdm_authorization_service::snapshot_on(
+                        employee.authority_profile(),
+                        c,
+                        employee.tenant_id(),
+                        employee.instance_id(),
+                    )
+                    .await?
+                    .query_binding_revalidated(employee, fresh)?;
+                    let local = admission.local_session(c, device).await?;
+                    let binding = rss_mdm_query::cursor::fingerprint(&(
+                        "device_access.discovery",
+                        &who,
+                        &reference,
+                        endpoint.device(),
+                        device.epoch(),
+                        &local,
+                        &authority,
+                    ))
+                    .map_err(|_| Error::Malformed)?;
+                    let after = query
+                        .cursor()
+                        .as_ref()
+                        .map(|value| {
+                            let token = rss_contract::PageCursor::parse(value)
+                                .map_err(|_| Error::Malformed)?;
+                            service
+                                .cursor
+                                .decode::<Uuid>(&token, &binding)
+                                .map_err(|_| Error::CursorInvalidated)
+                        })
+                        .transpose()?;
+
+                    let rows: Vec<serde_json::Value> = sqlx::query_scalar(
+                        "SELECT document FROM rss_da.bindings WHERE tenant_id=$1 AND device=$2
+                         AND instance=$3 AND principal=$4 AND account=$5 ORDER BY id LIMIT 129",
+                    )
+                    .bind(tenant)
+                    .bind(endpoint.device().into_uuid())
+                    .bind(who.instance)
+                    .bind(who.principal)
+                    .bind(sqlx::types::Json(&local.account))
+                    .fetch_all(&mut *c)
+                    .await
+                    .map_err(db)?;
+                    if rows.len() > 128 {
+                        return Err(Error::Capacity);
+                    }
+                    let mut bindings = Vec::with_capacity(rows.len());
+                    for row in rows {
+                        let value: Binding =
+                            serde_json::from_value(row).map_err(|_| Error::Corrupt)?;
+                        value.validate()?;
+                        bindings.push(value.status()?);
+                    }
+
+                    let (policies, after) =
+                        if storage::first_in(c, tenant, endpoint.device()).await? {
+                            admission
+                                .policies(
+                                    c,
+                                    tenant,
+                                    endpoint.device(),
+                                    after,
+                                    u16::try_from(query.limit()).map_err(|_| Error::Malformed)?,
+                                )
+                                .await?
+                        } else {
+                            (Vec::new(), None)
+                        };
+                    let next_cursor = after
+                        .map(|id| {
+                            service
+                                .cursor
+                                .encode(&binding, &id)
+                                .map(|value| value.as_str().to_owned())
+                        })
+                        .transpose()
+                        .map_err(|_| Error::Malformed)?;
+                    employee.check_live()?;
+                    Ok(rss_mdm_agent_wire::runtime::AccessDirectory {
+                        device_id: *endpoint.device(),
+                        policies,
+                        next_cursor,
+                        bindings,
+                    })
+                })
+            },
         )
-        .await?;
-        let before = rss_mdm_authorization_service::snapshot_on(
-            employee.authority_profile(),
-            &mut tx,
-            employee.tenant_id(),
-            employee.instance_id(),
-        )
-        .await?
-        .query_binding_revalidated(employee, fresh.as_ref().ok_or(Error::Unauthorized)?)?;
-        let binding = rss_mdm_query::cursor::fingerprint(&(
-            "device_access.discovery",
-            &who,
-            &reference,
-            endpoint.device(),
-            &before,
-        ))
-        .map_err(|_| Error::Malformed)?;
-        let after = query
-            .cursor()
-            .as_ref()
-            .map(|v| {
-                let token = rss_contract::PageCursor::parse(v).map_err(|_| Error::Malformed)?;
-                self.cursor
-                    .decode::<Uuid>(&token, &binding)
-                    .map_err(|_| Error::CursorInvalidated)
+        .await
+    }
+
+    pub async fn change_step_up_context(
+        &self,
+        actor: &AuthorizedPrincipal,
+        device: &rss_mdm_agent_wire::DeviceId,
+        id: Uuid,
+        input: &Change,
+        fingerprints: &std::collections::BTreeMap<Uuid, String>,
+        admission: &dyn Admission,
+    ) -> Result<(rss_identity_core::step_up::StepUpContext, Option<Uuid>), Error> {
+        let epoch = self
+            .read_with_session(actor, (actor, device, id, input, admission), |ctx, c| {
+                Box::pin(async move {
+                    let (p, device, id, input, admission) = *ctx;
+                    Ok(owner::change(c, p, device, id, input, admission)
+                        .await?
+                        .map(|(_, epoch)| epoch))
+                })
             })
-            .transpose()?;
-        let rows: Vec<serde_json::Value> = sqlx::query_scalar("SELECT document FROM rss_da.bindings WHERE tenant_id = $1 AND device = $2 AND instance = $3 AND principal = $4 ORDER BY id LIMIT 129")
-            .bind(tenant_uuid(device.tenant())?).bind(endpoint.device().into_uuid()).bind(who.instance).bind(who.principal)
-            .fetch_all(&mut *tx).await.map_err(db)?;
-        if rows.len() > 128 {
-            return Err(Error::Capacity);
-        }
-        let mut bindings = Vec::new();
-        for row in rows {
-            let b: Binding = serde_json::from_value(row).map_err(|_| Error::Corrupt)?;
-            b.validate()?;
-            bindings.push(b.status());
-        }
-        let local = admission.local_session(&mut tx, device).await?;
-        let first = storage::first_in(
-            &mut tx,
-            tenant_uuid(device.tenant())?,
-            endpoint.device(),
-            &who,
-            &local.account,
-        )
-        .await?;
-        let (policies, after) = if first {
-            admission
-                .policies(
-                    &mut tx,
-                    tenant_uuid(device.tenant())?,
-                    endpoint.device(),
-                    after,
-                    u16::try_from(query.limit()).map_err(|_| Error::Malformed)?,
-                )
-                .await?
+            .await?;
+        let context = input.step_up_context(actor, device, id, fingerprints)?;
+        let context = if let Some(epoch) = epoch {
+            let mut digest = Sha256::new();
+            digest.update(context.digest());
+            digest.update(epoch.as_bytes());
+            rss_identity_core::step_up::StepUpContext::new(
+                "mdm.device_access.employee".into(),
+                digest.finalize().into(),
+            )
+            .map_err(|_| Error::Corrupt)?
         } else {
-            (Vec::new(), None)
+            context
         };
-        let next_cursor = after
-            .map(|id| {
-                self.cursor
-                    .encode(&binding, &id)
-                    .map(|v| v.as_str().to_owned())
-            })
-            .transpose()
-            .map_err(|_| Error::Malformed)?;
-        tx.rollback().await.map_err(db)?;
-        let fresh = request.revalidate().await?;
-        let mut current = self.store.begin(employee.tenant_id()).await?;
-        let current_endpoint = crate::delivery::resolve_on(&mut current, device).await?;
-        if current_endpoint.device() != endpoint.device() {
-            return Err(Error::ReadConflict);
-        }
-        rss_mdm_registration_service::lifecycle::require_work_in(
-            rss_mdm_install_support::StorageProfile::Da,
-            &mut current,
-            employee.tenant_id(),
-            endpoint.device(),
-        )
-        .await?;
-        rss_mdm_authorization_service::lock_shared_on(
-            employee.authority_profile(),
-            &mut current,
-            employee.tenant_id(),
-            employee.instance_id(),
-        )
-        .await?;
-        if before
-            != request.current_binding(
-                &rss_mdm_authorization_service::snapshot_on(
-                    employee.authority_profile(),
-                    &mut current,
-                    employee.tenant_id(),
-                    employee.instance_id(),
-                )
-                .await?,
-                fresh.as_ref(),
-            )?
-        {
-            return Err(Error::ReadConflict);
-        }
-        let current_local = admission.local_session(&mut current, device).await?;
-        if current_local.account != local.account {
-            return Err(Error::ReadConflict);
-        }
-        employee.check_live()?;
-        current.rollback().await.map_err(db)?;
-        Ok(rss_mdm_agent_wire::runtime::AccessDirectory {
-            policies,
-            next_cursor,
-            bindings,
-        })
+        Ok((context, epoch))
     }
 
     pub async fn device_access_operation(
@@ -276,8 +292,8 @@ impl Service {
             let local = admission.local_session(c, authenticated).await?;
             local.validate().map_err(|_| Error::Malformed)?;
             if !selection.configuration.admits(&local.account) {return Err(Error::Forbidden);}
-            if !storage::first_in(c, tenant_uuid(device.tenant())?, device.device(), who, &local.account).await? { return Err(Error::Conflict); }
-            sqlx::query("DELETE FROM rss_da.ceremonies WHERE tenant_id=$1 AND expires_at<to_timestamp($2::bigint::double precision) AND consumed IS NULL")
+            if !storage::first_in(c, tenant_uuid(device.tenant())?, device.device()).await? { return Err(Error::Conflict); }
+            sqlx::query("DELETE FROM rss_da.ceremonies WHERE tenant_id=$1 AND expires_at<to_timestamp($2::bigint::double precision)")
                 .bind(tenant_uuid(device.tenant())?).bind(time).execute(&mut *c).await.map_err(db)?;
             let count: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_da.ceremonies WHERE tenant_id=$1 AND device=$2")
                 .bind(tenant_uuid(device.tenant())?).bind(device.device().into_uuid()).fetch_one(&mut *c).await.map_err(db)?;
@@ -358,7 +374,7 @@ impl Service {
             let policy:Uuid=row.try_get("policy").map_err(db)?;
             let selected=admission.policy(c,tenant_uuid(device.tenant())?,device.device(),policy).await?;
             if selected.version!=row.try_get::<Uuid,_>("policy_version").map_err(db)? || !selected.configuration.self_enrollment || !selected.configuration.enabled || !selected.configuration.admits(&local.account) { return Err(Error::Forbidden); }
-            if !storage::first_in(c,tenant_uuid(device.tenant())?,device.device(),who,&local.account).await? {return Err(Error::Conflict);}
+            if !storage::first_in(c,tenant_uuid(device.tenant())?,device.device()).await? {return Err(Error::Conflict);}
             let mut binding=Binding{account_delivery:None,deployment_application:None,operation_id:input.operation_id,account_disposition:rss_mdm_agent_wire::runtime::AccessAccountDisposition::Keep,id:Uuid::new_v4(),tenant:tenant_uuid(device.tenant())?,device:*device.device(),person:who.clone(),origin:Origin::SelfEnrollment,generation:1,factor_generation:1,revision:1,state:State::Pending,intent:AccountIntent::Existing{account:local.account.clone()},account:Some(local.account),policy:selected.policy,policy_version:selected.version,configuration:selected.configuration,received_revision:None,applied_revision:None,effect:None,applied_windows:None,created_by_rss:false};
             binding.account_delivery=super::account_delivery::select(c,&binding,authenticated.installation(),has_custody).await?;
             storage::insert_in(c,&binding).await?;
@@ -390,7 +406,6 @@ impl Service {
         if input.operation_id.is_nil() || id.is_nil() || input.expected_revision < 0 {
             return Err(Error::Malformed);
         }
-        actor.require(Permission::AccountWrite, Some(device))?;
         audit.owned_operation(
             rss_mdm_audit_integration::operation::OperationOwner::DeviceAccess,
             input.operation_id,
@@ -398,7 +413,6 @@ impl Service {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.target_device(device);
-        let context = input.step_up_context(actor, device, id, idp_fingerprints)?;
         let hash = digest(&("device_access_change", device, id, input, idp_fingerprints))?;
         if let Some(value) = self
             .access_replay(actor, device, input.operation_id, &hash)
@@ -407,10 +421,12 @@ impl Service {
             return Ok(value);
         }
         let has_custody = self.recovery.is_some();
-        let result = self.write_admitted(
+        let result = async {
+            let (context, expected_epoch) = self.change_step_up_context(actor, device, id, input, idp_fingerprints, admission).await?;
+            self.write_admitted(
             &self.access_audit,
             audit,
-            (actor, device, id, input, admission, audit, proof, &context, idp_fingerprints),
+            (actor, device, id, input, admission, audit, proof, &context, idp_fingerprints, expected_epoch, &hash),
             |ctx, c| Box::pin(async move {
                 let proof = ctx.6.ok_or(Error::Unauthorized)?;
                 rss_identity_postgres::consume_step_up_on(c, ctx.0.session()?, ctx.7, proof.expose())
@@ -423,31 +439,31 @@ impl Service {
             }),
             |ctx, c| {
                 Box::pin(async move {
-                    let (actor, device, id, input, admission, audit, _, _, idp_fingerprints) = ctx;
-                    authorize(c, actor, device, Permission::AccountWrite).await?;
+                    let (actor, device, id, input, admission, audit, _, _, idp_fingerprints, expected_epoch, hash) = ctx;
+                    let employee=owner::change(c,actor,device,*id,input,*admission).await?;
+                    if employee.as_ref().map(|(_, epoch)| *epoch) != *expected_epoch { return Err(Error::Conflict); }
                     let tenant = Uuid::parse_str(actor.tenant_id()).map_err(|_| Error::Corrupt)?;
                     if matches!(input.action,Action::Offboard{..}) {super::lifecycle::lock_offboarding_on(c,tenant,*id).await?;}
-                    crate::delivery::lock_da_target(c,actor.tenant_id(),device,None).await?;
-                    rss_mdm_registration_service::lifecycle::require_work_in(rss_mdm_install_support::StorageProfile::Da, c, actor.tenant_id(), device).await?;
-                    rss_mdm_registration_service::device::endpoints::lock_da_in(c,
-                        actor.tenant_id(),
-                        device)
-                    .await?;
-                    rss_mdm_registration_service::device::endpoints::current_da_in(c,
-                        actor.tenant_id(),
-                        device)
-                    .await?
-                    .ok_or(Error::Conflict)?;
-                    let hash = digest(&("device_access_change", *device, *id, *input, *idp_fingerprints))?;
-                    let op = Operation::new(actor, input.operation_id, &hash)?;
+                    if employee.is_none() {
+                        storage::lock_registration(c, tenant, device).await?;
+                    } else {
+                        rss_mdm_registration_service::lifecycle::require_work_in(rss_mdm_install_support::StorageProfile::Da, c, actor.tenant_id(), device).await?;
+                    }
+                    let op = Operation::new(actor, input.operation_id, hash)?;
                     if crate::operations::replay( c, &op).await?.is_some() {
                         // Roll back this proof consumption, then return the committed receipt.
                         return Err(Error::Conflict);
                     }
-                    let old = match storage::get_in(c, tenant, *id).await {
-                        Ok(b) => Some(b),
-                        Err(Error::NotFound) => None,
-                        Err(e) => return Err(e),
+                    let (old,origin) = if let Some((binding,registration_epoch))=employee {
+                        let windows_key=crate::enterprise::eligible_key(c,&binding,registration_epoch).await?;
+                        (Some(binding),Origin::Employee {registration_epoch,windows_key})
+                    } else {
+                        let old=match storage::get_in(c,tenant,*id).await {
+                            Ok(binding)=>Some(binding),
+                            Err(Error::NotFound)=>None,
+                            Err(error)=>return Err(error),
+                        };
+                        (old,Origin::Administrator{actor:actor.actor()})
                     };
                     if old.as_ref().map_or(0, |b| b.revision) != input.expected_revision
                         || old.as_ref().is_some_and(|b| {
@@ -547,7 +563,7 @@ impl Service {
 
 
                                 person: person.clone(),
-                                origin: Origin::Administrator { actor: actor.actor() },
+                                origin: origin.clone(),
                                 generation,
                                 factor_generation,
                                 revision,
@@ -565,6 +581,14 @@ impl Service {
                                     || matches!(intent, AccountIntent::Create { .. }),
                             }
                         }
+                        Action::RepairBinding => {
+                            let mut b=old.clone().ok_or(Error::NotFound)?;
+                            b.revision=b.revision.checked_add(1).ok_or(Error::Capacity)?;
+                            b.state=State::Pending;
+                            b.deployment_application=None;
+                            b.origin=origin.clone();
+                            b
+                        }
                         Action::ResetFactors => {
                             let mut b = old.clone().ok_or(Error::NotFound)?;
                             if b.state == State::Revoked || b.intent.platform() != TaskPlatform::Windows { return Err(Error::Conflict); }
@@ -575,7 +599,7 @@ impl Service {
                             b.revision = b.revision.checked_add(1).ok_or(Error::Capacity)?;
                             b.policy_version = selected.version;
                             b.configuration = selected.configuration;
-                            b.origin = Origin::Administrator { actor: actor.actor() };
+                            b.origin = origin;
                             b.state = State::Pending;
                             b
                         }
@@ -586,7 +610,7 @@ impl Service {
                             b.state = State::Revoked;
                             b.configuration.enabled = false;
                             b.account_disposition = *disposition;
-                            b.origin=Origin::Administrator{actor: actor.actor()};
+                            b.origin=origin;
                             b
                         }
                     };
@@ -637,7 +661,8 @@ impl Service {
                 })
             },
         )
-        .await;
+        .await
+        }.await;
         match result {
             Ok(value) => Ok(value),
             Err(error) => match self
@@ -659,24 +684,14 @@ impl Service {
         self.read_with_session(actor, (actor, device, operation, hash), |ctx, c| {
             Box::pin(async move {
                 let (actor, device, operation, hash) = *ctx;
-                authorize(c, actor, device, Permission::AccountWrite).await?;
                 let op = Operation::new(actor, operation, hash)?;
-                let value = crate::operations::read(c, &op).await?;
-                let value = value
-                    .map(|value| {
-                        let binding: Binding =
-                            serde_json::from_str(&value).map_err(|_| Error::Corrupt)?;
-                        binding.validate()?;
-                        if binding.tenant.to_string() != actor.tenant_id()
-                            || binding.device != *device
-                        {
-                            return Err(Error::Forbidden);
-                        }
-                        Ok(binding)
-                    })
-                    .transpose()?;
-
-                Ok(value)
+                let Some(document) = crate::operations::read(c, &op).await? else {
+                    return Ok(None);
+                };
+                let saved: Binding = serde_json::from_str(&document).map_err(|_| Error::Corrupt)?;
+                saved.validate()?;
+                owner::receipt(c, actor, device, &saved).await?;
+                Ok(Some(saved))
             })
         })
         .await
@@ -708,15 +723,15 @@ pub(super) async fn operation_on(
     device: &rss_mdm_agent_wire::DeviceId,
     id: Uuid,
 ) -> Result<Binding, Error> {
-    authorize(c, actor, device, Permission::AccountWrite).await?;
     let result:Option<String>=sqlx::query_scalar("SELECT result FROM rss_da.operations WHERE tenant_id=$1::uuid AND actor=$2::uuid AND instance=$3::uuid AND operation_id=$4")
             .bind(actor.tenant_id()).bind(actor.principal_id()).bind(actor.instance_id()).bind(id).fetch_optional(&mut *c).await.map_err(db)?;
     let value: Binding =
         serde_json::from_str(&result.ok_or(Error::NotFound)?).map_err(|_| Error::NotFound)?;
     value.validate()?;
-    if value.device != *device || value.tenant.to_string() != actor.tenant_id() {
+    if value.operation_id != id {
         return Err(Error::NotFound);
     }
+    owner::receipt(c, actor, device, &value).await?;
     // A subject offboarding receipt represents all frozen targets, not only its initiating device.
     let offboarding: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM rss_da.lifecycles WHERE tenant_id=$1::uuid AND operation=$2)",

@@ -28,14 +28,9 @@ pub async fn lock_registration(
         device,
     )
     .await?;
-    rss_mdm_registration_service::device::endpoints::lock_da_in(c, &tenant, device).await?;
-    let current =
-        rss_mdm_registration_service::device::endpoints::current_da_in(c, &tenant, device)
-            .await?
-            .ok_or(Error::Conflict)?;
-    if current.device != *device {
-        return Err(Error::Conflict);
-    }
+    rss_mdm_registration_service::device::endpoints::current_da_in(c, &tenant, device)
+        .await?
+        .ok_or(Error::Conflict)?;
     Ok(())
 }
 
@@ -107,8 +102,6 @@ pub async fn first_in(
     c: &mut PgConnection,
     tenant: Uuid,
     device: &rss_mdm_agent_wire::DeviceId,
-    _person: &Person,
-    _account: &AccessAccount,
 ) -> Result<bool, Error> {
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM rss_da.bindings WHERE tenant_id = $1 AND device = $2)",
@@ -431,6 +424,8 @@ pub(crate) async fn deployment_result_in(
             .fetch_one(&mut *c)
             .await
             .map_err(db)?;
+    let first_application =
+        b.applied_revision != Some(b.revision) || b.deployment_application.is_none();
     if !registered || !project_result(&mut b, report)? {
         return Err(Error::Forbidden);
     }
@@ -444,6 +439,17 @@ pub(crate) async fn deployment_result_in(
         &observation.authority,
         format!("{}:{}:{}", b.device, observation.sequence, b.id).as_bytes(),
     );
+    if first_application {
+        record_result_in(
+            c,
+            b.tenant,
+            b.operation_id,
+            observation.authority,
+            event,
+            report,
+        )
+        .await?;
+    }
     super::lifecycle::emit_on(c, &b, None, event, "applied").await
 }
 

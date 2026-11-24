@@ -3,6 +3,7 @@
 pub mod account_delivery;
 pub mod directory;
 pub mod lifecycle;
+mod owner;
 pub(crate) mod service;
 pub mod storage;
 use crate::Error;
@@ -24,6 +25,10 @@ pub const INSTALL_SQL: &str = concat!(
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Origin {
     SelfEnrollment,
+    Employee {
+        registration_epoch: Uuid,
+        windows_key: Option<crate::enterprise::KeyVersion>,
+    },
     Administrator {
         actor: rss_mdm_authorization_service::Actor,
     },
@@ -72,8 +77,10 @@ pub struct Binding {
     pub created_by_rss: bool,
 }
 impl Binding {
-    pub fn status(&self) -> rss_mdm_agent_wire::runtime::AccessBindingStatus {
-        rss_mdm_agent_wire::runtime::AccessBindingStatus {
+    pub fn status(&self) -> Result<rss_mdm_agent_wire::runtime::AccessBindingStatus, Error> {
+        Ok(rss_mdm_agent_wire::runtime::AccessBindingStatus {
+            operation_id: self.operation_id,
+            definition_digest: self.definition_digest()?,
             account_disposition: self.account_disposition,
             id: self.id,
             binding_generation: self.generation,
@@ -85,7 +92,7 @@ impl Binding {
             received_revision: self.received_revision,
             applied_revision: self.applied_revision,
             effect: self.effect.clone(),
-        }
+        })
     }
 
     pub fn validate(&self) -> Result<(), Error> {
@@ -173,6 +180,7 @@ impl Binding {
 
 /// Product composition checks the current policy and live native interactive context.
 pub trait Admission: Send + Sync {
+    fn agent_store(&self) -> Option<&dyn rss_mdm_registration_service::participants::agent::Store>;
     fn broker_release_query(&self) -> &'static str {
         crate::broker_release_query!(
             "SELECT NULL::uuid AS tenant_id,NULL::uuid AS installation,NULL::uuid AS device,NULL::uuid AS registration,NULL::bigint AS generation,NULL::text AS platform,NULL::jsonb AS capabilities,NULL::jsonb AS execution_context WHERE false"
@@ -233,6 +241,7 @@ pub enum Action {
         disposition: rss_mdm_agent_wire::runtime::AccessAccountDisposition,
     },
     ResetFactors,
+    RepairBinding,
     Reinstate {
         person: Person,
         intent: AccountIntent,
@@ -261,10 +270,6 @@ impl Change {
         if self.operation_id.is_nil() || binding.is_nil() || self.expected_revision < 0 {
             return Err(Error::Malformed);
         }
-        actor.require(
-            rss_mdm_authorization_service::Permission::AccountWrite,
-            Some(device),
-        )?;
         actor.session()?;
         if matches!(
             self.action,

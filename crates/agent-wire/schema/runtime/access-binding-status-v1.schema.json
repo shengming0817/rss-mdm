@@ -920,6 +920,18 @@
       "$ref": "#/$defs/AccessConfiguration",
       "description": "Desired configuration."
     },
+    "definitionDigest": {
+      "description": "Exact desired effect identity used in signed native application results.",
+      "items": {
+        "format": "uint8",
+        "maximum": 255,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "maxItems": 32,
+      "minItems": 32,
+      "type": "array"
+    },
     "effect": {
       "anyOf": [
         {
@@ -938,6 +950,11 @@
     },
     "id": {
       "description": "Stable binding.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "operationId": {
+      "description": "Operation which requested this desired revision.",
       "format": "uuid",
       "type": "string"
     },
@@ -960,10 +977,12 @@
     }
   },
   "required": [
+    "operationId",
     "accountDisposition",
     "id",
     "bindingGeneration",
     "factorGeneration",
+    "definitionDigest",
     "revision",
     "revoked",
     "configuration"

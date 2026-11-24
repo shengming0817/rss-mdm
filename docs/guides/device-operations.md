@@ -174,10 +174,13 @@ recoveryVersion，必须仍处于原自动投递窗口；`POST /deliveries/{id}/
 
 `GET /api/v1/tenants/{tenant}/devices/{device}/device-access` 使用统一 `filter/sort/fields/limit/cursor`，返回 `items/nextCursor`；`GET /devices/{device}/device-access/bindings/{id}` 读取单条绑定。企业配置目录 `/device-access/enterprise/configuration` 使用同一查询语法，但独立字段目录为 `id/kind/value`，详情为 `/configuration/{id}`。恢复凭据 `/devices/{device}/recovery-credentials` 同样返回元数据分页，秘密仍只通过专用授权披露操作取得。三类游标签名绑定资源、租户、主体、权限、设备（设备级资源）和数据版本；查询、权限或源数据变化后重新开始，不接受旧 `after/afterId/afterVersion` 参数。
 `PUT /api/v1/tenants/{tenant}/devices/{device}/device-access/bindings/{id}` 使用 operationId、expectedRevision 和
-`put`/`unbind`/`reset_factors` 动作；新绑定 revision 为 0。Put 指定同一 Identity 实例的 principal、当前匹配的 DA policy，
+支持 `put`、`unbind`、`reset_factors`、`repair_binding`、`offboard` 和 `reinstate`；新绑定 revision 为 0。Put 指定同一 Identity 实例的 principal、当前匹配的 DA policy，
 以及 existing 稳定账号或 create 平台/账号名。已有绑定换本地目标须新增绑定，不根据名称接管。
-后续变更和读取要求当前设备 AccountWrite 权限；只持有本机管理员权限不能调用。
-写入前向 `/device-access/bindings/{id}/step-up` POST 同一业务正文，完成 Identity WebAuthn authenticate 后携带用途绑定的 operation cookie 写入。证明先于产品锁消费，并与绑定、回执和审计同事务结算。业务摘要不包含 proof handle；成功后精确重试先返回同操作者的原回执，不额外消费证明。摘要不符返回冲突。
+Windows 原钥续认沿用员工操作受理时仍有效的来源 ID 和版本；管理员换钥或后台策略推进修订后，原操作的续认资格终止。
+管理员按设备 AccountWrite 管理绑定。员工通过现有 RSS 会话及本次用途证明，可对本人已有绑定提交 `{"kind":"reset_factors"}` 或 `{"kind":"repair_binding"}`。目标注册、企业主体和稳定系统账号取自服务端既有绑定，沿原 operations/{operationId} 和 /execution 查询本次回执和端侧结果。
+丢失旧手机可使用已登记的独立 WebAuthn 或已关联且获部署授权的 MFA IdP。后者向绑定的 /step-up/oidc/{provider} 发送 {change,returnTarget}，浏览器打开返回的 authorizationUrl，完成 MFA 并经过 Identity 原 callback，携带用途绑定 cookie 提交同一操作。
+独立 DA 的 oidc 与嵌入宿主同样显式配置 assurance_profiles 和 private_providers。
+选择 WebAuthn 时，向 `/device-access/bindings/{id}/step-up` POST 同一业务正文，完成 Identity WebAuthn authenticate 后携带用途绑定的 operation cookie 写入。证明先于产品锁消费，并与绑定、回执和审计同事务结算。业务摘要不包含 proof handle；成功后精确重试先返回同操作者的原回执，不额外消费证明。摘要不符返回冲突。
 响应丢失先读取 `/device-access/operations/{operationId}`，或精确重放原写入。回执保留当次提交快照，最新设备效果另读绑定列表。
 
 `unbind` 必须明确 `disposition: keep|disable|standard`；通常选择 keep 保留账号状态，禁用和降权由管理员显式选择。三种处置均不删除账号或数据。任务摘要绑定该意图，只有一致的原生回读结果才推进 appliedRevision。
@@ -261,7 +264,7 @@ operationId/expectedRevision 保护幂等和 CAS。RP 固定 HTTPS callback、�
 首次保存只需原操作 ID。成功响应中的应用 ID、修订和启用状态取自该次提交；
 当前配置通过详情 `/configuration/rp:<id>` 读取。404 `operation_not_found` 表示没有匹配的原回执，
 应保留结果未知并避免自动重提。会话失效须重新认证，撤权或服务故障按相应错误处理。
-Windows key 登记使用 wire 的 KeyRegistration.signing_bytes，证明只覆盖持钥，不替代原生用户在场证明。
+Windows key 登记使用 wire 的 KeyRegistration.signing_bytes。本人修复或因子重置实际应用后，由受保护客户端向设备端 /device-access/operations/{operation}/windows-key 提交 KeyRegistration，使用已登记的私钥签署原操作和当前修订，同时提供设备 mTLS 与 x-rss-user-session。current 表示原钥已续认；registration_required 表示需要按企业管理流程登记。员工无需选择密钥。
 
 
 ### FileVault 独立托管来源

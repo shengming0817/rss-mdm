@@ -60,3 +60,70 @@ fn channel_facts_have_a_fixed_value_and_source_contract() {
             .is_err()
     );
 }
+
+#[test]
+fn module_collection_matches_the_da_report() {
+    use rss_mdm_inventory::ValueType;
+    use std::collections::BTreeSet;
+    let schema =
+        serde_json::to_value(schemars::schema_for!(rss_mdm_agent_wire::da::ClientModules)).unwrap();
+    let ValueType::Object { properties } = definition(builtin::CLIENT_MODULES).value_type else {
+        panic!("expected module object")
+    };
+    let names = |values: &serde_json::Value| -> BTreeSet<String> {
+        values.as_object().unwrap().keys().cloned().collect()
+    };
+    let required = schema["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap().to_owned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(names(&schema["properties"]), required);
+    assert_eq!(
+        properties.keys().cloned().collect::<BTreeSet<_>>(),
+        required
+    );
+    for (key, ty) in properties {
+        let pointer = schema["properties"][&key]["$ref"]
+            .as_str()
+            .unwrap()
+            .strip_prefix('#')
+            .unwrap();
+        let field = schema.pointer(pointer).unwrap();
+        match ty {
+            ValueType::Record { properties } => {
+                assert_eq!(
+                    properties.keys().cloned().collect::<BTreeSet<_>>(),
+                    names(&field["properties"])
+                );
+                for (name, property) in properties {
+                    assert_eq!(
+                        property.required,
+                        field["required"]
+                            .as_array()
+                            .is_some_and(|names| names.iter().any(|k| k == &name))
+                    );
+                    assert_eq!(property.value_type, ValueType::Boolean);
+                    assert!(
+                        field["properties"][name]["type"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|v| v == "boolean")
+                    );
+                }
+            }
+            ValueType::Enum { values } => {
+                let states: BTreeSet<String> = field["oneOf"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|s| s["const"].as_str().unwrap().to_owned())
+                    .collect();
+                assert_eq!(values, states);
+            }
+            _ => panic!("unexpected module property {key}"),
+        }
+    }
+}

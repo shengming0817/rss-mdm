@@ -48,6 +48,33 @@ impl agent_pki::Clock for Clock {
         Ok(now())
     }
 }
+pub async fn publish_agent_trust(
+    c: &Context,
+    mut trust: rss_mdm_agent_wire::pki::Trust,
+) -> Result<()> {
+    use rss_mdm_agent_wire::pki::Purpose;
+    trust.tenant = Uuid::parse_str(&c.tenant.to_string())?;
+    trust.purpose = Purpose::Agent;
+    let trust = Arc::new(
+        rss_mdm_device_trust::device_identity::DeviceIdentityTrust::from_trust(
+            rss_mdm_device_trust::DeviceTrust::new(trust, Purpose::Agent, now())?,
+            2,
+        )?,
+    );
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
+    for purpose in [Purpose::Agent, Purpose::AgentBootstrap] {
+        let mut public = trust.trust.public()?;
+        public.purpose = purpose;
+        rss_mdm_device_trust::DeviceTrust::new(public.clone(), purpose, now())?;
+        let name = rss_mdm_pki_service::registry::purpose(purpose);
+        sqlx::query("INSERT INTO mdm_pki.trust(tenant_id,purpose,revision,body) VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).bind(name).bind(public.revision as i64).bind(serde_json::to_vec(&public)?).execute(&mut *tx).await?;
+        for issuer in &public.issuers {
+            sqlx::query("INSERT INTO mdm_pki.issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES($1::uuid,$2,$3,$4,$5,$6,'step_ca',$7) ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).bind(name).bind(&issuer.digest).bind(public.revision as i64).bind(serde_json::to_value(issuer.mode)?.as_str().unwrap()).bind(serde_json::to_vec(issuer)?).bind(trust.expires()).execute(&mut *tx).await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(())
+}
 pub async fn service(
     c: &Context,
     n: &Native,
@@ -60,14 +87,7 @@ pub async fn service(
         Configuration, StepCa,
         providers::{Provider, Providers},
     };
-    let mut trust = n.trust.clone();
-    trust.purpose = Purpose::Agent;
-    let trust = Arc::new(
-        rss_mdm_device_trust::device_identity::DeviceIdentityTrust::from_trust(
-            rss_mdm_device_trust::DeviceTrust::new(trust, Purpose::Agent, now())?,
-            2,
-        )?,
-    );
+    publish_agent_trust(c, n.trust.clone()).await?;
     let digest = format!("{:x}", Sha256::digest(&n.root));
     let client = Arc::new(StepCa::new(
         Configuration {
@@ -91,18 +111,6 @@ pub async fn service(
         c.execution(),
         providers.clone(),
     ));
-    let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    for purpose in [Purpose::Agent, Purpose::AgentBootstrap] {
-        let mut public = trust.trust.public()?;
-        public.purpose = purpose;
-        rss_mdm_device_trust::DeviceTrust::new(public.clone(), purpose, now())?;
-        let name = rss_mdm_pki_service::registry::purpose(purpose);
-        sqlx::query("INSERT INTO mdm_pki.trust(tenant_id,purpose,revision,body) VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).bind(name).bind(public.revision as i64).bind(serde_json::to_vec(&public)?).execute(&mut *tx).await?;
-        for issuer in &public.issuers {
-            sqlx::query("INSERT INTO mdm_pki.issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES($1::uuid,$2,$3,$4,$5,$6,'step_ca',$7) ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).bind(name).bind(&issuer.digest).bind(public.revision as i64).bind(serde_json::to_value(issuer.mode)?.as_str().unwrap()).bind(serde_json::to_vec(issuer)?).bind(trust.expires()).execute(&mut *tx).await?;
-        }
-    }
-    tx.commit().await?;
     let clock = Arc::new(Clock);
     let issuer = Arc::new(agent_pki::DeviceIssuer::new(
         rss_mdm_install_support::StorageProfile::Mdm,

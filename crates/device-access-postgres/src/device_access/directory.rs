@@ -80,6 +80,36 @@ pub fn view(b: super::Binding) -> BindingView {
     }
 }
 
+/// Device managers see the device scope. A browser session may also read its own active bindings.
+async fn reader_scope(
+    c: &mut PgConnection,
+    p: &AuthorizedPrincipal,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<(String, Option<rss_mdm_device_access::Person>), Error> {
+    let snapshot = rss_mdm_authorization_service::snapshot_on(
+        p.authority_profile(),
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?;
+    let scope = match snapshot
+        .require(p, Permission::AccountWrite, Some(device))
+        .map_err(rss_mdm_authorization_service::Error::from)
+        .map_err(Error::from)
+    {
+        Ok(()) => None,
+        Err(Error::Forbidden) => {
+            let who = super::service::person(p)?;
+            let tenant = uuid::Uuid::parse_str(p.tenant_id()).map_err(|_| Error::Corrupt)?;
+            super::lifecycle::require_subject_on(c, tenant, &who).await?;
+            Some(who)
+        }
+        Err(e) => return Err(e),
+    };
+    Ok((snapshot.query_binding(p)?, scope))
+}
+
 impl Service {
     pub async fn device_access_binding(
         &self,
@@ -93,23 +123,31 @@ impl Service {
             return Err(Error::Forbidden);
         }
         let mut tx = self.store.snapshot(p.tenant_id()).await?;
-        rss_mdm_authorization_service::snapshot_on(
-            p.authority_profile(),
-            &mut tx,
-            p.tenant_id(),
-            p.instance_id(),
-        )
-        .await?
-        .require(p, Permission::AccountWrite, Some(device))
-        .map_err(rss_mdm_authorization_service::Error::from)?;
-        let before = authorization_binding(&mut tx, p).await?;
+        let (before, owner) = reader_scope(&mut tx, p, device).await?;
         let b = super::storage::get_in(
             &mut tx,
             uuid::Uuid::parse_str(&execution.tenant().to_string()).map_err(|_| Error::Corrupt)?,
             id,
         )
         .await?;
-        if b.device != *device {
+        if b.device != *device
+            || owner.as_ref().is_some_and(|who| {
+                b.person != *who
+                    || b.account.is_none()
+                    || b.state == rss_mdm_device_access::State::Revoked
+            })
+        {
+            return Err(Error::NotFound);
+        }
+        if owner.is_some()
+            && rss_mdm_registration_service::device::endpoints::current_da_in(
+                &mut tx,
+                p.tenant_id(),
+                device,
+            )
+            .await?
+            .is_none()
+        {
             return Err(Error::NotFound);
         }
         p.check_live()?;
@@ -131,16 +169,7 @@ impl Service {
             return Err(Error::Forbidden);
         }
         let mut tx = self.store.snapshot(p.tenant_id()).await?;
-        rss_mdm_authorization_service::snapshot_on(
-            p.authority_profile(),
-            &mut tx,
-            p.tenant_id(),
-            p.instance_id(),
-        )
-        .await?
-        .require(p, Permission::AccountWrite, Some(device))
-        .map_err(rss_mdm_authorization_service::Error::from)?;
-        let before = authorization_binding(&mut tx, p).await?;
+        let (before, owner) = reader_scope(&mut tx, p, device).await?;
         let binding = q
             .binding(&(
                 p.tenant_id(),
@@ -156,6 +185,13 @@ impl Service {
         sql.push_bind(p.tenant_id().to_owned())
             .push("::uuid AND b.device=")
             .push_bind(device.into_uuid());
+        if let Some(owner) = owner {
+            sql.push(" AND b.instance=")
+                .push_bind(owner.instance)
+                .push(" AND b.principal=")
+                .push_bind(owner.principal)
+                .push(" AND b.state <> 'revoked' AND b.account IS NOT NULL AND rss_da.current_da_registration(b.device) IS NOT NULL");
+        }
         rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*BINDINGS).map_err(error)?;
         let rows: Vec<Value> = sql
             .build_query_scalar()

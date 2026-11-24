@@ -114,13 +114,7 @@ impl Verifier {
         .ok_or(PlatformError::Rejected)?;
         let source: WindowsSource =
             serde_json::from_value(document).map_err(|_| PlatformError::Unavailable)?;
-        if source.binding_id != binding.id
-            || source.binding_generation != binding.generation
-            || source.factor_generation != binding.factor_generation
-            || source.binding_revision != binding.revision
-            || source.person != binding.person
-            || source.version < 1
-        {
+        if !source.current(binding) {
             return Err(PlatformError::Rejected);
         }
         let value = PlatformBinding {

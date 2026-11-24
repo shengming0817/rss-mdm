@@ -11,7 +11,17 @@ pub const API_VERSION: u8 = 1;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/enterprise/manifest.json");
 /// Digest of generated schema bytes in manifest order.
 pub const SCHEMA_FINGERPRINT: &str =
-    "67bc06186ad06968202f5cc944ad551ac1a467f6d2967fc6e4f6ad54f1bfe8c6";
+    "4dd2205ff82ae0b26cce20f370a30b10a025aeafd5148d69c1144c516cf65bcb";
+
+/// Outcome of continuing a previously registered Windows key after employee recovery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyRenewal {
+    /// The registered key is current for this operation.
+    Current,
+    /// The employee needs enterprise key registration.
+    RegistrationRequired,
+}
 
 /// Register a user-held key against the exact applied Windows account binding.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]

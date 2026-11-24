@@ -284,6 +284,7 @@ pub(crate) struct Identity {
 impl Identity {
     pub(crate) fn da_browser(&self) -> Arc<rss_mdm_device_access_http::identity::Identity> {
         Arc::new(rss_mdm_device_access_http::identity::Identity {
+            federated_routes: self.federation.as_ref().map(|_| self.routes.clone()),
             enterprise_clients: self.enterprise_clients.clone(),
             enterprise_administrators: self.enterprise_administrators.clone(),
             authority: self.authority.clone(),
@@ -674,22 +675,7 @@ pub struct OidcConfig {
     pub assurance_profiles: Vec<AssuranceProfile>,
     pub private_providers: Vec<PrivateProvider>,
 }
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssuranceProfile {
-    pub tenant_id: String,
-    pub issuer: String,
-    pub client_id: String,
-    pub keycloak_totp: bool,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PrivateProvider {
-    pub tenant_id: String,
-    pub issuer: String,
-    pub client_id: String,
-    pub cidrs: Vec<String>,
-}
+pub use rss_mdm_device_access_runtime::oidc::{AssuranceProfile, PrivateProvider};
 impl OidcConfig {
     pub(crate) fn validate_deployment(
         &self,
@@ -717,32 +703,17 @@ impl OidcConfig {
         rss_identity_postgres::CredentialKeys::new(self.active_credential_key.clone(), keys)
             .map_err(failure)
     }
-    fn private_access(&self) -> Result<Vec<rss_identity_oidc::PrivateProviderAccess>, Error> {
-        self.private_providers
-            .iter()
-            .map(|p| {
-                let owner = TenantId::parse(&p.tenant_id).map_err(|_| invalid())?;
-                Ok(rss_identity_oidc::PrivateProviderAccess {
-                    tenant: owner,
-                    issuer: p.issuer.clone(),
-                    client_id: p.client_id.clone(),
-                    cidrs: p
-                        .cidrs
-                        .iter()
-                        .map(|s| s.parse().map_err(|_| invalid()))
-                        .collect::<Result<_, _>>()?,
-                })
-            })
-            .collect()
-    }
     fn transport(
         &self,
         policy: rss_identity_oidc::TransportPolicy,
     ) -> Result<rss_identity_oidc::HttpOidc, Error> {
-        rss_identity_oidc::HttpOidc::new(self.profiles()?, self.private_access()?, policy)
-            .map_err(|_| invalid())
+        rss_mdm_device_access_runtime::oidc::transport(
+            &self.assurance_profiles,
+            &self.private_providers,
+            policy,
+        )
+        .map_err(|_| invalid())
     }
-
     fn federation(
         &self,
         authority: Authority,
@@ -752,19 +723,6 @@ impl OidcConfig {
     ) -> Result<rss_identity_postgres::Federation, Error> {
         let oidc = self.transport(policy)?;
         self.federation_using(authority, origin, instance, Arc::new(oidc))
-    }
-    fn profiles(&self) -> Result<Vec<rss_identity_oidc::TrustedAssuranceProfile>, Error> {
-        self.assurance_profiles
-            .iter()
-            .map(|p| {
-                Ok(rss_identity_oidc::TrustedAssuranceProfile {
-                    tenant: TenantId::parse(&p.tenant_id).map_err(|_| invalid())?,
-                    issuer: p.issuer.clone(),
-                    client_id: p.client_id.clone(),
-                    keycloak_totp: p.keycloak_totp,
-                })
-            })
-            .collect::<Result<Vec<_>, Error>>()
     }
     fn federation_using(
         &self,

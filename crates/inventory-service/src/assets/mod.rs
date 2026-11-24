@@ -207,7 +207,29 @@ impl AssetService {
                         cut.ok_or(Error::Unavailable(Failure::AssetsStorage))?,
                     )
                     .await?;
-                Response::Detail { device: view }
+                let module_observation_stale = view
+                    .fields
+                    .get(&rss_mdm_inventory::builtin::CLIENT_MODULES)
+                    .and_then(|field| {
+                        field.sources.iter().find(|fact| {
+                            matches!(
+                                fact.state,
+                                rss_mdm_inventory::State::Known(_)
+                                    | rss_mdm_inventory::State::Unknown { .. }
+                                    | rss_mdm_inventory::State::Unsupported
+                            ) && fact.evidence.source == rss_mdm_inventory::Source::AgentBuiltin
+                                && fact.evidence.dataset.as_deref()
+                                    == Some(rss_mdm_inventory::builtin::MDM_ENROLLMENT.as_str())
+                        })
+                    })
+                    .map(|fact| {
+                        at.unix_seconds().saturating_sub(fact.evidence.received_at)
+                            >= i64::from(rss_mdm_agent_wire::da::MODULE_STALE_SECONDS)
+                    });
+                Response::Detail {
+                    device: view,
+                    module_observation_stale,
+                }
             }
             Command::Search { request, scope } => {
                 if request.expected_revision != 0 {

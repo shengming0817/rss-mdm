@@ -21,6 +21,17 @@ pub async fn verify(
         sequence: 1,
         observed_at: Some(0),
         client_version: "foundation".into(),
+        modules: da::ClientModules {
+            da: da::ModuleObservation {
+                installed: Some(true),
+                enabled: Some(true),
+            },
+            mdm: da::ModuleObservation {
+                installed: None,
+                enabled: Some(false),
+            },
+            application: da::ModuleApplication::Pending,
+        },
         contract_version: 1,
         binding: da::Health::Ready,
         factor: da::Health::Ready,
@@ -177,6 +188,14 @@ pub async fn verify(
     )
     .await?;
     assert_eq!(stale["stale"], true);
+    assert_eq!(
+        stale["report"]["modules"],
+        serde_json::to_value(report.modules)?
+    );
+    assert_eq!(
+        stale["report"]["observedAt"],
+        serde_json::json!(report.observed_at)
+    );
     let limited = material::device_administrator(c, &registration.device).await?;
     assert_eq!(
         client

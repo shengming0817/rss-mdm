@@ -2,6 +2,7 @@
 //! No MDM/Agent business service is required for independent DA registration or PSSO.
 pub mod enterprise;
 pub mod installation;
+pub mod oidc;
 pub mod platform;
 use rss_mdm_device_access_postgres as pg;
 use rss_mdm_registration_service as registration;

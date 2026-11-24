@@ -84,6 +84,8 @@ GRANT SELECT ON rss_da.credential_runs TO mdm_access;
 GRANT EXECUTE ON FUNCTION rss_da.credential_save_retired_run(uuid,uuid,jsonb,jsonb) TO mdm_access,mdm_command_runtime;
 GRANT SELECT,INSERT,DELETE ON rss_da.recovery_agent_guards TO mdm_command_runtime;
 GRANT SELECT ON rss_da.devices TO mdm_identity_runtime;
+GRANT SELECT(tenant_id,id,device,purpose,state) ON rss_da.credentials TO mdm_identity_runtime;
+GRANT SELECT(tenant_id,credential,not_after) ON rss_da.certificate_issuances TO mdm_identity_runtime;
 GRANT SELECT(tenant_id,id,retirement) ON rss_da.devices TO mdm_command_runtime;
 -- The host Policy participant can resolve RSS task anchors in its original transaction.
 GRANT SELECT ON rss_da.bindings,rss_da.agent_delivery,rss_da.devices,rss_da.policies,rss_da.policy_versions TO mdm_policy_runtime;
