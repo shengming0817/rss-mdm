@@ -23,6 +23,7 @@ impl Claim for Item {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Scenario {
+    Reschedule,
     EarlyEmpty,
     NewWork,
     SlowCursor,
@@ -124,7 +125,7 @@ impl DurableStore for Store {
             tokio::time::sleep_until(self.start + Duration::from_millis(25)).await;
         }
         let more = self.scans.lock().unwrap().len() == 1 || slow_head;
-        scanned(scope, started, more);
+        scanned(scope, started, more, claims.iter().map(Claim::target));
         Ok(ClaimBatch { claims, more })
     }
     async fn finish<T: Timer>(
@@ -148,7 +149,7 @@ impl DurableStore for Store {
             Completion::Converged => {}
             other => panic!("unexpected completion {other:?}"),
         }
-        settled(claim.target.scope(), completion);
+        settled(&claim.target, Some(completion));
         Ok(())
     }
 }
@@ -159,6 +160,9 @@ impl Reconciler<Item> for Store {
         claim: &Item,
         _: &Control<'_, T>,
     ) -> Result<ReconcileStep<ReconcileDiff<()>>, Error> {
+        if self.scenario == Scenario::Reschedule && claim.first {
+            return Ok(ReconcileStep::Deferred(Duration::from_secs(86_400)));
+        }
         if claim.target.entity() == "z-peer" {
             // A nonempty tail with no immediate convergence-driven follow-up.
             return Ok(ReconcileStep::Deferred(Duration::from_secs(60)));
@@ -369,3 +373,6 @@ async fn one_tenants_scan_backoff_allows_a_peers_notifications() {
     let (result, ()) = tokio::join!(worker, proof);
     result.unwrap();
 }
+
+#[path = "reschedule.rs"]
+mod reschedule;

@@ -186,7 +186,12 @@ impl DurableStore for Scheduler {
             .store
             .claim_due(scope, limit, scan_budget, lease, control)
             .await?;
-        crate::reconcile::scanned(scope, started, batch.more);
+        crate::reconcile::scanned(
+            scope,
+            started,
+            batch.more,
+            batch.claims.iter().map(PgClaim::target),
+        );
         Ok(batch)
     }
     async fn renew<T: Timer>(
@@ -206,7 +211,7 @@ impl DurableStore for Scheduler {
     ) -> Result<(), Error> {
         let _slot = self.connection(claim.target().scope(), control).await?;
         self.store.finish(claim, completion, control).await?;
-        crate::reconcile::settled(claim.target().scope(), completion);
+        crate::reconcile::settled(claim.target(), Some(completion));
         Ok(())
     }
     async fn release<T: Timer>(
@@ -215,6 +220,8 @@ impl DurableStore for Scheduler {
         control: &Control<'_, T>,
     ) -> Result<(), Error> {
         let _slot = self.connection(claim.target().scope(), control).await?;
-        self.store.release(claim, control).await
+        self.store.release(claim, control).await?;
+        crate::reconcile::settled(claim.target(), None);
+        Ok(())
     }
 }

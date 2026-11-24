@@ -33,7 +33,10 @@ struct Tenant {
     active: BTreeSet<usize>,
     discovered: bool,
     claiming: Option<usize>,
-    deadlines: BTreeSet<Instant>,
+    // An entity belongs to exactly one scope in this registration.
+    deadlines: BTreeSet<(Instant, Arc<str>)>,
+    by_entity: BTreeMap<Arc<str>, Instant>,
+    in_flight: BTreeMap<Arc<str>, usize>,
     sweep_start: Option<Instant>,
     previous_sweep: Option<Instant>,
     immediate: bool,
@@ -50,7 +53,7 @@ impl Tenant {
         }
         self.recovery
             .into_iter()
-            .chain(self.deadlines.first().copied())
+            .chain(self.deadlines.first().map(|(at, _)| *at))
             .min()
             .unwrap_or(now)
     }
@@ -97,6 +100,7 @@ impl Drop for Round {
         let mut running = self.running.lock().expect("active claim rounds");
         let tenant = running.get_mut(&self.tenant).expect("active tenant");
         tenant.active.remove(&self.position);
+        tenant.in_flight.retain(|_, owner| *owner != self.position);
         if tenant.claiming == Some(self.position) {
             tenant.claiming = None;
         }
@@ -112,11 +116,25 @@ impl Drop for Round {
 // to the owning batch, including during RSS's concurrent attempt polling.
 tokio::task_local! { static CURRENT: (Scope, Arc<Round>); }
 
-pub(crate) fn scanned(scope: &Scope, started: Instant, more: bool) {
+pub(crate) fn scanned<'a>(
+    scope: &Scope,
+    started: Instant,
+    more: bool,
+    claims: impl Iterator<Item = &'a Target>,
+) {
     let _ = CURRENT.try_with(|(owner, round)| {
         if owner == scope {
             let mut running = round.running.lock().expect("active claim rounds");
             let tenant = running.get_mut(&round.tenant).expect("active tenant");
+            // Physical claims are serialized per scope until Round::claimed. Older
+            // positions may still be waiting for their finish acknowledgement.
+            for target in claims {
+                let entity = target.entity();
+                if let Some((key, at)) = tenant.by_entity.remove_entry(entity) {
+                    tenant.deadlines.remove(&(at, key));
+                }
+                tenant.in_flight.insert(Arc::from(entity), round.position);
+            }
             // A tail page cannot cover a ticket behind its cursor or beyond its
             // high-water mark. Only retire through the start of the whole sweep.
             let start = *tenant.sweep_start.get_or_insert(started);
@@ -131,9 +149,10 @@ pub(crate) fn scanned(scope: &Scope, started: Instant, more: bool) {
             while tenant
                 .deadlines
                 .first()
-                .is_some_and(|at| through.is_some_and(|end| *at <= end))
+                .is_some_and(|(at, _)| through.is_some_and(|end| *at <= end))
             {
-                tenant.deadlines.pop_first();
+                let (_, entity) = tenant.deadlines.pop_first().expect("present deadline");
+                tenant.by_entity.remove(&entity);
             }
         }
     });
@@ -143,23 +162,33 @@ pub(crate) fn scanned(scope: &Scope, started: Instant, more: bool) {
     clippy::disallowed_methods,
     reason = "monotonic acknowledged settlement deadline"
 )]
-pub(crate) fn settled(scope: &Scope, completion: Completion) {
-    let (Completion::Reobserve(after)
-    | Completion::Deferred(after)
-    | Completion::Retry { after, .. }) = completion
-    else {
-        return;
-    };
-    let now = Instant::now();
-    let Some(at) = now.checked_add(after) else {
-        return;
-    };
+pub(crate) fn settled(target: &Target, completion: Option<Completion>) {
     let _ = CURRENT.try_with(|(owner, round)| {
-        if owner == scope {
-            let mut running = round.running.lock().expect("active claim rounds");
-            let tenant = running.get_mut(&round.tenant).expect("active tenant");
+        if owner != target.scope() {
+            return;
+        }
+        let mut running = round.running.lock().expect("active claim rounds");
+        let tenant = running.get_mut(&round.tenant).expect("active tenant");
+        if tenant.in_flight.get(target.entity()) != Some(&round.position) {
+            return;
+        }
+        let (entity, _) = tenant
+            .in_flight
+            .remove_entry(target.entity())
+            .expect("owned claim");
+        let Some(
+            Completion::Reobserve(after)
+            | Completion::Deferred(after)
+            | Completion::Retry { after, .. },
+        ) = completion
+        else {
+            return;
+        };
+        let now = Instant::now();
+        if let Some(at) = now.checked_add(after) {
             let previous = tenant.next(now);
-            tenant.deadlines.insert(at);
+            tenant.deadlines.insert((at, entity.clone()));
+            tenant.by_entity.insert(entity, at);
             if at < previous {
                 round.rescan.notify_one();
             }
@@ -229,7 +258,7 @@ where
                         active.retain(|_, tenant| {
                             std::mem::take(&mut tenant.discovered)
                                 || !tenant.active.is_empty()
-                                || tenant.deadlines.last().is_some_and(|at| *at > now)
+                                || tenant.deadlines.last().is_some_and(|(at, _)| *at > now)
                                 || tenant.retry.is_some_and(|at| at > now)
                         });
                     }
