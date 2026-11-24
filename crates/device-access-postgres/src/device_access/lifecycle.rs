@@ -629,7 +629,8 @@ impl crate::service::Service {
     }
 }
 
-/// Project committed native cleanup or an exact confirmation that no local cleanup was necessary.
+/// A cancelled run confirms no cleanup was needed only if the device never received a Start.
+/// An unused issued permit closes its attempt with the requested disposition still unconfirmed.
 pub(super) async fn cleanup_phases(
     c: &mut PgConnection,
     tenant: &str,
@@ -661,9 +662,14 @@ pub(super) async fn cleanup_phases(
                 WHERE u.tenant_id=$1::uuid AND u.binding_id=(t->>'id')::uuid AND u.da_target IS NOT NULL
                   AND u.access_binding->'operationId'=t->'operation' AND u.access_binding->'revision'=t->'revision'
                   AND u.access_binding->'generation'=t->'generation' AND u.state->>'cancellation'='confirmed'
+                  AND u.da_journal->>'received'='false'
             ) AS confirmed,
             COALESCE(bool_or(r.document#>>'{effect,state}'='unknown'),false) AS unknown,
-            COALESCE(bool_or(r.document#>>'{effect,state}'='failed'),false) AS failed
+            COALESCE(bool_or(r.document#>>'{effect,state}'='failed'),false) OR EXISTS (
+                SELECT FROM rss_da.access_runs u WHERE u.tenant_id=$1::uuid AND u.binding_id=(t->>'id')::uuid
+                  AND u.access_binding->'operationId'=t->'operation' AND u.access_binding->'revision'=t->'revision'
+                  AND u.da_journal->>'cleanup_conflict'='true'
+            ) AS failed
          FROM jsonb_array_elements($2) t
          LEFT JOIN rss_da.results r ON r.tenant_id=$1::uuid AND r.binding=(t->>'id')::uuid
             AND r.document->'bindingGeneration'=t->'generation' AND r.document->'revision'=t->'revision'

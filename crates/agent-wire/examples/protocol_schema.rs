@@ -13,6 +13,7 @@ fn main() {
             "CurrentConfiguration": schemars::schema_for!(rss_mdm_agent_wire::da::CurrentConfiguration),
             "RevocationReceipt": schemars::schema_for!(rss_mdm_agent_wire::da::RevocationReceipt),
             "Configuration": schemars::schema_for!(rss_mdm_agent_wire::da::Configuration),
+            "AccountClaim": schemars::schema_for!(rss_mdm_agent_wire::da::AccountClaim),
             "AccountOffer": schemars::schema_for!(rss_mdm_agent_wire::da::AccountOffer),
             "AccountEvent": schemars::schema_for!(rss_mdm_agent_wire::da::AccountEvent),
             "AccountSettlement": schemars::schema_for!(rss_mdm_agent_wire::da::AccountSettlement),

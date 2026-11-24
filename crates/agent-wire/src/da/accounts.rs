@@ -1,7 +1,73 @@
-//! Direct delivery of a frozen Windows account operation over the DA device listener.
+//! Direct delivery of a frozen local account operation over the DA device listener.
 use crate::runtime as w;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+/// Execution platform selected by this client before the server chooses a candidate.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountClaim {
+    /// Selects eligible offers. The unqualified Windows poll and explicit macOS query share this route.
+    /// Authentication and execution authority remain bound to the DA registration and original target.
+    #[serde(default = "windows_platform")]
+    pub platform: w::TaskPlatform,
+}
+
+fn windows_platform() -> w::TaskPlatform {
+    w::TaskPlatform::Windows
+}
+
+/// Observations stored with standalone DA account operations.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(
+    tag = "state",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum AccountEffect {
+    /// A directly authorized macOS Create was read back. PSSO readiness is independent.
+    MacAccountCreated {
+        /// Stable native identity read from the created account.
+        generated_uid: Uuid,
+        /// Actual privilege, including when it differs from the requested role.
+        role: w::AccessRole,
+        /// Account-specific Secure Token observation.
+        secure_token: w::AccessObservation,
+        /// Independently observed Apple silicon volume ownership.
+        volume_owner: w::AccessObservation,
+        /// Independently observed FileVault unlock eligibility.
+        filevault_unlock: w::AccessObservation,
+    },
+    /// Common configuration, refusal, unknown or cleanup observation.
+    #[serde(untagged)]
+    Access(w::AccessEffect),
+}
+impl From<w::AccessEffect> for AccountEffect {
+    fn from(v: w::AccessEffect) -> Self {
+        Self::Access(v)
+    }
+}
+impl From<w::AccessResult> for AccountResult {
+    fn from(v: w::AccessResult) -> Self {
+        let w::AccessResult {
+            binding_id,
+            binding_generation,
+            revision,
+            definition_digest,
+            effect,
+        } = v;
+        Self {
+            binding_id,
+            binding_generation,
+            revision,
+            definition_digest,
+            effect: effect.into(),
+        }
+    }
+}
+/// DA uses the same attempt coordinates for native creation and configuration observations.
+pub type AccountResult = w::AccessResult<AccountEffect>;
 
 /// Coordinates to journal before acknowledging an offered account operation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -33,7 +99,7 @@ pub struct AccountEvent {
     pub event: AccountObservation,
 }
 
-/// Closed set of Windows account observations accepted by DA.
+/// Closed set of local account observations accepted by DA.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
@@ -61,7 +127,7 @@ pub enum AccountObservation {
     /// Encrypted RSS factor recovery material.
     Escrow(w::CredentialEscrow),
     /// Actual local observation, including unknown and cleanup.
-    Result(w::AccessResult),
+    Result(AccountResult),
 }
 
 /// Receipt of the exact device event.

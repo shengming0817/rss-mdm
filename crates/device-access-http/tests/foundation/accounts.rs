@@ -1,33 +1,25 @@
 //! mTLS account consumer on an installation with no Agent schema or delivery relationship.
+pub(super) mod macos;
 use super::*;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use rss_identity_core::session::{BearerSecret, SessionSecret};
+use rss_identity_core::session::SessionSecret;
 use rss_mdm_agent_wire::{da, runtime as w};
 use rss_mdm_device_access_postgres::device_access as access;
 use rss_mdm_recovery_credentials::tasks::device::{Action, Request, State, Status};
 use serde_json::{Value, json};
 
 struct Manager {
+    authenticator: tokio::sync::Mutex<Option<business::Authenticator>>,
     principal: Uuid,
     cookie: String,
     csrf: String,
 }
 impl Manager {
     async fn new(c: &Context, client: &reqwest::Client) -> Result<Self> {
-        let token = material::administrator(c).await?;
-        let principal = c
-            .authority
-            .inspect_bearer(
-                c.execution(),
-                BearerSecret::parse(token)?,
-                platform::deadline(),
-            )
-            .await?
-            .account()
-            .principal
-            .as_uuid();
+        let principal = material::seed_administrator(c, None).await?;
         let (cookie, csrf) = credentials::login(c, client, principal).await?;
         Ok(Self {
+            authenticator: Default::default(),
             principal,
             cookie,
             csrf,
@@ -43,21 +35,21 @@ impl Manager {
         action: Value,
     ) -> Result<()> {
         let session = SessionSecret::parse(self.cookie.split_once('=').unwrap().1.to_owned())?;
-        let p = c
-            .sessions
-            .authenticate(
-                c.execution(),
-                &c.authorization,
-                rss_mdm_authorization_service::credential::RequestCredential::Cookie(
-                    SessionSecret::parse(session.expose().to_owned())?,
-                ),
-                platform::deadline(),
-            )
-            .await?;
-        let proof = Box::pin(business::operation_proof(
+        let p = Box::pin(c.sessions.authenticate(
+            c.execution(),
+            &c.authorization,
+            rss_mdm_authorization_service::credential::RequestCredential::Cookie(
+                SessionSecret::parse(session.expose().to_owned())?,
+            ),
+            platform::deadline(),
+        ))
+        .await?;
+        let mut authenticator = self.authenticator.lock().await;
+        let proof = Box::pin(business::registered_operation_proof(
             c,
             &session,
             change.step_up_context(&p, &r.device, binding, &Default::default())?,
+            Some(&mut authenticator),
         ))
         .await?;
         let result:Value=material::success(client.put(format!("{}/api/v1/tenants/{}/devices/{}/device-access/bindings/{binding}",c.browser_origin,c.tenant,r.device))
@@ -299,7 +291,13 @@ pub(super) async fn verify(
     };
     let mut unknown = report.clone();
     unknown.effect = w::AccessEffect::Unknown;
-    observe(&peer, base, &offer, da::AccountObservation::Result(unknown)).await?;
+    observe(
+        &peer,
+        base,
+        &offer,
+        da::AccountObservation::Result(unknown.into()),
+    )
+    .await?;
     let uncertain: Value = material::success(progress(op, &admin.cookie).await?).await?;
     assert_eq!(uncertain["execution"], "unknown");
     assert_eq!(
@@ -310,7 +308,7 @@ pub(super) async fn verify(
         &peer,
         base,
         &offer,
-        da::AccountObservation::Result(report.clone()),
+        da::AccountObservation::Result(report.clone().into()),
     )
     .await?;
     let read: Value = material::success(progress(op, &admin.cookie).await?).await?;
@@ -433,7 +431,7 @@ pub(super) async fn verify(
         event_id: Uuid::new_v4(),
         attempt_id: offer.attempt_id,
         definition_digest: offer.definition_digest,
-        event: da::AccountObservation::Result(report),
+        event: da::AccountObservation::Result(report.into()),
     };
     assert_eq!(
         peer.post(format!(
@@ -463,7 +461,13 @@ pub(super) async fn verify(
     // The management rule was replaced after Start. An already-completed removal still settles.
     assert_eq!(sqlx::query("UPDATE rss_da.authorization_rules SET revision=revision+1 WHERE tenant_id=$1 AND document::text LIKE '%' || $2 || '%'")
         .bind(r.tenant).bind(cleanup.principal.to_string()).execute(&c.operator).await?.rows_affected(),1);
-    observe(&peer, base, &offer, da::AccountObservation::Result(result)).await?;
+    observe(
+        &peer,
+        base,
+        &offer,
+        da::AccountObservation::Result(result.into()),
+    )
+    .await?;
     let applied:i64=sqlx::query_scalar("SELECT (document->>'appliedRevision')::bigint FROM rss_da.bindings WHERE tenant_id=$1 AND id=$2")
       .bind(r.tenant).bind(binding).fetch_one(&c.operator).await?;
     assert_eq!(applied, permit.revision);
@@ -731,7 +735,7 @@ pub(super) async fn stopped_create(
             binding_generation: permit.binding_generation,
             revision: permit.revision,
             definition_digest: permit.definition_digest,
-            effect: w::AccessEffect::Unknown,
+            effect: w::AccessEffect::Unknown.into(),
         }),
     )
     .await?;
