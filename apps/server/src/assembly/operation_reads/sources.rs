@@ -20,6 +20,20 @@ struct Source {
     owner: Owner,
 }
 
+// In a per-device LATERAL seek the device value is fixed. Evaluate device
+// conditions on that outer value, so an IN predicate cannot turn the equality
+// index walk back into a bitmap scan and sort. All other bindings are shared.
+static GRANTED_BINDINGS: LazyLock<rss_mdm_query_postgres::Bindings> = LazyLock::new(|| {
+    rss_mdm_query_postgres::Bindings::mapped(&SCHEMA, |field| {
+        if field == "device" {
+            Ok("granted.allowed_id")
+        } else {
+            column(field)
+        }
+    })
+    .expect("Complete operation SQL dispatch for each granted device")
+});
+
 static COLLECTION: LazyLock<String> =
     LazyLock::new(rss_mdm_inventory_service::collection::execution::queries::relation_sql);
 static SOURCES: LazyLock<[Source; 13]> = LazyLock::new(|| {
@@ -284,8 +298,13 @@ impl<'a> Scope<'a> {
                 .push(i);
             if multiple.is_some() {
                 sql.push(" WHERE device=granted.allowed_id");
-                rss_mdm_query_postgres::prefilter(sql, self.query, &*BINDINGS, selection::metadata)
-                    .map_err(query_error)?;
+                rss_mdm_query_postgres::prefilter(
+                    sql,
+                    self.query,
+                    &*GRANTED_BINDINGS,
+                    selection::metadata,
+                )
+                .map_err(query_error)?;
             } else {
                 self.eligible(sql)?;
             }
