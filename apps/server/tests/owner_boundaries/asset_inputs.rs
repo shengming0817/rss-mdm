@@ -59,7 +59,7 @@ async fn message(c: &Context) -> Result<(MessageEnvelope<Vec<u8>>, Vec<u8>)> {
     );
     Ok((envelope, fingerprint))
 }
-async fn wait_sql(c: &Context, sql: &'static str, object: Uuid) -> Result<()> {
+pub(super) async fn wait_sql(c: &Context, sql: &'static str, object: Uuid) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(45), async {
         loop {
             if sqlx::query_scalar::<_, bool>(sql)
@@ -372,7 +372,7 @@ async fn projection_lanes(
     Ok((assets, groups))
 }
 
-struct Workers {
+pub(super) struct Workers {
     stack: rss_runtime::ShutdownStack,
     pool: sqlx::PgPool,
     policy_owner: Option<crate::owner_storage::OwnerRuntime>,
@@ -385,7 +385,7 @@ impl Workers {
     ) -> Result<Self> {
         Self::start_policy(c, owners, scopes, None).await
     }
-    async fn start_policy(
+    pub(super) async fn start_policy(
         c: &Context,
         owners: &Owners,
         scopes: Arc<rss_mdm_scope_service::Scopes>,
@@ -575,7 +575,7 @@ impl Workers {
             policy_owner,
         })
     }
-    async fn close(self) -> Result<()> {
+    pub(super) async fn close(self) -> Result<()> {
         anyhow::ensure!(
             self.stack.shutdown().join().await?.is_clean(),
             "worker shutdown failed"

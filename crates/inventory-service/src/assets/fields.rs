@@ -17,6 +17,9 @@ impl AssetService {
         field: FieldKey,
         change: &Operation<FieldChange>,
     ) -> Result<Response> {
+        if rss_mdm_inventory::personnel::DeviceUser::for_key(field).is_some() {
+            return Err(Error::Forbidden.into());
+        }
         let tenant = tx.tenant_id();
         tx.with_connection(move |c| {
             Box::pin(async move {
@@ -126,11 +129,11 @@ pub fn visible(definition: &FieldDefinition) -> bool {
     definition.sensitivity != Sensitivity::Secret
 }
 
-/// Actual field directory entry, using the same field contract as signed projections.
+/// Actual field directory entry, including fields owned by the server.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FieldView {
     #[serde(flatten)]
-    pub definition: rss_mdm_agent_wire::runtime::FieldDefinition,
+    pub definition: FieldDefinition,
     pub operations: Vec<rss_mdm_inventory::Operator>,
 }

@@ -15,6 +15,8 @@ enum Position {
     },
 }
 struct QueryState {
+    fields: Vec<FieldKey>,
+    cut: AssetCut,
     summary: Summary,
     status: String,
     failure: Option<String>,
@@ -35,12 +37,32 @@ impl AssetService {
         let completed = state.completed;
         let failure = state.failure;
         let forwarded = state.started;
-        if owner.subject != scope.subject
+        if !scope.permits_query(&state.input.query)
+            || owner.subject != scope.subject
             || owner.collection_scope != scope.collection_scope
             || owner.devices != scope.devices
         {
             return Err(Error::Forbidden.into());
         }
+        let protected = state.input.query.personnel_fields();
+        let mappings: BTreeSet<_> = protected
+            .iter()
+            .filter_map(|key| match rss_mdm_inventory::personnel::attribute(*key) {
+                Some((_, rss_mdm_inventory::personnel::Attribute::Profile(id))) => Some(id),
+                _ => None,
+            })
+            .collect();
+        if !mappings.is_empty() {
+            let expected = mappings.len() as i64;
+            let count: i64 = tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query_scalar("SELECT count(*) FROM mdm_user_profiles.device_fields WHERE field_id=ANY($1)")
+                    .bind(mappings.into_iter().collect::<Vec<_>>()).fetch_one(c).await
+            })).await?;
+            if count != expected {
+                return Err(Error::Forbidden.into());
+            }
+        }
+        let fields = protected.into_iter().collect();
         let status = if failure.is_some() {
             "failed"
         } else if completed {
@@ -51,6 +73,8 @@ impl AssetService {
             "pending"
         };
         Ok(QueryState {
+            fields,
+            cut: state.input.asset_cut,
             summary: state.summary,
             status: status.into(),
             ready: completed && failure.is_none(),
@@ -108,6 +132,7 @@ impl AssetService {
     }
     pub(super) async fn asset_query_items(
         &self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         scope: &ReadScope,
@@ -162,6 +187,32 @@ impl AssetService {
         if !more {
             next = None;
         }
+        let mut personnel = if state.fields.is_empty() {
+            BTreeMap::new()
+        } else {
+            let now = self
+                .clock
+                .unix_seconds()
+                .ok_or(Error::Unavailable(Failure::AssetsStorage))?;
+            let mut facts =
+                personnel::load_in(tx, &state.cut, now, true, &ids, &state.fields).await?;
+            let devices: Vec<_> = facts.keys().map(|d| d.into_uuid()).collect();
+            let mut qualified = BTreeMap::new();
+            if !devices.is_empty() {
+                let users = self
+                    .users
+                    .read(binding, &devices, crate::transaction::deadline())
+                    .await?;
+                for u in users {
+                    let device = crate::database::device_id(u.device)?;
+                    if let Some(mut fields) = facts.remove(&device) {
+                        fields.retain(|key, fact| u.qualifies(*key, fact));
+                        qualified.insert(device, fields);
+                    }
+                }
+            }
+            qualified
+        };
         let tenant = tx.tenant_id().to_string();
         let rows=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("SELECT r.device,r.document,r.digest FROM unnest($3::uuid[]) WITH ORDINALITY p(device,n) JOIN mdm_assets.asset_query_results r ON r.device=p.device WHERE r.tenant_id=$1::uuid AND r.run=$2::uuid ORDER BY p.n")
@@ -174,7 +225,7 @@ impl AssetService {
             if Sha256::digest(&raw).as_slice() != row.try_get::<Vec<u8>, _>("digest")? {
                 return Err(Error::Unavailable(Failure::AssetsStorage).into());
             }
-            let item: DeviceView = stored(serde_json::from_slice(&raw))?;
+            let mut item: DeviceView = stored(serde_json::from_slice(&raw))?;
             if item.device
                 != row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
                     rss_mdm_agent_wire::DeviceId::try_from(id)
@@ -182,6 +233,15 @@ impl AssetService {
                 })?
             {
                 return Err(Error::Unavailable(Failure::AssetsStorage).into());
+            }
+            let facts = personnel.remove(&item.device).unwrap_or_default();
+            for &key in &state.fields {
+                if facts.get(&key).is_none_or(|f| f.value.is_none()) {
+                    if let Some(field) = item.fields.get_mut(&key) {
+                        field.state = rss_mdm_inventory::State::Missing;
+                    }
+                    item.revisions.remove(&key);
+                }
             }
             items.push(item);
         }

@@ -218,6 +218,35 @@ enum InputState {
     Scalar(rss_mdm_inventory::State),
     Array(rss_mdm_inventory::ArrayState),
 }
+fn server_input<'a>(
+    facts: impl Iterator<Item = &'a personnel::Fact>,
+    verified: bool,
+    expected: usize,
+) -> Result<(InputState, String, i64)> {
+    let facts: Vec<_> = facts.collect();
+    let state = match facts.first() {
+        Some(first)
+            if verified
+                && facts
+                    .iter()
+                    .all(|f| f.subject == first.subject && f.value == first.value) =>
+        {
+            if facts.len() == expected {
+                first.value.clone().map_or(State::Missing, State::Known)
+            } else {
+                State::Missing
+            }
+        }
+        Some(_) => State::Conflict,
+        None => State::Missing,
+    };
+    Ok((
+        InputState::Scalar(state),
+        digest(&facts)?,
+        facts.iter().map(|f| f.observed_at).max().unwrap_or(0),
+    ))
+}
+
 fn object(
     tenant: TenantId,
     key: rss_mdm_agent_wire::ObjectRef,
@@ -230,7 +259,19 @@ fn object(
     let mut facts = BTreeMap::new();
     for (name, expected) in rule.view().fields {
         let key = checked_input(FieldKey::parse(name))?;
-        let path = checked_input(catalog.path(key))?;
+        let path = catalog.path(key);
+        if rss_mdm_inventory::personnel::attribute(key).is_some()
+            && path
+                .as_ref()
+                .ok()
+                .and_then(|p| dictionary_field(key, p).ok())
+                .as_ref()
+                != Some(expected)
+        {
+            // The saved rule owns its type. An unavailable input evaluates to Unknown.
+            continue;
+        }
+        let path = checked_input(path)?;
         if &dictionary_field(key, &path)? != expected {
             return Err(Error::Malformed.into());
         }
@@ -296,6 +337,9 @@ pub(super) fn page(
                 rule,
                 progress,
                 |key| {
+                    if rss_mdm_inventory::personnel::DeviceUser::for_key(key).is_some() {
+                        return server_input(device.personnel.get(&key).into_iter(), true, 1);
+                    }
                     if let Some(f) = device.arrays.get(&key) {
                         Ok((
                             InputState::Array(f.state.clone()),
@@ -345,6 +389,21 @@ pub(super) fn associated_page(
             rule,
             progress,
             |key| {
+                if rss_mdm_inventory::personnel::DeviceUser::for_key(key).is_some() {
+                    return server_input(
+                        devices
+                            .iter()
+                            .filter(|d| input.members.iter().any(|m| m.device == d.scalars.device))
+                            .filter_map(|d| d.personnel.get(&key)),
+                        input.verified,
+                        input
+                            .members
+                            .iter()
+                            .map(|m| m.device)
+                            .collect::<BTreeSet<_>>()
+                            .len(),
+                    );
+                }
                 let definition = checked_input(catalog.definition(key))?;
                 let allowed = |device: &DeviceSummary, e: &rss_mdm_inventory::Evidence| {
                     input.members.iter().any(|m| {
@@ -463,10 +522,30 @@ pub fn require_visible(catalog: &Catalog, criteria: &Criteria) -> Result<()> {
 pub fn require_visible_rule(catalog: &Catalog, rule: &g::Rule) -> Result<()> {
     for name in rule.view().fields.keys() {
         let key = checked_input(FieldKey::parse(name))?;
+        if rss_mdm_inventory::personnel::attribute(key).is_some()
+            && catalog.definition(key).is_err()
+        {
+            continue;
+        }
         if checked_input(catalog.path(key))?.root.sensitivity
             == rss_mdm_inventory::Sensitivity::Secret
         {
             return Err(Error::Forbidden.into());
+        }
+    }
+    Ok(())
+}
+
+/// Drafts must still be executable with the currently visible dictionary.
+pub fn require_current_rule(catalog: &Catalog, rule: &g::Rule) -> Result<()> {
+    for (name, expected) in rule.view().fields {
+        let key = checked_input(FieldKey::parse(name))?;
+        let path = checked_input(catalog.path(key))?;
+        if path.root.sensitivity == rss_mdm_inventory::Sensitivity::Secret {
+            return Err(Error::Forbidden.into());
+        }
+        if &dictionary_field(key, &path)? != expected {
+            return Err(Error::Malformed.into());
         }
     }
     Ok(())

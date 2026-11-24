@@ -149,6 +149,7 @@ pub struct Owner {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadScope {
+    pub personnel: super::personnel::Access,
     pub authority: String,
     pub collection_scope: rss_mdm_inventory::CollectionScope,
     pub subject: String,
@@ -159,6 +160,7 @@ impl ReadScope {
     pub fn all() -> Self {
         Self {
             collection_scope: rss_mdm_inventory::CollectionScope::Device,
+            personnel: super::personnel::Access::all(),
             subject: "group".into(),
             authority: "internal".into(),
             devices: None,
@@ -175,6 +177,7 @@ impl ReadScope {
     ) -> std::result::Result<Self, Error> {
         Ok(Self {
             collection_scope: rss_mdm_inventory::CollectionScope::Device,
+            personnel: super::personnel::Access::from_snapshot(p, snapshot),
             subject: format!("{}:{}", p.instance_id(), p.principal_id()),
             devices: snapshot.inventory_devices(p)?,
             authority: snapshot.query_binding(p)?,

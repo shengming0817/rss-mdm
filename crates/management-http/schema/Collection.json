@@ -184,10 +184,10 @@
   },
   "FieldView": {
     "$defs": {
-      "FieldKey2": {
-        "description": "Bounded protocol field identity; parsing grants no catalog or source authority.",
+      "FieldKey": {
+        "description": "Validated field identity. Admission requires lookup in the tenant's catalog.",
         "maxLength": 128,
-        "pattern": "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+        "pattern": "^(device|custom|channel)(\\.[a-z][a-z0-9_]*)+$",
         "type": "string"
       },
       "Operator": {
@@ -265,7 +265,7 @@
           }
         ]
       },
-      "Platform2": {
+      "Platform": {
         "description": "Platform applicable to a field or collector.",
         "oneOf": [
           {
@@ -280,17 +280,17 @@
           }
         ]
       },
-      "Property2": {
+      "Property": {
         "additionalProperties": false,
-        "description": "One explicitly declared record member.",
+        "description": "One explicitly typed property in a protocol record.",
         "properties": {
           "required": {
-            "description": "Whether the producer must include this member.",
+            "description": "Whether absence invalidates the record.",
             "type": "boolean"
           },
           "valueType": {
-            "$ref": "#/$defs/ValueType2",
-            "description": "Exact type when present."
+            "$ref": "#/$defs/ValueType",
+            "description": "Exact value type when present."
           }
         },
         "required": [
@@ -299,7 +299,7 @@
         ],
         "type": "object"
       },
-      "RetentionReference2": {
+      "RetentionReference": {
         "additionalProperties": false,
         "description": "Product retention policy identity; duration is owned by its immutable policy version.",
         "properties": {
@@ -320,7 +320,7 @@
         ],
         "type": "object"
       },
-      "Sensitivity2": {
+      "Sensitivity": {
         "description": "Field visibility class, enforced by the product authorization boundary.",
         "oneOf": [
           {
@@ -340,47 +340,7 @@
           }
         ]
       },
-      "Source2": {
-        "description": "All allowed asset sources. Serialized as their canonical stable identifier.",
-        "oneOf": [
-          {
-            "const": "agent.script",
-            "description": "Controlled collection script evidence.",
-            "type": "string"
-          },
-          {
-            "const": "agent.native",
-            "description": "Signed declarative native task evidence.",
-            "type": "string"
-          },
-          {
-            "const": "agent.osquery",
-            "description": "Published SQL template evidence.",
-            "type": "string"
-          },
-          {
-            "const": "mdm.apple",
-            "description": "Apple MDM evidence.",
-            "type": "string"
-          },
-          {
-            "const": "agent.builtin",
-            "description": "Built-in agent evidence.",
-            "type": "string"
-          },
-          {
-            "const": "manual",
-            "description": "Administrator assignment.",
-            "type": "string"
-          },
-          {
-            "const": "mdm.windows",
-            "description": "Windows MDM evidence.",
-            "type": "string"
-          }
-        ]
-      },
-      "TelemetryAggregation2": {
+      "TelemetryAggregation": {
         "description": "Operations are selected explicitly; missing data is never filled implicitly.",
         "oneOf": [
           {
@@ -435,7 +395,7 @@
           }
         ]
       },
-      "TelemetryDimension2": {
+      "TelemetryDimension": {
         "additionalProperties": false,
         "description": "One bounded dimension extracted from a declared object property path.",
         "properties": {
@@ -451,8 +411,6 @@
             "items": {
               "type": "string"
             },
-            "maxItems": 1024,
-            "minItems": 1,
             "type": "array",
             "uniqueItems": true
           }
@@ -463,7 +421,7 @@
         ],
         "type": "object"
       },
-      "TelemetryKind2": {
+      "TelemetryKind": {
         "description": "Numeric interpretation is immutable for a field identity.",
         "oneOf": [
           {
@@ -488,24 +446,23 @@
           }
         ]
       },
-      "TimeSeriesBinding2": {
+      "TimeSeriesBinding": {
         "additionalProperties": false,
         "description": "A field's optional history capability, validated against the Inventory catalog.",
         "properties": {
           "aggregations": {
             "description": "Explicit operations permitted for this field.",
             "items": {
-              "$ref": "#/$defs/TelemetryAggregation2"
+              "$ref": "#/$defs/TelemetryAggregation"
             },
             "type": "array",
             "uniqueItems": true
           },
           "dimensions": {
             "additionalProperties": {
-              "$ref": "#/$defs/TelemetryDimension2"
+              "$ref": "#/$defs/TelemetryDimension"
             },
             "description": "Closed dimensions. Device/resource/source identities are not arbitrary dimensions.",
-            "maxProperties": 1024,
             "type": "object"
           },
           "intervalStartPath": {
@@ -519,7 +476,7 @@
             ]
           },
           "kind": {
-            "$ref": "#/$defs/TelemetryKind2",
+            "$ref": "#/$defs/TelemetryKind",
             "description": "Numeric or finite-state interpretation."
           },
           "maxResources": {
@@ -529,7 +486,7 @@
             "type": "integer"
           },
           "retention": {
-            "$ref": "#/$defs/RetentionReference2",
+            "$ref": "#/$defs/RetentionReference",
             "description": "Versioned product policy, never an asset TTL."
           },
           "valuePath": {
@@ -551,12 +508,12 @@
         ],
         "type": "object"
       },
-      "ValueType2": {
-        "description": "Closed structural schema for one field; every property is explicit and required.",
+      "ValueType": {
+        "description": "Closed structural schema for one field.",
         "oneOf": [
           {
             "additionalProperties": false,
-            "description": "Record with explicit required and optional properties.",
+            "description": "Closed record with explicit per-property presence requirements.",
             "properties": {
               "kind": {
                 "const": "record",
@@ -564,9 +521,9 @@
               },
               "properties": {
                 "additionalProperties": {
-                  "$ref": "#/$defs/Property2"
+                  "$ref": "#/$defs/Property"
                 },
-                "description": "Declared members.",
+                "description": "Unique property declarations; absent optional values remain absent.",
                 "type": "object"
               }
             },
@@ -591,8 +548,7 @@
               "maxLength": {
                 "description": "Character budget.",
                 "format": "uint32",
-                "maximum": 65536,
-                "minimum": 1,
+                "minimum": 0,
                 "type": "integer"
               }
             },
@@ -614,12 +570,8 @@
               "values": {
                 "description": "Permitted nonempty values.",
                 "items": {
-                  "maxLength": 256,
-                  "minLength": 1,
                   "type": "string"
                 },
-                "maxItems": 1024,
-                "minItems": 1,
                 "type": "array",
                 "uniqueItems": true
               }
@@ -691,7 +643,7 @@
             "description": "Ordered values sharing one schema.",
             "properties": {
               "items": {
-                "$ref": "#/$defs/ValueType2",
+                "$ref": "#/$defs/ValueType",
                 "description": "Element schema."
               },
               "kind": {
@@ -701,8 +653,7 @@
               "maxItems": {
                 "description": "Maximum number of values.",
                 "format": "uint32",
-                "maximum": 100000,
-                "minimum": 1,
+                "minimum": 0,
                 "type": "integer"
               }
             },
@@ -723,16 +674,9 @@
               },
               "properties": {
                 "additionalProperties": {
-                  "$ref": "#/$defs/ValueType2"
+                  "$ref": "#/$defs/ValueType"
                 },
                 "description": "Property schema by literal name.",
-                "maxProperties": 64,
-                "minProperties": 1,
-                "propertyNames": {
-                  "maxLength": 64,
-                  "pattern": "^[a-z][a-z0-9_]*$",
-                  "type": "string"
-                },
                 "type": "object"
               }
             },
@@ -746,22 +690,18 @@
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "Actual field directory entry, using the same field contract as signed projections.",
+    "description": "Actual field directory entry, including fields owned by the server.",
     "properties": {
       "itemKey": {
         "description": "Optional stable item-key property for a structured inventory list.",
-        "maxLength": 64,
-        "pattern": "^[a-z][a-z0-9_]*$",
         "type": [
           "string",
           "null"
         ]
       },
       "key": {
-        "$ref": "#/$defs/FieldKey2",
-        "description": "Stable field identity.",
-        "maxLength": 128,
-        "pattern": "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$"
+        "$ref": "#/$defs/FieldKey",
+        "description": "Stable field identity."
       },
       "manual": {
         "description": "Whether management assignment is permitted.",
@@ -780,10 +720,8 @@
       "platforms": {
         "description": "Supported platforms.",
         "items": {
-          "$ref": "#/$defs/Platform2"
+          "$ref": "#/$defs/Platform"
         },
-        "maxItems": 2,
-        "minItems": 1,
         "type": "array",
         "uniqueItems": true
       },
@@ -792,7 +730,7 @@
         "type": "boolean"
       },
       "sensitivity": {
-        "$ref": "#/$defs/Sensitivity2",
+        "$ref": "#/$defs/Sensitivity",
         "description": "Read/filter visibility classification."
       },
       "sources": {
@@ -803,16 +741,12 @@
           "type": "integer"
         },
         "description": "Allowed sources with priority; lower numbers win, equal numbers require consensus.",
-        "minProperties": 1,
-        "propertyNames": {
-          "$ref": "#/$defs/Source2"
-        },
         "type": "object"
       },
       "timeSeries": {
         "anyOf": [
           {
-            "$ref": "#/$defs/TimeSeriesBinding2"
+            "$ref": "#/$defs/TimeSeriesBinding"
           },
           {
             "type": "null"
@@ -822,22 +756,19 @@
       },
       "unit": {
         "description": "Exact optional unit; no implicit conversion.",
-        "maxLength": 64,
-        "minLength": 1,
         "type": [
           "string",
           "null"
         ]
       },
       "valueType": {
-        "$ref": "#/$defs/ValueType2",
+        "$ref": "#/$defs/ValueType",
         "description": "Exact bounded type."
       },
       "version": {
         "description": "Monotonic published version.",
         "format": "uint64",
-        "maximum": 9223372036854775807,
-        "minimum": 1,
+        "minimum": 0,
         "type": "integer"
       }
     },

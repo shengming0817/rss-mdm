@@ -72,6 +72,9 @@ fn to_wire_type(value: &d::ValueType) -> Result<w::ValueType, Error> {
 }
 /// Convert an Inventory definition to its current Agent DTO.
 pub fn to_wire_field(value: &d::FieldDefinition) -> Result<w::FieldDefinition, Error> {
+    if d::personnel::DeviceUser::for_key(value.key).is_some() {
+        return Err(Error::Malformed);
+    }
     Ok(w::FieldDefinition {
         time_series: value.time_series.as_ref().map(binding_to_wire),
         key: w::FieldKey::parse(value.key.as_str()).map_err(|_| Error::Malformed)?,

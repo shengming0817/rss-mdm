@@ -277,6 +277,19 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         assert_eq!(status, 200, "{restricted_body}");
         assert_eq!(restricted_body["firstUse"]["access"], "forbidden");
         assert!(restricted_body["firstUse"].get("summary").is_none());
+        let (status, descriptor)=http.get("/asset-fields/device.current_user.principal_id",&[]).await?;
+        assert_eq!(status,200,"{descriptor}");
+        assert_eq!(descriptor["asset"]["field"]["key"], "device.current_user.principal_id");
+        let (status,_)=http.get("/asset-fields/device.registration_user.principal_id",&[]).await?;
+        assert_eq!(status,403);
+        for (field,status) in [("device.registration_user.principal_id",403),("device.current_user.principal_id",200)] {
+            let request=json!({"assetContext":"endpoint","criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":field,"op":"eq","value":{"kind":"string","value":manager.user.principal_id}}}});
+            let response=http.client.post(format!("http://{address}/api/v1/tenants/{}/groups/previews",c.tenant))
+                .header("host","mdm.example.test").header("x-rss-public-origin","https://mdm.example.test").header("x-forwarded-for","127.0.0.1")
+                .header("cookie",&http.cookie).header("origin","https://mdm.example.test").header("x-identity-request","1").header("x-csrf-token",&http.csrf)
+                .json(&request).send().await?;
+            assert_eq!(response.status(),status,"{field}");
+        }
         diagnostics::exercise(&c, &manager, &diagnostic_reader, &restricted, &http).await?;
         // Reading the original configuration operation must work in its read-only snapshot.
         let operation: Uuid = sqlx::query_scalar("SELECT operation_id FROM mdm_access.agent_configurations WHERE tenant_id=$1::uuid AND id=$2")

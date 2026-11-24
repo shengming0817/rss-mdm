@@ -93,6 +93,10 @@ impl Groups {
         kind: GroupPageKind,
         query: &rss_mdm_query::window::Query,
         subject: &str,
+        access: (
+            &rss_mdm_authorization_service::Snapshot,
+            &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        ),
     ) -> Result<Value> {
         use rss_mdm_group_postgres as pg;
         checked_input(query.require_schema(&SCHEMA))?;
@@ -145,6 +149,12 @@ impl Groups {
                 )
             }
             GroupPageKind::Decisions => {
+                if let Some(version) = &build.request.rule_version {
+                    let rule = group_checked(self.groups.rule_in(tx, owner, version).await?)?
+                        .ok_or(Error::Group(GroupMissing::Rule))?;
+                    criteria::view(rule.view().criteria)?
+                        .require_field_access(access.0, access.1)?;
+                }
                 let mut items = checked(
                     self.groups
                         .build_decisions_in(

@@ -12,6 +12,8 @@ pub const ASSET_CHANGED_SCHEMA: &str = include_str!("../schema/asset-changed-v1.
 pub enum AssetChangeKind {
     /// A projected collection field, including explicit absence.
     Inventory,
+    /// A product-owned computed device field.
+    Derived,
     /// An administrator-owned field assignment.
     Manual,
     /// A device registration or its execution eligibility.

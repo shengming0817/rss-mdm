@@ -211,6 +211,27 @@ impl Groups {
                             )?,
                         },
                     ];
+                    if let Command::Group { change, .. } = command
+                        && let GroupChange::Create {
+                            criteria: Some(condition),
+                            ..
+                        }
+                        | GroupChange::Rule {
+                            criteria: condition,
+                        } = &change.input
+                    {
+                        for permission in condition.criteria.personnel_permissions() {
+                            let evidence = if permission.device() {
+                                OperationAuthority::all_devices(&snapshot, proof, permission)?
+                            } else {
+                                OperationAuthority::tenant(&snapshot, proof, permission)?
+                            };
+                            authority.push(RequiredAuthority {
+                                permission,
+                                evidence,
+                            });
+                        }
+                    }
                     if nested {
                         authority.push(RequiredAuthority {
                             permission: Permission::GroupRead,
@@ -269,7 +290,9 @@ impl Groups {
                             )
                             .await?
                         }
-                        Command::GroupRead { id } => s.group_read(tx, *id).await?,
+                        Command::GroupRead { id } => {
+                            s.group_read(tx, *id, &snapshot, proof).await?
+                        }
                         Command::GroupPage {
                             group,
                             result,
@@ -286,6 +309,7 @@ impl Groups {
                                     audit.snapshot().actor,
                                     audit.snapshot().instance,
                                 )))?,
+                                (&snapshot, proof),
                             )
                             .await?
                         }

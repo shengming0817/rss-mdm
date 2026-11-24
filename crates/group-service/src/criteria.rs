@@ -27,6 +27,32 @@ pub enum Criteria {
     },
 }
 impl Criteria {
+    pub fn personnel_permissions(
+        &self,
+    ) -> std::collections::BTreeSet<rss_mdm_authorization_service::Permission> {
+        match self {
+            Self::Predicate { field, .. } => assets::personnel::permissions(*field).collect(),
+            Self::Group { .. } => Default::default(),
+            Self::And { children } | Self::Or { children } => children
+                .iter()
+                .flat_map(Self::personnel_permissions)
+                .collect(),
+        }
+    }
+    pub(crate) fn require_field_access(
+        &self,
+        authority: &rss_mdm_authorization_service::Snapshot,
+        proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+    ) -> Result<()> {
+        for permission in self.personnel_permissions() {
+            if permission.device() {
+                authority.require_all_devices(proof, permission)?;
+            } else {
+                authority.require(proof, permission, None)?;
+            }
+        }
+        Ok(())
+    }
     pub fn references_groups(&self) -> bool {
         match self {
             Self::Group { .. } => true,

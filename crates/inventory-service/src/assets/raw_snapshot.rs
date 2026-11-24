@@ -35,7 +35,9 @@ pub async fn read_on(
     }
     let keys = catalog
         .fields()
-        .filter(|f| fields::visible(f))
+        .filter(|f| {
+            fields::visible(f) && rss_mdm_inventory::personnel::DeviceUser::for_key(f.key).is_none()
+        })
         .map(|f| f.key.as_str())
         .collect::<Vec<_>>();
     let raw: Value =
@@ -179,7 +181,10 @@ pub fn decode(
         .into_iter()
         .map(|(id, mut device)| {
             let mut resolved_arrays = BTreeMap::new();
-            for definition in catalog.fields().filter(|f| fields::visible(f)) {
+            for definition in catalog.fields().filter(|f| {
+                fields::visible(f)
+                    && rss_mdm_inventory::personnel::DeviceUser::for_key(f.key).is_none()
+            }) {
                 let key = definition.key;
                 if matches!(definition.value_type, ValueType::Array { .. }) {
                     let facts = arrays
@@ -206,6 +211,7 @@ pub fn decode(
             }
             restrict_fields(&mut device, catalog);
             Ok(DeviceSummary {
+                personnel: Default::default(),
                 scalars: device,
                 arrays: resolved_arrays,
             })

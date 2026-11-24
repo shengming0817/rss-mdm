@@ -71,18 +71,13 @@ pub(super) fn versions(
     catalog: &Catalog,
     rule: &g::Rule,
 ) -> Result<BTreeMap<String, ArrayValue>> {
-    let roots: BTreeSet<_> = rule
-        .view()
-        .fields
-        .keys()
-        .map(|name| {
-            Ok::<_, crate::transaction::Fault>(
-                checked_input(catalog.path(checked_input(FieldKey::parse(name))?))?
-                    .root
-                    .key,
-            )
-        })
-        .collect::<Result<_>>()?;
+    let mut roots = BTreeSet::new();
+    for name in rule.view().fields.keys() {
+        let key = checked_input(FieldKey::parse(name))?;
+        if rss_mdm_inventory::personnel::attribute(key).is_none() {
+            roots.insert(checked_input(catalog.path(key))?.root.key);
+        }
+    }
     let mut versions = BTreeMap::new();
     for device in devices {
         for (key, field) in &device.arrays {
@@ -153,6 +148,9 @@ pub(super) async fn advance_on(
             stored(current.validate_item(item))?;
         }
         for (key, wanted) in operands {
+            if rss_mdm_inventory::personnel::attribute(*key).is_some() {
+                continue;
+            }
             let path = checked_input(catalog.path(*key))?;
             if path.root.key != field {
                 continue;
@@ -351,6 +349,7 @@ mod tests {
             actor: Some("actor".into()),
         };
         let mut device = DeviceSummary {
+            personnel: Default::default(),
             scalars: DeviceView {
                 collection_scope: CollectionScope::Device,
                 device: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")

@@ -138,3 +138,4 @@ GRANT SELECT,INSERT ON mdm.collection_definitions TO mdm_policy_runtime;
 GRANT INSERT ON mdm.collection_definitions,mdm.collection_results TO mdm_telemetry_runtime;
 -- Only admitted collection owners append hardware locator evidence.
 GRANT SELECT,INSERT ON mdm.device_hardware_evidence TO mdm_access,mdm_command_runtime,mdm_inventory_runtime,mdm_telemetry_runtime;
+GRANT SELECT ON mdm_assets.personnel_history TO mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime;

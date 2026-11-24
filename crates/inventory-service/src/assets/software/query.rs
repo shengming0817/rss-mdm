@@ -432,6 +432,7 @@ impl AssetService {
                     tx,
                     saved,
                     assets::planning::ConditionRequest {
+                        as_of: input.as_of,
                         cut: &input.asset_cut,
                         devices: &devices,
                         catalog: &catalog,

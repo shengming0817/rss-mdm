@@ -91,6 +91,10 @@ impl Fixture {
                 clock: Arc::new(crate::clock::SystemClock),
                 cursor_key: vec![7; 32],
                 reconcile_messaging: messaging,
+                users: Arc::new(rss_mdm_device_service::personnel::QualifiedUsers {
+                    authority: c.authority.clone(),
+                    platform: serde_json::Value::Null,
+                }),
                 software_sources: s::Sources {
                     objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
                     groups: groups.source_reader(),

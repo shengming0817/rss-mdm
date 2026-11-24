@@ -4,6 +4,7 @@ use rss_mdm_inventory::{Catalog, CollectionScope, ResolvedArray};
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct DeviceSummary {
+    pub personnel: BTreeMap<FieldKey, super::personnel::Fact>,
     pub scalars: DeviceView,
     pub arrays: BTreeMap<FieldKey, ResolvedArray>,
 }

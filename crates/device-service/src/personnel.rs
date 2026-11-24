@@ -4,6 +4,7 @@ use crate::{Error, Result};
 use rss_identity_postgres::{Authority, AuthorityError, PersonnelRevision};
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_mdm_device_access::deployment::PlatformConfiguration;
+use rss_mdm_inventory_service::assets::personnel::{DeviceSubjects, DeviceSubjectsRead};
 use rss_request_context::Clock;
 use rss_transactional_messaging::policy::OperationDeadline;
 use serde_json::Value;
@@ -115,4 +116,95 @@ async fn query_rows(
     rss_mdm_query_postgres::observe_rows("device.personnel", &rows)
         .map_err(|_| AuthorityError::Unavailable)?;
     Ok((context.revision()?, rows))
+}
+
+/// Resolves a bounded inventory page using the same credential and platform qualifications as the device directory.
+async fn device_subjects(
+    authority: &Authority,
+    binding: rss_transactional_messaging::fence::ExecutionBinding,
+    platform: Value,
+    devices: &[uuid::Uuid],
+    deadline: OperationDeadline,
+) -> Result<Vec<DeviceSubjects>> {
+    use sqlx::{Arguments, Row};
+    const SELECT: &str = concat!("WITH platform_configuration AS (SELECT $3::jsonb AS config),",
+        include_str!("platform_sessions.sql"),"
+        SELECT d.device, CASE WHEN (u.registration_user->>'instanceId')::uuid=$4 AND
+        (u.registration_user->>'tenantId')::uuid=$1::uuid THEN (u.registration_user->>'principalId')::uuid END AS registration,
+        s.principal_id AS current, coalesce(u.registration_revision,0) AS registration_revision,
+        coalesce(u.current_revision,0) AS current_revision,
+        least(u.valid_until,s.platform_valid_until,s.session_valid_until) AS current_until
+        FROM unnest($2::uuid[]) d(device)
+        LEFT JOIN mdm_access.directory_users u ON u.tenant_id=$1::uuid AND u.device=d.device
+        LEFT JOIN platform_sessions s ON u.registration_valid AND s.instance_id=$4 AND s.tenant_id=$1::uuid
+         AND s.instance_id=(u.session_reference->>'instance')::uuid AND s.tenant_id=(u.session_reference->>'tenant')::uuid
+         AND s.principal_id=(u.session_reference->>'principal')::uuid AND s.session_id=(u.session_reference->>'session')::uuid
+         AND s.credential_kind=u.session_reference->>'credentialKind' ORDER BY d.device");
+    let mut args = PgArguments::default();
+    args.add(binding.tenant().to_string())
+        .map_err(|_| Error::Storage)?;
+    args.add(devices.to_vec()).map_err(|_| Error::Storage)?;
+    args.add(platform).map_err(|_| Error::Storage)?;
+    args.add(authority.instance().as_uuid())
+        .map_err(|_| Error::Storage)?;
+    let size = devices.len().max(1);
+    let (_, rows) = authority
+        .with_session_references_read(binding, deadline, move |ctx| {
+            Box::pin(query_rows(ctx, SELECT, args, size))
+        })
+        .await
+        .map_err(identity_error)?;
+    let rows = rows
+        .into_iter()
+        .map(|r| {
+            Ok(DeviceSubjects {
+                device: r.try_get("device")?,
+                registration: r.try_get("registration")?,
+                current: r.try_get("current")?,
+                registration_revision: r.try_get("registration_revision")?,
+                current_revision: r.try_get("current_revision")?,
+                current_until: r.try_get("current_until")?,
+            })
+        })
+        .collect::<std::result::Result<_, sqlx::Error>>()
+        .map_err(|_| Error::Storage)?;
+    Ok(rows)
+}
+
+#[derive(Clone)]
+pub struct QualifiedUsers {
+    pub authority: Authority,
+    pub platform: Value,
+}
+impl DeviceSubjectsRead for QualifiedUsers {
+    fn read<'a>(
+        &'a self,
+        binding: rss_transactional_messaging::fence::ExecutionBinding,
+        devices: &'a [uuid::Uuid],
+        deadline: OperationDeadline,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = rss_mdm_inventory_service::transaction::Result<Vec<DeviceSubjects>>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            device_subjects(
+                &self.authority,
+                binding,
+                self.platform.clone(),
+                devices,
+                deadline,
+            )
+            .await
+            .map_err(|_| {
+                rss_mdm_inventory_service::Error::Unavailable(
+                    rss_mdm_inventory_service::Failure::AssetsStorage,
+                )
+                .into()
+            })
+        })
+    }
 }

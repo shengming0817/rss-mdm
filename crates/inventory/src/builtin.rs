@@ -155,6 +155,7 @@ pub fn fields() -> Vec<FieldDefinition> {
         definition.item_key = Some("id".into());
         fields.push(definition);
     }
+    fields.extend(crate::personnel::fixed_fields());
     fields.extend(standard::fields());
     fields.extend(windows::fields());
     fields.extend(apple::fields());

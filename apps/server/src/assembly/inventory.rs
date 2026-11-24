@@ -10,17 +10,22 @@ impl Services {
     pub(crate) async fn new(
         inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
         read_pool: sqlx::PgPool,
-        runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-        audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+        owner: &crate::owner_storage::OwnerRuntime,
         probe: rss_transactional_messaging::fence::ExecutionBinding,
         key: &[u8],
         clock: Arc<dyn crate::clock::Clock>,
+        users: Arc<dyn rss_mdm_inventory_service::assets::personnel::DeviceSubjectsRead>,
     ) -> Result<Self, Error> {
+        let runtime = owner.runtime.clone();
+        let audit_store = owner.audit.clone();
         runtime
             .local_tx(probe, crate::identity::deadline(), move |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
+                            rss_identity_postgres::verify_personnel_fact_read(c)
+                                .await
+                                .map_err(|_| sqlx::Error::Protocol("personnel read role".into()))?;
                             rss_mdm_inventory_service::admit_storage_in(
                                 rss_mdm_install_support::StorageProfile::Mdm,
                                 c,
@@ -85,6 +90,7 @@ impl Services {
                     clock: Arc::new(crate::clock::InventoryClock(clock.clone())),
                     cursor_key: key.to_vec(),
                     reconcile_messaging: messaging.clone(),
+                    users,
                     software_sources: rss_mdm_inventory_service::assets::software::Sources {
                         objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
                         groups: groups.source_reader(),

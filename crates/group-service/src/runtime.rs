@@ -10,13 +10,34 @@ use rss_reconcile_postgres::{PgClaim, ProtectedStep};
 use rss_transactional_messaging_postgres::PgError;
 use std::{sync::Mutex, time::Duration};
 
+type Binding = rss_transactional_messaging::fence::ExecutionBinding;
+/// Refresh the device-field inputs ahead of normal rule reconciliation.
+pub trait DeviceFieldRefresh: Send + Sync {
+    fn advance(
+        &self,
+        binding: Binding,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = std::result::Result<bool, ReconcileError>> + Send + '_,
+        >,
+    >;
+}
 pub struct GroupWork {
+    fields: Option<Arc<dyn DeviceFieldRefresh>>,
     groups: Arc<Groups>,
     schedule: Scheduler,
 }
 impl GroupWork {
     pub fn new(groups: Arc<Groups>, schedule: Scheduler) -> Self {
-        Self { groups, schedule }
+        Self {
+            groups,
+            schedule,
+            fields: None,
+        }
+    }
+    pub fn with_device_fields(mut self, fields: Arc<dyn DeviceFieldRefresh>) -> Self {
+        self.fields = Some(fields);
+        self
     }
     async fn capture<T: Timer>(
         &self,
@@ -486,7 +507,40 @@ impl GroupWork {
                                 owner.groups.record_runner_failure(event);
                             },
                         )
-                        .await
+                        .await?;
+                        if let Some(fields) = &owner.fields
+                            && !stop.is_cancelled()
+                        {
+                            let result = async {
+                                let epoch: Option<i64> = sqlx::query_scalar(
+                                    "SELECT mdm_assets.group_work_epoch($1::uuid,NULL)",
+                                )
+                                .bind(tenant.to_string())
+                                .fetch_one(&owner.groups.read_pool)
+                                .await
+                                .map_err(|e| storage(e.into()))?;
+                                if let Some(epoch) = epoch {
+                                    let epoch =
+                                        rss_transactional_messaging::fence::Epoch::new(epoch)
+                                            .map_err(|_| {
+                                                ReconcileError::new(ErrorKind::Invariant)
+                                            })?;
+                                    return fields
+                                        .advance(Binding::new(owner.groups.storage, tenant, epoch))
+                                        .await;
+                                }
+                                Ok::<bool, ReconcileError>(false)
+                            }
+                            .await;
+                            let source =
+                                Scope::new(tenant, "mdm.personnel").expect("constant scope");
+                            if !matches!(result, Ok(false)) {
+                                owner
+                                    .groups
+                                    .record_scan(&source, result.err().map(|e| e.kind()));
+                            }
+                        }
+                        Ok(())
                     }
                 },
             )

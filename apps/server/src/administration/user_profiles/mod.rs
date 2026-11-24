@@ -7,6 +7,7 @@ pub(crate) mod http;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
+pub(crate) mod device_fields;
 pub(crate) mod directory;
 pub(crate) mod model;
 mod projection;

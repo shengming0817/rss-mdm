@@ -176,6 +176,7 @@ impl Compliance {
                     tx,
                     evaluation_progress,
                     rss_mdm_inventory_service::assets::planning::ConditionRequest {
+                        as_of: input.evaluated_at,
                         cut: &input.asset_cut,
                         devices: &page.devices,
                         catalog: &page.catalog,

@@ -430,7 +430,11 @@ impl FieldDefinition {
         }
         if self.version == 0
             || self.version > i64::MAX as u64
-            || self.sources.is_empty()
+            || (crate::personnel::DeviceUser::for_key(self.key).is_some()
+                && (crate::personnel::attribute(self.key).is_none()
+                    || self.time_series.is_some()
+                    || self.manual))
+            || self.sources.is_empty() != crate::personnel::DeviceUser::for_key(self.key).is_some()
             || self.platforms.is_empty()
             || self.manual != self.sources.contains_key(&Source::Manual)
             || self

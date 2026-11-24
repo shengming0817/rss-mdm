@@ -31,6 +31,7 @@ mod runs;
 mod scopes;
 pub use fields::{FieldChange, FieldView};
 mod model;
+pub mod personnel;
 pub mod planning;
 pub mod raw_snapshot;
 pub mod software;
@@ -231,7 +232,7 @@ impl AssetService {
                 limit,
                 cursor,
             } => {
-                self.asset_query_items(tx, *task, scope, *limit, cursor.as_deref())
+                self.asset_query_items(binding, tx, *task, scope, *limit, cursor.as_deref())
                     .await?
             }
             Command::QueryFacets {
@@ -310,12 +311,14 @@ pub struct AssetDependencies {
     pub cursor_key: Vec<u8>,
     pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     pub software_sources: software::Sources,
+    pub users: Arc<dyn personnel::DeviceSubjectsRead>,
 }
 
 pub struct AssetService {
     storage: rss_transactional_messaging::fence::StorageIdentity,
     read_pool: sqlx::PgPool,
     software_sources: software::Sources,
+    users: Arc<dyn personnel::DeviceSubjectsRead>,
     worker_health: std::sync::Mutex<rss_mdm_recovery_observation::Observations>,
     task_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
     inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
@@ -337,12 +340,14 @@ impl AssetService {
             cursor_key,
             reconcile_messaging,
             software_sources,
+            users,
         } = dependencies;
 
         Self {
             storage: probe.storage(),
             read_pool,
             software_sources,
+            users,
             task_status: Default::default(),
             worker_health: Default::default(),
             inventory,

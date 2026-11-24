@@ -80,6 +80,10 @@ impl Groups {
                     let authority = query_authority(tx, proof).await?;
                     authority.require(proof, Permission::GroupRead, None)?;
                     authority.require_all_devices(proof, Permission::InventoryRead)?;
+                    request
+                        .criteria
+                        .criteria
+                        .require_field_access(&authority, proof)?;
                     group_checked(s.groups.lock_graph_in(tx).await?)?;
                     let snapshot = if request.asset_context == AssetContext::AssociatedDevice {
                         let reader = s.objects.clone();
@@ -103,7 +107,7 @@ impl Groups {
                         &catalog,
                     )?;
                     let current_catalog = assets::catalog_in(tx, proof.binding().tenant()).await?;
-                    assets::filter::require_visible_rule(&current_catalog, &rule)?;
+                    assets::filter::require_current_rule(&current_catalog, &rule)?;
                     let mut targets = rule.groups().into_iter().collect::<BTreeSet<_>>();
                     if let Some(editing) = &request.editing {
                         targets.insert(editing.group_id.to_string());
@@ -132,7 +136,7 @@ impl Groups {
                         .await?;
                     // Current visibility and live authentication remain required even for a fixed cut.
                     let current_catalog = assets::catalog_in(tx, proof.binding().tenant()).await?;
-                    assets::filter::require_visible_rule(&current_catalog, &rule)?;
+                    assets::filter::require_current_rule(&current_catalog, &rule)?;
                     proof.check_live()?;
                     Ok(Response {
                         items,
@@ -242,6 +246,7 @@ impl Groups {
                 .condition_page_in(
                     tx,
                     crate::input::ConditionPageRequest {
+                        as_of: at.unix_seconds(),
                         cut,
                         snapshot,
                         condition: &request.criteria,

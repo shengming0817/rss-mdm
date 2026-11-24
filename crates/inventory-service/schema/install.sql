@@ -257,3 +257,24 @@ ALTER FUNCTION mdm_assets.query_work_epoch(uuid,uuid) OWNER TO mdm_owner;
 REVOKE ALL ON FUNCTION mdm_assets.query_work_scopes(uuid),mdm_assets.query_work_epoch(uuid,uuid) FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm_assets TO mdm_access;
 GRANT EXECUTE ON FUNCTION mdm_assets.query_work_scopes(uuid),mdm_assets.query_work_epoch(uuid,uuid) TO mdm_access;
+
+-- Immutable, server-derived device facts share the ordinary committed asset cut.
+CREATE TABLE mdm_assets.personnel_history (
+ tenant_id uuid NOT NULL, device uuid NOT NULL, field text NOT NULL, revision bigint NOT NULL,
+ field_version bigint NOT NULL, subject uuid, value jsonb, observed_at bigint NOT NULL, valid_until bigint, fingerprint jsonb NOT NULL,
+ PRIMARY KEY(tenant_id,device,field,revision),
+ FOREIGN KEY(tenant_id,revision) REFERENCES mdm.asset_changes(tenant_id,revision),
+ CHECK (value IS NULL OR subject IS NOT NULL)
+);
+CREATE TABLE mdm_assets.personnel_cursor (
+ tenant_id uuid PRIMARY KEY, after_device uuid, after_field text, next_scan timestamptz NOT NULL DEFAULT '-infinity'
+);
+DO $$DECLARE relation text; BEGIN
+ FOREACH relation IN ARRAY ARRAY['personnel_history','personnel_cursor'] LOOP
+  EXECUTE format('ALTER TABLE mdm_assets.%I ENABLE ROW LEVEL SECURITY',relation);
+  EXECUTE format('ALTER TABLE mdm_assets.%I FORCE ROW LEVEL SECURITY',relation);
+  EXECUTE format('CREATE POLICY tenant ON mdm_assets.%I USING(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid) WITH CHECK(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid)',relation);
+ END LOOP;
+END$$;
+GRANT SELECT,INSERT ON mdm_assets.personnel_history TO mdm_inventory_runtime;
+GRANT SELECT,INSERT,UPDATE(after_device,after_field,next_scan) ON mdm_assets.personnel_cursor TO mdm_inventory_runtime;

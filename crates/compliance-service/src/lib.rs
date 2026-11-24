@@ -162,6 +162,9 @@ impl Compliance {
                         }
                     }
                     let response = s.handle(tx, command, candidate).await?;
+                    if let Reply::Rule(view) = &response {
+                        require_fields(&current, proof, &view.definition)?;
+                    }
                     if let Some(id) = operation {
                         let h = hash.clone();
                         let v = json(&response)?;
@@ -405,6 +408,20 @@ impl Compliance {
     }
 }
 
+fn require_fields(
+    current: &Snapshot,
+    proof: &AuthorizedPrincipal,
+    definition: &Definition,
+) -> std::result::Result<(), Error> {
+    let access =
+        rss_mdm_inventory_service::assets::personnel::Access::from_snapshot(proof, current);
+    if access.permits_condition(&definition.criteria.criteria, None) {
+        Ok(())
+    } else {
+        Err(Error::Forbidden)
+    }
+}
+
 fn authorize(
     current: &Snapshot,
     proof: &AuthorizedPrincipal,
@@ -419,8 +436,9 @@ fn authorize(
         _ => (Permission::ComplianceRuleRead, None),
     };
     current.require(proof, permission, device)?;
-    if matches!(command, Command::Put { .. }) {
+    if let Command::Put { request, .. } = command {
         current.inventory_devices(proof)?;
+        require_fields(current, proof, &request.input)?;
     }
     if let Command::Put { request, .. } = command
         && !request.input.groups().is_empty()

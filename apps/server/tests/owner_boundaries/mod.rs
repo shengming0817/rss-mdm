@@ -1,5 +1,6 @@
 //! Real independent Group and Compliance consumers of Inventory's bounded facts.
 mod asset_inputs;
+mod personnel_fields;
 mod preview;
 mod retirement_reruns;
 mod scope_preview;

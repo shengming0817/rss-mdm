@@ -81,7 +81,7 @@ CREATE TABLE mdm.asset_changes (
  expected_epoch bigint NOT NULL CHECK(expected_epoch>0),
  tenant_id uuid NOT NULL, revision bigint NOT NULL CHECK(revision>0),
  source_epoch uuid NOT NULL REFERENCES mdm.asset_epochs(id), writer_xid xid8 NOT NULL,
- kind text NOT NULL CHECK(kind IN ('inventory','manual','device','source','credential','collection','catalog')),
+ kind text NOT NULL CHECK(kind IN ('inventory','derived','manual','device','source','credential','collection','catalog')),
  identity jsonb NOT NULL CHECK(octet_length(identity::text)<=65536),
  fields text[] NOT NULL,
  PRIMARY KEY(tenant_id,revision)
@@ -169,7 +169,7 @@ BEGIN
  VALUES(t,v,epoch,pg_current_xact_id(),k,identity,fields,current_setting('rss.execution_epoch')::bigint);
  payload=jsonb_build_object('v',1,'executionEpoch',current_setting('rss.execution_epoch')::bigint,'tenant',t,'revision',v,'historyEpoch',epoch,'kind',k,'identity',identity,'fields',to_jsonb(fields));
  PERFORM mdm.append_input_event(t,'asset.changed.v1:'||epoch::text||':'||v::text,
-  'asset.changed','mdm.asset.changed','sha256:fd05796b9bf5ccb7b0e82c764acc43a7e73de3d887fe2754effd6f1f8a91ea66',payload);
+  'asset.changed','mdm.asset.changed','sha256:70edf1cbaa0b9999ff801d38ae32face8eb6ebaabf5a7cb346abac82759f0fe1',payload);
  -- Existing device/software lifecycle consumers still use this hint; this chain uses Outbox.
  PERFORM pg_notify('mdm_work','assets_changed');
  RETURN v;
@@ -210,7 +210,7 @@ CREATE TRIGGER manual_history AFTER INSERT OR UPDATE OR DELETE ON mdm.manual_ass
 
 
 CREATE TABLE mdm.field_versions (
- tenant_id uuid NOT NULL, field text NOT NULL, version bigint NOT NULL CHECK(version>0),
+ tenant_id uuid NOT NULL, field text COLLATE "C" NOT NULL, version bigint NOT NULL CHECK(version>0),
  revision bigint NOT NULL, definition jsonb,
  PRIMARY KEY(tenant_id,field,version),
  FOREIGN KEY(tenant_id,revision) REFERENCES mdm.asset_changes(tenant_id,revision),
