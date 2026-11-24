@@ -99,7 +99,28 @@ use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgError, PgRuntime};
 use std::sync::{Arc, Mutex};
 /// Product-owned schema installed by the privileged App migrator.
-pub const SCHEMA_SQL: &str = include_str!("schema.sql");
+pub fn schema_sql() -> &'static str {
+    static SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        include_str!("schema.sql")
+            .replace(
+                "@OLD_ENDPOINT_KEY@",
+                rss_mdm_registration_service::endpoint_lock_key_sql!("OLD.tenant_id", "OLD.device"),
+            )
+            .replace(
+                "@NEW_ENDPOINT_KEY@",
+                rss_mdm_registration_service::endpoint_lock_key_sql!("NEW.tenant_id", "NEW.device"),
+            )
+            .replace(
+                "@OLD_CATALOG_KEY@",
+                rss_mdm_inventory_postgres::field_catalog_lock_key_sql!("OLD.tenant_id"),
+            )
+            .replace(
+                "@NEW_CATALOG_KEY@",
+                rss_mdm_inventory_postgres::field_catalog_lock_key_sql!("NEW.tenant_id"),
+            )
+    });
+    &SQL
+}
 /// Host ceilings, shared by all Agent ingress replicas through PostgreSQL.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -406,7 +427,20 @@ async fn verify_owner(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
     rss_mdm_inventory_postgres::verify_collections(c)
         .await
         .map_err(|_| sqlx::Error::Protocol("collection producer admission rejected".into()))?;
+    // Verify the installed PL/pgSQL, including the two owners' lock expressions.
+    let trigger_body = |declaration: &str| {
+        schema_sql()
+            .split_once(declaration)
+            .and_then(|(_, sql)| sql.split("$$").nth(1))
+            .expect("installed trigger function body")
+    };
     if !sqlx::query_scalar::<_, bool>(ADMISSION_SQL)
+        .bind(trigger_body(
+            "CREATE FUNCTION mdm_telemetry.invalidate_batch_prefix()",
+        ))
+        .bind(trigger_body(
+            "CREATE FUNCTION mdm_telemetry.invalidate_frozen_prefix()",
+        ))
         .fetch_one(c)
         .await?
     {

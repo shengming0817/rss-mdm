@@ -2,6 +2,21 @@ use crate::Error;
 use std::{future::Future, pin::Pin};
 pub mod resources;
 
+/// PostgreSQL key used by endpoint writers, recovery readers and product SQL triggers.
+/// The arguments are trusted SQL expressions for the tenant and device UUIDs.
+#[macro_export]
+macro_rules! endpoint_lock_key_sql {
+    ($tenant:literal,$device:literal) => {
+        concat!(
+            r#"hashtextextended(format('["%s","%s"]',"#,
+            $tenant,
+            ",",
+            $device,
+            "),2790)"
+        )
+    };
+}
+
 /// A run recovery may share the lifecycle fence only when it neither admits new
 /// device work nor mutates registration/channel state. Retirement and foreground
 /// writers retain the exclusive fence. Resource admission still serializes runs
@@ -11,12 +26,16 @@ pub async fn lock_recovery_in(
     tenant: &str,
     device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<(), Error> {
-    let key = serde_json::to_string(&(tenant, device)).map_err(|_| Error::Malformed)?;
-    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2790))")
-        .bind(key)
-        .execute(c)
-        .await
-        .map_err(crate::database::db)?;
+    sqlx::query(concat!(
+        "SELECT pg_advisory_xact_lock_shared(",
+        crate::endpoint_lock_key_sql!("$1::text", "$2::uuid"),
+        ")"
+    ))
+    .bind(tenant)
+    .bind(device.into_uuid())
+    .execute(c)
+    .await
+    .map_err(crate::database::db)?;
     Ok(())
 }
 
@@ -26,12 +45,16 @@ pub async fn try_lock_recovery_in(
     tenant: &str,
     device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<bool, Error> {
-    let key = serde_json::to_string(&(tenant, device)).map_err(|_| Error::Malformed)?;
-    sqlx::query_scalar("SELECT pg_try_advisory_xact_lock_shared(hashtextextended($1,2790))")
-        .bind(key)
-        .fetch_one(c)
-        .await
-        .map_err(crate::database::db)
+    sqlx::query_scalar(concat!(
+        "SELECT pg_try_advisory_xact_lock_shared(",
+        crate::endpoint_lock_key_sql!("$1::text", "$2::uuid"),
+        ")"
+    ))
+    .bind(tenant)
+    .bind(device.into_uuid())
+    .fetch_one(c)
+    .await
+    .map_err(crate::database::db)
 }
 /// Participate after registration state is retired, using the same borrowed transaction.
 pub trait Retirement: Send + Sync {
@@ -89,8 +112,17 @@ pub async fn lock_devices_in(
     tenant: &str,
     devices: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<(), Error> {
-    let keys = device_lock_keys(tenant, devices)?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(key,2790)) FROM unnest($1::text[]) WITH ORDINALITY locks(key,n) ORDER BY n").bind(keys).execute(c).await.map_err(crate::database::db)?;
+    let ids = ordered_devices(devices)?;
+    sqlx::query(concat!(
+        "SELECT pg_advisory_xact_lock(",
+        crate::endpoint_lock_key_sql!("$1::text", "device"),
+        ") FROM unnest($2::uuid[]) WITH ORDINALITY locks(device,n) ORDER BY n"
+    ))
+    .bind(tenant)
+    .bind(ids)
+    .execute(c)
+    .await
+    .map_err(crate::database::db)?;
     Ok(())
 }
 
@@ -103,21 +135,25 @@ pub async fn try_lock_devices_in(
     tenant: &str,
     devices: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<bool, Error> {
-    let keys = device_lock_keys(tenant, devices)?;
-    let batch = keys.len() > 1;
+    let ids = ordered_devices(devices)?;
+    let batch = ids.len() > 1;
     if batch {
         sqlx::query("SAVEPOINT mdm_endpoint_fences")
             .execute(&mut *c)
             .await
             .map_err(crate::database::db)?;
     }
-    for key in keys {
-        let locked: bool =
-            sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2790))")
-                .bind(key)
-                .fetch_one(&mut *c)
-                .await
-                .map_err(crate::database::db)?;
+    for id in ids {
+        let locked: bool = sqlx::query_scalar(concat!(
+            "SELECT pg_try_advisory_xact_lock(",
+            crate::endpoint_lock_key_sql!("$1::text", "$2::uuid"),
+            ")"
+        ))
+        .bind(tenant)
+        .bind(id)
+        .fetch_one(&mut *c)
+        .await
+        .map_err(crate::database::db)?;
         if !locked {
             if batch {
                 sqlx::query("ROLLBACK TO SAVEPOINT mdm_endpoint_fences")
@@ -140,20 +176,17 @@ pub async fn try_lock_devices_in(
     }
     Ok(true)
 }
-fn device_lock_keys(
-    tenant: &str,
-    devices: &[rss_mdm_agent_wire::DeviceId],
-) -> Result<Vec<String>, Error> {
+fn ordered_devices(devices: &[rss_mdm_agent_wire::DeviceId]) -> Result<Vec<uuid::Uuid>, Error> {
     if devices.len() > 1024 {
         return Err(Error::Malformed);
     }
-    let keys = devices
+    let mut ids = devices
         .iter()
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .map(|device| serde_json::to_string(&(tenant, device)).map_err(|_| Error::Malformed))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(keys)
+        .map(|device| device.into_uuid())
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    Ok(ids)
 }
 
 /// Normal work and enrollment cannot cross an accepted retirement. Authentication

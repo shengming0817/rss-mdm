@@ -240,6 +240,7 @@ fn operation(
     )?)
 }
 mod stream_authority;
+pub(crate) use stream_authority::prune_checks;
 pub(crate) fn tx_error(error: rss_transactional_messaging_postgres::PgError) -> Error {
     if error.kind() == rss_transactional_messaging::error::MessagingErrorKind::DeadlineElapsed {
         Error::Deadline
@@ -317,9 +318,9 @@ async fn authorize(call: &Call<'_>, c: &mut sqlx::PgConnection) -> Result<Qualif
             call.audit.mark_intent_committed();
         }
     }
-    sqlx::query("DELETE FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid AND id=$2 AND expires_at<=clock_timestamp()")
-        .bind(tenant.to_string()).bind(input.id).execute(&mut *c).await?;
-    let conflicting:bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid AND id=$2 AND binding<>$3)")
+    // An expired working binding carries no authority. Leave its physical row
+    // alone until the stream fences have been acquired or the idle sweep runs.
+    let conflicting:bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid AND id=$2 AND binding<>$3 AND expires_at>clock_timestamp())")
         .bind(tenant.to_string()).bind(input.id).bind(call.binding).fetch_one(&mut *c).await?;
     if conflicting {
         return Err(Error::Conflict);
@@ -601,7 +602,7 @@ impl Call<'_> {
                     self.audit,
                 )
                 .await?;
-                if matches!(result, Progress::Complete { .. })
+                if matches!(result, Progress::Complete { .. } | Progress::Blocked { .. })
                     && self.input.stream_target().is_some()
                 {
                     stream_authority::clear(c, tenant, self.input.id, self.binding).await?;

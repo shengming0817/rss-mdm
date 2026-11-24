@@ -68,10 +68,14 @@ pub async fn publish_field_in(
         expected < i64::MAX as u64 && field.version == expected + 1,
         "invalid field revision"
     );
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2554))")
-        .bind(format!("{tenant}:field-catalog"))
-        .execute(&mut *c)
-        .await?;
+    sqlx::query(concat!(
+        "SELECT pg_advisory_xact_lock(",
+        crate::field_catalog_lock_key_sql!("$1"),
+        ")"
+    ))
+    .bind(tenant.to_string())
+    .execute(&mut *c)
+    .await?;
     if let Some(binding) = &field.time_series {
         ensure!(
             crate::retention_policy_in(
@@ -180,10 +184,14 @@ pub async fn retire_field_in(
         expected > 0 && expected < i64::MAX as u64 && !builtin::protected(key),
         "system field cannot be removed"
     );
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2554))")
-        .bind(format!("{tenant}:field-catalog"))
-        .execute(&mut *c)
-        .await?;
+    sqlx::query(concat!(
+        "SELECT pg_advisory_xact_lock(",
+        crate::field_catalog_lock_key_sql!("$1"),
+        ")"
+    ))
+    .bind(tenant.to_string())
+    .execute(&mut *c)
+    .await?;
     let catalog = catalog_in(c, tenant).await?;
     if catalog.definition(key).ok().map(|f| f.version) != Some(expected) {
         return Ok(false);
@@ -315,10 +323,14 @@ pub async fn collection_version_in(
 /// or replace an existing tenant revision. Runtime reads do not call this function.
 pub async fn initialize_fields_in(c: &mut PgConnection, tenant: TenantId) -> Result<()> {
     crate::reader::assert_tenant(c, tenant).await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2554))")
-        .bind(format!("{tenant}:field-catalog"))
-        .execute(&mut *c)
-        .await?;
+    sqlx::query(concat!(
+        "SELECT pg_advisory_xact_lock(",
+        crate::field_catalog_lock_key_sql!("$1"),
+        ")"
+    ))
+    .bind(tenant.to_string())
+    .execute(&mut *c)
+    .await?;
     for field in builtin::fields() {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field=$2)",
@@ -424,23 +436,53 @@ pub async fn historical_field_in(
     .transpose()
 }
 
+/// Single SQL key for the Inventory field publication fence in Rust and DDL.
+#[macro_export]
+macro_rules! field_catalog_lock_key_sql {
+    ($tenant:literal) => {
+        concat!(
+            "hashtextextended(",
+            $tenant,
+            "::text||':field-catalog',2554)"
+        )
+    };
+}
+
+/// Latest committed tenant publication under the caller's catalog read fence.
+pub async fn catalog_revision_in(c: &mut PgConnection, tenant: TenantId) -> Result<i64> {
+    Ok(sqlx::query_scalar(
+        "SELECT coalesce(max(revision),0) FROM mdm.field_versions WHERE tenant_id=$1::uuid",
+    )
+    .bind(tenant.to_string())
+    .fetch_one(c)
+    .await?)
+}
+
 /// Hold field authority stable while checking references and publishing metadata.
 pub async fn lock_catalog_write_in(c: &mut PgConnection, tenant: TenantId) -> Result<()> {
     crate::reader::assert_tenant(c, tenant).await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2554))")
-        .bind(format!("{tenant}:field-catalog"))
-        .execute(c)
-        .await?;
+    sqlx::query(concat!(
+        "SELECT pg_advisory_xact_lock(",
+        crate::field_catalog_lock_key_sql!("$1"),
+        ")"
+    ))
+    .bind(tenant.to_string())
+    .execute(c)
+    .await?;
     Ok(())
 }
 /// Share the existing field-authoring fence while admitting new references or manual facts.
 /// Ordinary device facts do not update this lock or the field catalog.
 pub async fn lock_catalog_read_in(c: &mut PgConnection, tenant: TenantId) -> Result<()> {
     crate::reader::assert_tenant(c, tenant).await?;
-    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2554))")
-        .bind(format!("{tenant}:field-catalog"))
-        .execute(c)
-        .await?;
+    sqlx::query(concat!(
+        "SELECT pg_advisory_xact_lock_shared(",
+        crate::field_catalog_lock_key_sql!("$1"),
+        ")"
+    ))
+    .bind(tenant.to_string())
+    .execute(c)
+    .await?;
     Ok(())
 }
 /// Stop new telemetry admission at retirement while allowing already sealed work to drain.

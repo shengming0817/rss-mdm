@@ -147,7 +147,11 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "telemetry-service-schema-v1",
-            rss_mdm_telemetry_service::SCHEMA_SQL,
+            rss_mdm_telemetry_service::schema_sql(),
+        ),
+        (
+            "telemetry-stream-inputs-v1",
+            include_str!("../../schema/telemetry-stream-inputs.sql"),
         ),
         (
             "native-protection-v1",

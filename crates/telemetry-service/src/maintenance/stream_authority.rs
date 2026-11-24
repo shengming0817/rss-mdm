@@ -37,12 +37,11 @@ pub(super) async fn advance(
     target: &StreamTarget,
     binding: &[u8],
 ) -> Result<bool, Error> {
-    let revision: i64 = sqlx::query_scalar(
-        "SELECT coalesce(max(revision),0) FROM mdm.field_versions WHERE tenant_id=$1::uuid",
-    )
-    .bind(tenant.to_string())
-    .fetch_one(&mut *c)
-    .await?;
+    sqlx::query("DELETE FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid AND id=$2 AND expires_at<=clock_timestamp()")
+        .bind(tenant.to_string()).bind(input.id).execute(&mut *c).await?;
+    let revision = rss_mdm_inventory_postgres::catalog_revision_in(c, tenant)
+        .await
+        .map_err(|_| Error::Storage)?;
     let limit = i64::from(service.maintenance_policy.authorization_bytes.get());
     let row = sqlx::query("SELECT policy,version,found, catalog_revision=$3 AND byte_limit=$4 AND expires_at>clock_timestamp() AS valid
        FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
@@ -93,8 +92,7 @@ pub(super) async fn advance(
             .await?;
         // An idle tenant may have missed its periodic sweep. Expired checkpoints
         // must not keep a newly admitted identity out of the bounded table.
-        sqlx::query("DELETE FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid AND expires_at<=clock_timestamp()")
-            .bind(tenant.to_string()).execute(&mut *c).await?;
+        prune_checks(c, tenant).await?;
         let full: bool = sqlx::query_scalar(
             "SELECT count(*)>=256 FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid",
         )
@@ -181,4 +179,17 @@ async fn qualified_fields(
         return Err(Error::Denied);
     }
     Ok(keys)
+}
+
+/// A quota admission can hold its own expired ID while another admission holds
+/// the tenant quota fence. Sweeps never wait for another transaction's row.
+pub(crate) async fn prune_checks(
+    c: &mut PgConnection,
+    tenant: rss_request_context::TenantId,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("WITH expired AS (SELECT id FROM mdm_telemetry.stream_checks
+        WHERE tenant_id=$1::uuid AND expires_at<=clock_timestamp() ORDER BY expires_at,id LIMIT 256 FOR UPDATE SKIP LOCKED)
+        DELETE FROM mdm_telemetry.stream_checks s USING expired e WHERE s.tenant_id=$1::uuid AND s.id=e.id")
+        .bind(tenant.to_string()).execute(c).await?;
+    Ok(())
 }

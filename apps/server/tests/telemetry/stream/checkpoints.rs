@@ -92,8 +92,8 @@ pub(super) async fn boundaries(
 ) -> Result<()> {
     let id = Uuid::parse_str(request["id"].as_str().unwrap())?;
     binding_and_revocation(c, http, request, account).await?;
-    last_slot(c, http, request, batch, id).await?;
-    expiry_and_publication(c, short, request).await?;
+    let other = last_slot(c, http, request, batch, id).await?;
+    expiry_and_publication(c, short, http, request, other, id).await?;
     changed_membership(c, short, http, request, batch, id).await?;
     correct_qualified_prefix(c, http, request).await
 }
@@ -136,7 +136,7 @@ async fn last_slot(
     request: &Value,
     batch: Uuid,
     id: Uuid,
-) -> Result<()> {
+) -> Result<rss_mdm_agent_wire::DeviceId> {
     let rows=sqlx::query("INSERT INTO mdm_telemetry.stream_checks
         SELECT tenant_id,gen_random_uuid(),sha256('quota'),device,source,epoch,catalog_revision,byte_limit,policy,version,found,expires_at
         FROM mdm_telemetry.stream_checks CROSS JOIN generate_series(1,254) WHERE tenant_id=$1::uuid AND id=$2")
@@ -172,7 +172,7 @@ async fn last_slot(
     .await?;
     assert_eq!(size, 256);
 
-    Ok(())
+    Ok(other_device)
 }
 
 async fn race(c: &Context, http: &http::Http, one: Value, two: Value) -> Result<(u16, u16)> {
@@ -219,10 +219,19 @@ async fn wait_for_contenders(
     Ok(())
 }
 
-async fn expiry_and_publication(c: &Context, short: &http::Http, request: &Value) -> Result<()> {
+async fn expiry_and_publication(
+    c: &Context,
+    short: &http::Http,
+    http: &http::Http,
+    request: &Value,
+    other: rss_mdm_agent_wire::DeviceId,
+    id: Uuid,
+) -> Result<()> {
     super::late_page_deadline(c, short, request, 17).await?;
     sqlx::query("UPDATE mdm_telemetry.stream_checks SET expires_at=clock_timestamp()-interval '1 minute' WHERE tenant_id=$1::uuid")
         .bind(c.tenant.to_string()).execute(&c.operator).await?;
+    expired_device_wait(c, short, request).await?;
+    expired_peer_wait(c, http, request, id, other).await?;
     let mut replacement = request.clone();
     replacement["resource"] = json!("after-expiry");
     super::late_page_deadline(c, short, &replacement, 1).await?;
@@ -341,4 +350,139 @@ pub(super) async fn resume_final_pass(
     .execute(&c.operator)
     .await?;
     proof
+}
+
+// Additional historical publications use one already delivered Current profile.
+// The first 17 uploads still exercise signing, intake, delivery and the provider.
+pub(super) async fn extend_history(c: &Context, batch: Uuid) -> Result<()> {
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
+    let n=sqlx::query("WITH ids AS MATERIALIZED (
+      SELECT lpad(to_hex(n),32,'0')::uuid policy,gen_random_uuid() version FROM generate_series(18,49)n),
+      base AS MATERIALIZED(SELECT * FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND id=$2 AND delivery='published'),
+      policies AS (INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at)
+        SELECT p.tenant_id,i.policy,1,i.version,1,p.state,p.definition,p.author,p.updated_at FROM base b JOIN mdm_policy.policies p
+          ON (p.tenant_id,p.id)=(b.tenant_id,b.policy) CROSS JOIN ids i RETURNING id,current_version),
+      versions AS (INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,resource,resource_version,frozen,fingerprint)
+        SELECT v.tenant_id,p.current_version,p.id,1,v.action_kind,v.resource,v.resource_version,v.frozen,v.fingerprint
+          FROM base b JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(b.tenant_id,b.policy_version) CROSS JOIN policies p RETURNING id,policy)
+      INSERT INTO mdm_telemetry.batches(expected_epoch,tenant_id,id,device,credential,source,epoch,policy,policy_version,input_digest,context_digest,fields,received_at,delivery,first_observed,last_observed,quality,observations,current_assets)
+        SELECT b.expected_epoch,b.tenant_id,gen_random_uuid(),b.device,b.credential,b.source,b.epoch,v.policy,v.id,b.input_digest,b.context_digest,b.fields,b.received_at,b.delivery,b.first_observed,b.last_observed,b.quality,b.observations,b.current_assets FROM base b CROSS JOIN versions v")
+        .bind(c.tenant.to_string()).bind(batch).execute(&mut *tx).await?.rows_affected();
+    anyhow::ensure!(n == 32);
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(super) async fn assert_blocked_releases_slot(
+    c: &Context,
+    http: &http::Http,
+    reclaim: &Value,
+) -> Result<()> {
+    let id = Uuid::parse_str(reclaim["id"].as_str().unwrap())?;
+    let added=sqlx::query("INSERT INTO mdm_telemetry.stream_checks SELECT $1::uuid,gen_random_uuid(),sha256('busy'),gen_random_uuid(),
+        'agent.script',gen_random_uuid(),0,1,NULL,NULL,false,clock_timestamp()+interval '1 hour' FROM generate_series(1,255)")
+        .bind(c.tenant.to_string()).execute(&c.operator).await?.rows_affected();
+    assert_eq!(added, 255);
+    let progress = http.post("/telemetry/maintenance", reclaim.clone()).await?;
+    assert_eq!(progress["state"], "blocked");
+    let facts:(i64,bool)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid),
+        EXISTS(SELECT FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 AND result->>'state'='blocked')")
+       .bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
+    assert_eq!(
+        facts,
+        (255, true),
+        "close must have a free slot while the original blocked receipt survives"
+    );
+    Ok(())
+}
+
+// The expired retry waits for the endpoint. Its own row must still be available
+// to the transaction already holding that endpoint and invalidating old data.
+async fn expired_device_wait(c: &Context, short: &http::Http, request: &Value) -> Result<()> {
+    let id = Uuid::parse_str(request["id"].as_str().unwrap())?;
+    let device = serde_json::from_value(request["device"].clone())?;
+    let mut write = crate::command_runtime_t2_support::seed_transaction(c).await?;
+    rss_mdm_registration_service::device::store::lock_channel(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut write,
+        &c.tenant.to_string(),
+        &device,
+        inv::Channel::Agent,
+    )
+    .await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *write)
+        .await?;
+    let check = async {
+        c.wait_blocked(pid).await?;
+        sqlx::query("SELECT id FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE NOWAIT")
+            .bind(c.tenant.to_string()).bind(id).fetch_one(&mut *write).await?;
+        anyhow::Ok(())
+    };
+    let ((), response) =
+        tokio::try_join!(check, short.call("/telemetry/maintenance", request.clone()))?;
+    assert_eq!(response.0, 504);
+    write.rollback().await?;
+    Ok(())
+}
+
+async fn expired_peer_wait(
+    c: &Context,
+    http: &http::Http,
+    request: &Value,
+    id: Uuid,
+    other: rss_mdm_agent_wire::DeviceId,
+) -> Result<()> {
+    let mut held = crate::command_runtime_t2_support::seed_transaction(c).await?;
+    sqlx::query(
+        "SELECT id FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE",
+    )
+    .bind(c.tenant.to_string())
+    .bind(id)
+    .fetch_one(&mut *held)
+    .await?;
+    let mut peer = request.clone();
+    peer["id"] = json!(Uuid::new_v4());
+    peer["device"] = json!(other);
+    peer["action"]["before_micros"] = json!(0);
+    assert_eq!(
+        http.post("/telemetry/maintenance", peer).await?["state"],
+        "complete"
+    );
+    held.rollback().await?;
+    Ok(())
+}
+
+pub(super) async fn reject_trigger_drift(c: &Context, service: &Service) -> Result<()> {
+    let saved: String = sqlx::query_scalar(
+        "SELECT pg_get_functiondef('mdm_telemetry.invalidate_batch_prefix()'::regprocedure)",
+    )
+    .fetch_one(&c.operator)
+    .await?;
+    sqlx::raw_sql("CREATE OR REPLACE FUNCTION mdm_telemetry.invalidate_batch_prefix() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$BEGIN RETURN NEW; END$$")
+        .execute(&c.operator).await?;
+    let replaced = service
+        .admit_default(c.execution(), crate::authority_t2_support::deadline())
+        .await;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(saved))
+        .execute(&c.operator)
+        .await?;
+    anyhow::ensure!(
+        replaced.is_err(),
+        "substituted trigger function passed admission"
+    );
+    sqlx::query("GRANT EXECUTE ON FUNCTION mdm_telemetry.invalidate_frozen_prefix() TO PUBLIC")
+        .execute(&c.operator)
+        .await?;
+    let granted = service
+        .admit_default(c.execution(), crate::authority_t2_support::deadline())
+        .await;
+    sqlx::query("REVOKE EXECUTE ON FUNCTION mdm_telemetry.invalidate_frozen_prefix() FROM PUBLIC")
+        .execute(&c.operator)
+        .await?;
+    anyhow::ensure!(
+        granted.is_err(),
+        "unexpected function EXECUTE passed admission"
+    );
+    Ok(())
 }

@@ -24,6 +24,14 @@ SELECT
      AND CASE WHEN expected.rel='mdm_telemetry.batches'::regclass THEN
        (SELECT array_agg(a.attname::text ORDER BY a.attname) FROM pg_attribute a WHERE a.attrelid=t.tgrelid AND a.attnum=ANY(t.tgattr))
          =ARRAY['device','epoch','fields','policy','policy_version','source','tenant_id'] ELSE cardinality(t.tgattr::smallint[])=0 END))
+ AND NOT EXISTS (SELECT FROM (VALUES('mdm_telemetry.invalidate_batch_prefix()'::regprocedure,$1::text),
+      ('mdm_telemetry.invalidate_frozen_prefix()'::regprocedure,$2::text)) required(oid,body)
+    WHERE NOT EXISTS(SELECT FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang WHERE p.oid=required.oid
+      AND p.prosrc=required.body AND p.prokind='f' AND p.prorettype='trigger'::regtype AND l.lanname='plpgsql'
+      AND p.proowner=(SELECT relowner FROM pg_class WHERE oid='mdm_telemetry.stream_checks'::regclass)
+      AND NOT p.prosecdef AND NOT p.proleakproof AND NOT p.proisstrict AND p.provolatile='v'
+      AND p.proconfig=ARRAY['search_path=pg_catalog']
+      AND NOT EXISTS(SELECT FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee<>p.proowner)))
  AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['batches','definition_progress','gap_reports','maintenance','observation_receipts','rate_windows','resources','retention_targets','storage_binding','stream_checks'] FROM tables)
  AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication OR oid IN(SELECT relowner FROM tables))
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE NOT relrowsecurity OR NOT relforcerowsecurity OR NOT has_table_privilege(current_user,t.oid,'SELECT') OR (has_table_privilege(current_user,t.oid,'INSERT')<>(t.relname<>'storage_binding'))

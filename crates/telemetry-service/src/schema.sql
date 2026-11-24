@@ -114,12 +114,12 @@ CREATE FUNCTION mdm_telemetry.invalidate_batch_prefix() RETURNS trigger
 LANGUAGE plpgsql SET search_path=pg_catalog AS $$
 BEGIN
  IF TG_OP <> 'INSERT' THEN
-   PERFORM pg_advisory_xact_lock(hashtextextended(format('["%s","%s"]',OLD.tenant_id,OLD.device),2790));
+   PERFORM pg_advisory_xact_lock(@OLD_ENDPOINT_KEY@);
    UPDATE mdm_telemetry.stream_checks SET policy=NULL,version=NULL,found=false WHERE (tenant_id,device,source,epoch)=(OLD.tenant_id,OLD.device,OLD.source,OLD.epoch)
      AND (policy,version)>=(OLD.policy,OLD.policy_version);
  END IF;
  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
- PERFORM pg_advisory_xact_lock(hashtextextended(format('["%s","%s"]',NEW.tenant_id,NEW.device),2790));
+ PERFORM pg_advisory_xact_lock(@NEW_ENDPOINT_KEY@);
  IF EXISTS (SELECT FROM mdm_telemetry.stream_checks WHERE (tenant_id,device,source,epoch)=(NEW.tenant_id,NEW.device,NEW.source,NEW.epoch)
              AND (policy,version)>=(NEW.policy,NEW.policy_version))
  AND NOT EXISTS (SELECT FROM mdm_telemetry.batches WHERE (tenant_id,device,source,epoch,policy,policy_version)=
@@ -139,21 +139,16 @@ CREATE TRIGGER invalidate_batch_prefix BEFORE INSERT OR DELETE OR UPDATE OF tena
 CREATE FUNCTION mdm_telemetry.invalidate_frozen_prefix() RETURNS trigger
 LANGUAGE plpgsql SET search_path=pg_catalog AS $$
 BEGIN
- PERFORM pg_advisory_xact_lock(hashtextextended(OLD.tenant_id::text||':field-catalog',2554));
+ PERFORM pg_advisory_xact_lock(@OLD_CATALOG_KEY@);
  UPDATE mdm_telemetry.stream_checks SET policy=NULL,version=NULL,found=false WHERE tenant_id=OLD.tenant_id;
  IF TG_OP='DELETE' THEN RETURN OLD; END IF;
  IF NEW.tenant_id<>OLD.tenant_id THEN
-   PERFORM pg_advisory_xact_lock(hashtextextended(NEW.tenant_id::text||':field-catalog',2554));
+   PERFORM pg_advisory_xact_lock(@NEW_CATALOG_KEY@);
    UPDATE mdm_telemetry.stream_checks SET policy=NULL,version=NULL,found=false WHERE tenant_id=NEW.tenant_id;
  END IF;
  RETURN NEW;
 END $$;
 REVOKE ALL ON FUNCTION mdm_telemetry.invalidate_frozen_prefix() FROM PUBLIC;
-CREATE TRIGGER invalidate_telemetry_prefix BEFORE UPDATE OR DELETE ON mdm.field_versions
- FOR EACH ROW EXECUTE FUNCTION mdm_telemetry.invalidate_frozen_prefix();
-CREATE TRIGGER invalidate_telemetry_prefix BEFORE UPDATE OR DELETE ON mdm_policy.versions
- FOR EACH ROW EXECUTE FUNCTION mdm_telemetry.invalidate_frozen_prefix();
-
 -- Scheduling coordinates only; immutable field history and RSS remain authoritative.
 CREATE TABLE mdm_telemetry.retention_targets (
  tenant_id uuid NOT NULL,id bytea NOT NULL CHECK(octet_length(id)=32),

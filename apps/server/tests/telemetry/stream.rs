@@ -23,8 +23,8 @@ async fn upload(
     let mut references = Vec::new();
     let mut mappings = serde_json::Map::new();
     let mut values = std::collections::BTreeMap::new();
-    for n in 0..if page >= 16 { 1 } else { 64 } {
-        let key = format!("custom.history_{:04}", page.min(16) * 64 + n);
+    for n in 0..if page == 16 { 1 } else { 64 } {
+        let key = format!("custom.history_{:04}", page * 64 + n);
         let mut field = wire["fields"][0].clone();
         field["key"] = json!(key);
         field["platforms"] = json!(["windows"]);
@@ -90,8 +90,7 @@ async fn upload(
     let frozen = json!({"resourceDigest":configuration.resource_digest,"source":"agent.script","profile":profile,
         "fields":fields,"collector":{"kind":"script","definition":script,"reference":"fixture.ps1","length":4,"digest":vec![7;32]}});
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    sqlx::query("SELECT mdm.append_field_version($1::uuid,f->>'key',1,f) FROM jsonb_array_elements($2::jsonb) f
-        WHERE NOT EXISTS(SELECT FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field=f->>'key' AND version=1)")
+    sqlx::query("SELECT mdm.append_field_version($1::uuid,f->>'key',1,f) FROM jsonb_array_elements($2::jsonb) f")
         .bind(c.tenant.to_string()).bind(json!(fields)).execute(&mut *tx).await?;
     let definition = json!({"scope":Uuid::new_v4(),"action":{"kind":"telemetry_profile","resource":{"id":"profile","version":"v1","variant":"default","platform":"windows","architecture":"x86_64"}}});
     let author = rss_mdm_authorization_service::Actor::Account {
@@ -239,6 +238,7 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         verify_pool(c,f,&mut prepared).await?;
         fixture::persist_selection(c,&f.config).await?;
         let service=f.service(c,std::slice::from_ref(&f.config)).await?;
+        checkpoints::reject_trigger_drift(c,&service).await?;
         let (registration,grant)=materials::seed_registration(c).await?;
         let principal=materials::authenticated_agent(c,grant,&registration,vec![
             wire::Capability::InventoryCollectionV1,wire::Capability::TelemetryCollectV1]).await?;
@@ -253,7 +253,7 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
             .bind(c.tenant.to_string()).bind(principal.device().into_uuid()).bind(epoch).execute(&mut *tx).await?;
         tx.commit().await?;
         let mut ids=Vec::new();
-        for page in 0..49 { ids.push(upload(c,&service,&prepared.signing,&principal,epoch,page).await?); }
+        for page in 0..17 { ids.push(upload(c,&service,&prepared.signing,&principal,epoch,page).await?); }
         let final_batch=ids[16];
         let first_batch=ids[0];
         let keys:i64=sqlx::query_scalar("SELECT count(DISTINCT field) FROM mdm_telemetry.batches CROSS JOIN LATERAL unnest(fields) field WHERE tenant_id=$1::uuid AND device=$2 AND epoch=$3")
@@ -272,6 +272,7 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         worker.await??;
         delivery??;
         // Repeated historical admissions share an indexed field set. Only one earlier real batch is changed below.
+        checkpoints::extend_history(c,first_batch).await?;
         copy_batches(c,final_batch,8192,None,None).await?;
         let account=c.account(&[Permission::InventoryRead,Permission::TelemetryMaintain]).await?;
         let short=http::Http::with_timeout(c,service.clone(),&account,std::time::Duration::from_millis(750)).await?;
@@ -350,6 +351,7 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         let intents:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2")
             .bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
         anyhow::ensure!(intents==0);
+        checkpoints::assert_blocked_releases_slot(c,&http,&reclaim).await?;
         for command in [expire,close] {
             let (left,right)=tokio::join!(http.post("/telemetry/maintenance",command.clone()),http.post("/telemetry/maintenance",command.clone()));
             let progress=left?;
@@ -370,7 +372,14 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         let mut hold=crate::command_runtime_t2_support::seed_transaction(c).await?;
         let blocker:i32=sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_telemetry.retention_targets WHERE tenant_id=$1::uuid AND device=$2 AND field=$3 FOR UPDATE")
             .bind(c.tenant.to_string()).bind(principal.device().into_uuid()).bind(bad_page).fetch_one(&mut *hold).await?;
-        let uncertain=short.call("/telemetry/maintenance",reclaim.clone());
+        let uncertain=async {
+            for _ in 0..=49 {
+                let response=short.call("/telemetry/maintenance",reclaim.clone()).await?;
+                if response.0!=504 {return anyhow::Ok(response);}
+                anyhow::ensure!(response.1["code"]=="request_deadline");
+            }
+            anyhow::bail!("original reclaim did not reach dispatch")
+        };
         let (observed,response)=tokio::join!(c.wait_blocked(blocker),uncertain);
         observed?;
         let (code,body)=response?;

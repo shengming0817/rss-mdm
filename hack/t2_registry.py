@@ -11,7 +11,7 @@ MODULES = {
                 'apps/server/tests/webhook_relay.rs','apps/server/src/adapters/webhooks.rs',
                 'apps/server/src/config/webhooks.rs','apps/server/tests/support/command_runtime.rs','hack/native_protocol_materials.py')),
     'telemetry.query': dict(prefix='assembly::telemetry_queries_t2::', profiles=('shared',),
-        inputs=('crates/work-page/*', 'crates/agent-wire/src/identity.rs', 'crates/management-http/src/telemetry*', 'crates/management-http/src/decimal.rs', 'crates/management-http/src/body_limits.json', 'deployment/render_gateway.py', 'hack/gateway_fixture.py',
+        inputs=('apps/server/schema/telemetry-stream-inputs.sql','crates/registration-service/src/lifecycle.rs','crates/inventory-postgres/src/catalog.rs','crates/work-page/*', 'crates/agent-wire/src/identity.rs', 'crates/management-http/src/telemetry*', 'crates/management-http/src/decimal.rs', 'crates/management-http/src/body_limits.json', 'deployment/render_gateway.py', 'hack/gateway_fixture.py',
                 'crates/management-http/src/boundary.rs','crates/management-http/src/body_policy.rs','crates/management-http/src/authorization/http.rs',
                 'crates/policy-service/src/telemetry.rs','crates/policy-postgres/src/telemetry.rs','crates/policy-postgres/src/storage_profile.rs','crates/agent-wire/tests/fixtures/telemetry-v1-vectors.json',
                 'crates/telemetry-service/*', 'apps/server/src/telemetry.rs', 'apps/server/tests/telemetry/*',

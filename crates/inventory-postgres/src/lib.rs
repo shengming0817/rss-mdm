@@ -34,10 +34,10 @@ pub use history::{manual_scalars_at_in, read_scalars_at_in};
 
 mod catalog;
 pub use catalog::{
-    catalog_at_in, catalog_in, collection_in, collection_version_in, datasets_in, field_version_in,
-    historical_field_in, initialize_fields_in, lock_catalog_read_in, lock_catalog_write_in,
-    publish_field_in, register_collection_in, retire_field_in, tenant_seed_sql,
-    time_series_versions_in,
+    catalog_at_in, catalog_in, catalog_revision_in, collection_in, collection_version_in,
+    datasets_in, field_version_in, historical_field_in, initialize_fields_in, lock_catalog_read_in,
+    lock_catalog_write_in, publish_field_in, register_collection_in, retire_field_in,
+    tenant_seed_sql, time_series_versions_in,
 };
 
 mod results;
