@@ -1238,8 +1238,78 @@ async fn registered_owners_share_capacity_and_drain() -> Result<()> {
         serde_json::to_vec_pretty(&results)?,
     )?;
     blocked_refill_yields_execution_budget(&a, &b).await?;
+    rescheduled_target_across_hosts(&a, &b).await?;
     b.close().await?;
     a.close().await
+}
+
+// Each host opens its own scheduling pool against the same RSS target. Both may
+// recheck a hint, but only the current lease may settle the replacement.
+async fn rescheduled_target_across_hosts(a: &Harness, b: &Harness) -> Result<()> {
+    use rss_reconcile::{Completion, ResourceSet, Scope, Target};
+    let first = &a.a.resources.storage.reconcile;
+    let second = &b.a.resources.storage.reconcile;
+    let timer = rss_mdm_policy_service::clock::Timer::new();
+    let cancel = CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cancel);
+    let scope = Scope::new(a.c.tenant, "mdm.replacement-proof")?;
+    let target = Target::new(scope.clone(), "deployment")?;
+    let resources = ResourceSet::empty(a.c.tenant);
+    let lease = Duration::from_secs(10);
+    first.wake(&target, &resources, &control).await?;
+    let original = first
+        .claim_due(&scope, 1, 64, lease, &control)
+        .await?
+        .claims
+        .pop()
+        .expect("original claim");
+    first
+        .finish(
+            &original,
+            Completion::Deferred(Duration::from_secs(86_400)),
+            &control,
+        )
+        .await?;
+    second.wake(&target, &resources, &control).await?;
+    let next = second
+        .claim_due(&scope, 1, 64, lease, &control)
+        .await?
+        .claims
+        .pop()
+        .expect("replacement claim");
+    second
+        .finish(
+            &next,
+            Completion::Deferred(Duration::from_millis(50)),
+            &control,
+        )
+        .await?;
+    let stale = first
+        .finish(&original, Completion::Converged, &control)
+        .await
+        .unwrap_err();
+    anyhow::ensure!(stale.kind() == rss_reconcile::ErrorKind::Fenced);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let (left, right) = tokio::try_join!(
+        first.claim_due(&scope, 1, 64, lease, &control),
+        second.claim_due(&scope, 1, 64, lease, &control)
+    )?;
+    anyhow::ensure!(left.claims.len() + right.claims.len() == 1);
+    if let Some(claim) = left.claims.first() {
+        first.finish(claim, Completion::Converged, &control).await?;
+    } else {
+        second
+            .finish(&right.claims[0], Completion::Converged, &control)
+            .await?;
+    }
+    anyhow::ensure!(
+        first
+            .claim_due(&scope, 1, 64, lease, &control)
+            .await?
+            .claims
+            .is_empty()
+    );
+    Ok(())
 }
 
 // A settlement owns this tenant's only PG scheduling permit. A subsequent

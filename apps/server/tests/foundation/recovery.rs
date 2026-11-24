@@ -52,7 +52,20 @@ async fn restore_reservation_and_asset_epoch_survive_reentry_without_second_rota
     rss_mdm_inventory_postgres::publish_field_in(&mut tx, tenant, 0, &field).await?;
     tx.commit().await?;
     let frozen = rss_mdm_inventory_postgres::capture_asset_cut(&pool, tenant).await?;
+    let operation_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO mdm_telemetry.stream_checks VALUES($1::uuid,$2,sha256('binding'),$3,'agent.script',$4,1,512,$5,$6,true,clock_timestamp()+interval '1 hour')")
+        .bind(tenant.to_string()).bind(operation_id).bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind(Uuid::new_v4()).execute(&pool).await?;
+    sqlx::query(
+        "INSERT INTO mdm_telemetry.maintenance VALUES($1::uuid,$2,sha256('binding'),'{}',NULL)",
+    )
+    .bind(tenant.to_string())
+    .bind(operation_id)
+    .execute(&pool)
+    .await?;
     let epoch = advance_asset_history(&mut connection, operation).await?;
+    let restored:(bool,bool)=sqlx::query_as("SELECT EXISTS(SELECT FROM mdm_telemetry.stream_checks WHERE id=$1),EXISTS(SELECT FROM mdm_telemetry.maintenance WHERE id=$1)")
+        .bind(operation_id).fetch_one(&pool).await?;
+    assert_eq!(restored, (false, true));
     field.version += 1;
     let mut tx = pool.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")

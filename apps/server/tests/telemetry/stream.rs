@@ -1,5 +1,7 @@
 //! The union belongs to a stream incarnation, independently of the maximum fields per upload.
 use super::*;
+mod checkpoints;
+use checkpoints::{copy_batches, fixed_budget};
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_registration_service::DevicePrincipal;
 use rss_mdm_telemetry_service::Service;
@@ -21,8 +23,8 @@ async fn upload(
     let mut references = Vec::new();
     let mut mappings = serde_json::Map::new();
     let mut values = std::collections::BTreeMap::new();
-    for n in 0..if page == 16 { 1 } else { 64 } {
-        let key = format!("custom.history_{:04}", page * 64 + n);
+    for n in 0..if page >= 16 { 1 } else { 64 } {
+        let key = format!("custom.history_{:04}", page.min(16) * 64 + n);
         let mut field = wire["fields"][0].clone();
         field["key"] = json!(key);
         field["platforms"] = json!(["windows"]);
@@ -88,8 +90,10 @@ async fn upload(
     let frozen = json!({"resourceDigest":configuration.resource_digest,"source":"agent.script","profile":profile,
         "fields":fields,"collector":{"kind":"script","definition":script,"reference":"fixture.ps1","length":4,"digest":vec![7;32]}});
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    sqlx::query("SELECT mdm.append_field_version($1::uuid,f->>'key',1,f) FROM jsonb_array_elements($2::jsonb) f")
+    if page <= 16 {
+        sqlx::query("SELECT mdm.append_field_version($1::uuid,f->>'key',1,f) FROM jsonb_array_elements($2::jsonb) f")
         .bind(c.tenant.to_string()).bind(json!(fields)).execute(&mut *tx).await?;
+    }
     let definition = json!({"scope":Uuid::new_v4(),"action":{"kind":"telemetry_profile","resource":{"id":"profile","version":"v1","variant":"default","platform":"windows","architecture":"x86_64"}}});
     let author = rss_mdm_authorization_service::Actor::Account {
         user: c.user(Uuid::new_v4()),
@@ -137,10 +141,15 @@ async fn upload(
 
 // A read policy in the isolated PostgreSQL fixture pauses precisely the seventeenth
 // publication. The normal verifier must finish its first page to reach this row.
-async fn late_page_deadline(c: &Context, short: &http::Http, operation: &Value) -> Result<()> {
+async fn late_page_deadline(
+    c: &Context,
+    short: &http::Http,
+    operation: &Value,
+    publication: u128,
+) -> Result<()> {
     let policy = format!("late_page_{}", Uuid::new_v4().simple());
     let key = Uuid::new_v4().as_u128() as i64;
-    let last = Uuid::from_u128(17);
+    let last = Uuid::from_u128(publication);
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE POLICY {policy} ON mdm_policy.versions AS RESTRICTIVE FOR SELECT
         USING (CASE WHEN tenant_id='{}'::uuid AND policy='{last}'::uuid THEN (SELECT true FROM pg_advisory_xact_lock({key}::bigint)) ELSE true END)",c.tenant))).execute(&c.operator).await?;
     let result = async {
@@ -149,16 +158,29 @@ async fn late_page_deadline(c: &Context, short: &http::Http, operation: &Value) 
             .bind(key)
             .fetch_one(&mut *tx)
             .await?;
-        let (blocked, response) = tokio::join!(
-            c.wait_blocked(pid),
-            short.call("/telemetry/maintenance", operation.clone())
-        );
+        let observed = std::sync::atomic::AtomicBool::new(false);
+        let attempts = async {
+            for _ in 0..16 {
+                let response = short
+                    .call("/telemetry/maintenance", operation.clone())
+                    .await?;
+                anyhow::ensure!(
+                    response == (504, json!({"code":"request_deadline"})),
+                    "qualification returned {response:?}"
+                );
+                if observed.load(std::sync::atomic::Ordering::SeqCst) {
+                    return anyhow::Ok(());
+                }
+            }
+            anyhow::bail!("request budget never reached gated publication")
+        };
+        let watch = async {
+            c.wait_blocked(pid).await?;
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            anyhow::Ok(())
+        };
+        tokio::try_join!(watch, attempts)?;
         tx.rollback().await?;
-        blocked?;
-        anyhow::ensure!(
-            response? == (504, json!({"code":"request_deadline"})),
-            "late-page qualification lost its deadline"
-        );
         anyhow::Ok(())
     }
     .await;
@@ -223,8 +245,9 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
             .bind(c.tenant.to_string()).bind(principal.device().into_uuid()).bind(epoch).execute(&mut *tx).await?;
         tx.commit().await?;
         let mut ids=Vec::new();
-        for page in 0..17 { ids.push(upload(c,&service,&prepared.signing,&principal,epoch,page).await?); }
-        let final_batch=*ids.last().unwrap();
+        for page in 0..49 { ids.push(upload(c,&service,&prepared.signing,&principal,epoch,page).await?); }
+        let final_batch=ids[16];
+        let first_batch=ids[0];
         let keys:i64=sqlx::query_scalar("SELECT count(DISTINCT field) FROM mdm_telemetry.batches CROSS JOIN LATERAL unnest(fields) field WHERE tenant_id=$1::uuid AND device=$2 AND epoch=$3")
             .bind(c.tenant.to_string()).bind(principal.device().into_uuid()).bind(epoch).fetch_one(&c.operator).await?;
         anyhow::ensure!(keys==1025);
@@ -241,13 +264,7 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         worker.await??;
         delivery??;
         // Repeated historical admissions share an indexed field set. Only one earlier real batch is changed below.
-        let mut tx=crate::command_runtime_t2_support::seed_transaction(c).await?;
-        let copied=sqlx::query("INSERT INTO mdm_telemetry.batches(expected_epoch,tenant_id,id,device,credential,source,epoch,policy,policy_version,input_digest,context_digest,fields,received_at,delivery,first_observed,last_observed,quality,observations,current_assets)
-            SELECT expected_epoch,tenant_id,gen_random_uuid(),device,credential,source,epoch,policy,policy_version,input_digest,context_digest,fields,received_at,delivery,first_observed,last_observed,quality,observations,current_assets
-            FROM mdm_telemetry.batches CROSS JOIN generate_series(1,8192) WHERE tenant_id=$1::uuid AND id=$2")
-            .bind(c.tenant.to_string()).bind(final_batch).execute(&mut *tx).await?.rows_affected();
-        anyhow::ensure!(copied==8192);
-        tx.commit().await?;
+        copy_batches(c,final_batch,8192,None,None).await?;
         let account=c.account(&[Permission::InventoryRead,Permission::TelemetryMaintain]).await?;
         let short=http::Http::with_timeout(c,service.clone(),&account,std::time::Duration::from_millis(750)).await?;
         let http=http::Http::open(c,service.clone(),&account).await?;
@@ -275,7 +292,10 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         let foreign=http::Http::open(&other,service.clone(),&account_other).await?;
         assert_eq!(foreign.call("/telemetry/maintenance",expire.clone()).await?.0,403);
         drop(foreign); other.close().await;
-        late_page_deadline(c,&short,&expire).await?;
+        let probe_op=request(json!({"action":"expire_receipts","target":target,"before_micros":0}));
+        fixed_budget(c,&short,&probe_op,first_batch).await?;
+        late_page_deadline(c,&short,&expire,17).await?;
+        checkpoints::boundaries(c,&short,&http,&expire,&account,first_batch).await?;
         let provider_expired:bool=sqlx::query_scalar("SELECT expired FROM rss_timeseries.batches WHERE tenant_id=$1::uuid AND generation=$2")
             .bind(c.tenant.to_string()).bind(&generation).fetch_one(&mut observer).await?;
         anyhow::ensure!(!provider_expired);
@@ -321,7 +341,9 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
             .bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
         anyhow::ensure!(intents==0);
         for command in [expire,close] {
-            let progress=http.post("/telemetry/maintenance",command.clone()).await?;
+            let (left,right)=tokio::join!(http.post("/telemetry/maintenance",command.clone()),http.post("/telemetry/maintenance",command.clone()));
+            let progress=left?;
+            assert_eq!(right?,progress);
             assert_eq!(progress["state"],"complete");
             assert_eq!(limited.post("/telemetry/maintenance",command.clone()).await?,progress);
             assert_eq!(http.post("/telemetry/maintenance",command).await?,progress);

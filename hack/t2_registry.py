@@ -298,7 +298,7 @@ MODULES = {
                 'apps/server/tests/foundation/tenants.rs')),
     'foundation.recovery': dict(
         prefix='installation::backup::t2::', profiles=('recovery',),
-        inputs=('crates/install-support/src/maintenance/*','crates/audit-integration/src/backup.rs','crates/pki-service/src/backup.rs','apps/server/src/installation/backup.rs',
+        inputs=('crates/telemetry-service/src/schema.sql','crates/install-support/src/maintenance/*','crates/audit-integration/src/backup.rs','crates/pki-service/src/backup.rs','apps/server/src/installation/backup.rs',
                 'crates/inventory-postgres/migrations/asset-cuts.sql',
                 'crates/inventory-postgres/migrations/install.sql',
                 'apps/server/tests/foundation/recovery.rs')),
