@@ -201,31 +201,28 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     let router = router.layer(axum::Extension(
         gateway.request_origin("https://mdm.example.test".into()),
     ));
-    let certificate: String = sqlx::query_scalar("SELECT certificate_chain->>0 FROM mdm_access.certificate_issuances WHERE tenant_id=$1::uuid AND credential=$2")
-        .bind(h.c.tenant.to_string()).bind(h.p.credential()).fetch_one(&h.c.operator).await?;
-    let evidence = gateway.client_certificate(&format!(
-        "-----BEGIN CERTIFICATE-----\n{certificate}\n-----END CERTIFICATE-----\n"
-    ))?;
-    let send = |bytes: Vec<u8>, authenticated: bool| {
-        let router = router.clone();
-        let evidence = evidence.clone();
-        async move {
-            let mut request = axum::http::Request::builder()
-                .method("POST")
-                .uri("/reports")
-                .header("host", "mdm.example.test")
-                .header("content-type", "application/json");
-            if authenticated {
-                request = request.extension(evidence);
+    let evidence = report_certificate(&h.c, &h.p, &gateway).await?;
+    let send_as =
+        |bytes: Vec<u8>, evidence: Option<rss_mdm_certificate::ClientCertificateEvidence>| {
+            let router = router.clone();
+            async move {
+                let mut request = axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/reports")
+                    .header("host", "mdm.example.test")
+                    .header("content-type", "application/json");
+                if let Some(evidence) = evidence {
+                    request = request.extension(evidence);
+                }
+                let response = router
+                    .oneshot(request.body(axum::body::Body::from(bytes))?)
+                    .await?;
+                let status = response.status();
+                let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024).await?;
+                Ok::<_, anyhow::Error>((status, bytes))
             }
-            let response = router
-                .oneshot(request.body(axum::body::Body::from(bytes))?)
-                .await?;
-            let status = response.status();
-            let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024).await?;
-            Ok::<_, anyhow::Error>((status, bytes))
-        }
-    };
+        };
+    let send = |bytes, authenticated: bool| send_as(bytes, authenticated.then(|| evidence.clone()));
     assert_eq!(send(body.clone(), false).await?.0, 401);
     let first = send(body.clone(), true).await?;
     assert_eq!(first.0, 202, "{}", String::from_utf8_lossy(&first.1));
@@ -396,7 +393,153 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     assert_eq!(page.items, vec![Scalar::String("\\\"".repeat(1024)); 128]);
     assert!(page.next.is_none());
     tx.rollback().await?;
+    // This tenant's management catalog contains only the built-in fields used by the client.
+    let module_context = Context::open("shared", &[]).await?;
+    crate::assembly::registration_installation_t2::support::publish_agent_trust(
+        &module_context,
+        n.trust.clone(),
+    )
+    .await?;
+    let (device, grant) = material::seed_registration(&module_context).await?;
+    let capabilities = vec![w::Capability::InventoryCollectionV1];
+    let peer = material::authenticated_agent(&module_context, grant, &device, capabilities.clone())
+        .await?;
+    let module_certificate = report_certificate(&module_context, &peer, &gateway).await?;
+    use rss_mdm_inventory::builtin::{CLIENT_MODULES, MDM_ENROLLMENT};
+    use rss_mdm_registration_service::agent::{Binding, RuntimeBinding};
+    let profile = rss_mdm_install_support::StorageProfile::Mdm;
+    let scope = rss_mdm_registration_service::device::scope_dataset(
+        profile,
+        module_context.tenant,
+        &device,
+        "agent.builtin",
+        peer.epoch(),
+        MDM_ENROLLMENT.as_str(),
+    )?;
+    let mut tx = command::seed_transaction(&module_context).await?;
+    for field in rss_mdm_inventory::builtin::fields()
+        .into_iter()
+        .filter(|f| [CLIENT_MODULES, MDM_ENROLLMENT].contains(&f.key))
+    {
+        rss_mdm_inventory_postgres::publish_field_in(&mut tx, module_context.tenant, 0, &field)
+            .await?;
+    }
+    let negotiated = agent::Bindings::new(profile)
+        .bind(
+            &mut tx,
+            Binding {
+                profile,
+                tenant: module_context.tenant,
+                device,
+                epoch: peer.epoch(),
+                operation: Uuid::new_v4(),
+            },
+            &rss_mdm_agent_wire::enroll::RuntimeProfile {
+                platform: w::TaskPlatform::Windows,
+                architecture: w::TaskArchitecture::X86_64,
+                execution_context: context(),
+                capabilities,
+            },
+        )
+        .await?;
+    tx.commit().await?;
+    let [frozen] = negotiated.collections.as_slice() else {
+        anyhow::bail!("expected one built-in collection")
+    };
+    let modules = w::Scalar::Object(
+        [
+            (
+                "da".into(),
+                w::Scalar::Object([("enabled".into(), w::Scalar::Boolean(false))].into()),
+            ),
+            (
+                "mdm".into(),
+                w::Scalar::Object(
+                    [
+                        ("enabled".into(), w::Scalar::Boolean(true)),
+                        ("installed".into(), w::Scalar::Boolean(true)),
+                    ]
+                    .into(),
+                ),
+            ),
+            ("application".into(), w::Scalar::String("applied".into())),
+        ]
+        .into(),
+    );
+    let enrollment_fact = w::FieldValue {
+        field: w::FieldKey::parse(MDM_ENROLLMENT.as_str())?,
+        value: w::CollectedValue::Value(w::Scalar::String("unenrolled".into())),
+    };
+    let module_fact = w::FieldValue {
+        field: w::FieldKey::parse(CLIENT_MODULES.as_str())?,
+        value: w::CollectedValue::Value(modules.clone()),
+    };
+    let report = w::ReportRequest::new(
+        Uuid::new_v4(),
+        3,
+        now() - 120,
+        frozen.clone(),
+        w::ReportBody::Snapshot(vec![enrollment_fact.clone(), module_fact]),
+    )?;
+    let body = report.canonical()?;
+    let accepted = send_as(body.clone(), Some(module_certificate.clone())).await?;
+    assert_eq!(accepted.0, 202, "{}", String::from_utf8_lossy(&accepted.1));
+    assert_eq!(
+        send_as(body, Some(module_certificate.clone())).await?,
+        accepted
+    );
+    let partial = w::ReportRequest::new(
+        Uuid::new_v4(),
+        4,
+        now() - 120,
+        frozen.clone(),
+        w::ReportBody::Partial(vec![enrollment_fact.clone()]),
+    )?;
+    assert_eq!(
+        send_as(partial.canonical()?, Some(module_certificate))
+            .await?
+            .0,
+        202
+    );
+
+    let receipt: w::ReportAck = serde_json::from_slice(&accepted.1)?;
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let mut tx = command::seed_transaction(&module_context).await?;
+            let facts = rss_mdm_inventory_postgres::read_in(
+                &mut tx,
+                module_context.tenant,
+                std::slice::from_ref(&scope),
+                &[CLIENT_MODULES],
+            )
+            .await?;
+            tx.rollback().await?;
+            if let Some(fact) = facts.scalars.first() {
+                assert_eq!(fact.fact.evidence.received_at, receipt.received_at);
+                assert_eq!(fact.fact.evidence.observed_at, report.observed_at());
+                let State::Known(actual) = &fact.fact.state else {
+                    anyhow::bail!("expected complete module report")
+                };
+                assert_eq!(
+                    serde_json::to_value(actual)?,
+                    serde_json::to_value(&modules)?
+                );
+                return anyhow::Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await??;
     assert!(worker_lifecycle.shutdown().join().await?.is_clean());
+    Box::pin(check_module_detail(
+        &module_context,
+        device,
+        &receipt,
+        &modules,
+    ))
+    .await?;
+
+    module_context.close().await;
     // A still-valid certificate must not authenticate through either Agent entry after a tenant restore.
     assert!(enrollment.authenticate(&evidence).await.is_ok());
     let origin = gateway.request_origin("https://mdm.example.test".into());
@@ -448,4 +591,68 @@ async fn complete_large_report_survives_authenticated_intake_replay_and_projecti
     ));
     assert!(lifecycle.shutdown().join().await?.is_clean());
     h.close().await
+}
+
+async fn check_module_detail(
+    c: &Context,
+    device: rss_mdm_agent_wire::DeviceId,
+    receipt: &w::ReportAck,
+    modules: &w::Scalar,
+) -> anyhow::Result<()> {
+    use rss_mdm_authorization_service::{Permission, credential::RequestCredential};
+    let reader = c.account(&[Permission::InventoryRead]).await?;
+    let other = c.account(&[Permission::AccountWrite]).await?;
+    let cookie = |a: &crate::authority_t2_support::Account| -> anyhow::Result<String> {
+        let RequestCredential::Cookie(secret) = a.credential()? else {
+            anyhow::bail!("expected cookie session")
+        };
+        Ok(format!("__Host-identity-session={}", secret.expose()))
+    };
+    let reader = cookie(&reader)?;
+    let other = cookie(&other)?;
+    let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+    let config =
+        crate::host_t2_support::configuration(&c.inputs, &c.profile, address, Uuid::new_v4())
+            .await?;
+    crate::host_t2_support::run(config, |client, base| async move {
+        let url = format!("{base}/api/v1/tenants/{}/devices/{device}/inventory", c.tenant);
+        let get = |session: &str| client.get(&url).header("cookie", session).send();
+        assert_eq!(get(&other).await?.status(), 403);
+        let data = get(&reader).await?.error_for_status()?.json::<Value>().await?;
+        let detail = &data["asset"];
+        assert_eq!(detail["moduleObservationStale"], false);
+        let field = &detail["device"]["fields"]["channel.client.modules"];
+        assert_eq!(field["state"]["value"], serde_json::to_value(modules)?);
+        assert_eq!(field["sources"][0]["evidence"]["receivedAt"], receipt.received_at);
+
+        let mut tx = command::seed_transaction(c).await?;
+        let changed = sqlx::query(
+            "UPDATE mdm.inventory SET received_at=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='channel.client.modules'"
+        ).bind(c.tenant.to_string()).bind(device.into_uuid()).bind(receipt.received_at-901).execute(&mut *tx).await?;
+        assert_eq!(changed.rows_affected(),1);
+        tx.commit().await?;
+        let stale = get(&reader).await?.error_for_status()?.json::<Value>().await?;
+        assert_eq!(stale["asset"]["moduleObservationStale"], true);
+
+        let mut tx = command::seed_transaction(c).await?;
+        sqlx::query(
+            "UPDATE mdm.inventory SET state='deleted',value=NULL WHERE tenant_id=$1::uuid AND registration=$2 AND field='channel.client.modules'"
+        ).bind(c.tenant.to_string()).bind(device.into_uuid()).execute(&mut *tx).await?;
+        tx.commit().await?;
+        let unknown = get(&reader).await?.error_for_status()?.json::<Value>().await?;
+        assert!(unknown["asset"]["moduleObservationStale"].is_null());
+        Ok(())
+    }).await
+}
+
+async fn report_certificate(
+    c: &Context,
+    p: &rss_mdm_registration_service::DevicePrincipal,
+    gateway: &rss_mdm_certificate::GatewayConnection,
+) -> anyhow::Result<rss_mdm_certificate::ClientCertificateEvidence> {
+    let certificate: String = sqlx::query_scalar("SELECT certificate_chain->>0 FROM mdm_access.certificate_issuances WHERE tenant_id=$1::uuid AND credential=$2")
+        .bind(c.tenant.to_string()).bind(p.credential()).fetch_one(&c.operator).await?;
+    Ok(gateway.client_certificate(&format!(
+        "-----BEGIN CERTIFICATE-----\n{certificate}\n-----END CERTIFICATE-----\n"
+    ))?)
 }

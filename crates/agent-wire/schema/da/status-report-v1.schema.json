@@ -1,5 +1,29 @@
 {
   "$defs": {
+    "ClientModules": {
+      "additionalProperties": false,
+      "description": "Device-local observations available to either authenticated product channel.",
+      "properties": {
+        "application": {
+          "$ref": "#/$defs/ModuleApplication",
+          "description": "Installation-profile outcome, independent of native login readiness."
+        },
+        "da": {
+          "$ref": "#/$defs/ModuleObservation",
+          "description": "Device Access installation and enablement."
+        },
+        "mdm": {
+          "$ref": "#/$defs/ModuleObservation",
+          "description": "MDM installation and enablement."
+        }
+      },
+      "required": [
+        "da",
+        "mdm",
+        "application"
+      ],
+      "type": "object"
+    },
     "DeviceId": {
       "format": "uuid",
       "maxLength": 36,
@@ -69,6 +93,57 @@
           "type": "string"
         }
       ]
+    },
+    "ModuleApplication": {
+      "description": "Outcome of the local installation profile operation.",
+      "oneOf": [
+        {
+          "const": "unknown",
+          "description": "No installation operation was observed.",
+          "type": "string"
+        },
+        {
+          "const": "received",
+          "description": "Local journal recorded receipt.",
+          "type": "string"
+        },
+        {
+          "const": "pending",
+          "description": "Local changes are in progress.",
+          "type": "string"
+        },
+        {
+          "const": "applied",
+          "description": "Local installation profile was applied.",
+          "type": "string"
+        },
+        {
+          "const": "rejected",
+          "description": "Local installation rejected the requested profile.",
+          "type": "string"
+        }
+      ]
+    },
+    "ModuleObservation": {
+      "additionalProperties": false,
+      "description": "Local evidence. An absent observation has no truth value.",
+      "properties": {
+        "enabled": {
+          "description": "Administrator's local module selection.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "installed": {
+          "description": "Installed components observed on disk.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
     "ReportIdentity": {
       "additionalProperties": false,
@@ -142,6 +217,10 @@
       "$ref": "#/$defs/ReportIdentity",
       "description": "Authenticated identity coordinates."
     },
+    "modules": {
+      "$ref": "#/$defs/ClientModules",
+      "description": "Independent observations made on the reporting device."
+    },
     "observedAt": {
       "description": "Device time is descriptive only.",
       "format": "int64",
@@ -160,6 +239,7 @@
     "identity",
     "sequence",
     "clientVersion",
+    "modules",
     "contractVersion",
     "binding",
     "factor",

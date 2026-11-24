@@ -131,6 +131,15 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
         let observed = record.batch().observed_at_seconds();
         let received = i64::try_from(record.received_at())
             .map_err(|error| rejected(event.position(), error))?;
+        let module_received = (source == model::Source::AgentBuiltin
+            && record.scope().dataset().as_str() == model::builtin::MDM_ENROLLMENT.as_str())
+        .then(|| {
+            progress
+                .fields()
+                .get(&model::builtin::CLIENT_MODULES)
+                .and_then(|field| field.received_at)
+        })
+        .flatten();
         let sequence = i64::try_from(record.batch().sequence())
             .map_err(|error| rejected(event.position(), error))?;
         let fields: Vec<_> = expected.fields().map(|f| f.key).collect();
@@ -152,6 +161,7 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
             }
             for change in &changes {
                 let field=model::FieldKey::parse(change.key().as_str()).expect("validated field");
+                let received = if field==model::builtin::CLIENT_MODULES { module_received.unwrap_or(received) } else { received };
                 let field_scope=expected.field_scope(field).expect("validated field").canonical().map_err(|_|sqlx::Error::Protocol("invalid field scope".into()))?;
                 let outcome=change.value().map(|v|model::CollectedValue::decode(expected.field(field).expect("validated field"),v).expect("validated collected outcome"));
                 let mut array=None;

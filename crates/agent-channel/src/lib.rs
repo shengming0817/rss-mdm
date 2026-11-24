@@ -610,18 +610,19 @@ async fn builtin_collections(
     device: &rss_mdm_agent_wire::DeviceId,
     epoch: Uuid,
 ) -> Result<Vec<wire::CollectionDefinition>, Error> {
-    let key = rss_mdm_inventory::builtin::MDM_ENROLLMENT;
+    use rss_mdm_inventory::builtin::{CLIENT_MODULES, MDM_ENROLLMENT};
     let scope = device::scope_dataset(
         profile,
         tenant,
         device,
         InventorySource::AgentBuiltin.as_str(),
         epoch,
-        key.as_str(),
+        MDM_ENROLLMENT.as_str(),
     )?;
-    Ok(vec![collection::wire::to_wire(
-        &collection::store::freeze_in(profile, c, &scope, 1, &[key]).await?,
-    )?])
+    let frozen =
+        collection::store::freeze_in(profile, c, &scope, 1, &[MDM_ENROLLMENT, CLIENT_MODULES])
+            .await?;
+    Ok(vec![collection::wire::to_wire(&frozen)?])
 }
 
 impl IntoResponse for Error {

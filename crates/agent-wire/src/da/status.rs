@@ -46,6 +46,53 @@ pub enum Diagnostic {
     /// A binding or factor is not ready.
     FactorUnavailable,
 }
+/// Local evidence. An absent observation has no truth value.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModuleObservation {
+    /// Installed components observed on disk.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installed: Option<bool>,
+    /// Administrator's local module selection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+/// Outcome of the local installation profile operation.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleApplication {
+    /// No installation operation was observed.
+    #[default]
+    Unknown,
+    /// Local journal recorded receipt.
+    Received,
+    /// Local changes are in progress.
+    Pending,
+    /// Local installation profile was applied.
+    Applied,
+    /// Local installation rejected the requested profile.
+    Rejected,
+}
+/// Device-local observations available to either authenticated product channel.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClientModules {
+    /// Device Access installation and enablement.
+    pub da: ModuleObservation,
+    /// MDM installation and enablement.
+    pub mdm: ModuleObservation,
+    /// Installation-profile outcome, independent of native login readiness.
+    pub application: ModuleApplication,
+}
+/// Default freshness window for a periodic client module report.
+pub const MODULE_STALE_SECONDS: u32 = 900;
+
 /// Complete diagnostic snapshot; sequence is the idempotency key within its registration.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -58,6 +105,8 @@ pub struct StatusReport {
     pub observed_at: Option<i64>,
     /// Bounded version label, not an executable capability declaration.
     pub client_version: String,
+    /// Independent observations made on the reporting device.
+    pub modules: ClientModules,
     /// Current protocol format, one.
     pub contract_version: u8,
     /// Binding readiness claimed by the device.

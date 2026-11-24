@@ -32,7 +32,7 @@ impl Default for Limits {
         Self {
             history_seconds: 30 * 86400,
             history_count: 10000,
-            stale_seconds: 900,
+            stale_seconds: da::MODULE_STALE_SECONDS,
             body_bytes: 65536,
             reports_per_minute: 10000,
             bytes_per_minute: 64 * 1024 * 1024,

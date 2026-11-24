@@ -223,6 +223,7 @@ async fn embedded_status(
         "recipients":[{"certificate_file":c.inputs.directory.join("task-trust-ca/ca.pem"),"private_key_file":c.inputs.directory.join("task-trust-ca/ca.key")}]});
     let admin = c
         .account(&[
+            Permission::OperationRead,
             Permission::Enrollment,
             Permission::Credentials,
             Permission::PolicyWrite,
@@ -314,6 +315,33 @@ async fn lifecycle_http(
     let trust = format!("{protocol}/configuration-trust");
     assert_eq!(first_peer.get(&trust).send().await?.status(), 401);
     let device = renewed.device;
+    let report = rss_mdm_agent_wire::da::StatusReport {
+        identity: rss_mdm_agent_wire::da::ReportIdentity {
+            service_id: renewed.service_id,
+            tenant: renewed.tenant,
+            device_id: device,
+        },
+        sequence: 1,
+        observed_at: Some(time::OffsetDateTime::now_utc().unix_timestamp()),
+        client_version: "embedded".into(),
+        contract_version: 1,
+        modules: rss_mdm_agent_wire::da::ClientModules {
+            da: rss_mdm_agent_wire::da::ModuleObservation {
+                installed: Some(true),
+                enabled: Some(true),
+            },
+            mdm: rss_mdm_agent_wire::da::ModuleObservation {
+                installed: Some(true),
+                enabled: Some(true),
+            },
+            application: rss_mdm_agent_wire::da::ModuleApplication::Applied,
+        },
+        health: rss_mdm_agent_wire::da::Health::Unknown,
+        binding: rss_mdm_agent_wire::da::Health::Unknown,
+        factor: rss_mdm_agent_wire::da::Health::Unknown,
+        configuration_digest: None,
+        errors: vec![],
+    };
     let credentials = format!(
         "{base}/api/v1/tenants/{}/devices/{device}/device-access",
         c.tenant
@@ -327,6 +355,42 @@ async fn lifecycle_http(
         agent,
     ))
     .await?;
+    let reported = renewed_peer
+        .post(format!("{protocol}/status-reports"))
+        .json(&report)
+        .send()
+        .await?;
+    reported.error_for_status()?;
+    let status_url = format!("{management}/admin/devices/{device}/status");
+    let detail = browser
+        .get(&status_url)
+        .header("cookie", &cookie)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Value>()
+        .await?;
+    assert_eq!(detail["report"]["modules"], json!(report.modules));
+    let denied = c
+        .account(&[rss_mdm_authorization_service::Permission::AccountWrite])
+        .await?;
+    let rss_mdm_authorization_service::credential::RequestCredential::Cookie(credential) =
+        denied.credential()?
+    else {
+        anyhow::bail!("expected browser session")
+    };
+    assert_eq!(
+        browser
+            .get(&status_url)
+            .header(
+                "cookie",
+                format!("__Host-identity-session={}", credential.expose())
+            )
+            .send()
+            .await?
+            .status(),
+        403
+    );
     let claim = ordered(
         c,
         device,

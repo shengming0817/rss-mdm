@@ -292,6 +292,8 @@ pub enum Response {
     },
     Detail {
         device: DeviceView,
+        /// Age of the original module report. Absent until this registration has reported.
+        module_observation_stale: Option<bool>,
     },
     Page {
         items: Vec<DeviceView>,
