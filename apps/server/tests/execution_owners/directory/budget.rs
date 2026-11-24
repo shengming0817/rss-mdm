@@ -41,80 +41,113 @@ async fn http(
     ))
 }
 
-async fn plans(h: &Harness, device: Uuid, busy_device: Uuid, after: Uuid) -> Result<()> {
+async fn plans(
+    h: &Harness,
+    device: Uuid,
+    busy_device: Uuid,
+    native_history: Uuid,
+    after: Uuid,
+) -> Result<()> {
     let mut tx = command::seed_transaction(&h.c).await?;
-    sqlx::query("ANALYZE mdm_script.runs")
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "ANALYZE mdm_script.runs, mdm_devices.control_operations, rss_device_command.commands",
+    )
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("SET LOCAL ROLE mdm_command_runtime")
         .execute(&mut *tx)
         .await?;
     let artifacts = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../artifacts/local-t2/operation-plans");
     std::fs::create_dir_all(&artifacts)?;
-    for label in ["first", "deep", "statistics", "deadline", "wide-statistics"] {
-        let busy = matches!(label, "deadline" | "wide-statistics");
-        let query = SCHEMA.parse(if label == "deadline" {
-            "sort=deadline&limit=1"
-        } else {
-            "limit=1"
-        })?;
-        let scope = Scope::new(
-            h.c.tenant.to_string(),
-            Some(vec![if busy { busy_device } else { device }]),
-            &query,
-        );
+    let at_limit = format!("sort=deadline&limit=1&filter=id!={}", Uuid::from_u128(4098));
+    let deep_run = Position(vec![json!(after), json!("action_run")]);
+    let deep_command = Position(vec![json!(Uuid::from_u128(1_000_250)), json!("command")]);
+    for (label, raw, device, position, budget, expected) in [
+        ("first", "limit=1", device, None, None, 2),
+        ("deep", "limit=1", device, Some(&deep_run), None, 2),
+        (
+            "native-deep",
+            "limit=1",
+            native_history,
+            Some(&deep_command),
+            None,
+            2,
+        ),
+        ("statistics", "", device, None, Some(4), 4),
+        ("deadline", at_limit.as_str(), busy_device, None, None, 2),
+        (
+            "deadline-over",
+            "sort=deadline&limit=1",
+            busy_device,
+            None,
+            None,
+            0,
+        ),
+        ("wide-statistics", "", busy_device, None, Some(4097), 4097),
+    ] {
+        let query = SCHEMA.parse(raw)?;
+        let scope = Scope::new(h.c.tenant.to_string(), Some(vec![device]), &query);
         let mut sql = sqlx::QueryBuilder::new("EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) ");
-        match label {
-            "first" | "deadline" => scope.page(&mut sql, None, 2)?,
-            "deep" => scope.page(
-                &mut sql,
-                Some(&Position(vec![json!(after), json!("action_run")])),
-                2,
-            )?,
-            "wide-statistics" => scope.totals(&mut sql, 4096)?,
-            _ => scope.totals(&mut sql, 4)?,
+        if let Some(budget) = budget {
+            scope.totals(&mut sql, budget)?;
+        } else {
+            scope.page(&mut sql, position, 2)?;
         }
         let plan: Value = sql.build_query_scalar().fetch_one(&mut *tx).await?;
         std::fs::write(
             artifacts.join(format!("{label}.json")),
             serde_json::to_vec_pretty(&plan)?,
         )?;
-        let (selected, script_rows) = plan_rows(&plan);
-        let expected = match label {
-            "statistics" => 4,
-            "wide-statistics" => 4096,
-            _ => 2,
-        };
-        assert_eq!(selected, Some(expected), "{label} scoped probe");
-        eprintln!("operations {label}: selected={expected} run table rows examined={script_rows}");
-        assert!(
-            script_rows > 0 && (busy || script_rows < 128),
-            "{label} examined {script_rows} run rows with 4096 unrelated rows"
-        );
+        check_plan(label, &plan, expected);
     }
     tx.rollback().await?;
     Ok(())
 }
 
-fn plan_rows(plan: &Value) -> (Option<u64>, u64) {
+fn check_plan(label: &str, plan: &Value, expected: u64) {
     let mut nodes = vec![&plan[0]["Plan"]];
     let mut selected = None;
+    let mut sort_input = None;
     let mut script_rows = 0;
+    let mut native_rows = 0;
     while let Some(node) = nodes.pop() {
-        let actual = node["Actual Rows"].as_u64().unwrap();
+        let rows = node["Actual Rows"].as_u64().unwrap();
         let loops = node["Actual Loops"].as_u64().unwrap();
-        if node["Subplan Name"] == "CTE selected" {
-            selected = Some(actual * loops);
+        let examined = (rows + node["Rows Removed by Filter"].as_u64().unwrap_or(0)) * loops;
+        match node["Subplan Name"].as_str() {
+            Some("CTE selected") => selected = Some(rows * loops),
+            Some("CTE sort_input") => sort_input = Some(rows * loops),
+            _ => (),
         }
-        if node["Relation Name"] == "runs" && node["Schema"] == "mdm_script" {
-            script_rows += loops * (actual + node["Rows Removed by Filter"].as_u64().unwrap_or(0));
+        match (node["Schema"].as_str(), node["Relation Name"].as_str()) {
+            (Some("mdm_script"), Some("runs")) => script_rows += examined,
+            (Some("mdm_devices"), Some("control_operations")) => native_rows += examined,
+            _ => (),
         }
         nodes.extend(node["Plans"].as_array().into_iter().flatten());
     }
-    (selected, script_rows)
+    assert_eq!(selected, Some(expected), "{label} scoped probe");
+    match label {
+        "deadline" => assert_eq!(sort_input, Some(4096)),
+        "deadline-over" => assert_eq!(sort_input, Some(4097)),
+        "wide-statistics" => assert!(script_rows >= 4097),
+        "native-deep" => assert!(
+            (1..64).contains(&native_rows),
+            "{label} examined {native_rows} native rows"
+        ),
+        _ => {
+            assert!(
+                (1..128).contains(&script_rows),
+                "{label} examined {script_rows} Script rows"
+            );
+            assert!(
+                native_rows < 64,
+                "{label} examined {native_rows} native rows"
+            );
+        }
+    }
 }
-
 #[tokio::test]
 #[ignore = "T2: scoped PostgreSQL scans, exact statistics, live keysets and candidate-only ownership"]
 async fn scoped_pages_and_statistics_charge_only_eligible_history() -> Result<()> {
@@ -143,7 +176,7 @@ async fn verify(h: &mut Harness, peer: &Context) -> Result<()> {
         &h.c,
         version,
         &hidden,
-        &(2..4098).map(Uuid::from_u128).collect::<Vec<_>>(),
+        &(2..4099).map(Uuid::from_u128).collect::<Vec<_>>(),
     )
     .await?;
     // A different tenant owns the same UUID as the visible native command.
@@ -165,19 +198,13 @@ async fn verify(h: &mut Harness, peer: &Context) -> Result<()> {
     sqlx::query("UPDATE mdm_access.authorization_rules SET document=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2")
             .bind(h.c.tenant.to_string()).bind(account.rule).bind(serde_json::to_value(rule)?).execute(&h.c.operator).await?;
     let proof = Arc::new(h.c.authenticate(&account).await?);
-    let operations = Arc::new(Operations {
-        budgets: Budgets {
+    let operations = Arc::new(directory(
+        h,
+        Budgets {
             page: 3,
             statistics: 3,
         },
-        apple: Arc::new(rss_mdm_apple_channel::flow_store::Store {
-            protection: h.a.resources.protection.clone(),
-        }),
-        tasks: h.a.task_reads.clone(),
-        registration: h.a.registration.native.clone(),
-        recovery: None,
-        execution: h.a.service.clone(),
-    });
+    ));
     let codec = CursorCodec::new(&[8; 32])?;
     let router = rss_mdm_management_http::execution::http::read_routes()
         .with_state::<()>(operations.clone())
@@ -217,13 +244,18 @@ async fn verify(h: &mut Harness, peer: &Context) -> Result<()> {
     let request = h.c.read_auth(proof.clone());
     let audit = h.c.request(&proof)?;
     over_budget(&operations, &request, &audit, &codec, &router, &stats_path).await?;
+    let native_history =
+        super::super::retirement::native_controls_in(h, 1_000_000..=1_000_255).await?;
     plans(
         h,
         native.device.into_uuid(),
         hidden.members[0].device.into_uuid(),
+        native_history.device.into_uuid(),
         first,
     )
     .await?;
+
+    sorted_budget(h, hidden.members[0].device).await?;
 
     // A conflicting owner on a hidden device remains detectable even when the
     // query selects only commands, and even for an id-only response.
@@ -348,5 +380,39 @@ async fn over_budget(
         operations.directory(request, &q, codec, audit).await,
         Err(Error::Unavailable(Failure::Capacity))
     ));
+    Ok(())
+}
+fn directory(h: &Harness, budgets: Budgets) -> Operations {
+    Operations {
+        budgets,
+        apple: Arc::new(rss_mdm_apple_channel::flow_store::Store {
+            protection: h.a.resources.protection.clone(),
+        }),
+        tasks: h.a.task_reads.clone(),
+        registration: h.a.registration.native.clone(),
+        recovery: None,
+        execution: h.a.service.clone(),
+    }
+}
+
+async fn sorted_budget(h: &Harness, device: rss_mdm_agent_wire::DeviceId) -> Result<()> {
+    let account = h.c.account(&[Permission::OperationRead]).await?;
+    let proof = Arc::new(h.c.authenticate(&account).await?);
+    let operations = directory(h, Default::default());
+    let request = h.c.read_auth(proof.clone());
+    let codec = CursorCodec::new(&[8; 32])?;
+    let audit = h.c.request(&proof)?;
+    let q = SCHEMA.parse(&format!(
+        "sort=deadline&limit=1&fields=id&filter=device=={device}"
+    ))?;
+    assert!(matches!(
+        operations.directory(&request, &q, &codec, &audit).await,
+        Err(Error::Unavailable(Failure::Capacity))
+    ));
+    let last = Uuid::from_u128(4097);
+    let q=SCHEMA.parse(&format!("sort=deadline&limit=1&fields=id&filter=device=={device};id!={};(id=={last},authorization.state==blocked)",Uuid::from_u128(4098)))?;
+    let page = operations.directory(&request, &q, &codec, &audit).await?;
+    assert_eq!(serde_json::to_value(page.items)?, json!([{"id":last}]));
+    assert!(page.next_cursor.is_none());
     Ok(())
 }
