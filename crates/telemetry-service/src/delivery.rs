@@ -426,9 +426,9 @@ impl Service {
                         return Ok(idle);
                     }
                     let gaps = owner
-                        .prune_gaps(binding)
+                        .prune_expired(binding)
                         .await
-                        .map_err(|_| eprintln!("telemetry gap maintenance unconfirmed"));
+                        .map_err(|_| eprintln!("telemetry expiry maintenance unconfirmed"));
                     if stop.is_cancelled() {
                         return gaps.map(|()| idle);
                     }

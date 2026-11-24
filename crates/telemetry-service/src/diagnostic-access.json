@@ -70,6 +70,13 @@
       "read_write": false,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_telemetry",
+      "table": "stream_checks",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [
