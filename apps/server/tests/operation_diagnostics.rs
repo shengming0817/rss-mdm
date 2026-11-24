@@ -149,6 +149,15 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
                     .unwrap()
                     .iter()
                     .all(|(key, value)| &body["originalResult"]["value"][key] == value);
+            if *owner == "enterprise_configuration" {
+                let receipt = &body["originalResult"]["value"];
+                let mut summary =
+                    rss_mdm_audit_integration::operation::ReceiptSummary::new(*case_id);
+                summary.object = Some("original-party".into());
+                summary.revision = Some(21);
+                summary.enabled = Some(false);
+                assert_eq!(receipt, &serde_json::to_value(summary)?);
+            }
             if !matches {
                 failures.push(format!(
                     "{owner} expected {expected}, received {status}: {body}"

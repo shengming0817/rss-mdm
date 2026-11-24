@@ -136,7 +136,7 @@ pub(super) async fn seed(
             "enterprise_configuration",
             enterprise,
             "".into(),
-            json!({"revision":21}),
+            json!({"operationId":enterprise,"object":"original-party","revision":21,"enabled":false}),
         ),
         (
             "agent_delivery",
