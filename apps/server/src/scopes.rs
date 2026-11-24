@@ -36,8 +36,7 @@ async fn bind(
             crate::Error::Scope(rss_mdm_scope_service::Error::Unavailable(
                 rss_mdm_scope_service::Failure::Admission,
             ))
-        })?
-        .with_input_validity(crate::administration::user_profiles::device_fields::group_current);
+        })?;
     let reconcile_messaging = Box::pin(rss_reconcile_postgres::PgMessagingStore::new(
         runtime.clone(),
         probe,

@@ -47,7 +47,7 @@ impl Groups {
             current.require(proof,Permission::GroupRead,None)?;
             current.require_all_devices(proof,Permission::InventoryRead)?;
             if current.query_binding(proof)?!=authority {return Err(Error::Conflict.into());}
-            let result=self.memberships_on(&mut tx,proof,device,query,(&authority,&current)).await?;
+            let result=self.memberships_on(&mut tx,proof,device,query,&authority).await?;
             tx.rollback().await?;
             Ok::<_,crate::transaction::Fault>(result)
         }).await;
@@ -116,9 +116,8 @@ impl Groups {
         p: &AuthorizedPrincipal,
         device: &rss_mdm_agent_wire::DeviceId,
         q: &Query,
-        access: (&str, &rss_mdm_authorization_service::Snapshot),
+        authority: &str,
     ) -> Result<Memberships> {
-        let (authority, snapshot) = access;
         if !crate::device::read::registered(
             rss_mdm_install_support::StorageProfile::Mdm,
             c,
@@ -197,20 +196,9 @@ impl Groups {
                 )
             };
             let id = item["id"].as_str().ok_or(Error::Conflict)?;
-            let permissions =
-                criteria::source_permissions_on(c, &[stored(Uuid::parse_str(id))?]).await?;
-            if !criteria::permits(snapshot, p, &permissions) {
-                return Err(Error::Forbidden.into());
-            }
-            let qualified: bool =
-                sqlx::query_scalar("SELECT mdm_user_profiles.group_inputs_current($1::uuid,$2)")
-                    .bind(id)
-                    .bind(cut.to_json())
-                    .fetch_one(&mut *c)
-                    .await?;
             let dirty:bool=sqlx::query_scalar("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)) SELECT EXISTS(SELECT FROM mdm.asset_changes e WHERE e.tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,e.source_epoch,e.writer_xid) FROM asset_cut_2),false) AND (e.kind IN('device','source','credential') OR EXISTS(SELECT FROM mdm_assets.group_fields f WHERE f.tenant_id=e.tenant_id AND f.group_id=$3::uuid AND f.field=ANY(e.fields))))")
                 .bind(p.binding().tenant().to_string()).bind(cut.to_json()).bind(id).fetch_one(&mut *c).await?;
-            let input_current = qualified && complete && !dirty;
+            let input_current = complete && !dirty;
             item["associationCurrent"] = if associated {
                 serde_json::json!(resolved.current)
             } else {

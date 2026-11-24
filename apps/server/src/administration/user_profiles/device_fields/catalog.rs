@@ -10,22 +10,24 @@ pub(super) async fn fields(
     rss_mdm_inventory_postgres::lock_catalog_write_in(c, tenant)
         .await
         .map_err(invalid)?;
-    let rows=sqlx::query("SELECT DISTINCT ON (field) field,version,definition FROM mdm.field_versions WHERE tenant_id=$1::uuid ORDER BY field,version DESC")
+    let rows=sqlx::query("SELECT DISTINCT ON (field) field,version,definition,coalesce(octet_length(definition::text),0) AS bytes FROM mdm.field_versions WHERE tenant_id=$1::uuid ORDER BY field,version DESC")
         .bind(tenant.to_string()).fetch_all(&mut *c).await?;
     let mut previous = BTreeMap::new();
-    let mut other = Vec::new();
+    let mut count = 0;
+    let mut bytes = 0i64;
     for row in rows {
         let key = rss_mdm_inventory::FieldKey::parse(row.try_get("field")?).map_err(invalid)?;
-        let version: i64 = row.try_get("version")?;
-        let value: Option<Value> = row.try_get("definition")?;
-        let old: Option<FieldDefinition> = value
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(invalid)?;
+        let size = i64::from(row.try_get::<i32, _>("bytes")?);
         if DeviceUser::for_key(key).is_some() {
-            previous.insert(key, (version, old));
-        } else {
-            other.extend(old);
+            let raw: Option<Value> = row.try_get("definition")?;
+            let definition: Option<FieldDefinition> = raw
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(invalid)?;
+            previous.insert(key, (row.try_get::<i64, _>("version")?, definition, size));
+        } else if size > 0 {
+            count += 1;
+            bytes += size;
         }
     }
     let mut fields = Vec::new();
@@ -67,6 +69,9 @@ pub(super) async fn fields(
     for row in definitions {
         let d: model::DefinitionValue =
             serde_json::from_value(row.try_get("value")?).map_err(invalid)?;
+        if model::device_path(&d.pointer).is_none() {
+            continue;
+        }
         let kind = match d.value_type {
             model::ValueType::String => ValueType::String {
                 max_length: d.max_length.unwrap_or(65536),
@@ -86,45 +91,68 @@ pub(super) async fn fields(
             version,
         );
     }
-    let mut changes = Vec::new();
-    for field in &mut fields {
-        for (_, d) in &mut field.fields {
-            let (version, old) = previous.remove(&d.key).unwrap_or_default();
-            let revision = d.version;
-            if let Some(old) = old
-                && revision <= old.version
+    // Keep published attributes first when the shared field catalog is full.
+    fields.sort_by_key(|f| {
+        !f.fields.iter().any(|(_, d)| {
+            previous
+                .get(&d.key)
+                .is_some_and(|(_, old, _)| old.is_some())
+        })
+    });
+    let mut accepted = Vec::new();
+    for mut field in fields {
+        if count + field.fields.len() > rss_mdm_inventory::catalog_capacity() {
+            continue;
+        }
+        let mut changed = Vec::new();
+        let mut field_bytes = 0i64;
+        for (_, definition) in &mut field.fields {
+            let old = previous.get(&definition.key);
+            let previous_version = old.map_or(0, |(v, _, _)| *v);
+            definition.version = definition.version.max(previous_version as u64);
+            if let Some((_, Some(published), size)) = old
+                && published == definition
             {
-                d.version = old.version;
-                if *d == old {
-                    other.push(old);
-                    continue;
-                }
+                field_bytes += size;
+                continue;
             }
-            d.version = revision.max((version + 1) as u64);
-            other.push(d.clone());
-            changes.push((
-                d.key,
-                d.version,
-                Some(serde_json::to_value(d).map_err(invalid)?),
-            ));
+            definition.version = definition.version.max((previous_version + 1) as u64);
+            let body = serde_json::to_value(&*definition).map_err(invalid)?;
+            let size: i32 = sqlx::query_scalar("SELECT octet_length($1::jsonb::text)")
+                .bind(&body)
+                .fetch_one(&mut *c)
+                .await?;
+            field_bytes += i64::from(size);
+            changed.push((definition.key, definition.version, body));
         }
-    }
-    for (key, (version, old)) in previous {
-        if old.is_some() {
-            changes.push((key, (version + 1) as u64, None))
+        if bytes + field_bytes > rss_mdm_inventory::MAX_CATALOG_BYTES as i64 {
+            continue;
         }
-    }
-    if !changes.is_empty() {
-        rss_mdm_inventory::Catalog::new(other).map_err(invalid)?;
-        for (key, version, definition) in changes {
+        for (key, version, body) in changed {
             sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,$4)")
                 .bind(tenant.to_string())
                 .bind(key.as_str())
                 .bind(version as i64)
-                .bind(definition)
+                .bind(body)
+                .execute(&mut *c)
+                .await?;
+        }
+        count += field.fields.len();
+        bytes += field_bytes;
+        for (_, d) in &field.fields {
+            previous.remove(&d.key);
+        }
+        accepted.push(field);
+    }
+    for (key, (version, old, _)) in previous {
+        if old.is_some() {
+            sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,NULL)")
+                .bind(tenant.to_string())
+                .bind(key.as_str())
+                .bind(version + 1)
                 .execute(&mut *c)
                 .await?;
         }
     }
-    Ok(fields)
+    Ok(accepted)
 }

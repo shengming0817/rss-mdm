@@ -124,7 +124,7 @@ pub async fn device_subjects(
     platform: Value,
     devices: &[uuid::Uuid],
     deadline: OperationDeadline,
-) -> Result<(PersonnelRevision, Vec<DeviceSubjects>)> {
+) -> Result<Vec<DeviceSubjects>> {
     use sqlx::{Arguments, Row};
     const SELECT: &str = concat!("WITH platform_configuration AS (SELECT $3::jsonb AS config),",
         include_str!("platform_sessions.sql"),"
@@ -132,7 +132,7 @@ pub async fn device_subjects(
         (u.registration_user->>'tenantId')::uuid=$1::uuid THEN (u.registration_user->>'principalId')::uuid END AS registration,
         s.principal_id AS current, coalesce(u.registration_revision,0) AS registration_revision,
         coalesce(u.current_revision,0) AS current_revision,
-        least(u.valid_until,s.platform_valid_until) AS current_until
+        least(u.valid_until,s.platform_valid_until,s.session_valid_until) AS current_until
         FROM unnest($2::uuid[]) d(device)
         LEFT JOIN mdm_access.directory_users u ON u.tenant_id=$1::uuid AND u.device=d.device
         LEFT JOIN platform_sessions s ON u.registration_valid AND s.instance_id=$4 AND s.tenant_id=$1::uuid
@@ -147,7 +147,7 @@ pub async fn device_subjects(
     args.add(authority.instance().as_uuid())
         .map_err(|_| Error::Storage)?;
     let size = devices.len().max(1);
-    let (window, rows) = authority
+    let (_, rows) = authority
         .with_session_references_read(binding, deadline, move |ctx| {
             Box::pin(query_rows(ctx, SELECT, args, size))
         })
@@ -162,14 +162,12 @@ pub async fn device_subjects(
                 current: r.try_get("current")?,
                 registration_revision: r.try_get("registration_revision")?,
                 current_revision: r.try_get("current_revision")?,
-                current_until: r
-                    .try_get::<Option<i64>, _>("current_until")?
-                    .map(|end| end.min(window.valid_until)),
+                current_until: r.try_get("current_until")?,
             })
         })
         .collect::<std::result::Result<_, sqlx::Error>>()
         .map_err(|_| Error::Storage)?;
-    Ok((window, rows))
+    Ok(rows)
 }
 
 pub struct DeviceSubjects {

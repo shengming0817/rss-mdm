@@ -35,7 +35,8 @@ impl AssetService {
         let completed = state.completed;
         let failure = state.failure;
         let forwarded = state.started;
-        if owner.subject != scope.subject
+        if !scope.permits_query(&state.input.query)
+            || owner.subject != scope.subject
             || owner.collection_scope != scope.collection_scope
             || owner.devices != scope.devices
         {

@@ -112,11 +112,8 @@ async fn registration_and_current_fields_share_preview_and_revoke_local_membersh
     let mut tx = seed_transaction(&c).await?;
     sqlx::query("UPDATE mdm_access.user_groups SET document=jsonb_set(document,'{members}','[]'),revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2")
         .bind(c.tenant.to_string()).bind(group).execute(&mut *tx).await?;
-    assert!(
-        !sqlx::query_scalar::<_, bool>("SELECT mdm_user_profiles.fields_current()")
-            .fetch_one(&mut *tx)
-            .await?
-    );
+    sqlx::query("UPDATE mdm_assets.personnel_cursor SET next_scan=clock_timestamp() WHERE tenant_id=$1::uuid")
+        .bind(c.tenant.to_string()).execute(&mut *tx).await?;
     tx.commit().await?;
     refresh.advance(c.execution()).await?;
     assert!(

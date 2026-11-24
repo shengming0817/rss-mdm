@@ -283,6 +283,23 @@ fn pointer(value: &str) -> bool {
     }
     true
 }
+/// Paths that Identity's bounded scalar reader can address in a normalized profile.
+pub(super) fn device_path(pointer: &str) -> Option<Vec<String>> {
+    let parts = pointer
+        .strip_prefix('/')?
+        .split('/')
+        .map(|p| p.replace("~1", "/").replace("~0", "~"))
+        .collect::<Vec<_>>();
+    let supported = match parts.as_slice() {
+        [fixed] => matches!(
+            fixed.as_str(),
+            "username" | "displayName" | "email" | "emailVerified"
+        ),
+        [root, _, ..] => root == "extensions" && parts.len() <= 9,
+        _ => false,
+    };
+    supported.then_some(parts)
+}
 pub(super) fn mapping_changed(a: &DefinitionValue, b: &DefinitionValue) -> bool {
     a.source != b.source
         || a.pointer != b.pointer

@@ -248,7 +248,8 @@ impl AssetService {
         let same_scope = if task.input.software.is_some() {
             current == task.input.scope
         } else {
-            current.subject == task.input.scope.subject
+            current.permits_query(&task.input.query)
+                && current.subject == task.input.scope.subject
                 && current.collection_scope == task.input.scope.collection_scope
                 && current.devices == task.input.scope.devices
         };

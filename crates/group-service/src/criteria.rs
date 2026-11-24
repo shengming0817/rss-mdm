@@ -39,6 +39,20 @@ impl Criteria {
                 .collect(),
         }
     }
+    pub(crate) fn require_field_access(
+        &self,
+        authority: &rss_mdm_authorization_service::Snapshot,
+        proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+    ) -> Result<()> {
+        for permission in self.personnel_permissions() {
+            if permission.device() {
+                authority.require_all_devices(proof, permission)?;
+            } else {
+                authority.require(proof, permission, None)?;
+            }
+        }
+        Ok(())
+    }
     pub fn references_groups(&self) -> bool {
         match self {
             Self::Group { .. } => true,
@@ -175,61 +189,5 @@ pub fn view(c: &g::Criteria) -> Result<Criteria> {
             },
             _ => return Err(Error::Conflict.into()),
         },
-    })
-}
-
-impl Criteria {
-    pub(crate) fn referenced_groups(&self, targets: &mut Vec<Uuid>) {
-        match self {
-            Self::Group { group_id, .. } => targets.push(*group_id),
-            Self::And { children } | Self::Or { children } => {
-                children.iter().for_each(|c| c.referenced_groups(targets))
-            }
-            Self::Predicate { .. } => (),
-        }
-    }
-}
-
-pub(crate) async fn source_permissions_on(
-    c: &mut sqlx::PgConnection,
-    groups: &[Uuid],
-) -> std::result::Result<
-    std::collections::BTreeSet<rss_mdm_authorization_service::Permission>,
-    sqlx::Error,
-> {
-    let keys: Vec<String> = sqlx::query_scalar("SELECT * FROM mdm_user_profiles.group_fields($1)")
-        .bind(groups)
-        .fetch_all(c)
-        .await?;
-    let mut permissions = std::collections::BTreeSet::new();
-    for key in keys {
-        let key = assets::FieldKey::parse(&key)
-            .map_err(|_| sqlx::Error::Protocol("invalid group field".into()))?;
-        permissions.extend(assets::personnel::permissions(key));
-    }
-    Ok(permissions)
-}
-pub(crate) async fn source_permissions(
-    tx: &mut PgTransaction<'_>,
-    groups: Vec<Uuid>,
-) -> Result<std::collections::BTreeSet<rss_mdm_authorization_service::Permission>> {
-    if groups.is_empty() {
-        return Ok(Default::default());
-    }
-    Ok(tx
-        .with_connection(move |c| Box::pin(async move { source_permissions_on(c, &groups).await }))
-        .await?)
-}
-pub(crate) fn permits(
-    snapshot: &rss_mdm_authorization_service::Snapshot,
-    proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
-    permissions: &std::collections::BTreeSet<rss_mdm_authorization_service::Permission>,
-) -> bool {
-    permissions.iter().all(|p| {
-        if p.device() {
-            snapshot.require_all_devices(proof, *p).is_ok()
-        } else {
-            snapshot.require(proof, *p, None).is_ok()
-        }
     })
 }

@@ -3,7 +3,13 @@ use super::*;
 use rss_mdm_group_postgres as pg;
 use serde_json::json;
 impl Groups {
-    pub async fn group_read(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Value> {
+    pub async fn group_read(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+        authority: &rss_mdm_authorization_service::Snapshot,
+        proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+    ) -> Result<Value> {
         let id = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
         let group = group_checked(self.groups.get_in(tx, id).await?)?
             .filter(|g| !g.deleted)
@@ -15,7 +21,9 @@ impl Groups {
             if rule.view().dictionary_version != rss_mdm_inventory::DICTIONARY {
                 return Err(Error::Conflict.into());
             }
-            Some(super::condition_in(tx, tx.tenant_id(), id, version, &rule).await?)
+            let condition = super::condition_in(tx, tx.tenant_id(), id, version, &rule).await?;
+            condition.criteria.require_field_access(authority, proof)?;
+            Some(condition)
         } else {
             None
         };

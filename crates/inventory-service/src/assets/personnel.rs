@@ -63,24 +63,16 @@ pub(super) async fn load_in(
     let rows = tx
         .with_connection(move |c| {
             Box::pin(async move {
-                if !sqlx::query_scalar::<_, bool>("SELECT mdm_user_profiles.fields_current()")
-                    .fetch_one(&mut *c)
-                    .await?
-                {
-                    return Ok(None);
-                }
-                let rows = sqlx::query(include_str!("personnel.sql"))
+                sqlx::query(include_str!("personnel.sql"))
                     .bind(tenant)
                     .bind(ids)
                     .bind(keys)
                     .bind(cut)
                     .fetch_all(c)
-                    .await?;
-                Ok(Some(rows))
+                    .await
             })
         })
-        .await?
-        .ok_or(Error::Unavailable(Failure::AssetSources))?;
+        .await?;
     let mut page = BTreeMap::<_, BTreeMap<_, _>>::new();
     for row in rows {
         let id = crate::database::device_id(row.try_get("device")?)?;
@@ -150,5 +142,27 @@ impl Access {
             Permission::DepartmentRead => self.departments,
             _ => false,
         })
+    }
+}
+
+impl ReadScope {
+    pub fn permits_condition(&self, c: &Criteria) -> bool {
+        match c {
+            Criteria::Predicate { field, .. } => {
+                self.personnel.allows(*field, self.devices.as_ref())
+            }
+            Criteria::And { children } | Criteria::Or { children } => {
+                children.iter().all(|c| self.permits_condition(c))
+            }
+        }
+    }
+    pub fn permits_query(&self, q: &Query) -> bool {
+        q.criteria
+            .as_ref()
+            .is_none_or(|c| self.permits_condition(&c.criteria))
+            && q.fields
+                .iter()
+                .chain(q.sort.iter().map(|s| &s.field))
+                .all(|key| self.personnel.allows(*key, self.devices.as_ref()))
     }
 }

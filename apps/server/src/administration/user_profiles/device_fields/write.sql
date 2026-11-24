@@ -5,9 +5,8 @@ WITH candidates AS (
  LEFT JOIN LATERAL (SELECT * FROM mdm_assets.personnel_history h
   WHERE h.tenant_id=$1::uuid AND h.device=d.device AND h.field=d.field ORDER BY revision DESC LIMIT 1) h ON true
  WHERE (h.revision IS NULL AND d.value IS NOT NULL)
- OR (h.revision IS NOT NULL AND ((d.field_version,d.subject,d.value,d.fingerprint) IS DISTINCT FROM (h.field_version,h.subject,h.value,h.fingerprint)
- OR d.valid_until<h.valid_until OR ((d.valid_until IS NULL)<>(h.valid_until IS NULL))
- OR (d.valid_until>h.valid_until AND h.valid_until<extract(epoch FROM statement_timestamp())+25)))
+ OR (h.revision IS NOT NULL AND (d.field_version,d.subject,d.value,d.fingerprint,d.valid_until)
+      IS DISTINCT FROM (h.field_version,h.subject,h.value,h.fingerprint,h.valid_until))
 ), changes AS MATERIALIZED (
  SELECT device,mdm.record_asset_change($1::uuid,'derived',jsonb_build_object('device',device,'fact',device,'operation','updated'),array_agg(field ORDER BY field)) AS revision
  FROM changed GROUP BY device ORDER BY device

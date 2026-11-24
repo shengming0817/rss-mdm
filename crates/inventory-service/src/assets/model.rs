@@ -171,7 +171,7 @@ impl ReadScope {
     ) -> std::result::Result<Self, Error> {
         Self::from_snapshot(p, p.authorization()?)
     }
-    pub(super) fn from_snapshot(
+    pub fn from_snapshot(
         p: &crate::authorization::context::AuthorizedPrincipal,
         snapshot: &crate::authorization::Snapshot,
     ) -> std::result::Result<Self, Error> {

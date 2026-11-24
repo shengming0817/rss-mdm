@@ -60,10 +60,7 @@ impl Services {
                 rss_mdm_inventory_service::transaction::deadline(),
             )
             .await
-            .map_err(|_| Error::Unavailable(Failure::Database))?
-            .with_input_validity(
-                crate::administration::user_profiles::device_fields::group_current,
-            ),
+            .map_err(|_| Error::Unavailable(Failure::Database))?,
         );
         let group_service = Arc::new(
             rss_mdm_group_service::Groups::new(rss_mdm_group_service::Dependencies {

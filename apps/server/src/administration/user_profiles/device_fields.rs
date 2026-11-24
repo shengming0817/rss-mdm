@@ -71,23 +71,11 @@ impl rss_mdm_group_service::runtime::DeviceFieldRefresh for Refresh {
 impl Refresh {
     async fn page(&self, c: &mut PgConnection, binding: ExecutionBinding) -> Result<()> {
         let tenant = binding.tenant().to_string();
-        sqlx::query("INSERT INTO mdm_assets.personnel_cursor(tenant_id,instance) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&tenant).bind(self.identity.instance().as_uuid()).execute(&mut *c).await?;
-        let cursor=sqlx::query("SELECT after_device,scanning,scan_end,mdm_user_profiles.input_stamp(instance) AS stamp FROM mdm_assets.personnel_cursor WHERE tenant_id=$1::uuid AND (published IS DISTINCT FROM mdm_user_profiles.input_stamp(instance) OR next_scan<=clock_timestamp()) FOR UPDATE SKIP LOCKED")
+        sqlx::query("INSERT INTO mdm_assets.personnel_cursor(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING")
+            .bind(&tenant).execute(&mut *c).await?;
+        let cursor = sqlx::query_scalar::<_, Option<Uuid>>("SELECT after_device FROM mdm_assets.personnel_cursor WHERE tenant_id=$1::uuid AND next_scan<=clock_timestamp() FOR UPDATE SKIP LOCKED")
             .bind(&tenant).fetch_optional(&mut *c).await?;
-        let Some(cursor) = cursor else { return Ok(()) };
-        let stamp: Vec<i64> = cursor.try_get("stamp")?;
-        let continuing =
-            cursor.try_get::<Option<Vec<i64>>, _>("scanning")?.as_ref() == Some(&stamp);
-        let after: Option<Uuid> = if continuing {
-            cursor.try_get("after_device")?
-        } else {
-            None
-        };
-        let mut transition: Option<i64> = if after.is_some() {
-            cursor.try_get("scan_end")?
-        } else {
-            None
-        };
+        let Some(after) = cursor else { return Ok(()) };
         let providers = match &self.federation {
             Some(f) => f
                 .login_options(binding, crate::identity::deadline())
@@ -101,7 +89,7 @@ impl Refresh {
         let fields = catalog::fields(c, binding, &providers).await?;
         let devices:Vec<Uuid>=sqlx::query_scalar("SELECT device FROM (SELECT device FROM mdm_user_profiles.attributed_devices WHERE tenant_id=$1::uuid AND ($2::uuid IS NULL OR device>$2) UNION SELECT device FROM mdm_assets.personnel_history WHERE tenant_id=$1::uuid AND ($2::uuid IS NULL OR device>$2)) d ORDER BY device LIMIT $3")
             .bind(&tenant).bind(after).bind(PAGE).fetch_all(&mut *c).await?;
-        let (window, subjects) = rss_mdm_device_service::personnel::device_subjects(
+        let subjects = rss_mdm_device_service::personnel::device_subjects(
             &self.identity,
             binding,
             self.platform.clone(),
@@ -131,25 +119,11 @@ impl Refresh {
                 .push(Scalar::String(group.to_string()));
         }
         let mut writes = Vec::new();
-        if stamp.first() != Some(&window.generation) {
-            return Err(invalid("personnel generation changed"));
-        }
-        for row in &subjects {
-            if row.current.is_some() {
-                transition = [transition, row.current_until].into_iter().flatten().min();
-            }
-        }
         for field in fields {
             let path = field
                 .profile
                 .as_ref()
-                .map(|def| {
-                    def.pointer
-                        .split('/')
-                        .skip(1)
-                        .map(|seg| seg.replace("~1", "/").replace("~0", "~"))
-                        .collect::<Vec<_>>()
-                })
+                .and_then(|d| model::device_path(&d.pointer))
                 .unwrap_or_default();
             let account_path = [String::from("emailVerified")];
             let request = match field.attribute {
@@ -189,13 +163,6 @@ impl Refresh {
             )
             .await
             .map_err(invalid)?;
-            if page.generation != window.generation {
-                return Err(invalid("personnel generation changed"));
-            }
-            transition = [transition, page.next_transition_at()]
-                .into_iter()
-                .flatten()
-                .min();
             let facts = page
                 .items
                 .into_iter()
@@ -258,14 +225,8 @@ impl Refresh {
         } else {
             None
         };
-        let done = after.is_none();
-        let updated=sqlx::query("UPDATE mdm_assets.personnel_cursor SET after_device=$2,scanning=$3,scan_end=$4,
-            published=CASE WHEN $5 THEN $3 ELSE published END,valid_until=CASE WHEN $5 THEN $4 ELSE valid_until END,
-            next_scan=CASE WHEN $5 THEN least(clock_timestamp()+interval '30 seconds',greatest(clock_timestamp()+interval '1 second',coalesce(to_timestamp($4::bigint)-interval '15 seconds','infinity'::timestamptz))) ELSE clock_timestamp() END
-            WHERE tenant_id=$1::uuid AND mdm_user_profiles.input_stamp(instance)=$3").bind(tenant).bind(after).bind(stamp).bind(transition).bind(done).execute(c).await?;
-        if updated.rows_affected() != 1 {
-            return Err(invalid("source changed during scan"));
-        }
+        sqlx::query("UPDATE mdm_assets.personnel_cursor SET after_device=$2,next_scan=CASE WHEN $2::uuid IS NULL THEN clock_timestamp()+interval '30 seconds' ELSE clock_timestamp() END WHERE tenant_id=$1::uuid")
+            .bind(tenant).bind(after).execute(c).await?;
         Ok(())
     }
 }
@@ -328,7 +289,7 @@ impl Field {
                 match d.value_type {
                     model::ValueType::String => Scalar::String(v.as_str()?.to_owned()),
                     model::ValueType::Boolean => Scalar::Boolean(v.as_bool()?),
-                    model::ValueType::Integer => Scalar::Integer(v.as_i64()?),
+                    model::ValueType::Integer => Scalar::Integer(v.as_f64()? as i64),
                     model::ValueType::Number => {
                         serde_json::from_value(json!({"kind":"number","value":v})).ok()?
                     }
@@ -337,35 +298,4 @@ impl Field {
             }
         })
     }
-}
-
-pub(crate) fn group_current<'a>(
-    c: &'a mut PgConnection,
-    group: rss_mdm_group::GroupId,
-    version: &'a str,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool>> + Send + 'a>> {
-    Box::pin(async move {
-        let qualified: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT FROM mdm_user_profiles.group_fields(ARRAY[$1::uuid]))",
-        )
-        .bind(group.to_string())
-        .fetch_one(&mut *c)
-        .await?;
-        if !qualified {
-            return Ok(true);
-        }
-        let cut = if let Some(snapshot) =
-            rss_mdm_inventory_service::objects::ObjectSnapshot::from_group_input(version)
-                .map_err(invalid)?
-        {
-            snapshot.asset_cut
-        } else {
-            rss_mdm_inventory::AssetCut::from_input_version(version).map_err(invalid)?
-        };
-        sqlx::query_scalar("SELECT mdm_user_profiles.group_inputs_current($1::uuid,$2)")
-            .bind(group.to_string())
-            .bind(cut.to_json())
-            .fetch_one(c)
-            .await
-    })
 }

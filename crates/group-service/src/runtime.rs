@@ -494,23 +494,6 @@ impl GroupWork {
                         let tenant = TenantId::parse(&tenant.to_string()).map_err(|_| {
                             rss_reconcile::Error::new(rss_reconcile::ErrorKind::InvalidInput)
                         })?;
-                        if let Some(fields) = &owner.fields {
-                            let epoch: Option<i64> = sqlx::query_scalar(
-                                "SELECT mdm_assets.group_work_epoch($1::uuid,NULL)",
-                            )
-                            .bind(tenant.to_string())
-                            .fetch_one(&owner.groups.read_pool)
-                            .await
-                            .map_err(|e| storage(e.into()))?;
-                            if let Some(epoch) = epoch {
-                                let epoch =
-                                    rss_transactional_messaging::fence::Epoch::new(epoch)
-                                        .map_err(|_| ReconcileError::new(ErrorKind::Invariant))?;
-                                fields
-                                    .advance(Binding::new(owner.groups.storage, tenant, epoch))
-                                    .await?;
-                            }
-                        }
                         let scope = Scope::new(tenant, "mdm.groups").expect("constant scope");
                         rss_mdm_work_page::reconcile::batch(
                             (owner.as_ref(), owner.as_ref()),
@@ -522,7 +505,38 @@ impl GroupWork {
                                 owner.groups.record_runner_failure(event);
                             },
                         )
-                        .await
+                        .await?;
+                        if let Some(fields) = &owner.fields
+                            && !stop.is_cancelled()
+                        {
+                            let result = async {
+                                let epoch: Option<i64> = sqlx::query_scalar(
+                                    "SELECT mdm_assets.group_work_epoch($1::uuid,NULL)",
+                                )
+                                .bind(tenant.to_string())
+                                .fetch_one(&owner.groups.read_pool)
+                                .await
+                                .map_err(|e| storage(e.into()))?;
+                                if let Some(epoch) = epoch {
+                                    let epoch =
+                                        rss_transactional_messaging::fence::Epoch::new(epoch)
+                                            .map_err(|_| {
+                                                ReconcileError::new(ErrorKind::Invariant)
+                                            })?;
+                                    fields
+                                        .advance(Binding::new(owner.groups.storage, tenant, epoch))
+                                        .await?;
+                                }
+                                Ok::<(), ReconcileError>(())
+                            }
+                            .await;
+                            let source =
+                                Scope::new(tenant, "mdm.personnel").expect("constant scope");
+                            owner
+                                .groups
+                                .record_scan(&source, result.err().map(|e| e.kind()));
+                        }
+                        Ok(())
                     }
                 },
             )

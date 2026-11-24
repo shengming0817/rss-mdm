@@ -419,8 +419,14 @@ fn authorize(
         _ => (Permission::ComplianceRuleRead, None),
     };
     current.require(proof, permission, device)?;
-    if matches!(command, Command::Put { .. }) {
-        current.inventory_devices(proof)?;
+    if let Command::Put { request, .. } = command {
+        let mut scope =
+            rss_mdm_inventory_service::assets::ReadScope::from_snapshot(proof, current)?;
+        // Compliance rules evaluate the full device population.
+        scope.devices = None;
+        if !scope.permits_condition(&request.input.criteria.criteria) {
+            return Err(Error::Forbidden);
+        }
     }
     if let Command::Put { request, .. } = command
         && !request.input.groups().is_empty()

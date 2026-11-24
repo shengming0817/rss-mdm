@@ -62,20 +62,13 @@ impl AssetService {
         self.validate_query(tx.tenant_id(), q, &catalog)?;
         if let Some(criteria) = &q.criteria {
             filter::require_visible(&catalog, &criteria.criteria)?;
-            let compiled = rule(tx.tenant_id(), Uuid::nil(), &criteria.criteria, &catalog)?;
-            for name in compiled.view().fields.keys() {
-                if !scope.personnel.allows(
-                    checked_input(FieldKey::parse(name))?,
-                    scope.devices.as_ref(),
-                ) {
-                    return Err(Error::Forbidden.into());
-                }
-            }
+        }
+        if !scope.permits_query(q) {
+            return Err(Error::Forbidden.into());
         }
         for key in q.fields.iter().chain(q.sort.iter().map(|s| &s.field)) {
-            if !scope.personnel.allows(*key, scope.devices.as_ref())
-                || checked_input(catalog.definition(*key))?.sensitivity
-                    == rss_mdm_inventory::Sensitivity::Secret
+            if checked_input(catalog.definition(*key))?.sensitivity
+                == rss_mdm_inventory::Sensitivity::Secret
             {
                 return Err(Error::Forbidden.into());
             }

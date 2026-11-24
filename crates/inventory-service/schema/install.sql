@@ -267,8 +267,7 @@ CREATE TABLE mdm_assets.personnel_history (
  CHECK (value IS NULL OR subject IS NOT NULL)
 );
 CREATE TABLE mdm_assets.personnel_cursor (
- tenant_id uuid PRIMARY KEY, instance uuid NOT NULL, scanning bigint[], published bigint[],
- scan_end bigint, valid_until bigint, after_device uuid, next_scan timestamptz NOT NULL DEFAULT '-infinity'
+ tenant_id uuid PRIMARY KEY, after_device uuid, next_scan timestamptz NOT NULL DEFAULT '-infinity'
 );
 DO $$DECLARE relation text; BEGIN
  FOREACH relation IN ARRAY ARRAY['personnel_history','personnel_cursor'] LOOP
