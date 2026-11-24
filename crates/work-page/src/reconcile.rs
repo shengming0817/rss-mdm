@@ -31,6 +31,7 @@ pub struct Grant {
 #[derive(Default)]
 struct Tenant {
     active: BTreeSet<usize>,
+    discovered: bool,
     claiming: Option<usize>,
     deadlines: BTreeSet<Instant>,
     sweep_start: Option<Instant>,
@@ -227,21 +228,23 @@ where
                     let now = Instant::now();
                     let mut active = running.lock().expect("active claim rounds");
                     if after.is_none() {
-                        // An elapsed idle scope needs no history: discovery admits it afresh.
+                        // Only retire absent scopes. A discovered tenant can still
+                        // be waiting in the fair queue after every deadline elapsed.
                         active.retain(|_, tenant| {
-                            !tenant.active.is_empty()
-                                || tenant.retry.is_some_and(|at| at > now)
-                                || tenant.recovery.is_some_and(|at| at > now)
+                            std::mem::take(&mut tenant.discovered)
+                                || !tenant.active.is_empty()
                                 || tenant.deadlines.last().is_some_and(|at| *at > now)
+                                || tenant.retry.is_some_and(|at| at > now)
                         });
                     }
                     let mut next = None;
                     let rows = tenants
                         .into_iter()
                         .filter_map(|id| {
-                            let Some(tenant) = active.get(&id) else {
+                            let Some(tenant) = active.get_mut(&id) else {
                                 return Some((id, 0));
                             };
+                            tenant.discovered = true;
                             let at = tenant.next(now);
                             if at > now {
                                 next = Some(next.map_or(at, |old: Instant| old.min(at)));
@@ -268,6 +271,7 @@ where
                 && state.claiming.is_none()
                 && !state.active.contains(&position))
             .then(|| {
+                state.discovered = true;
                 state.active.insert(position);
                 state.claiming = Some(position);
                 state.immediate = false;

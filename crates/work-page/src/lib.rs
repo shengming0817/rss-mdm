@@ -260,10 +260,7 @@ where
             true
         },
         (binding, page),
-        |key, stop| {
-            let attempt = batch(key, stop);
-            async move { attempt.await.map(Some) }
-        },
+        batch,
         observed,
     )
     .await
@@ -273,7 +270,7 @@ where
     clippy::disallowed_methods,
     reason = "process-owned monotonic worker deadlines"
 )]
-pub(crate) async fn run_pages<K, T, S, O, R, P, F, E, N>(
+pub(crate) async fn run_pages<K, T, S, O, R, P, F, E, N, D>(
     capacity: NonZeroUsize,
     idle: Duration,
     stop: &CancellationToken,
@@ -289,7 +286,8 @@ where
     O: Ord,
     R: Into<Page<K>>,
     P: Future<Output = Result<R, Failure<E>>>,
-    F: Future<Output = Result<Option<Duration>, Failure<E>>> + Send + 'static,
+    F: Future<Output = Result<D, Failure<E>>> + Send + 'static,
+    D: Into<Option<Duration>> + Send + 'static,
     E: Send + 'static,
     N: Future<Output = bool>,
 {
@@ -321,7 +319,7 @@ where
                 first_batches.insert(key.clone());
             }
             let attempt = batch(key.clone(), admission.clone());
-            tasks.spawn(async move { (key, attempt.await) });
+            tasks.spawn(async move { (key, attempt.await.map(Into::into)) });
         }
         if stop.is_cancelled() {
             break;
