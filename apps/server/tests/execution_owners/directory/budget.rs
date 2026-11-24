@@ -63,7 +63,36 @@ async fn plans(
     let at_limit = format!("sort=deadline&limit=1&filter=id!={}", Uuid::from_u128(4098));
     let deep_run = Position(vec![json!(after), json!("action_run")]);
     let deep_command = Position(vec![json!(Uuid::from_u128(1_000_250)), json!("command")]);
+    let desc_cursor = Position(vec![json!(Uuid::from_u128(4096)), json!("action_run")]);
+    let multi_cursor = Position(vec![json!(Uuid::from_u128(1)), json!("command")]);
+    let business_scope = format!("filter=device=in=({device},{native_history})&limit=1");
     for (label, raw, device, position, budget, expected) in [
+        ("desc-first", "sort=-id&limit=1", busy_device, None, None, 2),
+        (
+            "desc-next",
+            "sort=-id&limit=1",
+            busy_device,
+            Some(&desc_cursor),
+            None,
+            2,
+        ),
+        ("multi-first", "limit=1", device, None, None, 2),
+        (
+            "multi-next",
+            "limit=1",
+            device,
+            Some(&multi_cursor),
+            None,
+            2,
+        ),
+        (
+            "multi-filter",
+            business_scope.as_str(),
+            device,
+            None,
+            None,
+            2,
+        ),
         ("first", "limit=1", device, None, None, 2),
         ("deep", "limit=1", device, Some(&deep_run), None, 2),
         (
@@ -87,7 +116,12 @@ async fn plans(
         ("wide-statistics", "", busy_device, None, Some(4097), 4097),
     ] {
         let query = SCHEMA.parse(raw)?;
-        let scope = Scope::new(h.c.tenant.to_string(), Some(vec![device]), &query);
+        let allowed = match label {
+            "multi-filter" => None,
+            "multi-first" | "multi-next" => Some(vec![device, native_history]),
+            _ => Some(vec![device]),
+        };
+        let scope = Scope::new(h.c.tenant.to_string(), allowed, &query);
         let mut sql = sqlx::QueryBuilder::new("EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) ");
         if let Some(budget) = budget {
             scope.totals(&mut sql, budget)?;
@@ -100,6 +134,26 @@ async fn plans(
             serde_json::to_vec_pretty(&plan)?,
         )?;
         check_plan(label, &plan, expected);
+        let expected_ids = match label {
+            "desc-first" => Some([4098, 4097]),
+            "desc-next" => Some([4095, 4094]),
+            "multi-first" | "multi-filter" => Some([1, 8192]),
+            "multi-next" => Some([8192, 16384]),
+            _ => None,
+        };
+        if let Some(ids) = expected_ids {
+            let mut sql = sqlx::QueryBuilder::new("");
+            scope.page(&mut sql, position, 2)?;
+            let documents: Vec<Value> = sql.build_query_scalar().fetch_all(&mut *tx).await?;
+            assert_eq!(
+                documents
+                    .iter()
+                    .map(|row| row["id"].clone())
+                    .collect::<Vec<_>>(),
+                ids.map(|i| json!(Uuid::from_u128(i))),
+                "{label}"
+            );
+        }
     }
     tx.rollback().await?;
     Ok(())

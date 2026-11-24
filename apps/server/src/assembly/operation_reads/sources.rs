@@ -106,8 +106,46 @@ pub(crate) struct Scope<'a> {
     query: &'a Query,
 }
 
+fn device_keys(
+    expr: &rss_mdm_query::Expression<String, Value>,
+) -> Option<std::collections::BTreeSet<Uuid>> {
+    use rss_mdm_query::{Expression, Operator};
+    match expr {
+        Expression::Compare {
+            field,
+            operator: Operator::Eq | Operator::In,
+            values,
+        } if field == "device" => values
+            .iter()
+            .map(|v| Uuid::parse_str(v.as_str()?).ok())
+            .collect(),
+        Expression::And(terms) => terms.iter().filter_map(device_keys).reduce(|mut a, b| {
+            a.retain(|id| b.contains(id));
+            a
+        }),
+        Expression::Or(terms) => {
+            let mut keys = std::collections::BTreeSet::new();
+            for term in terms {
+                keys.extend(device_keys(term)?);
+            }
+            Some(keys)
+        }
+        _ => None,
+    }
+}
+
 impl<'a> Scope<'a> {
     pub(crate) fn new(tenant: String, devices: Option<Vec<Uuid>>, query: &'a Query) -> Self {
+        // A positive device term is also a physical access path for a tenant-wide
+        // grant. Keep the original RSQL predicate; only narrow the granted key set.
+        let devices = match (devices, query.filter().and_then(device_keys)) {
+            (Some(mut granted), Some(keys)) => {
+                granted.retain(|id| keys.contains(id));
+                Some(granted)
+            }
+            (None, Some(keys)) => Some(keys.into_iter().collect()),
+            (granted, None) => granted,
+        };
         Self {
             tenant,
             devices,
@@ -173,10 +211,24 @@ impl<'a> Scope<'a> {
     }
 
     pub(super) fn needs_sort(&self) -> bool {
-        self.query
+        if self
+            .query
             .sort()
             .first()
             .is_some_and(|key| key.field != "id")
+        {
+            return true;
+        }
+        let width = if selection::classified(self.query) {
+            selection::BATCH
+        } else {
+            self.query.limit() + 1
+        };
+        match &self.devices {
+            // Keep the per-owner merge bounded even for a large explicit grant.
+            Some(ids) => ids.len().saturating_mul(width) > SORT_ROWS,
+            None => self.query.mentions("device"),
+        }
     }
 
     fn bounded_sort(
@@ -212,31 +264,52 @@ impl<'a> Scope<'a> {
         after: Option<&Position>,
         size: usize,
     ) -> Result<(), Error> {
+        let descending = self.query.sort()[0].descending;
+        // IDs are non-null in every source. Natural DESC permits a backwards
+        // B-tree scan; the full public ordering still applies at the merge.
+        let order = if descending {
+            " ORDER BY id DESC LIMIT "
+        } else {
+            " ORDER BY id ASC LIMIT "
+        };
+        let multiple = self.devices.as_deref().filter(|ids| ids.len() > 1);
+        if let Some(ids) = multiple {
+            sql.push(",granted AS MATERIALIZED (SELECT unnest(")
+                .push_bind(ids.to_vec())
+                .push("::uuid[]) AS allowed_id)");
+        }
         sql.push(",selected AS MATERIALIZED (SELECT * FROM (");
         for i in 0..SOURCES.len() {
             if i > 0 {
                 sql.push(" UNION ALL ");
             }
-            sql.push("(SELECT *,")
+            sql.push("(");
+            if multiple.is_some() {
+                sql.push("SELECT local_rows.* FROM granted CROSS JOIN LATERAL (");
+            }
+            sql.push("SELECT *,")
                 .push(i)
                 .push(" AS source FROM owner_")
                 .push(i);
-            self.eligible(sql)?;
-            // The inclusive leading range lets a B-tree skip the discarded prefix of
-            // late identity pages. page_limit still checks the complete lexicographic key.
-            if let Some(after) = after
-                && let Some(key) = self.query.sort().first().filter(|k| k.field == "id")
-                && let Some(id) = after.0.first().and_then(Value::as_str)
-            {
-                sql.push(if key.descending {
-                    " AND id<="
-                } else {
-                    " AND id>="
-                })
-                .push_bind(Uuid::parse_str(id).map_err(|_| Error::QueryCursorInvalidated)?);
+            if multiple.is_some() {
+                sql.push(" WHERE device=granted.allowed_id");
+                rss_mdm_query_postgres::prefilter(sql, self.query, &*BINDINGS, selection::metadata)
+                    .map_err(query_error)?;
+            } else {
+                self.eligible(sql)?;
             }
-            rss_mdm_query_postgres::page_limit(sql, self.query, after, &*BINDINGS, size)
+            // An inclusive index range skips the leading prefix while the public
+            // keyset also handles other sort keys and live boundary collisions.
+            if let Some(id) = after.and_then(|p| p.0.first()).and_then(Value::as_str) {
+                sql.push(if descending { " AND id<=" } else { " AND id>=" })
+                    .push_bind(Uuid::parse_str(id).map_err(|_| Error::QueryCursorInvalidated)?);
+            }
+            rss_mdm_query_postgres::seek(sql, self.query, after, &*BINDINGS)
                 .map_err(query_error)?;
+            sql.push(order).push_bind(size as i64);
+            if multiple.is_some() {
+                sql.push(") local_rows").push(order).push_bind(size as i64);
+            }
             sql.push(")");
         }
         sql.push(") merged");
