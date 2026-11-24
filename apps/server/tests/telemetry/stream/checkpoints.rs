@@ -91,6 +91,19 @@ pub(super) async fn boundaries(
     batch: Uuid,
 ) -> Result<()> {
     let id = Uuid::parse_str(request["id"].as_str().unwrap())?;
+    binding_and_revocation(c, http, request, account).await?;
+    last_slot(c, http, request, batch, id).await?;
+    expiry_and_publication(c, short, request).await?;
+    changed_membership(c, short, http, request, batch, id).await?;
+    correct_qualified_prefix(c, http, request).await
+}
+
+async fn binding_and_revocation(
+    c: &Context,
+    http: &http::Http,
+    request: &Value,
+    account: &crate::authority_t2_support::Account,
+) -> Result<()> {
     let mut altered = request.clone();
     altered["resource"] = json!("different");
     assert_eq!(http.call("/telemetry/maintenance", altered).await?.0, 409);
@@ -114,6 +127,16 @@ pub(super) async fn boundaries(
     )
     .await?;
 
+    Ok(())
+}
+
+async fn last_slot(
+    c: &Context,
+    http: &http::Http,
+    request: &Value,
+    batch: Uuid,
+    id: Uuid,
+) -> Result<()> {
     let rows=sqlx::query("INSERT INTO mdm_telemetry.stream_checks
         SELECT tenant_id,gen_random_uuid(),sha256('quota'),device,source,epoch,catalog_revision,byte_limit,policy,version,found,expires_at
         FROM mdm_telemetry.stream_checks CROSS JOIN generate_series(1,254) WHERE tenant_id=$1::uuid AND id=$2")
@@ -136,6 +159,23 @@ pub(super) async fn boundaries(
     let one = fresh();
     let mut two = fresh();
     two["device"] = json!(other_device);
+    let (a, b) = race(c, http, one, two).await?;
+    gate.rollback().await?;
+    let mut statuses = [a, b];
+    statuses.sort();
+    assert_eq!(statuses, [422, 504]);
+    let size: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid",
+    )
+    .bind(c.tenant.to_string())
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(size, 256);
+
+    Ok(())
+}
+
+async fn race(c: &Context, http: &http::Http, one: Value, two: Value) -> Result<(u16, u16)> {
     // Pause the first INSERT after its capacity read. The contender must wait
     // behind that transaction (or the same gate if serialization regresses).
     let probe = format!("quota_{}", Uuid::new_v4().simple());
@@ -149,40 +189,37 @@ pub(super) async fn boundaries(
         .bind(key)
         .fetch_one(&mut *insert)
         .await?;
-    let both_wait = async {
-        tokio::time::timeout(std::time::Duration::from_secs(4),async {
-            loop {
-                let blocked:i64=sqlx::query_scalar("WITH RECURSIVE waiting(pid) AS (SELECT $1::int UNION SELECT p.pid FROM waiting w JOIN pg_stat_activity p ON w.pid=ANY(pg_blocking_pids(p.pid))) SELECT count(*)-1 FROM waiting")
-                    .bind(blocker).fetch_one(&c.operator).await?;
-                if blocked>=2 {break anyhow::Ok(());}
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-        }).await??;
-        insert.rollback().await?;
-        anyhow::Ok(())
-    };
     let (a, b, ()) = tokio::try_join!(
         http.call("/telemetry/maintenance", one),
         http.call("/telemetry/maintenance", two),
-        both_wait
+        wait_for_contenders(insert, blocker)
     )?;
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "DROP TRIGGER {probe} ON mdm_telemetry.stream_checks; DROP SCHEMA {probe} CASCADE"
     )))
     .execute(&c.operator)
     .await?;
-    gate.rollback().await?;
-    let mut statuses = [a.0, b.0];
-    statuses.sort();
-    assert_eq!(statuses, [422, 504]);
-    let size: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid",
-    )
-    .bind(c.tenant.to_string())
-    .fetch_one(&c.operator)
-    .await?;
-    assert_eq!(size, 256);
+    Ok((a.0, b.0))
+}
 
+async fn wait_for_contenders(
+    mut insert: sqlx::Transaction<'_, sqlx::Postgres>,
+    blocker: i32,
+) -> Result<()> {
+    tokio::time::timeout(std::time::Duration::from_secs(4),async {
+            loop {
+                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *insert).await?;
+                let blocked:i64=sqlx::query_scalar("WITH RECURSIVE waiting(pid) AS (SELECT $1::int UNION SELECT p.pid FROM waiting w JOIN pg_stat_activity p ON w.pid=ANY(pg_blocking_pids(p.pid))) SELECT count(*)-1 FROM waiting")
+                    .bind(blocker).fetch_one(&mut *insert).await?;
+                if blocked>=2 {break anyhow::Ok(());}
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }).await??;
+    insert.rollback().await?;
+    Ok(())
+}
+
+async fn expiry_and_publication(c: &Context, short: &http::Http, request: &Value) -> Result<()> {
     super::late_page_deadline(c, short, request, 17).await?;
     sqlx::query("UPDATE mdm_telemetry.stream_checks SET expires_at=clock_timestamp()-interval '1 minute' WHERE tenant_id=$1::uuid")
         .bind(c.tenant.to_string()).execute(&c.operator).await?;
@@ -202,6 +239,17 @@ pub(super) async fn boundaries(
     super::late_page_deadline(c, short, request, 1).await?;
     super::late_page_deadline(c, short, request, 17).await?;
 
+    Ok(())
+}
+
+async fn changed_membership(
+    c: &Context,
+    short: &http::Http,
+    http: &http::Http,
+    request: &Value,
+    batch: Uuid,
+    id: Uuid,
+) -> Result<()> {
     // A new digest behind the cursor invalidates the checked prefix. A new
     // publication beyond it remains visible to the final tail seek.
     for (field, policy) in [
@@ -232,6 +280,10 @@ pub(super) async fn boundaries(
         assert_eq!(removed, 1);
         super::late_page_deadline(c, short, request, 17).await?;
     }
+    Ok(())
+}
+
+async fn correct_qualified_prefix(c: &Context, http: &http::Http, request: &Value) -> Result<()> {
     let mut corrupt = crate::command_runtime_t2_support::seed_transaction(c).await?;
     sqlx::query("UPDATE mdm.field_versions SET definition=jsonb_set(definition,'{sensitivity}',to_jsonb('secret'::text))
         WHERE tenant_id=$1::uuid AND field='custom.history_0001'").bind(c.tenant.to_string()).execute(&mut *corrupt).await?;

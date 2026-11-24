@@ -90,10 +90,9 @@ async fn upload(
     let frozen = json!({"resourceDigest":configuration.resource_digest,"source":"agent.script","profile":profile,
         "fields":fields,"collector":{"kind":"script","definition":script,"reference":"fixture.ps1","length":4,"digest":vec![7;32]}});
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    if page <= 16 {
-        sqlx::query("SELECT mdm.append_field_version($1::uuid,f->>'key',1,f) FROM jsonb_array_elements($2::jsonb) f")
+    sqlx::query("SELECT mdm.append_field_version($1::uuid,f->>'key',1,f) FROM jsonb_array_elements($2::jsonb) f
+        WHERE NOT EXISTS(SELECT FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field=f->>'key' AND version=1)")
         .bind(c.tenant.to_string()).bind(json!(fields)).execute(&mut *tx).await?;
-    }
     let definition = json!({"scope":Uuid::new_v4(),"action":{"kind":"telemetry_profile","resource":{"id":"profile","version":"v1","variant":"default","platform":"windows","architecture":"x86_64"}}});
     let author = rss_mdm_authorization_service::Actor::Account {
         user: c.user(Uuid::new_v4()),
