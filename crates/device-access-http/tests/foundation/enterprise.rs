@@ -279,6 +279,11 @@ pub(super) async fn verify(
     for (result, expected_status) in [
         ("22", StatusCode::NOT_FOUND),
         (
+            r#"{"kind":"unrecognized","value":{}}"#,
+            StatusCode::NOT_FOUND,
+        ),
+        (r#"{"kind":"subject","value":{}}"#, StatusCode::NOT_FOUND),
+        (
             r#"{"kind":"relying_party","value":{}}"#,
             StatusCode::SERVICE_UNAVAILABLE,
         ),

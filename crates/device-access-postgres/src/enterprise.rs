@@ -490,11 +490,12 @@ pub enum EnterpriseReceipt {
 }
 
 impl EnterpriseReceipt {
-    fn decode(id: Uuid, raw: &str) -> Result<Self, Error> {
+    fn decode(id: Uuid, raw: &str, application_only: bool) -> Result<Self, Error> {
         let document: serde_json::Value = serde_json::from_str(raw).map_err(|_| Error::Corrupt)?;
         // The receipt table also serves other DA owners. Only our closed tags claim a row.
         match document.get("kind").and_then(serde_json::Value::as_str) {
-            Some("relying_party" | "subject" | "windows_key") => {}
+            Some("relying_party") => {}
+            Some("subject" | "windows_key") if !application_only => {}
             _ => return Err(Error::NotFound),
         }
         match serde_json::from_value(document).map_err(|_| Error::Corrupt)? {
@@ -525,7 +526,7 @@ impl EnterpriseReceipt {
         }
     }
 
-    pub fn application(self, expected_id: Option<&str>) -> Result<ApplicationReceipt, Error> {
+    fn application(self, expected_id: Option<&str>) -> Result<ApplicationReceipt, Error> {
         match self {
             Self::Application(v)
                 if expected_id.is_none_or(|expected| expected == v.application_id) =>
@@ -544,19 +545,39 @@ impl Service {
         actor: &AuthorizedPrincipal,
         id: Uuid,
     ) -> Result<EnterpriseReceipt, Error> {
+        self.read_enterprise_operation(actor, id, false).await
+    }
+
+    pub async fn application_operation(
+        &self,
+        actor: &AuthorizedPrincipal,
+        id: Uuid,
+        expected_id: Option<&str>,
+    ) -> Result<ApplicationReceipt, Error> {
+        self.read_enterprise_operation(actor, id, true)
+            .await?
+            .application(expected_id)
+    }
+
+    async fn read_enterprise_operation(
+        &self,
+        actor: &AuthorizedPrincipal,
+        id: Uuid,
+        application_only: bool,
+    ) -> Result<EnterpriseReceipt, Error> {
         if id.is_nil() {
             return Err(Error::Malformed);
         }
-        self.read_with_session(actor, (actor, id), |ctx, c| {
+        self.read_with_session(actor, (actor, id, application_only), |ctx, c| {
             Box::pin(async move {
-                let (actor, id) = *ctx;
+                let (actor, id, application_only) = *ctx;
                 authorize(c, actor, Permission::EnterpriseApplicationsRead).await?;
                 let raw: String = sqlx::query_scalar(
                     "SELECT result FROM rss_da.operations WHERE tenant_id=$1::uuid AND instance=$2::uuid AND actor=$3::uuid AND operation_id=$4",
                 )
                 .bind(actor.tenant_id()).bind(actor.instance_id()).bind(actor.principal_id()).bind(id)
                 .fetch_optional(c).await.map_err(db)?.ok_or(Error::NotFound)?;
-                EnterpriseReceipt::decode(id, &raw)
+                EnterpriseReceipt::decode(id, &raw, application_only)
             })
         }).await
     }

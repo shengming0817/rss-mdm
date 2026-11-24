@@ -328,9 +328,8 @@ async fn enterprise_operation(
     axum::extract::Query(query): axum::extract::Query<ApplicationOperationQuery>,
 ) -> Result<Json<rss_mdm_device_access_postgres::enterprise::ApplicationReceipt>, Error> {
     s.registration
-        .enterprise_operation(&auth.proof, operation)
+        .application_operation(&auth.proof, operation, query.application_id.as_deref())
         .await
-        .and_then(|v| v.application(query.application_id.as_deref()))
         .map(Json)
         .map_err(|e| match e {
             rss_mdm_device_access_postgres::Error::NotFound => Error::OperationNotFound,
