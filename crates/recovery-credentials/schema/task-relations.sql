@@ -14,6 +14,8 @@ GRANT UPDATE(authority,revision,observed_command_version,gateway_accepted,dispat
 GRANT EXECUTE ON FUNCTION mdm_recovery_tasks.native_status(uuid),mdm_recovery_tasks.retirement_commands(uuid,text),mdm_recovery_tasks.save_retired_command(uuid,uuid,bigint,bigint) TO mdm_access,mdm_command_runtime,mdm_policy_runtime;
 -- Immutable request coordinates used by the tenant-scoped activity projection.
 GRANT SELECT(tenant_id,actor,id,operation) ON mdm_recovery_tasks.requests TO mdm_access;
+CREATE INDEX operations_device_directory ON mdm_recovery_tasks.operations(tenant_id,device,id);
+CREATE INDEX runs_device_directory ON mdm_recovery_tasks.runs(tenant_id,device,id);
 COMMIT;
 -- Previous configuration ownership requires only the authenticated original request.
 GRANT USAGE ON SCHEMA mdm_recovery_tasks TO mdm_policy_runtime;

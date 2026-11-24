@@ -203,11 +203,23 @@ pub fn page_limit(
     columns: impl Columns,
     limit: usize,
 ) -> Result<()> {
-    columns.require(q.schema())?;
     let maximum = usize::from(q.schema().max_limit) + 1;
     if !(1..=maximum).contains(&limit) {
         return Err(Error::Budget);
     }
+    seek(sql, q, after, columns)?;
+    order(sql, q, columns)?;
+    sql.push(" LIMIT ").push_bind(limit as i64);
+    Ok(())
+}
+/// Append only the checked NULLS LAST keyset predicate to an existing WHERE clause.
+pub fn seek(
+    sql: &mut QueryBuilder<Postgres>,
+    q: &Query,
+    after: Option<&Position>,
+    columns: impl Columns,
+) -> Result<()> {
+    columns.require(q.schema())?;
     if let Some(p) = after {
         q.validate_position(p)?;
         if q.sort()
@@ -251,8 +263,6 @@ pub fn page_limit(
         }
         sql.push(")");
     }
-    order(sql, q, columns)?;
-    sql.push(" LIMIT ").push_bind(limit as i64);
     Ok(())
 }
 /// Preserve the same ordering outside a bounded candidate subquery.

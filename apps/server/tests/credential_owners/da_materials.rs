@@ -392,6 +392,58 @@ pub(super) async fn verify(
     Ok(())
 }
 
+/// A DA-targeted run belongs to the standalone DA path. The same UUID on a visible
+/// credential run remains unambiguous under the MDM command read role and its RLS.
+async fn directory_da_target_isolation(
+    c: &Context,
+    binding: &access::Binding,
+    agent: &DevicePrincipal,
+    id: Uuid,
+) -> Result<()> {
+    use crate::assembly::operation_reads::sources::Scope;
+    use rss_mdm_management_http::execution::operations::SCHEMA;
+    let mut tx = seed(c).await?;
+    let epoch: Uuid =
+        sqlx::query_scalar("SELECT epoch FROM rss_da.devices WHERE tenant_id=$1 AND id=$2")
+            .bind(binding.tenant)
+            .bind(binding.device.into_uuid())
+            .fetch_one(&mut *tx)
+            .await?;
+    let mut targeted = binding.clone();
+    targeted.account_delivery = Some(access::account_delivery::Target::Da {
+        installation: agent.installation(),
+        epoch,
+    });
+    let at = now();
+    sqlx::query("INSERT INTO rss_da.access_runs(expected_epoch,tenant_id,id,policy_version,origin,access_binding,device,occurrence,created_at,available_at,deadline,state,da_target)
+        VALUES(current_setting('rss.execution_epoch')::bigint,$1,$2,$3,'\"human\"',$4,$5,$6,$7,$7,$8,$9,$10)")
+        .bind(binding.tenant).bind(id).bind(binding.policy_version).bind(serde_json::to_value(&targeted)?)
+        .bind(binding.device.into_uuid()).bind(id.to_string()).bind(at).bind(at+300)
+        .bind(serde_json::to_value(rss_mdm_task_state::RunState::new(at+300,at)?)?)
+        .bind(serde_json::json!({"installation":agent.installation(),"epoch":epoch,"authority":null}))
+        .execute(&mut *tx).await?;
+    sqlx::query("SET LOCAL ROLE mdm_command_runtime")
+        .execute(&mut *tx)
+        .await?;
+    let q = SCHEMA.parse(&format!("filter=id=={id}"))?;
+    let scope = Scope::new(
+        c.tenant.to_string(),
+        Some(vec![agent.device().into_uuid()]),
+        &q,
+    );
+    let mut sql = sqlx::QueryBuilder::new("");
+    scope.page(&mut sql, None, 2)?;
+    let rows: Vec<(serde_json::Value, bool)> = sql.build_query_as().fetch_all(&mut *tx).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0["id"], serde_json::json!(id));
+    assert!(
+        !rows[0].1,
+        "the MDM read role excludes the standalone DA target"
+    );
+    tx.rollback().await?;
+    Ok(())
+}
+
 /// Recovery must read Agent liveness from its owner even though the run and binding live in DA.
 #[expect(
     clippy::cognitive_complexity,
@@ -476,6 +528,7 @@ async fn verify_access_recovery(
     )
     .await
     .context("prepare the RSS credential execution owner and frozen run")?;
+    directory_da_target_isolation(c, binding, agent, credential_id).await?;
     let mut tx = seed(c).await?;
     sqlx::query("INSERT INTO rss_da.access_runs (expected_epoch,tenant_id, id, policy_version, origin, access_binding, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint) VALUES (current_setting('rss.execution_epoch')::bigint,$1, $2, $3, '\"policy\"', $4, $5, $6, $7, $7, $8, $9, $10)")
         .bind(binding.tenant).bind(id).bind(binding.policy_version).bind(serde_json::to_value(binding)?)

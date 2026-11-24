@@ -131,10 +131,10 @@ impl Operations {
             };
             let collection_relation=rss_mdm_inventory_service::collection::execution::queries::relation_sql();
             let (relation,kind)=match owner {
-                O::DeviceControl=> (rss_mdm_device_service::control::directory::RELATION_SQL,"command"),
-                O::DeviceAction=> (rss_mdm_device_service::control::directory::RELATION_SQL,"action_run"),
-                O::SoftwareDeployment=>(rss_mdm_software_service::deployment::directory::RELATION_SQL,"command"),
-                O::SoftwareAction=>(rss_mdm_software_service::deployment::directory::RELATION_SQL,"action_run"),
+                O::DeviceControl=> (rss_mdm_device_service::control::directory::COMMAND_RELATION,"command"),
+                O::DeviceAction=> (rss_mdm_device_service::control::directory::RUN_RELATION,"action_run"),
+                O::SoftwareDeployment=>(rss_mdm_software_service::deployment::directory::COMMAND_RELATION,"command"),
+                O::SoftwareAction=>(rss_mdm_software_service::deployment::directory::RUN_RELATION,"action_run"),
                 O::Installation=>(rss_mdm_registration_service::installation::queries::RELATION_SQL,"command"),
                 O::RecoveryCommand=>(rss_mdm_recovery_credentials::native::queries::RELATION_SQL,"command"),
                 O::Configuration=>(CONFIGURATION_RELATION,"command"),

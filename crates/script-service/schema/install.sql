@@ -94,6 +94,7 @@ CREATE INDEX script_unknown_resource ON mdm_script.runs(tenant_id,device,resourc
  WHERE state->>'execution'='unknown';
 CREATE INDEX script_offer ON mdm_script.runs(tenant_id,device,available_at,id)
  WHERE state->>'execution'='not_started' AND state->>'cancellation'='none';
+CREATE INDEX script_device_history ON mdm_script.runs(tenant_id,device,id);
 CREATE INDEX script_history ON mdm_script.runs(tenant_id,policy_version,available_at,id);
 COMMIT;
 

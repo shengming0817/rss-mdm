@@ -13,8 +13,8 @@ mod installation;
 #[path = "operation_diagnostics/receipts.rs"]
 mod receipts;
 
-/// Exercise the actual product composition, including its real owner pools and HTTP authority.
-#[tokio::test]
+/// Run the real HTTP host and its owner pools on the same scheduler as the product binary.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "T2: production App diagnostics, original receipt namespaces and evidence continuation"]
 #[allow(
     clippy::disallowed_methods,

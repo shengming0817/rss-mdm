@@ -612,6 +612,12 @@ pub(super) async fn native_controls(
     h: &mut Harness,
     count: u128,
 ) -> Result<crate::native_identity_t2_support::Native> {
+    native_controls_in(h, 1..=count).await
+}
+pub(super) async fn native_controls_in(
+    h: &mut Harness,
+    ids: std::ops::RangeInclusive<u128>,
+) -> Result<crate::native_identity_t2_support::Native> {
     use rss_mdm_authorization_service::Permission;
     use rss_mdm_device_service::control::device_control::{Action, Input};
     let native = crate::native_identity_t2_support::seed(&h.c, "windows").await?;
@@ -625,7 +631,7 @@ pub(super) async fn native_controls(
     sqlx::query("INSERT INTO mdm_windows.capabilities (tenant_id, device, protocol_epoch, os_version, edition, session, observed_at) VALUES (CAST($1 AS uuid), $2, $3, '10.0.22631.0', 4, 1, CAST(EXTRACT(EPOCH FROM clock_timestamp()) AS bigint))")
         .bind(h.c.tenant.to_string()).bind(native.device.into_uuid()).bind(native.epoch).execute(&mut *tx).await?;
     tx.commit().await?;
-    for n in 1..=count {
+    for n in ids {
         h.a.service
             .create_control(
                 &proof,

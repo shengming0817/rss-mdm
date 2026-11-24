@@ -247,7 +247,7 @@ presentation/resourceRevision，展示只从 Resource 读取。原生软件发�
 
 `GET /devices`、`GET /device-views`、`GET /operations` 使用 `filter/sort/fields/limit/cursor`，
 返回 `items/nextCursor`。例如 `/operations?filter=kind==action_run;status==running&sort=-id,-kind&fields=id,kind,status,detailUrl&limit=50`。
-执行唯一身份为 `(id,kind)`；设备视图以 `key` 稳定排序，平台、通道和来源是成员集合过滤，不提供集合排序。
+执行目录以 `(id,kind)` 补足稳定排序；候选 UUID 在同租户各执行来源中必须归属唯一，多条归属时读取失败；设备视图以 `key` 稳定排序，平台、通道和来源是成员集合过滤，不提供集合排序。
 统一视图仍要求同一成员满足完整条件，只有全部成员可见才合并关联；人员搜索和展示受各自权限约束。
 普通设备身份的 source/channel 包含其注册历史；统一视图的对应过滤使用当前展示的注册和签发记录。
 

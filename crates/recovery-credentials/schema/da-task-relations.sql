@@ -57,4 +57,5 @@ CREATE FUNCTION rss_da.release_targeted_credential(p_task uuid,p_attempt uuid) R
 $$;
 REVOKE ALL ON FUNCTION rss_da.release_targeted_credential(uuid,uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rss_da.release_targeted_credential(uuid,uuid) TO da_access;
+CREATE INDEX credential_runs_device_directory ON rss_da.credential_runs(tenant_id,device,id);
 COMMIT;

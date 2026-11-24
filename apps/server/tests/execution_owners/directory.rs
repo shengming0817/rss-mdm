@@ -1,4 +1,5 @@
 //! A real aggregate read retains native ownership through the production collection response.
+mod budget;
 use super::*;
 use axum::response::IntoResponse;
 use rss_mdm_authorization_service::Permission;
@@ -14,6 +15,7 @@ async fn native_directory_serializes_the_actual_owner_and_respects_projection() 
         let account = h.c.account(&[Permission::OperationRead]).await?;
         let proof = Arc::new(h.c.authenticate(&account).await?);
         let operations = crate::assembly::operation_reads::Operations {
+            budgets: Default::default(),
             apple: Arc::new(rss_mdm_apple_channel::flow_store::Store {
                 protection: h.a.resources.protection.clone(),
             }),
@@ -142,6 +144,7 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
         let account=h.c.account(&[Permission::OperationRead,Permission::PolicyRead,Permission::InventoryRead]).await?;
         let proof=Arc::new(h.c.authenticate(&account).await?);
         let operations=Arc::new(crate::assembly::operation_reads::Operations {
+            budgets: Default::default(),
             apple:Arc::new(rss_mdm_apple_channel::flow_store::Store{protection:h.a.resources.protection.clone()}),
             tasks:h.a.task_reads.clone(),registration:h.a.registration.native.clone(),recovery:None,execution:h.a.service.clone(),
         });
@@ -245,8 +248,11 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
             .layer(axum::Extension(h.c.read_auth(denied.clone())))
             .layer(axum::Extension(h.c.request(&denied)?)).into_axum();
         let router = axum::Router::new().nest("/api/v1/tenants/{tenant}", router);
-        let response=router.oneshot(axum::http::Request::builder().uri(format!("/api/v1/tenants/{}/operations", h.c.tenant)).body(axum::body::Body::empty())?).await?;
-        assert_eq!(response.status(),axum::http::StatusCode::FORBIDDEN);
+        let wrong_binding = CursorCodec::new(&[8;32])?.encode("different authority", &rss_mdm_query::directory::Position(vec![json!(script), json!("action_run")]))?;
+        for suffix in [String::new(), format!("?cursor={}",wrong_binding.as_str())] {
+            let response=router.clone().oneshot(axum::http::Request::builder().uri(format!("/api/v1/tenants/{}/operations{suffix}", h.c.tenant)).body(axum::body::Body::empty())?).await?;
+            assert_eq!(response.status(),axum::http::StatusCode::FORBIDDEN);
+        }
         Ok(())
     }.await;
     h.close().await?;

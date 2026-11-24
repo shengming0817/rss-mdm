@@ -153,6 +153,14 @@ impl Harness {
         run_as: &str,
         scope: Uuid,
     ) -> Result<(Uuid, Uuid)> {
+        Self::script_policy(&self.c, scope, resource, run_as).await
+    }
+    async fn script_policy(
+        c: &Context,
+        scope: Uuid,
+        resource: &str,
+        run_as: &str,
+    ) -> Result<(Uuid, Uuid)> {
         use sha2::{Digest, Sha256};
         let policy = Uuid::new_v4();
         let version = Uuid::new_v4();
@@ -198,11 +206,11 @@ impl Harness {
         })?;
         let _: script::policy::Published = serde_json::from_value(frozen.clone())?;
         let author = rss_mdm_authorization_service::Actor::Account {
-            user: self.c.user(Uuid::new_v4()),
+            user: c.user(Uuid::new_v4()),
         };
-        let mut tx = command::seed_transaction(&self.c).await?;
-        sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'enabled',$4,$5,$6)").bind(self.c.tenant.to_string()).bind(policy).bind(version).bind(serde_json::to_value(definition)?).bind(serde_json::to_value(author)?).bind(now()).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint,resource,resource_version) VALUES($1::uuid,$2,$3,1,'execution',$4,$5,$6,'1')").bind(self.c.tenant.to_string()).bind(version).bind(policy).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).bind(resource).execute(&mut *tx).await?;
+        let mut tx = command::seed_transaction(c).await?;
+        sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'enabled',$4,$5,$6)").bind(c.tenant.to_string()).bind(policy).bind(version).bind(serde_json::to_value(definition)?).bind(serde_json::to_value(author)?).bind(now()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint,resource,resource_version) VALUES($1::uuid,$2,$3,1,'execution',$4,$5,$6,'1')").bind(c.tenant.to_string()).bind(version).bind(policy).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).bind(resource).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok((policy, version))
     }

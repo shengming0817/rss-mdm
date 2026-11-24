@@ -319,6 +319,8 @@ CREATE INDEX windows_wake_operations
     AND input_context ->> 'platform' = 'windows';
 
 CREATE INDEX action_software_effect ON mdm_software_deployment.action_runs(tenant_id,device) WHERE software_effect IS NOT NULL;
+CREATE INDEX operations_device_directory ON mdm_software_deployment.operations(tenant_id,device,id);
+CREATE INDEX action_runs_device_directory ON mdm_software_deployment.action_runs(tenant_id,device,id);
 COMMIT;
 
 CREATE TABLE mdm_software_deployment.software_stage_stats (

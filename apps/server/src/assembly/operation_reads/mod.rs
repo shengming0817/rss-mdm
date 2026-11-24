@@ -3,12 +3,29 @@ use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, Snapshot as Grant, context::AuthorizedPrincipal};
 use rss_mdm_management_http::{Error, Failure, execution::operations::*};
 use rss_mdm_query::{cursor::CursorCodec, directory::Query};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 mod declarations;
+mod hydrate;
 mod selection;
+pub(super) mod sources;
+
+#[derive(Clone, Copy)]
+pub(crate) struct Budgets {
+    pub page: usize,
+    pub statistics: usize,
+}
+impl Default for Budgets {
+    fn default() -> Self {
+        Self {
+            page: 1_048_576,
+            statistics: 4_194_304,
+        }
+    }
+}
 pub(crate) struct Operations {
+    pub budgets: Budgets,
     pub apple: Arc<rss_mdm_apple_channel::flow_store::Store>,
     pub tasks: Arc<super::task_reads::Reads>,
     pub registration: Arc<rss_mdm_registration_service::installation::Service>,
@@ -60,75 +77,7 @@ static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
         rss_mdm_query_postgres::Bindings::mapped(&SCHEMA, column)
             .expect("Complete operation SQL dispatch")
     });
-const PAGE_SOURCES: i64 = 1_048_576;
 const CONFIGURATION_RELATION: &str = "SELECT id,device,kind,source_kind,policy_version,policy,deadline,status,input_bytes FROM mdm_planning.configuration_execution_facts WHERE tenant_id=$1::uuid";
-const STATISTICS_SOURCES: i64 = 4_194_304;
-fn check_sources(rows: i64, limit: i64, stage: &'static str) -> Result<(), Error> {
-    if rows < 0 {
-        return Err(Error::Unavailable(Failure::CommandInvariant));
-    }
-    if !rss_mdm_query_postgres::within_budget(
-        stage,
-        rows as u64,
-        rows as u64 * 16,
-        limit as u64,
-        limit as u64 * 16,
-    ) {
-        return Err(Error::Unavailable(Failure::Capacity));
-    }
-    Ok(())
-}
-
-fn relation(
-    tenant: String,
-    allowed: Option<Vec<rss_mdm_agent_wire::DeviceId>>,
-    source_limit: i64,
-    source_rows: Option<i64>,
-) -> sqlx::QueryBuilder<sqlx::Postgres> {
-    let mut sql = sqlx::QueryBuilder::new("WITH tenant_context AS(SELECT ");
-    sql.push_bind(tenant).push("::uuid),executions AS(");
-    sql.push(CONFIGURATION_RELATION)
-        .push(" UNION ALL ")
-        .push(rss_mdm_device_service::control::directory::RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_software_service::deployment::directory::RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_registration_service::installation::queries::RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_registration_service::enrollment::tasks::queries::RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_device_access_postgres::device_access::execution::queries::RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_recovery_credentials::tasks::queries::RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_recovery_credentials::tasks::queries::DA_RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_recovery_credentials::native::queries::RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_script_service::queries::RELATION_SQL)
-        .push(" UNION ALL ")
-        .push(rss_mdm_inventory_service::collection::execution::queries::relation_sql());
-    sql.push("),source_probe AS MATERIALIZED(SELECT id FROM executions LIMIT ")
-        .push_bind(source_limit + 1)
-        .push("),source_count AS MATERIALIZED (");
-    if let Some(rows) = source_rows {
-        sql.push("SELECT ").push_bind(rows).push("::bigint AS rows");
-    } else {
-        sql.push("SELECT count(*) AS rows FROM source_probe");
-    }
-    sql.push("),source_budget AS MATERIALIZED(SELECT CASE WHEN EXISTS(SELECT id FROM source_probe GROUP BY id HAVING count(*)>1) THEN -1 ELSE rows END AS rows FROM source_count),visible AS(SELECT * FROM executions WHERE (SELECT rows FROM source_budget) BETWEEN 0 AND ").push_bind(source_limit);
-    if let Some(ids) = allowed {
-        sql.push(" AND device=ANY(")
-            .push_bind(
-                ids.into_iter()
-                    .map(rss_mdm_agent_wire::DeviceId::into_uuid)
-                    .collect::<Vec<_>>(),
-            )
-            .push(")");
-    }
-    sql.push(") ");
-    sql
-}
 impl Operations {
     #[expect(
         clippy::too_many_arguments,
@@ -229,14 +178,18 @@ impl Operations {
         c: &mut sqlx::PgConnection,
         proof: &AuthorizedPrincipal,
         grant: &Grant,
-        ids: Vec<Uuid>,
+        rows: &[Value],
         now: i64,
     ) -> Result<BTreeMap<Uuid, (Authorization, Reauthorization)>, Error> {
-        use super::native_ownership::{self, Owner};
+        use super::native_ownership::Owner;
         let (mut execution, mut software, mut registration) = (Vec::new(), Vec::new(), Vec::new());
         let mut recovery = Vec::new();
         let mut configuration = Vec::new();
-        for (id, owner) in native_ownership::batch_on(c, proof.binding().tenant(), &ids).await? {
+        for row in rows {
+            let sources::Owner::Command(owner) = sources::owner(row)? else {
+                continue;
+            };
+            let id = selection::id(row)?;
             match owner {
                 Owner::Device => execution.push(id),
                 Owner::Configuration => configuration.push(id),
@@ -487,50 +440,27 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
         let proof = request.proof.as_ref();
         Box::pin(async move {
             q.require_schema(&SCHEMA).map_err(query_error)?;
-            self.tasks.snapshot(request,(self,proof,q,codec),|ctx,c,grant,now|Box::pin(async move{
-                let(s,p,q,codec)=*ctx;let authority=grant.query_binding(p)?;
-                let binding=q.binding(&(p.tenant_id(),p.instance_id(),p.principal_id(),"live-operations",&authority)).map_err(query_error)?;
-                let page=selection::page(s,c,(p,grant),q,codec,&binding,now).await?;
-                let mut run_ids=Vec::new();
-                if q.selects("evidence"){for row in &page.items{if row["kind"]=="action_run"{run_ids.push(uuid::Uuid::parse_str(row["id"].as_str().ok_or(Error::Malformed)?).map_err(|_|Error::Malformed)?);}}}
-                let execution_ids=rss_mdm_device_service::control::capacity::owned_ids_on(c,p.binding().tenant(),&run_ids).await.map_err(sql)?;
-                let software_ids=rss_mdm_software_service::deployment::capacity::owned_ids_on(c,p.binding().tenant(),&run_ids).await.map_err(sql)?;
-                let enrollment_ids=rss_mdm_registration_service::enrollment::tasks::storage::owned_ids_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.binding().tenant(),&run_ids).await.map_err(sql)?;
-                let access_ids=rss_mdm_device_access_postgres::device_access::execution::storage::owned_ids_on(c,p.binding().tenant(),&run_ids).await.map_err(sql)?;
-                let credential_ids=rss_mdm_recovery_credentials::tasks::storage::owned_ids_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.binding().tenant(),&run_ids).await.map_err(sql)?;
-                let da_credential_ids=rss_mdm_recovery_credentials::tasks::storage::owned_ids_on(rss_mdm_install_support::StorageProfile::Da, c,p.binding().tenant(),&run_ids).await.map_err(sql)?;
-                let script_ids=rss_mdm_script_service::storage::owned_ids_on(c,p.binding().tenant(),&run_ids).await.map_err(sql)?;
-                let collection_ids=rss_mdm_inventory_service::collection::execution::storage::owned_ids_on(c,p.binding().tenant(),&run_ids).await.map_err(sql)?;
-                for id in &run_ids{if [access_ids.contains(id),credential_ids.contains(id),da_credential_ids.contains(id),execution_ids.contains(id),software_ids.contains(id),enrollment_ids.contains(id),script_ids.contains(id),collection_ids.contains(id)].into_iter().filter(|v|*v).count()!=1{return Err(Error::Unavailable(Failure::CommandInvariant));}}
-                let mut execution=rss_mdm_device_service::control::directory::run_summaries_on(c,p.binding().tenant(),execution_ids.into_iter().collect()).await.map_err(execution_fault)?;
-                let mut software=rss_mdm_software_service::deployment::directory::run_summaries_on(c,p.binding().tenant(),software_ids.into_iter().collect()).await.map_err(software_fault)?;
-                let mut scripts=rss_mdm_script_service::queries::run_summaries_on(c,p.binding().tenant(),script_ids).await.map_err(super::task_reads::script_fault)?;
-                let mut collections=rss_mdm_inventory_service::collection::execution::queries::run_summaries_on(c,p.binding().tenant(),collection_ids).await?;
-                let mut items=Vec::with_capacity(page.items.len());
-                for row in page.items{
-                    let authorization=row.get("authorization").cloned().map(serde_json::from_value).transpose().map_err(|_|Error::Unavailable(Failure::CommandInvariant))?;
-                    let reauthorization=row.get("reauthorization").cloned().map(serde_json::from_value).transpose().map_err(|_|Error::Unavailable(Failure::CommandInvariant))?;
-                    let metadata:Metadata=serde_json::from_value(row).map_err(|_|Error::Unavailable(Failure::CommandInvariant))?;
-                    let evidence=if !q.selects("evidence"){None}else{Some(match metadata.kind{
-                        KindOfOperation::Command=>Evidence::Native { detail: Box::new(s.detail_on(c,p,grant,now,&metadata.device,metadata.id,true).await?) },
-                        KindOfOperation::ActionRun=>{
-                            if let Some(v)=execution.remove(&metadata.id){Evidence::Device(v)}
-                            else if let Some(v)=software.remove(&metadata.id){Evidence::Software(v)}
-                            else if let Some(v)=scripts.remove(&metadata.id){Evidence::Script(Box::new(v))}
-                            else if let Some(v)=collections.remove(&metadata.id){Evidence::Collection(Box::new(v))}
-                            else if access_ids.contains(&metadata.id){Evidence::Access(rss_mdm_device_access_postgres::device_access::execution::queries::detail_on(c,&p.binding().tenant().to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::access_fault)?)}
-                            else if credential_ids.contains(&metadata.id){Evidence::Credential(rss_mdm_recovery_credentials::tasks::queries::detail_on(rss_mdm_install_support::StorageProfile::Mdm, c,&p.binding().tenant().to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::credential_fault)?)}
-                            else if da_credential_ids.contains(&metadata.id){Evidence::Credential(rss_mdm_recovery_credentials::tasks::queries::detail_on(rss_mdm_install_support::StorageProfile::Da, c,&p.binding().tenant().to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::credential_fault)?)}
-                            else if enrollment_ids.contains(&metadata.id){Evidence::Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::detail_on(rss_mdm_install_support::StorageProfile::Mdm, c,&p.binding().tenant().to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::enrollment_fault)?)}
-                            else{return Err(Error::Unavailable(Failure::CommandInvariant));}
-                        }
-                    })};
-                    let tenant = p.tenant_id();
-                    let detail_url=match metadata.kind{KindOfOperation::Command=>format!("/api/v1/tenants/{tenant}/devices/{}/operations/{}",url::form_urlencoded::byte_serialize(metadata.device.to_string().as_bytes()).collect::<String>().replace('+',"%20"),metadata.id),KindOfOperation::ActionRun=>format!("/api/v1/tenants/{tenant}/policies/{}/runs/{}",metadata.policy.ok_or(Error::Conflict)?,metadata.id)};
-                    items.push(q.project_typed(Item{metadata,evidence,authorization,reauthorization,detail_url}).map_err(query_error)?);
-                }
-                Ok(Page{items,next_cursor:page.next_cursor})
-            })).await.inspect(|_|audit.require_final_request())
+            self.tasks
+                .snapshot(request, (self, proof, q, codec), |ctx, c, grant, now| {
+                    Box::pin(async move {
+                        let (s, p, q, codec) = *ctx;
+                        let authority = grant.query_binding(p)?;
+                        let binding = q
+                            .binding(&(
+                                p.tenant_id(),
+                                p.instance_id(),
+                                p.principal_id(),
+                                "live-operations",
+                                &authority,
+                            ))
+                            .map_err(query_error)?;
+                        let page =
+                            selection::page(s, c, (p, grant), q, codec, &binding, now).await?;
+                        s.hydrate(c, (p, grant), q, now, page).await
+                    })
+                })
+                .await
+                .inspect(|_| audit.require_final_request())
         })
     }
     fn statistics<'a>(
@@ -549,12 +479,7 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
                 .snapshot(request, (self, proof, q), |ctx, c, grant, now| {
                     Box::pin(async move {
                         let (s, p, q) = *ctx;
-                        let allowed = grant
-                            .devices_for(p, Permission::OperationRead)?
-                            .map(|ids| ids.into_iter().collect());
-                        let value = selection::statistics(s, c, p, grant, q, allowed, now).await?;
-                        serde_json::from_value(value)
-                            .map_err(|_| Error::Unavailable(Failure::CommandInvariant))
+                        selection::statistics(s, c, p, grant, q, now).await
                     })
                 })
                 .await
