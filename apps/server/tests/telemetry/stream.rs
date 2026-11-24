@@ -1,5 +1,7 @@
 //! The union belongs to a stream incarnation, independently of the maximum fields per upload.
 use super::*;
+mod checkpoints;
+use checkpoints::{copy_batches, fixed_budget};
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_registration_service::DevicePrincipal;
 use rss_mdm_telemetry_service::Service;
@@ -135,30 +137,22 @@ async fn upload(
     Ok(input.batch_id)
 }
 
-// A read policy in the isolated PostgreSQL fixture pauses precisely the seventeenth
-// publication. The normal verifier must finish its first page to reach this row.
-async fn late_page_deadline(c: &Context, short: &http::Http, operation: &Value) -> Result<()> {
-    let policy = format!("late_page_{}", Uuid::new_v4().simple());
-    let key = Uuid::new_v4().as_u128() as i64;
-    let last = Uuid::from_u128(17);
-    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE POLICY {policy} ON mdm_policy.versions AS RESTRICTIVE FOR SELECT
-        USING (CASE WHEN tenant_id='{}'::uuid AND policy='{last}'::uuid THEN (SELECT true FROM pg_advisory_xact_lock({key}::bigint)) ELSE true END)",c.tenant))).execute(&c.operator).await?;
+// Gate a particular frozen read and wait until the real HTTP request reaches it.
+async fn late_page_deadline(
+    c: &Context,
+    short: &http::Http,
+    operation: &Value,
+    publication: u128,
+) -> Result<()> {
+    let (policy, key) = gate_publication(c, publication).await?;
     let result = async {
         let mut tx = c.operator.begin().await?;
         let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid() FROM pg_advisory_xact_lock($1)")
             .bind(key)
             .fetch_one(&mut *tx)
             .await?;
-        let (blocked, response) = tokio::join!(
-            c.wait_blocked(pid),
-            short.call("/telemetry/maintenance", operation.clone())
-        );
+        wait_for_cutoff(c, short, operation, pid).await?;
         tx.rollback().await?;
-        blocked?;
-        anyhow::ensure!(
-            response? == (504, json!({"code":"request_deadline"})),
-            "late-page qualification lost its deadline"
-        );
         anyhow::Ok(())
     }
     .await;
@@ -168,6 +162,46 @@ async fn late_page_deadline(c: &Context, short: &http::Http, operation: &Value) 
     .execute(&c.operator)
     .await?;
     result
+}
+
+async fn gate_publication(c: &Context, publication: u128) -> Result<(String, i64)> {
+    let policy = format!("late_page_{}", Uuid::new_v4().simple());
+    let key = Uuid::new_v4().as_u128() as i64;
+    let last = Uuid::from_u128(publication);
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE POLICY {policy} ON mdm_policy.versions AS RESTRICTIVE FOR SELECT
+        USING (CASE WHEN tenant_id='{}'::uuid AND policy='{last}'::uuid THEN (SELECT true FROM pg_advisory_xact_lock({key}::bigint)) ELSE true END)",c.tenant))).execute(&c.operator).await?;
+    Ok((policy, key))
+}
+
+async fn wait_for_cutoff(
+    c: &Context,
+    short: &http::Http,
+    operation: &Value,
+    pid: i32,
+) -> Result<()> {
+    let observed = std::sync::atomic::AtomicBool::new(false);
+    let attempts = async {
+        for _ in 0..16 {
+            let response = short
+                .call("/telemetry/maintenance", operation.clone())
+                .await?;
+            anyhow::ensure!(
+                response == (504, json!({"code":"request_deadline"})),
+                "qualification returned {response:?}"
+            );
+            if observed.load(std::sync::atomic::Ordering::SeqCst) {
+                return anyhow::Ok(());
+            }
+        }
+        anyhow::bail!("request budget never reached gated publication")
+    };
+    let watch = async {
+        c.wait_blocked(pid).await?;
+        observed.store(true, std::sync::atomic::Ordering::SeqCst);
+        anyhow::Ok(())
+    };
+    tokio::try_join!(watch, attempts)?;
+    Ok(())
 }
 
 async fn verify_pool(
@@ -209,6 +243,7 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         verify_pool(c,f,&mut prepared).await?;
         fixture::persist_selection(c,&f.config).await?;
         let service=f.service(c,std::slice::from_ref(&f.config)).await?;
+        checkpoints::reject_trigger_drift(c,&service).await?;
         let (registration,grant)=materials::seed_registration(c).await?;
         let principal=materials::authenticated_agent(c,grant,&registration,vec![
             wire::Capability::InventoryCollectionV1,wire::Capability::TelemetryCollectV1]).await?;
@@ -224,7 +259,9 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         tx.commit().await?;
         let mut ids=Vec::new();
         for page in 0..17 { ids.push(upload(c,&service,&prepared.signing,&principal,epoch,page).await?); }
-        let final_batch=*ids.last().unwrap();
+        let final_batch=ids[16];
+        let first_batch=ids[0];
+        let later_batch=ids[1];
         let keys:i64=sqlx::query_scalar("SELECT count(DISTINCT field) FROM mdm_telemetry.batches CROSS JOIN LATERAL unnest(fields) field WHERE tenant_id=$1::uuid AND device=$2 AND epoch=$3")
             .bind(c.tenant.to_string()).bind(principal.device().into_uuid()).bind(epoch).fetch_one(&c.operator).await?;
         anyhow::ensure!(keys==1025);
@@ -241,13 +278,8 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         worker.await??;
         delivery??;
         // Repeated historical admissions share an indexed field set. Only one earlier real batch is changed below.
-        let mut tx=crate::command_runtime_t2_support::seed_transaction(c).await?;
-        let copied=sqlx::query("INSERT INTO mdm_telemetry.batches(expected_epoch,tenant_id,id,device,credential,source,epoch,policy,policy_version,input_digest,context_digest,fields,received_at,delivery,first_observed,last_observed,quality,observations,current_assets)
-            SELECT expected_epoch,tenant_id,gen_random_uuid(),device,credential,source,epoch,policy,policy_version,input_digest,context_digest,fields,received_at,delivery,first_observed,last_observed,quality,observations,current_assets
-            FROM mdm_telemetry.batches CROSS JOIN generate_series(1,8192) WHERE tenant_id=$1::uuid AND id=$2")
-            .bind(c.tenant.to_string()).bind(final_batch).execute(&mut *tx).await?.rows_affected();
-        anyhow::ensure!(copied==8192);
-        tx.commit().await?;
+        checkpoints::extend_history(c,later_batch).await?;
+        copy_batches(c,final_batch,8192,None,None).await?;
         let account=c.account(&[Permission::InventoryRead,Permission::TelemetryMaintain]).await?;
         let short=http::Http::with_timeout(c,service.clone(),&account,std::time::Duration::from_millis(750)).await?;
         let http=http::Http::open(c,service.clone(),&account).await?;
@@ -275,7 +307,12 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         let foreign=http::Http::open(&other,service.clone(),&account_other).await?;
         assert_eq!(foreign.call("/telemetry/maintenance",expire.clone()).await?.0,403);
         drop(foreign); other.close().await;
-        late_page_deadline(c,&short,&expire).await?;
+        let probe_op=request(json!({"action":"expire_receipts","target":target,"before_micros":0}));
+        fixed_budget(c,&short,&probe_op,first_batch).await?;
+        let final_pass=request(json!({"action":"expire_receipts","target":target,"before_micros":0}));
+        checkpoints::resume_final_pass(c,&short,&final_pass).await?;
+        late_page_deadline(c,&short,&expire,17).await?;
+        checkpoints::boundaries(c,&short,&http,&expire,&account,first_batch).await?;
         let provider_expired:bool=sqlx::query_scalar("SELECT expired FROM rss_timeseries.batches WHERE tenant_id=$1::uuid AND generation=$2")
             .bind(c.tenant.to_string()).bind(&generation).fetch_one(&mut observer).await?;
         anyhow::ensure!(!provider_expired);
@@ -320,8 +357,11 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         let intents:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2")
             .bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
         anyhow::ensure!(intents==0);
+        checkpoints::blocked_under_pressure(c,&http,&reclaim,&close).await?;
         for command in [expire,close] {
-            let progress=http.post("/telemetry/maintenance",command.clone()).await?;
+            let (left,right)=tokio::join!(http.post("/telemetry/maintenance",command.clone()),http.post("/telemetry/maintenance",command.clone()));
+            let progress=left?;
+            assert_eq!(right?,progress);
             assert_eq!(progress["state"],"complete");
             assert_eq!(limited.post("/telemetry/maintenance",command.clone()).await?,progress);
             assert_eq!(http.post("/telemetry/maintenance",command).await?,progress);
@@ -338,8 +378,13 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         let mut hold=crate::command_runtime_t2_support::seed_transaction(c).await?;
         let blocker:i32=sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_telemetry.retention_targets WHERE tenant_id=$1::uuid AND device=$2 AND field=$3 FOR UPDATE")
             .bind(c.tenant.to_string()).bind(principal.device().into_uuid()).bind(bad_page).fetch_one(&mut *hold).await?;
+        // Any re-read of the first frozen version would hit this lock before
+        // dispatch and return 504. Reusing the prefix reaches provider settlement.
+        let (policy,key)=gate_publication(c,1).await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)").bind(key).execute(&mut *hold).await?;
         let uncertain=short.call("/telemetry/maintenance",reclaim.clone());
         let (observed,response)=tokio::join!(c.wait_blocked(blocker),uncertain);
+        let proof=async {
         observed?;
         let (code,body)=response?;
         anyhow::ensure!(code==503 && body["code"]=="operation_unknown","post-provider settlement: {code} {body}");
@@ -347,7 +392,11 @@ pub(super) async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         let left:i64=sqlx::query_scalar("SELECT count(*) FROM rss_timeseries.batches WHERE tenant_id=$1::uuid AND generation=$2")
             .bind(c.tenant.to_string()).bind(&generation).fetch_one(&mut observer).await?;
         anyhow::ensure!(left==0);
+        anyhow::Ok(())
+        }.await;
         hold.rollback().await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP POLICY {policy} ON mdm_policy.versions"))).execute(&c.operator).await?;
+        proof?;
         let completed=http.post("/telemetry/maintenance",reclaim.clone()).await?;
         assert_eq!(completed,json!({"state":"complete","processed":0,"fence":reclaim["id"]}));
         assert_eq!(http.post("/telemetry/maintenance",reclaim).await?,completed);

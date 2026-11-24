@@ -6,10 +6,7 @@ use rss_request_context::Deadline;
 use rss_timeseries::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
-use std::{
-    num::NonZeroU32,
-    sync::{Arc, Mutex},
-};
+use std::{num::NonZeroU32, sync::Arc};
 /// Per-invocation work limits; the admitted row/bucket values are frozen with each intent.
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -111,6 +108,16 @@ impl Target {
             stream: self.stream.clone(),
             series: self.series.clone(),
         })
+    }
+}
+impl Request {
+    fn stream_target(&self) -> Option<&StreamTarget> {
+        match &self.action {
+            Action::CloseStream { target }
+            | Action::Reclaim { target }
+            | Action::ExpireReceipts { target, .. } => Some(target),
+            _ => None,
+        }
     }
 }
 /// Stored source incarnation. Device membership is checked against durable intake records.
@@ -233,21 +240,7 @@ fn operation(
     )?)
 }
 mod stream_authority;
-async fn qualify(
-    service: &Service,
-    c: &mut sqlx::PgConnection,
-    auth: &rss_mdm_authorization_service::context::RequestAuth,
-    input: &Request,
-    cutoff: Deadline,
-) -> Result<Option<Progress>, Error> {
-    tokio::select! {
-        biased;
-        () = auth.cancellation.cancelled() => Err(Error::Deadline),
-        () = tokio::time::sleep_until(cutoff.instant().into()) => Err(Error::Deadline),
-        result = authorize(service,c,auth.proof.binding().tenant(),&auth.proof,input) => result,
-    }
-}
-
+pub(crate) use stream_authority::prune_checks;
 pub(crate) fn tx_error(error: rss_transactional_messaging_postgres::PgError) -> Error {
     if error.kind() == rss_transactional_messaging::error::MessagingErrorKind::DeadlineElapsed {
         Error::Deadline
@@ -255,17 +248,11 @@ pub(crate) fn tx_error(error: rss_transactional_messaging_postgres::PgError) -> 
         Error::Storage
     }
 }
-async fn authorize(
-    service: &Service,
-    c: &mut sqlx::PgConnection,
-    tenant: rss_request_context::TenantId,
-    proof: &AuthorizedPrincipal,
-    input: &Request,
-) -> Result<Option<Progress>, Error> {
+async fn authorize(call: &Call<'_>, c: &mut sqlx::PgConnection) -> Result<Qualification, Error> {
+    let proof = &call.auth.proof;
+    let input = call.input;
+    let tenant = proof.binding().tenant();
     proof.check_live().map_err(|_| Error::Denied)?;
-    if proof.tenant_id() != tenant.to_string() {
-        return Err(Error::Denied);
-    }
     rss_mdm_authorization_service::lock_shared_on(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
@@ -296,18 +283,67 @@ async fn authorize(
             Some(&input.device),
         )
         .map_err(|_| Error::Denied)?;
-    let terminal: Option<(Vec<u8>,Json)> = sqlx::query_as(
-        "SELECT binding,result FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 AND result->>'state'='complete'"
-    ).bind(tenant.to_string()).bind(input.id).fetch_optional(&mut *c).await?;
-    if let Some((bound, result)) = terminal {
-        use sha2::Digest;
-        if bound.as_slice() != sha2::Sha256::digest(serde_json::to_vec(input)?).as_slice() {
+    // All maintenance actions sharing an original ID serialize before looking at
+    // either the disposable prefix or the business receipt.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,3252))")
+        .bind(format!("{tenant}:{}", input.id))
+        .execute(&mut *c)
+        .await?;
+    let accepted: Option<(Vec<u8>, Option<Json>)> = sqlx::query_as(
+        "SELECT binding,result FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(tenant.to_string())
+    .bind(input.id)
+    .fetch_optional(&mut *c)
+    .await?;
+    if let Some((bound, result)) = accepted {
+        if bound != call.binding {
             return Err(Error::Conflict);
         }
-        return Ok(Some(
-            serde_json::from_value(result).map_err(|_| Error::Storage)?,
-        ));
+        proof.check_live().map_err(|_| Error::Denied)?;
+        if let Some(result) = result
+            && result["state"] == "complete"
+        {
+            return Ok(Qualification::Replay(
+                serde_json::from_value(result).map_err(|_| Error::Storage)?,
+            ));
+        }
+        if call.phase == Phase::Execute
+            && call.audit.snapshot().write_outcome
+                != rss_mdm_audit_integration::WriteOutcome::Committed
+        {
+            // A fresh request can observe a previously acknowledged intent and
+            // dispatch under the current grant in this very transaction.
+            call.audit.mark_commit_started();
+            call.audit.mark_intent_committed();
+        }
     }
+    // An expired working binding carries no authority. Leave its physical row
+    // alone until the stream fences have been acquired or the idle sweep runs.
+    let conflicting:bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid AND id=$2 AND binding<>$3 AND expires_at>clock_timestamp())")
+        .bind(tenant.to_string()).bind(input.id).bind(call.binding).fetch_one(&mut *c).await?;
+    if conflicting {
+        return Err(Error::Conflict);
+    }
+    if input.stream_target().is_some() {
+        stream_authority::lock(c, tenant, input).await?;
+    }
+    match qualify_action(call, c).await {
+        Err(error @ (Error::Denied | Error::Invalid | Error::Capacity | Error::Conflict))
+            if input.stream_target().is_some() =>
+        {
+            stream_authority::clear(c, tenant, input.id, call.binding).await?;
+            Ok(Qualification::Rejected(error))
+        }
+        result => result,
+    }
+}
+async fn qualify_action(
+    call: &Call<'_>,
+    c: &mut sqlx::PgConnection,
+) -> Result<Qualification, Error> {
+    let input = call.input;
+    let tenant = call.auth.proof.binding().tenant();
     let key = rss_mdm_inventory::FieldKey::parse(&input.field).map_err(|_| Error::Invalid)?;
     let (field, _) = rss_mdm_inventory_postgres::historical_field_in(c, tenant, key)
         .await
@@ -330,7 +366,6 @@ async fn authorize(
         Action::CloseStream { target }
         | Action::Reclaim { target }
         | Action::ExpireReceipts { target, .. } => {
-            stream_authority::verify(service, c, tenant, input, target).await?;
             if let Action::ExpireReceipts { before_micros, .. } = &input.action {
                 let now: i64 = sqlx::query_scalar(
                     "SELECT floor(extract(epoch FROM clock_timestamp())*1000000)::bigint",
@@ -355,10 +390,15 @@ async fn authorize(
                     return Err(Error::Denied);
                 }
                 let pending:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = $3 AND epoch = $4 AND delivery <> 'published')")
-                    .bind(tenant.to_string()).bind(input.device.into_uuid()).bind(target.source.as_str()).bind(target.epoch).fetch_one(c).await?;
+                    .bind(tenant.to_string()).bind(input.device.into_uuid()).bind(target.source.as_str()).bind(target.epoch).fetch_one(&mut *c).await?;
                 if pending {
                     return Err(Error::Conflict);
                 }
+            }
+            if !stream_authority::advance(call.service, c, tenant, input, target, call.binding)
+                .await?
+            {
+                return Ok(Qualification::Advanced);
             }
         }
         Action::Recompute { spec } => {
@@ -480,41 +520,132 @@ async fn authorize(
         }
         Action::Restore { .. } => {}
     }
-    Ok(None)
+    Ok(Qualification::Ready)
+}
+enum Qualification {
+    Advanced,
+    Ready,
+    Replay(Progress),
+    Rejected(Error),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Scan,
+    Admit,
+    Execute,
+}
+
+enum Pass {
+    Advanced,
+    Qualified,
+    Accepted { new: bool },
+    Finished(Progress),
+    Rejected(Error),
+}
+
+struct Call<'a> {
+    service: &'a Service,
+    auth: &'a rss_mdm_authorization_service::context::RequestAuth,
+    input: &'a Request,
+    audit: &'a RequestAudit,
+    binding: &'a [u8],
+    cutoff: Deadline,
+    phase: Phase,
+}
+impl Call<'_> {
+    async fn run_on(&self, c: &mut sqlx::PgConnection) -> Result<Pass, Error> {
+        let tenant = self.auth.proof.binding().tenant();
+        let qualified = tokio::select! {
+            biased;
+            () = self.auth.cancellation.cancelled() => return Err(Error::Deadline),
+            () = tokio::time::sleep_until(self.cutoff.instant().into()) => return Err(Error::Deadline),
+            result = authorize(self, c) => result?,
+        };
+        match qualified {
+            Qualification::Advanced => {
+                self.auth.proof.check_live().map_err(|_| Error::Denied)?;
+                return Ok(Pass::Advanced);
+            }
+            Qualification::Rejected(error) => return Ok(Pass::Rejected(error)),
+            Qualification::Replay(result) => return Ok(Pass::Finished(result)),
+            Qualification::Ready => {}
+        }
+        match self.phase {
+            Phase::Scan => Ok(Pass::Qualified),
+            Phase::Admit => {
+                crate::selection::lock_read(c, tenant).await?;
+                let accepted:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2)")
+                    .bind(tenant.to_string()).bind(self.input.id).fetch_one(&mut *c).await?;
+                if !accepted && crate::selection::pending(c, tenant).await?.is_some() {
+                    return Err(Error::Conflict);
+                }
+                self.auth.proof.check_live().map_err(|_| Error::Denied)?;
+                if !accepted {
+                    let request = Stored {
+                        input: self.input.clone(),
+                        rows: self.service.maintenance_policy.rows,
+                        buckets: self.service.maintenance_policy.buckets,
+                    };
+                    sqlx::query("INSERT INTO mdm_telemetry.maintenance(tenant_id,id,binding,request) VALUES($1::uuid,$2,$3,$4)")
+                        .bind(tenant.to_string()).bind(self.input.id).bind(self.binding).bind(serde_json::to_value(request)?).execute(c).await?;
+                }
+                Ok(Pass::Accepted { new: !accepted })
+            }
+            Phase::Execute => {
+                let result = step_on(
+                    self.service,
+                    c,
+                    self.auth,
+                    self.input,
+                    self.cutoff,
+                    self.audit,
+                )
+                .await?;
+                if self.input.stream_target().is_some() {
+                    if matches!(result, Progress::Complete { .. }) {
+                        stream_authority::clear(c, tenant, self.input.id, self.binding).await?;
+                    } else {
+                        let blocked = matches!(result, Progress::Blocked { .. });
+                        sqlx::query(
+                            "UPDATE mdm_telemetry.stream_checks SET reclaimable=$3
+                            WHERE tenant_id=$1::uuid AND id=$2 AND reclaimable<>$3",
+                        )
+                        .bind(tenant.to_string())
+                        .bind(self.input.id)
+                        .bind(blocked)
+                        .execute(c)
+                        .await?;
+                    }
+                }
+                Ok(Pass::Finished(result))
+            }
+        }
+    }
 }
 impl Service {
-    /// Persist the audited intent before any backend effect. Retry the same request to
-    /// continue or recover; only the RSS maintainer owns progression and deletion fences.
+    /// Only an acknowledged business intent permits the following transaction to dispatch.
     pub async fn maintenance(
         self: &Arc<Self>,
         auth: &rss_mdm_authorization_service::context::RequestAuth,
         input: &Request,
         audit: &RequestAudit,
     ) -> Result<Progress, Error> {
-        let proof = &auth.proof;
-        let caller = Deadline::at(auth.deadline);
-        let cutoff = caller.capped(
+        use sha2::Digest;
+        let execution = auth.proof.binding();
+        let cutoff = Deadline::at(auth.deadline).capped(
             &crate::backend::SystemClock,
             std::time::Duration::from_secs(self.maintenance_policy.step_seconds),
         );
         operation(
-            proof.binding().tenant(),
+            execution.tenant(),
             input,
             self.maintenance_policy.rows,
             self.maintenance_policy.buckets,
         )?;
-        let binding = {
-            use sha2::Digest;
-            sha2::Sha256::digest(serde_json::to_vec(input)?).to_vec()
-        };
-        let rows = self.maintenance_policy.rows;
-        let buckets = self.maintenance_policy.buckets;
-        let service = self.clone();
-        let actor = auth.clone();
-        let intent = input.clone();
-        let audit = audit.clone();
+        let binding = sha2::Sha256::digest(serde_json::to_vec(input)?);
         let fact = rss_mdm_audit_integration::Fact::business(
-            &audit,
+            audit,
             rss_mdm_audit_integration::operation::OperationOwner::Telemetry,
             &format!("telemetry-maintenance:{}", input.id),
             202,
@@ -527,94 +658,135 @@ impl Service {
             )
         })
         .map_err(|_| Error::Storage)?;
-        let settlement_audit = audit.clone();
-        let rejection = Arc::new(Mutex::new(None));
-        let rejected = rejection.clone();
-        let execution = proof.binding();
-        let completed = self.runtime.local_tx(execution,rss_transactional_messaging::policy::OperationDeadline::from_cutoff(cutoff, &crate::backend::SystemClock),move|tx|Box::pin(async move {
-            service.audit_store.prepare_in(tx, &audit, &[]).await.map_err(crate::storage_error)?;
-            let tenant=execution.tenant();
-            let authority = service.clone();
-            let (replayed,completed) = tx.with_connection(move|c|Box::pin(async move {
-                let result=async {
-                    if let Some(result)=qualify(&authority,c,&actor,&intent,cutoff).await? {return Ok((true,Some(result)));}
-                    crate::selection::lock_read(c,tenant).await?;
-                    if crate::selection::pending(c,tenant).await?.is_some() && !sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2)").bind(tenant.to_string()).bind(intent.id).fetch_one(&mut *c).await? {return Err(Error::Conflict);}
-                    let inserted=sqlx::query("INSERT INTO mdm_telemetry.maintenance(tenant_id,id,binding,request) VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING")
-                        .bind(tenant.to_string()).bind(intent.id).bind(binding.as_slice()).bind(serde_json::to_value(Stored { input: intent.clone(), rows, buckets })?).execute(&mut *c).await?.rows_affected();
-                    let stored:Vec<u8>=sqlx::query_scalar("SELECT binding FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
-                        .bind(tenant.to_string()).bind(intent.id).fetch_one(c).await?;
-                    if stored.as_slice()!=binding.as_slice() {return Err(Error::Conflict);}
-                    Ok((inserted==0,None))
-                }.await;
-                result.map_err(|e|{*rejected.lock().expect("maintenance intent")=Some(e);sqlx::Error::Protocol("maintenance intent rejected".into())})
-            })).await?;
-            (if replayed { Ok(()) } else { service.audit_store.append_in(tx, &fact).await }).map_err(crate::storage_error)?;
-            if completed.is_none() {audit.mark_commit_started();}
-            Ok(completed)
-        })).await.fold(|v|{if v.is_none(){settlement_audit.mark_intent_committed();}Ok(v)},|e|Err(tx_error(e)),|e|{settlement_audit.mark_rolled_back();Err(rejection.lock().expect("maintenance intent").unwrap_or_else(||tx_error(e)))},|_|{settlement_audit.mark_rollback_failed();Err(Error::Unknown)},|e|{
-            if settlement_audit.snapshot().write_outcome == rss_mdm_audit_integration::WriteOutcome::CommitNotStarted {
-                Err(tx_error(e))
-            } else { Err(Error::Unknown) }
-        },|_|Err(Error::Storage))?;
-        if let Some(result) = completed {
-            return Ok(result);
-        }
-        let service = self.clone();
-        let actor = auth.clone();
-        let input = input.clone();
-        let effect = settlement_audit.clone();
-        let rejection = Arc::new(Mutex::new(None));
-        let rejected = rejection.clone();
-        self.runtime
-            .local_tx(
-                proof.binding(),
-                rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
-                    cutoff,
-                    &crate::backend::SystemClock,
-                ),
-                move |tx| {
-                    Box::pin(async move {
-                        tx.with_connection(move |c| {
-                            Box::pin(async move {
-                                step_on(&service, c, &actor, &input, cutoff, &effect)
+        // On the first transaction consult the durable receipt. Even a budget
+        // that fits only one final pass can admit now and dispatch on the retry.
+        let mut resume = true;
+        let mut phase = Phase::Admit;
+        loop {
+            let mut call = Call {
+                service: self,
+                auth,
+                input,
+                audit,
+                binding: &binding,
+                cutoff,
+                phase,
+            };
+            let mut rejection = None;
+            let attempt = self
+                .runtime
+                .local_tx_with_context(
+                    execution,
+                    rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
+                        cutoff,
+                        &crate::backend::SystemClock,
+                    ),
+                    (&mut call, &fact, &mut rejection),
+                    move |(call, fact, rejection), tx| {
+                        Box::pin(async move {
+                            if resume {
+                                let existing = tx.with_connection_context(&mut (execution.tenant(),call.input.id),|(tenant,id),c|Box::pin(async move{
+                                    sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2)")
+                                        .bind(tenant.to_string()).bind(*id).fetch_one(c).await
+                                })).await?;
+                                if existing {call.phase=Phase::Execute;}
+                            }
+                            if call.phase == Phase::Admit {
+                                call.service
+                                    .audit_store
+                                    .prepare_in(tx, call.audit, &[])
                                     .await
-                                    .map_err(|e| {
-                                        *rejected.lock().expect("maintenance step") = Some(e);
-                                        sqlx::Error::Protocol("maintenance step unconfirmed".into())
-                                    })
-                            })
+                                    .map_err(crate::storage_error)?;
+                            }
+                            let pass = tx
+                                .with_connection_context(
+                                    &mut (&**call, rejection),
+                                    |(call, rejection), c| {
+                                        Box::pin(async move {
+                                            call.run_on(c).await.map_err(|error| {
+                                                rejection.replace(error);
+                                                sqlx::Error::Protocol(
+                                                    "maintenance step unconfirmed".into(),
+                                                )
+                                            })
+                                        })
+                                    },
+                                )
+                                .await?;
+                            if let Pass::Accepted { new } = pass {
+                                if new {
+                                    call.service
+                                        .audit_store
+                                        .append_in(tx, fact)
+                                        .await
+                                        .map_err(crate::storage_error)?;
+                                }
+                                call.audit.mark_commit_started();
+                            }
+                            Ok(pass)
                         })
-                        .await
-                    })
-                },
-            )
-            .await
-            .fold(
+                    },
+                )
+                .await;
+            phase = call.phase;
+            resume = false;
+            let uncertain = || {
+                let state = audit.snapshot();
+                (phase == Phase::Execute
+                    && state.write_outcome == rss_mdm_audit_integration::WriteOutcome::Committed
+                    && !state.intent_only)
+                    || (phase == Phase::Admit
+                        && state.write_outcome == rss_mdm_audit_integration::WriteOutcome::Unknown)
+            };
+            let unsettled = |error| {
+                Err(if uncertain() {
+                    Error::Unknown
+                } else {
+                    tx_error(error)
+                })
+            };
+            let pass = attempt.fold(
                 Ok,
                 |e| Err(tx_error(e)),
                 |e| {
-                    Err(if !settlement_audit.snapshot().intent_only {
+                    Err(if phase == Phase::Execute && uncertain() {
                         Error::Unknown
                     } else {
-                        rejection
-                            .lock()
-                            .expect("maintenance step")
-                            .unwrap_or_else(|| tx_error(e))
+                        if phase == Phase::Admit {
+                            audit.mark_rolled_back();
+                        }
+                        rejection.unwrap_or_else(|| tx_error(e))
                     })
                 },
-                |_| Err(Error::Unknown),
-                |e| {
-                    Err(if !settlement_audit.snapshot().intent_only {
-                        Error::Unknown
+                |error| {
+                    if phase == Phase::Admit && uncertain() {
+                        audit.mark_rollback_failed();
+                        Err(Error::Unknown)
                     } else {
-                        tx_error(e)
-                    })
+                        unsettled(error)
+                    }
                 },
+                unsettled,
                 |_| Err(Error::Conflict),
-            )
+            )?;
+            match pass {
+                Pass::Advanced => {
+                    if phase == Phase::Admit {
+                        phase = Phase::Scan;
+                    }
+                }
+                Pass::Qualified => phase = Phase::Admit,
+                Pass::Accepted { .. } => {
+                    audit.mark_intent_committed();
+                    phase = Phase::Execute;
+                }
+                Pass::Finished(result) => return Ok(result),
+                Pass::Rejected(error) => return Err(error),
+            }
+        }
     }
 }
+
 async fn step_on(
     service: &Service,
     c: &mut sqlx::PgConnection,
@@ -624,9 +796,6 @@ async fn step_on(
     effect: &RequestAudit,
 ) -> Result<Progress, Error> {
     let proof = &auth.proof;
-    if let Some(result) = qualify(service, c, auth, input, deadline).await? {
-        return Ok(result);
-    }
     let (stored, previous): (Json, Option<Json>) = sqlx::query_as("SELECT request,result FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
         .bind(proof.binding().tenant().to_string()).bind(input.id).fetch_one(&mut *c).await?;
     let stored: Stored = serde_json::from_value(stored)?;
@@ -657,6 +826,7 @@ async fn step_on(
     {
         return Err(Error::Deadline);
     }
+    proof.check_live().map_err(|_| Error::Denied)?;
     effect.record_intent_dispatch(true);
     let outcome = backend
         .maintain(&authorized, None, deadline)

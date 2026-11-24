@@ -36,10 +36,7 @@ pub async fn publish_retention_policy_in(
 ) -> Result<bool> {
     crate::reader::assert_tenant(c, tenant).await?;
     policy.validate()?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2554))")
-        .bind(format!("{tenant}:field-catalog"))
-        .execute(&mut *c)
-        .await?;
+    crate::lock_catalog_write_in(c, tenant).await?;
     if let Some(old) = retention_policy_in(c, tenant, &policy.key, policy.revision).await? {
         return Ok(old == *policy);
     }

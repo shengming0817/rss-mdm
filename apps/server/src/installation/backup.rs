@@ -684,6 +684,12 @@ async fn advance_asset_history(c: &mut sqlx::PgConnection, operation: Uuid) -> R
             return Err(Error::Conflict);
         }
     }
+    if assigned.is_none() {
+        sqlx::query("TRUNCATE mdm_telemetry.stream_checks")
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| Error::Storage)?;
+    }
     let epoch: Uuid = sqlx::query_scalar("SELECT mdm.advance_asset_epoch($1)")
         .bind(operation)
         .fetch_one(&mut *tx)

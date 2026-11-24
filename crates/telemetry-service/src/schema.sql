@@ -88,6 +88,68 @@ REVOKE ALL ON mdm_telemetry.maintenance FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm_telemetry.maintenance TO mdm_telemetry_runtime;
 GRANT UPDATE(result) ON mdm_telemetry.maintenance TO mdm_telemetry_runtime;
 
+
+-- Disposable proof of a verified publication prefix. An accepted operation has its
+-- own audited maintenance row; receipt readers never observe this working state.
+CREATE TABLE mdm_telemetry.stream_checks (
+ tenant_id uuid NOT NULL, id uuid NOT NULL, binding bytea NOT NULL CHECK(octet_length(binding)=32),
+ device uuid NOT NULL, source text NOT NULL, epoch uuid NOT NULL,
+ catalog_revision bigint NOT NULL, byte_limit bigint NOT NULL CHECK(byte_limit>0),
+ policy uuid, version uuid, found boolean NOT NULL, expires_at timestamptz NOT NULL,
+ reclaimable boolean NOT NULL DEFAULT false,
+ CHECK((policy IS NULL)=(version IS NULL) AND (policy IS NOT NULL OR NOT found)),
+ PRIMARY KEY(tenant_id,id)
+);
+CREATE INDEX stream_checks_prefix ON mdm_telemetry.stream_checks(tenant_id,device,source,epoch,policy,version);
+CREATE INDEX stream_checks_expiry ON mdm_telemetry.stream_checks(tenant_id,expires_at);
+ALTER TABLE mdm_telemetry.stream_checks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_telemetry.stream_checks FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_telemetry.stream_checks USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_telemetry.stream_checks FROM PUBLIC;
+GRANT SELECT,INSERT,DELETE ON mdm_telemetry.stream_checks TO mdm_telemetry_runtime;
+GRANT UPDATE(catalog_revision,byte_limit,policy,version,found,expires_at,reclaimable) ON mdm_telemetry.stream_checks TO mdm_telemetry_runtime;
+
+-- The device fence is the same endpoint key used by Registration::lock_devices_in.
+-- BEFORE INSERT sees the previous membership, including prior rows of a bulk insert.
+CREATE FUNCTION mdm_telemetry.invalidate_batch_prefix() RETURNS trigger
+LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+BEGIN
+ IF TG_OP <> 'INSERT' THEN
+   PERFORM pg_advisory_xact_lock(@OLD_ENDPOINT_KEY@);
+   UPDATE mdm_telemetry.stream_checks SET policy=NULL,version=NULL,found=false WHERE (tenant_id,device,source,epoch)=(OLD.tenant_id,OLD.device,OLD.source,OLD.epoch)
+     AND (policy,version)>=(OLD.policy,OLD.policy_version);
+ END IF;
+ IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+ PERFORM pg_advisory_xact_lock(@NEW_ENDPOINT_KEY@);
+ IF EXISTS (SELECT FROM mdm_telemetry.stream_checks WHERE (tenant_id,device,source,epoch)=(NEW.tenant_id,NEW.device,NEW.source,NEW.epoch)
+             AND (policy,version)>=(NEW.policy,NEW.policy_version))
+ AND NOT EXISTS (SELECT FROM mdm_telemetry.batches WHERE (tenant_id,device,source,epoch,policy,policy_version)=
+     (NEW.tenant_id,NEW.device,NEW.source,NEW.epoch,NEW.policy,NEW.policy_version)
+     AND field_set_digest=mdm_telemetry.field_set_digest(NEW.fields)) THEN
+   UPDATE mdm_telemetry.stream_checks SET policy=NULL,version=NULL,found=false WHERE (tenant_id,device,source,epoch)=(NEW.tenant_id,NEW.device,NEW.source,NEW.epoch)
+     AND (policy,version)>=(NEW.policy,NEW.policy_version);
+ END IF;
+ RETURN NEW;
+END $$;
+REVOKE ALL ON FUNCTION mdm_telemetry.invalidate_batch_prefix() FROM PUBLIC;
+CREATE TRIGGER invalidate_batch_prefix BEFORE INSERT OR DELETE OR UPDATE OF tenant_id,device,source,epoch,policy,policy_version,fields ON mdm_telemetry.batches
+ FOR EACH ROW EXECUTE FUNCTION mdm_telemetry.invalidate_batch_prefix();
+
+-- Product writers append frozen definitions. A privileged in-place correction must
+-- fence active verifiers too, including the very first checkpoint in a tenant.
+CREATE FUNCTION mdm_telemetry.invalidate_frozen_prefix() RETURNS trigger
+LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+BEGIN
+ PERFORM pg_advisory_xact_lock(@OLD_CATALOG_KEY@);
+ UPDATE mdm_telemetry.stream_checks SET policy=NULL,version=NULL,found=false WHERE tenant_id=OLD.tenant_id;
+ IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+ IF NEW.tenant_id<>OLD.tenant_id THEN
+   PERFORM pg_advisory_xact_lock(@NEW_CATALOG_KEY@);
+   UPDATE mdm_telemetry.stream_checks SET policy=NULL,version=NULL,found=false WHERE tenant_id=NEW.tenant_id;
+ END IF;
+ RETURN NEW;
+END $$;
+REVOKE ALL ON FUNCTION mdm_telemetry.invalidate_frozen_prefix() FROM PUBLIC;
 -- Scheduling coordinates only; immutable field history and RSS remain authoritative.
 CREATE TABLE mdm_telemetry.retention_targets (
  tenant_id uuid NOT NULL,id bytea NOT NULL CHECK(octet_length(id)=32),

@@ -200,10 +200,9 @@ async fn retire_on(
 ) -> Result<(), Error> {
     let backend = service.work_backend_on(c, execution.tenant()).await?;
     // A shared catalog fence prevents fresh admission while retirement is decided.
-    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2554))")
-        .bind(format!("{}:field-catalog", execution.tenant()))
-        .execute(&mut *c)
-        .await?;
+    rss_mdm_inventory_postgres::lock_catalog_read_in(c, execution.tenant())
+        .await
+        .map_err(|_| Error::Storage)?;
     let row=sqlx::query("SELECT p.field,p.version,p.retired_through FROM mdm_telemetry.definition_progress p WHERE p.tenant_id=$1::uuid AND p.retired_through<p.version AND (SELECT definition IS NULL FROM mdm.field_versions f WHERE f.tenant_id=p.tenant_id AND f.field=p.field ORDER BY version DESC LIMIT 1) AND NOT EXISTS(SELECT 1 FROM mdm_telemetry.batches b WHERE b.tenant_id=p.tenant_id AND p.field=ANY(b.fields) AND b.delivery<>'published') ORDER BY p.field LIMIT 1 FOR UPDATE OF p")
         .bind(execution.tenant().to_string()).fetch_optional(&mut *c).await?;
     let Some(row) = row else {

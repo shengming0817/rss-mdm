@@ -1,20 +1,17 @@
-//! Stream membership is immutable within admitted batches. Keep device intake and catalog
-//! publication fenced until the caller finishes this maintenance step.
+//! One immutable publication per committed transaction. Device intake and catalog
+//! writers share the fences held through verification, intent admission or dispatch.
 use super::{Error, Request, Service, StreamTarget};
 use rss_request_context::TenantId;
-use sqlx::PgConnection;
+use sqlx::{PgConnection, Row};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
 type Cursor = (Uuid, Uuid);
-const PAGE: usize = 16;
 
-pub(super) async fn verify(
-    service: &Service,
+pub(super) async fn lock(
     c: &mut PgConnection,
     tenant: TenantId,
     input: &Request,
-    target: &StreamTarget,
 ) -> Result<(), Error> {
     rss_mdm_registration_service::device::store::lock_channel(
         rss_mdm_install_support::StorageProfile::Mdm,
@@ -27,60 +24,117 @@ pub(super) async fn verify(
     .map_err(|_| Error::Storage)?;
     rss_mdm_inventory_postgres::lock_catalog_read_in(c, tenant)
         .await
+        .map_err(|_| Error::Storage)
+}
+
+/// A true return proves the current tail was exhausted under the caller's locks.
+/// Each false return must be committed before attempting another publication.
+pub(super) async fn advance(
+    service: &Service,
+    c: &mut PgConnection,
+    tenant: TenantId,
+    input: &Request,
+    target: &StreamTarget,
+    binding: &[u8],
+) -> Result<bool, Error> {
+    sqlx::query("DELETE FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid AND id=$2 AND expires_at<=clock_timestamp()")
+        .bind(tenant.to_string()).bind(input.id).execute(&mut *c).await?;
+    let revision = rss_mdm_inventory_postgres::catalog_revision_in(c, tenant)
+        .await
         .map_err(|_| Error::Storage)?;
-    let mut cursor = (Uuid::nil(), Uuid::nil());
+    let limit = i64::from(service.maintenance_policy.authorization_bytes.get());
+    let row = sqlx::query("SELECT policy,version,found, catalog_revision=$3 AND byte_limit=$4 AND expires_at>clock_timestamp() AS valid
+       FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+        .bind(tenant.to_string()).bind(input.id).bind(revision).bind(limit).fetch_optional(&mut *c).await?;
+    let mut cursor = None;
     let mut found = false;
-    loop {
-        // Each index seek skips all batches with the previous publication. A long-lived
-        // stream with one frozen version costs the same number of seeks as a new stream.
-        let mut page: Vec<Cursor> = sqlx::query_as(
-            "WITH RECURSIVE publications(policy,version,n) AS (
-               (SELECT policy,policy_version,1 FROM mdm_telemetry.batches
-                WHERE tenant_id=$1::uuid AND device=$2 AND source=$3 AND epoch=$4
-                  AND (policy,policy_version) >= ($5::uuid,$6::uuid)
-                ORDER BY policy,policy_version LIMIT 1)
-               UNION ALL
-               SELECT next.policy,next.policy_version,p.n+1 FROM publications p
-               CROSS JOIN LATERAL (SELECT policy,policy_version FROM mdm_telemetry.batches
-                 WHERE tenant_id=$1::uuid AND device=$2 AND source=$3 AND epoch=$4
-                   AND (policy,policy_version)>(p.policy,p.version)
-                 ORDER BY policy,policy_version LIMIT 1) next WHERE p.n < $7
-             ) SELECT policy,version FROM publications ORDER BY n",
+    if let Some(row) = &row
+        && row.try_get::<bool, _>("valid")?
+    {
+        cursor = row
+            .try_get::<Option<Uuid>, _>("policy")?
+            .zip(row.try_get::<Option<Uuid>, _>("version")?);
+        found = row.try_get("found")?;
+    }
+    let query = if let Some((policy, version)) = cursor {
+        sqlx::query_as::<_,Cursor>("SELECT policy,policy_version FROM mdm_telemetry.batches
+            WHERE tenant_id=$1::uuid AND device=$2 AND source=$3 AND epoch=$4 AND (policy,policy_version)>($5,$6)
+            ORDER BY policy,policy_version LIMIT 1")
+            .bind(tenant.to_string()).bind(input.device.into_uuid()).bind(target.source.as_str()).bind(target.epoch).bind(policy).bind(version)
+    } else {
+        sqlx::query_as::<_,Cursor>("SELECT policy,policy_version FROM mdm_telemetry.batches
+            WHERE tenant_id=$1::uuid AND device=$2 AND source=$3 AND epoch=$4 ORDER BY policy,policy_version LIMIT 1")
+            .bind(tenant.to_string()).bind(input.device.into_uuid()).bind(target.source.as_str()).bind(target.epoch)
+    };
+    let Some((policy, version)) = query.fetch_optional(&mut *c).await? else {
+        return if found { Ok(true) } else { Err(Error::Denied) };
+    };
+    let fields = qualified_fields(service, c, tenant, target, policy, version).await?;
+    found |= fields.contains(&input.field);
+    let keys: Vec<_> = fields.into_iter().collect();
+    // Both index extremes must match even if the same version occurs thousands of times.
+    let differs: bool = sqlx::query_scalar("SELECT
+        (SELECT field_set_digest FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND device=$2
+         AND source=$3 AND epoch=$4 AND policy=$5 AND policy_version=$6 ORDER BY field_set_digest LIMIT 1)
+          <> mdm_telemetry.field_set_digest($7::text[]) OR
+        (SELECT field_set_digest FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND device=$2
+         AND source=$3 AND epoch=$4 AND policy=$5 AND policy_version=$6 ORDER BY field_set_digest DESC LIMIT 1)
+          <> mdm_telemetry.field_set_digest($7::text[])")
+        .bind(tenant.to_string()).bind(input.device.into_uuid()).bind(target.source.as_str())
+        .bind(target.epoch).bind(policy).bind(version).bind(keys).fetch_one(&mut *c).await?;
+    if differs {
+        return Err(Error::Denied);
+    }
+    if row.is_none() {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,3248))")
+            .bind(tenant.to_string())
+            .execute(&mut *c)
+            .await?;
+        // An idle tenant may have missed its periodic sweep. Expired checkpoints
+        // must not keep a newly admitted identity out of the bounded table.
+        prune_checks(c, tenant).await?;
+        let full: bool = sqlx::query_scalar(
+            "SELECT count(*)>=256 FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid",
         )
         .bind(tenant.to_string())
-        .bind(input.device.into_uuid())
-        .bind(target.source.as_str())
-        .bind(target.epoch)
-        .bind(cursor.0)
-        .bind(cursor.1)
-        .bind(i32::try_from(PAGE + 1).expect("bounded authorization page"))
-        .fetch_all(&mut *c)
+        .fetch_one(&mut *c)
         .await?;
-        let next = if page.len() > PAGE { page.pop() } else { None };
-        for (policy, version) in page {
-            let fields = qualified_fields(service, c, tenant, target, policy, version).await?;
-            found |= fields.contains(&input.field);
-            let keys: Vec<_> = fields.into_iter().collect();
-            // An ordered index covers every admission. Equal minimum and maximum prove
-            // that every batch matches this frozen version without reading its repetitions.
-            let differs: bool = sqlx::query_scalar("SELECT
-                (SELECT field_set_digest FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND device=$2
-                 AND source=$3 AND epoch=$4 AND policy=$5 AND policy_version=$6 ORDER BY field_set_digest LIMIT 1)
-                  <> mdm_telemetry.field_set_digest($7::text[]) OR
-                (SELECT field_set_digest FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND device=$2
-                 AND source=$3 AND epoch=$4 AND policy=$5 AND policy_version=$6 ORDER BY field_set_digest DESC LIMIT 1)
-                  <> mdm_telemetry.field_set_digest($7::text[])")
-                .bind(tenant.to_string()).bind(input.device.into_uuid()).bind(target.source.as_str())
-                .bind(target.epoch).bind(policy).bind(version).bind(&keys).fetch_one(&mut *c).await?;
-            if differs {
-                return Err(Error::Denied);
+        if full {
+            // A confirmed Blocked step can rebuild its proof. Evict at most one
+            // idle proof, leaving its audited request and provider receipt intact.
+            let freed=sqlx::query("WITH victim AS (SELECT id FROM mdm_telemetry.stream_checks
+                 WHERE tenant_id=$1::uuid AND reclaimable ORDER BY expires_at,id LIMIT 1 FOR UPDATE SKIP LOCKED)
+                 DELETE FROM mdm_telemetry.stream_checks s USING victim v WHERE s.tenant_id=$1::uuid AND s.id=v.id")
+                .bind(tenant.to_string()).execute(&mut *c).await?.rows_affected();
+            if freed == 0 {
+                return Err(Error::Capacity);
             }
         }
-        match next {
-            Some(key) => cursor = key,
-            None => return if found { Ok(()) } else { Err(Error::Denied) },
-        }
     }
+    sqlx::query("INSERT INTO mdm_telemetry.stream_checks(tenant_id,id,binding,device,source,epoch,catalog_revision,byte_limit,policy,version,found,expires_at)
+        VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,clock_timestamp()+interval '24 hours')
+        ON CONFLICT(tenant_id,id) DO UPDATE SET catalog_revision=excluded.catalog_revision,byte_limit=excluded.byte_limit,
+          policy=excluded.policy,version=excluded.version,found=excluded.found,expires_at=excluded.expires_at,reclaimable=false")
+        .bind(tenant.to_string()).bind(input.id).bind(binding).bind(input.device.into_uuid()).bind(target.source.as_str()).bind(target.epoch)
+        .bind(revision).bind(limit).bind(policy).bind(version).bind(found).execute(c).await?;
+    Ok(false)
+}
+
+pub(super) async fn clear(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    id: Uuid,
+    binding: &[u8],
+) -> Result<(), Error> {
+    sqlx::query(
+        "DELETE FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid AND id=$2 AND binding=$3",
+    )
+    .bind(tenant.to_string())
+    .bind(id)
+    .bind(binding)
+    .execute(c)
+    .await?;
+    Ok(())
 }
 
 async fn qualified_fields(
@@ -133,4 +187,17 @@ async fn qualified_fields(
         return Err(Error::Denied);
     }
     Ok(keys)
+}
+
+/// A quota admission can hold its own expired ID while another admission holds
+/// the tenant quota fence. Sweeps never wait for another transaction's row.
+pub(crate) async fn prune_checks(
+    c: &mut PgConnection,
+    tenant: rss_request_context::TenantId,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("WITH expired AS (SELECT id FROM mdm_telemetry.stream_checks
+        WHERE tenant_id=$1::uuid AND expires_at<=clock_timestamp() ORDER BY expires_at,id LIMIT 256 FOR UPDATE SKIP LOCKED)
+        DELETE FROM mdm_telemetry.stream_checks s USING expired e WHERE s.tenant_id=$1::uuid AND s.id=e.id")
+        .bind(tenant.to_string()).execute(c).await?;
+    Ok(())
 }
