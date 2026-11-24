@@ -460,6 +460,34 @@ async fn changes_wake_published_owners_through_disable_and_replay() -> Result<()
     ));
     assert_eq!(wake_revisions().await?, (1, 0, 0));
     let second = put(1, enrollment(c.tenant.to_string()))?;
+    // Unmanage is woken after Enrollment in this transaction. Its persisted fence
+    // rejects this attempt after the new version, Policy work and Enrollment wake.
+    let prior = || async {
+        sqlx::query_as::<_,(i64,i64,i64,i64)>("SELECT revision,
+            (SELECT count(*) FROM mdm_policy.versions WHERE tenant_id=p.tenant_id AND policy=p.id),
+            (SELECT count(*) FROM mdm_policy.work WHERE tenant_id=p.tenant_id AND target=p.id::text AND kind='policy_reconcile'),
+            (SELECT count(*) FROM mdm_policy.requests WHERE tenant_id=p.tenant_id AND id=$3)
+            FROM mdm_policy.policies p WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(c.tenant.to_string()).bind(id).bind(second.operation_id).fetch_one(&c.operator).await
+    };
+    let before = prior().await?;
+    assert_eq!(before, (1, 1, 1, 0));
+    sqlx::query("UPDATE mdm_devices.unmanage_policy_recovery SET expected_epoch=expected_epoch+1 WHERE tenant_id=$1::uuid AND policy=$2")
+        .bind(c.tenant.to_string()).bind(id).execute(&c.operator).await?;
+    let failed = fixture
+        .policies
+        .change(&p, id, &second, &c.request(&p)?)
+        .await;
+    sqlx::query("UPDATE mdm_devices.unmanage_policy_recovery SET expected_epoch=expected_epoch-1 WHERE tenant_id=$1::uuid AND policy=$2")
+        .bind(c.tenant.to_string()).bind(id).execute(&c.operator).await?;
+    assert!(failed.is_err());
+    assert_eq!(prior().await?, before);
+    assert_eq!(wake_revisions().await?, (1, 0, 0));
+    assert_eq!(
+        c.audit_count("mdm.business", &second.operation_id.to_string())
+            .await?,
+        0
+    );
     let view = fixture
         .policies
         .change(&p, id, &second, &c.request(&p)?)

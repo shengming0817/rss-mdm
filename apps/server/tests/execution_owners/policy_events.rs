@@ -48,15 +48,60 @@ async fn advance(h: &Harness, worker: &PolicyWork, batch: Uuid) -> Result<()> {
             let ReconcileStep::Ready(diff) = worker.observe(&claim, &control).await? else {
                 anyhow::bail!("event observation deferred")
             };
-            assert!(matches!(
-                worker.apply(&claim, diff, &control).await?,
-                ReconcileStep::Ready(())
-            ));
+            let step = worker.apply(&claim, diff, &control).await;
+            worker.release(&claim, &control).await?;
+            assert!(matches!(step?, ReconcileStep::Ready(())));
             applied = true;
+        } else {
+            worker.release(&claim, &control).await?;
         }
-        worker.release(&claim, &control).await?;
     }
     anyhow::ensure!(applied, "missing durable event job for {batch}");
+    Ok(())
+}
+
+async fn retry_member(h: &Harness, worker: &PolicyWork, batch: Uuid) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let member: Uuid = sqlx::query_scalar(
+        "SELECT id FROM mdm_policy.event_members WHERE tenant_id=$1::uuid AND batch=$2",
+    )
+    .bind(h.c.tenant.to_string())
+    .bind(batch)
+    .fetch_one(&h.c.operator)
+    .await?;
+    let event = format!(
+        "e-{:x}",
+        Sha256::digest(format!("policy-event:{batch}:{member}").as_bytes())
+    );
+    let facts = || async {
+        sqlx::query_as::<_,(String,i64,i64)>("SELECT decision->>'state',
+            (SELECT count(*) FROM mdm_script.runs WHERE tenant_id=m.tenant_id AND id=m.id),
+            (SELECT count(*) FROM rss_audit.records WHERE tenant_id=m.tenant_id AND source_id='mdm.business' AND event_id=$3)
+            FROM mdm_policy.event_members m WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(h.c.tenant.to_string()).bind(member).bind(&event).fetch_one(&h.c.operator).await
+    };
+    let name = format!("t2_member_{}", member.simple());
+    // The owner has admitted this Run when Policy persists its Accepted decision.
+    // Scope the failure to this exact member; other tenants continue processing.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("ALTER TABLE mdm_policy.event_members ADD CONSTRAINT {name}
+        CHECK (tenant_id <> '{}'::uuid OR id <> '{member}'::uuid OR decision->>'state' <> 'accepted') NOT VALID",h.c.tenant)))
+        .execute(&h.c.operator).await?;
+    let failed = advance(h, worker, batch).await;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "ALTER TABLE mdm_policy.event_members DROP CONSTRAINT {name}"
+    )))
+    .execute(&h.c.operator)
+    .await?;
+    assert_eq!(
+        failed
+            .unwrap_err()
+            .downcast::<rss_reconcile::Error>()?
+            .kind(),
+        rss_reconcile::ErrorKind::Transient
+    );
+    assert_eq!(facts().await?, ("pending".into(), 0, 0));
+    advance(h, worker, batch).await?;
+    assert_eq!(facts().await?, ("accepted".into(), 1, 1));
     Ok(())
 }
 
@@ -168,7 +213,7 @@ async fn original_parent_receipt_and_member_progress() -> Result<()> {
         events.invoke_agent(&h.p, &fresh, &request(&h.c)).await,
         Err(rss_mdm_policy_service::Error::Forbidden)
     ));
-    advance(&h, &worker, accepted.batch_id).await?;
+    retry_member(&h, &worker, accepted.batch_id).await?;
     let account =
         h.c.account(&[
             P::PolicyRead,
