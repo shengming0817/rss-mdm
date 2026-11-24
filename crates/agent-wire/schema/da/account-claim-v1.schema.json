@@ -1,0 +1,32 @@
+{
+  "$defs": {
+    "TaskPlatform": {
+      "description": "Exact operating system of the selected immutable artifact.",
+      "oneOf": [
+        {
+          "const": "windows",
+          "description": "Windows.",
+          "type": "string"
+        },
+        {
+          "const": "macos",
+          "description": "macOS.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Execution platform selected by this client before the server chooses a candidate.",
+  "properties": {
+    "platform": {
+      "$ref": "#/$defs/TaskPlatform",
+      "default": "windows",
+      "description": "Selects eligible offers. The unqualified Windows poll and explicit macOS query share this route.\nAuthentication and execution authority remain bound to the DA registration and original target."
+    }
+  },
+  "title": "AccountClaim",
+  "type": "object",
+  "$id": "https://rss.example/da/v1/AccountClaim"
+}

@@ -404,7 +404,7 @@
           "type": "array"
         },
         "effect": {
-          "$ref": "#/$defs/AccessEffect",
+          "$ref": "#/$defs/AccountEffect",
           "description": "Actual native effect."
         },
         "revision": {
@@ -648,8 +648,57 @@
         }
       ]
     },
+    "AccountEffect": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "description": "A directly authorized macOS Create was read back. PSSO readiness is independent.",
+          "properties": {
+            "filevaultUnlock": {
+              "$ref": "#/$defs/AccessObservation",
+              "description": "Independently observed FileVault unlock eligibility."
+            },
+            "generatedUid": {
+              "description": "Stable native identity read from the created account.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "role": {
+              "$ref": "#/$defs/AccessRole",
+              "description": "Actual privilege, including when it differs from the requested role."
+            },
+            "secureToken": {
+              "$ref": "#/$defs/AccessObservation",
+              "description": "Account-specific Secure Token observation."
+            },
+            "state": {
+              "const": "mac_account_created",
+              "type": "string"
+            },
+            "volumeOwner": {
+              "$ref": "#/$defs/AccessObservation",
+              "description": "Independently observed Apple silicon volume ownership."
+            }
+          },
+          "required": [
+            "state",
+            "generatedUid",
+            "role",
+            "secureToken",
+            "volumeOwner",
+            "filevaultUnlock"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/AccessEffect",
+          "description": "Common configuration, refusal, unknown or cleanup observation."
+        }
+      ],
+      "description": "Observations stored with standalone DA account operations."
+    },
     "AccountObservation": {
-      "description": "Closed set of Windows account observations accepted by DA.",
+      "description": "Closed set of local account observations accepted by DA.",
       "oneOf": [
         {
           "additionalProperties": false,

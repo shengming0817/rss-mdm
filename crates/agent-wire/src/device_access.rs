@@ -654,7 +654,7 @@ impl AccessEffect {
 /// Exactly correlated application report; cannot select a different tenant or device.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AccessResult {
+pub struct AccessResult<E = AccessEffect> {
     /// Stable business binding identity.
     pub binding_id: Uuid,
     /// Fences replacement/revocation of the personnel association.
@@ -664,7 +664,19 @@ pub struct AccessResult {
     /// Digest frozen into the signed task.
     pub definition_digest: [u8; 32],
     /// Actual native effect.
-    pub effect: AccessEffect,
+    pub effect: E,
+}
+impl<E> AccessResult<E> {
+    /// Retain the exact attempt coordinates when narrowing a transport-specific observation.
+    pub fn with_effect<F>(&self, effect: F) -> AccessResult<F> {
+        AccessResult {
+            binding_id: self.binding_id,
+            binding_generation: self.binding_generation,
+            revision: self.revision,
+            definition_digest: self.definition_digest,
+            effect,
+        }
+    }
 }
 impl AccessResult {
     /// Validate a report before correlating its task and attempt.
