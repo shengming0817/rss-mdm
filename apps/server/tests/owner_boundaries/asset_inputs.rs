@@ -1362,7 +1362,9 @@ async fn compliance_workers_share_candidate_and_freshness_semantics() -> Result<
 #[ignore = "T2: input failure survives restart and wake; successful owner settlement repairs every observer"]
 async fn input_health_is_durable_across_instances() -> Result<()> {
     use rss_reconcile::DurableStore;
-    let c = Context::open("shared", &[]).await?;
+    // This proof starts installation-wide projections and intentionally suspends
+    // three owners. Keep the fault and restart within this run's planning database.
+    let c = Context::open("planning_workers", &[]).await?;
     let owners = Owners::open(&c).await?;
     let scopes = crate::scope_t2::open(&c).await?;
     planning::endpoint(&c).await?;
