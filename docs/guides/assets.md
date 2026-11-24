@@ -372,7 +372,7 @@ Agent 在现有 mTLS runtime 边界读取
 对关闭流、回收流和清理回执，收到 `504 request_deadline` 后使用原 ID 和相同内容重试。
 服务从已确认的位置继续。每租户最多保留 256 个进度，名额用满时新增操作会收到 `422 capacity_exceeded`，可待已有核验结束或过期后重试。
 同一错误也可能表示单个冻结发布超过宿主的 `maintenance.authorization_bytes`；这种情况需核对发布字段和宿主预算。
-操作返回 `blocked` 时释放核验名额，业务回执保留。进度在最后一次推进满 24 小时后过期，数据库恢复后重新核验。
+操作返回 `blocked` 后，原 ID 可继续使用有效核验进度。名额用满时，新操作可回收一条受阻进度；业务回执保留，原 ID 下次重新核验。进度在最后一次推进满 24 小时后过期，数据库恢复后重新核验。
 业务受理后若收到 `503 operation_unknown`，持有设备范围内 `inventory_read` 和 `operation_read`
 权限的调用方可用 `GET /api/v1/tenants/{tenant}/operation-diagnostics/operations/telemetry/{operationId}`
 查询回执。查不到回执时，继续使用原 ID 和原请求内容重试。

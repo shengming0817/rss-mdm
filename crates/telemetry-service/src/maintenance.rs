@@ -602,10 +602,21 @@ impl Call<'_> {
                     self.audit,
                 )
                 .await?;
-                if matches!(result, Progress::Complete { .. } | Progress::Blocked { .. })
-                    && self.input.stream_target().is_some()
-                {
-                    stream_authority::clear(c, tenant, self.input.id, self.binding).await?;
+                if self.input.stream_target().is_some() {
+                    if matches!(result, Progress::Complete { .. }) {
+                        stream_authority::clear(c, tenant, self.input.id, self.binding).await?;
+                    } else {
+                        let blocked = matches!(result, Progress::Blocked { .. });
+                        sqlx::query(
+                            "UPDATE mdm_telemetry.stream_checks SET reclaimable=$3
+                            WHERE tenant_id=$1::uuid AND id=$2 AND reclaimable<>$3",
+                        )
+                        .bind(tenant.to_string())
+                        .bind(self.input.id)
+                        .bind(blocked)
+                        .execute(c)
+                        .await?;
+                    }
                 }
                 Ok(Pass::Finished(result))
             }

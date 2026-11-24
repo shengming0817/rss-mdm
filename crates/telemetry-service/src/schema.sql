@@ -96,6 +96,7 @@ CREATE TABLE mdm_telemetry.stream_checks (
  device uuid NOT NULL, source text NOT NULL, epoch uuid NOT NULL,
  catalog_revision bigint NOT NULL, byte_limit bigint NOT NULL CHECK(byte_limit>0),
  policy uuid, version uuid, found boolean NOT NULL, expires_at timestamptz NOT NULL,
+ reclaimable boolean NOT NULL DEFAULT false,
  CHECK((policy IS NULL)=(version IS NULL) AND (policy IS NOT NULL OR NOT found)),
  PRIMARY KEY(tenant_id,id)
 );
@@ -106,7 +107,7 @@ ALTER TABLE mdm_telemetry.stream_checks FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_telemetry.stream_checks USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_telemetry.stream_checks FROM PUBLIC;
 GRANT SELECT,INSERT,DELETE ON mdm_telemetry.stream_checks TO mdm_telemetry_runtime;
-GRANT UPDATE(catalog_revision,byte_limit,policy,version,found,expires_at) ON mdm_telemetry.stream_checks TO mdm_telemetry_runtime;
+GRANT UPDATE(catalog_revision,byte_limit,policy,version,found,expires_at,reclaimable) ON mdm_telemetry.stream_checks TO mdm_telemetry_runtime;
 
 -- The device fence is the same endpoint key used by Registration::lock_devices_in.
 -- BEFORE INSERT sees the previous membership, including prior rows of a bulk insert.

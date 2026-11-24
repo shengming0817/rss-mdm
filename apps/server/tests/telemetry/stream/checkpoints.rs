@@ -352,13 +352,13 @@ pub(super) async fn resume_final_pass(
     proof
 }
 
-// Additional historical publications use one already delivered Current profile.
+// Additional historical publications use a delivered Current profile with a disjoint field set.
 // The first 17 uploads still exercise signing, intake, delivery and the provider.
 pub(super) async fn extend_history(c: &Context, batch: Uuid) -> Result<()> {
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     let n=sqlx::query("WITH ids AS MATERIALIZED (
       SELECT lpad(to_hex(n),32,'0')::uuid policy,gen_random_uuid() version FROM generate_series(18,49)n),
-      base AS MATERIALIZED(SELECT * FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND id=$2 AND delivery='published'),
+      base AS MATERIALIZED(SELECT * FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND id=$2 AND delivery='published' AND NOT fields && ARRAY['custom.history_0000','custom.history_0001']::text[]),
       policies AS (INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at)
         SELECT p.tenant_id,i.policy,1,i.version,1,p.state,p.definition,p.author,p.updated_at FROM base b JOIN mdm_policy.policies p
           ON (p.tenant_id,p.id)=(b.tenant_id,b.policy) CROSS JOIN ids i RETURNING id,current_version),
@@ -373,10 +373,11 @@ pub(super) async fn extend_history(c: &Context, batch: Uuid) -> Result<()> {
     Ok(())
 }
 
-pub(super) async fn assert_blocked_releases_slot(
+pub(super) async fn blocked_under_pressure(
     c: &Context,
     http: &http::Http,
     reclaim: &Value,
+    close: &Value,
 ) -> Result<()> {
     let id = Uuid::parse_str(reclaim["id"].as_str().unwrap())?;
     let added=sqlx::query("INSERT INTO mdm_telemetry.stream_checks SELECT $1::uuid,gen_random_uuid(),sha256('busy'),gen_random_uuid(),
@@ -385,14 +386,28 @@ pub(super) async fn assert_blocked_releases_slot(
     assert_eq!(added, 255);
     let progress = http.post("/telemetry/maintenance", reclaim.clone()).await?;
     assert_eq!(progress["state"], "blocked");
-    let facts:(i64,bool)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid),
+    let occupied: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid",
+    )
+    .bind(c.tenant.to_string())
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(occupied, 256);
+    assert_eq!(
+        http.post("/telemetry/maintenance", close.clone()).await?["state"],
+        "complete"
+    );
+    let facts:(bool,bool)=sqlx::query_as("SELECT EXISTS(SELECT FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid AND id=$2),
         EXISTS(SELECT FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 AND result->>'state'='blocked')")
-       .bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
+        .bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
     assert_eq!(
         facts,
-        (255, true),
-        "close must have a free slot while the original blocked receipt survives"
+        (false, true),
+        "close recovers the slot without losing the blocked business receipt"
     );
+    let released=sqlx::query("DELETE FROM mdm_telemetry.stream_checks WHERE tenant_id=$1::uuid AND binding=sha256('busy')")
+        .bind(c.tenant.to_string()).execute(&c.operator).await?.rows_affected();
+    assert_eq!(released, 255);
     Ok(())
 }
 

@@ -100,13 +100,21 @@ pub(super) async fn advance(
         .fetch_one(&mut *c)
         .await?;
         if full {
-            return Err(Error::Capacity);
+            // A confirmed Blocked step can rebuild its proof. Evict at most one
+            // idle proof, leaving its audited request and provider receipt intact.
+            let freed=sqlx::query("WITH victim AS (SELECT id FROM mdm_telemetry.stream_checks
+                 WHERE tenant_id=$1::uuid AND reclaimable ORDER BY expires_at,id LIMIT 1 FOR UPDATE SKIP LOCKED)
+                 DELETE FROM mdm_telemetry.stream_checks s USING victim v WHERE s.tenant_id=$1::uuid AND s.id=v.id")
+                .bind(tenant.to_string()).execute(&mut *c).await?.rows_affected();
+            if freed == 0 {
+                return Err(Error::Capacity);
+            }
         }
     }
     sqlx::query("INSERT INTO mdm_telemetry.stream_checks(tenant_id,id,binding,device,source,epoch,catalog_revision,byte_limit,policy,version,found,expires_at)
         VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,clock_timestamp()+interval '24 hours')
         ON CONFLICT(tenant_id,id) DO UPDATE SET catalog_revision=excluded.catalog_revision,byte_limit=excluded.byte_limit,
-          policy=excluded.policy,version=excluded.version,found=excluded.found,expires_at=excluded.expires_at")
+          policy=excluded.policy,version=excluded.version,found=excluded.found,expires_at=excluded.expires_at,reclaimable=false")
         .bind(tenant.to_string()).bind(input.id).bind(binding).bind(input.device.into_uuid()).bind(target.source.as_str()).bind(target.epoch)
         .bind(revision).bind(limit).bind(policy).bind(version).bind(found).execute(c).await?;
     Ok(false)
