@@ -183,6 +183,11 @@ pub struct Slot {
     tenant: Uuid,
     window: Option<Window>,
 }
+impl Slot {
+    pub(crate) fn origin(&self) -> (Arc<Capacity>, Uuid, Option<Window>) {
+        (self.capacity.clone(), self.tenant, self.window)
+    }
+}
 impl Drop for Slot {
     fn drop(&mut self) {
         let mut state = self.capacity.state.lock().expect("capacity state");

@@ -3,31 +3,70 @@ use super::{
     Failure,
     capacity::{Capacity, Slot},
 };
-use futures::{StreamExt, stream::FuturesUnordered};
 use rss_reconcile::{
     Claim, ClaimBatch, Completion, Control, DurableStore, Error, ErrorKind, Observation, Policy,
     ReconcileDiff, ReconcileStep, Reconciler, ResourceSet, Scope, Target, Timer,
 };
+use std::collections::{BTreeMap, BTreeSet};
 use std::{
     future::Future,
     num::NonZeroUsize,
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const RECOVERY: Duration = Duration::from_secs(5);
 
-/// A grant belongs to one RSS claim round. The store can announce more durable
-/// work as soon as it knows the result, before a slow claim finishes.
+/// Execution permits for a single bounded RSS claim round.
 pub struct Grant {
     slots: Vec<Slot>,
-    refill: Arc<Notify>,
-    scan: OwnedSemaphorePermit,
+    round: Arc<Round>,
 }
 
+#[derive(Default)]
+struct Positions {
+    active: BTreeSet<usize>,
+    claiming: Option<usize>,
+}
+struct Round {
+    tenant: Uuid,
+    position: usize,
+    running: Arc<Mutex<BTreeMap<Uuid, Positions>>>,
+    rescan: Arc<Notify>,
+}
+impl Round {
+    fn claimed(&self, more: bool) {
+        let mut running = self.running.lock().expect("active claim rounds");
+        let positions = running.get_mut(&self.tenant).expect("active tenant");
+        if positions.claiming == Some(self.position) {
+            positions.claiming = None;
+        }
+        if more {
+            self.rescan.notify_one();
+        }
+    }
+}
+impl Drop for Round {
+    fn drop(&mut self) {
+        let mut running = self.running.lock().expect("active claim rounds");
+        let positions = running.get_mut(&self.tenant).expect("active tenant");
+        positions.active.remove(&self.position);
+        if positions.claiming == Some(self.position) {
+            positions.claiming = None;
+        }
+        if positions.active.is_empty() {
+            running.remove(&self.tenant);
+        }
+    }
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "retry deadlines shared across a tenant's claim rounds"
+)]
 pub async fn run<P, B>(
     budget: &Arc<Capacity>,
     policy: Policy,
@@ -44,86 +83,109 @@ where
         .expect("validated policy")
         .min(budget.limit());
     let window = budget.window(limit);
-    let active = Arc::new(Mutex::new(
-        std::collections::BTreeMap::<Uuid, Arc<Notify>>::new(),
-    ));
-    let registration_stop = stop.child_token();
+    let width = policy.claim_batch_size().min(limit.get());
+    let running = Arc::new(Mutex::new(BTreeMap::<Uuid, Positions>::new()));
+    let retry_at = Arc::new(Mutex::new(BTreeMap::<Uuid, tokio::time::Instant>::new()));
+    let rescan = Arc::new(Notify::new());
     let batch = Arc::new(batch);
-    let claim_limit = policy.claim_batch_size().min(limit.get());
-    // One additional discovered tenant may wait for the next physical slot.
-    super::run_fallible(
+    // Each local position owns exactly one RSS round. A hot tenant must re-enter the
+    // same ready queue as newly discovered peers before it can reserve another batch.
+    super::run_pages(
         limit.saturating_add(1),
         RECOVERY,
-        &registration_stop,
-        notify,
-        (std::convert::identity, |after| {
-            let future = page(after);
-            let active = &active;
-            async move {
-                let rows = future.await.map_err(|kind| match kind {
-                    ErrorKind::Transient | ErrorKind::Deadline => Failure::Retry,
-                    _ => Failure::Fatal(Error::new(kind)),
-                })?;
-                // The durable page can announce new work while an earlier batch
-                // still owns a slow claim. Coalesce those hints per active tenant.
-                let running = active.lock().expect("active tenants");
-                for tenant in &rows {
-                    if let Some(refill) = running.get(tenant) { refill.notify_one(); }
-                }
-                Ok(rows)
+        stop,
+        || async {
+            tokio::select! {
+                ()=notify.notified()=>true,
+                ()=rescan.notified()=>false,
             }
-        }),
-        |tenant, admission| {
-            let budget = budget.clone();
-            let batch = batch.clone();
-            let registration_stop = registration_stop.clone();
-            let active = active.clone();
-            let admission = admission.child_token();
-            let refill = Arc::new(Notify::new());
-            active.lock().expect("active tenants").insert(tenant,refill.clone());
-            let first = budget.acquire_within(tenant, claim_limit, window, &admission);
-            async move {
-                // Only one unclaimed round per tenant may be queued or inside claim_due.
-                let scan = Arc::new(Semaphore::new(1));
-                let attempt = |slots, permit| {
-                    let (stop, batch, refill) = (admission.clone(), batch.clone(), refill.clone());
-                    async move {
-                        let slots: Vec<Slot> = slots.await;
-                        if slots.is_empty() { return Ok(RECOVERY); }
-                        batch(tenant, Grant { slots, refill, scan: permit }, stop).await
-                    }
-                };
-                let mut attempts = FuturesUnordered::from_iter([attempt(first, scan.clone().try_acquire_owned().expect("initial scan"))]);
-                let mut delay = RECOVERY;
-                let mut failure = None;
-                while !attempts.is_empty() {
-                    tokio::select! {
-                        biased;
-                        result = attempts.next() => match result.expect("owned claim round") {
-                            Ok(next) => delay = delay.min(next),
-                            Err(error) => {
-                                admission.cancel();
-                                let classified = match error.kind() {
-                                    ErrorKind::Transient | ErrorKind::Deadline | ErrorKind::CommitUnknown => Failure::Retry,
-                                    _ => {
-                                        registration_stop.cancel();
-                                        Failure::Fatal(error)
-                                    }
-                                };
-                                if !matches!(failure, Some(Failure::Fatal(_))) { failure = Some(classified); }
+        },
+        (
+            |&(tenant, position): &(Uuid, usize)| {
+                super::Work::independent(tenant, (tenant, position))
+            },
+            |after: Option<(Uuid, usize)>| {
+                let page = page(after.map(|(tenant, _)| tenant));
+                let running = &running;
+                let retry_at = &retry_at;
+                async move {
+                    let tenants = page.await.map_err(|kind| match kind {
+                        ErrorKind::Transient | ErrorKind::Deadline => Failure::Retry,
+                        _ => Failure::Fatal(Error::new(kind)),
+                    })?;
+                    let after = tenants.last().map(|t| (*t, 0));
+                    let active = running.lock().expect("active claim rounds");
+                    let now = tokio::time::Instant::now();
+                    let mut retries = retry_at.lock().expect("scope retry deadlines");
+                    retries.retain(|_, due| *due > now);
+                    let next = retries.values().min().copied();
+                    let rows = tenants
+                        .into_iter()
+                        .filter_map(|tenant| {
+                            if retries.contains_key(&tenant) {
+                                return None;
                             }
-                        },
-                        permit = async {
-                            let permit = scan.clone().acquire_owned().await.expect("live scan gate");
-                            refill.notified().await;
-                            permit
-                        }, if !admission.is_cancelled() => {
-                            attempts.push(attempt(budget.acquire_within(tenant,claim_limit,window,&admission), permit));
-                        }
-                    }
+                            let Some(positions) = active.get(&tenant) else {
+                                return Some((tenant, 0));
+                            };
+                            if positions.claiming.is_some() || positions.active.len() >= limit.get()
+                            {
+                                return None;
+                            }
+                            (0..=positions.active.len())
+                                .find(|p| !positions.active.contains(p))
+                                .map(|p| (tenant, p))
+                        })
+                        .collect();
+                    Ok(super::Page { rows, after, next })
                 }
-                active.lock().expect("active tenants").remove(&tenant);
-                failure.map_or(Ok(delay), Err)
+            },
+        ),
+        |(tenant, position), admission| {
+            let mut active = running.lock().expect("active claim rounds");
+            let positions = active.entry(tenant).or_default();
+            positions.active.insert(position);
+            positions.claiming = Some(position);
+            drop(active);
+            let round = Arc::new(Round {
+                tenant,
+                position,
+                running: running.clone(),
+                rescan: rescan.clone(),
+            });
+            let requested = budget.acquire_within(tenant, width, window, &admission);
+            let batch = batch.clone();
+            let retry_at = retry_at.clone();
+            async move {
+                if let Some(due) = retry_at.lock().expect("scope retry deadlines").get(&tenant)
+                    && *due > tokio::time::Instant::now()
+                {
+                    return Ok(due.saturating_duration_since(tokio::time::Instant::now()));
+                }
+                let slots = requested.await;
+                if slots.is_empty() {
+                    return Ok(RECOVERY);
+                }
+                let result = batch(
+                    tenant,
+                    Grant {
+                        slots,
+                        round: round.clone(),
+                    },
+                    admission,
+                )
+                .await;
+                drop(round);
+                result.map_err(|error| match error.kind() {
+                    ErrorKind::Transient | ErrorKind::Deadline | ErrorKind::CommitUnknown => {
+                        retry_at
+                            .lock()
+                            .expect("scope retry deadlines")
+                            .insert(tenant, tokio::time::Instant::now() + RECOVERY);
+                        Failure::Retry
+                    }
+                    _ => Failure::Fatal(error),
+                })
             }
         },
         |_| {},
@@ -150,8 +212,9 @@ pub async fn batch<S: DurableStore, R: Reconciler<S::Claim>>(
     let control = Control::new(&timer, Duration::MAX, &force);
     let store = Admitted {
         store,
-        round: Mutex::new(Some((grant.slots, grant.scan))),
-        refill: grant.refill,
+        slots: Mutex::new(grant.slots),
+        round: grant.round,
+        stop: stop.clone(),
         next_scan: Mutex::new(None),
     };
     let report = rss_reconcile::run_batch(
@@ -181,8 +244,9 @@ pub async fn batch<S: DurableStore, R: Reconciler<S::Claim>>(
 
 struct Admitted<'a, S> {
     store: &'a S,
-    round: Mutex<Option<(Vec<Slot>, OwnedSemaphorePermit)>>,
-    refill: Arc<Notify>,
+    slots: Mutex<Vec<Slot>>,
+    round: Arc<Round>,
+    stop: CancellationToken,
     next_scan: Mutex<Option<Duration>>,
 }
 struct Leased<C> {
@@ -223,25 +287,22 @@ impl<S: DurableStore> DurableStore for Admitted<'_, S> {
         lease: Duration,
         control: &Control<'_, T>,
     ) -> Result<ClaimBatch<Self::Claim>, Error> {
-        let (mut slots, _scan) = self
-            .round
-            .lock()
-            .expect("claim round")
-            .take()
-            .ok_or_else(|| Error::new(ErrorKind::Invariant))?;
+        let mut slots = std::mem::take(&mut *self.slots.lock().expect("claim round"));
         slots.truncate(limit);
         if slots.is_empty() {
             return Err(Error::new(ErrorKind::Invariant));
         }
-        let batch = self
+        let query = self
             .store
-            .claim_due(scope, slots.len(), scan_budget, lease, control)
-            .await?;
+            .claim_due(scope, slots.len(), scan_budget, lease, control);
+        let (result, slots) =
+            super::scheduler::with_execution_slots(slots, self.stop.clone(), query).await;
+        let batch = result?;
+        self.round.claimed(batch.more);
         if batch.claims.len() > slots.len() {
             return Err(Error::new(ErrorKind::Invariant));
         }
         if batch.more {
-            self.refill.notify_one();
             *self.next_scan.lock().expect("batch scan hint") = Some(Duration::ZERO);
         }
         Ok(ClaimBatch {
@@ -331,10 +392,9 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    #[tokio::test]
-    async fn rediscovery_refills_a_slow_tenant_and_a_fatal_refill_stops_admission() {
-        let policy = Policy::try_from(rss_reconcile::PolicyConfig {
-            concurrency: 8,
+    fn test_policy(width: usize) -> Policy {
+        Policy::try_from(rss_reconcile::PolicyConfig {
+            concurrency: width,
             claim_batch_size: 8,
             scan_budget: 64,
             lease_ttl: Duration::from_secs(30),
@@ -345,7 +405,12 @@ mod tests {
             max_backoff: RECOVERY,
             max_attempts: 3,
         })
-        .unwrap();
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn rediscovery_refills_a_slow_tenant_and_a_fatal_refill_stops_admission() {
+        let policy = test_policy(8);
         let a = Uuid::from_u128(1);
         let budget = Capacity::new(NonZeroUsize::new(8).unwrap());
         let stop = CancellationToken::new();
@@ -365,7 +430,7 @@ mod tests {
                     let round = rounds.fetch_add(1, Ordering::SeqCst);
                     let (release, tx) = (release.clone(), tx.clone());
                     async move {
-                        drop(grant.scan);
+                        grant.round.claimed(false);
                         match round {
                             0 => {
                                 grant.slots.truncate(1);
@@ -398,5 +463,60 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result.unwrap_err().kind(), ErrorKind::Invariant);
+    }
+    #[tokio::test]
+    async fn hot_scopes_yield_registration_positions_to_later_pages() {
+        let limit = NonZeroUsize::MIN;
+        let host = Capacity::new(limit);
+        let stop = CancellationToken::new();
+        let notify = Notify::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let worker = run(
+            &host,
+            test_policy(1),
+            &stop,
+            &notify,
+            |after: Option<Uuid>| {
+                let after = after.map_or(0, |t| t.as_u128());
+                std::future::ready(Ok((1..=35)
+                    .filter(|id| *id > after)
+                    .take(32)
+                    .map(Uuid::from_u128)
+                    .collect()))
+            },
+            move |tenant, grant, _| {
+                let tx = tx.clone();
+                async move {
+                    let hot = matches!(tenant.as_u128(), 1 | 2 | 35);
+                    grant.round.claimed(hot);
+                    if hot {
+                        let (release, wait) = tokio::sync::oneshot::channel();
+                        tx.send((tenant.as_u128(), release)).unwrap();
+                        let _ = wait.await;
+                    }
+                    Ok(if hot { Duration::ZERO } else { RECOVERY })
+                }
+            },
+        );
+        let proof = async {
+            let mut served = BTreeSet::new();
+            for _ in 0..12 {
+                let (tenant, release) = rx.recv().await.unwrap();
+                served.insert(tenant);
+                if served.len() == 3 {
+                    stop.cancel();
+                    drop(release);
+                    return;
+                }
+                release.send(()).unwrap();
+            }
+            panic!("late hot scope starved: {served:?}");
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(worker, proof)
+        })
+        .await
+        .unwrap();
+        result.unwrap();
     }
 }

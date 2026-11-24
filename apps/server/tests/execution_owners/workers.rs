@@ -1018,13 +1018,8 @@ async fn registered_owners_share_capacity_and_drain() -> Result<()> {
     // Keep an observer connection available while the two independent locks are held.
     let lock_pool = a.c.inputs.pool("worker_capacity", "postgres").await?;
     let mut one = lock_pool.begin().await?;
-    sqlx::query(
-        "SELECT FROM mdm_script.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 FOR UPDATE",
-    )
-    .bind(a.c.tenant.to_string())
-    .bind(first)
-    .execute(&mut *one)
-    .await?;
+    let one_pid:i32 = sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_script.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 FOR UPDATE")
+        .bind(a.c.tenant.to_string()).bind(first).fetch_one(&mut *one).await?;
     let mut held = a.c.operator.begin().await?;
     let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid() FROM mdm_script.policy_recovery WHERE tenant_id=$1::uuid AND policy<>$2 FOR UPDATE")
         .bind(a.c.tenant.to_string()).bind(first).fetch_all(&mut *held).await?[0];
@@ -1043,7 +1038,10 @@ async fn registered_owners_share_capacity_and_drain() -> Result<()> {
     };
     let attempt = wait_for_blocked_attempt(&a.c.operator, pid, TaskOwner::Script.table()).await?;
     tokio::time::timeout(Duration::from_secs(5), async {
-        while counts().await? != (8, 0) {
+        loop {
+            let attempts: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND ($1=ANY(pg_blocking_pids(pid)) OR $2=ANY(pg_blocking_pids(pid))) AND strpos(query,$3)>0")
+                .bind(one_pid).bind(pid).bind(TaskOwner::Script.table()).fetch_one(&a.c.operator).await?;
+            if attempts == 8 && counts().await? == (8,0) { break; }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         Ok::<_, anyhow::Error>(())
@@ -1193,7 +1191,7 @@ async fn registered_owners_share_capacity_and_drain() -> Result<()> {
     }).await??;
     anyhow::ensure!(measurement.shutdown().join().await?.is_clean());
     let first_claim = first_claim.unwrap();
-    let results = json!({"jobs":8,"schedulerPool":2,"firstClaimMs":(first_claim-beginning).as_secs_f64()*1000.0,
+    let results = json!({"jobs":8,"schedulerPool":storage.reconcile.connection_limit().get(),"firstClaimMs":(first_claim-beginning).as_secs_f64()*1000.0,
         "firstClaimToFinalReceiptMs":(end-first_claim).as_secs_f64()*1000.0,"completedPerSecond":8.0/(end-beginning).as_secs_f64()});
     let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../artifacts/local-t2");
     std::fs::create_dir_all(&output)?;
@@ -1201,8 +1199,111 @@ async fn registered_owners_share_capacity_and_drain() -> Result<()> {
         output.join("worker-capacity.json"),
         serde_json::to_vec_pretty(&results)?,
     )?;
+    blocked_refill_yields_execution_budget(&a, &b).await?;
     b.close().await?;
     a.close().await
+}
+
+// A settlement owns this tenant's only PG scheduling permit. A subsequent
+// Script claim must yield its provisional execution slots to Collection.
+async fn blocked_refill_yields_execution_budget(a: &Harness, b: &Harness) -> Result<()> {
+    use rss_reconcile::{Completion, ResourceSet, Scope, Target};
+    let storage = &a.a.resources.storage;
+    let store = storage.reconcile.clone();
+    let timer = rss_mdm_policy_service::clock::Timer::new();
+    let stop = CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(25), &stop);
+    let scope = Scope::new(a.c.tenant, "mdm.capacity-proof")?;
+    let target = Target::new(scope.clone(), "settlement")?;
+    store
+        .wake(&target, &ResourceSet::empty(a.c.tenant), &control)
+        .await?;
+    let claim = store
+        .claim_due(&scope, 1, 64, Duration::from_secs(30), &control)
+        .await?
+        .claims
+        .pop()
+        .unwrap();
+    let mut held = a.c.operator.begin().await?;
+    let pid:i32=sqlx::query_scalar("SELECT pg_backend_pid() FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity='settlement' FOR UPDATE")
+        .bind(a.c.tenant.to_string()).bind(scope.reconciler()).fetch_one(&mut *held).await?;
+    let tenant = Uuid::from_bytes(a.c.tenant.octets());
+    let _held_item = storage.worker_budget.acquire(tenant, 1, &stop).await;
+    TaskOwner::Script.seed(a).await?;
+    let peer = TaskOwner::Collection.seed(b).await?;
+    let prove = async {
+        crate::authority_t2_support::wait_for_blocked_attempt(&a.c.operator, pid, "").await?;
+        let entered = CancellationToken::new();
+        let refill_stop = CancellationToken::new();
+        let notify = tokio::sync::Notify::new();
+        let tasks = a.a.resources.background.tasks;
+        let refill = rss_mdm_work_page::reconcile::run(
+            &storage.worker_budget,
+            tasks,
+            &refill_stop,
+            &notify,
+            |after| {
+                std::future::ready(Ok(if after.is_none() {
+                    vec![tenant]
+                } else {
+                    vec![]
+                }))
+            },
+            {
+                let owner = a.a.script_work.clone();
+                let entered = entered.clone();
+                let tenant = a.c.tenant;
+                move |_, grant, stop| {
+                    let (owner, entered) = (owner.clone(), entered.clone());
+                    async move {
+                        entered.cancel();
+                        rss_mdm_work_page::reconcile::batch(
+                            (&owner.recovery_store(), owner.as_ref()),
+                            grant,
+                            &script::wake::scope(tenant),
+                            tasks,
+                            &stop,
+                            |_| {},
+                        )
+                        .await
+                    }
+                }
+            },
+        );
+        let run_peer = async {
+            let _stop_on_error = refill_stop.clone().drop_guard();
+            tokio::time::timeout(Duration::from_secs(4), entered.cancelled()).await?;
+            let worker = start_owner(a.a.collection_work.clone().registration(
+                tasks,
+                a.a.resources.background.tasks_drain,
+                Arc::default(),
+            ))?;
+            let result=tokio::time::timeout(Duration::from_secs(4),async{
+                loop {
+                    if sqlx::query_scalar::<_,bool>("SELECT input_revision=input_consumed AND runs_done FROM mdm_inventory.collection_policy_recovery WHERE tenant_id=$1::uuid AND policy=$2")
+                        .bind(b.c.tenant.to_string()).bind(peer).fetch_one(&b.c.operator).await? {break Ok::<_,anyhow::Error>(());}
+                    tokio::task::yield_now().await;
+                }
+            }).await;
+            refill_stop.cancel();
+            anyhow::ensure!(worker.shutdown().join().await?.is_clean());
+            result??;
+            anyhow::ensure!(
+                crate::authority_t2_support::blocked_attempt(&a.c.operator, pid, "")
+                    .await?
+                    .is_some()
+            );
+            Ok::<_, anyhow::Error>(())
+        };
+        let (refill, proof) = tokio::join!(refill, run_peer);
+        held.rollback().await?;
+        refill?;
+        proof
+    };
+    let (settled, proof) =
+        tokio::join!(store.finish(&claim, Completion::Converged, &control), prove);
+    settled?;
+    proof
 }
 
 #[tokio::test]
@@ -1213,6 +1314,7 @@ async fn scheduler_connections_remain_available_to_a_late_tenant() -> Result<()>
     let a = Harness::open().await?;
     let b = Context::open("shared", &[]).await?;
     let store = a.a.resources.storage.reconcile.clone();
+    anyhow::ensure!(store.connection_limit().get() == 2);
     anyhow::ensure!(
         a.a.resources
             .storage

@@ -1,5 +1,6 @@
 //! Tenant-aware admission to the physical PostgreSQL scheduling pool.
 use crate::capacity::{Capacity, Slot};
+use futures::FutureExt;
 use rss_reconcile::{
     ClaimBatch, Completion, Control, DurableStore, Error, ErrorKind, ResourceSet, Scope, Target,
     Timer,
@@ -7,6 +8,77 @@ use rss_reconcile::{
 use rss_reconcile_postgres::{CloseOutcome, PgClaim, PgOperationError, PgStore, PgTransaction};
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
+
+// RSS and the owner's observation wrappers forward DurableStore::claim_due.
+// Bind this reservation only while polling that exact claim call; renew and
+// settlement never borrow another job's execution slots.
+struct Reservation {
+    slots: std::sync::Mutex<Vec<Slot>>,
+    stop: CancellationToken,
+}
+tokio::task_local! { static CLAIM: Arc<Reservation>; }
+
+pub(crate) async fn with_execution_slots<F: Future>(
+    slots: Vec<Slot>,
+    stop: CancellationToken,
+    query: F,
+) -> (F::Output, Vec<Slot>) {
+    let reservation = Arc::new(Reservation {
+        slots: std::sync::Mutex::new(slots),
+        stop,
+    });
+    let result = CLAIM.scope(reservation.clone(), query).await;
+    let slots = std::mem::take(&mut *reservation.slots.lock().expect("execution reservation"));
+    (result, slots)
+}
+
+impl Reservation {
+    // Never await either budget while holding the other. Try the complementary
+    // grant in the same poll, otherwise keep the queued ticket and release the
+    // provisional permits. All actual claims retain the original tenant/window.
+    async fn claim_connection(
+        &self,
+        db: &Arc<Capacity>,
+        tenant: uuid::Uuid,
+    ) -> Result<Option<(Slot, usize)>, Error> {
+        let mut execution = std::mem::take(&mut *self.slots.lock().expect("execution reservation"));
+        let (host, scope, window) = execution
+            .first()
+            .ok_or_else(|| Error::new(ErrorKind::Invariant))?
+            .origin();
+        if scope != tenant {
+            return Err(Error::new(ErrorKind::Invariant));
+        }
+        let maximum = execution.len();
+        loop {
+            let mut database = std::pin::pin!(db.acquire(tenant, 1, &self.stop));
+            if let Some(mut ready) = database.as_mut().now_or_never() {
+                let width = execution.len();
+                *self.slots.lock().expect("execution reservation") = execution;
+                return Ok(ready.pop().map(|slot| (slot, width)));
+            }
+            drop(execution);
+            let Some(connection) = database.await.pop() else {
+                return Ok(None);
+            };
+            let mut pending =
+                std::pin::pin!(host.acquire_within(tenant, maximum, window, &self.stop));
+            if let Some(grant) = pending.as_mut().now_or_never() {
+                if grant.is_empty() {
+                    return Ok(None);
+                }
+                let width = grant.len();
+                *self.slots.lock().expect("execution reservation") = grant;
+                return Ok(Some((connection, width)));
+            }
+            drop(connection);
+            execution = pending.await;
+            if execution.is_empty() {
+                return Ok(None);
+            }
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct Scheduler {
@@ -29,6 +101,11 @@ impl Scheduler {
                 NonZeroUsize::new(maximum.get() - 1).unwrap_or(NonZeroUsize::MIN),
             ),
         })
+    }
+
+    /// Per-pool maximum read from the physical pool at registration.
+    pub fn connection_limit(&self) -> NonZeroUsize {
+        self.connections.limit()
     }
 
     async fn connection<T: Timer>(
@@ -99,7 +176,23 @@ impl DurableStore for Scheduler {
         lease: Duration,
         control: &Control<'_, T>,
     ) -> Result<ClaimBatch<PgClaim>, Error> {
-        let _slot = self.connection(scope, control).await?;
+        let (_slot, limit) = if let Ok(reservation) = CLAIM.try_with(Arc::clone) {
+            let grant = control
+                .run(reservation.claim_connection(
+                    &self.connections,
+                    uuid::Uuid::from_bytes(scope.tenant().octets()),
+                ))
+                .await?;
+            let Some((slot, granted)) = grant else {
+                return Ok(ClaimBatch {
+                    claims: Vec::new(),
+                    more: false,
+                });
+            };
+            (slot, limit.min(granted))
+        } else {
+            (self.connection(scope, control).await?, limit)
+        };
         self.store
             .claim_due(scope, limit, scan_budget, lease, control)
             .await
