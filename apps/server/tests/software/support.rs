@@ -28,6 +28,14 @@ pub async fn software_with_export(
     name: &str,
     export: r::SoftwareExport,
 ) -> Result<r::Version> {
+    software_package(c, name, export, "Acme.App").await
+}
+pub(super) async fn software_package(
+    c: &Context,
+    name: &str,
+    export: r::SoftwareExport,
+    package: &str,
+) -> Result<r::Version> {
     let source: rss_mdm_software_service::catalog::SourceDefinition = serde_json::from_value(
         json!({"id":"private","revision":"1","protocol":{"kind":"private"}}),
     )?;
@@ -38,7 +46,7 @@ pub async fn software_with_export(
     } else {
         json!([{"evidence":{"reference":"reviewed-signature","length":3,"sha256":vec![4;32]},"artifact":"package","mechanism":"authenticode","publisher":"Acme"}])
     };
-    let mut spec = json!({"material":{"format":"msi","installer":"package"},"source":source.snapshot()?,"package":"Acme.App","version":"1.2","artifacts":{"package":{"reference":"app-msi","length":3,"sha256":r::Digest::of(b"msi").bytes()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2"},"upgradeInvocation":invocation},"signatures":signatures,"provenance":{"kind":"private"},"export":export});
+    let mut spec = json!({"material":{"format":"msi","installer":"package"},"source":source.snapshot()?,"package":package,"version":"1.2","artifacts":{"package":{"reference":"app-msi","length":3,"sha256":r::Digest::of(b"msi").bytes()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2"},"upgradeInvocation":invocation},"signatures":signatures,"provenance":{"kind":"private"},"export":export});
     let (platform, variant) = if matches!(export, r::SoftwareExport::Brew { .. }) {
         spec["package"] = json!("capacity-app");
         spec["material"]["format"] = json!("dmg");

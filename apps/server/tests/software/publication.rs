@@ -9,8 +9,10 @@ use tokio_util::sync::CancellationToken;
 
 struct Gate {
     store: Arc<content::Store>,
+    slow_active: std::sync::atomic::AtomicUsize,
+    slow_peak: std::sync::atomic::AtomicUsize,
     active: std::sync::atomic::AtomicBool,
-    entered: CancellationToken,
+    arrivals: tokio::sync::mpsc::UnboundedSender<(String, tokio::sync::oneshot::Sender<()>)>,
     release: CancellationToken,
 }
 impl catalog::ContentPort for Gate {
@@ -21,14 +23,28 @@ impl catalog::ContentPort for Gate {
     ) -> catalog::ContentFuture<'a> {
         Box::pin(async move {
             if self.active.load(std::sync::atomic::Ordering::Acquire) {
-                if version.resource().as_str() == "held-winget" {
-                    self.entered.cancel();
-                    self.release.cancelled().await;
-                } else {
-                    self.entered.cancelled().await;
-                }
+                let (release, wait) = tokio::sync::oneshot::channel();
+                let _ = self
+                    .arrivals
+                    .send((version.resource().as_str().to_owned(), release));
+                tokio::select! { _ = wait => {}, () = self.release.cancelled() => {} }
             }
-            catalog::ContentPort::verify(self.store.as_ref(), execution, version).await
+            let slow = version.resource().as_str().starts_with("held-winget-");
+            if slow {
+                let active = self
+                    .slow_active
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
+                self.slow_peak
+                    .fetch_max(active, std::sync::atomic::Ordering::SeqCst);
+            }
+            let result =
+                catalog::ContentPort::verify(self.store.as_ref(), execution, version).await;
+            if slow {
+                self.slow_active
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            result
         })
     }
 }
@@ -98,12 +114,12 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
     use rss_mdm_software_release as rel;
     use rss_mdm_software_service::management::publication::service::PublicationDirectory;
     use std::os::unix::fs::PermissionsExt;
-    let c = Context::open("shared", &[]).await?;
+    let c = Context::open("external_capacity", &[]).await?;
     let workspace = tempfile::tempdir()?;
     let root = workspace.path();
     let mut config = crate::host_t2_support::configuration(
         &c.inputs,
-        "shared",
+        "external_capacity",
         "127.0.0.1:10000".parse()?,
         Uuid::new_v4(),
     )
@@ -115,10 +131,13 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
     let store = crate::assembly::content::open(&config, material::protection(&c)?)
         .await?
         .unwrap();
+    let (arrivals, mut observed) = tokio::sync::mpsc::unbounded_channel();
     let gate = Arc::new(Gate {
         store: store.clone(),
         active: false.into(),
-        entered: CancellationToken::new(),
+        arrivals,
+        slow_active: 0.into(),
+        slow_peak: 0.into(),
         release: CancellationToken::new(),
     });
     let repo = root.join("source.git");
@@ -149,20 +168,25 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
         },
     )
     .await?;
-    let winget = software_with_export(
-        &c,
-        "held-winget",
-        r::SoftwareExport::Winget {
-            locale: "en-US".into(),
-            name: "Application".into(),
-            publisher: "Acme".into(),
-            description: "Controlled application".into(),
-            license: "MIT".into(),
-        },
-    )
-    .await?;
+    let mut slow_versions = Vec::new();
+    for n in 0..9 {
+        let version = software_package(
+            &c,
+            &format!("held-winget-{n}"),
+            r::SoftwareExport::Winget {
+                locale: "en-US".into(),
+                name: "Application".into(),
+                publisher: "Acme".into(),
+                description: "Controlled application".into(),
+                license: "MIT".into(),
+            },
+            &format!("Acme.Capacity{n}"),
+        )
+        .await?;
+        upload(&c, &store, &version, b"msi", "app-msi").await?;
+        slow_versions.push(version);
+    }
     upload(&c, &store, &brew, b"dmg", "app-dmg").await?;
-    upload(&c, &store, &winget, b"msi", "app-msi").await?;
     let owner = planning::owner(&c, "mdm_software_driver").await?;
     let proof = c
         .authenticate(
@@ -179,8 +203,7 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
         permission: Permission::ReleasePublish,
     };
     let mut services = std::collections::BTreeMap::new();
-    let mut records = Vec::new();
-    for (source, version) in [(&slow, &winget), (&fast, &brew)] {
+    for source in [&slow, &fast] {
         let base = format!("https://example.test/{{tenant}}/{source}/");
         let artifacts_base = format!("{base}artifacts/");
         let mut credentials = std::collections::BTreeMap::new();
@@ -221,7 +244,9 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
             )
             .await?,
         );
-        let operation = service.operation(c.execution())?;
+        services.insert(source.clone(), service);
+    }
+    let submit = async |operation: &p::PublicationOperation<'_>, version: &r::Version| {
         let record = rel::PublicationKey::new(c.tenant, Uuid::new_v4().to_string())?;
         let input = p::PublishInput {
             actor: rel::ActorId::new(c.tenant, proof.principal_id())?,
@@ -242,12 +267,57 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
             .snapshot()
             .attempt
             .clone();
-        records.push((record, attempt));
-        services.insert(source.clone(), service);
+        Ok::<_, anyhow::Error>((record, attempt))
+    };
+    let slow_op = services[&slow].operation(c.execution())?;
+    let mut slow_records = std::collections::BTreeMap::new();
+    for version in &slow_versions {
+        slow_records.insert(
+            version.resource().as_str().to_owned(),
+            submit(&slow_op, version).await?,
+        );
     }
+    // One real discovery query at a time. Park its first continuation until B exists.
+    // Expire the periodic scan deadline before starting A's six-second provider budgets.
+    let first_page = CancellationToken::new();
+    let scan_again = CancellationToken::new();
+    let consumed = CancellationToken::new();
+    let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let checkouts = std::sync::atomic::AtomicUsize::new(0);
+    let discovery = sqlx::postgres::PgPoolOptions::new()
+        .min_connections(1)
+        .max_connections(1)
+        .before_acquire({
+            let (first_page, scan_again, consumed) =
+                (first_page.clone(), scan_again.clone(), consumed.clone());
+            let armed = armed.clone();
+            move |_, _| {
+                if !armed.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Box::pin(async { Ok(true) });
+                }
+                let n = checkouts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let (first_page, scan_again, consumed) =
+                    (first_page.clone(), scan_again.clone(), consumed.clone());
+                Box::pin(async move {
+                    match n {
+                        0 => tokio::time::sleep(Duration::from_millis(5100)).await,
+                        1 => {
+                            first_page.cancel();
+                            scan_again.cancelled().await;
+                        }
+                        3 => consumed.cancel(),
+                        _ => {}
+                    }
+                    Ok(true)
+                })
+            }
+        })
+        .acquire_timeout(Duration::from_secs(15))
+        .connect_with(c.inputs.options("external_capacity", "mdm_access")?)
+        .await?;
     let directory = Arc::new(PublicationDirectory {
         storage: c.execution().storage(),
-        discovery_pool: c.database.archive_pool(),
+        discovery_pool: discovery.clone(),
         cursor: rss_mdm_query::cursor::CursorCodec::new(&[1; 32])?,
         services,
         runtime: owner.runtime.clone(),
@@ -256,6 +326,7 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
             crate::clock::SystemClock,
         ))),
     });
+    armed.store(true, std::sync::atomic::Ordering::SeqCst);
     gate.active
         .store(true, std::sync::atomic::Ordering::Release);
     let mut stack = rss_runtime::ShutdownStack::try_new(
@@ -267,15 +338,52 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
         directory
             .clone()
             .registration(
-                rss_mdm_work_page::external::Limits::new(8.try_into()?, 7.try_into()?).unwrap(),
+                rss_mdm_work_page::external::Limits::new(8.try_into()?, 8.try_into()?).unwrap(),
             )
             .critical(),
     );
     launch.finish();
     let fast_op = directory.services[&fast].operation(c.execution())?;
     let slow_op = directory.services[&slow].operation(c.execution())?;
+    let mut held = Vec::new();
+    let scenario = async {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        first_page.cancelled().await;
+        for _ in 0..8 {
+            let (id, release) = observed.recv().await.unwrap();
+            anyhow::ensure!(slow_records.contains_key(&id));
+            held.push((id, release));
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "software discovery or initial eight held requests timed out (observed {})",
+            held.len()
+        )
+    })??;
+    // Submit also verifies content. Allow this admission read, keeping all worker reads held.
+    let (fast_record, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::try_join!(submit(&fast_op, &brew), async {
+            let (id,release) = observed.recv().await.ok_or_else(||anyhow::anyhow!("content observer closed"))?;
+            anyhow::ensure!(id==brew.resource().as_str(),"unexpected verification during Brew submit");
+            release.send(()).map_err(|_|anyhow::anyhow!("Brew verification exited"))?;
+            Ok::<_,anyhow::Error>(())
+        })
+    }).await??;
+    let records = [slow_records.remove(&held[0].0).unwrap(), fast_record];
+    let visible: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_software_composition.work_scopes(NULL,NULL,NULL) WHERE tenant_id=$1::uuid AND id='p:'||encode($2,'hex')||':'||$3::text)")
+        .bind(c.tenant.to_string()).bind(records[1].1.id().digest().bytes().as_slice()).bind(records[1].1.attempt.to_string())
+        .fetch_one(&c.operator).await?;
+    anyhow::ensure!(visible, "B must be on the next fresh discovery page");
+    scan_again.cancel();
     let probe=tokio::time::timeout(Duration::from_secs(5),async {
-        gate.entered.cancelled().await;
+        consumed.cancelled().await;
+        held.pop().unwrap().1.send(()).unwrap();
+        let (name, release) = observed.recv().await.unwrap();
+        anyhow::ensure!(name == brew.resource().as_str(), "slow source refilled before Brew");
+        release.send(()).unwrap();
         let id=records[1].1.id().digest().bytes();
         loop {
             let applied:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_software_composition.projections WHERE tenant_id=$1::uuid AND publication=$2)").bind(c.tenant.to_string()).bind(id.as_slice()).fetch_one(&c.operator).await?;
@@ -284,6 +392,7 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
         }
         anyhow::ensure!(matches!(fast_op.record(&records[1].0,cutoff()).await?.unwrap().snapshot().attempt.outcome,rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))));
         anyhow::ensure!(!matches!(slow_op.record(&records[0].0,cutoff()).await?.unwrap().snapshot().attempt.outcome,rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))));
+        anyhow::ensure!(held.iter().all(|(_,release)| !release.is_closed()), "the other seven software reads must still be in flight");
         // The management withdrawal races the in-flight worker at the same publication slot.
         let held_record=slow_op.record(&records[0].0,cutoff()).await?.unwrap();
         let cancel=p::ServiceRequest{actor:rel::ActorId::new(c.tenant,proof.principal_id())?,id:rel::RequestId::new(c.tenant,Uuid::new_v4().to_string())?,expected_revision:held_record.snapshot().revision,as_of:rss_contract::Timepoint::try_from(now())?};
@@ -293,11 +402,17 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
         anyhow::ensure!(git.status.success());
         Ok::<_,anyhow::Error>(())
     }).await;
+    probe.map_err(|_| anyhow::anyhow!("timed out waiting for the discovered software peer receipt"))??;
+    Ok::<_,anyhow::Error>(records)
+    }.await;
     let drain = stack.shutdown();
+    scan_again.cancel();
+    gate.active
+        .store(false, std::sync::atomic::Ordering::Release);
     gate.release.cancel();
-    anyhow::ensure!(drain.join().await?.is_clean());
-
-    probe??;
+    let shutdown = drain.join().await;
+    let records = scenario?;
+    anyhow::ensure!(shutdown?.is_clean());
     anyhow::ensure!(matches!(
         slow_op
             .record(&records[0].0, cutoff())
@@ -343,6 +458,33 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
         sqlx::query_scalar::<_,bool>("SELECT complete FROM mdm_software_composition.withdrawals WHERE tenant_id=$1::uuid AND record=$2").bind(c.tenant.to_string()).bind(records[1].0.value()).fetch_one(&c.operator)
     };
     anyhow::ensure!(!complete().await?);
+    let mut limited_ids = Vec::new();
+    for n in 9..12 {
+        let version = software_package(
+            &c,
+            &format!("held-winget-{n}"),
+            r::SoftwareExport::Winget {
+                locale: "en-US".into(),
+                name: "Application".into(),
+                publisher: "Acme".into(),
+                description: "Controlled application".into(),
+                license: "MIT".into(),
+            },
+            &format!("Acme.Capacity{n}"),
+        )
+        .await?;
+        upload(&c, &store, &version, b"msi", "app-msi").await?;
+        limited_ids.push(
+            submit(&slow_op, &version)
+                .await?
+                .1
+                .id()
+                .digest()
+                .bytes()
+                .to_vec(),
+        );
+    }
+    gate.slow_peak.store(0, std::sync::atomic::Ordering::SeqCst);
     let mut restart = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(16))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -352,13 +494,14 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
         directory
             .clone()
             .registration(
-                rss_mdm_work_page::external::Limits::new(8.try_into()?, 7.try_into()?).unwrap(),
+                rss_mdm_work_page::external::Limits::new(8.try_into()?, 1.try_into()?).unwrap(),
             )
             .critical(),
     );
     launch.finish();
     let observed = tokio::time::timeout(Duration::from_secs(10), async {
-        while !complete().await? {
+        while !complete().await? || sqlx::query_scalar::<_,i64>("SELECT count(*) FROM mdm_software_composition.projections WHERE tenant_id=$1::uuid AND publication=ANY($2)")
+            .bind(c.tenant.to_string()).bind(&limited_ids).fetch_one(&c.operator).await? != 3 {
             tokio::time::sleep(Duration::from_millis(15)).await;
         }
         Ok::<_, anyhow::Error>(())
@@ -366,6 +509,7 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
     .await;
     anyhow::ensure!(restart.shutdown().join().await?.is_clean());
     observed??;
+    anyhow::ensure!(gate.slow_peak.load(std::sync::atomic::Ordering::SeqCst) == 1);
     anyhow::ensure!(
         fast_op
             .reconcile_withdrawal(records[1].1.id(), records[1].1.attempt, cutoff())
@@ -375,6 +519,7 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
     let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_software_composition.withdrawals WHERE tenant_id=$1::uuid AND record=$2")
         .bind(c.tenant.to_string()).bind(records[1].0.value()).fetch_one(&c.operator).await?;
     anyhow::ensure!(count == 1);
+    discovery.close().await;
     store.close().await;
     owner.runtime.close().await;
     c.close().await;

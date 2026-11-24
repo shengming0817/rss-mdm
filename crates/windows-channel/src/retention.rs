@@ -135,7 +135,7 @@ pub fn registration(
                         } else {
                             None
                         };
-                        Ok(rss_mdm_work_page::Page { rows, next })
+                        Ok(rss_mdm_work_page::Page::new(rows, next))
                     }
                 },
             ),

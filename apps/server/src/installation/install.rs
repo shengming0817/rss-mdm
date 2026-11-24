@@ -70,6 +70,7 @@ pub struct Input {
     pub audit_mode: AuditMode,
     pub request_slots: usize,
     pub buffered_body_bytes: usize,
+    #[serde(deserialize_with = "installation_external_calls")]
     pub external_calls: crate::background::ExternalCalls,
     pub planning_concurrency: usize,
     pub device_concurrency: usize,
@@ -81,6 +82,81 @@ pub struct Input {
     pub origin: String,
     pub listen: SocketAddr,
     pub trusted_gateway: IpAddr,
+}
+// Only the first-install input may omit a sublimit. Serialize the effective
+// configuration into the installation fingerprint and the exported host revision.
+fn installation_external_calls<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<crate::background::ExternalCalls, D::Error> {
+    use crate::background::{ExternalCalls, PublicationCapacity, PushCapacity};
+    use std::num::NonZeroUsize;
+    // Missing fields use Default; explicit values (including null) use the
+    // same positive-integer deserializer as the complete host configuration.
+    fn sublimit<'de, D: serde::Deserializer<'de>>(
+        d: D,
+    ) -> std::result::Result<Option<NonZeroUsize>, D::Error> {
+        NonZeroUsize::deserialize(d).map(Some)
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Push {
+        total: NonZeroUsize,
+        #[serde(default, deserialize_with = "sublimit")]
+        per_credential: Option<NonZeroUsize>,
+    }
+    impl From<Push> for PushCapacity {
+        fn from(p: Push) -> Self {
+            Self {
+                total: p.total,
+                per_credential: p.per_credential.unwrap_or(p.total),
+            }
+        }
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Publication {
+        total: NonZeroUsize,
+        #[serde(default, deserialize_with = "sublimit")]
+        per_source: Option<NonZeroUsize>,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Settings {
+        apns: Push,
+        wns: Push,
+        ade: NonZeroUsize,
+        publication: Publication,
+    }
+    let settings = Settings::deserialize(deserializer)?;
+    let publication = settings.publication;
+    Ok(ExternalCalls {
+        apns: settings.apns.into(),
+        wns: settings.wns.into(),
+        ade: settings.ade,
+        publication: PublicationCapacity {
+            total: publication.total,
+            per_source: publication.per_source.unwrap_or(publication.total),
+        },
+    })
+}
+#[cfg(test)]
+#[test]
+fn install_sublimits_default_only_when_absent() {
+    #[derive(Deserialize)]
+    struct Example(
+        #[serde(deserialize_with = "installation_external_calls")] crate::background::ExternalCalls,
+    );
+    for apns in [
+        r#"{"total":1,"total":8}"#,
+        r#"{"total":8,"per_credential":null}"#,
+    ] {
+        let json =
+            format!(r#"{{"apns":{apns},"wns":{{"total":2}},"ade":1,"publication":{{"total":2}}}}"#);
+        assert!(serde_json::from_str::<Example>(&json).is_err());
+    }
+    let input: Example = serde_json::from_str(r#"{"apns":{"total":8},"wns":{"total":8,"per_credential":3},"ade":1,"publication":{"total":2}}"#).unwrap();
+    assert_eq!(input.0.apns.per_credential.get(), 8);
+    assert_eq!(input.0.wns.per_credential.get(), 3);
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -365,6 +365,41 @@ async fn settle(
     );
     result
 }
+/// PostgreSQL measures each delay relative to its own statement_timestamp().
+/// Sample after checkout, immediately before the SQL that produced the delay.
+struct DiscoverySample {
+    observed: tokio::time::Instant,
+    rows: Vec<crate::participants::WakeCandidate>,
+    next: Option<Duration>,
+}
+#[allow(
+    clippy::disallowed_methods,
+    reason = "pair each SQL statement with its own monotonic sampling point"
+)]
+async fn sample_discovery<C, E>(
+    acquire: impl Future<Output = Result<C, E>>,
+    channels: impl AsyncFnOnce(&mut C) -> Result<Vec<crate::participants::WakeCandidate>, E>,
+    provider: impl AsyncFnOnce(&mut C) -> Result<Option<Duration>, E>,
+) -> Result<DiscoverySample, E> {
+    let mut connection = acquire.await?;
+    let observed = tokio::time::Instant::now();
+    let rows = channels(&mut connection).await?;
+    if rows.is_empty() {
+        let observed = tokio::time::Instant::now();
+        let next = provider(&mut connection).await?;
+        return Ok(DiscoverySample {
+            observed,
+            rows,
+            next,
+        });
+    }
+    Ok(DiscoverySample {
+        observed,
+        rows,
+        next: None,
+    })
+}
+
 pub fn registration(
     app: Arc<crate::HttpState>,
     eligibility: Arc<dyn WakeDemand>,
@@ -380,31 +415,59 @@ pub fn registration(
             &stop,
             &notify,
             (
-                |key: &(Uuid, Uuid, Vec<u8>)| {
-                    limits.push_quotas(key.0, key.2.clone(), (key.0, key.1))
-                },
+                |key: &(Uuid, Uuid, Vec<u8>)| limits.work(key.0, key.2.clone(), (key.0, key.1)),
                 |after| {
                     let (app, eligibility) = (&app, &eligibility);
                     async move {
-                        let rows = eligibility
-                            .candidates(&app.access.pool, after.map(|(t, d, _)| (t, d)))
-                            .await
-                            .map_err(|_| {
-                                eprintln!("windows_push_discovery_failed");
-                                rss_mdm_work_page::Failure::Retry
-                            })?;
-                        let next = if rows.is_empty() {
-                            sqlx::query_scalar::<_, Option<f64>>(
-                                "SELECT mdm_wns.next_provider_wakeup()",
-                            )
-                            .fetch_one(&app.access.pool)
-                            .await
-                            .map_err(|_| rss_mdm_work_page::Failure::Retry)?
-                            .map(|s| Duration::from_secs_f64(s.clamp(0., RECONCILE.as_secs_f64())))
-                        } else {
-                            None
-                        };
-                        Ok(rss_mdm_work_page::Page { rows, next })
+                        let DiscoverySample {
+                            observed,
+                            rows,
+                            next,
+                        } = sample_discovery(
+                            async {
+                                app.access
+                                    .pool
+                                    .acquire()
+                                    .await
+                                    .map_err(|_| rss_mdm_work_page::Failure::Retry)
+                            },
+                            async |c| {
+                                eligibility
+                                    .candidates(c, after.map(|(t, d, _)| (t, d)))
+                                    .await
+                                    .map_err(|_| {
+                                        eprintln!("windows_push_discovery_failed");
+                                        rss_mdm_work_page::Failure::Retry
+                                    })
+                            },
+                            async |c| {
+                                sqlx::query_scalar::<_, Option<f64>>(
+                                    "SELECT mdm_wns.next_provider_wakeup()",
+                                )
+                                .fetch_one(&mut **c)
+                                .await
+                                .map(|wait| {
+                                    wait.map(|s| {
+                                        Duration::from_secs_f64(
+                                            s.clamp(0., RECONCILE.as_secs_f64()),
+                                        )
+                                    })
+                                })
+                                .map_err(|_| rss_mdm_work_page::Failure::Retry)
+                            },
+                        )
+                        .await?;
+                        Ok(rss_mdm_work_page::Page::scheduled(
+                            observed,
+                            rows.into_iter()
+                                .map(|(tenant, device, credential, wait_ms)| {
+                                    (
+                                        (tenant, device, credential),
+                                        Duration::from_millis(wait_ms.unsigned_abs()),
+                                    )
+                                }),
+                            next,
+                        ))
                     }
                 },
             ),
@@ -462,4 +525,43 @@ pub fn registration(
             Err(never) => match never {},
         }
     })
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    #[tokio::test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "observe ordering of actual discovery sampling points"
+    )]
+    async fn checkout_and_channel_page_waits_do_not_age_later_sql_samples() {
+        let acquired = std::cell::Cell::new(tokio::time::Instant::now());
+        let row = sample_discovery(
+            async {
+                tokio::time::sleep(Duration::from_millis(15)).await;
+                acquired.set(tokio::time::Instant::now());
+                Ok(())
+            },
+            async |_| Ok::<_, ()>(vec![(Uuid::nil(), Uuid::nil(), vec![], 1000)]),
+            async |_| panic!("provider query on a nonempty page"),
+        )
+        .await
+        .unwrap();
+        assert!(row.observed >= acquired.get() && row.next.is_none());
+        let page_finished = std::cell::Cell::new(acquired.get());
+        let provider = sample_discovery(
+            std::future::ready(Ok(())),
+            async |_| {
+                tokio::time::sleep(Duration::from_millis(15)).await;
+                page_finished.set(tokio::time::Instant::now());
+                Ok::<_, ()>(Vec::new())
+            },
+            async |_| Ok(Some(Duration::from_secs(1))),
+        )
+        .await
+        .unwrap();
+        assert!(provider.observed >= page_finished.get());
+        assert_eq!(provider.next, Some(Duration::from_secs(1)));
+    }
 }

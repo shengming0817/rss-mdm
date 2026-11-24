@@ -512,16 +512,16 @@ impl Departure for WindowsBusiness {
 impl WakeDemand for WindowsBusiness {
     fn candidates<'a>(
         &'a self,
-        pool: &'a sqlx::PgPool,
+        connection: &'a mut sqlx::PgConnection,
         after: Option<(Uuid, Uuid)>,
-    ) -> Pending<'a, Vec<(Uuid, Uuid, Vec<u8>)>> {
+    ) -> Pending<'a, Vec<rss_mdm_windows_channel::participants::WakeCandidate>> {
         Box::pin(async move {
             sqlx::query_as(
-                "SELECT tenant_id,device,credential FROM mdm_windows.push_work_page($1,$2)",
+                "SELECT tenant_id,device,credential,wait_ms FROM mdm_windows.push_work_page($1,$2)",
             )
             .bind(after.map(|key| key.0))
             .bind(after.map(|key| key.1))
-            .fetch_all(pool)
+            .fetch_all(connection)
             .await
             .map_err(|_| {
                 rss_mdm_windows_channel::Error::Unavailable(

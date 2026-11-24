@@ -103,7 +103,7 @@ impl Maintenance {
         task.into_registration(move |stop| async move {
             let idle = Duration::from_secs(60);
             rss_mdm_work_page::run(
-                self.budget.limit(),
+                self.budget.limit().saturating_add(1),
                 idle,
                 &stop,
                 &tokio::sync::Notify::new(),
@@ -121,9 +121,9 @@ impl Maintenance {
                 },
                 |id: Uuid| {
                     let owner = self.clone();
-                    let stop = stop.clone();
+                    let admission = owner.budget.acquire(id, 1, &stop);
                     async move {
-                        let slots = owner.budget.acquire(id, 1, &stop).await;
+                        let slots = admission.await;
                         if slots.is_empty() {
                             return Ok(idle);
                         }

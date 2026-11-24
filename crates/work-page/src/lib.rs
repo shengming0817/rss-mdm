@@ -1,11 +1,13 @@
 //! Bounded traversal of the product workers' ordered discovery pages.
+mod admission;
+pub use admission::Work;
 pub mod capacity;
 pub mod external;
 pub mod reconcile;
 pub mod scheduler;
 
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     future::Future,
     num::NonZeroUsize,
     time::Duration,
@@ -15,12 +17,53 @@ use tokio_util::sync::CancellationToken;
 
 /// A discovery page can report a durable deadline even when it has no due rows.
 pub struct Page<K> {
-    pub rows: Vec<K>,
-    pub next: Option<Duration>,
+    rows: Vec<K>,
+    after: Option<K>,
+    next: Option<Instant>,
 }
-impl<K> From<Vec<K>> for Page<K> {
+impl<K: Clone> Page<K> {
+    #[allow(clippy::disallowed_methods, reason = "monotonic discovery deadline")]
+    pub fn new(rows: Vec<K>, next: Option<Duration>) -> Self {
+        let next = next.and_then(|delay| Instant::now().checked_add(delay));
+        let after = rows.last().cloned();
+        Self { rows, after, next }
+    }
+
+    /// Filter local eligibility while keeping the cursor of the full durable page.
+    pub fn retain(mut self, eligible: impl FnMut(&K) -> bool) -> Self {
+        self.rows.retain(eligible);
+        self
+    }
+
+    /// Advance past every durable row, including rows whose deadline is still ahead.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "compare rows to their original discovery clock"
+    )]
+    pub fn scheduled(
+        observed: Instant,
+        rows: impl IntoIterator<Item = (K, Duration)>,
+        next: Option<Duration>,
+    ) -> Self {
+        let mut page = Self::new(Vec::new(), None);
+        page.next = next.and_then(|wait| observed.checked_add(wait));
+        let now = Instant::now();
+        for (key, wait) in rows {
+            page.after = Some(key.clone());
+            if let Some(due) = observed.checked_add(wait) {
+                if due <= now {
+                    page.rows.push(key);
+                } else {
+                    page.next = Some(page.next.map_or(due, |old| old.min(due)));
+                }
+            }
+        }
+        page
+    }
+}
+impl<K: Clone> From<Vec<K>> for Page<K> {
     fn from(rows: Vec<K>) -> Self {
-        Self { rows, next: None }
+        Self::new(rows, None)
     }
 }
 
@@ -170,7 +213,13 @@ where
         idle,
         stop,
         notify,
-        (|key: &K| [(group(*key), 1)], page),
+        (
+            |key: &K| {
+                let group = group(*key);
+                Work::independent(group, group)
+            },
+            page,
+        ),
         batch,
         observed,
     )
@@ -183,37 +232,73 @@ where
     clippy::disallowed_methods,
     reason = "process-owned monotonic worker deadlines"
 )]
-pub async fn run_limited<K, G, L, R, P, F, E>(
+pub async fn run_limited<K, T, S, O, R, P, F, E>(
     capacity: NonZeroUsize,
     idle: Duration,
     stop: &CancellationToken,
     notify: &Notify,
-    (quotas, page): (impl Fn(&K) -> L, impl Fn(Option<K>) -> P),
+    (binding, page): (impl Fn(&K) -> Work<T, S, O>, impl Fn(Option<K>) -> P),
     batch: impl Fn(K, CancellationToken) -> F,
     observed: impl Fn(bool),
 ) -> Result<(), E>
 where
     K: Clone + Ord + Send + 'static,
-    G: Ord,
-    L: IntoIterator<Item = (G, usize)>,
+    T: Clone + Ord,
+    S: Clone + Ord,
+    O: Ord,
     R: Into<Page<K>>,
     P: Future<Output = Result<R, Failure<E>>>,
     F: Future<Output = Result<Duration, Failure<E>>> + Send + 'static,
     E: Send + 'static,
 {
+    run_pages(
+        capacity,
+        idle,
+        stop,
+        || async {
+            notify.notified().await;
+            true
+        },
+        (binding, page),
+        batch,
+        observed,
+    )
+    .await
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "process-owned monotonic worker deadlines"
+)]
+pub(crate) async fn run_pages<K, T, S, O, R, P, F, E, N>(
+    capacity: NonZeroUsize,
+    idle: Duration,
+    stop: &CancellationToken,
+    signal: impl Fn() -> N,
+    (binding, page): (impl Fn(&K) -> Work<T, S, O>, impl Fn(Option<K>) -> P),
+    batch: impl Fn(K, CancellationToken) -> F,
+    observed: impl Fn(bool),
+) -> Result<(), E>
+where
+    K: Clone + Ord + Send + 'static,
+    T: Clone + Ord,
+    S: Clone + Ord,
+    O: Ord,
+    R: Into<Page<K>>,
+    P: Future<Output = Result<R, Failure<E>>>,
+    F: Future<Output = Result<Duration, Failure<E>>> + Send + 'static,
+    E: Send + 'static,
+    N: Future<Output = bool>,
+{
     let admission = stop.child_token();
     let mut fatal = None;
     let retry = Duration::from_secs(5);
-    let mut active = BTreeSet::new();
-    let mut groups = BTreeMap::<G, (usize, K)>::new();
-    // A promoted waiter keeps its original turn when another quota blocks its admission.
-    let mut deferred = BTreeMap::<G, (bool, u128, K)>::new();
-    let mut sequence = 0u128;
+    let mut candidates = admission::Admission::new(capacity.get());
+    let mut round = 0;
     let mut pending_page = None;
     let mut first_scan_finished = false;
     let mut first_batches = BTreeSet::new();
     let mut tasks = JoinSet::<(K, Result<Duration, Failure<E>>)>::new();
-    let mut queued = VecDeque::new();
     let mut after = None;
     let mut scanning = true;
     let mut discovery_retry = None;
@@ -225,31 +310,31 @@ where
         if stop.is_cancelled() {
             break;
         }
-        let free = active.len() < capacity.get();
-        if scanning && free && queued.is_empty() && pending_page.is_none() {
+        while let Some(key) = candidates.take(&binding) {
+            if stop.is_cancelled() {
+                break;
+            }
+            if !first_scan_finished {
+                first_batches.insert(key.clone());
+            }
+            let attempt = batch(key.clone(), admission.clone());
+            tasks.spawn(async move { (key, attempt.await) });
+        }
+        if stop.is_cancelled() {
+            break;
+        }
+        let waiting = candidates.retain_successors(&binding);
+        if scanning && pending_page.is_none() {
             pending_page = Some(Box::pin(page(after.clone())));
         }
         tokio::select! {
             biased;
             () = stop.cancelled() => break,
-            Some(result) = tasks.join_next(), if !active.is_empty() => {
+            Some(result) = tasks.join_next(), if !tasks.is_empty() => {
                 let (key, result) = result.expect("owned worker batch panicked");
-                active.remove(&key);
+                candidates.finish(&key, binding(&key));
                 first_batches.remove(&key);
-                let mut released = Vec::new();
-                for (group, _) in quotas(&key) {
-                    let count = groups.get_mut(&group).expect("active group");
-                    count.0 -= 1;
-                    if count.0 == 0 { groups.remove(&group); }
-                    if let Some((_, turn, waiting))=deferred.remove(&group) {
-                        released.push((turn, waiting));
-                        wake = Instant::now();
-                    }
-                }
-                released.sort_unstable();
-                for (turn, waiting) in released.into_iter().rev() {
-                    queued.push_front((waiting, Some(turn)));
-                }
+                if waiting { wake = Instant::now(); }
                 let delay = match result {
                     Ok(delay) => {
                         failures.remove(&key);
@@ -269,70 +354,32 @@ where
                     observed(failed);
                 }
             }
-            ()=std::future::ready(()), if free && !queued.is_empty() => {
-                let (key, turn)=queued.pop_front().expect("queued candidate");
-                unseen.remove(&key);
-                if let Some(at) = due.get(&key).copied()
-                    && at > Instant::now()
-                {
-                    wake = wake.min(at);
-                    continue;
-                }
-                if active.contains(&key) {
-                    continue;
-                }
-                if let Some((blocked, _)) = quotas(&key)
-                    .into_iter()
-                    .find(|(group, limit)| groups.get(group).map_or(0, |(count,_)| *count) >= *limit)
-                {
-                    let last=&groups[&blocked].1;
-                    let promoted = turn.is_some();
-                    let turn = turn.unwrap_or_else(|| {sequence += 1; sequence});
-                    let entry = deferred.entry(blocked);
-                    match entry {
-                        std::collections::btree_map::Entry::Vacant(slot) => {slot.insert((promoted,turn,key));}
-                        std::collections::btree_map::Entry::Occupied(mut slot) => {
-                            let (other_promoted, other_turn, other) = slot.get();
-                            // Fresh discoveries rotate past the last admission. Handoffs take
-                            // precedence over rediscovery and keep FIFO order across quota changes.
-                            let replace = if promoted || *other_promoted {
-                                promoted && (!other_promoted || turn < *other_turn)
-                            } else {
-                                (&key <= last,&key) < (other <= last,other)
-                            };
-                            if replace { slot.insert((promoted,turn,key)); }
+            result=async {pending_page.as_mut().expect("active discovery").await}, if pending_page.is_some() => {
+                pending_page=None;
+            match result.map(Into::into) {
+                Ok(Page { rows, after: Some(cursor), next }) => {
+                    after = Some(cursor);
+                    if let Some(due) = next { wake = wake.min(due); }
+                    let now = Instant::now();
+                    for key in rows {
+                        unseen.remove(&key);
+                        if let Some(at) = due.get(&key).filter(|at| **at > now) {
+                            wake = wake.min(*at);
+                        } else {
+                            candidates.discover(key, round);
                         }
                     }
                     continue;
                 }
-                for (group, _) in quotas(&key) {
-                    let entry = groups.entry(group).or_insert_with(||(0,key.clone()));
-                    entry.0 += 1; entry.1=key.clone();
-                }
-                active.insert(key.clone());
-                if !first_scan_finished {
-                    first_batches.insert(key.clone());
-                }
-                let attempt = batch(key.clone(), admission.clone());
-                tasks.spawn(async move { (key, attempt.await) });
-
-            }
-            result=async {pending_page.as_mut().expect("active discovery").await}, if pending_page.is_some() => {
-                pending_page=None;
-            match result.map(Into::into) {
-                Ok(Page { rows, .. }) if !rows.is_empty() => {
-                    after = rows.last().cloned();
-                    queued.extend(rows.into_iter().map(|key| (key, None)));
-                    continue;
-                }
                 Ok(Page { next, .. }) => {
+                    candidates.finish_scan(round);
                     first_scan_finished = true;
-                    if let Some(delay) = next {
-                        wake = wake.min(Instant::now() + delay);
+                    if let Some(due) = next {
+                        wake = wake.min(due);
                     }
                     discovery_retry = None;
                     for key in &unseen {
-                        if !active.contains(key) {
+                        if !candidates.active(key) {
                             due.remove(key);
                             failures.remove(key);
                         }
@@ -356,10 +403,10 @@ where
                     return false;
                 }
                 tokio::select! {
-                    () = notify.notified() => true,
+                    invalidate = signal() => invalidate,
                     () = tokio::time::sleep_until(wake) => false,
                 }
-            }, if !scanning && active.len() < capacity.get() => {
+            }, if !scanning => {
                 if hint {
                     // Hints can announce new work before a previously observed deadline.
                     // Faulted bindings still observe their own retry delay.
@@ -368,6 +415,7 @@ where
                 if discovery_retry.take().is_none() {
                     unseen = due.keys().cloned().collect();
                     after = None;
+                    round += 1;
                 }
                 scanning = true;
                 wake = Instant::now() + idle;
@@ -393,6 +441,99 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
+    #[tokio::test(start_paused = true)]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "capture the injected monotonic query start"
+    )]
+    async fn discovery_time_counts_toward_row_deadlines() {
+        let start = Instant::now();
+        tokio::time::advance(Duration::from_secs(4)).await;
+        let page = Page::scheduled(
+            start,
+            [(1, Duration::from_secs(3)), (2, Duration::from_secs(5))],
+            None,
+        );
+        assert_eq!(page.rows, [1]);
+        assert_eq!(page.after, Some(2));
+        assert_eq!(page.next, Some(start + Duration::from_secs(5)));
+    }
+    #[tokio::test]
+    async fn fast_handoffs_while_the_later_page_is_pending_rotate_all_waiting_tenants() {
+        let stop = CancellationToken::new();
+        let notify = Notify::new();
+        let (reader, mut reads) = tokio::sync::mpsc::unbounded_channel();
+        let (jobs, mut started) = tokio::sync::mpsc::unbounded_channel();
+        let worker = run_limited(
+            NonZeroUsize::MIN,
+            Duration::from_secs(60),
+            &stop,
+            &notify,
+            (
+                |key: &u32| Work {
+                    tenant: *key / 4,
+                    resource: 0,
+                    resource_limit: 1,
+                    object: *key,
+                },
+                |after| {
+                    let (return_page, receive) = tokio::sync::oneshot::channel::<Vec<u32>>();
+                    reader.send((after, return_page)).unwrap();
+                    async move { Ok::<_, Failure>(receive.await.unwrap()) }
+                },
+            ),
+            |key, _| {
+                let jobs = jobs.clone();
+                async move {
+                    let (release, wait) = tokio::sync::oneshot::channel();
+                    jobs.send((key, release)).unwrap();
+                    let _ = wait.await;
+                    Ok(Duration::ZERO)
+                }
+            },
+            |_| {},
+        );
+        let proof = async {
+            let (cursor, first) = reads.recv().await.unwrap();
+            assert_eq!(cursor, None);
+            first.send(vec![0, 1]).unwrap();
+            let (key, mut held) = started.recv().await.unwrap();
+            assert_eq!(key / 4, 0);
+            let mut seen = BTreeSet::new();
+            for _ in 0..12 {
+                let (cursor, page) = reads.recv().await.unwrap();
+                assert_eq!(cursor, Some(1));
+                page.send(vec![4, 8, 12, 16]).unwrap();
+                let (cursor, end) = reads.recv().await.unwrap();
+                assert_eq!(cursor, Some(16));
+                end.send(Vec::new()).unwrap();
+                held.send(()).unwrap();
+                let (fast, release) = started.recv().await.unwrap();
+                seen.insert(fast / 4);
+                if seen.is_superset(&BTreeSet::from([1, 2, 3, 4])) {
+                    stop.cancel();
+                    drop(release);
+                    return;
+                }
+                let (cursor, first) = reads.recv().await.unwrap();
+                assert_eq!(cursor, None);
+                first.send(vec![0, 1]).unwrap();
+                // The next page cannot complete until the fast job has finished.
+                release.send(()).unwrap();
+                let (hot, release) = started.recv().await.unwrap();
+                assert_eq!(hot / 4, 0);
+                held = release;
+            }
+            panic!("lost a discovered tenant across fast handoffs: {seen:?}");
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(worker, proof)
+        })
+        .await
+        .unwrap();
+        result.unwrap();
+    }
+
     #[tokio::test]
     async fn a_saturated_group_hands_its_slot_to_a_waiter_during_page_io() {
         let stop = CancellationToken::new();
@@ -406,7 +547,7 @@ mod tests {
             &stop,
             &notify,
             (
-                |_: &u32| [(0, 1)],
+                |_: &u32| Work::independent(0, 0),
                 |after| {
                     let reading = reading.clone();
                     async move {
@@ -457,7 +598,12 @@ mod tests {
             &stop,
             &notify,
             (
-                |key: &u8| [(if *key == 1 { 1 } else { 2 }, 1), (3, 1)],
+                |key: &u8| Work {
+                    tenant: 0,
+                    resource: 3,
+                    resource_limit: 1,
+                    object: if *key == 1 { 1 } else { 2 },
+                },
                 |after| {
                     std::future::ready(Ok((1..=3)
                         .filter(|key| after.is_none_or(|a| *key > a))
@@ -500,7 +646,7 @@ mod tests {
             &stop,
             &notify,
             (
-                |_: &u8| [(1, 1)],
+                |_: &u8| Work::independent(0, 0),
                 |after| {
                     let (permit, reading) = (permit.clone(), reading.clone());
                     async move {

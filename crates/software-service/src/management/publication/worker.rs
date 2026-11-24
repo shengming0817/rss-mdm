@@ -24,7 +24,10 @@ struct Job {
 }
 const IDLE: Duration = Duration::from_secs(5);
 impl PublicationDirectory {
-    async fn work_page(&self, after: Option<Job>) -> Result<Vec<Job>, sqlx::Error> {
+    async fn work_page(
+        &self,
+        after: Option<Job>,
+    ) -> Result<rss_mdm_work_page::Page<Job>, sqlx::Error> {
         type Row = (
             uuid::Uuid,
             i64,
@@ -36,7 +39,7 @@ impl PublicationDirectory {
         let rows=sqlx::query_as::<_,Row>("SELECT tenant_id,expected_epoch,id,source,binding,slot FROM mdm_software_composition.work_scopes($1,$2,$3)")
             .bind(after.as_ref().map(|v|v.tenant)).bind(after.as_ref().map(|v|v.epoch)).bind(after.as_ref().map(|v|&v.id))
             .fetch_all(&self.discovery_pool).await?;
-        Ok(rows
+        let jobs = rows
             .into_iter()
             .map(|(tenant, epoch, id, source, binding, slot)| Job {
                 tenant,
@@ -46,7 +49,9 @@ impl PublicationDirectory {
                 binding: binding.0,
                 slot,
             })
-            .collect())
+            .collect::<Vec<_>>();
+        Ok(rss_mdm_work_page::Page::from(jobs)
+            .retain(|job| self.services.contains_key(&job.source)))
     }
     pub fn registration(
         self: Arc<Self>,
@@ -63,7 +68,7 @@ impl PublicationDirectory {
                 &tokio::sync::Notify::new(),
                 (
                     |job: &Job| {
-                        limits.source_quotas(
+                        limits.work(
                             job.tenant,
                             job.source.clone(),
                             (job.tenant, job.binding, job.slot.clone()),

@@ -26,22 +26,14 @@ pub fn registration(
     let (task, _) =
         rss_runtime::ManagedTask::prepare("apple-ade", std::time::Duration::from_secs(8));
     task.into_registration(move |stop| async move {
-        use rss_mdm_work_page::{
-            Failure::Retry,
-            external::{Group, fair_share},
-        };
+        use rss_mdm_work_page::{Failure::Retry, Work};
         let result: Result<(), std::convert::Infallible> = rss_mdm_work_page::run_limited(
             capacity,
             Duration::from_secs(5),
             &stop,
             &notify,
             (
-                |&(tenant, org, _): &(Uuid, Uuid, i64)| {
-                    [
-                        (Group::<(), _>::Tenant(tenant), fair_share(capacity)),
-                        (Group::Object((tenant, org)), 1),
-                    ]
-                },
+                |&(tenant, org, _): &(Uuid, Uuid, i64)| Work::independent(tenant, (tenant, org)),
                 |after| {
                     let app = &app;
                     async move {

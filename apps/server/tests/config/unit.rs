@@ -271,7 +271,12 @@ fn external_capacity_is_per_owner_and_requires_explicit_valid_limits() {
     let limits = config.background.compile(&config).unwrap().external;
     assert_eq!(limits.apns.total.get(), 16);
     assert_eq!(limits.wns.total.get(), 8);
-    for invalid in [0, 16, 17] {
+    for valid in [1, 7, 16] {
+        source["background"]["external_calls"]["apns"]["per_credential"] = serde_json::json!(valid);
+        let config: Config = serde_json::from_value(source.clone()).unwrap();
+        assert!(config.background.compile(&config).is_ok());
+    }
+    for invalid in [0, 17] {
         source["background"]["external_calls"]["apns"]["per_credential"] =
             serde_json::json!(invalid);
         assert!(

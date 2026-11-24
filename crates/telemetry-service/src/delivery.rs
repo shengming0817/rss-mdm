@@ -53,6 +53,29 @@ use rss_transactional_messaging_postgres::PgOutboxStore;
 use rss_transactional_messaging_runtime::relay::relay_once;
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 struct BatchAuthority<'a>(&'a Batch);
+// Probe eligibility is page payload; retries and exclusivity belong to tenant/epoch.
+#[derive(Clone, Copy)]
+struct RelayScope {
+    id: (uuid::Uuid, i64),
+    probe: bool,
+}
+impl PartialEq for RelayScope {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl Eq for RelayScope {}
+impl Ord for RelayScope {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+impl PartialOrd for RelayScope {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl Authority for BatchAuthority<'_> {
     fn authorize(&self, access: Access<'_>) -> Result<(), rss_timeseries::Error> {
         match access {
@@ -313,36 +336,31 @@ impl Service {
         stop: &tokio_util::sync::CancellationToken,
     ) {
         let idle = Duration::from_millis(500);
-        // The probe flag is an attribute of this page, not a durable cursor coordinate.
-        let probes = std::sync::Mutex::new(std::collections::BTreeSet::new());
         rss_mdm_work_page::run_grouped(
             NonZeroUsize::new(crate::RELAY_CONCURRENCY as usize).unwrap(),
             idle,
             stop,
             &tokio::sync::Notify::new(),
             (
-                |(tenant, _)| tenant,
-                |after| {
-                    let probes = &probes;
-                    async move {
-                        let rows = self
-                            .work_scopes(after)
-                            .await
-                            .map_err(|_| eprintln!("telemetry relay discovery unconfirmed"))?;
-                        *probes.lock().expect("relay discovery") = rows
-                            .iter()
-                            .filter(|row| row.2)
-                            .map(|row| (row.0, row.1))
-                            .collect();
-                        Ok(rows
-                            .into_iter()
-                            .map(|(tenant, epoch, _)| (tenant, epoch))
-                            .collect::<Vec<_>>())
-                    }
+                |candidate: RelayScope| candidate.id.0,
+                |after: Option<RelayScope>| async move {
+                    self.work_scopes(after.map(|row| row.id))
+                        .await
+                        .map(|rows| {
+                            rows.into_iter()
+                                .map(|(tenant, epoch, probe)| RelayScope {
+                                    id: (tenant, epoch),
+                                    probe,
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .map_err(|_| eprintln!("telemetry relay discovery unconfirmed"))
                 },
             ),
-            |key| {
-                let probe = probes.lock().expect("relay discovery").contains(&key);
+            |RelayScope {
+                 id: (tenant, epoch),
+                 probe,
+             }| {
                 let owner = self.clone();
                 let store = store.clone();
                 let stop = stop.clone();
@@ -350,7 +368,7 @@ impl Service {
                     if stop.is_cancelled() {
                         return Ok(idle);
                     }
-                    let binding = owner.work_binding(key.0, key.1).map_err(|_| ())?;
+                    let binding = owner.work_binding(tenant, epoch).map_err(|_| ())?;
                     if probe && owner.qualify_reader(binding).await.is_err() {
                         eprintln!("telemetry selection qualification unconfirmed");
                     }

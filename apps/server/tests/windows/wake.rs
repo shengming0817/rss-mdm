@@ -18,9 +18,9 @@ struct FailFirstPage {
 impl WakeDemand for FailFirstPage {
     fn candidates<'a>(
         &'a self,
-        pool: &'a sqlx::PgPool,
+        connection: &'a mut sqlx::PgConnection,
         after: Option<(Uuid, Uuid)>,
-    ) -> Pending<'a, Vec<(Uuid, Uuid, Vec<u8>)>> {
+    ) -> Pending<'a, Vec<rss_mdm_windows_channel::participants::WakeCandidate>> {
         if self.first.swap(false, Ordering::AcqRel) {
             return Box::pin(async {
                 Err(rss_mdm_windows_channel::Error::Unavailable(
@@ -28,7 +28,7 @@ impl WakeDemand for FailFirstPage {
                 ))
             });
         }
-        self.owner.candidates(pool, after)
+        self.owner.candidates(connection, after)
     }
     fn pending<'a>(
         &'a self,
