@@ -172,7 +172,8 @@ impl Refresh {
                     path: &path,
                     max_age_seconds: self.max_age,
                 },
-                // The account status in this owner read also applies to local memberships and principal IDs.
+                // Identity local profiles define emailVerified as Missing for active accounts.
+                // The owner reports Unavailable for a disabled account or inactive membership.
                 _ => PersonnelField::Profile {
                     source: rss_identity_postgres::ProfileSource::IdentityLocal,
                     path: &account_path,
@@ -260,7 +261,7 @@ impl Refresh {
         let done = after.is_none();
         let updated=sqlx::query("UPDATE mdm_assets.personnel_cursor SET after_device=$2,scanning=$3,scan_end=$4,
             published=CASE WHEN $5 THEN $3 ELSE published END,valid_until=CASE WHEN $5 THEN $4 ELSE valid_until END,
-            next_scan=CASE WHEN $5 THEN least(clock_timestamp()+interval '30 seconds',greatest(clock_timestamp()+interval '1 second',to_timestamp($4::bigint)-interval '15 seconds')) ELSE clock_timestamp() END
+            next_scan=CASE WHEN $5 THEN least(clock_timestamp()+interval '30 seconds',greatest(clock_timestamp()+interval '1 second',coalesce(to_timestamp($4::bigint)-interval '15 seconds','infinity'::timestamptz))) ELSE clock_timestamp() END
             WHERE tenant_id=$1::uuid AND mdm_user_profiles.input_stamp(instance)=$3").bind(tenant).bind(after).bind(stamp).bind(transition).bind(done).execute(c).await?;
         if updated.rows_affected() != 1 {
             return Err(invalid("source changed during scan"));
