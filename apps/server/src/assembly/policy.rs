@@ -115,12 +115,15 @@ pub(crate) async fn events(
             .map_err(super::owner_errors::credential)?,
         ));
     }
-    let participants = Arc::new(super::policy_ports::Events {
+    let members = Arc::new(rss_mdm_policy_service::events::participants::MemberOwners {
         software,
         enrollment,
         credentials,
         scripts,
         collections,
+    });
+    let operations = Arc::new(super::policy_ports::OperationReads {
+        members: members.clone(),
         configuration: application
             .configuration
             .clone()
@@ -128,8 +131,9 @@ pub(crate) async fn events(
     });
     Ok(Arc::new(Events {
         application,
-        execution: participants.clone(),
-        progress: participants,
+        members,
+        operations,
+        agent_facts: Arc::new(super::agent_facts::AgentFacts),
     }))
 }
 #[expect(

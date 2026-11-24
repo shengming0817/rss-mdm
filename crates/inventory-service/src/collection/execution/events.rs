@@ -16,12 +16,20 @@ impl super::Transactions {
         deadline: i64,
     ) -> crate::transaction::Result<Decision> {
         self.validate_in(tx)?;
+        if tx.tenant_id() != binding.tenant() || tx.expected_epoch() != binding.epoch() {
+            return Err(crate::Error::Forbidden.into());
+        }
         super::storage::lock_device(tx, &target.device).await?;
         let now = super::storage::now(tx).await?;
         if now >= deadline {
             return Ok(Decision::Expired);
         }
         let plan = super::policy::read_in(self, tx, version).await?;
+        if plan.policy.version != version {
+            return Ok(Decision::Rejected {
+                reason: "policy_changed".into(),
+            });
+        }
         if !plan.active {
             return Ok(Decision::Rejected {
                 reason: "policy_disabled".into(),

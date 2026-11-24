@@ -7,7 +7,7 @@ use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::activity::{ActivityDecision, ActivityOrigin};
 use rss_mdm_authorization_service::OperationAuthority;
 pub mod participants;
-use participants::{ExecutionEvents, ExecutionProgress, Target};
+use participants::{MemberOwners, OperationOwners, Target};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::Row;
@@ -16,8 +16,9 @@ pub mod queries;
 
 pub struct Events {
     pub application: Arc<Application>,
-    pub execution: Arc<dyn ExecutionEvents>,
-    pub progress: Arc<dyn ExecutionProgress>,
+    pub members: Arc<MemberOwners>,
+    pub operations: Arc<dyn OperationOwners>,
+    pub agent_facts: Arc<dyn rss_mdm_device_service::control::agent_facts::Store>,
 }
 #[derive(Clone, Copy)]
 enum Requester<'a> {
@@ -51,6 +52,41 @@ struct Dispatch<'a> {
 }
 const MAX_MEMBERS: usize = 1000;
 impl Events {
+    async fn verify_agent_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        principal: &rss_mdm_registration_service::DevicePrincipal,
+    ) -> Result<()> {
+        if tx.tenant_id() != principal.tenant() {
+            return Err(Error::Unauthorized.into());
+        }
+        let p = principal.clone();
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                Ok(
+                    rss_mdm_registration_service::device::store::revalidate_source(
+                        rss_mdm_install_support::StorageProfile::Mdm,
+                        c,
+                        &p,
+                        rss_mdm_inventory::ReportSource::AgentBuiltin,
+                    )
+                    .await,
+                )
+            })
+        })
+        .await??;
+        let binding = rss_mdm_device_service::control::agent_facts::agent_binding_in(
+            tx,
+            self.agent_facts.clone(),
+            *principal.device(),
+        )
+        .await?;
+        if !binding.is_some_and(|b| b.inventory() && b.task()) {
+            return Err(Error::Forbidden.into());
+        }
+        Ok(())
+    }
+
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
         self.application.profile()
     }
@@ -135,9 +171,8 @@ impl Events {
                     s.application.runtime.validate_transaction(tx)?;
 
                     if let Requester::Agent(principal) = requester {
-                        s.execution
-                            .verify_event_device_in(tx, principal, Some(input))
-                            .await?;
+                        s.verify_agent_in(tx, principal).await?;
+                        input.execution_context.as_ref().ok_or(Error::Malformed)?.validate().map_err(|_| Error::Malformed)?;
                     }
                     let snapshot = match proof {
                         Some(p) => {
@@ -177,18 +212,17 @@ impl Events {
                         });
                     }
                     if let Caller::Agent { target } = caller
-                        && !s
-                            .execution
-                            .event_parent_current_in(tx, target, &input.source)
+                        && let wire::PolicyEventSource::Policy { run_id } = input.source
+                        && !s.operations.event_parent_current_in(tx, target.device, run_id)
                             .await?
                     {
                         return Err(Error::Forbidden.into());
                     }
                     if let Caller::Agent { target } = caller {
-                        s.execution
+                        s.members.software
                             .apply_event_context_in(
                                 tx,
-                                target,
+                                target.device,
                                 input.execution_context.as_ref().ok_or(Error::Malformed)?,
                             )
                             .await?;
@@ -454,7 +488,7 @@ impl Application {
     pub(crate) async fn advance_event_in(
         &self,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
-        execution: &dyn ExecutionEvents,
+        members: &MemberOwners,
         tx: &mut PgTransaction<'_>,
         batch: Uuid,
     ) -> Result<()> {
@@ -522,7 +556,7 @@ impl Application {
                 rejected("policy_disabled")
             } else {
                 self.dispatch_event_in(
-                    execution,
+                    members,
                     tx,
                     Dispatch {
                         policy: &policy,
@@ -597,7 +631,7 @@ impl Application {
     }
     async fn dispatch_event_in(
         &self,
-        execution: &dyn ExecutionEvents,
+        members: &MemberOwners,
         tx: &mut PgTransaction<'_>,
         dispatch: Dispatch<'_>,
     ) -> Result<wire::PolicyEventDecision> {
@@ -666,8 +700,76 @@ impl Application {
                 )
                 .await
             }
-            _ => Ok(execution
-                .accept_policy_event_in(tx, policy, target, (member, origin), deadline, audit)
+            Action::DeviceAccess { .. } => Ok(wire::PolicyEventDecision::NoChange {
+                reason: "managed_configuration_publication".into(),
+            }),
+            Action::Software { .. } | Action::EnsureAgentInstalled { .. } => Ok(members
+                .software
+                .accept_policy_event_in(
+                    tx,
+                    policy.id,
+                    policy.version,
+                    &rss_mdm_software_service::deployment::Target {
+                        device: target.device,
+                    },
+                    (member, origin),
+                    deadline,
+                    audit,
+                )
+                .await?),
+            Action::Credential { operation, .. } => Ok(members
+                .credentials(rss_mdm_recovery_credentials::tasks::product::profile(
+                    operation,
+                ))?
+                .accept_event_in(
+                    audit.binding()?,
+                    tx,
+                    policy.version,
+                    &rss_mdm_recovery_credentials::tasks::Target {
+                        device: target.device,
+                    },
+                    (member, origin),
+                    deadline,
+                )
+                .await?),
+            Action::RequestMdmEnrollment { .. } => Ok(members
+                .enrollment
+                .accept_event_in(
+                    audit.binding()?,
+                    tx,
+                    policy.version,
+                    &rss_mdm_registration_service::enrollment::tasks::Target {
+                        device: target.device,
+                    },
+                    (member, origin),
+                    deadline,
+                )
+                .await?),
+            Action::Execution { .. } => Ok(members
+                .scripts
+                .accept_event_in(
+                    audit.binding()?,
+                    tx,
+                    policy.version,
+                    &rss_mdm_script_service::Target {
+                        device: target.device,
+                    },
+                    (member, origin),
+                    deadline,
+                )
+                .await?),
+            Action::AgentCollection { .. } | Action::NativeCollection { .. } => Ok(members
+                .collections
+                .accept_event_in(
+                    audit.binding()?,
+                    tx,
+                    policy.version,
+                    &rss_mdm_inventory_service::collection::execution::model::Target {
+                        device: target.device,
+                    },
+                    (member, origin),
+                    deadline,
+                )
                 .await?),
         }
     }

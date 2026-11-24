@@ -18,12 +18,20 @@ impl crate::enrollment::tasks::Transactions {
         let profile = self.profile();
 
         self.validate_in(tx)?;
+        if tx.tenant_id() != binding.tenant() || tx.expected_epoch() != binding.epoch() {
+            return Err(crate::enrollment::tasks::Error::Forbidden.into());
+        }
         crate::enrollment::tasks::storage::lock_device(profile, tx, &target.device).await?;
         let now = crate::enrollment::tasks::storage::now(tx).await?;
         if now >= deadline {
             return Ok(Decision::Expired);
         }
         let plan = crate::enrollment::tasks::policy::read_in(self, tx, version).await?;
+        if plan.policy.version != version {
+            return Ok(Decision::Rejected {
+                reason: "policy_changed".into(),
+            });
+        }
         if !plan.active {
             return Ok(Decision::Rejected {
                 reason: "policy_disabled".into(),

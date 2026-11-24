@@ -303,7 +303,8 @@ pub(super) async fn decision(
                     .0
                     .accept_policy_event_in(
                         tx,
-                        &policy,
+                        policy.id,
+                        policy.version,
                         ctx.1,
                         (
                             ctx.4,

@@ -7,36 +7,36 @@ use crate::transaction::Fault;
 pub struct Target {
     pub device: rss_mdm_agent_wire::DeviceId,
 }
-pub trait ExecutionEvents: Send + Sync {
-    fn verify_event_device_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        principal: &'a rss_mdm_registration_service::DevicePrincipal,
-        input: Option<&'a wire::PolicyEventRequest>,
-    ) -> Pending<'a, (), Fault>;
-    fn apply_event_context_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        target: &'a Target,
-        context: &'a wire::SoftwareExecutionContext,
-    ) -> Pending<'a, (), Fault>;
+/// Concrete participants bound to the Policy event worker's transaction runtime.
+pub struct MemberOwners {
+    pub software: Arc<rss_mdm_software_service::deployment::Transactions>,
+    pub enrollment: Arc<rss_mdm_registration_service::enrollment::tasks::Transactions>,
+    pub credentials: Vec<Arc<rss_mdm_recovery_credentials::tasks::Transactions>>,
+    pub scripts: Arc<rss_mdm_script_service::Transactions>,
+    pub collections: Arc<rss_mdm_inventory_service::collection::execution::Transactions>,
+}
+
+impl MemberOwners {
+    pub fn credentials(
+        &self,
+        profile: rss_mdm_install_support::StorageProfile,
+    ) -> Result<&rss_mdm_recovery_credentials::tasks::Transactions> {
+        self.credentials
+            .iter()
+            .find(|service| service.profile() == profile)
+            .map(Arc::as_ref)
+            .ok_or_else(|| Error::Unsupported.into())
+    }
+}
+
+/// The host resolves an original operation to its single tenant-local owner.
+pub trait OperationOwners: Send + Sync {
     fn event_parent_current_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        target: &'a Target,
-        source: &'a wire::PolicyEventSource,
+        device: rss_mdm_agent_wire::DeviceId,
+        run: Uuid,
     ) -> Pending<'a, bool, Fault>;
-    fn accept_policy_event_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        policy: &'a rss_mdm_policy::Policy,
-        target: &'a Target,
-        cause: (Uuid, ActivityOrigin),
-        deadline: i64,
-        audit: &'a RequestAudit,
-    ) -> Pending<'a, wire::PolicyEventDecision, Fault>;
-}
-pub trait ExecutionProgress: Send + Sync {
     fn policy_event_operation_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,

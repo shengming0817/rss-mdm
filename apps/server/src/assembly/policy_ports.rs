@@ -1,7 +1,5 @@
 //! Static mappings for the foreign capabilities consumed by Policy.
 use rss_mdm_agent_wire::runtime as wire;
-use rss_mdm_audit_integration::{RequestAudit, activity::ActivityOrigin};
-use rss_mdm_policy::{Action, Policy};
 use rss_mdm_policy_service::events::participants::*;
 use rss_mdm_policy_service::{Error, Failure, inputs::*, transaction::Fault};
 use rss_transactional_messaging_postgres::PgTransaction;
@@ -87,86 +85,19 @@ impl ConfigurationDependents for NativeDependents {
     }
 }
 
-pub(super) struct Events {
-    pub software: Arc<rss_mdm_software_service::deployment::Transactions>,
-    pub enrollment: Arc<rss_mdm_registration_service::enrollment::tasks::Transactions>,
-    pub credentials: Vec<Arc<rss_mdm_recovery_credentials::tasks::Transactions>>,
-    pub scripts: Arc<rss_mdm_script_service::Transactions>,
-    pub collections: Arc<rss_mdm_inventory_service::collection::execution::Transactions>,
+pub(super) struct OperationReads {
+    pub members: Arc<MemberOwners>,
     pub configuration: Arc<rss_mdm_policy_service::configuration::Transactions>,
 }
 
-impl ExecutionEvents for Events {
-    fn verify_event_device_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        principal: &'a rss_mdm_registration_service::DevicePrincipal,
-        input: Option<&'a wire::PolicyEventRequest>,
-    ) -> Pending<'a, (), Fault> {
-        Box::pin(async move {
-            if tx.tenant_id() != principal.tenant() {
-                return Err(Error::Unauthorized.into());
-            }
-            let p = principal.clone();
-            tx.with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(
-                        rss_mdm_registration_service::device::store::revalidate_source(
-                            rss_mdm_install_support::StorageProfile::Mdm,
-                            c,
-                            &p,
-                            rss_mdm_inventory::ReportSource::AgentBuiltin,
-                        )
-                        .await,
-                    )
-                })
-            })
-            .await??;
-            let binding = rss_mdm_device_service::control::agent_facts::agent_binding_in(
-                tx,
-                Arc::new(super::agent_facts::AgentFacts),
-                *principal.device(),
-            )
-            .await
-            .map_err(Fault::from)?;
-            if !binding.is_some_and(|b| b.inventory() && b.task()) {
-                return Err(Error::Forbidden.into());
-            }
-            if let Some(input) = input {
-                input
-                    .execution_context
-                    .as_ref()
-                    .ok_or(Error::Malformed)?
-                    .validate()
-                    .map_err(|_| Error::Malformed)?;
-            }
-            Ok(())
-        })
-    }
-    fn apply_event_context_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        value: &'a Target,
-        context: &'a wire::SoftwareExecutionContext,
-    ) -> Pending<'a, (), Fault> {
-        Box::pin(async move {
-            self.software
-                .apply_event_context_in(tx, &software_target(value), context)
-                .await
-                .map_err(Fault::from)
-        })
-    }
+impl OperationOwners for OperationReads {
     fn event_parent_current_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        value: &'a Target,
-        source: &'a wire::PolicyEventSource,
+        device: rss_mdm_agent_wire::DeviceId,
+        id: Uuid,
     ) -> Pending<'a, bool, Fault> {
         Box::pin(async move {
-            let wire::PolicyEventSource::Policy { run_id } = source else {
-                return Ok(true);
-            };
-            let id = *run_id;
             let tenant = tx.tenant_id();
             let owner = tx
                 .with_connection(move |c| {
@@ -179,20 +110,19 @@ impl ExecutionEvents for Events {
                     let run = rss_mdm_device_service::control::actions::storage::load_run(tx, id)
                         .await
                         .map_err(Fault::from)?;
-                    Ok(run.target.device == value.device
+                    Ok(run.target.device == device
                         && run.state.execution == rss_mdm_task_state::Execution::Running
                         && run.state.started_at.is_some())
                 }
-                Owner::Software => self
+                Owner::Software => self.members
                     .software
-                    .event_parent_current_in(tx, &software_target(value), source)
+                    .event_parent_current_in(tx, device, id)
                     .await
                     .map_err(Fault::from),
                 Owner::Access => {
-                    let device = value.device;
-                    tx.with_connection(move|c|Box::pin(async move{rss_mdm_device_access_postgres::device_access::execution::events::parent_current_on(c,&device,id).await})).await.map_err(Into::into)
+                                        tx.with_connection(move|c|Box::pin(async move{rss_mdm_device_access_postgres::device_access::execution::events::parent_current_on(c,&device,id).await})).await.map_err(Into::into)
                 }
-                Owner::Credential(profile) => self
+                Owner::Credential(profile) => self.members
                     .credentials
                     .iter()
                     .find(|s| s.profile() == profile)
@@ -200,40 +130,40 @@ impl ExecutionEvents for Events {
                     .event_parent_current_in(
                         tx,
                         &rss_mdm_recovery_credentials::tasks::Target {
-                            device: value.device,
+                            device: device,
                         },
                         id,
                     )
                     .await
                     .map_err(Into::into),
-                Owner::Registration => self
+                Owner::Registration => self.members
                     .enrollment
                     .event_parent_current_in(
                         tx,
                         &rss_mdm_registration_service::enrollment::tasks::Target {
-                            device: value.device,
+                            device: device,
                         },
                         id,
                     )
                     .await
                     .map_err(Fault::from),
-                Owner::Script => self
+                Owner::Script => self.members
                     .scripts
                     .event_parent_current_in(
                         tx,
                         &rss_mdm_script_service::Target {
-                            device: value.device,
+                            device: device,
                         },
                         id,
                     )
                     .await
                     .map_err(Into::into),
-                Owner::Collection => self
+                Owner::Collection => self.members
                     .collections
                     .event_parent_current_in(
                         tx,
                         &rss_mdm_inventory_service::collection::execution::model::Target {
-                            device: value.device,
+                            device: device,
                         },
                         id,
                     )
@@ -242,114 +172,6 @@ impl ExecutionEvents for Events {
             }
         })
     }
-    fn accept_policy_event_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        policy: &'a Policy,
-        value: &'a Target,
-        cause: (Uuid, ActivityOrigin),
-        deadline: i64,
-        audit: &'a RequestAudit,
-    ) -> Pending<'a, wire::PolicyEventDecision, Fault> {
-        Box::pin(async move {
-            match policy.definition.action.kind() {
-                rss_mdm_policy::ActionKind::Software
-                | rss_mdm_policy::ActionKind::EnsureAgentInstalled => {
-                    return self
-                        .software
-                        .accept_policy_event_in(
-                            tx,
-                            policy,
-                            &software_target(value),
-                            cause,
-                            deadline,
-                            audit,
-                        )
-                        .await
-                        .map_err(Fault::from);
-                }
-                rss_mdm_policy::ActionKind::DeviceAccess => {
-                    return Ok(wire::PolicyEventDecision::NoChange {
-                        reason: "managed_configuration_publication".into(),
-                    });
-                }
-                rss_mdm_policy::ActionKind::Credential => {
-                    let profile = credential_profile(&policy.definition.action);
-                    return self
-                        .credentials
-                        .iter()
-                        .find(|s| s.profile() == profile)
-                        .ok_or(Error::Unsupported)?
-                        .accept_event_in(
-                            audit.binding()?,
-                            tx,
-                            policy.version,
-                            &rss_mdm_recovery_credentials::tasks::Target {
-                                device: value.device,
-                            },
-                            cause,
-                            deadline,
-                        )
-                        .await
-                        .map_err(Into::into);
-                }
-                rss_mdm_policy::ActionKind::RequestMdmEnrollment => {
-                    return self
-                        .enrollment
-                        .accept_event_in(
-                            audit.binding()?,
-                            tx,
-                            policy.version,
-                            &rss_mdm_registration_service::enrollment::tasks::Target {
-                                device: value.device,
-                            },
-                            cause,
-                            deadline,
-                        )
-                        .await
-                        .map_err(Fault::from);
-                }
-                rss_mdm_policy::ActionKind::Execution => {
-                    return self
-                        .scripts
-                        .accept_event_in(
-                            audit.binding()?,
-                            tx,
-                            policy.version,
-                            &rss_mdm_script_service::Target {
-                                device: value.device,
-                            },
-                            cause,
-                            deadline,
-                        )
-                        .await
-                        .map_err(Into::into);
-                }
-                rss_mdm_policy::ActionKind::AgentCollection
-                | rss_mdm_policy::ActionKind::NativeCollection => {
-                    return self
-                        .collections
-                        .accept_event_in(
-                            audit.binding()?,
-                            tx,
-                            policy.version,
-                            &rss_mdm_inventory_service::collection::execution::model::Target {
-                                device: value.device,
-                            },
-                            cause,
-                            deadline,
-                        )
-                        .await
-                        .map_err(Into::into);
-                }
-                _ => {}
-            }
-            // Unmanage events are admitted by Policy's lifecycle path before this port.
-            Err(Error::Unsupported.into())
-        })
-    }
-}
-impl ExecutionProgress for Events {
     fn policy_event_operation_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
@@ -403,7 +225,7 @@ impl ExecutionProgress for Events {
                         });
                     }
                     super::task_ownership::Owner::Software => {
-                        return self
+                        return self.members
                             .software
                             .policy_event_operation_in(tx, reference)
                             .await
@@ -424,6 +246,7 @@ impl ExecutionProgress for Events {
                 }
                 if owner == super::native_ownership::Owner::Software {
                     return self
+                        .members
                         .software
                         .policy_event_operation_in(tx, reference)
                         .await
@@ -530,9 +353,6 @@ fn software_agent_registration_observation(
     }
 }
 
-fn software_target(v: &Target) -> rss_mdm_software_service::deployment::Target {
-    rss_mdm_software_service::deployment::Target { device: v.device }
-}
 fn software_progress(
     v: rss_mdm_software_service::deployment::policy_events::EventOperationProgress,
 ) -> EventOperationProgress {
@@ -558,18 +378,6 @@ fn software_progress(
             agent_installation: agent_installation.map(software_installation),
             allowed_actions,
         },
-    }
-}
-
-pub(super) fn credential_profile(
-    action: &rss_mdm_policy::Action,
-) -> rss_mdm_install_support::StorageProfile {
-    if let rss_mdm_policy::Action::Credential { operation, .. } = action
-        && rss_mdm_recovery_credentials::tasks::product::rss(operation)
-    {
-        rss_mdm_install_support::StorageProfile::Da
-    } else {
-        rss_mdm_install_support::StorageProfile::Mdm
     }
 }
 
