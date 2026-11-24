@@ -19,10 +19,12 @@ use tokio_util::sync::CancellationToken;
 pub struct Page<K> {
     rows: Vec<K>,
     after: Option<K>,
-    next: Option<Duration>,
+    next: Option<Instant>,
 }
 impl<K: Clone> Page<K> {
+    #[allow(clippy::disallowed_methods, reason = "monotonic discovery deadline")]
     pub fn new(rows: Vec<K>, next: Option<Duration>) -> Self {
+        let next = next.and_then(|delay| Instant::now().checked_add(delay));
         let after = rows.last().cloned();
         Self { rows, after, next }
     }
@@ -34,17 +36,26 @@ impl<K: Clone> Page<K> {
     }
 
     /// Advance past every durable row, including rows whose deadline is still ahead.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "compare rows to their original discovery clock"
+    )]
     pub fn scheduled(
+        observed: Instant,
         rows: impl IntoIterator<Item = (K, Duration)>,
         next: Option<Duration>,
     ) -> Self {
-        let mut page = Self::new(Vec::new(), next);
+        let mut page = Self::new(Vec::new(), None);
+        page.next = next.and_then(|wait| observed.checked_add(wait));
+        let now = Instant::now();
         for (key, wait) in rows {
             page.after = Some(key.clone());
-            if wait.is_zero() {
-                page.rows.push(key);
-            } else {
-                page.next = Some(page.next.map_or(wait, |old| old.min(wait)));
+            if let Some(due) = observed.checked_add(wait) {
+                if due <= now {
+                    page.rows.push(key);
+                } else {
+                    page.next = Some(page.next.map_or(due, |old| old.min(due)));
+                }
             }
         }
         page
@@ -240,6 +251,45 @@ where
     F: Future<Output = Result<Duration, Failure<E>>> + Send + 'static,
     E: Send + 'static,
 {
+    run_pages(
+        capacity,
+        idle,
+        stop,
+        || async {
+            notify.notified().await;
+            true
+        },
+        (binding, page),
+        batch,
+        observed,
+    )
+    .await
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "process-owned monotonic worker deadlines"
+)]
+pub(crate) async fn run_pages<K, T, S, O, R, P, F, E, N>(
+    capacity: NonZeroUsize,
+    idle: Duration,
+    stop: &CancellationToken,
+    signal: impl Fn() -> N,
+    (binding, page): (impl Fn(&K) -> Work<T, S, O>, impl Fn(Option<K>) -> P),
+    batch: impl Fn(K, CancellationToken) -> F,
+    observed: impl Fn(bool),
+) -> Result<(), E>
+where
+    K: Clone + Ord + Send + 'static,
+    T: Clone + Ord,
+    S: Clone + Ord,
+    O: Ord,
+    R: Into<Page<K>>,
+    P: Future<Output = Result<R, Failure<E>>>,
+    F: Future<Output = Result<Duration, Failure<E>>> + Send + 'static,
+    E: Send + 'static,
+    N: Future<Output = bool>,
+{
     let admission = stop.child_token();
     let mut fatal = None;
     let retry = Duration::from_secs(5);
@@ -309,7 +359,7 @@ where
             match result.map(Into::into) {
                 Ok(Page { rows, after: Some(cursor), next }) => {
                     after = Some(cursor);
-                    if let Some(delay) = next { wake = wake.min(Instant::now() + delay); }
+                    if let Some(due) = next { wake = wake.min(due); }
                     let now = Instant::now();
                     for key in rows {
                         unseen.remove(&key);
@@ -324,8 +374,8 @@ where
                 Ok(Page { next, .. }) => {
                     candidates.finish_scan(round);
                     first_scan_finished = true;
-                    if let Some(delay) = next {
-                        wake = wake.min(Instant::now() + delay);
+                    if let Some(due) = next {
+                        wake = wake.min(due);
                     }
                     discovery_retry = None;
                     for key in &unseen {
@@ -353,7 +403,7 @@ where
                     return false;
                 }
                 tokio::select! {
-                    () = notify.notified() => true,
+                    invalidate = signal() => invalidate,
                     () = tokio::time::sleep_until(wake) => false,
                 }
             }, if !scanning => {
@@ -391,6 +441,23 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
+    #[tokio::test(start_paused = true)]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "capture the injected monotonic query start"
+    )]
+    async fn discovery_time_counts_toward_row_deadlines() {
+        let start = Instant::now();
+        tokio::time::advance(Duration::from_secs(4)).await;
+        let page = Page::scheduled(
+            start,
+            [(1, Duration::from_secs(3)), (2, Duration::from_secs(5))],
+            None,
+        );
+        assert_eq!(page.rows, [1]);
+        assert_eq!(page.after, Some(2));
+        assert_eq!(page.next, Some(start + Duration::from_secs(5)));
+    }
     #[tokio::test]
     async fn a_saturated_group_hands_its_slot_to_a_waiter_during_page_io() {
         let stop = CancellationToken::new();

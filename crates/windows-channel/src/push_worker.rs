@@ -384,6 +384,11 @@ pub fn registration(
                 |after| {
                     let (app, eligibility) = (&app, &eligibility);
                     async move {
+                        #[allow(
+                            clippy::disallowed_methods,
+                            reason = "anchor database discovery deadlines before page I/O"
+                        )]
+                        let observed = tokio::time::Instant::now();
                         let rows = eligibility
                             .candidates(&app.access.pool, after.map(|(t, d, _)| (t, d)))
                             .await
@@ -403,6 +408,7 @@ pub fn registration(
                             None
                         };
                         Ok(rss_mdm_work_page::Page::scheduled(
+                            observed,
                             rows.into_iter()
                                 .map(|(tenant, device, credential, wait_ms)| {
                                     (

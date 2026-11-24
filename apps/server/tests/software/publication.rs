@@ -346,6 +346,7 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
     let fast_op = directory.services[&fast].operation(c.execution())?;
     let slow_op = directory.services[&slow].operation(c.execution())?;
     let mut held = Vec::new();
+    let scenario = async {
     tokio::time::timeout(Duration::from_secs(15), async {
         first_page.cancelled().await;
         for _ in 0..8 {
@@ -363,12 +364,15 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
         )
     })??;
     // Submit also verifies content. Allow this admission read, keeping all worker reads held.
-    let (fast_record, ()) = tokio::join!(submit(&fast_op, &brew), async {
-        let (id, release) = observed.recv().await.unwrap();
-        assert_eq!(id, brew.resource().as_str());
-        release.send(()).unwrap();
-    });
-    let records = [slow_records.remove(&held[0].0).unwrap(), fast_record?];
+    let (fast_record, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::try_join!(submit(&fast_op, &brew), async {
+            let (id,release) = observed.recv().await.ok_or_else(||anyhow::anyhow!("content observer closed"))?;
+            anyhow::ensure!(id==brew.resource().as_str(),"unexpected verification during Brew submit");
+            release.send(()).map_err(|_|anyhow::anyhow!("Brew verification exited"))?;
+            Ok::<_,anyhow::Error>(())
+        })
+    }).await??;
+    let records = [slow_records.remove(&held[0].0).unwrap(), fast_record];
     let visible: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_software_composition.work_scopes(NULL,NULL,NULL) WHERE tenant_id=$1::uuid AND id='p:'||encode($2,'hex')||':'||$3::text)")
         .bind(c.tenant.to_string()).bind(records[1].1.id().digest().bytes().as_slice()).bind(records[1].1.attempt.to_string())
         .fetch_one(&c.operator).await?;
@@ -398,15 +402,17 @@ async fn independent_source_commits_before_slow_content_returns() -> Result<()> 
         anyhow::ensure!(git.status.success());
         Ok::<_,anyhow::Error>(())
     }).await;
+    probe.map_err(|_| anyhow::anyhow!("timed out waiting for the discovered software peer receipt"))??;
+    Ok::<_,anyhow::Error>(records)
+    }.await;
     let drain = stack.shutdown();
+    scan_again.cancel();
     gate.active
         .store(false, std::sync::atomic::Ordering::Release);
     gate.release.cancel();
-    anyhow::ensure!(drain.join().await?.is_clean());
-
-    probe.map_err(|_| {
-        anyhow::anyhow!("timed out waiting for the discovered software peer receipt")
-    })??;
+    let shutdown = drain.join().await;
+    let records = scenario?;
+    anyhow::ensure!(shutdown?.is_clean());
     anyhow::ensure!(matches!(
         slow_op
             .record(&records[0].0, cutoff())

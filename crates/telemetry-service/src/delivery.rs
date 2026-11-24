@@ -53,6 +53,29 @@ use rss_transactional_messaging_postgres::PgOutboxStore;
 use rss_transactional_messaging_runtime::relay::relay_once;
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 struct BatchAuthority<'a>(&'a Batch);
+// Probe eligibility is page payload; retries and exclusivity belong to tenant/epoch.
+#[derive(Clone, Copy)]
+struct RelayScope {
+    id: (uuid::Uuid, i64),
+    probe: bool,
+}
+impl PartialEq for RelayScope {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl Eq for RelayScope {}
+impl Ord for RelayScope {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+impl PartialOrd for RelayScope {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl Authority for BatchAuthority<'_> {
     fn authorize(&self, access: Access<'_>) -> Result<(), rss_timeseries::Error> {
         match access {
@@ -319,14 +342,25 @@ impl Service {
             stop,
             &tokio::sync::Notify::new(),
             (
-                |(tenant, _, _)| tenant,
-                |after: Option<(_, _, bool)>| async move {
-                    self.work_scopes(after.map(|(tenant, epoch, _)| (tenant, epoch)))
+                |candidate: RelayScope| candidate.id.0,
+                |after: Option<RelayScope>| async move {
+                    self.work_scopes(after.map(|row| row.id))
                         .await
+                        .map(|rows| {
+                            rows.into_iter()
+                                .map(|(tenant, epoch, probe)| RelayScope {
+                                    id: (tenant, epoch),
+                                    probe,
+                                })
+                                .collect::<Vec<_>>()
+                        })
                         .map_err(|_| eprintln!("telemetry relay discovery unconfirmed"))
                 },
             ),
-            |(tenant, epoch, probe)| {
+            |RelayScope {
+                 id: (tenant, epoch),
+                 probe,
+             }| {
                 let owner = self.clone();
                 let store = store.clone();
                 let stop = stop.clone();

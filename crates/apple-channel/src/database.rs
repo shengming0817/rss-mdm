@@ -199,6 +199,11 @@ impl Store {
         fresh_epoch: rss_transactional_messaging::fence::Epoch,
         observed_at: i64,
     ) -> Result<rss_mdm_work_page::Page<(uuid::Uuid, uuid::Uuid, i64)>, Error> {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "pair the ADE wall-clock sample with monotonic query start"
+        )]
+        let observed = tokio::time::Instant::now();
         let rows = sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid, i64, i64)>(
             "SELECT * FROM mdm_apple.ade_work_scopes($1,$2,$3,$4,$5)",
         )
@@ -211,6 +216,7 @@ impl Store {
         .await
         .map_err(db)?;
         Ok(rss_mdm_work_page::Page::scheduled(
+            observed,
             rows.into_iter().map(|(tenant, org, epoch, due)| {
                 (
                     (tenant, org, epoch),
