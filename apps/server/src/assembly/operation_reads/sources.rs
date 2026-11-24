@@ -8,6 +8,7 @@ use rss_mdm_query::directory::Position;
 use sqlx::{Postgres, QueryBuilder};
 use std::sync::LazyLock;
 
+#[derive(Clone, Copy)]
 pub(super) enum Owner {
     Command(Command),
     Run(Run),
@@ -16,84 +17,74 @@ pub(super) enum Owner {
 struct Source {
     relation: &'static str,
     identities: Option<&'static str>,
-    command: Option<Command>,
-    run: Option<Run>,
+    owner: Owner,
 }
 
 static COLLECTION: LazyLock<String> =
     LazyLock::new(rss_mdm_inventory_service::collection::execution::queries::relation_sql);
-static SOURCES: LazyLock<[Source; 11]> = LazyLock::new(|| {
-    let source = |relation, command, run| Source {
+static SOURCES: LazyLock<[Source; 13]> = LazyLock::new(|| {
+    use rss_mdm_device_service::control::directory as device;
+    use rss_mdm_software_service::deployment::directory as software;
+    let source = |relation, owner| Source {
         relation,
+        owner,
         identities: None,
-        command,
-        run,
     };
+    // Each physically ordered command or run relation gets its own seek and LIMIT.
+    // Limiting their UNION lets PostgreSQL sort both histories before taking a key.
     [
-        source(CONFIGURATION_RELATION, Some(Command::Configuration), None),
         source(
-            rss_mdm_device_service::control::directory::RELATION_SQL,
-            Some(Command::Device),
-            Some(Run::Device),
+            CONFIGURATION_RELATION,
+            Owner::Command(Command::Configuration),
         ),
+        source(device::COMMAND_RELATION, Owner::Command(Command::Device)),
+        source(device::RUN_RELATION, Owner::Run(Run::Device)),
         source(
-            rss_mdm_software_service::deployment::directory::RELATION_SQL,
-            Some(Command::Software),
-            Some(Run::Software),
+            software::COMMAND_RELATION,
+            Owner::Command(Command::Software),
         ),
+        source(software::RUN_RELATION, Owner::Run(Run::Software)),
         source(
             rss_mdm_registration_service::installation::queries::RELATION_SQL,
-            Some(Command::Registration),
-            None,
+            Owner::Command(Command::Registration),
         ),
         source(
             rss_mdm_registration_service::enrollment::tasks::queries::RELATION_SQL,
-            None,
-            Some(Run::Registration),
+            Owner::Run(Run::Registration),
         ),
         source(
             rss_mdm_device_access_postgres::device_access::execution::queries::RELATION_SQL,
-            None,
-            Some(Run::Access),
+            Owner::Run(Run::Access),
         ),
         source(
             rss_mdm_recovery_credentials::tasks::queries::RELATION_SQL,
-            None,
-            Some(Run::Credential(StorageProfile::Mdm)),
+            Owner::Run(Run::Credential(StorageProfile::Mdm)),
         ),
         source(
             rss_mdm_recovery_credentials::tasks::queries::DA_RELATION_SQL,
-            None,
-            Some(Run::Credential(StorageProfile::Da)),
+            Owner::Run(Run::Credential(StorageProfile::Da)),
         ),
         source(
             rss_mdm_recovery_credentials::native::queries::RELATION_SQL,
-            Some(Command::Recovery),
-            None,
+            Owner::Command(Command::Recovery),
         ),
         Source {
             identities: Some(rss_mdm_script_service::storage::IDENTITY_RELATION),
             ..source(
                 rss_mdm_script_service::queries::RELATION_SQL,
-                None,
-                Some(Run::Script),
+                Owner::Run(Run::Script),
             )
         },
-        source(&COLLECTION, None, Some(Run::Collection)),
+        source(&COLLECTION, Owner::Run(Run::Collection)),
     ]
 });
 
 pub(super) fn owner(row: &Value) -> Result<Owner, Error> {
-    let source = row["source"]
+    row["source"]
         .as_u64()
-        .and_then(|i| SOURCES.get(i as usize))
-        .ok_or(Error::Unavailable(Failure::CommandInvariant))?;
-    match row["kind"].as_str() {
-        Some("command") => source.command.map(Owner::Command),
-        Some("action_run") => source.run.map(Owner::Run),
-        _ => None,
-    }
-    .ok_or(Error::Unavailable(Failure::CommandInvariant))
+        .and_then(|index| SOURCES.get(index as usize))
+        .map(|source| source.owner)
+        .ok_or(Error::Unavailable(Failure::CommandInvariant))
 }
 
 // Bound a sort that has to consume its entire input, independently of how few

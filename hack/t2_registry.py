@@ -84,6 +84,7 @@ MODULES = {
                 'crates/recovery-credentials/schema/da-task-relations.sql',
                 'crates/device-access-postgres/schema/device-access-tasks.sql',
                 'crates/inventory-service/schema/collection-tasks.sql',
+                'crates/device-service/src/control/directory.rs', 'crates/software-service/src/deployment/directory.rs',
                 'crates/device-access-postgres/src/device_access/execution/queries.rs',
                 'apps/server/tests/execution_owners/fixture.rs', 'apps/server/tests/execution_owners/retirement.rs',
                 'crates/script-service/src/queries.rs', 'crates/inventory-service/src/collection/execution/queries.rs',
