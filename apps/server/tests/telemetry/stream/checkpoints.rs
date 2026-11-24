@@ -453,7 +453,7 @@ async fn expired_peer_wait(
     Ok(())
 }
 
-pub(super) async fn reject_trigger_drift(c: &Context, service: &Service) -> Result<()> {
+pub(super) async fn reject_trigger_drift(c: &Context, service: &Arc<Service>) -> Result<()> {
     let saved: String = sqlx::query_scalar(
         "SELECT pg_get_functiondef('mdm_telemetry.invalidate_batch_prefix()'::regprocedure)",
     )
