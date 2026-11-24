@@ -127,18 +127,15 @@ impl Refresh {
                 }
             }
         }
-        if !writes.is_empty() {
-            sqlx::query(include_str!("device_fields/write.sql"))
-                .bind(&tenant)
-                .bind(Value::Array(writes))
-                .execute(&mut *c)
-                .await?;
-        }
-        let after = if devices.len() == PAGE as usize {
-            devices.last().copied()
-        } else {
-            None
-        };
+        sqlx::query(include_str!("device_fields/write.sql"))
+            .bind(&tenant)
+            .bind(Value::Array(writes))
+            .execute(&mut *c)
+            .await?;
+        let after = devices
+            .last()
+            .copied()
+            .filter(|_| devices.len() == PAGE as usize);
         sqlx::query("UPDATE mdm_assets.personnel_cursor SET after_device=$2,next_scan=CASE WHEN $2::uuid IS NULL THEN clock_timestamp()+interval '30 seconds' ELSE clock_timestamp() END WHERE tenant_id=$1::uuid")
             .bind(tenant).bind(after).execute(c).await?;
         Ok(())
