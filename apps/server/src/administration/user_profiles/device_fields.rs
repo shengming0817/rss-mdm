@@ -170,46 +170,7 @@ impl Refresh {
                 .collect::<BTreeMap<_, _>>();
             for row in &subjects {
                 for (role, def) in &field.fields {
-                    let (id, binding_revision, bound) = match role {
-                        DeviceUser::Registration => {
-                            (row.registration, row.registration_revision, None)
-                        }
-                        DeviceUser::Current => {
-                            (row.current, row.current_revision, row.current_until)
-                        }
-                    };
-                    let fact = id.and_then(|id| facts.get(&id));
-                    let scalar = fact
-                        .and_then(|fact| field.value(fact, &groups))
-                        .filter(|v| def.value_type.validate_value(v).is_ok());
-                    let sourced = matches!(
-                        field.attribute,
-                        Attribute::Profile(_) | Attribute::Provider(..)
-                    );
-                    let end = if sourced {
-                        [bound, fact.and_then(|f| f.expires_at)]
-                            .into_iter()
-                            .flatten()
-                            .min()
-                    } else {
-                        bound
-                    };
-                    let source = if sourced {
-                        fact.map(|f| {
-                            json!([
-                                f.snapshot_id,
-                                f.observation_sequence,
-                                f.source_revision,
-                                f.provider_version,
-                                f.collected_at_micros
-                            ])
-                        })
-                    } else {
-                        None
-                    };
-                    // No qualification window is needed for an unknown value.
-                    writes.push(json!({"device":row.device,"field":def.key,"field_version":def.version,"subject":id,"value":scalar,
-                        "valid_until":scalar.as_ref().and(end),"fingerprint":[binding_revision,source]}));
+                    writes.push(field.observation(row, *role, def, &facts, &groups));
                 }
             }
         }
@@ -238,6 +199,51 @@ struct Field {
     after: i64,
 }
 impl Field {
+    fn observation(
+        &self,
+        row: &rss_mdm_device_service::personnel::DeviceSubjects,
+        role: DeviceUser,
+        def: &FieldDefinition,
+        facts: &BTreeMap<Uuid, PersonnelFact>,
+        groups: &BTreeMap<Uuid, Vec<Scalar>>,
+    ) -> Value {
+        let (id, binding_revision, bound) = match role {
+            DeviceUser::Registration => (row.registration, row.registration_revision, None),
+            DeviceUser::Current => (row.current, row.current_revision, row.current_until),
+        };
+        let fact = id.and_then(|id| facts.get(&id));
+        let scalar = fact
+            .and_then(|fact| self.value(fact, groups))
+            .filter(|v| def.value_type.validate_value(v).is_ok());
+        let sourced = matches!(
+            self.attribute,
+            Attribute::Profile(_) | Attribute::Provider(..)
+        );
+        let end = if sourced {
+            [bound, fact.and_then(|f| f.expires_at)]
+                .into_iter()
+                .flatten()
+                .min()
+        } else {
+            bound
+        };
+        let source = if sourced {
+            fact.map(|f| {
+                json!([
+                    f.snapshot_id,
+                    f.observation_sequence,
+                    f.source_revision,
+                    f.provider_version,
+                    f.collected_at_micros
+                ])
+            })
+        } else {
+            None
+        };
+        // No qualification window is needed for an unknown value.
+        json!({"device":row.device,"field":def.key,"field_version":def.version,"subject":id,"value":scalar,
+                        "valid_until":scalar.as_ref().and(end),"fingerprint":[binding_revision,source]})
+    }
     fn value(&self, f: &PersonnelFact, groups: &BTreeMap<Uuid, Vec<Scalar>>) -> Option<Scalar> {
         if matches!(f.status, ProfileStatus::Unavailable) {
             return None;

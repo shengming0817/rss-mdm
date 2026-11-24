@@ -277,4 +277,4 @@ DO $$DECLARE relation text; BEGIN
  END LOOP;
 END$$;
 GRANT SELECT,INSERT ON mdm_assets.personnel_history TO mdm_inventory_runtime;
-GRANT SELECT,INSERT,UPDATE ON mdm_assets.personnel_cursor TO mdm_inventory_runtime;
+GRANT SELECT,INSERT,UPDATE(after_device,next_scan) ON mdm_assets.personnel_cursor TO mdm_inventory_runtime;

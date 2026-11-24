@@ -101,6 +101,9 @@ async fn registration_and_current_fields_share_preview_and_revoke_local_membersh
     let saved = owners
         .create(&c, &proof, Some(membership.criteria.clone()))
         .await?;
+    let task = sqlx::query_scalar("SELECT id FROM mdm_assets.group_tasks WHERE tenant_id=$1::uuid AND target=$2 AND kind='group' AND NOT completed")
+        .bind(c.tenant.to_string()).bind(saved).fetch_one(&c.operator).await?;
+    owners.settle(&c, task).await?;
     let count: i64 = sqlx::query_scalar(
         "SELECT member_count FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2",
     )

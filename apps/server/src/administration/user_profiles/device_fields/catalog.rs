@@ -30,67 +30,7 @@ pub(super) async fn fields(
             bytes += size;
         }
     }
-    let mut fields = Vec::new();
-    let mut add = |attribute, kind: ValueType, profile, after, revision: u64| {
-        fields.push(Field {
-            attribute,
-            profile,
-            after,
-            fields: DeviceUser::ALL
-                .into_iter()
-                .map(|role| (role, role.definition(attribute, revision, kind.clone())))
-                .collect(),
-        });
-    };
-    add(
-        Attribute::Principal,
-        ValueType::String {
-            max_length: 36,
-            allow_empty: false,
-        },
-        None,
-        0,
-        1,
-    );
-    add(Attribute::LocalGroups, personnel::identifiers(), None, 0, 1);
-    for id in providers {
-        for attr in ProviderAttribute::ALL {
-            add(
-                Attribute::Provider(*id, attr),
-                personnel::identifiers(),
-                None,
-                0,
-                1,
-            );
-        }
-    }
-    let definitions=sqlx::query("SELECT field_id,revision,collected_after_micros,value FROM mdm_user_profiles.device_fields ORDER BY field_id LIMIT $1")
-        .bind(rss_mdm_inventory::catalog_capacity() as i64 + 1).fetch_all(&mut *c).await?;
-    for row in definitions {
-        let d: model::DefinitionValue =
-            serde_json::from_value(row.try_get("value")?).map_err(invalid)?;
-        if model::device_path(&d.pointer).is_none() {
-            continue;
-        }
-        let kind = match d.value_type {
-            model::ValueType::String => ValueType::String {
-                max_length: d.max_length.unwrap_or(65536),
-                allow_empty: true,
-            },
-            model::ValueType::Number => ValueType::Number,
-            model::ValueType::Integer => ValueType::Integer,
-            model::ValueType::Boolean => ValueType::Boolean,
-            _ => return Err(invalid("profile type")),
-        };
-        let version = u64::try_from(row.try_get::<i64, _>("revision")?).map_err(invalid)?;
-        add(
-            Attribute::Profile(row.try_get("field_id")?),
-            kind,
-            Some(d),
-            row.try_get("collected_after_micros")?,
-            version,
-        );
-    }
+    let mut fields = desired_fields(c, providers).await?;
     // Keep published attributes first when the shared field catalog is full.
     fields.sort_by_key(|f| {
         !f.fields.iter().any(|(_, d)| {
@@ -155,4 +95,69 @@ pub(super) async fn fields(
         }
     }
     Ok(accepted)
+}
+
+async fn desired_fields(c: &mut PgConnection, providers: &[Uuid]) -> Result<Vec<Field>> {
+    let mut fields = Vec::new();
+    let mut add = |attribute, kind: ValueType, profile, after, revision: u64| {
+        fields.push(Field {
+            attribute,
+            profile,
+            after,
+            fields: DeviceUser::ALL
+                .into_iter()
+                .map(|role| (role, role.definition(attribute, revision, kind.clone())))
+                .collect(),
+        });
+    };
+    add(
+        Attribute::Principal,
+        ValueType::String {
+            max_length: 36,
+            allow_empty: false,
+        },
+        None,
+        0,
+        1,
+    );
+    add(Attribute::LocalGroups, personnel::identifiers(), None, 0, 1);
+    for id in providers {
+        for attr in ProviderAttribute::ALL {
+            add(
+                Attribute::Provider(*id, attr),
+                personnel::identifiers(),
+                None,
+                0,
+                1,
+            );
+        }
+    }
+    let definitions=sqlx::query("SELECT field_id,revision,collected_after_micros,value FROM mdm_user_profiles.device_fields ORDER BY field_id LIMIT $1")
+        .bind(rss_mdm_inventory::catalog_capacity() as i64 + 1).fetch_all(&mut *c).await?;
+    for row in definitions {
+        let d: model::DefinitionValue =
+            serde_json::from_value(row.try_get("value")?).map_err(invalid)?;
+        if model::device_path(&d.pointer).is_none() {
+            continue;
+        }
+        let kind = match d.value_type {
+            model::ValueType::String => ValueType::String {
+                max_length: d.max_length.unwrap_or(65536),
+                allow_empty: true,
+            },
+            model::ValueType::Number => ValueType::Number,
+            model::ValueType::Integer => ValueType::Integer,
+            model::ValueType::Boolean => ValueType::Boolean,
+            _ => return Err(invalid("profile type")),
+        };
+        let version = u64::try_from(row.try_get::<i64, _>("revision")?).map_err(invalid)?;
+        add(
+            Attribute::Profile(row.try_get("field_id")?),
+            kind,
+            Some(d),
+            row.try_get("collected_after_micros")?,
+            version,
+        );
+    }
+    Ok(fields)
 }
