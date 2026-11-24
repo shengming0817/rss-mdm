@@ -538,10 +538,22 @@ pub async fn verify(
 
 // The WebAuthn and Identity owner futures are large in debug builds. Heap-pin each
 // ceremony step so neither this proof nor its enclosing business scenario embeds them.
-pub(super) async fn operation_proof(
+pub(super) fn operation_proof<'a>(
+    c: &'a Context,
+    session_secret: &'a SessionSecret,
+    context: rss_identity_core::step_up::StepUpContext,
+) -> impl Future<Output = Result<wire::Secret>> + 'a {
+    registered_operation_proof(c, session_secret, context, None)
+}
+pub(super) type Authenticator = webauthn_authenticator_rs::WebauthnAuthenticator<
+    webauthn_authenticator_rs::softpasskey::SoftPasskey,
+>;
+
+pub(super) async fn registered_operation_proof(
     c: &Context,
     session_secret: &SessionSecret,
     context: rss_identity_core::step_up::StepUpContext,
+    enrolled: Option<&mut Option<Authenticator>>,
 ) -> Result<wire::Secret> {
     use webauthn_authenticator_rs::{WebauthnAuthenticator, softpasskey::SoftPasskey};
     let origin = url::Url::parse(&c.browser_origin)?;
@@ -551,37 +563,43 @@ pub(super) async fn operation_proof(
         origin.clone(),
     )?;
     let generation = rss_identity_postgres::RpGeneration::new(1)?;
-    let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
-    let session = Box::pin(c.authority.inspect_session(
-        c.execution(),
-        SessionSecret::parse(session_secret.expose().into())?,
-        deadline(),
-    ))
-    .await?;
-    let registration = Box::pin(webauthn.begin_registration(
-        session,
-        generation,
-        "DA business proof".into(),
-        false,
-        rss_identity_postgres::RegistrationAuthorization::First,
-        deadline(),
-    ))
-    .await?;
-    let response = authenticator.do_registration(origin.clone(), registration.options)?;
-    let session = Box::pin(c.authority.inspect_session(
-        c.execution(),
-        SessionSecret::parse(session_secret.expose().into())?,
-        deadline(),
-    ))
-    .await?;
-    Box::pin(webauthn.finish_registration(
-        session,
-        generation,
-        registration.id,
-        response,
-        deadline(),
-    ))
-    .await?;
+    let mut temporary = None;
+    let enrolled = enrolled.unwrap_or(&mut temporary);
+    if enrolled.is_none() {
+        let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
+        let session = Box::pin(c.authority.inspect_session(
+            c.execution(),
+            SessionSecret::parse(session_secret.expose().into())?,
+            deadline(),
+        ))
+        .await?;
+        let registration = Box::pin(webauthn.begin_registration(
+            session,
+            generation,
+            "DA business proof".into(),
+            false,
+            rss_identity_postgres::RegistrationAuthorization::First,
+            deadline(),
+        ))
+        .await?;
+        let response = authenticator.do_registration(origin.clone(), registration.options)?;
+        let session = Box::pin(c.authority.inspect_session(
+            c.execution(),
+            SessionSecret::parse(session_secret.expose().into())?,
+            deadline(),
+        ))
+        .await?;
+        Box::pin(webauthn.finish_registration(
+            session,
+            generation,
+            registration.id,
+            response,
+            deadline(),
+        ))
+        .await?;
+        *enrolled = Some(authenticator);
+    }
+    let authenticator = enrolled.as_mut().context("registered authenticator")?;
     let session = Box::pin(c.authority.inspect_session(
         c.execution(),
         SessionSecret::parse(session_secret.expose().into())?,

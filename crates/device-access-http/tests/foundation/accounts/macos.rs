@@ -229,6 +229,36 @@ async fn scenario(
         other_device.post(&url).json(&ack).send().await?.status(),
         404
     );
+    let mut foreign = c.access.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(Uuid::new_v4().to_string())
+        .execute(&mut *foreign)
+        .await?;
+    let visible: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT FROM rss_da.access_runs WHERE id=$1)")
+            .bind(offer.task_id)
+            .fetch_one(&mut *foreign)
+            .await?;
+    assert!(!visible);
+    foreign.rollback().await?;
+    // The same live TLS peer must not act on a run frozen for another registration epoch.
+    let target: Value = sqlx::query_scalar("SELECT da_target FROM rss_da.access_runs WHERE id=$1")
+        .bind(offer.task_id)
+        .fetch_one(&c.operator)
+        .await?;
+    sqlx::query("UPDATE rss_da.access_runs SET da_target=jsonb_set(da_target,'{epoch}',to_jsonb($2::uuid)) WHERE id=$1")
+        .bind(offer.task_id).bind(Uuid::new_v4()).execute(&c.operator).await?;
+    assert!(
+        material::success::<Option<da::AccountOffer>>(next().await?)
+            .await?
+            .is_none()
+    );
+    assert_eq!(peer.post(&url).json(&ack).send().await?.status(), 403);
+    sqlx::query("UPDATE rss_da.access_runs SET da_target=$2 WHERE id=$1")
+        .bind(offer.task_id)
+        .bind(target)
+        .execute(&c.operator)
+        .await?;
     for incorrect in [
         da::AccountEvent {
             attempt_id: Uuid::new_v4(),
@@ -263,7 +293,13 @@ async fn scenario(
             w::TaskPermit::Start
         )
     );
-    assert!(matches!(t.action, w::AccessAction::Create { .. }) && t.windows.is_none());
+    assert!(
+        matches!(&t.action, w::AccessAction::Create { name, configuration } if name == if binding == id_a { "LocalUser" } else { "localuser" } && configuration == &policy.configuration)
+    );
+    assert!(
+        matches!(t.authorization,w::TaskAuthorization::Policy {policy_id,policy_version} if (policy_id,policy_version)==(policy.id,policy.version))
+    );
+    assert!(t.windows.is_none());
     reject_premature_application(c, &t, Uuid::new_v4(), w::AccessRole::Standard).await?;
     let progress = |id, admin: &Manager| {
         client

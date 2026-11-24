@@ -2,33 +2,24 @@
 pub(super) mod macos;
 use super::*;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use rss_identity_core::session::{BearerSecret, SessionSecret};
+use rss_identity_core::session::SessionSecret;
 use rss_mdm_agent_wire::{da, runtime as w};
 use rss_mdm_device_access_postgres::device_access as access;
 use rss_mdm_recovery_credentials::tasks::device::{Action, Request, State, Status};
 use serde_json::{Value, json};
 
 struct Manager {
+    authenticator: tokio::sync::Mutex<Option<business::Authenticator>>,
     principal: Uuid,
     cookie: String,
     csrf: String,
 }
 impl Manager {
     async fn new(c: &Context, client: &reqwest::Client) -> Result<Self> {
-        let token = material::administrator(c).await?;
-        let principal = c
-            .authority
-            .inspect_bearer(
-                c.execution(),
-                BearerSecret::parse(token)?,
-                platform::deadline(),
-            )
-            .await?
-            .account()
-            .principal
-            .as_uuid();
+        let principal = material::seed_administrator(c, None).await?;
         let (cookie, csrf) = credentials::login(c, client, principal).await?;
         Ok(Self {
+            authenticator: Default::default(),
             principal,
             cookie,
             csrf,
@@ -44,21 +35,21 @@ impl Manager {
         action: Value,
     ) -> Result<()> {
         let session = SessionSecret::parse(self.cookie.split_once('=').unwrap().1.to_owned())?;
-        let p = c
-            .sessions
-            .authenticate(
-                c.execution(),
-                &c.authorization,
-                rss_mdm_authorization_service::credential::RequestCredential::Cookie(
-                    SessionSecret::parse(session.expose().to_owned())?,
-                ),
-                platform::deadline(),
-            )
-            .await?;
-        let proof = Box::pin(business::operation_proof(
+        let p = Box::pin(c.sessions.authenticate(
+            c.execution(),
+            &c.authorization,
+            rss_mdm_authorization_service::credential::RequestCredential::Cookie(
+                SessionSecret::parse(session.expose().to_owned())?,
+            ),
+            platform::deadline(),
+        ))
+        .await?;
+        let mut authenticator = self.authenticator.lock().await;
+        let proof = Box::pin(business::registered_operation_proof(
             c,
             &session,
             change.step_up_context(&p, &r.device, binding, &Default::default())?,
+            Some(&mut authenticator),
         ))
         .await?;
         let result:Value=material::success(client.put(format!("{}/api/v1/tenants/{}/devices/{}/device-access/bindings/{binding}",c.browser_origin,c.tenant,r.device))
