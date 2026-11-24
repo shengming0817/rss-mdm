@@ -78,7 +78,7 @@ pub async fn verify(
           "certificate_days":365,"configuration_revision":null,"configuration_lifetime":3600},
         "protection":{"active_file":c.inputs.directory.join("native.key"),"historical_files":[],
           "fingerprint_file":c.inputs.directory.join("fingerprint.key")},"cursor_key_file":cursor,
-        "reports":{"historySeconds":2592000,"historyCount":2,"staleSeconds":900,"bodyBytes":65536,"reportsPerMinute":10,"bytesPerMinute":67108864},"deployment_authorities":authorities,"platform_sso":platform::configuration(&m.directory)?,"enterprise":null,"oidc":null,"recovery":{"active_key":"fixture","key_files":{"fixture":c.inputs.directory.join("native.key")},"recipients":[{"certificate_file":m.directory.join("recovery.pem"),"private_key_file":m.directory.join("recovery.key")}] }
+        "reports":{"historySeconds":2592000,"historyCount":2,"staleSeconds":900,"bodyBytes":65536,"reportsPerMinute":10,"bytesPerMinute":67108864},"deployment_authorities":authorities,"platform_sso":platform::configuration(&m.directory)?,"enterprise":enterprise::deployment(c, m)?,"oidc":null,"recovery":{"active_key":"fixture","key_files":{"fixture":c.inputs.directory.join("native.key")},"recipients":[{"certificate_file":m.directory.join("recovery.pem"),"private_key_file":m.directory.join("recovery.key")}] }
     });
     private(&runtime_file, &serde_json::to_vec(&value)?)?;
     let password_file = m.directory.join("host-password");
@@ -156,7 +156,7 @@ pub async fn verify(
         assert!(!signed_in["csrfToken"].as_str().unwrap().is_empty());
         let response = client
             .get(format!("{base}/session"))
-            .header("cookie", cookie)
+            .header("cookie", &cookie)
             .send()
             .await?;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
@@ -174,7 +174,7 @@ pub async fn verify(
             .send()
             .await?;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
-        let cookie = response
+        let business_cookie = response
             .headers()
             .get("set-cookie")
             .unwrap()
@@ -187,12 +187,20 @@ pub async fn verify(
                 "{origin}/api/v1/tenants/{}/da/pki/da_device/trust",
                 c.tenant
             ))
-            .header("cookie", cookie)
+            .header("cookie", business_cookie)
             .send()
             .await?;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let observed: rss_mdm_agent_wire::pki::Trust = response.json().await?;
         assert_eq!(observed.purpose, rss_mdm_agent_wire::pki::Purpose::DaDevice);
+        Box::pin(enterprise::verify(
+            c,
+            &client,
+            business_cookie,
+            management,
+            &cookie,
+        ))
+        .await?;
         vault_user_http(c, &client, &origin).await?;
         Ok::<(), anyhow::Error>(())
     }

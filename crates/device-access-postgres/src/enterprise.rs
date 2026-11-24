@@ -91,6 +91,30 @@ pub enum Record {
     Subject(Subject),
     WindowsKey(WindowsSource),
 }
+fn valid_rp(id: &str, callback: &str, capabilities: &[ProofKind]) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+        && url::Url::parse(callback).is_ok_and(|url| {
+            url.scheme() == "https"
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.fragment().is_none()
+                && url.query().is_none()
+                && url.as_str() == callback
+        })
+        && match capabilities {
+            [_] => true,
+            [first, second] => first != second,
+            _ => false,
+        }
+}
+fn valid_fingerprint(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
 fn text(s: &str) -> bool {
     !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control)
 }
@@ -117,23 +141,7 @@ impl Change {
                 capabilities,
                 ..
             } => {
-                let url = url::Url::parse(callback).map_err(|_| Error::Malformed)?;
-                if id.is_empty()
-                    || id.len() > 64
-                    || !id
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-                    || url.scheme() != "https"
-                    || url.host_str().is_none()
-                    || !url.username().is_empty()
-                    || url.password().is_some()
-                    || url.fragment().is_some()
-                    || url.query().is_some()
-                    || url.as_str() != callback
-                    || capabilities.is_empty()
-                    || capabilities.len() > 2
-                    || capabilities.len() == 2 && capabilities[0] == capabilities[1]
-                {
+                if !valid_rp(id, callback, capabilities) {
                     return Err(Error::Malformed);
                 }
             }
@@ -249,8 +257,7 @@ impl Service {
         self.proof(actor, audit)?;
         let context = input.context(actor, target_fingerprint)?;
         if matches!(input.configuration, Configuration::RelyingParty { .. })
-            && !target_fingerprint
-                .is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+            && !target_fingerprint.is_some_and(valid_fingerprint)
         {
             return Err(Error::Configuration);
         }
@@ -462,22 +469,117 @@ pub fn verify_signature(
     .map_err(|_| Error::Unauthorized)
 }
 
+/// Original committed application state exposed to the saving administrator.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApplicationReceipt {
+    pub operation_id: Uuid,
+    pub application_id: String,
+    pub revision: i64,
+    pub enabled: bool,
+}
+
+/// Coordinates shared by the application recovery endpoint and operation diagnostics.
+pub enum EnterpriseReceipt {
+    Application(ApplicationReceipt),
+    Other {
+        object: String,
+        revision: i64,
+        enabled: Option<bool>,
+    },
+}
+
+impl EnterpriseReceipt {
+    fn decode(id: Uuid, raw: &str, application_only: bool) -> Result<Self, Error> {
+        let document: serde_json::Value = serde_json::from_str(raw).map_err(|_| Error::Corrupt)?;
+        // The receipt table also serves other DA owners. Only our closed tags claim a row.
+        match document.get("kind").and_then(serde_json::Value::as_str) {
+            Some("relying_party") => {}
+            Some("subject" | "windows_key") if !application_only => {}
+            _ => return Err(Error::NotFound),
+        }
+        // Typed decoding must see the original bytes so duplicate fields remain detectable.
+        match serde_json::from_str(raw).map_err(|_| Error::Corrupt)? {
+            Record::RelyingParty(rp) => {
+                if rp.revision < 1
+                    || !valid_rp(&rp.id, &rp.callback, &rp.capabilities)
+                    || !valid_fingerprint(&rp.target_fingerprint)
+                {
+                    return Err(Error::Corrupt);
+                }
+                Ok(Self::Application(ApplicationReceipt {
+                    operation_id: id,
+                    application_id: rp.id,
+                    revision: rp.revision,
+                    enabled: rp.enabled,
+                }))
+            }
+            Record::Subject(v) => Ok(Self::Other {
+                object: v.person.principal.to_string(),
+                revision: v.revision,
+                enabled: Some(v.enabled),
+            }),
+            Record::WindowsKey(v) => Ok(Self::Other {
+                object: v.id.to_string(),
+                revision: v.version,
+                enabled: None,
+            }),
+        }
+    }
+
+    fn application(self, expected_id: Option<&str>) -> Result<ApplicationReceipt, Error> {
+        match self {
+            Self::Application(v)
+                if expected_id.is_none_or(|expected| expected == v.application_id) =>
+            {
+                Ok(v)
+            }
+            _ => Err(Error::NotFound),
+        }
+    }
+}
+
 impl Service {
     /// Read the original result under the current session and original actor namespace.
     pub async fn enterprise_operation(
         &self,
         actor: &AuthorizedPrincipal,
         id: Uuid,
-    ) -> Result<Record, Error> {
+    ) -> Result<EnterpriseReceipt, Error> {
+        self.read_enterprise_operation(actor, id, false).await
+    }
+
+    pub async fn application_operation(
+        &self,
+        actor: &AuthorizedPrincipal,
+        id: Uuid,
+        expected_id: Option<&str>,
+    ) -> Result<ApplicationReceipt, Error> {
+        self.read_enterprise_operation(actor, id, true)
+            .await?
+            .application(expected_id)
+    }
+
+    async fn read_enterprise_operation(
+        &self,
+        actor: &AuthorizedPrincipal,
+        id: Uuid,
+        application_only: bool,
+    ) -> Result<EnterpriseReceipt, Error> {
         if id.is_nil() {
             return Err(Error::Malformed);
         }
-        self.read_with_session(actor,(actor,id),|ctx,c|Box::pin(async move{
-            let(actor,id)=*ctx;
-            authorize(c,actor,Permission::EnterpriseApplicationsRead).await?;
-            let raw:Option<String>=sqlx::query_scalar("SELECT result FROM rss_da.operations WHERE tenant_id=$1::uuid AND instance=$2::uuid AND actor=$3::uuid AND operation_id=$4")
-                .bind(actor.tenant_id()).bind(actor.instance_id()).bind(actor.principal_id()).bind(id).fetch_optional(c).await.map_err(db)?;
-            serde_json::from_str(&raw.ok_or(Error::NotFound)?).map_err(|_|Error::NotFound)
-        })).await
+        self.read_with_session(actor, (actor, id, application_only), |ctx, c| {
+            Box::pin(async move {
+                let (actor, id, application_only) = *ctx;
+                authorize(c, actor, Permission::EnterpriseApplicationsRead).await?;
+                let raw: String = sqlx::query_scalar(
+                    "SELECT result FROM rss_da.operations WHERE tenant_id=$1::uuid AND instance=$2::uuid AND actor=$3::uuid AND operation_id=$4",
+                )
+                .bind(actor.tenant_id()).bind(actor.instance_id()).bind(actor.principal_id()).bind(id)
+                .fetch_optional(c).await.map_err(db)?.ok_or(Error::NotFound)?;
+                EnterpriseReceipt::decode(id, &raw, application_only)
+            })
+        }).await
     }
 }

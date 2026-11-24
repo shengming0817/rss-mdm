@@ -256,6 +256,11 @@ RP assertion issuer 必须各自独立；Keycloak 专用 client 信任对应 ES2
 写入用同路径 `/step-up` 发起证明。配置种类为 relying_party、subject、windows_key；
 operationId/expectedRevision 保护幂等和 CAS。RP 固定 HTTPS callback、能力和部署指纹；
 修改部署配置后先显式更新 RP revision，旧交接立即拒绝。稳定 IdP sub 永久归属其人员，不能重新分配给另一主体。
+业务 RP 保存响应丢失时，原操作者使用当前管理会话 GET 同路径的
+`/operations/{operationId}`，可加 `?applicationId=<原始 RP ID>` 核对对象。
+首次保存只需原操作 ID。成功响应中的应用 ID、修订和启用状态取自该次提交；
+当前配置通过详情 `/configuration/rp:<id>` 读取。404 `operation_not_found` 表示没有匹配的原回执，
+应保留结果未知并避免自动重提。会话失效须重新认证，撤权或服务故障按相应错误处理。
 Windows key 登记使用 wire 的 KeyRegistration.signing_bytes，证明只覆盖持钥，不替代原生用户在场证明。
 
 

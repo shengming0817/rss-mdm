@@ -5,6 +5,7 @@ mod business;
 mod configuration;
 mod context;
 mod credentials;
+mod enterprise;
 mod exports;
 mod host;
 mod installation;

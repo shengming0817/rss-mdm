@@ -134,7 +134,7 @@ pub(super) fn signed(value: &Observation) -> Result<pg::evidence::SignedObservat
     })
 }
 // Committed DA business effects; Identity and request-completion facts have separate owners.
-async fn counts(c: &Context) -> Result<(i64, i64, i64, i64)> {
+pub(super) async fn counts(c: &Context) -> Result<(i64, i64, i64, i64)> {
     Ok(sqlx::query_as("SELECT (SELECT count(*) FROM rss_da.bindings WHERE tenant_id=$1::uuid),(SELECT count(*) FROM rss_da.operations WHERE tenant_id=$1::uuid),(SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='da.business'),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid)")
         .bind(c.tenant.to_string()).fetch_one(&c.operator).await?)
 }

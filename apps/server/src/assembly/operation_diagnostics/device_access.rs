@@ -170,27 +170,24 @@ impl Diagnostics {
         let mut result = ReceiptSummary::new(id);
         match l.owner {
             O::EnterpriseConfiguration => {
-                use rss_mdm_device_access_postgres::enterprise::Record;
-                let v = service
+                use rss_mdm_device_access_postgres::enterprise::EnterpriseReceipt;
+                let (object, revision, enabled) = match service
                     .enterprise_operation(p, id)
                     .await
-                    .map_err(da_error)?;
-                match v {
-                    Record::RelyingParty(v) => {
-                        result.object = Some(v.id);
-                        result.revision = Some(v.revision);
-                        result.enabled = Some(v.enabled);
+                    .map_err(da_error)?
+                {
+                    EnterpriseReceipt::Application(v) => {
+                        (v.application_id, v.revision, Some(v.enabled))
                     }
-                    Record::Subject(v) => {
-                        result.object = Some(v.person.principal.to_string());
-                        result.revision = Some(v.revision);
-                        result.enabled = Some(v.enabled);
-                    }
-                    Record::WindowsKey(v) => {
-                        result.object = Some(v.id.to_string());
-                        result.revision = Some(v.version);
-                    }
-                }
+                    EnterpriseReceipt::Other {
+                        object,
+                        revision,
+                        enabled,
+                    } => (object, revision, enabled),
+                };
+                result.object = Some(object);
+                result.revision = Some(revision);
+                result.enabled = enabled;
             }
             O::DaPublication => {
                 let v = service
