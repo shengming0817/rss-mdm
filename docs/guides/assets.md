@@ -428,3 +428,34 @@ instance/owner/id，即使属于同租户其他用户，也只返回最小身份
 该独立消费视图由 `python3 hack/http_contract_artifact.py --write` 从完整 HTTP 契约的真实挂载输入/输出投影；不再维护单独的类型清单。
 类型源是真实 Resource HTTP 输入/输出和字段目录类型，不维护 Web 手写结构副本。
 企业采集的字段映射随签名任务/遥测配置下发；Agent 本地打包能力和桌面设置权限不受该接口控制。
+
+### 按设备的用户属性编写条件
+
+字段目录的 `deviceUser` 元数据给出用户字段、属性类型和来源标识。规则编辑器使用目录返回的 `key`、`valueType` 和 `operations`。两个用户字段可以出现在同一个普通 `and` 或 `or` 条件中。
+
+| 设备字段前缀 | 取值依据 | 读取权限 |
+| --- | --- | --- |
+| `device.registration_user` | 此设备的注册用户 | 对目标设备的 Enrollment |
+| `device.current_user` | 有效设备凭据所绑定的活动会话，平台登录同时校验平台绑定 | InventorySensitiveRead |
+
+`principal_id` 支持字符串比较。`local_group_ids` 和指定 IdP 的组标识支持 `contains_any`、`contains_all`，另需 UserGroupRead。指定 IdP 的 `department_ids` 仅含直属部门，`department_ancestor_ids` 包含直属部门及全部祖先，另需 DepartmentRead。配置的资料标量以映射 ID 为字段标识，另需 UserProfilesRead。参与条件的映射必须启用、允许管理员查看且为非敏感标量。
+
+例如，用普通谓词匹配注册用户所属的本地组：
+
+```json
+{
+  "assetContext": "endpoint",
+  "criteria": {
+    "selector": { "kind": "device" },
+    "quantifier": "one",
+    "criteria": {
+      "kind": "predicate",
+      "field": "device.registration_user.local_group_ids",
+      "op": "contains_any",
+      "values": [{ "kind": "string", "value": "c7224bfb-cdfa-4952-ab53-7a46db1c1fce" }]
+    }
+  }
+}
+```
+
+通过 `POST /groups/previews` 预览，使用现有 Group 写入操作保存同一个条件。保存后的设备组可被 Scope 和 Policy 引用。已确认的空集合能够给出不匹配结果，用户缺失、资料过期或关联端点冲突则产生 Unknown。后台按租户和设备分页读取来源，在同一事务提交字段事实、资产变更和重算通知。来源变化或有效期截止时，消费方重新检查组输入。
