@@ -14,53 +14,11 @@ impl Operations {
     ) -> Result<Page, Error> {
         let (p, grant) = authority;
         let evidence_requested = q.selects("evidence");
-        let mut summaries = BTreeMap::new();
-        if evidence_requested {
-            let (mut device, mut software, mut script, mut collection) =
-                (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-            for row in &page.items {
-                let group = match sources::owner(row)? {
-                    Owner::Run(Run::Device) => &mut device,
-                    Owner::Run(Run::Software) => &mut software,
-                    Owner::Run(Run::Script) => &mut script,
-                    Owner::Run(Run::Collection) => &mut collection,
-                    _ => continue,
-                };
-                group.push(selection::id(row)?);
-            }
-            let tenant = p.binding().tenant();
-            summaries.extend(
-                rss_mdm_device_service::control::directory::run_summaries_on(c, tenant, device)
-                    .await
-                    .map_err(execution_fault)?
-                    .into_iter()
-                    .map(|(id, v)| (id, Evidence::Device(v))),
-            );
-            summaries.extend(
-                rss_mdm_software_service::deployment::directory::run_summaries_on(
-                    c, tenant, software,
-                )
-                .await
-                .map_err(software_fault)?
-                .into_iter()
-                .map(|(id, v)| (id, Evidence::Software(v))),
-            );
-            summaries.extend(
-                rss_mdm_script_service::queries::run_summaries_on(c, tenant, script)
-                    .await
-                    .map_err(super::super::task_reads::script_fault)?
-                    .into_iter()
-                    .map(|(id, v)| (id, Evidence::Script(Box::new(v)))),
-            );
-            summaries.extend(
-                rss_mdm_inventory_service::collection::execution::queries::run_summaries_on(
-                    c, tenant, collection,
-                )
-                .await?
-                .into_iter()
-                .map(|(id, v)| (id, Evidence::Collection(Box::new(v)))),
-            );
-        }
+        let mut summaries = if evidence_requested {
+            summaries_on(c, p.binding().tenant(), &page.items).await?
+        } else {
+            BTreeMap::new()
+        };
 
         let tenant = p.tenant_id();
         let mut items = Vec::with_capacity(page.items.len());
@@ -170,4 +128,55 @@ impl Operations {
             next_cursor: page.next_cursor,
         })
     }
+}
+
+async fn summaries_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    rows: &[Value],
+) -> Result<BTreeMap<Uuid, Evidence>, Error> {
+    let mut summaries = BTreeMap::new();
+    let (mut device, mut software, mut script, mut collection) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for row in rows {
+        let group = match sources::owner(row)? {
+            Owner::Run(Run::Device) => &mut device,
+            Owner::Run(Run::Software) => &mut software,
+            Owner::Run(Run::Script) => &mut script,
+            Owner::Run(Run::Collection) => &mut collection,
+            _ => continue,
+        };
+        group.push(selection::id(row)?);
+    }
+
+    summaries.extend(
+        rss_mdm_device_service::control::directory::run_summaries_on(c, tenant, device)
+            .await
+            .map_err(execution_fault)?
+            .into_iter()
+            .map(|(id, v)| (id, Evidence::Device(v))),
+    );
+    summaries.extend(
+        rss_mdm_software_service::deployment::directory::run_summaries_on(c, tenant, software)
+            .await
+            .map_err(software_fault)?
+            .into_iter()
+            .map(|(id, v)| (id, Evidence::Software(v))),
+    );
+    summaries.extend(
+        rss_mdm_script_service::queries::run_summaries_on(c, tenant, script)
+            .await
+            .map_err(super::super::task_reads::script_fault)?
+            .into_iter()
+            .map(|(id, v)| (id, Evidence::Script(Box::new(v)))),
+    );
+    summaries.extend(
+        rss_mdm_inventory_service::collection::execution::queries::run_summaries_on(
+            c, tenant, collection,
+        )
+        .await?
+        .into_iter()
+        .map(|(id, v)| (id, Evidence::Collection(Box::new(v)))),
+    );
+    Ok(summaries)
 }

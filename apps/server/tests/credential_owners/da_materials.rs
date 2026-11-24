@@ -392,9 +392,9 @@ pub(super) async fn verify(
     Ok(())
 }
 
-/// The DA delivery is hidden from MDM pages but shares the task identity namespace
-/// used when following a credential run's detail URL. Keep the conflicting seed local.
-async fn directory_collision(
+/// A DA-targeted run belongs to the standalone DA path. The same UUID on a visible
+/// credential run remains unambiguous under the MDM command read role and its RLS.
+async fn directory_da_target_isolation(
     c: &Context,
     binding: &access::Binding,
     agent: &DevicePrincipal,
@@ -422,7 +422,7 @@ async fn directory_collision(
         .bind(serde_json::to_value(rss_mdm_task_state::RunState::new(at+300,at)?)?)
         .bind(serde_json::json!({"installation":agent.installation(),"epoch":epoch,"authority":null}))
         .execute(&mut *tx).await?;
-    sqlx::query("SET LOCAL ROLE mdm_access")
+    sqlx::query("SET LOCAL ROLE mdm_command_runtime")
         .execute(&mut *tx)
         .await?;
     let q = SCHEMA.parse(&format!("filter=id=={id}"))?;
@@ -437,8 +437,8 @@ async fn directory_collision(
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].0["id"], serde_json::json!(id));
     assert!(
-        rows[0].1,
-        "the candidate shares its UUID with a targeted DA run"
+        !rows[0].1,
+        "the MDM read role excludes the standalone DA target"
     );
     tx.rollback().await?;
     Ok(())
@@ -528,7 +528,7 @@ async fn verify_access_recovery(
     )
     .await
     .context("prepare the RSS credential execution owner and frozen run")?;
-    directory_collision(c, binding, agent, credential_id).await?;
+    directory_da_target_isolation(c, binding, agent, credential_id).await?;
     let mut tx = seed(c).await?;
     sqlx::query("INSERT INTO rss_da.access_runs (expected_epoch,tenant_id, id, policy_version, origin, access_binding, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint) VALUES (current_setting('rss.execution_epoch')::bigint,$1, $2, $3, '\"policy\"', $4, $5, $6, $7, $7, $8, $9, $10)")
         .bind(binding.tenant).bind(id).bind(binding.policy_version).bind(serde_json::to_value(binding)?)

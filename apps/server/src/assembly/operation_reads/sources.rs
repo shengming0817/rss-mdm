@@ -15,7 +15,6 @@ pub(super) enum Owner {
 
 struct Source {
     relation: &'static str,
-    identities: Option<&'static str>,
     command: Option<Command>,
     run: Option<Run>,
 }
@@ -25,7 +24,6 @@ static COLLECTION: LazyLock<String> =
 static SOURCES: LazyLock<[Source; 11]> = LazyLock::new(|| {
     let source = |relation, command, run| Source {
         relation,
-        identities: None,
         command,
         run,
     };
@@ -51,11 +49,11 @@ static SOURCES: LazyLock<[Source; 11]> = LazyLock::new(|| {
             None,
             Some(Run::Registration),
         ),
-        Source {
-            identities: Some(rss_mdm_device_access_postgres::device_access::execution::storage::IDENTITY_RELATION),
-            ..source(rss_mdm_device_access_postgres::device_access::execution::queries::RELATION_SQL,
-                None, Some(Run::Access))
-        },
+        source(
+            rss_mdm_device_access_postgres::device_access::execution::queries::RELATION_SQL,
+            None,
+            Some(Run::Access),
+        ),
         source(
             rss_mdm_recovery_credentials::tasks::queries::RELATION_SQL,
             None,
@@ -211,16 +209,11 @@ fn ambiguity(sql: &mut QueryBuilder<Postgres>, page: bool) {
         sql.push(",candidate_keys AS MATERIALIZED (SELECT array_agg(id) AS ids FROM selected)");
     }
     sql.push(",ambiguous AS (SELECT memberships.id FROM (");
-    for (i, source) in SOURCES.iter().enumerate() {
+    for i in 0..SOURCES.len() {
         if i > 0 {
             sql.push(" UNION ALL ");
         }
-        sql.push("SELECT id FROM ");
-        if let Some(identities) = source.identities {
-            sql.push("(").push(identities).push(") owned");
-        } else {
-            sql.push("owner_").push(i);
-        }
+        sql.push("SELECT id FROM owner_").push(i);
         if page {
             sql.push(" WHERE id=ANY((SELECT ids FROM candidate_keys)::uuid[])");
         }

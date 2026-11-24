@@ -46,7 +46,7 @@ async fn plans(h: &Harness, device: Uuid, busy_device: Uuid, after: Uuid) -> Res
     sqlx::query("ANALYZE mdm_script.runs")
         .execute(&mut *tx)
         .await?;
-    sqlx::query("SET LOCAL ROLE mdm_access")
+    sqlx::query("SET LOCAL ROLE mdm_command_runtime")
         .execute(&mut *tx)
         .await?;
     let artifacts = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -80,21 +80,7 @@ async fn plans(h: &Harness, device: Uuid, busy_device: Uuid, after: Uuid) -> Res
             artifacts.join(format!("{label}.json")),
             serde_json::to_vec_pretty(&plan)?,
         )?;
-        let mut nodes = vec![&plan[0]["Plan"]];
-        let mut selected = None;
-        let mut script_rows = 0;
-        while let Some(node) = nodes.pop() {
-            let actual = node["Actual Rows"].as_u64().unwrap();
-            let loops = node["Actual Loops"].as_u64().unwrap();
-            if node["Subplan Name"] == "CTE selected" {
-                selected = Some(actual * loops);
-            }
-            if node["Relation Name"] == "runs" && node["Schema"] == "mdm_script" {
-                script_rows +=
-                    loops * (actual + node["Rows Removed by Filter"].as_u64().unwrap_or(0));
-            }
-            nodes.extend(node["Plans"].as_array().into_iter().flatten());
-        }
+        let (selected, script_rows) = plan_rows(&plan);
         let expected = match label {
             "statistics" => 4,
             "wide-statistics" => 4096,
@@ -111,6 +97,24 @@ async fn plans(h: &Harness, device: Uuid, busy_device: Uuid, after: Uuid) -> Res
     Ok(())
 }
 
+fn plan_rows(plan: &Value) -> (Option<u64>, u64) {
+    let mut nodes = vec![&plan[0]["Plan"]];
+    let mut selected = None;
+    let mut script_rows = 0;
+    while let Some(node) = nodes.pop() {
+        let actual = node["Actual Rows"].as_u64().unwrap();
+        let loops = node["Actual Loops"].as_u64().unwrap();
+        if node["Subplan Name"] == "CTE selected" {
+            selected = Some(actual * loops);
+        }
+        if node["Relation Name"] == "runs" && node["Schema"] == "mdm_script" {
+            script_rows += loops * (actual + node["Rows Removed by Filter"].as_u64().unwrap_or(0));
+        }
+        nodes.extend(node["Plans"].as_array().into_iter().flatten());
+    }
+    (selected, script_rows)
+}
+
 #[tokio::test]
 #[ignore = "T2: scoped PostgreSQL scans, exact statistics, live keysets and candidate-only ownership"]
 async fn scoped_pages_and_statistics_charge_only_eligible_history() -> Result<()> {
@@ -122,6 +126,10 @@ async fn scoped_pages_and_statistics_charge_only_eligible_history() -> Result<()
     result
 }
 
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "exercise grant, filter, continuation and corrupt-identity boundaries against the same committed fixture"
+)]
 async fn verify(h: &mut Harness, peer: &Context) -> Result<()> {
     let (_, version) = h.policy("budget-script").await?;
     let hidden = h.object.clone();
@@ -185,51 +193,20 @@ async fn verify(h: &mut Harness, peer: &Context) -> Result<()> {
         native.device
     );
     let filter = format!("id!={extra}");
-    for expression in [&filter, &matching] {
-        let mut cursor = None::<String>;
-        for expected in [first, second, command_id] {
-            // Same non-null policy sorts by id, followed by the command's NULL policy.
-            let mut pairs = vec![
-                ("filter", expression.as_str()),
-                ("sort", "policy"),
-                ("limit", "1"),
-                ("fields", "id,kind"),
-            ];
-            if let Some(token) = cursor.as_deref() {
-                pairs.push(("cursor", token));
-            }
-            let (status, page) = http(&router, &path, &pairs).await?;
-            assert_eq!(status, axum::http::StatusCode::OK, "{page}");
-            assert_eq!(page["items"].as_array().unwrap().len(), 1);
-            assert_eq!(page["items"][0]["id"], json!(expected));
-            cursor = page["nextCursor"].as_str().map(str::to_owned);
-            assert_eq!(cursor.is_some(), expected != command_id);
-        }
-        let (status, totals) = http(&router, &stats_path, &[("filter", expression)]).await?;
-        assert_eq!(status, axum::http::StatusCode::OK, "{totals}");
-        assert_eq!(
-            totals["statistics"],
-            json!({"total":3,"commands":1,"actionRuns":2,"unknown":0})
-        );
-    }
-    let classified_only = format!(
-        "id!={extra};(device=={},authorization.state==not_applicable)",
-        hidden.members[0].device
-    );
-    let (status, filtered) = http(
+    filtered_pages(
         &router,
         &path,
-        &[("filter", &classified_only), ("fields", "id")],
+        [&filter, &matching],
+        [first, second, command_id],
     )
     .await?;
-    assert_eq!(status, axum::http::StatusCode::OK);
-    assert_eq!(filtered["items"], json!([{"id":first},{"id":second}]));
-    let (status, filtered) = http(&router, &stats_path, &[("filter", &classified_only)]).await?;
-    assert_eq!(status, axum::http::StatusCode::OK);
-    assert_eq!(
-        filtered["statistics"],
-        json!({"total":2,"commands":0,"actionRuns":2,"unknown":0})
-    );
+    filtered_totals(
+        &router,
+        &path,
+        hidden.members[0].device.into_uuid(),
+        [first, second, extra],
+    )
+    .await?;
     // Unclassified lists stop at the first lookahead even if the eligible set is larger.
     assert_eq!(
         http(&router, &path, &[("limit", "1"), ("fields", "id")])
@@ -239,32 +216,7 @@ async fn verify(h: &mut Harness, peer: &Context) -> Result<()> {
     );
     let request = h.c.read_auth(proof.clone());
     let audit = h.c.request(&proof)?;
-    for raw in ["", "filter=authorization.state==blocked"] {
-        let q = SCHEMA.statistics(raw)?;
-        assert!(matches!(
-            operations.statistics(&request, &q, &audit).await,
-            Err(Error::Unavailable(Failure::Capacity))
-        ));
-        assert_eq!(
-            http(
-                &router,
-                &stats_path,
-                &if raw.is_empty() {
-                    vec![]
-                } else {
-                    vec![("filter", "authorization.state==blocked")]
-                }
-            )
-            .await?
-            .0,
-            axum::http::StatusCode::SERVICE_UNAVAILABLE
-        );
-    }
-    let q = SCHEMA.parse("filter=authorization.state==blocked&limit=1&fields=id")?;
-    assert!(matches!(
-        operations.directory(&request, &q, &codec, &audit).await,
-        Err(Error::Unavailable(Failure::Capacity))
-    ));
+    over_budget(&operations, &request, &audit, &codec, &router, &stats_path).await?;
     plans(
         h,
         native.device.into_uuid(),
@@ -294,5 +246,107 @@ async fn verify(h: &mut Harness, peer: &Context) -> Result<()> {
     .await?;
     assert_eq!(status, axum::http::StatusCode::OK);
     assert_eq!(page["items"], json!([{"id":first}]));
+    Ok(())
+}
+async fn filtered_pages(
+    router: &axum::Router,
+    path: &str,
+    expressions: [&str; 2],
+    ids: [Uuid; 3],
+) -> Result<()> {
+    let stats_path = format!("{path}/statistics");
+    let [first, second, command_id] = ids;
+    for expression in expressions {
+        let mut cursor = None::<String>;
+        for expected in [first, second, command_id] {
+            // Same non-null policy sorts by id, followed by the command's NULL policy.
+            let mut pairs = vec![
+                ("filter", expression),
+                ("sort", "policy"),
+                ("limit", "1"),
+                ("fields", "id,kind"),
+            ];
+            if let Some(token) = cursor.as_deref() {
+                pairs.push(("cursor", token));
+            }
+            let (status, page) = http(router, path, &pairs).await?;
+            assert_eq!(status, axum::http::StatusCode::OK, "{page}");
+            assert_eq!(page["items"].as_array().unwrap().len(), 1);
+            assert_eq!(page["items"][0]["id"], json!(expected));
+            cursor = page["nextCursor"].as_str().map(str::to_owned);
+            assert_eq!(cursor.is_some(), expected != command_id);
+        }
+        let (status, totals) = http(router, &stats_path, &[("filter", expression)]).await?;
+        assert_eq!(status, axum::http::StatusCode::OK, "{totals}");
+        assert_eq!(
+            totals["statistics"],
+            json!({"total":3,"commands":1,"actionRuns":2,"unknown":0})
+        );
+    }
+    Ok(())
+}
+
+async fn filtered_totals(
+    router: &axum::Router,
+    path: &str,
+    hidden: Uuid,
+    ids: [Uuid; 3],
+) -> Result<()> {
+    let [first, second, extra] = ids;
+    let stats_path = format!("{path}/statistics");
+    let classified_only = format!(
+        "id!={extra};(device=={},authorization.state==not_applicable)",
+        hidden
+    );
+    let (status, filtered) = http(
+        router,
+        path,
+        &[("filter", &classified_only), ("fields", "id")],
+    )
+    .await?;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(filtered["items"], json!([{"id":first},{"id":second}]));
+    let (status, filtered) = http(router, &stats_path, &[("filter", &classified_only)]).await?;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(
+        filtered["statistics"],
+        json!({"total":2,"commands":0,"actionRuns":2,"unknown":0})
+    );
+    Ok(())
+}
+async fn over_budget(
+    operations: &Operations,
+    request: &rss_mdm_authorization_service::context::RequestAuth,
+    audit: &RequestAudit,
+    codec: &CursorCodec,
+    router: &axum::Router,
+    stats_path: &str,
+) -> Result<()> {
+    for raw in ["", "filter=authorization.state==blocked"] {
+        let q = SCHEMA.statistics(raw)?;
+        assert!(matches!(
+            operations.statistics(request, &q, audit).await,
+            Err(Error::Unavailable(Failure::Capacity))
+        ));
+        assert_eq!(
+            http(
+                router,
+                stats_path,
+                &if raw.is_empty() {
+                    vec![]
+                } else {
+                    vec![("filter", "authorization.state==blocked")]
+                }
+            )
+            .await?
+            .0,
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+    let q = SCHEMA.parse("filter=authorization.state==blocked&limit=1&fields=id")?;
+    assert!(matches!(
+        operations.directory(request, &q, codec, audit).await,
+        Err(Error::Unavailable(Failure::Capacity))
+    ));
     Ok(())
 }
