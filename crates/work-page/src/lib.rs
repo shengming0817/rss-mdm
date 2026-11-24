@@ -270,7 +270,7 @@ where
     clippy::disallowed_methods,
     reason = "process-owned monotonic worker deadlines"
 )]
-pub(crate) async fn run_pages<K, T, S, O, R, P, F, E, N>(
+pub(crate) async fn run_pages<K, T, S, O, R, P, F, E, N, D>(
     capacity: NonZeroUsize,
     idle: Duration,
     stop: &CancellationToken,
@@ -286,7 +286,8 @@ where
     O: Ord,
     R: Into<Page<K>>,
     P: Future<Output = Result<R, Failure<E>>>,
-    F: Future<Output = Result<Duration, Failure<E>>> + Send + 'static,
+    F: Future<Output = Result<D, Failure<E>>> + Send + 'static,
+    D: Into<Option<Duration>> + Send + 'static,
     E: Send + 'static,
     N: Future<Output = bool>,
 {
@@ -298,7 +299,7 @@ where
     let mut pending_page = None;
     let mut first_scan_finished = false;
     let mut first_batches = BTreeSet::new();
-    let mut tasks = JoinSet::<(K, Result<Duration, Failure<E>>)>::new();
+    let mut tasks = JoinSet::<(K, Result<Option<Duration>, Failure<E>>)>::new();
     let mut after = None;
     let mut scanning = true;
     let mut discovery_retry = None;
@@ -318,7 +319,7 @@ where
                 first_batches.insert(key.clone());
             }
             let attempt = batch(key.clone(), admission.clone());
-            tasks.spawn(async move { (key, attempt.await) });
+            tasks.spawn(async move { (key, attempt.await.map(Into::into)) });
         }
         if stop.is_cancelled() {
             break;
@@ -338,17 +339,22 @@ where
                 let delay = match result {
                     Ok(delay) => {
                         failures.remove(&key);
-                        delay.min(idle)
+                        delay.map(|delay| delay.min(idle))
                     }
                     Err(Failure::Fatal(error)) => {fatal = Some(error); break;}
                     Err(Failure::Retry) => {
                         failures.insert(key.clone());
-                        retry
+                        Some(retry)
                     }
                 };
-                let at = Instant::now() + delay;
-                due.insert(key, at);
-                wake = wake.min(at);
+                if let Some(delay) = delay {
+                    let at = Instant::now() + delay;
+                    due.insert(key, at);
+                    wake = wake.min(at);
+                } else {
+                    // This owner supplies eligibility and the next wake on its discovery page.
+                    due.remove(&key);
+                }
                 let failed = discovery_retry.is_some() || !failures.is_empty();
                 if failed || (first_scan_finished && first_batches.is_empty()) {
                     observed(failed);
