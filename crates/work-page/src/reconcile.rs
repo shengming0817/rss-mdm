@@ -14,7 +14,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::sync::Notify;
+use tokio::{sync::Notify, time::Instant};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -26,41 +26,127 @@ pub struct Grant {
     round: Arc<Round>,
 }
 
+// One registration owns one reconciler domain. Positions execute claims, while
+// the tenant retains all acknowledged wake times across position reuse.
 #[derive(Default)]
-struct Positions {
+struct Tenant {
     active: BTreeSet<usize>,
     claiming: Option<usize>,
+    deadlines: BTreeSet<Instant>,
+    immediate: bool,
+    recovery: Option<Instant>,
+    retry: Option<Instant>,
+}
+impl Tenant {
+    fn next(&self, now: Instant) -> Instant {
+        if let Some(retry) = self.retry.filter(|at| *at > now) {
+            return retry;
+        }
+        if self.immediate {
+            return now;
+        }
+        self.recovery
+            .into_iter()
+            .chain(self.deadlines.first().copied())
+            .min()
+            .unwrap_or(now)
+    }
 }
 struct Round {
     tenant: Uuid,
     position: usize,
-    running: Arc<Mutex<BTreeMap<Uuid, Positions>>>,
+    running: Arc<Mutex<BTreeMap<Uuid, Tenant>>>,
     rescan: Arc<Notify>,
 }
+#[allow(
+    clippy::disallowed_methods,
+    reason = "monotonic tenant claim deadlines"
+)]
 impl Round {
     fn claimed(&self, more: bool) {
         let mut running = self.running.lock().expect("active claim rounds");
-        let positions = running.get_mut(&self.tenant).expect("active tenant");
-        if positions.claiming == Some(self.position) {
-            positions.claiming = None;
+        let tenant = running.get_mut(&self.tenant).expect("active tenant");
+        tenant.claiming = None;
+        let now = Instant::now();
+        tenant.recovery = Some(now + RECOVERY);
+        tenant.immediate |= more;
+        // A page scanned before this claim finished may have slept with the
+        // previous earliest deadline (or none, while an immediate scan was pending).
+        if tenant.next(now) <= now || !tenant.deadlines.is_empty() {
+            self.rescan.notify_one();
         }
-        if more {
+    }
+    fn request_scan(&self) {
+        let mut running = self.running.lock().expect("active claim rounds");
+        running
+            .get_mut(&self.tenant)
+            .expect("active tenant")
+            .immediate = true;
+        self.rescan.notify_one();
+    }
+}
+impl Drop for Round {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "reconsider due work when a position drains"
+    )]
+    fn drop(&mut self) {
+        let mut running = self.running.lock().expect("active claim rounds");
+        let tenant = running.get_mut(&self.tenant).expect("active tenant");
+        tenant.active.remove(&self.position);
+        if tenant.claiming == Some(self.position) {
+            tenant.claiming = None;
+        }
+        let now = Instant::now();
+        if tenant.next(now) <= now {
             self.rescan.notify_one();
         }
     }
 }
-impl Drop for Round {
-    fn drop(&mut self) {
-        let mut running = self.running.lock().expect("active claim rounds");
-        let positions = running.get_mut(&self.tenant).expect("active tenant");
-        positions.active.remove(&self.position);
-        if positions.claiming == Some(self.position) {
-            positions.claiming = None;
+
+// Only the provider knows when the physical claim started and which completion
+// reached storage after the domain's settlement wrapper. Scope these callbacks
+// to the owning batch, including during RSS's concurrent attempt polling.
+tokio::task_local! { static CURRENT: (Scope, Arc<Round>); }
+
+pub(crate) fn scanned(scope: &Scope, started: Instant) {
+    let _ = CURRENT.try_with(|(owner, round)| {
+        if owner == scope {
+            let mut running = round.running.lock().expect("active claim rounds");
+            let tenant = running.get_mut(&round.tenant).expect("active tenant");
+            while tenant.deadlines.first().is_some_and(|at| *at <= started) {
+                tenant.deadlines.pop_first();
+            }
         }
-        if positions.active.is_empty() {
-            running.remove(&self.tenant);
+    });
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "monotonic acknowledged settlement deadline"
+)]
+pub(crate) fn settled(scope: &Scope, completion: Completion) {
+    let (Completion::Reobserve(after)
+    | Completion::Deferred(after)
+    | Completion::Retry { after, .. }) = completion
+    else {
+        return;
+    };
+    let now = Instant::now();
+    let Some(at) = now.checked_add(after) else {
+        return;
+    };
+    let _ = CURRENT.try_with(|(owner, round)| {
+        if owner == scope {
+            let mut running = round.running.lock().expect("active claim rounds");
+            let tenant = running.get_mut(&round.tenant).expect("active tenant");
+            let previous = tenant.next(now);
+            tenant.deadlines.insert(at);
+            if at < previous {
+                round.rescan.notify_one();
+            }
         }
-    }
+    });
 }
 
 #[allow(
@@ -77,15 +163,14 @@ pub async fn run<P, B>(
 ) -> Result<(), Error>
 where
     P: Future<Output = Result<Vec<Uuid>, ErrorKind>>,
-    B: Future<Output = Result<Duration, Error>> + Send + 'static,
+    B: Future<Output = Result<(), Error>> + Send + 'static,
 {
     let limit = NonZeroUsize::new(policy.concurrency())
         .expect("validated policy")
         .min(budget.limit());
     let window = budget.window(limit);
     let width = policy.claim_batch_size().min(limit.get());
-    let running = Arc::new(Mutex::new(BTreeMap::<Uuid, Positions>::new()));
-    let retry_at = Arc::new(Mutex::new(BTreeMap::<Uuid, tokio::time::Instant>::new()));
+    let running = Arc::new(Mutex::new(BTreeMap::<Uuid, Tenant>::new()));
     let rescan = Arc::new(Notify::new());
     let batch = Arc::new(batch);
     // Each local position owns exactly one RSS round. A hot tenant must re-enter the
@@ -96,9 +181,14 @@ where
         stop,
         || async {
             tokio::select! {
-                ()=notify.notified()=>true,
-                ()=rescan.notified()=>false,
+                ()=notify.notified()=>{
+                    for tenant in running.lock().expect("active claim rounds").values_mut() {
+                        tenant.immediate = true;
+                    }
+                },
+                ()=rescan.notified()=>{},
             }
+            false
         },
         (
             |&(tenant, position): &(Uuid, usize)| {
@@ -107,34 +197,41 @@ where
             |after: Option<(Uuid, usize)>| {
                 let page = page(after.map(|(tenant, _)| tenant));
                 let running = &running;
-                let retry_at = &retry_at;
                 async move {
                     let tenants = page.await.map_err(|kind| match kind {
                         ErrorKind::Transient | ErrorKind::Deadline => Failure::Retry,
                         _ => Failure::Fatal(Error::new(kind)),
                     })?;
                     let after = tenants.last().map(|t| (*t, 0));
-                    let active = running.lock().expect("active claim rounds");
-                    let now = tokio::time::Instant::now();
-                    let mut retries = retry_at.lock().expect("scope retry deadlines");
-                    retries.retain(|_, due| *due > now);
-                    let next = retries.values().min().copied();
+                    let now = Instant::now();
+                    let mut active = running.lock().expect("active claim rounds");
+                    if after.is_none() {
+                        // An elapsed idle scope needs no history: discovery admits it afresh.
+                        active.retain(|_, tenant| {
+                            !tenant.active.is_empty()
+                                || tenant.retry.is_some_and(|at| at > now)
+                                || tenant.recovery.is_some_and(|at| at > now)
+                                || tenant.deadlines.last().is_some_and(|at| *at > now)
+                        });
+                    }
+                    let mut next = None;
                     let rows = tenants
                         .into_iter()
-                        .filter_map(|tenant| {
-                            if retries.contains_key(&tenant) {
-                                return None;
-                            }
-                            let Some(positions) = active.get(&tenant) else {
-                                return Some((tenant, 0));
+                        .filter_map(|id| {
+                            let Some(tenant) = active.get(&id) else {
+                                return Some((id, 0));
                             };
-                            if positions.claiming.is_some() || positions.active.len() >= limit.get()
-                            {
+                            let at = tenant.next(now);
+                            if at > now {
+                                next = Some(next.map_or(at, |old: Instant| old.min(at)));
                                 return None;
                             }
-                            (0..=positions.active.len())
-                                .find(|p| !positions.active.contains(p))
-                                .map(|p| (tenant, p))
+                            if tenant.claiming.is_some() || tenant.active.len() >= limit.get() {
+                                return None;
+                            }
+                            (0..=tenant.active.len())
+                                .find(|position| !tenant.active.contains(position))
+                                .map(|position| (id, position))
                         })
                         .collect();
                     Ok(super::Page { rows, after, next })
@@ -143,30 +240,46 @@ where
         ),
         |(tenant, position), admission| {
             let mut active = running.lock().expect("active claim rounds");
-            let positions = active.entry(tenant).or_default();
-            positions.active.insert(position);
-            positions.claiming = Some(position);
-            drop(active);
-            let round = Arc::new(Round {
-                tenant,
-                position,
-                running: running.clone(),
-                rescan: rescan.clone(),
+            let state = active.entry(tenant).or_default();
+            let now = Instant::now();
+            // Admission may retain a candidate while another position scans or backs off.
+            let round = (state.next(now) <= now
+                && state.claiming.is_none()
+                && !state.active.contains(&position))
+            .then(|| {
+                state.active.insert(position);
+                state.claiming = Some(position);
+                state.immediate = false;
+                Arc::new(Round {
+                    tenant,
+                    position,
+                    running: running.clone(),
+                    rescan: rescan.clone(),
+                })
             });
-            let requested = budget.acquire_within(tenant, width, window, &admission);
+            drop(active);
+            let requested = round.map(|round| {
+                (
+                    round,
+                    budget.acquire_within(tenant, width, window, &admission),
+                )
+            });
             let batch = batch.clone();
-            let retry_at = retry_at.clone();
             async move {
-                if let Some(due) = retry_at.lock().expect("scope retry deadlines").get(&tenant)
-                    && *due > tokio::time::Instant::now()
-                {
-                    return Ok(due.saturating_duration_since(tokio::time::Instant::now()));
-                }
+                let Some((round, requested)) = requested else {
+                    return Ok(None);
+                };
                 let slots = requested.await;
                 if slots.is_empty() {
-                    return Ok(RECOVERY);
+                    return Ok(None);
                 }
-                let result = batch(
+                if round.running.lock().expect("active claim rounds")[&tenant]
+                    .retry
+                    .is_some_and(|at| at > Instant::now())
+                {
+                    return Ok(None);
+                }
+                match batch(
                     tenant,
                     Grant {
                         slots,
@@ -174,18 +287,24 @@ where
                     },
                     admission,
                 )
-                .await;
-                drop(round);
-                result.map_err(|error| match error.kind() {
-                    ErrorKind::Transient | ErrorKind::Deadline | ErrorKind::CommitUnknown => {
-                        retry_at
-                            .lock()
-                            .expect("scope retry deadlines")
-                            .insert(tenant, tokio::time::Instant::now() + RECOVERY);
-                        Failure::Retry
+                .await
+                {
+                    Ok(()) => Ok(None),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            ErrorKind::Transient | ErrorKind::Deadline | ErrorKind::CommitUnknown
+                        ) =>
+                    {
+                        let mut running = round.running.lock().expect("active claim rounds");
+                        let state = running.get_mut(&tenant).expect("active tenant");
+                        state.retry = Some(Instant::now() + RECOVERY);
+                        state.immediate = true;
+                        round.rescan.notify_one();
+                        Ok(None)
                     }
-                    _ => Failure::Fatal(error),
-                })
+                    Err(error) => Err(Failure::Fatal(error)),
+                }
             }
         },
         |_| {},
@@ -202,7 +321,7 @@ pub async fn batch<S: DurableStore, R: Reconciler<S::Claim>>(
     policy: Policy,
     stop: &CancellationToken,
     observe: impl FnMut(Observation) + Send,
-) -> Result<Duration, Error> {
+) -> Result<(), Error> {
     #[allow(
         clippy::disallowed_methods,
         reason = "monotonic execution clock boundary"
@@ -215,31 +334,17 @@ pub async fn batch<S: DurableStore, R: Reconciler<S::Claim>>(
         slots: Mutex::new(grant.slots),
         round: grant.round,
         stop: stop.clone(),
-        next_scan: Mutex::new(None),
     };
-    let report = rss_reconcile::run_batch(
-        &store,
-        &Delegate(reconciler),
-        scope,
-        policy,
-        &control,
-        stop,
-        observe,
-    )
-    .await?;
-    // A committed settlement owns the next useful scan. An immediate empty
-    // scan would otherwise discard a short reobserve deadline until recovery.
-    let next = store.next_scan.into_inner().expect("batch scan hint");
-    Ok(next.map_or_else(
-        || {
-            if report.converged > 0 {
-                Duration::ZERO
-            } else {
-                RECOVERY
-            }
-        },
-        |due| due.saturating_sub(timer.now()),
-    ))
+    let delegate = Delegate(reconciler);
+    let execution =
+        rss_reconcile::run_batch(&store, &delegate, scope, policy, &control, stop, observe);
+    let report = CURRENT
+        .scope((scope.clone(), store.round.clone()), execution)
+        .await?;
+    if report.converged > 0 {
+        store.round.request_scan();
+    }
+    Ok(())
 }
 
 struct Admitted<'a, S> {
@@ -247,7 +352,6 @@ struct Admitted<'a, S> {
     slots: Mutex<Vec<Slot>>,
     round: Arc<Round>,
     stop: CancellationToken,
-    next_scan: Mutex<Option<Duration>>,
 }
 struct Leased<C> {
     claim: C,
@@ -302,9 +406,6 @@ impl<S: DurableStore> DurableStore for Admitted<'_, S> {
         if batch.claims.len() > slots.len() {
             return Err(Error::new(ErrorKind::Invariant));
         }
-        if batch.more {
-            *self.next_scan.lock().expect("batch scan hint") = Some(Duration::ZERO);
-        }
         Ok(ClaimBatch {
             claims: batch
                 .claims
@@ -329,18 +430,7 @@ impl<S: DurableStore> DurableStore for Admitted<'_, S> {
         completion: Completion,
         control: &Control<'_, T>,
     ) -> Result<(), Error> {
-        let delay = match &completion {
-            Completion::Reobserve(after)
-            | Completion::Deferred(after)
-            | Completion::Retry { after, .. } => Some(*after),
-            _ => None,
-        };
-        self.store.finish(&claim.claim, completion, control).await?;
-        if let Some(due) = delay.and_then(|after| control.elapsed().checked_add(after)) {
-            let mut next = self.next_scan.lock().expect("batch scan hint");
-            *next = Some(next.map_or(due, |previous| previous.min(due)));
-        }
-        Ok(())
+        self.store.finish(&claim.claim, completion, control).await
     }
     async fn release<T: Timer>(
         &self,
@@ -392,6 +482,8 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    mod deadlines;
+
     fn test_policy(width: usize) -> Policy {
         Policy::try_from(rss_reconcile::PolicyConfig {
             concurrency: width,
@@ -438,7 +530,7 @@ mod tests {
                                 stop.cancelled().await;
                                 tx.send((round, 0)).unwrap();
                                 release.cancelled().await;
-                                Ok(RECOVERY)
+                                Ok(())
                             }
                             1 => {
                                 tx.send((round, grant.slots.len())).unwrap();
@@ -494,7 +586,9 @@ mod tests {
                         tx.send((tenant.as_u128(), release)).unwrap();
                         let _ = wait.await;
                     }
-                    Ok(if hot { Duration::ZERO } else { RECOVERY })
+                    // Model a real claim holding execution capacity until settlement.
+                    drop(grant);
+                    Ok(())
                 }
             },
         );

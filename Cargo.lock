@@ -5322,6 +5322,7 @@ dependencies = [
  "futures",
  "rss-reconcile",
  "rss-reconcile-postgres",
+ "rss-request-context",
  "sqlx",
  "tokio",
  "tokio-util",

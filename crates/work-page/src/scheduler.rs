@@ -177,9 +177,17 @@ impl DurableStore for Scheduler {
         } else {
             (self.connection(scope, control).await?, limit)
         };
-        self.store
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "physical claim start after connection admission"
+        )]
+        let started = tokio::time::Instant::now();
+        let batch = self
+            .store
             .claim_due(scope, limit, scan_budget, lease, control)
-            .await
+            .await?;
+        crate::reconcile::scanned(scope, started);
+        Ok(batch)
     }
     async fn renew<T: Timer>(
         &self,
@@ -197,7 +205,9 @@ impl DurableStore for Scheduler {
         control: &Control<'_, T>,
     ) -> Result<(), Error> {
         let _slot = self.connection(claim.target().scope(), control).await?;
-        self.store.finish(claim, completion, control).await
+        self.store.finish(claim, completion, control).await?;
+        crate::reconcile::settled(claim.target().scope(), completion);
+        Ok(())
     }
     async fn release<T: Timer>(
         &self,

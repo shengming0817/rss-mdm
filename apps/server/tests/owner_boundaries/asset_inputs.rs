@@ -391,7 +391,7 @@ impl Workers {
         scopes: Arc<rss_mdm_scope_service::Scopes>,
         policy: Option<&crate::policy_configuration_t2::fixture::Fixture>,
     ) -> Result<Self> {
-        let mut config: crate::config::Config = serde_json::from_value(
+        let config: crate::config::Config = serde_json::from_value(
             crate::host_t2_support::configuration(
                 &c.inputs,
                 &c.profile,
@@ -400,9 +400,6 @@ impl Workers {
             )
             .await?,
         )?;
-        // Exercise durable owner transitions without waiting through a five-second
-        // recovery scan for each page of an already active calculation.
-        config.background.scheduling.planning.scan_interval_ms = 1;
         let background = config.background.compile(&config)?;
         let listener = worker_wake::Listener::new(config.access_options()?);
         let signals = listener.signals.clone();
