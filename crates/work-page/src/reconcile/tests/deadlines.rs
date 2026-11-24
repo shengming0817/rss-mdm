@@ -27,6 +27,13 @@ enum Scenario {
     NewWork,
     SlowCursor,
     LockedCursor,
+    SharedTail,
+    LockedTarget,
+}
+
+enum PageConstraint {
+    AfterTicket(&'static str),
+    SkipLocked(&'static str),
 }
 
 struct Store {
@@ -35,6 +42,7 @@ struct Store {
     scans: Mutex<Vec<(Duration, Vec<String>)>>,
     scenario: Scenario,
     tail_pending: std::sync::atomic::AtomicBool,
+    next_page: Mutex<Option<PageConstraint>>,
 }
 impl DurableStore for Store {
     type Claim = Item;
@@ -85,11 +93,17 @@ impl DurableStore for Store {
                 .unwrap()
                 .iter()
                 .any(|(at, _)| *at == SHORT);
+        let constraint = self.next_page.lock().unwrap().take();
         let claims: Vec<_> = {
             let mut due = self.due.lock().unwrap();
             let names: Vec<_> = due
                 .iter()
                 .filter(|(_, (at, _))| !tail && !locked && *at <= started)
+                .filter(|(name, _)| match constraint {
+                    Some(PageConstraint::AfterTicket(ticket)) => name.as_str() > ticket,
+                    Some(PageConstraint::SkipLocked(entity)) => name.as_str() != entity,
+                    None => true,
+                })
                 .take(limit)
                 .map(|(name, _)| name.clone())
                 .collect();
@@ -110,7 +124,7 @@ impl DurableStore for Store {
             tokio::time::sleep_until(self.start + Duration::from_millis(25)).await;
         }
         let more = self.scans.lock().unwrap().len() == 1 || slow_head;
-        scanned(scope, started, more, claims.is_empty());
+        scanned(scope, started, more);
         Ok(ClaimBatch { claims, more })
     }
     async fn finish<T: Timer>(
@@ -145,6 +159,10 @@ impl Reconciler<Item> for Store {
         claim: &Item,
         _: &Control<'_, T>,
     ) -> Result<ReconcileStep<ReconcileDiff<()>>, Error> {
+        if claim.target.entity() == "z-peer" {
+            // A nonempty tail with no immediate convergence-driven follow-up.
+            return Ok(ReconcileStep::Deferred(Duration::from_secs(60)));
+        }
         if claim.first && claim.target.entity() == "late" {
             return Ok(ReconcileStep::Deferred(SHORT));
         }
@@ -178,6 +196,7 @@ async fn verify_schedule(scenario: Scenario) {
         scans: Mutex::default(),
         scenario,
         tail_pending: Default::default(),
+        next_page: Default::default(),
     });
     let id = Uuid::from_u128(1);
     let scope = Scope::new(TenantId::parse(&id.to_string()).unwrap(), "planning").unwrap();
@@ -214,6 +233,18 @@ async fn verify_schedule(scenario: Scenario) {
                 .insert("new".into(), (Instant::now(), false));
         }
         notify.notify_one();
+        if matches!(scenario, Scenario::SharedTail | Scenario::LockedTarget) {
+            tokio::time::sleep_until(start + Duration::from_millis(6)).await;
+            store
+                .due
+                .lock()
+                .unwrap()
+                .insert("z-peer".into(), (start + SHORT, false));
+            *store.next_page.lock().unwrap() = Some(match scenario {
+                Scenario::SharedTail => PageConstraint::AfterTicket("short"),
+                _ => PageConstraint::SkipLocked("short"),
+            });
+        }
         tokio::time::sleep_until(start + LATE + Duration::from_millis(1)).await;
         assert_eq!(store.scans.lock().unwrap()[2].0, Duration::from_millis(5));
         let short_due = if scenario == Scenario::SlowCursor {
@@ -229,6 +260,11 @@ async fn verify_schedule(scenario: Scenario) {
         let mut expected = vec![(Duration::ZERO, "late"), (Duration::ZERO, "short")];
         if scenario == Scenario::NewWork {
             expected.push((Duration::from_millis(5), "new"));
+        }
+        if matches!(scenario, Scenario::SharedTail | Scenario::LockedTarget) {
+            let first_due_page = history.iter().find(|(at, _)| *at == SHORT).unwrap();
+            assert_eq!(first_due_page.1, ["z-peer"]);
+            expected.push((SHORT, "z-peer"));
         }
         expected.extend([(short_due, "short"), (LATE, "late")]);
         assert_eq!(nonempty, expected);
@@ -274,6 +310,16 @@ async fn an_in_flight_empty_page_cannot_consume_a_later_deadline() {
 #[tokio::test(start_paused = true)]
 async fn a_locked_empty_terminal_page_gets_a_fresh_scan() {
     verify_schedule(Scenario::LockedCursor).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_peers_cursor_can_skip_a_due_ticket_on_a_nonempty_tail() {
+    verify_schedule(Scenario::SharedTail).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_page_can_claim_a_peer_while_the_due_target_is_locked() {
+    verify_schedule(Scenario::LockedTarget).await;
 }
 
 #[tokio::test(start_paused = true)]

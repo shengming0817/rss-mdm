@@ -35,7 +35,7 @@ struct Tenant {
     claiming: Option<usize>,
     deadlines: BTreeSet<Instant>,
     sweep_start: Option<Instant>,
-    empty_through: Option<Instant>,
+    previous_sweep: Option<Instant>,
     immediate: bool,
     recovery: Option<Instant>,
     retry: Option<Instant>,
@@ -112,7 +112,7 @@ impl Drop for Round {
 // to the owning batch, including during RSS's concurrent attempt polling.
 tokio::task_local! { static CURRENT: (Scope, Arc<Round>); }
 
-pub(crate) fn scanned(scope: &Scope, started: Instant, more: bool, empty: bool) {
+pub(crate) fn scanned(scope: &Scope, started: Instant, more: bool) {
     let _ = CURRENT.try_with(|(owner, round)| {
         if owner == scope {
             let mut running = round.running.lock().expect("active claim rounds");
@@ -124,14 +124,10 @@ pub(crate) fn scanned(scope: &Scope, started: Instant, more: bool, empty: bool) 
                 return;
             }
             tenant.sweep_start = None;
-            // A locked shared cursor also returns a terminal empty page. Allow
-            // one fresh pass for each due hint, then fall back to idle recovery.
-            let through = if empty {
-                tenant.empty_through.replace(start)
-            } else {
-                tenant.empty_through = None;
-                Some(start)
-            };
+            // Even a nonempty terminal page may resume a peer's cursor or skip
+            // a locked row. Give each due hint one fresh pass through the fair
+            // queue. Persistent contention is handled by normal idle recovery.
+            let through = tenant.previous_sweep.replace(start);
             while tenant
                 .deadlines
                 .first()
@@ -339,6 +335,11 @@ where
 
 /// RSS owns claims, attempts, renewal and settlement. Move the capacity slot
 /// with that exact claim so unrelated completions can refill the budget.
+///
+/// For timed wakes, the store must forward physical claims and final settlements
+/// to [Scheduler](super::scheduler::Scheduler), including any domain-adjusted completion.
+/// Other stores receive notifications, pagination and the five-second recovery scan;
+/// their delayed completions do not publish a local deadline.
 pub async fn batch<S: DurableStore, R: Reconciler<S::Claim>>(
     (store, reconciler): (&S, &R),
     grant: Grant,
