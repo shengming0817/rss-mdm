@@ -19,6 +19,17 @@ fn http_contract_authentication_survives_final_listener_assembly() {
             );
         }
     }
+    let receipt = endpoints.iter().find(|e|
+        e["listener"] == "browser" && e["method"] == "GET" &&
+        e["path"] == "/api/v1/tenants/{tenant}/device-access/enterprise/configuration/operations/{operationId}"
+    ).expect("mounted enterprise application receipt");
+    let credentials: Vec<_> = receipt["authentication"]["alternatives"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(credentials, ["cookie", "bearer"]);
     let health = endpoints
         .iter()
         .find(|e| e["resource"]["id"] == "health")
