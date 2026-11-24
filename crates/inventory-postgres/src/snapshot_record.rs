@@ -45,6 +45,7 @@ impl Record {
             value.insert(key.into(), json!(row.try_get::<Option<String>, _>(key)?));
         }
         for key in [
+            "collection_sequence",
             "observed_at",
             "received_at",
             "last_known_observed",
