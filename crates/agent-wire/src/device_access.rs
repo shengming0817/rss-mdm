@@ -496,19 +496,6 @@ pub enum AccessFailure {
     deny_unknown_fields
 )]
 pub enum AccessEffect {
-    /// A directly authorized macOS Create was read back. PSSO readiness is independent.
-    MacAccountCreated {
-        /// Stable native identity read from the created account.
-        generated_uid: Uuid,
-        /// Actual privilege, including when it differs from the requested role.
-        role: AccessRole,
-        /// Account-specific Secure Token observation.
-        secure_token: AccessObservation,
-        /// Independently observed Apple silicon volume ownership.
-        volume_owner: AccessObservation,
-        /// Independently observed FileVault unlock eligibility.
-        filevault_unlock: AccessObservation,
-    },
     /// Native retirement observation; completion also requires credential removal.
     WhfbRetired {
         /// Exact Entra account.
@@ -545,11 +532,6 @@ pub enum AccessEffect {
 impl AccessEffect {
     /// Reject cross-platform or incomplete successful evidence.
     pub fn validate_for(&self, platform: TaskPlatform) -> Result<(), WireError> {
-        if let Self::MacAccountCreated { generated_uid, .. } = self
-            && (platform != TaskPlatform::Macos || generated_uid.is_nil())
-        {
-            return Err(WireError::InvalidValue);
-        }
         if let Self::Applied {
             account,
             mac,
@@ -664,7 +646,7 @@ impl AccessEffect {
                     || !matches!(configuration.windows, AccessWindowsConfiguration::Whfb)
             }
             Self::Applied { .. } => false,
-            Self::MacAccountCreated { .. } | Self::Unknown | Self::Failed { .. } => false,
+            Self::Unknown | Self::Failed { .. } => false,
         }
     }
 }
@@ -672,7 +654,7 @@ impl AccessEffect {
 /// Exactly correlated application report; cannot select a different tenant or device.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AccessResult {
+pub struct AccessResult<E = AccessEffect> {
     /// Stable business binding identity.
     pub binding_id: Uuid,
     /// Fences replacement/revocation of the personnel association.
@@ -682,7 +664,19 @@ pub struct AccessResult {
     /// Digest frozen into the signed task.
     pub definition_digest: [u8; 32],
     /// Actual native effect.
-    pub effect: AccessEffect,
+    pub effect: E,
+}
+impl<E> AccessResult<E> {
+    /// Retain the exact attempt coordinates when narrowing a transport-specific observation.
+    pub fn with_effect<F>(&self, effect: F) -> AccessResult<F> {
+        AccessResult {
+            binding_id: self.binding_id,
+            binding_generation: self.binding_generation,
+            revision: self.revision,
+            definition_digest: self.definition_digest,
+            effect,
+        }
+    }
 }
 impl AccessResult {
     /// Validate a report before correlating its task and attempt.

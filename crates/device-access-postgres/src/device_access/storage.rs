@@ -231,13 +231,13 @@ pub async fn result_in(
 }
 
 /// Immutable native observations, shared by configuration and standalone creation receipts.
-pub(super) async fn record_result_in(
+pub(super) async fn record_result_in<E: Serialize>(
     c: &mut PgConnection,
     tenant: Uuid,
     task: Uuid,
     attempt: Uuid,
     event: Uuid,
-    report: &AccessResult,
+    report: &AccessResult<E>,
 ) -> Result<bool, Error> {
     use sha2::{Digest, Sha256};
     if task.is_nil() || attempt.is_nil() || event.is_nil() {
@@ -560,7 +560,7 @@ pub async fn require_retired_in(c: &mut PgConnection, b: &Binding) -> Result<(),
                     u.state->>'cancellation'<>'confirmed' AND
                     old.document->'appliedRevision' IS DISTINCT FROM old.document->'revision' AND
                     (u.da_journal->>'awaiting_create' IS NOT NULL OR old.account IS NOT NULL)
-                 ELSE (old.id<>$3 OR u.result#>>'{effect,state}'='mac_account_created')
+                 ELSE u.state->>'cancellation'<>'confirmed' AND (old.id<>$3 OR u.result#>>'{effect,state}'='mac_account_created')
                     AND (u.result IS NULL OR u.result#>>'{effect,state}'<>'failed')
                  END)",
         )
@@ -595,12 +595,21 @@ pub async fn require_retired_in(c: &mut PgConnection, b: &Binding) -> Result<(),
     let Some(account) = &b.account else {
         return Ok(());
     };
-    let pending: bool = sqlx::query_scalar("SELECT EXISTS (SELECT FROM rss_da.bindings WHERE tenant_id=$1 AND device=$2 AND account=$3 AND state='revoked' AND (account->>'platform'='windows' OR document#>>'{accountDelivery,kind}'='da') AND document->'appliedRevision' IS DISTINCT FROM document->'revision')")
-        .bind(b.tenant).bind(b.device.into_uuid()).bind(serde_json::to_value(account).map_err(|_| Error::Malformed)?)
-        .fetch_one(c).await.map_err(db)?;
-    if pending {
+    if cleanup_owns_account(c, b, account, None).await? {
         Err(Error::Conflict)
     } else {
         Ok(())
     }
+}
+
+/// Device fence is already held. A stable UID stays reserved until the requested cleanup is observed.
+pub(super) async fn cleanup_owns_account(
+    c: &mut PgConnection,
+    b: &Binding,
+    account: &AccessAccount,
+    except: Option<Uuid>,
+) -> Result<bool, Error> {
+    sqlx::query_scalar("SELECT EXISTS (SELECT FROM rss_da.bindings WHERE tenant_id=$1 AND device=$2 AND account=$3 AND state='revoked' AND ($4::uuid IS NULL OR id<>$4) AND (account->>'platform'='windows' OR document#>>'{accountDelivery,kind}'='da') AND document->'appliedRevision' IS DISTINCT FROM document->'revision')")
+        .bind(b.tenant).bind(b.device.into_uuid()).bind(sqlx::types::Json(account)).bind(except)
+        .fetch_one(c).await.map_err(db)
 }

@@ -631,11 +631,15 @@ fn cms_upload_is_bounded_and_receipt_cannot_acknowledge_different_material() {
 fn mac_created_proves_only_the_native_creation() {
     let mut value = serde_json::json!({"state":"mac_account_created","generatedUid":Uuid::new_v4(),"role":"standard",
         "secureToken":"absent","volumeOwner":"unknown","filevaultUnlock":"needs_administrator"});
-    let effect: AccessEffect = serde_json::from_value(value.clone()).unwrap();
-    assert!(effect.validate_for(TaskPlatform::Macos).is_ok());
-    assert!(effect.validate_for(TaskPlatform::Windows).is_err());
-    assert!(!effect.complete(&configuration(), TaskPlatform::Macos));
+    use rss_mdm_agent_wire::da::AccountEffect;
+    let effect: AccountEffect = serde_json::from_value(value.clone()).unwrap();
+    assert!(serde_json::from_value::<AccessEffect>(value.clone()).is_err());
+    let da_schema = serde_json::to_string(&schemars::schema_for!(AccountEffect)).unwrap();
+    let agent_schema = serde_json::to_string(&schemars::schema_for!(TaskEventRequest)).unwrap();
+    assert!(
+        da_schema.contains("mac_account_created") && !agent_schema.contains("mac_account_created")
+    );
     assert_eq!(serde_json::to_value(&effect).unwrap(), value);
     value["password"] = "local only".into();
-    assert!(serde_json::from_value::<AccessEffect>(value).is_err());
+    assert!(serde_json::from_value::<AccountEffect>(value).is_err());
 }

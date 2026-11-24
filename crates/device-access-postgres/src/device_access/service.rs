@@ -583,7 +583,7 @@ impl Service {
                         // A new revision cannot start over an unresolved native mutation.
                         let unresolved:bool=sqlx::query_scalar(
                             "SELECT EXISTS(SELECT FROM rss_da.access_runs WHERE tenant_id=$1 AND binding_id=$2
-                             AND da_target IS NOT NULL AND state->>'execution' IN ('running','unknown')
+                             AND da_target IS NOT NULL AND state->>'execution' IN ('running','unknown') AND state->>'cancellation'<>'confirmed'
                              AND (access_binding->>'revision')::bigint=$3)"
                         ).bind(tenant).bind(*id).bind(input.expected_revision).fetch_one(&mut *c).await.map_err(db)?;
                         if unresolved {return Err(Error::Conflict);}

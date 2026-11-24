@@ -59,7 +59,7 @@ pub const MAX_REPORT_FIELDS: usize = 4096;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "07ef4874c06cfa74b4d7e10b578f381aa76088475bd7ab5f9d06d55d79595a86";
+    "e22811798268212b696c2bc9204c4dddc91b9e9eaf8c90ffe89e2c7c95418898";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

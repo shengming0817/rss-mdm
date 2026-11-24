@@ -87,13 +87,13 @@ async fn unlink(
     Ok(id)
 }
 
-fn report(t: &w::AccessTaskSpec, effect: w::AccessEffect) -> da::AccountObservation {
+fn report(t: &w::AccessTaskSpec, effect: impl Into<da::AccountEffect>) -> da::AccountObservation {
     da::AccountObservation::Result(w::AccessResult {
         binding_id: t.binding_id,
         binding_generation: t.binding_generation,
         revision: t.revision,
         definition_digest: t.definition_digest,
-        effect,
+        effect: effect.into(),
     })
 }
 
@@ -115,7 +115,7 @@ async fn reject_premature_application(
         }),
         windows: None,
     };
-    let da::AccountObservation::Result(result) = report(t, effect) else {
+    let da::AccountObservation::Result(result) = report(t, effect.clone()) else {
         unreachable!()
     };
     let mut tx = c.seed().await?;
@@ -126,7 +126,7 @@ async fn reject_premature_application(
             t.task_id,
             t.attempt_id,
             Uuid::new_v4(),
-            &result,
+            &result.with_effect(effect),
             true
         )
         .await,
@@ -214,7 +214,17 @@ async fn scenario(
         other => anyhow::bail!("unexpected concurrent create outcomes {other:?}"),
     };
     assert!(error.to_string().contains("HTTP 409"), "{error:#}");
-    let next = || peer.post(format!("{base}/account-operations/next")).send();
+    let poll = |platform| {
+        peer.post(format!("{base}/account-operations/next"))
+            .json(&da::AccountClaim { platform })
+            .send()
+    };
+    let next = || poll(w::TaskPlatform::Macos);
+    assert!(
+        material::success::<Option<da::AccountOffer>>(poll(w::TaskPlatform::Windows).await?)
+            .await?
+            .is_none()
+    );
     let offer: da::AccountOffer = material::success(next().await?).await?;
     assert_eq!(offer, material::success(next().await?).await?);
     assert_eq!((offer.operation_id, offer.binding_id), (op, binding));
@@ -368,7 +378,7 @@ async fn scenario(
             body,
         )
         .await?;
-    let created = |uid, role| w::AccessEffect::MacAccountCreated {
+    let created = |uid, role| da::AccountEffect::MacAccountCreated {
         generated_uid: uid,
         role,
         secure_token: w::AccessObservation::Unknown,
@@ -380,7 +390,7 @@ async fn scenario(
         event: report(&t, created(uid, w::AccessRole::Standard)),
         ..ack.clone()
     };
-    let business_before = business::counts(c).await?.2;
+    let before = business::counts(c).await?;
     assert!(
         peer.post(&url)
             .json(&evidence)
@@ -392,7 +402,8 @@ async fn scenario(
     let lost: da::AccountSettlement =
         material::success(peer.post(&url).json(&evidence).send().await?).await?;
     assert_eq!(lost.event_id, evidence.event_id);
-    assert_eq!(business::counts(c).await?.2, business_before + 1);
+    let after = business::counts(c).await?;
+    assert_eq!((after.2, after.3), (before.2 + 1, before.3 + 1));
     let changed = da::AccountEvent {
         event: report(&t, created(Uuid::new_v4(), w::AccessRole::Standard)),
         ..evidence
@@ -419,6 +430,44 @@ async fn scenario(
     assert!(
         matches!(clean.action,w::AccessAction::Unbind{account:w::AccessAccount::Macos{generated_uid},..} if generated_uid==uid)
     );
+    // The original cleanup is now permitted. A later Create with a different name
+    // cannot acquire the same UID until that disposition is complete.
+    let competing = Uuid::new_v4();
+    let competing_op = Box::pin(assign(
+        c,
+        &client,
+        &r,
+        &other,
+        competing,
+        policy.id,
+        "differentname",
+    ))
+    .await?;
+    let contender: da::AccountOffer = material::success(next().await?).await?;
+    assert_eq!(contender.operation_id, competing_op);
+    let start = observe(&peer, base, &contender, da::AccountObservation::Received)
+        .await?
+        .permit
+        .context("competing create")?;
+    observe(
+        &peer,
+        base,
+        &contender,
+        report(&start, created(uid, w::AccessRole::Standard)),
+    )
+    .await?;
+    let conflict: Value = material::success(progress(competing_op, &other).await?).await?;
+    assert_eq!(conflict["execution"], "failed");
+    assert_eq!(conflict["effect"]["generatedUid"], json!(uid));
+    let unclaimed: bool =
+        sqlx::query_scalar("SELECT account IS NULL FROM rss_da.bindings WHERE id=$1")
+            .bind(competing)
+            .fetch_one(&c.operator)
+            .await?;
+    assert!(unclaimed);
+    let redundant = Box::pin(unlink(c, &client, &r, &other, competing)).await?;
+    let redundant: Value = material::success(progress(redundant, &other).await?).await?;
+    assert_eq!(redundant["cleanupPending"], false);
     observe(
         &peer,
         base,
@@ -521,5 +570,75 @@ async fn scenario(
     let unlink_op = unlink(c, &client, &r, &denying, id).await?;
     let done: Value = material::success(progress(unlink_op, &denying).await?).await?;
     assert_eq!(done["cleanupPending"], false);
+    let unstarted_id = Uuid::new_v4();
+    Box::pin(assign(
+        c,
+        &client,
+        &r,
+        &denying,
+        unstarted_id,
+        policy.id,
+        "offline",
+    ))
+    .await?;
+    let original: da::AccountOffer = material::success(next().await?).await?;
+    let original_permit = observe(&peer, base, &original, da::AccountObservation::Received).await?;
+    let expiry = expire_permit(c, original.task_id, original_permit.event_id).await?;
+    let mut tx = c.seed().await?;
+    policy.revision += 1;
+    policy.version = Uuid::new_v4();
+    rss_mdm_policy_postgres::device_access::publish_on(
+        &mut tx,
+        r.tenant,
+        &policy,
+        2,
+        json!({"kind":"system"}),
+        now(),
+    )
+    .await?;
+    tx.commit().await?;
+    let closed = observe(
+        &peer,
+        base,
+        &original,
+        da::AccountObservation::NotStarted { expires_at: expiry },
+    )
+    .await?;
+    assert!(closed.permit.is_none() && closed.issued_expires_at.is_none());
+    assert!(
+        material::success::<Option<da::AccountOffer>>(next().await?)
+            .await?
+            .is_none()
+    );
+    let person = rss_mdm_device_access::Person {
+        instance: r.service_id,
+        principal: denying.principal,
+    };
+    let intent = rss_mdm_device_access::AccountIntent::Create {
+        platform: w::TaskPlatform::Macos,
+        name: "offline".into(),
+    };
+    let body = json!({"kind":"put","instance":person.instance,"principal":person.principal,"account":intent,"policy":policy.id});
+    let revised = Uuid::new_v4();
+    Box::pin(denying.change(
+        c,
+        &client,
+        &r,
+        unstarted_id,
+        access::Change {
+            operation_id: revised,
+            expected_revision: 1,
+            action: access::Action::Put {
+                person,
+                intent,
+                policy: policy.id,
+            },
+        },
+        body,
+    ))
+    .await?;
+    let replacement: da::AccountOffer = material::success(next().await?).await?;
+    assert_eq!(replacement.operation_id, revised);
+    assert_ne!(replacement.attempt_id, original.attempt_id);
     Ok(())
 }

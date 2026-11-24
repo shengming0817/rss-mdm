@@ -177,7 +177,13 @@ pub(super) async fn verify(
     };
     let read: Value = material::success(progress(op, &admin.cookie).await?).await?;
     assert_eq!(read["received"], false);
-    let next = || peer.post(format!("{base}/account-operations/next")).send();
+    let next = || {
+        peer.post(format!("{base}/account-operations/next"))
+            .json(&da::AccountClaim {
+                platform: w::TaskPlatform::Windows,
+            })
+            .send()
+    };
     let offer: da::AccountOffer = material::success(next().await?).await?;
     assert_eq!(offer.operation_id, op);
     assert_eq!(
@@ -291,7 +297,13 @@ pub(super) async fn verify(
     };
     let mut unknown = report.clone();
     unknown.effect = w::AccessEffect::Unknown;
-    observe(&peer, base, &offer, da::AccountObservation::Result(unknown)).await?;
+    observe(
+        &peer,
+        base,
+        &offer,
+        da::AccountObservation::Result(unknown.into()),
+    )
+    .await?;
     let uncertain: Value = material::success(progress(op, &admin.cookie).await?).await?;
     assert_eq!(uncertain["execution"], "unknown");
     assert_eq!(
@@ -302,7 +314,7 @@ pub(super) async fn verify(
         &peer,
         base,
         &offer,
-        da::AccountObservation::Result(report.clone()),
+        da::AccountObservation::Result(report.clone().into()),
     )
     .await?;
     let read: Value = material::success(progress(op, &admin.cookie).await?).await?;
@@ -425,7 +437,7 @@ pub(super) async fn verify(
         event_id: Uuid::new_v4(),
         attempt_id: offer.attempt_id,
         definition_digest: offer.definition_digest,
-        event: da::AccountObservation::Result(report),
+        event: da::AccountObservation::Result(report.into()),
     };
     assert_eq!(
         peer.post(format!(
@@ -455,7 +467,13 @@ pub(super) async fn verify(
     // The management rule was replaced after Start. An already-completed removal still settles.
     assert_eq!(sqlx::query("UPDATE rss_da.authorization_rules SET revision=revision+1 WHERE tenant_id=$1 AND document::text LIKE '%' || $2 || '%'")
         .bind(r.tenant).bind(cleanup.principal.to_string()).execute(&c.operator).await?.rows_affected(),1);
-    observe(&peer, base, &offer, da::AccountObservation::Result(result)).await?;
+    observe(
+        &peer,
+        base,
+        &offer,
+        da::AccountObservation::Result(result.into()),
+    )
+    .await?;
     let applied:i64=sqlx::query_scalar("SELECT (document->>'appliedRevision')::bigint FROM rss_da.bindings WHERE tenant_id=$1 AND id=$2")
       .bind(r.tenant).bind(binding).fetch_one(&c.operator).await?;
     assert_eq!(applied, permit.revision);
@@ -591,7 +609,13 @@ pub(super) async fn interrupted_create(
     };
     let body = json!({"kind":"put","instance":person.instance,"principal":person.principal,"account":intent,"policy":policy});
     Box::pin(manager.change(c, client, r, binding, put(0), body.clone())).await?;
-    let next = || peer.post(format!("{base}/account-operations/next")).send();
+    let next = || {
+        peer.post(format!("{base}/account-operations/next"))
+            .json(&da::AccountClaim {
+                platform: w::TaskPlatform::Windows,
+            })
+            .send()
+    };
     let offer: da::AccountOffer = material::success(next().await?).await?;
     let ack = da::AccountEvent {
         event_id: Uuid::new_v4(),
@@ -690,7 +714,13 @@ pub(super) async fn stopped_create(
     base: &str,
     binding: Uuid,
 ) -> Result<()> {
-    let next = || peer.post(format!("{base}/account-operations/next")).send();
+    let next = || {
+        peer.post(format!("{base}/account-operations/next"))
+            .json(&da::AccountClaim {
+                platform: w::TaskPlatform::Windows,
+            })
+            .send()
+    };
     let fresh: da::AccountOffer = material::success(next().await?).await?;
     assert_eq!(fresh.binding_id, binding);
     let start = observe(peer, base, &fresh, da::AccountObservation::Received).await?;
@@ -723,7 +753,7 @@ pub(super) async fn stopped_create(
             binding_generation: permit.binding_generation,
             revision: permit.revision,
             definition_digest: permit.definition_digest,
-            effect: w::AccessEffect::Unknown,
+            effect: w::AccessEffect::Unknown.into(),
         }),
     )
     .await?;
