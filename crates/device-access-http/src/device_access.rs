@@ -202,7 +202,7 @@ fn register() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Decla
                 get(
                     enterprise_operation,
                     &contracts::ENTERPRISE_CONFIGURATION,
-                    &[RouteOperation::Get],
+                    &[RouteOperation::Action],
                 ),
             ),
             post_enterprise_step_up: rss_mdm_http_contract::module::Route::new(

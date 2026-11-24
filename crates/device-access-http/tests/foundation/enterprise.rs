@@ -312,12 +312,18 @@ pub(super) async fn verify(
         expected
     );
     assert_eq!(
-        sqlx::query("DELETE FROM rss_da.authorization_rules WHERE tenant_id=$1::uuid AND id=$2")
-            .bind(c.tenant.to_string())
-            .bind(rule)
-            .execute(&c.operator)
-            .await?
-            .rows_affected(),
+        sqlx::query(
+            "UPDATE rss_da.authorization_rules
+             SET revision=revision+1, document=jsonb_set(document, '{grants}',
+                 (SELECT jsonb_agg(g) FROM jsonb_array_elements(document->'grants') g
+                  WHERE g->>'operation' <> 'enterprise_applications_read'))
+             WHERE tenant_id=$1::uuid AND id=$2",
+        )
+        .bind(c.tenant.to_string())
+        .bind(rule)
+        .execute(&c.operator)
+        .await?
+        .rows_affected(),
         1
     );
     assert_eq!(
