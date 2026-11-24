@@ -87,13 +87,31 @@ impl super::Transactions {
     pub async fn event_parent_current_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        target: &super::model::Target,
+        device: rss_mdm_agent_wire::DeviceId,
         id: Uuid,
     ) -> crate::transaction::Result<bool> {
         self.validate_in(tx)?;
         let run = super::storage::load_run(tx, id).await?;
-        Ok(run.target.device == target.device
+        Ok(run.target.device == device
             && run.state.execution == rss_mdm_task_state::Execution::Running
             && run.state.started_at.is_some())
+    }
+}
+pub enum EventProgress {
+    Agent(rss_mdm_task_state::RunState),
+    Native(super::model::NativeProgress),
+}
+impl super::Transactions {
+    pub async fn event_progress_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+    ) -> crate::transaction::Result<EventProgress> {
+        self.validate_in(tx)?;
+        Ok(if super::storage::channel_in(tx, id).await? == "agent" {
+            EventProgress::Agent(super::storage::read_run(tx, id).await?.state)
+        } else {
+            EventProgress::Native(super::storage::native_progress_in(tx, id).await?)
+        })
     }
 }

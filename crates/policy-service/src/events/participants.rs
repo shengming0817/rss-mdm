@@ -63,7 +63,8 @@ pub enum EventOperationProgress {
         #[serde(serialize_with = "serialize_native_status")]
         #[schemars(schema_with = "native_status_schema")]
         state: rss_device_command::Status,
-        agent_installation: Option<InstallationObservation>,
+        agent_installation:
+            Option<rss_mdm_software_service::deployment::queries::records::InstallationObservation>,
         allowed_actions: [String; 0],
     },
     Retirement {
@@ -80,32 +81,4 @@ fn serialize_native_status<S: serde::Serializer>(
 }
 fn native_status_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({"type":"string","enum":rss_device_command::Status::ALL.map(|s|s.as_str())})
-}
-
-#[derive(schemars::JsonSchema, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BootstrapObservation {
-    pub state: String,
-    pub delivery: Uuid,
-    pub cleanup: Option<Uuid>,
-    pub cleanup_complete: bool,
-    pub cleanup_retry_at: i64,
-    pub deadline: i64,
-}
-#[derive(schemars::JsonSchema, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InstallationObservation {
-    pub bootstrap: Option<BootstrapObservation>,
-    pub protocol: String,
-    pub delivery: String,
-    pub installation: String,
-    pub agent_registration: Option<AgentRegistration>,
-    pub observed_at: Option<i64>,
-}
-#[derive(schemars::JsonSchema, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentRegistration {
-    pub device_id: rss_mdm_agent_wire::DeviceId,
-    pub state: String,
-    pub capabilities: Option<Vec<String>>,
 }

@@ -15,6 +15,12 @@ pub struct Fixture {
 }
 impl Fixture {
     pub async fn open(c: &Context) -> Result<Self> {
+        Self::with_enrollment(c, None).await
+    }
+    pub async fn with_enrollment(
+        c: &Context,
+        entries: Option<rss_mdm_registration_service::enrollment::task::Entries>,
+    ) -> Result<Self> {
         let resources = fixture::Fixture::open(c).await?;
         let owner = planning::owner(c, "mdm_policy_runtime").await?;
         let config = &resources.resources.config;
@@ -46,7 +52,7 @@ impl Fixture {
                 owner.runtime.clone(),
                 resources.software.materials.inputs.clone(),
             )),
-            config.enrollment_entries.clone(),
+            entries.unwrap_or_else(|| config.enrollment_entries.clone()),
             &[7; 32],
             None,
             protection,

@@ -395,3 +395,119 @@ async fn scope_contention_preserves_original_policy_operation_for_retry() -> Res
     c.close().await;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "T2: publication wakes each historical owner once and replay preserves the original version and audit"]
+async fn changes_wake_published_owners_through_disable_and_replay() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let account = c
+        .account(&[
+            P::PolicyRead,
+            P::PolicyWrite,
+            P::InventoryRead,
+            P::DeviceUnmanage,
+            P::Enrollment,
+            P::AccountWrite,
+        ])
+        .await?;
+    let p = c.authenticate(&account).await?;
+    let entry = "https://mdm.example.test/enroll";
+    let fixture = Fixture::with_enrollment(
+        &c,
+        Some(rss_mdm_registration_service::enrollment::task::Entries {
+            windows: None,
+            macos: Some(entry.into()),
+        }),
+    )
+    .await?;
+    let id = Uuid::new_v4();
+    let put = |revision, action| -> Result<_> {
+        Ok(Operation {
+            operation_id: Uuid::new_v4(),
+            expected_revision: revision,
+            input: Change::Put {
+                definition: serde_json::from_value(
+                    json!({"scope":{"targets":[],"limitations":null,"exclusions":[]},"action":action}),
+                )?,
+                enabled: true,
+            },
+        })
+    };
+    let wake_revisions = || async {
+        sqlx::query_as::<_,(i64,i64,i64)>("SELECT
+          COALESCE((SELECT input_revision FROM mdm_devices.unmanage_policy_recovery WHERE tenant_id=$1::uuid AND policy=$2),0),
+          COALESCE((SELECT input_revision FROM mdm_registration_tasks.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2),0),
+          (SELECT count(*) FROM mdm_script.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2)")
+          .bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await
+    };
+    let first = put(
+        0,
+        json!({"kind":"unmanage_device","runLifetimeSeconds":300}),
+    )?;
+    fixture
+        .policies
+        .change(&p, id, &first, &c.request(&p)?)
+        .await?;
+    assert_eq!(wake_revisions().await?, (1, 0, 0));
+    let enrollment = |organization: String| json!({"kind":"request_mdm_enrollment","organization":organization,"runLifetimeSeconds":300});
+    let invalid = put(1, enrollment(Uuid::new_v4().to_string()))?;
+    assert!(matches!(
+        fixture
+            .policies
+            .change(&p, id, &invalid, &c.request(&p)?)
+            .await,
+        Err(rss_mdm_policy_service::Error::Unsupported)
+    ));
+    assert_eq!(wake_revisions().await?, (1, 0, 0));
+    let second = put(1, enrollment(c.tenant.to_string()))?;
+    let view = fixture
+        .policies
+        .change(&p, id, &second, &c.request(&p)?)
+        .await?;
+    let frozen: serde_json::Value = sqlx::query_scalar(
+        "SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND policy=$2 AND id=$3",
+    )
+    .bind(c.tenant.to_string())
+    .bind(id)
+    .bind(view.version_id)
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(frozen["kind"], "enrollment");
+    assert_eq!(frozen["action"]["entries"]["macos"], entry);
+    assert_eq!(wake_revisions().await?, (2, 1, 0));
+    let third = put(
+        2,
+        json!({"kind":"device_access","mac":null,"windows":{"kind":"whfb"},"selfEnrollment":false,"role":null}),
+    )?;
+    fixture
+        .policies
+        .change(&p, id, &third, &c.request(&p)?)
+        .await?;
+    assert_eq!(wake_revisions().await?, (3, 2, 0));
+    let disable = Operation {
+        operation_id: Uuid::new_v4(),
+        expected_revision: 3,
+        input: Change::Disable,
+    };
+    fixture
+        .policies
+        .change(&p, id, &disable, &c.request(&p)?)
+        .await?;
+    assert_eq!(wake_revisions().await?, (4, 3, 0));
+    let facts = || async {
+        sqlx::query_scalar::<_,i64>("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.business'")
+        .bind(c.tenant.to_string()).fetch_one(&c.operator).await
+    };
+    let before = facts().await?;
+    assert!(before > 0);
+    let replay = fixture
+        .policies
+        .change(&p, id, &second, &c.request(&p)?)
+        .await?;
+    assert_eq!(replay.version_id, view.version_id);
+    assert_eq!(wake_revisions().await?, (4, 3, 0));
+    assert_eq!(facts().await?, before);
+    fixture.close().await?;
+    c.close().await;
+    Ok(())
+}

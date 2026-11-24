@@ -106,69 +106,15 @@ impl OperationOwners for OperationReads {
                 .await?;
             use super::task_ownership::Owner;
             match owner {
-                Owner::Device => {
-                    let run = rss_mdm_device_service::control::actions::storage::load_run(tx, id)
-                        .await
-                        .map_err(Fault::from)?;
-                    Ok(run.target.device == device
-                        && run.state.execution == rss_mdm_task_state::Execution::Running
-                        && run.state.started_at.is_some())
-                }
-                Owner::Software => self.members
-                    .software
-                    .event_parent_current_in(tx, device, id)
-                    .await
-                    .map_err(Fault::from),
-                Owner::Access => {
-                                        tx.with_connection(move|c|Box::pin(async move{rss_mdm_device_access_postgres::device_access::execution::events::parent_current_on(c,&device,id).await})).await.map_err(Into::into)
-                }
-                Owner::Credential(profile) => self.members
-                    .credentials
-                    .iter()
-                    .find(|s| s.profile() == profile)
-                    .ok_or(Error::Unsupported)?
-                    .event_parent_current_in(
-                        tx,
-                        &rss_mdm_recovery_credentials::tasks::Target {
-                            device: device,
-                        },
-                        id,
-                    )
-                    .await
-                    .map_err(Into::into),
-                Owner::Registration => self.members
-                    .enrollment
-                    .event_parent_current_in(
-                        tx,
-                        &rss_mdm_registration_service::enrollment::tasks::Target {
-                            device: device,
-                        },
-                        id,
-                    )
-                    .await
-                    .map_err(Fault::from),
-                Owner::Script => self.members
-                    .scripts
-                    .event_parent_current_in(
-                        tx,
-                        &rss_mdm_script_service::Target {
-                            device: device,
-                        },
-                        id,
-                    )
-                    .await
-                    .map_err(Into::into),
-                Owner::Collection => self.members
-                    .collections
-                    .event_parent_current_in(
-                        tx,
-                        &rss_mdm_inventory_service::collection::execution::model::Target {
-                            device: device,
-                        },
-                        id,
-                    )
-                    .await
-                    .map_err(Into::into),
+                Owner::Device => rss_mdm_device_service::control::actions::event_parent_current_in(tx, device, id).await.map_err(Into::into),
+                Owner::Access => tx.with_connection(move |c| Box::pin(async move {
+                    rss_mdm_device_access_postgres::device_access::execution::events::parent_current_on(c, &device, id).await
+                })).await.map_err(Into::into),
+                Owner::Software => self.members.software.event_parent_current_in(tx, device, id).await.map_err(Into::into),
+                Owner::Registration => self.members.enrollment.event_parent_current_in(tx, device, id).await.map_err(Into::into),
+                Owner::Credential(profile) => self.members.credentials(profile)?.event_parent_current_in(tx, device, id).await.map_err(Into::into),
+                Owner::Script => self.members.scripts.event_parent_current_in(tx, device, id).await.map_err(Into::into),
+                Owner::Collection => self.members.collections.event_parent_current_in(tx, device, id).await.map_err(Into::into),
             }
         })
     }
@@ -178,105 +124,65 @@ impl OperationOwners for OperationReads {
         reference: &'a wire::PolicyEventOperation,
     ) -> Pending<'a, EventOperationProgress, Fault> {
         Box::pin(async move {
-            if let wire::PolicyEventOperation::Run { id } = reference {
-                let tenant = tx.tenant_id();
-                let id = *id;
-                match tx
-                    .with_connection(move |c| Box::pin(super::task_ownership::on(c, tenant, id)))
-                    .await?
-                {
-                    super::task_ownership::Owner::Script => {
-                        return Ok(EventOperationProgress::Run {
-                            reference: reference.clone(),
-                            state: rss_mdm_script_service::storage::read_run(tx, id)
-                                .await?
-                                .state,
-                            allowed_actions: [],
-                        });
+            Ok(match *reference {
+                wire::PolicyEventOperation::Run { id } => {
+                    use super::task_ownership::Owner;
+                    use rss_mdm_inventory_service::collection::execution::events::EventProgress;
+                    let tenant = tx.tenant_id();
+                    let owner = tx
+                        .with_connection(move |c| {
+                            Box::pin(super::task_ownership::on(c, tenant, id))
+                        })
+                        .await?;
+                    let state = match owner {
+                        Owner::Script => self.members.scripts.event_progress_in(tx,id).await?,
+                        Owner::Collection => match self.members.collections.event_progress_in(tx,id).await? {
+                            EventProgress::Agent(state) => state,
+                            EventProgress::Native(state) => return Ok(EventOperationProgress::Collection {
+                                reference: reference.clone(), state, allowed_actions: [],
+                            }),
+                        },
+                        Owner::Credential(profile) => self.members.credentials(profile)?.event_progress_in(tx,id).await?,
+                        Owner::Registration => self.members.enrollment.event_progress_in(tx,id).await?,
+                        Owner::Software => self.members.software.run_progress_in(tx,id).await?,
+                        Owner::Device => rss_mdm_device_service::control::actions::event_progress_in(tx,id).await?,
+                        Owner::Access => rss_mdm_device_access_postgres::device_access::execution::events::event_progress_in(tx,id).await.map_err(access_fault)?,
+                    };
+                    EventOperationProgress::Run {
+                        reference: reference.clone(),
+                        state,
+                        allowed_actions: [],
                     }
-                    super::task_ownership::Owner::Collection => {
-                        use rss_mdm_inventory_service::collection::execution::storage;
-                        return Ok(if storage::channel_in(tx, id).await? == "agent" {
-                            EventOperationProgress::Run {
-                                reference: reference.clone(),
-                                state: storage::read_run(tx, id).await?.state,
-                                allowed_actions: [],
+                }
+                wire::PolicyEventOperation::Native { id } => {
+                    use super::native_ownership::Owner;
+                    let (state, agent_installation) =
+                        match super::native_ownership::in_transaction(tx, id).await? {
+                            Owner::Registration | Owner::Recovery => {
+                                return Err(Error::Forbidden.into());
                             }
-                        } else {
-                            EventOperationProgress::Collection {
-                                reference: reference.clone(),
-                                state: storage::native_progress_in(tx, id).await?,
-                                allowed_actions: [],
+                            Owner::Configuration => {
+                                return self.configuration.event_progress_in(tx, reference).await;
                             }
-                        });
+                            Owner::Software => {
+                                let progress =
+                                    self.members.software.native_progress_in(tx, id).await?;
+                                (progress.state, progress.installation)
+                            }
+                            Owner::Device => (
+                                rss_mdm_device_service::control::storage::status_in(tx, id).await?,
+                                None,
+                            ),
+                        };
+                    EventOperationProgress::Native {
+                        reference: reference.clone(),
+                        state,
+                        agent_installation,
+                        allowed_actions: [],
                     }
-                    super::task_ownership::Owner::Access=>return Ok(EventOperationProgress::Run{reference:reference.clone(),state:rss_mdm_device_access_postgres::device_access::execution::storage::read_run(tx,id).await.map_err(access_fault)?.state,allowed_actions:[]}),
-                    super::task_ownership::Owner::Credential(profile)=>return Ok(EventOperationProgress::Run{reference:reference.clone(),state:rss_mdm_recovery_credentials::tasks::storage::read_run(profile, tx,id).await?.state,allowed_actions:[]}),
-                    super::task_ownership::Owner::Registration => {
-                        return Ok(EventOperationProgress::Run {
-                            reference: reference.clone(),
-                            state:
-                                rss_mdm_registration_service::enrollment::tasks::storage::read_run(rss_mdm_install_support::StorageProfile::Mdm, tx, id,
-                                )
-                                .await
-                                .map_err(Fault::from)?
-                                .state,
-                            allowed_actions: [],
-                        });
-                    }
-                    super::task_ownership::Owner::Software => {
-                        return self.members
-                            .software
-                            .policy_event_operation_in(tx, reference)
-                            .await
-                            .map(software_progress)
-                            .map_err(Fault::from);
-                    }
-                    super::task_ownership::Owner::Device => {}
                 }
-            }
-            if let wire::PolicyEventOperation::Native { id } = reference {
-                let owner = super::native_ownership::in_transaction(tx, *id).await?;
-                if matches!(
-                    owner,
-                    super::native_ownership::Owner::Registration
-                        | super::native_ownership::Owner::Recovery
-                ) {
-                    return Err(Error::Forbidden.into());
-                }
-                if owner == super::native_ownership::Owner::Software {
-                    return self
-                        .members
-                        .software
-                        .policy_event_operation_in(tx, reference)
-                        .await
-                        .map(software_progress)
-                        .map_err(Fault::from);
-                }
-                if owner == super::native_ownership::Owner::Configuration {
-                    return self.configuration.event_progress_in(tx, reference).await;
-                }
-            }
-            Ok(match reference {
-                wire::PolicyEventOperation::Run { id } => EventOperationProgress::Run {
-                    reference: reference.clone(),
-                    state: rss_mdm_device_service::control::actions::storage::read_run(tx, *id)
-                        .await
-                        .map_err(Fault::from)?
-                        .state,
-                    allowed_actions: [],
-                },
-                wire::PolicyEventOperation::Native { id } => EventOperationProgress::Native {
-                    reference: reference.clone(),
-                    state: rss_mdm_device_service::control::storage::status_in(tx, *id)
-                        .await
-                        .map_err(Fault::from)?,
-                    agent_installation: None,
-                    allowed_actions: [],
-                },
                 wire::PolicyEventOperation::Retirement { id } => {
                     let tenant = tx.tenant_id();
-                    let id = *id;
                     let state = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
@@ -292,92 +198,6 @@ impl OperationOwners for OperationReads {
                 }
             })
         })
-    }
-}
-
-fn software_installation(
-    v: rss_mdm_software_service::deployment::queries::records::InstallationObservation,
-) -> InstallationObservation {
-    let rss_mdm_software_service::deployment::queries::records::InstallationObservation {
-        bootstrap,
-        protocol,
-        delivery,
-        installation,
-        agent_registration,
-        observed_at,
-    } = v;
-    InstallationObservation {
-        bootstrap: bootstrap.map(software_bootstrap_observation),
-        protocol,
-        delivery,
-        installation,
-        agent_registration: agent_registration.map(software_agent_registration_observation),
-        observed_at,
-    }
-}
-
-fn software_bootstrap_observation(
-    v: rss_mdm_software_service::deployment::queries::records::BootstrapObservation,
-) -> BootstrapObservation {
-    let rss_mdm_software_service::deployment::queries::records::BootstrapObservation {
-        state,
-        delivery,
-        cleanup,
-        cleanup_complete,
-        cleanup_retry_at,
-        deadline,
-    } = v;
-    BootstrapObservation {
-        state,
-        delivery,
-        cleanup,
-        cleanup_complete,
-        cleanup_retry_at,
-        deadline,
-    }
-}
-
-fn software_agent_registration_observation(
-    v: rss_mdm_software_service::deployment::queries::records::AgentRegistration,
-) -> AgentRegistration {
-    let rss_mdm_software_service::deployment::queries::records::AgentRegistration {
-        device_id,
-        state,
-        capabilities,
-    } = v;
-    AgentRegistration {
-        device_id,
-
-        state,
-        capabilities,
-    }
-}
-
-fn software_progress(
-    v: rss_mdm_software_service::deployment::policy_events::EventOperationProgress,
-) -> EventOperationProgress {
-    use rss_mdm_software_service::deployment::policy_events::EventOperationProgress as P;
-    match v {
-        P::Run {
-            reference,
-            state,
-            allowed_actions,
-        } => EventOperationProgress::Run {
-            reference,
-            state,
-            allowed_actions,
-        },
-        P::Native {
-            reference,
-            state,
-            agent_installation,
-            allowed_actions,
-        } => EventOperationProgress::Native {
-            reference,
-            state,
-            agent_installation: agent_installation.map(software_installation),
-            allowed_actions,
-        },
     }
 }
 

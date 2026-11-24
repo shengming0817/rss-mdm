@@ -16,46 +16,9 @@ pub fn rejected(reason: &str) -> Decision {
         reason: reason.into(),
     }
 }
-fn accepted(ids: Vec<Uuid>, native: bool) -> Decision {
-    Decision::Accepted {
-        operations: ids
-            .into_iter()
-            .map(|id| {
-                if native {
-                    Operation::Native { id }
-                } else {
-                    Operation::Run { id }
-                }
-            })
-            .collect(),
-    }
-}
-/// The actual operation owner's progress, retaining the established untagged HTTP shape.
-#[derive(serde::Serialize, schemars::JsonSchema)]
-#[serde(untagged, rename_all_fields = "camelCase")]
-pub enum EventOperationProgress {
-    Run {
-        reference: Operation,
-        state: rss_mdm_task_state::RunState,
-        allowed_actions: [String; 0],
-    },
-    Native {
-        reference: Operation,
-        #[serde(serialize_with = "serialize_native_status")]
-        #[schemars(schema_with = "native_status_schema")]
-        state: rss_device_command::Status,
-        agent_installation: Option<crate::deployment::queries::records::InstallationObservation>,
-        allowed_actions: [String; 0],
-    },
-}
-fn serialize_native_status<S: serde::Serializer>(
-    status: &rss_device_command::Status,
-    serializer: S,
-) -> std::result::Result<S::Ok, S::Error> {
-    serializer.serialize_str(status.as_str())
-}
-fn native_status_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    schemars::json_schema!({"type":"string","enum":rss_device_command::Status::ALL.map(|s|s.as_str())})
+pub struct NativeEventProgress {
+    pub state: rss_device_command::Status,
+    pub installation: Option<crate::deployment::queries::records::InstallationObservation>,
 }
 
 impl crate::deployment::transactions::Transactions {
@@ -173,7 +136,9 @@ impl crate::deployment::transactions::Transactions {
                 .await?;
                 crate::deployment::actions::software::persist_effect_in(tx, request, &slot.effect)
                     .await?;
-                Ok(accepted(vec![request], false))
+                Ok(Decision::Accepted {
+                    operations: vec![Operation::Run { id: request }],
+                })
             }
 
             Action::EnsureAgentInstalled { .. } => {
@@ -216,57 +181,50 @@ impl crate::deployment::transactions::Transactions {
             && run.state.started_at.is_some())
     }
     /// Return only operation progress, never script output or protected request inputs.
-    pub async fn policy_event_operation_in(
+    pub async fn run_progress_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        reference: &Operation,
-    ) -> Result<EventOperationProgress> {
+        id: Uuid,
+    ) -> Result<rss_mdm_task_state::RunState> {
         self.validate_policy_transaction_in(tx)?;
-        match reference {
-            Operation::Retirement { .. } => Err(crate::deployment::Error::Unsupported.into()),
-            Operation::Run { id } => {
-                let run = runs::load_run(tx, *id).await?;
-                Ok(EventOperationProgress::Run {
-                    reference: reference.clone(),
-                    state: run.state,
-                    allowed_actions: [],
-                })
-            }
-            Operation::Native { id } => {
-                let operation = crate::deployment::storage::load(tx, &self.protection, *id).await?;
-                let command = self.required_command(tx, &operation).await?;
-                let installation = if matches!(
-                    operation.authority,
-                    crate::deployment::authority::Authority::AgentInstall { .. }
-                ) {
-                    Some(
-                        crate::deployment::native_installation::installation_observation(
-                            self.inventory.clone(),
-                            tx,
-                            self.windows_results.clone(),
-                            self.apple_results.clone(),
-                            self.agent_store.clone(),
-                            &operation,
-                        )
-                        .await?,
+        Ok(runs::load_run(tx, id).await?.state)
+    }
+    pub async fn native_progress_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+    ) -> Result<NativeEventProgress> {
+        self.validate_policy_transaction_in(tx)?;
+        let operation = crate::deployment::storage::load(tx, &self.protection, id).await?;
+        let command = self.required_command(tx, &operation).await?;
+        let installation = if matches!(
+            operation.authority,
+            crate::deployment::authority::Authority::AgentInstall { .. }
+        ) {
+            Some(
+                crate::deployment::native_installation::installation_observation(
+                    self.inventory.clone(),
+                    tx,
+                    self.windows_results.clone(),
+                    self.apple_results.clone(),
+                    self.agent_store.clone(),
+                    &operation,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        Ok(NativeEventProgress {
+            state: command.status(),
+            installation: installation
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| {
+                    crate::deployment::Error::Unavailable(
+                        crate::deployment::Failure::CommandStorage,
                     )
-                } else {
-                    None
-                };
-                Ok(EventOperationProgress::Native {
-                    reference: reference.clone(),
-                    state: command.status(),
-                    agent_installation: installation
-                        .map(serde_json::from_value)
-                        .transpose()
-                        .map_err(|_| {
-                            crate::deployment::Error::Unavailable(
-                                crate::deployment::Failure::CommandStorage,
-                            )
-                        })?,
-                    allowed_actions: [],
-                })
-            }
-        }
+                })?,
+        })
     }
 }

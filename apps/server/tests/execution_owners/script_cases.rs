@@ -229,3 +229,6 @@ async fn periodic_assignment_keeps_history_separate_from_current_admission() -> 
     h.close().await?;
     result
 }
+
+#[path = "policy_events.rs"]
+mod policy_events;

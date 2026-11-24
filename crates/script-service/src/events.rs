@@ -87,13 +87,23 @@ impl crate::Transactions {
     pub async fn event_parent_current_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        target: &crate::Target,
+        device: rss_mdm_agent_wire::DeviceId,
         id: Uuid,
     ) -> crate::Result<bool> {
         self.validate_in(tx)?;
         let run = crate::storage::load_run(tx, id).await?;
-        Ok(run.target.device == target.device
+        Ok(run.target.device == device
             && run.state.execution == rss_mdm_task_state::Execution::Running
             && run.state.started_at.is_some())
+    }
+}
+impl crate::Transactions {
+    pub async fn event_progress_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+    ) -> crate::Result<rss_mdm_task_state::RunState> {
+        self.validate_in(tx)?;
+        Ok(crate::storage::read_run(tx, id).await?.state)
     }
 }

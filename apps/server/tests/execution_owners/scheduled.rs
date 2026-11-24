@@ -130,6 +130,16 @@ async fn published_owner_proofs_are_not_interchangeable_or_cached_authority() ->
         .bind(h.c.tenant.to_string()).bind(software_policy).bind(software_version).bind(h.object.object.kind()).bind(h.object.object.uuid())
         .bind(serde_json::to_value(agent)?).bind(h.scope).execute(&mut *assignment).await?;
     assignment.commit().await?;
+    for epoch in [2_i64, 1] {
+        let mut tx = command::seed_transaction(&h.c).await?;
+        sqlx::query("UPDATE mdm_policy.assignments SET expected_epoch=$3 WHERE tenant_id=$1::uuid AND version=$2")
+            .bind(h.c.tenant.to_string()).bind(software_version).bind(epoch).execute(&mut *tx).await?;
+        tx.commit().await?;
+        if epoch == 2 {
+            wake(&h, software_version, agent, false).await?;
+            assert!(scheduled(&h).await?.is_empty());
+        }
+    }
     assert!(wake(&h, software_version, agent, true).await.is_err());
     assert!(scheduled(&h).await?.is_empty());
     wake(&h, software_version, &native_object.members[0], false).await?;
