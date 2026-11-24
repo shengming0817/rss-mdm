@@ -138,13 +138,13 @@ COMMIT;
 
                 assets_channel_snapshot_details_in_1: concat!("SELECT r.id, s.source, s.epoch FROM unnest(CAST($2 AS uuid[]), CAST($3 AS text[]), CAST($4 AS text[])) AS t (id, source, channel) INNER JOIN ", $access_schema, "devices AS r ON r.tenant_id = CAST($1 AS uuid) AND r.id = t.id AND r.channel = t.channel AND r.state = 'active' INNER JOIN ", $access_schema, "report_sources AS s ON s.tenant_id = r.tenant_id AND s.device = r.id AND s.source = t.source AND s.enabled"),
                 assets_channel_snapshot_details_in_2: concat!("WITH selected AS MATERIALIZED (
-                    SELECT latest.* FROM unnest($2::text[], $3::text[]) AS requested(scope,field)
-                    CROSS JOIN LATERAL (SELECT r.scope,r.id,r.result,r.attempts,r.evidence::text AS evidence
+                    SELECT requested.scope,latest.* FROM unnest($2::text[], $3::text[]) AS requested(scope,field)
+                    LEFT JOIN LATERAL (SELECT r.id,r.sequence,r.result,r.attempts,r.evidence::text AS evidence
                       FROM ", $access_schema, "collection_runs r
                       WHERE r.tenant_id=$1::uuid AND r.scope=requested.scope AND r.sealed_at IS NOT NULL
                         AND (r.source <> 'agent.builtin' OR r.result <> 'partial'
                           OR (r.attempts::jsonb #>> ARRAY['fields',requested.field,'quality']) IN ('success','unknown','unsupported','deleted'))
-                      ORDER BY r.sequence DESC LIMIT 1) latest
+                      ORDER BY r.sequence DESC LIMIT 1) latest ON true
                     ),budget AS(SELECT coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected)
                     SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok"),
                 object_manifest: concat!(r###"{"tables":[""###, $access_schema, r###"collection_history",""###, $access_schema, r###"collection_items",""###, $access_schema, r###"collection_runs",""###, $access_schema, r###"collection_versions"],"functions":[""###, $access_schema, r###"collection_delivery_scopes",""###, $access_schema, r###"capture_collection_history",""###, $access_schema, r###"capture_collection_metadata",""###, $access_schema, r###"immutable_collection",""###, $access_schema, r###"prune_agent_collections",""###, $asset_reader, r###""],"views":[]}"###),

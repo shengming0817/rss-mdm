@@ -14,6 +14,9 @@ pub struct InventoryField {
     pub scope: String,
     /// Dictionary field.
     pub field: FieldKey,
+    /// Source sequence of the projected collection, used to compare against retained runs.
+    #[serde(skip)]
+    pub sequence: i64,
     /// Current state, provenance, and last-known value.
     pub fact: SourceFact,
 }
@@ -172,6 +175,7 @@ pub(crate) fn decode_records(
                 None
             };
             Ok(InventoryField {
+                sequence: r.try_get("collection_sequence")?,
                 scope,
                 field,
                 fact: SourceFact {

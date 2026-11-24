@@ -121,6 +121,11 @@ pub async fn snapshot_details_in(
     )
     .await
     .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
+    let projected = facts
+        .scalars
+        .into_iter()
+        .map(|f| ((f.scope.clone(), f.field), f))
+        .collect::<BTreeMap<_, _>>();
     let mut result = BTreeMap::new();
     for latest in rows {
         if !latest.try_get::<bool, _>("within_budget").map_err(db)? {
@@ -129,45 +134,58 @@ pub async fn snapshot_details_in(
         let Some(scope) = latest.try_get::<Option<String>, _>("scope").map_err(db)? else {
             continue;
         };
-        let (device, source, field) = by_scope.remove(&scope).ok_or(Error::Malformed)?;
-        let kind: String = latest.try_get("result").map_err(db)?;
-        if !(kind == "snapshot" || (source == ReportSource::AgentBuiltin && kind == "partial")) {
-            continue;
-        }
-        let id: Uuid = latest.try_get("id").map_err(db)?;
-        let attempt: crate::collection::Attempts =
-            serde_json::from_str(latest.try_get("attempts").map_err(db)?)
-                .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
-        let received_at = attempt
-            .fields()
-            .get(&field)
-            .and_then(|f| f.received_at)
-            .ok_or(Error::Malformed)?;
-        let evidence: Option<rss_mdm_inventory::channel::AgentEvidence> = latest
-            .try_get::<Option<String>, _>("evidence")
-            .map_err(db)?
-            .map(|s| {
-                let value: serde_json::Value = serde_json::from_str(&s)?;
-                // Raw device reports are not server-verified installation evidence.
-                if source == ReportSource::AgentBuiltin && value.get("agentReport").is_some() {
-                    Ok(None)
-                } else {
-                    serde_json::from_value(value)
-                }
-            })
-            .transpose()
-            .map_err(|_| Error::Malformed)?
-            .flatten();
-        let fact = facts.scalars.iter().find(|fact| {
-            fact.scope == scope
-                && fact.field == field
-                && fact.fact.evidence.source.as_str() == source.as_str()
-                && fact.fact.evidence.snapshot_id == id.to_string()
-        });
-        let observed = match fact {
-            Some(fact) => match &fact.fact.state {
-                State::Known(Scalar::String(value)) => Observation::Ready(Current {
-                    state: value.clone(),
+        let (device, source, field) = *by_scope.get(&scope).ok_or(Error::Malformed)?;
+        let fact = projected
+            .get(&(scope, field))
+            .filter(|f| f.fact.evidence.source.as_str() == source.as_str());
+        let sequence: Option<i64> = latest.try_get("sequence").map_err(db)?;
+        let (id, received_at, evidence) = if source == ReportSource::AgentBuiltin
+            && let Some(projected) = fact
+            && sequence.is_none_or(|retained| projected.sequence > retained)
+        {
+            // Retention may remove a newer run before its same-second predecessor.
+            let original = &projected.fact.evidence;
+            (
+                Uuid::parse_str(&original.snapshot_id).map_err(|_| Error::Malformed)?,
+                original.received_at,
+                None,
+            )
+        } else {
+            let kind: Option<String> = latest.try_get("result").map_err(db)?;
+            if !(kind.as_deref() == Some("snapshot")
+                || (source == ReportSource::AgentBuiltin && kind.as_deref() == Some("partial")))
+            {
+                continue;
+            }
+            let id: Uuid = latest.try_get("id").map_err(db)?;
+            let attempt: crate::collection::Attempts =
+                serde_json::from_str(latest.try_get("attempts").map_err(db)?)
+                    .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
+            let received_at = attempt
+                .fields()
+                .get(&field)
+                .and_then(|f| f.received_at)
+                .ok_or(Error::Malformed)?;
+            let evidence: Option<rss_mdm_inventory::channel::AgentEvidence> = latest
+                .try_get::<Option<String>, _>("evidence")
+                .map_err(db)?
+                .map(|s| {
+                    let value: serde_json::Value = serde_json::from_str(&s)?;
+                    if source == ReportSource::AgentBuiltin && value.get("agentReport").is_some() {
+                        Ok(None)
+                    } else {
+                        serde_json::from_value(value)
+                    }
+                })
+                .transpose()
+                .map_err(|_| Error::Malformed)?
+                .flatten();
+            (id, received_at, evidence)
+        };
+        let observation = match fact.filter(|f| f.fact.evidence.snapshot_id == id.to_string()) {
+            Some(f) => match &f.fact.state {
+                State::Known(Scalar::String(state)) => Observation::Ready(Current {
+                    state: state.clone(),
                     snapshot: id,
                     received_at,
                     evidence,
@@ -176,27 +194,7 @@ pub async fn snapshot_details_in(
             },
             None => Observation::ProjectionPending { evidence },
         };
-        result.insert((device, source.as_str().to_owned()), observed);
-    }
-    // A run can age out while its last reported enrollment fact is still current.
-    // Scopes with a retained run have already settled above, including pending projections.
-    for fact in facts.scalars {
-        if let Some((device, ReportSource::AgentBuiltin, field)) = by_scope.get(&fact.scope)
-            && fact.field == *field
-            && fact.fact.evidence.source == rss_mdm_inventory::Source::AgentBuiltin
-            && let State::Known(Scalar::String(state)) = fact.fact.state
-        {
-            result.insert(
-                (*device, ReportSource::AgentBuiltin.as_str().to_owned()),
-                Observation::Ready(Current {
-                    state,
-                    snapshot: Uuid::parse_str(&fact.fact.evidence.snapshot_id)
-                        .map_err(|_| Error::Malformed)?,
-                    received_at: fact.fact.evidence.received_at,
-                    evidence: None,
-                }),
-            );
-        }
+        result.insert((device, source.as_str().to_owned()), observation);
     }
     Ok(result)
 }
