@@ -34,6 +34,7 @@ static GRANTED_BINDINGS: LazyLock<rss_mdm_query_postgres::Bindings> = LazyLock::
     .expect("Complete operation SQL dispatch for each granted device")
 });
 
+const DOCUMENT: &str = "jsonb_build_object('id',id,'kind',kind,'device',device,'origin',source_kind,'policy',policy,'deadline',deadline,'status',status,'source',source,'inputBytes',input_bytes)";
 static COLLECTION: LazyLock<String> =
     LazyLock::new(rss_mdm_inventory_service::collection::execution::queries::relation_sql);
 static SOURCES: LazyLock<[Source; 13]> = LazyLock::new(|| {
@@ -201,7 +202,9 @@ impl<'a> Scope<'a> {
             self.identity_page(sql, after, size)?;
         }
         ambiguity(sql, true);
-        sql.push(" SELECT CASE WHEN selected.id IS NOT NULL THEN jsonb_build_object('id',selected.id,'kind',kind,'device',device,'origin',source_kind,'policy',policy,'deadline',deadline,'status',status,'source',source,'inputBytes',input_bytes) END AS document, ambiguous.id IS NOT NULL AS ambiguous FROM ");
+        sql.push(" SELECT CASE WHEN selected.id IS NOT NULL THEN ")
+            .push(DOCUMENT)
+            .push(" END AS document, ambiguous.id IS NOT NULL AS ambiguous FROM ");
         if sorted {
             sql.push("sort_work LEFT JOIN selected ON sort_work.admitted");
         } else {
@@ -346,6 +349,63 @@ impl<'a> Scope<'a> {
         Ok(())
     }
 
+    /// Unordered, transaction-local cursor. FETCH releases the connection for the
+    /// owner's classification/authorization queries between bounded batches.
+    /// ref: PostgreSQL REL_17_6 src/backend/commands/portalcmds.c
+    pub(super) async fn open_statistics(
+        &self,
+        c: &mut sqlx::PgConnection,
+        budget: usize,
+    ) -> Result<(), Error> {
+        let mut sql =
+            QueryBuilder::new("DECLARE execution_statistic NO SCROLL CURSOR WITHOUT HOLD FOR ");
+        self.sources(&mut sql);
+        sql.push(" SELECT ")
+            .push(DOCUMENT)
+            .push(" AS document FROM (");
+        self.eligible_sources(&mut sql)?;
+        sql.push(") eligible LIMIT ").push_bind(budget as i64 + 1);
+        sql.build().execute(c).await.map_err(super::sql)?;
+        Ok(())
+    }
+
+    pub(super) async fn check_identities(
+        &self,
+        c: &mut sqlx::PgConnection,
+        ids: Vec<Uuid>,
+    ) -> Result<(), Error> {
+        let mut sql = QueryBuilder::new("");
+        self.sources(&mut sql);
+        sql.push(",candidate_keys AS (SELECT ")
+            .push_bind(ids)
+            .push("::uuid[] AS ids)");
+        memberships(&mut sql, false);
+        sql.push(" SELECT EXISTS(SELECT FROM ambiguous)");
+        if sql
+            .build_query_scalar::<bool>()
+            .fetch_one(c)
+            .await
+            .map_err(super::sql)?
+        {
+            return Err(Error::Unavailable(Failure::CommandInvariant));
+        }
+        Ok(())
+    }
+
+    fn eligible_sources(&self, sql: &mut QueryBuilder<Postgres>) -> Result<(), Error> {
+        for i in 0..SOURCES.len() {
+            if i > 0 {
+                sql.push(" UNION ALL ");
+            }
+            sql.push("SELECT *,")
+                .push(i)
+                .push(" AS source FROM owner_")
+                .push(i);
+            self.eligible(sql)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn totals(
         &self,
         sql: &mut QueryBuilder<Postgres>,
@@ -353,13 +413,7 @@ impl<'a> Scope<'a> {
     ) -> Result<(), Error> {
         self.sources(sql);
         sql.push(",selected AS MATERIALIZED (SELECT id,kind,status FROM (");
-        for i in 0..SOURCES.len() {
-            if i > 0 {
-                sql.push(" UNION ALL ");
-            }
-            sql.push("SELECT * FROM owner_").push(i);
-            self.eligible(sql)?;
-        }
+        self.eligible_sources(sql)?;
         sql.push(") eligible LIMIT ")
             .push_bind(budget as i64 + 1)
             .push(")");
@@ -383,6 +437,10 @@ fn ambiguity(sql: &mut QueryBuilder<Postgres>, page: bool) {
         sql.push(",candidate_keys AS (SELECT array_agg(id) AS ids FROM (SELECT id, (row_number() OVER () - 1) / ")
             .push(selection::BATCH).push(" AS batch FROM selected) numbered GROUP BY batch)");
     }
+    memberships(sql, page);
+}
+
+fn memberships(sql: &mut QueryBuilder<Postgres>, page: bool) {
     sql.push(",ambiguous AS (SELECT duplicates.id FROM candidate_keys k CROSS JOIN LATERAL (SELECT id FROM (");
     for (i, source) in SOURCES.iter().enumerate() {
         if i > 0 {

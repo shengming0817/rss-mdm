@@ -15,39 +15,38 @@ pub(super) fn classified(q: &Query) -> bool {
         .iter()
         .any(|f| !metadata(&f.name) && q.mentions(&f.name))
 }
+fn authorized_scope<'a>(
+    p: &AuthorizedPrincipal,
+    grant: &Grant,
+    query: &'a Query,
+) -> Result<Scope<'a>, Error> {
+    let devices = grant
+        .devices_for(p, Permission::OperationRead)?
+        .map(|ids| ids.into_iter().map(|id| id.into_uuid()).collect());
+    Ok(Scope::new(p.tenant_id().to_owned(), devices, query))
+}
+
 struct Scan<'a> {
     scope: Scope<'a>,
     query: &'a Query,
     after: Option<Position>,
     remaining: usize,
     limit: usize,
-    stage: &'static str,
     exhausted: bool,
     ordered: Option<std::vec::IntoIter<sqlx::postgres::PgRow>>,
 }
 
 impl<'a> Scan<'a> {
-    fn new(
-        p: &AuthorizedPrincipal,
-        grant: &Grant,
-        query: &'a Query,
-        limit: usize,
-        stage: &'static str,
-    ) -> Result<Self, Error> {
-        let devices = grant
-            .devices_for(p, Permission::OperationRead)?
-            .map(|ids| ids.into_iter().map(|id| id.into_uuid()).collect());
-        let scope = Scope::new(p.tenant_id().to_owned(), devices, query);
-        Ok(Self {
+    fn new(scope: Scope<'a>, query: &'a Query, limit: usize, after: Option<Position>) -> Self {
+        Self {
             scope,
             query,
-            after: None,
+            after,
             remaining: limit,
             limit,
-            stage,
             exhausted: false,
             ordered: None,
-        })
+        }
     }
 
     async fn next(
@@ -82,7 +81,7 @@ impl<'a> Scan<'a> {
         check_budget(
             self.limit - self.remaining + rows.len(),
             self.limit,
-            self.stage,
+            "operations.sources",
         )?;
         self.remaining -= rows.len();
         self.exhausted = rows.len() < size;
@@ -220,8 +219,9 @@ pub(super) async fn page(
     as_of: i64,
 ) -> Result<rss_mdm_query::Page<Value>, Error> {
     let (p, grant) = authority;
-    let mut scan = Scan::new(p, grant, q, s.budgets.page, "operations.sources")?;
-    scan.after = q.after(codec, binding).map_err(query_error)?;
+    let scope = authorized_scope(p, grant, q)?;
+    let after = q.after(codec, binding).map_err(query_error)?;
+    let mut scan = Scan::new(scope, q, s.budgets.page, after);
     let filtering = classified(q);
     let mut items = Vec::new();
     while items.len() <= q.limit() {
@@ -265,10 +265,10 @@ pub(super) async fn statistics(
     now: i64,
 ) -> Result<rss_mdm_query::Statistics<Statistics>, Error> {
     let stage = "operations.statistics.sources";
-    let mut scan = Scan::new(p, grant, q, s.budgets.statistics, stage)?;
+    let scope = authorized_scope(p, grant, q)?;
     let statistics = if !classified(q) {
         let mut sql = sqlx::QueryBuilder::new("");
-        scan.scope.totals(&mut sql, s.budgets.statistics)?;
+        scope.totals(&mut sql, s.budgets.statistics)?;
         let (total, commands, runs, unknown, ambiguous): (i64, i64, i64, i64, bool) = sql
             .build_query_as()
             .fetch_one(c)
@@ -291,11 +291,27 @@ pub(super) async fn statistics(
             action_runs: 0,
             unknown: 0,
         };
+        let mut examined = 0;
+        scope.open_statistics(c, s.budgets.statistics).await?;
         loop {
-            let rows = scan.next(c, BATCH).await?;
-            if rows.is_empty() {
+            let mut fetch = sqlx::QueryBuilder::new("FETCH FORWARD ");
+            fetch.push(BATCH).push(" FROM execution_statistic");
+            let batch = fetch.build().fetch_all(&mut *c).await.map_err(super::sql)?;
+            if batch.is_empty() {
                 break;
             }
+            examined += batch.len();
+            check_budget(examined, s.budgets.statistics, stage)?;
+            rss_mdm_query_postgres::observe_rows("operations.statistics.candidates", &batch)
+                .map_err(super::sql)?;
+            let rows = batch
+                .iter()
+                .map(|r| r.try_get::<Value, _>("document"))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(super::sql)?;
+            scope
+                .check_identities(c, rows.iter().map(id).collect::<Result<_, _>>()?)
+                .await?;
             let mut start = 0;
             while start < rows.len() {
                 let end = split(&rows, start)?;

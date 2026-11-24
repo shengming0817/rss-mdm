@@ -310,6 +310,7 @@ async fn verify(h: &mut Harness, peer: &Context) -> Result<()> {
     .await?;
 
     sorted_budget(h, hidden.members[0].device).await?;
+    independent_statistics(h, &hidden, version).await?;
 
     // A conflicting owner on a hidden device remains detectable even when the
     // query selects only commands, and even for an id-only response.
@@ -322,6 +323,11 @@ async fn verify(h: &mut Harness, peer: &Context) -> Result<()> {
     let q = SCHEMA.statistics("filter=kind==command")?;
     assert!(matches!(
         operations.statistics(&request, &q, &audit).await,
+        Err(Error::Unavailable(Failure::CommandInvariant))
+    ));
+    let classified = SCHEMA.statistics("filter=kind==command;authorization.state==authorized")?;
+    assert!(matches!(
+        operations.statistics(&request, &classified, &audit).await,
         Err(Error::Unavailable(Failure::CommandInvariant))
     ));
     let (status, page) = http(
@@ -468,5 +474,81 @@ async fn sorted_budget(h: &Harness, device: rss_mdm_agent_wire::DeviceId) -> Res
     let page = operations.directory(&request, &q, &codec, &audit).await?;
     assert_eq!(serde_json::to_value(page.items)?, json!([{"id":last}]));
     assert!(page.next_cursor.is_none());
+    Ok(())
+}
+
+async fn independent_statistics(h: &Harness, busy: &DeviceObject, version: Uuid) -> Result<()> {
+    use rss_mdm_authorization_service::{Grant, Rule, Scope as DeviceScope, Subject};
+    let account = h.c.account(&[Permission::OperationRead]).await?;
+    let proof = Arc::new(h.c.authenticate(&account).await?);
+    let operations = Arc::new(directory(
+        h,
+        Budgets {
+            page: 3,
+            statistics: 4097,
+        },
+    ));
+    let router = rss_mdm_management_http::execution::http::read_routes()
+        .with_state::<()>(operations.clone())
+        .layer(axum::Extension(CursorCodec::new(&[8; 32])?))
+        .layer(axum::Extension(h.c.read_auth(proof.clone())))
+        .layer(axum::Extension(h.c.request(&proof)?))
+        .into_axum();
+    let router = axum::Router::new().nest("/api/v1/tenants/{tenant}", router);
+    let path = format!("/api/v1/tenants/{}/operations/statistics", h.c.tenant);
+    // AllDevices with an OR whose device set is not finite. The id range selects
+    // just the 4,097 busy-device runs, and still requires full classification.
+    let mixed = format!(
+        "id=ge={};id=le={};(device=={},authorization.state==not_applicable)",
+        Uuid::from_u128(2),
+        Uuid::from_u128(4098),
+        Uuid::new_v4()
+    );
+    let (status, totals) = http(&router, &path, &[("filter", &mixed)]).await?;
+    assert_eq!(status, axum::http::StatusCode::OK, "{totals}");
+    assert_eq!(totals["statistics"]["total"], 4097);
+    // Five explicit grants used to send classified statistics into the list sort fallback.
+    let mut grants = vec![Grant {
+        operation: Permission::OperationRead,
+        scope: DeviceScope::Device {
+            id: busy.members[0].device,
+        },
+    }];
+    for _ in 0..4 {
+        let endpoint = planning::endpoint(&h.c).await?;
+        grants.push(Grant {
+            operation: Permission::OperationRead,
+            scope: DeviceScope::Device {
+                id: endpoint.members[0].device,
+            },
+        });
+    }
+    let rule = Rule {
+        subject: Subject::User {
+            user: account.user.clone(),
+        },
+        grants,
+    };
+    sqlx::query("UPDATE mdm_access.authorization_rules SET document=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(h.c.tenant.to_string()).bind(account.rule).bind(serde_json::to_value(rule)?).execute(&h.c.operator).await?;
+    let filter = "authorization.state==not_applicable";
+    let (status, totals) = http(&router, &path, &[("filter", filter)]).await?;
+    assert_eq!(status, axum::http::StatusCode::OK, "{totals}");
+    assert_eq!(
+        totals["statistics"],
+        json!({"total":4097,"commands":0,"actionRuns":4097,"unknown":0})
+    );
+    runs(&h.c, version, busy, &[Uuid::from_u128(4099)]).await?;
+    let q = SCHEMA.statistics(&format!("filter={filter}"))?;
+    assert!(matches!(
+        operations
+            .statistics(&h.c.read_auth(proof.clone()), &q, &h.c.request(&proof)?)
+            .await,
+        Err(Error::Unavailable(Failure::Capacity))
+    ));
+    assert_eq!(
+        http(&router, &path, &[("filter", filter)]).await?.0,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
     Ok(())
 }
